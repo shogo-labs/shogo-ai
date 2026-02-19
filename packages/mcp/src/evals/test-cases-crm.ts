@@ -24,8 +24,8 @@ function getProjectDir(result: EvalResult): string | null {
   for (const tc of result.toolCalls) {
     if (tc.name === 'template.copy') {
       // Check explicit targetDir first
-      if (tc.params?.targetDir) return tc.params.targetDir
-      if (tc.params?.target_dir) return tc.params.target_dir
+      if (tc.params?.targetDir) return tc.params.targetDir as string
+      if (tc.params?.target_dir) return tc.params.target_dir as string
     }
   }
   

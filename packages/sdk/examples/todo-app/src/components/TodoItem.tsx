@@ -1,4 +1,8 @@
 import type { Todo } from '../App'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Button } from '@/components/ui/button'
+import { Trash2 } from 'lucide-react'
+import { cn } from '@/lib/utils'
 
 interface TodoItemProps {
   todo: Todo
@@ -8,62 +12,28 @@ interface TodoItemProps {
 
 export function TodoItem({ todo, onToggle, onDelete }: TodoItemProps) {
   return (
-    <li style={styles.item}>
-      <label style={styles.label}>
-        <input
-          type="checkbox"
-          checked={todo.completed}
-          onChange={onToggle}
-          style={styles.checkbox}
-        />
-        <span style={{
-          ...styles.title,
-          textDecoration: todo.completed ? 'line-through' : 'none',
-          color: todo.completed ? '#888' : '#333',
-        }}>
-          {todo.title}
-        </span>
-      </label>
-      <button onClick={onDelete} style={styles.delete}>
-        Delete
-      </button>
+    <li className="flex items-center gap-3 rounded-lg border p-3 transition-colors hover:bg-muted/50">
+      <Checkbox
+        checked={todo.completed}
+        onCheckedChange={onToggle}
+        className="h-5 w-5"
+      />
+      <span
+        className={cn(
+          'flex-1 text-sm',
+          todo.completed && 'line-through text-muted-foreground'
+        )}
+      >
+        {todo.title}
+      </span>
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        onClick={onDelete}
+        className="text-destructive hover:text-destructive hover:bg-destructive/10"
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </Button>
     </li>
   )
-}
-
-const styles: Record<string, React.CSSProperties> = {
-  item: {
-    padding: '1rem',
-    borderRadius: '8px',
-    background: '#f9fafb',
-    marginBottom: '0.5rem',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.5rem',
-  },
-  label: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.75rem',
-    cursor: 'pointer',
-    flex: 1,
-  },
-  checkbox: {
-    width: '1.25rem',
-    height: '1.25rem',
-    cursor: 'pointer',
-  },
-  title: {
-    fontSize: '1rem',
-    flex: 1,
-  },
-  delete: {
-    background: 'none',
-    border: '1px solid #dc2626',
-    color: '#dc2626',
-    padding: '0.25rem 0.75rem',
-    borderRadius: '4px',
-    cursor: 'pointer',
-    fontSize: '0.75rem',
-  },
 }

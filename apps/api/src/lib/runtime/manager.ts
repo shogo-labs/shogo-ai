@@ -34,6 +34,12 @@ const BUNDLED_TEMPLATE_DIR = join(__dirname, '..', '..', '..', '..', '..', 'pack
 const PROJECT_RUNTIME_SERVER = join(__dirname, '..', '..', '..', '..', '..', 'packages', 'project-runtime', 'src', 'server.ts')
 
 /**
+ * Path to the agent-runtime server.
+ * Used for local development to run agent projects.
+ */
+const AGENT_RUNTIME_SERVER = join(__dirname, '..', '..', '..', '..', '..', 'packages', 'agent-runtime', 'src', 'server.ts')
+
+/**
  * Path to the MCP server (for project-runtime to spawn).
  */
 const MCP_SERVER_PATH = join(__dirname, '..', '..', '..', '..', '..', 'packages', 'mcp', 'src', 'server-templates.ts')
@@ -380,12 +386,41 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     return projectDir
   }
 
+  private async getProjectType(projectId: string): Promise<'APP' | 'AGENT'> {
+    try {
+      const { prisma } = await import('../prisma')
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { type: true },
+      })
+      return (project?.type as 'APP' | 'AGENT') || 'APP'
+    } catch {
+      return 'APP'
+    }
+  }
+
+  private async getProjectWorkspaceId(projectId: string): Promise<string | null> {
+    try {
+      const { prisma } = await import('../prisma')
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { workspaceId: true },
+      })
+      return project?.workspaceId ?? null
+    } catch {
+      return null
+    }
+  }
+
   async start(projectId: string): Promise<IProjectRuntime> {
     // Check if already running
     const existing = this.runtimes.get(projectId)
     if (existing && existing.status === 'running') {
       throw new Error(`Runtime for project ${projectId} is already running`)
     }
+
+    const projectType = await this.getProjectType(projectId)
+    const isAgentProject = projectType === 'AGENT'
 
     // Ensure project directory exists with dependencies
     const projectDir = await this.ensureProjectDirectory(projectId)
@@ -410,6 +445,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     this.runtimes.set(projectId, runtime)
 
     try {
+      // Agent projects don't need a Vite dev server — only the agent-runtime
+      if (!isAgentProject) {
+
       // Build Vite environment - override DATABASE_URL with projects database if available
       // This ensures project runtimes connect to the isolated projects database, not the platform database
       const viteEnv: Record<string, string> = {
@@ -552,21 +590,46 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         if (output.includes('Local:') || output.includes('ready in')) {
           console.log(`[RuntimeManager] Vite ready for ${projectId} on port ${port}`)
         }
+        // Forward Vite output to the agent server's console log for the Server tab
+        for (const line of output.split('\n')) {
+          if (line.trim()) {
+            fetch(`http://localhost:${agentPort}/console-log/append`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ line: line.trim(), stream: 'stdout' }),
+            }).catch(() => {}) // Ignore if agent isn't ready yet
+          }
+        }
       })
 
       proc.stderr?.on('data', (data) => {
-        console.error(`[RuntimeManager] Vite stderr for ${projectId}:`, data.toString())
+        const output = data.toString()
+        console.error(`[RuntimeManager] Vite stderr for ${projectId}:`, output)
+        // Forward Vite stderr to the agent server's console log for the Server tab
+        for (const line of output.split('\n')) {
+          if (line.trim()) {
+            fetch(`http://localhost:${agentPort}/console-log/append`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ line: line.trim(), stream: 'stderr' }),
+            }).catch(() => {}) // Ignore if agent isn't ready yet
+          }
+        }
       })
 
-      // Spawn project-runtime agent server for local development
-      if (existsSync(PROJECT_RUNTIME_SERVER)) {
-        console.log(`[RuntimeManager] Starting agent server for ${projectId} on port ${agentPort}`)
+      } // end if (!isAgentProject) — skip Vite for agent projects
+
+      // Spawn runtime agent server for local development
+      const runtimeServerPath = isAgentProject ? AGENT_RUNTIME_SERVER : PROJECT_RUNTIME_SERVER
+      if (existsSync(runtimeServerPath)) {
+        console.log(`[RuntimeManager] Starting ${isAgentProject ? 'agent' : 'project'} runtime for ${projectId} on port ${agentPort}`)
         
-        // Build environment for project runtime
+        // Build environment for runtime
         const runtimeEnv: Record<string, string> = {
           ...process.env as Record<string, string>,
           PROJECT_ID: projectId,
           PROJECT_DIR: projectDir,
+          ...(isAgentProject ? { AGENT_DIR: projectDir } : {}),
           PORT: String(agentPort),
           SCHEMAS_PATH: join(this.config.workspacesDir || process.cwd(), '..', '.schemas'),
           MCP_SERVER_PATH: MCP_SERVER_PATH,
@@ -581,16 +644,30 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           console.log(`[RuntimeManager] Using isolated projects database: ${process.env.PROJECTS_DATABASE_URL.replace(/:[^:@]+@/, ':***@')}`)
         }
 
-        // AI Proxy configuration for user-created AI apps
-        // In local dev, the API server runs on the same machine
-        const apiPort = process.env.API_PORT || '3000'
-        runtimeEnv.AI_PROXY_URL = process.env.AI_PROXY_URL || `http://localhost:${apiPort}/api/ai/v1`
-        // Token will be generated by the project-runtime on startup if not set
-        if (process.env.AI_PROXY_TOKEN) {
-          runtimeEnv.AI_PROXY_TOKEN = process.env.AI_PROXY_TOKEN
+        // AI Proxy configuration — always route Claude Code through the local API proxy.
+        // We generate a fresh, project-scoped token here rather than propagating
+        // process.env.AI_PROXY_TOKEN (which may be a platform-level or stale token).
+        // The raw ANTHROPIC_API_KEY is explicitly deleted from the child env so the
+        // runtime process cannot fall back to the platform API key.
+        const apiPort = process.env.API_PORT || '8002'
+        const proxyUrl = `http://localhost:${apiPort}/api/ai/v1`
+        runtimeEnv.AI_PROXY_URL = proxyUrl
+
+        try {
+          const { generateProxyToken } = await import('../ai-proxy-token')
+          const workspaceId = await this.getProjectWorkspaceId(projectId) || 'local-dev'
+          runtimeEnv.AI_PROXY_TOKEN = await generateProxyToken(projectId, workspaceId, 'system', 7 * 24 * 60 * 60 * 1000)
+          console.log(`[RuntimeManager] Generated AI proxy token for ${projectId} (workspace: ${workspaceId})`)
+        } catch (err: any) {
+          console.error(`[RuntimeManager] Failed to generate proxy token for ${projectId}: ${err.message}`)
+          console.error(`[RuntimeManager] Runtime will start without AI proxy — LLM calls will fail`)
         }
+
+        // Strip the raw platform API key so the child process cannot bypass the proxy.
+        delete runtimeEnv.ANTHROPIC_API_KEY
+        delete runtimeEnv.ANTHROPIC_BASE_URL
         
-        const agentProc = spawn('bun', ['run', PROJECT_RUNTIME_SERVER], {
+        const agentProc = spawn('bun', ['run', runtimeServerPath], {
           cwd: projectDir,
           stdio: ['ignore', 'pipe', 'pipe'],
           detached: false,
@@ -608,21 +685,26 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         })
 
         agentProc.stdout?.on('data', (data) => {
-          const output = data.toString()
-          if (output.includes('Starting server') || output.includes('port')) {
-            console.log(`[RuntimeManager] Agent server ready for ${projectId} on port ${agentPort}`)
+          const output = data.toString().trim()
+          if (output) {
+            console.log(`[Agent:${projectId.slice(0, 8)}] ${output}`)
           }
         })
 
         agentProc.stderr?.on('data', (data) => {
-          console.error(`[RuntimeManager] Agent stderr for ${projectId}:`, data.toString())
+          const output = data.toString().trim()
+          if (output) {
+            console.error(`[Agent:${projectId.slice(0, 8)}] ${output}`)
+          }
         })
       } else {
-        console.warn(`[RuntimeManager] Agent server not found at ${PROJECT_RUNTIME_SERVER}, skipping agent startup`)
+        console.warn(`[RuntimeManager] Runtime server not found at ${runtimeServerPath}, skipping startup`)
       }
 
-      // Wait for Vite to start
-      await this.waitForReady(projectId, port, 30000)
+      // Wait for Vite to start (skip for agent projects — no Vite)
+      if (!isAgentProject) {
+        await this.waitForReady(projectId, port, 30000)
+      }
 
       // Wait for agent server
       if (runtime.agentProcess) {
@@ -796,8 +878,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     }
 
     try {
-      const response = await fetch(`http://localhost:${runtime.port}`, {
-        method: 'HEAD',
+      const healthPort = runtime.agentPort && !runtime.process ? runtime.agentPort : runtime.port
+      const response = await fetch(`http://localhost:${healthPort}${runtime.process ? '' : '/health'}`, {
+        method: runtime.process ? 'HEAD' : 'GET',
         signal: AbortSignal.timeout(5000),
       })
 

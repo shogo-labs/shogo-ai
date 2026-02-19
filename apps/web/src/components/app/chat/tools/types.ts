@@ -89,7 +89,7 @@ export function getToolCategory(name: string): ToolCategory {
 
 /**
  * Format tool name for display.
- * Handles MCP namespacing: mcp__wavesmith__store_query -> wavesmith.store_query
+ * Handles MCP namespacing: mcp__shogo__store_query -> shogo.store_query
  */
 export function formatToolName(name: string): string {
   if (name.startsWith("mcp__")) {
@@ -191,9 +191,9 @@ export function getToolKeyArg(toolName: string, args?: Record<string, unknown>):
     return args.skill as string | undefined || null
   }
 
-  // MCP wavesmith tools - extract relevant arg
-  if (toolName.startsWith("mcp__wavesmith__")) {
-    const shortName = toolName.replace("mcp__wavesmith__", "")
+  // MCP shogo tools - extract relevant arg
+  if (toolName.startsWith("mcp__shogo__")) {
+    const shortName = toolName.replace("mcp__shogo__", "")
 
     // Schema operations
     if (shortName.startsWith("schema_")) {

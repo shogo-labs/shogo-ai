@@ -31,7 +31,7 @@ export interface InlineToolWidgetProps {
 /**
  * Renders an inline tool call widget with expand/collapse.
  *
- * Collapsed: [●] wavesmith.store_query  schema.Model  ✓
+ * Collapsed: [●] shogo.store_query  schema.Model  ✓
  * Expanded: Shows full args and result below the header
  *
  * @example

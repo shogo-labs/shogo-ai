@@ -19,9 +19,14 @@ COPY tsconfig.base.json ./
 COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/mcp/package.json ./packages/mcp/
 COPY packages/project-runtime/package.json ./packages/project-runtime/
+COPY packages/agent-runtime/package.json ./packages/agent-runtime/
+COPY packages/shared-runtime/package.json ./packages/shared-runtime/
 COPY packages/sdk/package.json ./packages/sdk/
 COPY apps/api/package.json ./apps/api/
 COPY apps/web/package.json ./apps/web/
+
+# Copy scripts needed for postinstall (patch-claude-sdk runs during bun install)
+COPY scripts ./scripts
 
 # Install all dependencies
 RUN bun install
@@ -30,6 +35,8 @@ RUN bun install
 COPY packages/state-api ./packages/state-api
 COPY packages/mcp ./packages/mcp
 COPY packages/project-runtime ./packages/project-runtime
+COPY packages/agent-runtime ./packages/agent-runtime
+COPY packages/shared-runtime ./packages/shared-runtime
 COPY packages/sdk ./packages/sdk
 COPY apps/api ./apps/api
 
@@ -84,6 +91,8 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages/state-api ./packages/state-api
 COPY --from=builder /app/packages/mcp ./packages/mcp
 COPY --from=builder /app/packages/project-runtime ./packages/project-runtime
+COPY --from=builder /app/packages/agent-runtime ./packages/agent-runtime
+COPY --from=builder /app/packages/shared-runtime ./packages/shared-runtime
 COPY --from=builder /app/packages/sdk ./packages/sdk
 COPY --from=builder /app/apps/api ./apps/api
 COPY --from=builder /app/package.json ./

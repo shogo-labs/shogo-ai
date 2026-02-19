@@ -28,14 +28,19 @@ logTiming('Server module loading...')
 
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { streamText, tool, type ModelMessage } from 'ai'
-import { createClaudeCode } from 'ai-sdk-provider-claude-code'
+import { createUIMessageStream, createUIMessageStreamResponse } from 'ai'
 import { z } from 'zod'
 import { resolve, isAbsolute, relative, dirname, join, basename } from 'path'
 import { existsSync, readdirSync, readFileSync, writeFileSync, statSync, cpSync, mkdirSync, rmSync } from 'fs'
-import { initializeS3Sync, type S3Sync } from './s3-sync'
-import { initializePostgresBackup, type PostgresBackup } from './postgres-backup'
-import { verifyPreviewToken, type PreviewTokenPayload } from './preview-token'
+import {
+  initializeS3Sync, type S3Sync,
+  initializePostgresBackup, type PostgresBackup,
+  verifyPreviewToken, type PreviewTokenPayload,
+  configureAIProxy, buildClaudeCodeEnv,
+  createSessionManager, type ModelTier, type V2SessionOptions,
+  extractUserText, findLastUserMessage,
+  streamSdkToUI,
+} from '@shogo/shared-runtime'
 import { buildSystemPrompt } from './system-prompt'
 import { fileURLToPath } from 'url'
 
@@ -51,26 +56,40 @@ const MONOREPO_ROOT = resolve(__dirname, '../../..')
 
 logTiming('Loading configuration...')
 
-const PROJECT_ID = process.env.PROJECT_ID
+const POOL_PROJECT_ID = '__POOL__'
+let currentProjectId = process.env.PROJECT_ID
 const PROJECT_DIR = process.env.PROJECT_DIR || '/app/project'
 const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
-const MCP_SERVER_PATH = process.env.MCP_SERVER_PATH || '/app/packages/mcp/src/server-templates.ts'
+// MCP server path: resolve from MONOREPO_ROOT for local dev, fallback to Docker path
+const MCP_SERVER_PATH = process.env.MCP_SERVER_PATH || resolve(MONOREPO_ROOT, 'packages/mcp/src/server-templates.ts')
 const PORT = parseInt(process.env.PORT || '8080', 10)
 
 // Fast start mode: server starts before build completes
 const FAST_START_MODE = process.env.FAST_START_MODE === 'true'
 const BUILD_STATUS_FILE = process.env.BUILD_STATUS_FILE || '/tmp/build-status'
 
+// Warm pool mode: pod starts without a real project, awaiting assignment
+const IS_POOL_MODE = currentProjectId === POOL_PROJECT_ID || process.env.WARM_POOL_MODE === 'true'
+let poolAssigned = false
+
 // Validate required environment
-if (!PROJECT_ID) {
+if (!currentProjectId) {
   console.error('[project-runtime] ERROR: PROJECT_ID environment variable is required')
   process.exit(1)
 }
 
-logTiming(`Configuration loaded for project: ${PROJECT_ID}`)
+// Alias for backward compatibility (many references throughout this large file)
+const PROJECT_ID = currentProjectId
+
+if (IS_POOL_MODE) {
+  logTiming('Starting in WARM POOL mode (awaiting project assignment)')
+} else {
+  logTiming(`Configuration loaded for project: ${currentProjectId}`)
+}
 console.log(`[project-runtime] Project directory: ${PROJECT_DIR}`)
 console.log(`[project-runtime] Schemas path: ${SCHEMAS_PATH}`)
 console.log(`[project-runtime] MCP server path: ${MCP_SERVER_PATH}`)
+console.log(`[project-runtime] Template endpoints: /templates/list, /templates/copy`)
 if (FAST_START_MODE) {
   logTiming('Fast start mode enabled (build runs in background)')
 }
@@ -88,18 +107,70 @@ let postgresBackup: PostgresBackup | null = null
 // Writes marker file when complete so background init can proceed
 const S3_RESTORE_MARKER = '/tmp/s3-restore-complete'
 
-;(async () => {
+// In pool mode, skip S3 sync until a project is assigned
+if (IS_POOL_MODE) {
+  logTiming('Pool mode: skipping S3 sync (no project assigned yet)')
+  writeFileSync(S3_RESTORE_MARKER, `pool-mode:${Date.now()}`)
+}
+
+;(!IS_POOL_MODE) && (async () => {
   const s3StartTime = Date.now()
   try {
-    s3Sync = await initializeS3Sync(PROJECT_DIR)
-    if (s3Sync) {
+    const result = await initializeS3Sync(PROJECT_DIR)
+    if (result) {
+      const { sync, downloadSucceeded } = result
       const s3Duration = Date.now() - s3StartTime
-      logTiming(`S3 sync initialized (took ${s3Duration}ms)`)
       
-      // Write marker file to signal background init that S3 restore is complete
-      // This allows background init to skip bun install if node_modules was restored
-      writeFileSync(S3_RESTORE_MARKER, `restored:${Date.now()}`)
-      logTiming('S3 restore marker written')
+      if (downloadSucceeded) {
+        // Download succeeded - safe to enable sync and set the global
+        s3Sync = sync
+        logTiming(`S3 sync initialized successfully (took ${s3Duration}ms)`)
+        // Write marker file to signal background init that S3 restore is complete
+        // This allows background init to skip bun install if node_modules was restored
+        writeFileSync(S3_RESTORE_MARKER, `restored:${Date.now()}`)
+        logTiming('S3 restore marker written')
+      } else {
+        // Download failed but not a critical auth error.
+        // CRITICAL: Do NOT set s3Sync - this prevents ANY uploads of template files.
+        // The entrypoint template files are on disk, and uploading them would
+        // overwrite the user's actual project data in S3.
+        console.warn(`[project-runtime] S3 download failed (took ${s3Duration}ms) - sync DISABLED to protect user data`)
+        console.warn(`[project-runtime] Will retry download in 10 seconds...`)
+        writeFileSync(S3_RESTORE_MARKER, `download-failed:${Date.now()}`)
+        
+        // Retry download after a delay
+        const retryDownload = async (attempt: number) => {
+          try {
+            console.log(`[project-runtime] Retrying S3 download (attempt ${attempt})...`)
+            const retryStats = await sync.downloadAll()
+            if (retryStats.errors.length === 0) {
+              console.log(`[project-runtime] S3 download retry succeeded! Enabling sync.`)
+              // Now safe to enable sync - set the global and start watcher/periodic
+              s3Sync = sync
+              sync.startPeriodicSync()
+              sync.startWatcher()
+              writeFileSync(S3_RESTORE_MARKER, `restored-retry:${Date.now()}`)
+            } else {
+              console.error(`[project-runtime] S3 download retry ${attempt} failed:`, retryStats.errors)
+              // Retry with exponential backoff up to 3 attempts
+              if (attempt < 3) {
+                const delay = 10000 * Math.pow(2, attempt - 1) // 10s, 20s, 40s
+                console.log(`[project-runtime] Will retry again in ${delay / 1000}s...`)
+                setTimeout(() => retryDownload(attempt + 1), delay)
+              } else {
+                console.error(`[project-runtime] All S3 download retries failed. Sync remains disabled.`)
+              }
+            }
+          } catch (retryError) {
+            console.error(`[project-runtime] S3 download retry ${attempt} error:`, retryError)
+            if (attempt < 3) {
+              const delay = 10000 * Math.pow(2, attempt - 1)
+              setTimeout(() => retryDownload(attempt + 1), delay)
+            }
+          }
+        }
+        setTimeout(() => retryDownload(1), 10000)
+      }
     } else {
       logTiming('S3 sync not configured (S3_WORKSPACES_BUCKET not set)')
       // Still write marker so background init doesn't wait forever
@@ -108,6 +179,7 @@ const S3_RESTORE_MARKER = '/tmp/s3-restore-complete'
   } catch (error) {
     console.error(`[project-runtime] S3 sync initialization failed:`, error)
     // Write marker even on error so background init doesn't hang
+    // But do NOT start uploading - protect user data
     writeFileSync(S3_RESTORE_MARKER, `error:${Date.now()}`)
   }
 })()
@@ -325,119 +397,243 @@ function copyTemplate(templateName: string, projectName: string): { ok: boolean;
 }
 
 /**
- * AI SDK native tools for template operations
+ * Theme CSS presets for template theming
  */
-const templateTools = {
-  'template.list': tool({
-    description: `List and search available starter templates. Returns templates with metadata including name, description, complexity, features, models, and tags.
-
-Available templates:
-- todo-app: Simple task management
-- expense-tracker: Personal finance with categories
-- crm: Customer relationship management
-- inventory: Stock and product management
-- kanban: Project boards with drag-and-drop
-- ai-chat: AI chatbot with conversation history`,
-    parameters: z.object({
-      query: z.string().optional().describe('Optional search query to filter templates'),
-    }),
-    execute: async ({ query }) => {
-      console.log(`[project-runtime] template.list called with query: ${query}`)
-      let templates = loadTemplates()
-
-      if (query) {
-        const queryLower = query.toLowerCase()
-        templates = templates.filter(t =>
-          t.name.toLowerCase().includes(queryLower) ||
-          t.description.toLowerCase().includes(queryLower) ||
-          t.tags.some(tag => tag.toLowerCase().includes(queryLower)) ||
-          t.useCases.some(uc => uc.toLowerCase().includes(queryLower))
-        )
-      }
-
-      return JSON.stringify({ ok: true, templates }, null, 2)
-    },
-  }),
-
-  'template.copy': tool({
-    description: `Copy a starter template to set up the project. This will copy all template files to the current project directory, install dependencies, build the project, and start the preview server automatically.`,
-    parameters: z.object({
-      templateName: z.string().describe('Name of the template to copy (e.g., "ai-chat", "todo-app", "expense-tracker")'),
-      projectName: z.string().optional().describe('Optional project name (for package.json)'),
-    }),
-    execute: async ({ templateName, projectName }) => {
-      console.log(`[project-runtime] template.copy called: ${templateName}`)
-      const result = copyTemplate(templateName, projectName || templateName)
-      
-      // If successful, trigger S3 sync immediately to persist the template files
-      if (result.ok && s3Sync) {
-        console.log(`[project-runtime] Triggering S3 sync after template copy`)
-        s3Sync.triggerSync(true) // immediate=true since template copy is a critical operation
-      }
-      
-      // If successful, automatically rebuild and restart the preview
-      if (result.ok) {
-        let restartResult: { success: boolean; message: string; mode?: string; port?: number | null } = {
-          success: false,
-          message: 'Restart not attempted',
-        }
-        
-        try {
-          console.log(`[project-runtime] Starting dev mode for project ${PROJECT_ID}...`)
-          // Call our local dev endpoint (uses vite dev server with HMR for instant updates)
-          const response = await fetch(`http://localhost:${PORT}/preview/dev`, {
-            method: 'POST',
-          })
-          
-          if (response.ok) {
-            const data = await response.json() as { success: boolean; mode: string; port: number | null }
-            restartResult = {
-              success: true,
-              message: `Preview restarted in ${data.mode} mode`,
-              mode: data.mode,
-              port: data.port,
-            }
-            console.log(`[project-runtime] Preview restarted in ${data.mode} mode`)
-          } else {
-            const errorData = await response.json().catch(() => ({})) as { error?: string }
-            restartResult = {
-              success: false,
-              message: errorData.error || `Restart failed with status ${response.status}`,
-            }
-          }
-        } catch (err: any) {
-          console.warn(`[project-runtime] Restart error: ${err.message}`)
-          restartResult = {
-            success: false,
-            message: err.message,
-          }
-        }
-        
-        return JSON.stringify({
-          ...result,
-          restart: restartResult,
-          message: restartResult.success 
-            ? `Template copied and preview rebuilt. The preview will show the ${templateName} app.`
-            : 'Template copied but rebuild failed. Try refreshing the preview.',
-        }, null, 2)
-      }
-      
-      return JSON.stringify(result, null, 2)
-    },
-  }),
+const THEME_CSS: Record<string, { light: string; dark: string; radius: string }> = {
+  default: {
+    light: `--background: 0 0% 100%; --foreground: 222.2 84% 4.9%; --card: 0 0% 100%; --card-foreground: 222.2 84% 4.9%; --popover: 0 0% 100%; --popover-foreground: 222.2 84% 4.9%; --primary: 222.2 47.4% 11.2%; --primary-foreground: 210 40% 98%; --secondary: 210 40% 96.1%; --secondary-foreground: 222.2 47.4% 11.2%; --muted: 210 40% 96.1%; --muted-foreground: 215.4 16.3% 46.9%; --accent: 210 40% 96.1%; --accent-foreground: 222.2 47.4% 11.2%; --destructive: 0 84.2% 60.2%; --destructive-foreground: 210 40% 98%; --border: 214.3 31.8% 91.4%; --input: 214.3 31.8% 91.4%; --ring: 222.2 84% 4.9%;`,
+    dark: `--background: 222.2 84% 4.9%; --foreground: 210 40% 98%; --card: 222.2 84% 4.9%; --card-foreground: 210 40% 98%; --popover: 222.2 84% 4.9%; --popover-foreground: 210 40% 98%; --primary: 210 40% 98%; --primary-foreground: 222.2 47.4% 11.2%; --secondary: 217.2 32.6% 17.5%; --secondary-foreground: 210 40% 98%; --muted: 217.2 32.6% 17.5%; --muted-foreground: 215 20.2% 65.1%; --accent: 217.2 32.6% 17.5%; --accent-foreground: 210 40% 98%; --destructive: 0 62.8% 30.6%; --destructive-foreground: 210 40% 98%; --border: 217.2 32.6% 17.5%; --input: 217.2 32.6% 17.5%; --ring: 212.7 26.8% 83.9%;`,
+    radius: '0.5',
+  },
+  lavender: {
+    light: `--background: 270 50% 98%; --foreground: 270 50% 10%; --card: 0 0% 100%; --card-foreground: 270 50% 10%; --popover: 0 0% 100%; --popover-foreground: 270 50% 10%; --primary: 262 83% 58%; --primary-foreground: 0 0% 100%; --secondary: 270 50% 93%; --secondary-foreground: 270 50% 10%; --muted: 270 50% 93%; --muted-foreground: 270 30% 45%; --accent: 262 83% 92%; --accent-foreground: 262 83% 35%; --destructive: 0 84% 60%; --destructive-foreground: 0 0% 100%; --border: 270 30% 88%; --input: 270 30% 88%; --ring: 262 83% 58%;`,
+    dark: `--background: 270 50% 5%; --foreground: 270 50% 98%; --card: 270 50% 8%; --card-foreground: 270 50% 98%; --popover: 270 50% 8%; --popover-foreground: 270 50% 98%; --primary: 262 83% 58%; --primary-foreground: 270 50% 5%; --secondary: 270 30% 17%; --secondary-foreground: 270 50% 98%; --muted: 270 30% 17%; --muted-foreground: 270 30% 65%; --accent: 262 83% 20%; --accent-foreground: 262 83% 90%; --destructive: 0 63% 31%; --destructive-foreground: 270 50% 98%; --border: 270 30% 17%; --input: 270 30% 17%; --ring: 262 83% 58%;`,
+    radius: '0.625',
+  },
+  glacier: {
+    light: `--background: 210 40% 98%; --foreground: 222 47% 11%; --card: 0 0% 100%; --card-foreground: 222 47% 11%; --popover: 0 0% 100%; --popover-foreground: 222 47% 11%; --primary: 199 89% 48%; --primary-foreground: 0 0% 100%; --secondary: 210 40% 93%; --secondary-foreground: 222 47% 11%; --muted: 210 40% 93%; --muted-foreground: 215 16% 47%; --accent: 199 89% 93%; --accent-foreground: 199 89% 30%; --destructive: 0 84% 60%; --destructive-foreground: 0 0% 100%; --border: 214 32% 91%; --input: 214 32% 91%; --ring: 199 89% 48%;`,
+    dark: `--background: 222 47% 6%; --foreground: 210 40% 98%; --card: 222 47% 9%; --card-foreground: 210 40% 98%; --popover: 222 47% 9%; --popover-foreground: 210 40% 98%; --primary: 199 89% 48%; --primary-foreground: 222 47% 6%; --secondary: 217 33% 17%; --secondary-foreground: 210 40% 98%; --muted: 217 33% 17%; --muted-foreground: 215 20% 65%; --accent: 199 89% 20%; --accent-foreground: 199 89% 90%; --destructive: 0 63% 31%; --destructive-foreground: 210 40% 98%; --border: 217 33% 17%; --input: 217 33% 17%; --ring: 199 89% 48%;`,
+    radius: '0.5',
+  },
+  harvest: {
+    light: `--background: 40 33% 98%; --foreground: 20 14% 10%; --primary: 24 95% 53%; --primary-foreground: 0 0% 100%; --secondary: 40 33% 93%; --secondary-foreground: 20 14% 10%; --muted: 40 33% 93%; --muted-foreground: 20 14% 45%; --accent: 24 95% 92%; --accent-foreground: 24 95% 30%; --border: 40 20% 88%; --input: 40 20% 88%; --ring: 24 95% 53%;`,
+    dark: `--background: 20 14% 6%; --foreground: 40 33% 98%; --primary: 24 95% 53%; --primary-foreground: 20 14% 6%; --secondary: 20 14% 17%; --secondary-foreground: 40 33% 98%; --muted: 20 14% 17%; --muted-foreground: 40 20% 65%; --accent: 24 95% 20%; --accent-foreground: 24 95% 90%; --border: 20 14% 17%; --input: 20 14% 17%; --ring: 24 95% 53%;`,
+    radius: '0.5',
+  },
+  brutalist: {
+    light: `--background: 0 0% 100%; --foreground: 0 0% 0%; --primary: 0 0% 0%; --primary-foreground: 0 0% 100%; --secondary: 0 0% 95%; --secondary-foreground: 0 0% 0%; --accent: 351 100% 50%; --accent-foreground: 0 0% 100%; --border: 0 0% 0%; --input: 0 0% 85%; --ring: 0 0% 0%;`,
+    dark: `--background: 0 0% 0%; --foreground: 0 0% 100%; --primary: 0 0% 100%; --primary-foreground: 0 0% 0%; --secondary: 0 0% 15%; --secondary-foreground: 0 0% 100%; --accent: 351 100% 50%; --accent-foreground: 0 0% 100%; --border: 0 0% 100%; --input: 0 0% 20%; --ring: 0 0% 100%;`,
+    radius: '0',
+  },
+  obsidian: {
+    light: `--background: 240 10% 96%; --foreground: 240 10% 10%; --primary: 240 6% 25%; --primary-foreground: 0 0% 100%; --secondary: 240 10% 91%; --secondary-foreground: 240 10% 10%; --muted: 240 10% 91%; --muted-foreground: 240 6% 45%; --border: 240 6% 85%; --input: 240 6% 85%; --ring: 240 6% 25%;`,
+    dark: `--background: 240 6% 6%; --foreground: 240 10% 96%; --primary: 240 10% 90%; --primary-foreground: 240 6% 6%; --secondary: 240 6% 15%; --secondary-foreground: 240 10% 96%; --muted: 240 6% 15%; --muted-foreground: 240 6% 55%; --border: 240 6% 15%; --input: 240 6% 15%; --ring: 240 10% 90%;`,
+    radius: '0.375',
+  },
+  orchid: {
+    light: `--background: 330 50% 98%; --foreground: 330 50% 10%; --primary: 330 81% 60%; --primary-foreground: 0 0% 100%; --secondary: 330 50% 93%; --secondary-foreground: 330 50% 10%; --muted: 330 50% 93%; --muted-foreground: 330 30% 45%; --border: 330 30% 88%; --input: 330 30% 88%; --ring: 330 81% 60%;`,
+    dark: `--background: 330 50% 5%; --foreground: 330 50% 98%; --primary: 330 81% 60%; --primary-foreground: 330 50% 5%; --secondary: 330 30% 17%; --secondary-foreground: 330 50% 98%; --muted: 330 30% 17%; --muted-foreground: 330 30% 65%; --border: 330 30% 17%; --input: 330 30% 17%; --ring: 330 81% 60%;`,
+    radius: '0.5',
+  },
+  solar: {
+    light: `--background: 48 100% 98%; --foreground: 20 14% 10%; --primary: 45 93% 47%; --primary-foreground: 20 14% 10%; --secondary: 48 100% 93%; --secondary-foreground: 20 14% 10%; --muted: 48 100% 93%; --muted-foreground: 20 14% 45%; --border: 48 50% 85%; --input: 48 50% 85%; --ring: 45 93% 47%;`,
+    dark: `--background: 20 14% 6%; --foreground: 48 100% 98%; --primary: 45 93% 47%; --primary-foreground: 20 14% 6%; --secondary: 20 14% 17%; --secondary-foreground: 48 100% 98%; --muted: 20 14% 17%; --muted-foreground: 48 50% 65%; --border: 20 14% 17%; --input: 20 14% 17%; --ring: 45 93% 47%;`,
+    radius: '0.5',
+  },
+  tide: {
+    light: `--background: 180 30% 98%; --foreground: 180 30% 10%; --primary: 173 80% 40%; --primary-foreground: 0 0% 100%; --secondary: 180 30% 93%; --secondary-foreground: 180 30% 10%; --muted: 180 30% 93%; --muted-foreground: 180 20% 45%; --border: 180 20% 88%; --input: 180 20% 88%; --ring: 173 80% 40%;`,
+    dark: `--background: 180 30% 5%; --foreground: 180 30% 98%; --primary: 173 80% 40%; --primary-foreground: 180 30% 5%; --secondary: 180 20% 17%; --secondary-foreground: 180 30% 98%; --muted: 180 20% 17%; --muted-foreground: 180 20% 65%; --border: 180 20% 17%; --input: 180 20% 17%; --ring: 173 80% 40%;`,
+    radius: '0.5',
+  },
+  verdant: {
+    light: `--background: 120 30% 98%; --foreground: 120 30% 10%; --primary: 142 71% 45%; --primary-foreground: 0 0% 100%; --secondary: 120 30% 93%; --secondary-foreground: 120 30% 10%; --muted: 120 30% 93%; --muted-foreground: 120 20% 45%; --border: 120 20% 88%; --input: 120 20% 88%; --ring: 142 71% 45%;`,
+    dark: `--background: 120 30% 5%; --foreground: 120 30% 98%; --primary: 142 71% 45%; --primary-foreground: 120 30% 5%; --secondary: 120 20% 17%; --secondary-foreground: 120 30% 98%; --muted: 120 20% 17%; --muted-foreground: 120 20% 65%; --border: 120 20% 17%; --input: 120 20% 17%; --ring: 142 71% 45%;`,
+    radius: '0.5',
+  },
 }
 
+/**
+ * Apply a theme to the project's index.css.
+ * Output is Tailwind v4–compatible (@import "tailwindcss", @theme inline) so that
+ * utilities like border-border and bg-background work with the project's Tailwind v4 setup.
+ */
+function formatThemeVars(inlineCSS: string, indent = '  '): string {
+  return inlineCSS
+    .split(';')
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(decl => {
+      const colonIdx = decl.indexOf(':')
+      if (colonIdx === -1) return ''
+      const prop = decl.slice(0, colonIdx).trim()
+      const value = decl.slice(colonIdx + 1).trim()
+      return `${indent}${prop}: hsl(${value});`
+    })
+    .filter(Boolean)
+    .join('\n')
+}
+
+/**
+ * Apply a theme to the project's index.css using Tailwind v4 syntax.
+ */
+function applyThemeToProject(projectDir: string, themeId: string): void {
+  const theme = THEME_CSS[themeId] || THEME_CSS.default
+  const indexCssPath = join(projectDir, 'src', 'index.css')
+  // Theme presets use HSL triplets (e.g. --border: 214.3 31.8% 91.4%); map to Tailwind v4 theme via hsl(var(--x))
+  const themeCSS = `@import "tailwindcss";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@plugin "tailwindcss-animate";
+
+/* Theme: ${themeId} */
+
+:root {
+  ${theme.light}
+  --radius: ${theme.radius}rem;
+}
+
+.dark {
+  ${theme.dark}
+}
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card, 0 0% 100%));
+  --color-card-foreground: hsl(var(--card-foreground, 222.2 84% 4.9%));
+  --color-popover: hsl(var(--popover, 0 0% 100%));
+  --color-popover-foreground: hsl(var(--popover-foreground, 222.2 84% 4.9%));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground, 210 40% 98%));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+      Oxygen, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif;
+  }
+}
+`
+  
+  try {
+    writeFileSync(indexCssPath, themeCSS, 'utf-8')
+    console.log(`[project-runtime] Applied theme "${themeId}" to ${indexCssPath}`)
+  } catch (err: any) {
+    console.warn(`[project-runtime] Warning: Could not apply theme: ${err.message}`)
+  }
+}
+
+// Template HTTP endpoints are registered after `app` is created (see /templates/list and /templates/copy below)
+
 // =============================================================================
-// Path Restriction (Security)
+// Path Restriction & Runtime Command Guardrails (Security)
 // =============================================================================
 
 /**
- * Creates a canUseTool callback that restricts file operations to the project directory.
- * This prevents the agent from accessing files outside the project.
+ * Forbidden runtime commands that the agent must NEVER execute.
+ * These would break the managed vite build --watch process, the Hono API server,
+ * or other managed infrastructure inside the project runtime container.
+ * 
+ * This is a HARD BLOCK — the command is physically prevented from running,
+ * regardless of what the LLM decides.
+ */
+const FORBIDDEN_COMMAND_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
+  // Vite commands (already running in watch mode)
+  { pattern: /\bvite\s+dev\b/, reason: 'The dev server is already running. Vite build --watch handles rebuilds automatically.' },
+  { pattern: /\bvite\s+build\b/, reason: 'Vite build --watch is already running and rebuilds automatically on file changes.' },
+  { pattern: /\bvite\s+serve\b/, reason: 'The server is already running and serving the built files.' },
+  { pattern: /\bvite\s+preview\b/, reason: 'The server is already running and serving the built files.' },
+  { pattern: /\bnpx\s+vite\b/, reason: 'Vite is already running in watch mode. Do not start another instance.' },
+  { pattern: /\bbunx\s+vite\b/, reason: 'Vite is already running in watch mode. Do not start another instance.' },
+  // Dev/build scripts (handled by watch mode)
+  { pattern: /\bbun\s+run\s+dev\b/, reason: 'The dev server is already running. No need to start it manually.' },
+  { pattern: /\bbun\s+run\s+build\b/, reason: 'Vite build --watch handles builds automatically. No manual build needed.' },
+  { pattern: /\bnpm\s+run\s+dev\b/, reason: 'The dev server is already running. No need to start it manually.' },
+  { pattern: /\bnpm\s+run\s+build\b/, reason: 'Vite build --watch handles builds automatically. No manual build needed.' },
+  { pattern: /\byarn\s+dev\b/, reason: 'The dev server is already running. No need to start it manually.' },
+  { pattern: /\byarn\s+build\b/, reason: 'Vite build --watch handles builds automatically. No manual build needed.' },
+  // Process killing (would kill managed infrastructure)
+  { pattern: /\bkill\s+-/, reason: 'Do not kill processes. The runtime manages all server processes automatically.' },
+  { pattern: /\bkill\s+\d/, reason: 'Do not kill processes. The runtime manages all server processes automatically.' },
+  { pattern: /\bpkill\b/, reason: 'Do not kill processes. The runtime manages all server processes automatically.' },
+  { pattern: /\bkillall\b/, reason: 'Do not kill processes. The runtime manages all server processes automatically.' },
+  // Server restart commands
+  { pattern: /\bpm2\s+restart\b/, reason: 'Do not restart processes. The runtime manages the server automatically.' },
+  { pattern: /\bsystemctl\s+restart\b/, reason: 'Do not restart system services. The runtime manages everything.' },
+  // Destructive database commands (would wipe all user data)
+  { pattern: /--force-reset/, reason: 'Database reset would destroy all user data. Use `prisma migrate dev` for schema changes that require data migration, or ask the user for confirmation first.' },
+  { pattern: /--accept-data-loss/, reason: 'This flag would destroy user data. Use `prisma migrate dev` for schema changes that require data migration, or ask the user for confirmation first.' },
+]
+
+/**
+ * Check if a bash command matches any forbidden runtime command pattern.
+ * Returns the reason string if forbidden, or null if allowed.
+ */
+function checkForbiddenCommand(command: string): string | null {
+  const cmd = command.toLowerCase()
+  for (const { pattern, reason } of FORBIDDEN_COMMAND_PATTERNS) {
+    if (pattern.test(cmd)) {
+      return reason
+    }
+  }
+  return null
+}
+
+/**
+ * Creates a canUseTool callback that:
+ * 1. Blocks forbidden runtime commands (vite restart, build, kill, etc.)
+ * 2. Restricts file operations to the project directory
+ * 
+ * This prevents the agent from:
+ * - Breaking the managed vite build --watch / Hono server infrastructure
+ * - Accessing files outside the project directory
  */
 function createPathRestrictor(projectDir: string) {
   return async (toolName: string, input: unknown) => {
-    // Only restrict file operation tools
+    // DEBUG: Log EVERY canUseTool invocation so we can verify it's being called
+    console.error(`[project-runtime] canUseTool called: tool=${toolName}, input=${JSON.stringify(input).slice(0, 300)}`)
+
+    // GUARDRAIL: Block forbidden runtime commands for Bash/Shell tools
+    if (toolName === 'Bash' || toolName === 'bash' || toolName === 'Shell' || toolName === 'shell') {
+      const inputObj = input as Record<string, unknown>
+      const command = String(inputObj.command || '')
+      console.error(`[project-runtime] Bash command intercepted: "${command}"`)
+      const reason = checkForbiddenCommand(command)
+      if (reason) {
+        console.error(`[project-runtime] ❌ BLOCKED forbidden command: "${command}" — reason: ${reason}`)
+        return {
+          behavior: 'deny' as const,
+          message: `Command blocked: ${reason} The runtime container manages vite build --watch and the API server automatically. If something isn't working, check .build.log for errors.`,
+        }
+      }
+      console.error(`[project-runtime] ✅ Bash command allowed: "${command}"`)
+    }
+
+    // Only restrict file operation tools for path checks
     const fileTools = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS', 'Bash']
     if (!fileTools.includes(toolName)) {
       return { behavior: 'allow' as const }
@@ -470,144 +666,111 @@ function createPathRestrictor(projectDir: string) {
 // =============================================================================
 
 const pathRestrictor = createPathRestrictor(PROJECT_DIR)
+console.log(`[project-runtime] ✅ Forbidden command guardrail ACTIVE (${FORBIDDEN_COMMAND_PATTERNS.length} patterns)`)
 
 // AI Proxy Configuration
-// When AI_PROXY_URL and AI_PROXY_TOKEN are set, route Claude Code CLI through
-// the proxy instead of directly to Anthropic. This prevents exposing the raw
-// ANTHROPIC_API_KEY to the project pod.
+// configureAIProxy() throws when AI_PROXY_URL is set but no token is available,
+// preventing silent fallback to a raw platform ANTHROPIC_API_KEY.
+let aiProxy: ReturnType<typeof configureAIProxy>
+try {
+  aiProxy = configureAIProxy({ logPrefix: 'project-runtime' })
+} catch (err: any) {
+  console.error(`[project-runtime] FATAL: ${err.message}`)
+  process.exit(1)
+}
+let claudeCodeEnv = buildClaudeCodeEnv(aiProxy, {
+  RUNTIME_PORT: String(PORT),
+})
+
+// =============================================================================
+// V2 Agent SDK Session Management
+// =============================================================================
+// Uses the V2 session-based API from @anthropic-ai/claude-agent-sdk.
+// Sessions persist across HTTP requests, keeping the CLI subprocess alive.
+// This eliminates the 7-12s cold start overhead per message.
 //
-// How it works:
-// - ANTHROPIC_BASE_URL is set to the proxy's Anthropic-native endpoint
-// - ANTHROPIC_API_KEY is set to the proxy token (proxy validates it)
-// - The proxy forwards requests to the real Anthropic API with server-side keys
-const AI_PROXY_URL = process.env.AI_PROXY_URL
-const AI_PROXY_TOKEN = process.env.AI_PROXY_TOKEN
-const useAIProxy = !!(AI_PROXY_URL && AI_PROXY_TOKEN)
+// IMPORTANT: The V2 SDK's unstable_v2_createSession() only forwards a subset
+// of options to the CLI process (model, env, allowedTools, permissionMode,
+// settingSources, canUseTool, hooks, includePartialMessages). It does NOT
+// forward systemPrompt, mcpServers, or cwd — these are silently dropped.
+//
+// To work around this, we write file-based configuration that the CLI reads
+// via settingSources: ['project']:
+//   - CLAUDE.md in PROJECT_DIR → system prompt (loaded as project instructions)
+//   - .mcp.json in PROJECT_DIR → MCP server config (loaded as project MCP servers)
 
-if (useAIProxy) {
-  // Derive the Anthropic-native proxy base URL from AI_PROXY_URL
-  // AI_PROXY_URL is like: http://api-server/api/ai/v1
-  // Anthropic base URL should be: http://api-server/api/ai/anthropic
-  const anthropicProxyBase = AI_PROXY_URL.replace(/\/v1$/, '/anthropic')
-  console.log(`[project-runtime] AI Proxy enabled: Claude Code → ${anthropicProxyBase}`)
-  console.log(`[project-runtime] Proxy token: ${AI_PROXY_TOKEN.slice(0, 20)}...`)
-} else {
-  console.log(`[project-runtime] AI Proxy not configured, using direct ANTHROPIC_API_KEY`)
-}
+/**
+ * Write CLAUDE.md and .mcp.json to the project directory so the V2 SDK CLI
+ * picks them up via settingSources: ['project']. This is necessary because
+ * the V2 session constructor does not forward systemPrompt or mcpServers
+ * from the programmatic options.
+ */
+function writeAgentConfigFiles(): void {
+  // Write CLAUDE.md with the system prompt
+  const claudeMdPath = resolve(PROJECT_DIR, 'CLAUDE.md')
+  const systemPromptContent = buildSystemPrompt(PROJECT_DIR)
+  writeFileSync(claudeMdPath, systemPromptContent, 'utf-8')
+  console.log(`[project-runtime] Wrote CLAUDE.md to ${claudeMdPath} (${systemPromptContent.length} chars)`)
 
-// Build environment overrides for Claude Code process
-// When proxy is enabled, override ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY
-// IMPORTANT: Spread process.env first so DATABASE_URL and other runtime vars are inherited
-const claudeCodeEnv: Record<string, string> = {
-  ...Object.fromEntries(
-    Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)
-  ),
-}
-if (useAIProxy) {
-  const anthropicProxyBase = AI_PROXY_URL!.replace(/\/v1$/, '/anthropic')
-  claudeCodeEnv.ANTHROPIC_BASE_URL = anthropicProxyBase
-  claudeCodeEnv.ANTHROPIC_API_KEY = AI_PROXY_TOKEN!
-}
-
-const claudeCode = createClaudeCode({
-  defaultSettings: {
-    // Enable streaming (required for hooks)
-    streamingInput: 'always',
-    // Verbose logging (disabled in production)
-    verbose: false,
-    // Working directory is the project
-    cwd: PROJECT_DIR,
-    // Path restriction for security
-    canUseTool: pathRestrictor,
-    // Load project settings (.claude/skills, .mcp.json, etc.)
-    settingSources: ['project', 'local'],
-    // Environment for Claude Code process
-    // Inherits all runtime env vars (DATABASE_URL, etc.) plus AI proxy overrides
-    env: claudeCodeEnv,
-    // MCP server configuration
+  // Write .mcp.json with the template MCP server config
+  const mcpJsonPath = resolve(PROJECT_DIR, '.mcp.json')
+  const mcpConfig = {
     mcpServers: {
-      wavesmith: {
+      shogo: {
         command: 'bun',
         args: ['run', MCP_SERVER_PATH],
         env: {
           SCHEMAS_PATH,
-          PROJECT_ID: PROJECT_ID!,
-          PROJECT_DIR,  // Critical: template.copy needs this to copy to the right location
-          RUNTIME_PORT: String(PORT),  // Port for calling /preview/restart from template.copy
+          PROJECT_ID: currentProjectId!,
+          PROJECT_DIR,
+          RUNTIME_PORT: String(PORT),
           NODE_ENV: process.env.NODE_ENV || 'production',
-          // Forward S3 configuration for schema persistence
-          S3_ENDPOINT: process.env.S3_ENDPOINT || '',
-          S3_SCHEMA_BUCKET: process.env.S3_SCHEMA_BUCKET || '',
-          S3_FORCE_PATH_STYLE: process.env.S3_FORCE_PATH_STYLE || '',
-          AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID || '',
-          AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY || '',
-          AWS_REGION: process.env.AWS_REGION || 'us-east-1',
-          SCHEMA_STORAGE: process.env.SCHEMA_STORAGE || '',
           DATABASE_URL: process.env.DATABASE_URL || '',
         },
       },
     },
-    // Allowed tools
-    allowedTools: [
-      // File operations
-      'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
-      // Skill and agent tools
-      'Skill', 'Task', 'Bash', 'TodoWrite',
-      // Template tools (underscores - Claude Code converts dots to underscores)
-      'mcp__wavesmith__template_list',
-      'mcp__wavesmith__template_copy',
-      // Wavesmith MCP tools - Schema (underscores)
-      // 'mcp__wavesmith__schema_set',
-      // 'mcp__wavesmith__schema_get',
-      // 'mcp__wavesmith__schema_list',
-      // 'mcp__wavesmith__schema_load',
-      // // Wavesmith MCP tools - Store (underscores)
-      // 'mcp__wavesmith__store_create',
-      // 'mcp__wavesmith__store_list',
-      // 'mcp__wavesmith__store_get',
-      // 'mcp__wavesmith__store_update',
-      // 'mcp__wavesmith__store_query',
-      // 'mcp__wavesmith__store_models',
-      // 'mcp__wavesmith__store_delete',
-      // // Wavesmith MCP tools - Views (underscores)
-      // 'mcp__wavesmith__view_execute',
-      // 'mcp__wavesmith__view_define',
-      // 'mcp__wavesmith__view_project',
-      // // Wavesmith MCP tools - Data & DDL (underscores)
-      // 'mcp__wavesmith__data_load',
-      // 'mcp__wavesmith__data_loadAll',
-      // 'mcp__wavesmith__ddl_execute',
-      // 'mcp__wavesmith__ddl_migrate',
-    ],
-    // Use default permission mode (our canUseTool callback handles restrictions)
-    permissionMode: 'default',
-  },
-})
-
-// =============================================================================
-// Model Instance Cache — "keep the CLI warm"
-// =============================================================================
-// Cache ClaudeCodeLanguageModel instances by model name so the internal sessionId
-// persists across HTTP requests.  After the first streamText() call the SDK stores
-// the sessionId; subsequent calls automatically pass `resume: <sessionId>` to the
-// Claude Code CLI subprocess.  This means the CLI loads the existing session from
-// disk (~/.claude/projects/) instead of cold-starting a brand-new conversation,
-// saving 1-2 s of MCP/skill initialisation per message.
-//
-// Only 3 possible keys (haiku | sonnet | opus) so memory is bounded.
-const cachedModels = new Map<string, ReturnType<typeof claudeCode>>()
-
-function getOrCreateModel(modelName: 'haiku' | 'sonnet' | 'opus') {
-  let model = cachedModels.get(modelName)
-  if (!model) {
-    model = claudeCode(modelName, {
-      streamingInput: 'always',
-    })
-    cachedModels.set(modelName, model)
-    console.log(`[project-runtime] Cached model instance for: ${modelName} (session will auto-resume on next call)`)
   }
-  return model
+  writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2), 'utf-8')
+  console.log(`[project-runtime] Wrote .mcp.json to ${mcpJsonPath}`)
 }
+
+// Write config files and ensure CLI will run in the project directory.
+// process.chdir() is safe here because the server uses absolute paths everywhere.
+try {
+  process.chdir(PROJECT_DIR)
+  console.log(`[project-runtime] Changed cwd to ${PROJECT_DIR}`)
+} catch (e: any) {
+  console.warn(`[project-runtime] Could not chdir to ${PROJECT_DIR}: ${e.message}`)
+}
+if (!IS_POOL_MODE) {
+  writeAgentConfigFiles()
+}
+
+function buildProjectSessionOptions(modelName: ModelTier): V2SessionOptions {
+  return {
+    model: modelName === 'haiku' ? 'claude-haiku-4-5'
+         : modelName === 'opus' ? 'claude-opus-4-6'
+         : 'claude-sonnet-4-5',
+    canUseTool: pathRestrictor,
+    settingSources: ['project', 'local'],
+    env: claudeCodeEnv,
+    includePartialMessages: true,
+    allowedTools: [
+      'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
+      'Bash',
+      'Skill', 'Task', 'TodoWrite',
+      'mcp__shogo__template_list',
+      'mcp__shogo__template_copy',
+    ],
+    permissionMode: 'default',
+  }
+}
+
+let sessions = createSessionManager({
+  buildSessionOptions: buildProjectSessionOptions,
+  defaultModel: (process.env.AGENT_MODEL || 'sonnet') as ModelTier,
+  logPrefix: 'project-runtime',
+})
 
 // =============================================================================
 // Stream Keep-Alive Utility
@@ -812,13 +975,95 @@ app.get('/health', (c) => {
   const uptimeMs = Date.now() - SERVER_START_TIME
   return c.json({
     status: 'ok',
-    projectId: PROJECT_ID,
+    projectId: currentProjectId,
     projectDir: PROJECT_DIR,
     uptime: process.uptime(),
     uptimeMs,
+    poolMode: IS_POOL_MODE && !poolAssigned,
     fastStartMode: FAST_START_MODE,
     coldStartMs: uptimeMs < 60000 ? uptimeMs : undefined, // Only show for first minute
   })
+})
+
+// =============================================================================
+// Warm Pool Assignment Endpoint
+// =============================================================================
+
+app.post('/pool/assign', async (c) => {
+  if (!IS_POOL_MODE) {
+    return c.json({ error: 'Not in pool mode' }, 400)
+  }
+  if (poolAssigned) {
+    return c.json({ error: 'Already assigned', projectId: currentProjectId }, 400)
+  }
+
+  const startTime = Date.now()
+  const body = await c.req.json()
+  const { projectId, env: envVars } = body
+
+  if (!projectId || typeof projectId !== 'string') {
+    return c.json({ error: 'projectId (string) is required' }, 400)
+  }
+
+  logTiming(`Pool assignment starting for project ${projectId}`)
+
+  // 1. Update project identity
+  currentProjectId = projectId
+  process.env.PROJECT_ID = projectId
+
+  // 2. Inject environment variables from the controller
+  if (envVars && typeof envVars === 'object') {
+    for (const [key, value] of Object.entries(envVars)) {
+      if (typeof value === 'string') {
+        process.env[key] = value
+      }
+    }
+  }
+
+  // 3. Reconfigure AI proxy with new env (picks up AI_PROXY_TOKEN)
+  try {
+    aiProxy = configureAIProxy({ logPrefix: 'project-runtime' })
+  } catch (err: any) {
+    console.error(`[project-runtime] FATAL during reconfigure: ${err.message}`)
+    process.exit(1)
+  }
+  claudeCodeEnv = buildClaudeCodeEnv(aiProxy, {
+    RUNTIME_PORT: String(PORT),
+  })
+
+  // 4. Recreate session manager with updated config
+  sessions = createSessionManager({
+    buildSessionOptions: buildProjectSessionOptions,
+    defaultModel: (process.env.AGENT_MODEL || 'sonnet') as ModelTier,
+    logPrefix: 'project-runtime',
+  })
+
+  // 5. Run project-specific initialization
+  try {
+    // Initialize S3 sync to download project data
+    if (process.env.S3_WORKSPACES_BUCKET) {
+      const result = await initializeS3Sync(PROJECT_DIR)
+      if (result) {
+        const { sync, downloadSucceeded } = result
+        if (downloadSucceeded) {
+          s3Sync = sync
+          logTiming('Pool assign: S3 sync initialized')
+          writeFileSync(S3_RESTORE_MARKER, `pool-assigned:${Date.now()}`)
+        }
+      }
+    }
+
+    // Write config files now that we have a real project
+    writeAgentConfigFiles()
+
+    poolAssigned = true
+    const duration = Date.now() - startTime
+    logTiming(`Pool assignment complete for ${projectId} (${duration}ms)`)
+    return c.json({ ok: true, projectId, durationMs: duration })
+  } catch (error: any) {
+    console.error(`[project-runtime] Pool assignment failed for ${projectId}:`, error.message)
+    return c.json({ error: `Assignment failed: ${error.message}` }, 500)
+  }
 })
 
 // Readiness check - returns 503 until build completes in fast start mode
@@ -987,6 +1232,156 @@ app.get('/build-events', (c) => {
   })
 })
 
+// =============================================================================
+// Template HTTP Endpoints (used by the agent via Bash + curl)
+// =============================================================================
+
+/**
+ * GET /templates/list — List available starter templates
+ * Supports optional query params: ?query=...&complexity=beginner|intermediate|advanced
+ */
+app.get('/templates/list', (c) => {
+  try {
+    let templates = loadTemplates()
+    
+    const query = c.req.query('query')
+    const complexity = c.req.query('complexity') as 'beginner' | 'intermediate' | 'advanced' | undefined
+    
+    // Filter by complexity
+    if (complexity) {
+      templates = templates.filter(t => t.complexity === complexity)
+    }
+    
+    // Search by query string
+    if (query) {
+      const queryLower = query.toLowerCase()
+      const queryWords = queryLower.split(/\s+/)
+      
+      templates = templates
+        .map(template => {
+          const searchableText = [
+            template.name, template.description,
+            ...template.tags, ...template.useCases,
+            ...template.models, ...template.features,
+          ].join(' ').toLowerCase()
+          
+          let score = 0
+          for (const word of queryWords) {
+            if (searchableText.includes(word)) {
+              score++
+              if (template.tags.some(t => t.toLowerCase() === word)) score += 2
+              if (template.useCases.some(u => u.toLowerCase().includes(word))) score += 2
+              if (template.name.toLowerCase().includes(word)) score += 3
+            }
+          }
+          return { template, score }
+        })
+        .filter(({ score }) => score > 0)
+        .sort((a, b) => b.score - a.score)
+        .map(({ template }) => template)
+    }
+    
+    // Strip internal paths from response
+    const safeTemplates = templates.map(({ path, ...rest }) => rest)
+    
+    return c.json({ ok: true, templates: safeTemplates })
+  } catch (error: any) {
+    return c.json({ ok: false, error: error.message || 'Failed to list templates' }, 500)
+  }
+})
+
+/**
+ * POST /templates/copy — Copy a starter template and set up the project
+ * Body: { template: string, name: string, theme?: string }
+ * 
+ * This endpoint:
+ * 1. Copies template files to the project directory
+ * 2. Applies optional theme
+ * 3. Triggers /preview/restart to install deps, generate Prisma, build, and start
+ */
+app.post('/templates/copy', async (c) => {
+  try {
+    const body = await c.req.json() as { template: string; name: string; theme?: string }
+    
+    if (!body.template || !body.name) {
+      return c.json({ ok: false, error: 'Missing required fields: template, name' }, 400)
+    }
+    
+    // Step 1: Copy template to project directory
+    const copyResult = copyTemplate(body.template, body.name)
+    if (!copyResult.ok) {
+      return c.json(copyResult, 400)
+    }
+    
+    // Step 2: Apply theme if specified.
+    if (body.theme) {
+      applyThemeToProject(PROJECT_DIR, body.theme)
+    }
+    
+    // Step 3: Trigger restart to install deps, generate Prisma, build, and start
+    try {
+      console.log(`[templates/copy] Triggering preview restart after template copy...`)
+      const restartResponse = await fetch(`http://localhost:${PORT}/preview/restart`, {
+        method: 'POST',
+      })
+      
+      if (restartResponse.ok) {
+        const restartResult = await restartResponse.json() as { mode: string; port: number | null; timings?: any }
+        return c.json({
+          ok: true,
+          message: `Template "${body.template}" copied and fully set up. The preview should now show the app.`,
+          template: body.template,
+          projectDir: PROJECT_DIR,
+          setup: {
+            success: true,
+            mode: restartResult.mode,
+            port: restartResult.port,
+          },
+        })
+      } else {
+        const errorData = await restartResponse.json().catch(() => ({})) as { error?: string }
+        return c.json({
+          ok: true,
+          message: `Template copied but setup had issues: ${errorData.error || 'unknown error'}. Try refreshing the preview.`,
+          template: body.template,
+          projectDir: PROJECT_DIR,
+          setup: { success: false, error: errorData.error },
+        })
+      }
+    } catch (restartError: any) {
+      return c.json({
+        ok: true,
+        message: `Template copied but could not trigger restart: ${restartError.message}. Try refreshing the preview.`,
+        template: body.template,
+        projectDir: PROJECT_DIR,
+        setup: { success: false, error: restartError.message },
+      })
+    }
+  } catch (error: any) {
+    return c.json({ ok: false, error: error.message || 'Failed to copy template' }, 500)
+  }
+})
+
+// Stop/interrupt endpoint - called when user clicks stop or before a new message
+app.post('/agent/stop', async (c) => {
+  console.log(`[project-runtime] Received stop request for project: ${PROJECT_ID}`)
+  
+  try {
+    const body = await c.req.json().catch(() => ({}))
+    const modelName = (body as any)?.modelName || 'sonnet'
+    
+    if (sessions.isActive(modelName)) {
+      await sessions.interrupt(modelName)
+      return c.json({ success: true, message: `Interrupted ${modelName} session` })
+    }
+    
+    return c.json({ success: true, message: 'No active session to interrupt' })
+  } catch (error: any) {
+    console.error('[project-runtime] Stop error:', error)
+    return c.json({ success: false, error: error.message }, 500)
+  }
+})
+
 // Main chat endpoint - receives from API, streams response
 app.post('/agent/chat', async (c) => {
   console.log(`[project-runtime] Received chat request for project: ${PROJECT_ID}`)
@@ -1008,132 +1403,7 @@ app.post('/agent/chat', async (c) => {
     
     const { messages, system, themeContext, agentMode } = parsed.data
     
-    // Build system prompt with optional theme context and current build status
-    // The prompt is defined in system-prompt.ts and can be updated via DSPy export
-    const getSystemPrompt = () => {
-      // Get current build status context for the agent
-      const buildContext = getBuildStatusContext()
-      
-      if (system) {
-        // Custom system prompt provided - append build status and optional theme context
-        let prompt = system
-        if (buildContext) prompt = `${prompt}\n\n${buildContext}`
-        if (themeContext) prompt = `${prompt}\n\n${themeContext}`
-        return prompt
-      }
-      // Use the default system prompt from system-prompt.ts with build status
-      return buildSystemPrompt(PROJECT_DIR, themeContext, buildContext)
-    }
-    
-    // Convert to ModelMessage format, handling both string and parts content
-    // Preserves image parts for multimodal AI processing
-    type ContentPart = { type: 'text'; text: string } | { type: 'image'; image: string; mimeType: string }
-
-    const coreMessages: ModelMessage[] = messages.map((msg) => {
-      // If message already has content string, pass through
-      if (typeof msg.content === 'string') {
-        return { role: msg.role, content: msg.content }
-      }
-
-      // If message has parts array (AI SDK v4 UIMessage format), process all part types including images
-      if (Array.isArray(msg.parts)) {
-        const contentParts: ContentPart[] = []
-
-        for (const part of msg.parts) {
-          if (part.type === 'text' && part.text) {
-            contentParts.push({ type: 'text', text: part.text })
-          } else if (part.type === 'file' && part.mediaType?.startsWith('image/')) {
-            // File parts with image mediaType: convert to ImagePart
-            // The url field contains the data URL (data:image/png;base64,...)
-            const parsed = parseDataUrl(part.url || '')
-            if (parsed) {
-              contentParts.push({
-                type: 'image',
-                image: parsed.base64Data,
-                mimeType: parsed.mimeType,
-              })
-            }
-          }
-        }
-
-        // Return appropriate format based on content
-        if (contentParts.length === 1 && contentParts[0].type === 'text') {
-          return { role: msg.role, content: contentParts[0].text }
-        }
-        if (contentParts.length > 0) {
-          return { role: msg.role, content: contentParts }
-        }
-        return { role: msg.role, content: '' }
-      }
-
-      // Also handle content array format (alternative message format)
-      if (Array.isArray(msg.content)) {
-        const contentParts: ContentPart[] = []
-
-        for (const part of msg.content) {
-          if (part.type === 'text' && part.text) {
-            contentParts.push({ type: 'text', text: part.text })
-          } else if (part.type === 'file' && part.mediaType?.startsWith('image/')) {
-            const parsed = parseDataUrl(part.url || '')
-            if (parsed) {
-              contentParts.push({
-                type: 'image',
-                image: parsed.base64Data,
-                mimeType: parsed.mimeType,
-              })
-            }
-          } else if (part.type === 'image' && part.image) {
-            // Already in image format, pass through
-            contentParts.push({ type: 'image', image: part.image, mimeType: part.mimeType || 'image/png' })
-          }
-        }
-
-        if (contentParts.length === 1 && contentParts[0].type === 'text') {
-          return { role: msg.role, content: contentParts[0].text }
-        }
-        if (contentParts.length > 0) {
-          return { role: msg.role, content: contentParts }
-        }
-      }
-
-      return { role: msg.role, content: msg.content ?? '' }
-    })
-    
-    // Debug: Log message structure to verify image handling
-    const messageStats = coreMessages.map(m => ({
-      role: m.role,
-      contentType: typeof m.content === 'string' ? 'string' : Array.isArray(m.content) ? `array(${m.content.length})` : typeof m.content,
-      hasImages: Array.isArray(m.content) ? m.content.some((p: any) => p.type === 'image') : false,
-    }))
-    console.log(`[project-runtime] Processing ${messages.length} messages:`, JSON.stringify(messageStats))
-    
-    // Retry configuration for transient API errors
-    const MAX_RETRIES = 3
-    const RETRY_DELAY_MS = 2000
-    const RETRYABLE_ERRORS = [
-      'rate_limit',
-      'overloaded',
-      'api_error',
-      'invalid_api_key', // Sometimes transient
-      'connection',
-      'timeout',
-      'ECONNRESET',
-      'ETIMEDOUT',
-      '529', // Overloaded
-      '503', // Service unavailable
-      '502', // Bad gateway
-    ]
-    
-    const isRetryableError = (error: any): boolean => {
-      const errorStr = String(error?.message || error || '').toLowerCase()
-      return RETRYABLE_ERRORS.some(e => errorStr.includes(e.toLowerCase()))
-    }
-    
-    // Create streaming response using Claude Code with native template tools
-    // Theme context (if provided) is appended to the system prompt for AI-aware styling
-    // Model selection: agentMode takes precedence, then AGENT_MODEL env var, then default to sonnet
-    // - basic mode uses Haiku (faster, cheaper)
-    // - advanced mode uses Sonnet (more capable)
+    // Model selection: agentMode takes precedence, then AGENT_MODEL env var, then sonnet
     const getModelFromAgentMode = (mode?: 'basic' | 'advanced'): 'haiku' | 'sonnet' | 'opus' => {
       if (mode === 'basic') return 'haiku'
       if (mode === 'advanced') return 'sonnet'
@@ -1141,108 +1411,79 @@ app.post('/agent/chat', async (c) => {
     }
     const modelName = getModelFromAgentMode(agentMode)
     console.log(`[project-runtime] Using model: ${modelName} (agentMode: ${agentMode || 'default'})`)
-    
-    let lastError: any = null
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        const result = streamText({
-          // perf: Use cached model instance to preserve sessionId across requests.
-          // After the first call the model auto-resumes the previous session,
-          // avoiding a full CLI cold-start on every message.
-          model: getOrCreateModel(modelName) as Parameters<typeof streamText>[0]['model'],
-          system: getSystemPrompt(),
-          messages: coreMessages,
-          tools: templateTools,
-          maxSteps: 10,
-        })
-        
-        // Return the AI SDK UI message stream response with keep-alive wrapper
-        // This ensures compatibility with @ai-sdk/react's useChat hook (DefaultChatTransport)
-        // The keep-alive wrapper prevents HTTP/2 connection termination during long tool calls
-        const response = result.toUIMessageStreamResponse()
-        
-        // Wrap the stream with keep-alive messages to prevent ALB/proxy timeouts
-        // This is critical for long-running operations like template.copy (45+ seconds)
-        // Also appends a custom usage SSE event after the stream finishes
-        if (response.body) {
-          const originalStream = response.body
-          const usagePromise = result.usage
-          
-          // Create a new stream that wraps the original with keep-alive AND appends usage
-          const wrappedStream = new ReadableStream({
-            async start(controller) {
-              let closed = false
-              const reader = wrapStreamWithKeepalive(originalStream, 15000).getReader()
-              try {
-                while (true) {
-                  const { done, value } = await reader.read()
-                  if (done) break
-                  controller.enqueue(value)
-                }
-              } catch (err) {
-                console.error('[project-runtime] Stream read error:', err)
-              } finally {
-                reader.releaseLock()
-              }
-              
-              // After the main stream finishes, append usage data as a custom SSE event
-              // Using "data-" prefix so @ai-sdk/react's stream validator accepts it
-              if (!closed) {
-                try {
-                  const usage = await usagePromise
-                  console.log('[project-runtime] Usage from streamText:', JSON.stringify(usage))
-                  if (usage) {
-                    const usageEvent = `data: ${JSON.stringify({ type: 'data-usage', data: { inputTokens: usage.inputTokens || 0, outputTokens: usage.outputTokens || 0, totalTokens: usage.totalTokens || 0 } })}\n\n`
-                    controller.enqueue(new TextEncoder().encode(usageEvent))
-                  }
-                } catch (err) {
-                  console.error('[project-runtime] Failed to get usage:', err)
-                }
-              }
-              
-              // Trigger S3 sync after agent chat completes.
-              // The agent may have written/modified project files via tool calls.
-              // The file watcher's debounce will also catch these, but this explicit
-              // trigger ensures we don't miss anything if the watcher is delayed.
-              if (s3Sync) {
-                s3Sync.triggerSync()
-              }
-              
-              try {
-                controller.close()
-              } catch {
-                // Controller may already be closed if the client disconnected
-              }
-              closed = true
+
+    // If a previous query is still active for this model, interrupt it first.
+    if (sessions.isActive(modelName)) {
+      console.log(`[project-runtime] Previous session still active for ${modelName}, interrupting...`)
+      await sessions.interrupt(modelName)
+    }
+
+    const session = sessions.getOrCreate(modelName)
+    sessions.markActive(modelName)
+
+    const lastUserMessage = findLastUserMessage(messages)
+    if (!lastUserMessage) {
+      return c.json({ error: { code: 'no_user_message', message: 'No user message found' } }, 400)
+    }
+
+    const userText = extractUserText(lastUserMessage)
+
+    // Prepend dynamic context (build status, theme) to the user message
+    const buildContext = getBuildStatusContext()
+    let contextPrefix = ''
+    if (buildContext) contextPrefix += `[Build Status]\n${buildContext}\n\n`
+    if (themeContext) contextPrefix += `[Theme Context]\n${themeContext}\n\n`
+    if (system) contextPrefix += `[Additional Instructions]\n${system}\n\n`
+    const fullUserText = contextPrefix ? `${contextPrefix}${userText}` : userText
+
+    console.log(`[project-runtime] Processing message (${fullUserText.length} chars, context prefix: ${contextPrefix.length} chars)`)
+
+    await session.send(fullUserText)
+
+    const stream = createUIMessageStream({
+      execute: async ({ writer }) => {
+        try {
+          await streamSdkToUI(session, writer, {
+            logPrefix: 'project-runtime',
+            onQueryCreated: (query) => sessions.setActiveQuery(modelName, query),
+            onUsage: (usage) => {
+              writer.write({
+                type: 'data-usage' as any,
+                data: {
+                  inputTokens: usage.inputTokens,
+                  outputTokens: usage.outputTokens,
+                  totalTokens: usage.inputTokens + usage.outputTokens,
+                },
+              })
             },
           })
-          
+        } finally {
+          sessions.markInactive(modelName)
+          sessions.deleteActiveQuery(modelName)
+
+          if (s3Sync) {
+            s3Sync.triggerSync()
+          }
+        }
+      },
+      onError: (error) => {
+        sessions.markInactive(modelName)
+        sessions.deleteActiveQuery(modelName)
+        console.error('[project-runtime] Stream error:', error)
+        return 'An error occurred during streaming'
+      },
+    })
+
+    // Wrap with keep-alive for long-running operations (template.copy etc.)
+    const response = createUIMessageStreamResponse({ stream })
+    if (response.body) {
+      const wrappedStream = wrapStreamWithKeepalive(response.body, 15000)
           return new Response(wrappedStream, {
             status: response.status,
             headers: response.headers,
           })
         }
-        
         return response
-      } catch (error: any) {
-        lastError = error
-        const errorMsg = error?.message || String(error)
-        
-        if (isRetryableError(error) && attempt < MAX_RETRIES) {
-          const delay = RETRY_DELAY_MS * attempt
-          console.warn(`[project-runtime] Chat API error (attempt ${attempt}/${MAX_RETRIES}): ${errorMsg}`)
-          console.warn(`[project-runtime] Retrying in ${delay}ms...`)
-          await new Promise(resolve => setTimeout(resolve, delay))
-          continue
-        }
-        
-        // Non-retryable or max retries exceeded
-        throw error
-      }
-    }
-    
-    // Should not reach here, but just in case
-    throw lastError
   } catch (error: any) {
     console.error('[project-runtime] Chat error:', error)
     return c.json({
@@ -1261,6 +1502,7 @@ app.get('/info', (c) => {
     projectDir: PROJECT_DIR,
     schemasPath: SCHEMAS_PATH,
     mcpServerPath: MCP_SERVER_PATH,
+    templateEndpoints: ['/templates/list', '/templates/copy'],
     nodeEnv: process.env.NODE_ENV,
     port: PORT,
     uptime: process.uptime(),
@@ -1385,8 +1627,8 @@ const EXPO_SERVER_PORT = parseInt(process.env.EXPO_SERVER_PORT || '8081', 10)
 
 // Track current preview mode and server processes
 let isExpo = process.env.IS_EXPO === 'true'
-let serverProcess: ReturnType<typeof Bun.spawn> | null = null
-let expoServerProcess: ReturnType<typeof Bun.spawn> | null = null
+let serverProcess: any = null
+let expoServerProcess: any = null
 
 // Dev mode: use vite dev server with HMR instead of production builds
 let isDevMode = false
@@ -1682,6 +1924,24 @@ function appendToConsoleLog(line: string, stream: 'stdout' | 'stderr' = 'stdout'
   } catch (e) {
     // Ignore write errors
   }
+  
+  // Push to SSE console event clients
+  if (consoleEventClients.size > 0) {
+    const payload = JSON.stringify({ line: logLine, stream, timestamp })
+    const encoder = new TextEncoder()
+    const message = encoder.encode(`data: ${payload}\n\n`)
+    const deadControllers: ReadableStreamDefaultController[] = []
+    for (const controller of consoleEventClients) {
+      try {
+        controller.enqueue(message)
+      } catch (e) {
+        deadControllers.push(controller)
+      }
+    }
+    for (const dead of deadControllers) {
+      consoleEventClients.delete(dead)
+    }
+  }
 }
 
 /**
@@ -1692,7 +1952,7 @@ function streamProcessOutput(proc: ReturnType<typeof Bun.spawn>, name: string) {
   // Stream stdout
   if (proc.stdout && typeof proc.stdout !== 'number') {
     ;(async () => {
-      const reader = proc.stdout.getReader()
+      const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader()
       const decoder = new TextDecoder()
       try {
         while (true) {
@@ -1715,7 +1975,7 @@ function streamProcessOutput(proc: ReturnType<typeof Bun.spawn>, name: string) {
   // Stream stderr
   if (proc.stderr && typeof proc.stderr !== 'number') {
     ;(async () => {
-      const reader = proc.stderr.getReader()
+      const reader = (proc.stderr as ReadableStream<Uint8Array>).getReader()
       const decoder = new TextDecoder()
       try {
         while (true) {
@@ -1889,6 +2149,9 @@ ${ctx.logExcerpt}
 
 // SSE clients listening for build events
 const buildEventClients = new Set<ReadableStreamDefaultController>()
+
+// SSE clients listening for console log events
+const consoleEventClients = new Set<ReadableStreamDefaultController>()
 
 /**
  * Check if a TCP port is accepting connections.
@@ -2178,6 +2441,29 @@ async function startViteBuildWatch(): Promise<void> {
             watchCrashCount = 0
             notifyBuildStateChange()
             
+            // Restart the backend API server after each successful rebuild.
+            // This ensures any changes to generated routes (from `shogo generate`)
+            // or server.tsx are picked up immediately. The overhead is minimal
+            // (~500ms to restart a Bun process) vs the UX cost of stale API routes.
+            if (serverProcess) {
+              const serverTsxPath = join(PROJECT_DIR, 'server.tsx')
+              const serverTsPath = join(PROJECT_DIR, 'server.ts')
+              const serverPath = existsSync(serverTsxPath) ? serverTsxPath : (existsSync(serverTsPath) ? serverTsPath : null)
+              if (serverPath) {
+                console.log('[project-runtime] 🔄 Restarting backend API server after rebuild...')
+                serverProcess.kill()
+                serverProcess = null
+                serverProcess = Bun.spawn(['bun', 'run', serverPath], {
+                  cwd: PROJECT_DIR,
+                  env: { ...process.env, PORT: String(SERVER_PORT) },
+                  stdout: 'pipe',
+                  stderr: 'pipe',
+                })
+                streamProcessOutput(serverProcess, 'api-server')
+                appendToBuildLog('🔄 Backend API server restarted')
+              }
+            }
+            
             // Return to idle after 1s
             setTimeout(() => {
               if (buildState === 'success') {
@@ -2338,14 +2624,18 @@ app.post('/preview/watch/resume', async (c) => {
     notifyBuildStateChange()
     
     // Restart the backend server to pick up new generated routes
+    // This must always restart (not just when serverProcess exists) because
+    // generation may have changed models/routes, and the server needs fresh imports.
     const serverTsxPath = join(PROJECT_DIR, 'server.tsx')
     const serverTsPath = join(PROJECT_DIR, 'server.ts')
     const serverPath = existsSync(serverTsxPath) ? serverTsxPath : (existsSync(serverTsPath) ? serverTsPath : null)
     
-    if (serverPath && serverProcess) {
+    if (serverPath && !isExpo) {
       console.log('[project-runtime] 🔄 Restarting backend API server...')
-      serverProcess.kill()
-      serverProcess = null
+      if (serverProcess) {
+        serverProcess.kill()
+        serverProcess = null
+      }
       serverProcess = Bun.spawn(['bun', 'run', serverPath], {
         cwd: PROJECT_DIR,
         env: { ...process.env, PORT: String(SERVER_PORT) },
@@ -2353,6 +2643,28 @@ app.post('/preview/watch/resume', async (c) => {
         stderr: 'pipe',
       })
       streamProcessOutput(serverProcess, 'api-server')
+      
+      // Wait for server to be ready (critical: detect startup crashes early)
+      let serverReady = false
+      for (let attempt = 1; attempt <= 10 && !serverReady; attempt++) {
+        try {
+          const healthCheck = await fetch(`http://localhost:${SERVER_PORT}/health`, {
+            signal: AbortSignal.timeout(500),
+          })
+          if (healthCheck.ok || healthCheck.status < 500) {
+            serverReady = true
+            console.log(`[project-runtime] ✅ Backend API server ready after ${attempt} attempt(s)`)
+            appendToBuildLog(`✅ Backend API server ready`)
+          }
+        } catch (e) {
+          await new Promise(resolve => setTimeout(resolve, Math.min(100 * attempt, 500)))
+        }
+      }
+      
+      if (!serverReady) {
+        console.warn('[project-runtime] ⚠️ Backend API server may still be starting...')
+        appendToBuildLog('⚠️ Backend API server may still be starting after generation')
+      }
     }
     
     // Restart watch mode
@@ -2450,10 +2762,14 @@ app.post('/preview/restart', async (c) => {
     const nodeModulesPath = join(PROJECT_DIR, 'node_modules')
     const nodeModulesExists = existsSync(nodeModulesPath)
     
-    // Check if node_modules appears complete (has key packages)
+    // Check if node_modules appears complete (has key packages AND lockfile)
+    // Without bun.lock, bun install must run to properly resolve the dependency graph.
+    // This prevents PostCSS/devDependency errors (e.g. @tailwindcss/postcss) when
+    // node_modules is copied from a template without a lockfile.
     const hasReact = existsSync(join(nodeModulesPath, 'react'))
     const hasVite = existsSync(join(nodeModulesPath, 'vite'))
-    const nodeModulesComplete = nodeModulesExists && hasReact && hasVite
+    const hasLockfile = existsSync(join(PROJECT_DIR, 'bun.lock'))
+    const nodeModulesComplete = nodeModulesExists && hasReact && hasVite && hasLockfile
     
     // Check if package.json has overrides - if so, we MUST run bun install to apply them
     // This is critical for templates using rolldown-vite via "overrides": { "vite": "npm:rolldown-vite@latest" }
@@ -2866,6 +3182,17 @@ app.post('/preview/rebuild', async (c) => {
     console.log(`[project-runtime] ✅ Manual rebuild complete (${durationMs}ms)`)
     notifyBuildStateChange()
     
+    // 4a. Update BUILD_STATUS_FILE so readiness probe reflects the successful build
+    // (getBuildStatus reads from this file, not the in-memory buildState)
+    if (FAST_START_MODE) {
+      try {
+        writeFileSync(BUILD_STATUS_FILE, 'ready')
+        console.log(`[project-runtime] ✅ Build status file updated to 'ready'`)
+      } catch (e) {
+        console.warn(`[project-runtime] ⚠️ Failed to update build status file:`, e)
+      }
+    }
+    
     // 4b. Restart the backend server process if server.tsx exists
     // This is critical: when the AI modifies server.tsx or generates new API routes,
     // the old serverProcess is stale and must be restarted to pick up changes.
@@ -2969,6 +3296,85 @@ app.get('/build-log', (c) => {
 })
 
 /**
+ * Get the current server console log (last N lines)
+ * Captures stdout/stderr from the running application server.
+ */
+app.get('/console-log', (c) => {
+  const lines = parseInt(c.req.query('lines') || '100', 10)
+  return c.json({
+    log: consoleLogLines.slice(-lines).join('\n'),
+    totalLines: consoleLogLines.length,
+  })
+})
+
+/**
+ * Append log lines to the console log (used by RuntimeManager in local dev).
+ * In local dev, the Vite dev server is managed by RuntimeManager, not by
+ * project-runtime. RuntimeManager forwards Vite output here so the Server tab can display it.
+ */
+app.post('/console-log/append', async (c) => {
+  try {
+    const body = await c.req.json()
+    const { line, stream = 'stdout' } = body as { line: string; stream?: 'stdout' | 'stderr' }
+    if (line) {
+      appendToConsoleLog(line, stream)
+    }
+    return c.json({ ok: true })
+  } catch {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+})
+
+/**
+ * Server-Sent Events endpoint for real-time server console log streaming.
+ * Clients subscribe to receive new log lines as they arrive from the server process.
+ */
+app.get('/console-events', (c) => {
+  c.header('Content-Type', 'text/event-stream')
+  c.header('Cache-Control', 'no-cache')
+  c.header('Connection', 'keep-alive')
+  
+  let clientController: ReadableStreamDefaultController | null = null
+  
+  const stream = new ReadableStream({
+    start(controller) {
+      clientController = controller
+      consoleEventClients.add(controller)
+      
+      // Send current log as initial payload so client has context
+      const initialPayload = JSON.stringify({
+        type: 'init',
+        log: consoleLogLines.slice(-200).join('\n'),
+        totalLines: consoleLogLines.length,
+      })
+      const encoder = new TextEncoder()
+      try {
+        controller.enqueue(encoder.encode(`data: ${initialPayload}\n\n`))
+      } catch {
+        consoleEventClients.delete(controller)
+      }
+      
+      console.log(`[project-runtime] Console events client connected (total: ${consoleEventClients.size})`)
+    },
+    cancel() {
+      if (clientController) {
+        consoleEventClients.delete(clientController)
+        clientController = null
+        console.log(`[project-runtime] Console events client disconnected (remaining: ${consoleEventClients.size})`)
+      }
+    },
+  })
+  
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    },
+  })
+})
+
+/**
  * Start Vite Dev Server with HMR
  * 
  * This provides instant updates via Hot Module Replacement instead of rebuilding.
@@ -3047,16 +3453,18 @@ app.post('/preview/dev', async (c) => {
     const nodeModulesExists = existsSync(nodeModulesPath)
     const hasReact = existsSync(join(nodeModulesPath, 'react'))
     const hasVite = existsSync(join(nodeModulesPath, 'vite'))
-    const nodeModulesComplete = nodeModulesExists && hasReact && hasVite
-    
+    const hasLockfile = existsSync(join(PROJECT_DIR, 'bun.lock'))
+    const nodeModulesComplete = nodeModulesExists && hasReact && hasVite && hasLockfile
+
     // Check if package.json has overrides - if so, we MUST run bun install to apply them
     // This is critical for templates using rolldown-vite via "overrides": { "vite": "npm:rolldown-vite@latest" }
     const hasOverrides = !!(packageJson.overrides || packageJson.resolutions)
     if (hasOverrides) {
       console.log('[project-runtime] Package has overrides/resolutions - will run bun install to apply them')
     }
-    
-    if (nodeModulesComplete && !hasOverrides) {
+
+    // Skip check disabled for now: always run bun install
+    if (false && nodeModulesComplete && !hasOverrides) {
       console.log('[project-runtime] ⚡ node_modules already exists - skipping bun install')
       markStep('bunInstall (skipped)')
     } else {
@@ -3821,13 +4229,18 @@ function isSubdomainAccess(c: any): boolean {
 }
 
 /**
- * Check if request is for subdomain preview access.
+ * Check if request is for subdomain preview or published app access.
+ * Returns true for:
+ * - Preview subdomains (preview--{projectId}.staging.shogo.ai)
+ * - Preview token in query string (__preview_token=...)
+ * - Published app domains (*.shogo.one)
  */
 function isSubdomainPreviewRequest(c: any): boolean {
   const token = c.req.query('__preview_token')
   const host = c.req.header('host') || ''
   const isPreviewSubdomain = host.startsWith('preview--')
-  return !!(token || isPreviewSubdomain)
+  const isPublishedDomain = host.endsWith('.shogo.one')
+  return !!(token || isPreviewSubdomain || isPublishedDomain)
 }
 
 /**
@@ -3925,11 +4338,31 @@ app.all('/*', async (c, next) => {
       '/terminal/',
       '/tests/',
       '/database/',
+      '/security/',
       '/api/',
       '/lsp',
     ]
     
-    if (apiPaths.some(p => path.startsWith(p))) {
+    // Also allow exact-match internal endpoints that are called directly by the API server
+    const internalEndpoints = [
+      '/download',
+      '/build-log',
+      '/build-events',
+      '/build-status',
+      '/console-log',
+      '/console-log/append',
+      '/console-events',
+      '/preview/restart',
+      '/preview/rebuild',
+      '/preview/dev',
+      '/preview/dev/stop',
+      '/preview/status',
+      '/agent/chat',
+      '/sync/download',
+      '/sync/upload',
+    ]
+    
+    if (apiPaths.some(p => path.startsWith(p)) || internalEndpoints.some(p => path === p || path.startsWith(p + '?'))) {
       // Call next() to let Hono continue to the specific route handlers
       return next()
     }
@@ -3970,6 +4403,7 @@ app.all('/*', async (c, next) => {
     '/preview/rebuild',
     '/preview/status',
     '/console-log',
+    '/console-events',
   ]
   
   if (runtimeInternalPaths.some(p => relativePath === p || relativePath.startsWith(p + '/'))) {
@@ -3977,11 +4411,65 @@ app.all('/*', async (c, next) => {
     return next()
   }
   
-  // Proxy /api/* requests to the project's backend server if one is running.
+  // Proxy /api/* requests to the project's backend server.
   // For Expo: handled below via the Expo server proxy.
   // For plain Vite: proxy to the project's Hono server started from server.ts.
-  // Without this, /api/* requests are served as static files from dist/, returning HTML.
-  if (!isExpo && serverProcess && relativePath.startsWith('/api/')) {
+  // IMPORTANT: /api/* must NEVER fall through to static file serving (which returns HTML).
+  if (!isExpo && relativePath.startsWith('/api/')) {
+    // If the backend is not running, try to auto-start it before returning an error.
+    // This handles cold starts from S3 restore where dist/ exists but the backend hasn't started.
+    if (!serverProcess) {
+      const serverTsxPath = join(PROJECT_DIR, 'server.tsx')
+      const serverTsPath = join(PROJECT_DIR, 'server.ts')
+      const _serverTsxExists = existsSync(serverTsxPath) || existsSync(serverTsPath)
+      const _distExists = existsSync(join(PROJECT_DIR, 'dist'))
+      
+      if (_serverTsxExists && _distExists) {
+        console.log('[project-runtime] 🔄 Auto-starting backend API server for /api/ request...')
+        const serverPath = existsSync(serverTsxPath) ? serverTsxPath : serverTsPath
+        serverProcess = Bun.spawn(['bun', 'run', serverPath], {
+          cwd: PROJECT_DIR,
+          env: { ...process.env, PORT: String(SERVER_PORT) },
+          stdout: 'pipe',
+          stderr: 'pipe',
+        })
+        streamProcessOutput(serverProcess, 'api-server')
+        console.log(`[project-runtime] Backend API server started (PID: ${serverProcess.pid}, port: ${SERVER_PORT})`)
+        
+        // Monitor for crashes — reset serverProcess to null so next request can retry
+        const proc = serverProcess
+        proc.exited.then((exitCode) => {
+          if (serverProcess === proc) {
+            console.error(`[project-runtime] ⚠️ Backend API server exited with code ${exitCode}`)
+            serverProcess = null
+          }
+        })
+        
+        // Give the server a moment to start before proxying
+        await new Promise(resolve => setTimeout(resolve, 2000))
+      } else {
+        // No server.tsx or no dist/ — can't start backend
+        console.error(`[project-runtime] Subdomain: /api/ request but no backend server available (path: ${relativePath})`)
+      return c.json({
+        error: { 
+          code: 'backend_unavailable', 
+            message: 'Backend API server is not available. The project may not have a server.tsx file.' 
+        }
+      }, 503)
+    }
+    }
+    
+    // If server process crashed between the auto-start above and now, return error
+    if (!serverProcess) {
+      console.error(`[project-runtime] Subdomain: /api/ backend server crashed during startup (path: ${relativePath})`)
+      return c.json({
+        error: { 
+          code: 'backend_unavailable', 
+          message: 'Backend API server crashed during startup. Check server logs for errors.' 
+        }
+      }, 503)
+    }
+    
     const targetUrl = `http://localhost:${SERVER_PORT}${relativePath}`
     const method = c.req.method
     console.log(`[project-runtime] Subdomain: proxying ${method} ${relativePath} to project API server at ${targetUrl}`)
@@ -4012,16 +4500,17 @@ app.all('/*', async (c, next) => {
         proxyHeaders['Authorization'] = authHeader
       }
       
-      // Build fetch options
+      // Build fetch options — read body once before any retry loop
       const fetchOptions: RequestInit = {
         method,
         headers: proxyHeaders,
       }
       
       // Forward request body for POST/PUT/PATCH
+      let bodyBuffer: ArrayBuffer | null = null
       if (method !== 'GET' && method !== 'HEAD') {
         try {
-          const bodyBuffer = await c.req.arrayBuffer()
+          bodyBuffer = await c.req.arrayBuffer()
           if (bodyBuffer.byteLength > 0) {
             fetchOptions.body = bodyBuffer
           }
@@ -4030,7 +4519,34 @@ app.all('/*', async (c, next) => {
         }
       }
       
-      const response = await fetch(targetUrl, fetchOptions)
+      // Retry logic: the backend server may have just been auto-started and not listening yet.
+      // Retry up to 5 times with 1s delay to give it time to start.
+      let response: Response | null = null
+      let lastError: Error | null = null
+      const MAX_PROXY_RETRIES = 5
+      for (let attempt = 1; attempt <= MAX_PROXY_RETRIES; attempt++) {
+        try {
+          // Re-attach body for retries (ArrayBuffer can only be consumed once)
+          const retryOptions = { ...fetchOptions }
+          if (bodyBuffer && bodyBuffer.byteLength > 0) {
+            retryOptions.body = bodyBuffer.slice(0) // clone for retry
+          }
+          response = await fetch(targetUrl, retryOptions)
+          break // Success
+        } catch (err: any) {
+          lastError = err
+          if (attempt < MAX_PROXY_RETRIES && (err.code === 'ECONNREFUSED' || err.message?.includes('ECONNREFUSED') || err.message?.includes('Failed to connect'))) {
+            console.log(`[project-runtime] API proxy attempt ${attempt}/${MAX_PROXY_RETRIES} failed (server starting?), retrying in 1s...`)
+            await new Promise(resolve => setTimeout(resolve, 1000))
+          } else {
+            throw err
+          }
+        }
+      }
+      
+      if (!response) {
+        throw lastError || new Error('API proxy failed after retries')
+      }
       
       const responseContentType = response.headers.get('Content-Type') || 'application/json'
       const body = await response.arrayBuffer()
@@ -4159,6 +4675,12 @@ app.all('/*', async (c, next) => {
   // For Expo: always auto-start if process isn't running
   const needsAutoStart = !serverProcess && !expoServerProcess && !devModeStarting && !isInBackoff && !distExists
   
+  // Also check: dist/ exists but the backend server isn't running and a server.tsx exists.
+  // This happens on cold starts from S3 restore (bg-init builds dist/ but doesn't start the backend).
+  // For published domains (*.shogo.one), we need the backend server for /api/* routes.
+  const serverTsxExists = existsSync(join(PROJECT_DIR, 'server.tsx')) || existsSync(join(PROJECT_DIR, 'server.ts'))
+  const needsBackendStart = !serverProcess && !isExpo && !devModeStarting && !isInBackoff && distExists && serverTsxExists
+  
   if (needsAutoStart) {
     console.log('[project-runtime] Auto-starting build mode on first subdomain request...')
     devModeStarting = true
@@ -4192,6 +4714,31 @@ app.all('/*', async (c, next) => {
         devModeError = err.message || 'Connection error'
         devModeStarting = false
       })
+  } else if (needsBackendStart) {
+    // dist/ exists (from S3 restore / bg-init build) but backend server isn't running.
+    // Start ONLY the backend server (no rebuild needed) so /api/* routes work.
+    console.log('[project-runtime] 🔄 Auto-starting backend API server (dist/ exists, server not running)...')
+    const serverTsxPath = join(PROJECT_DIR, 'server.tsx')
+    const serverTsPath = join(PROJECT_DIR, 'server.ts')
+    const serverPath = existsSync(serverTsxPath) ? serverTsxPath : serverTsPath
+    
+    serverProcess = Bun.spawn(['bun', 'run', serverPath], {
+      cwd: PROJECT_DIR,
+      env: { ...process.env, PORT: String(SERVER_PORT) },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+    streamProcessOutput(serverProcess, 'api-server')
+    console.log(`[project-runtime] Backend API server started (PID: ${serverProcess.pid}, port: ${SERVER_PORT})`)
+    
+    // Monitor for crashes — reset serverProcess to null so next request can retry
+    const proc = serverProcess
+    proc.exited.then((exitCode) => {
+      if (serverProcess === proc) {
+        console.error(`[project-runtime] ⚠️ Backend API server exited with code ${exitCode}`)
+        serverProcess = null
+      }
+    })
   }
   
   // Show loading page while build is starting
@@ -4545,6 +5092,59 @@ app.get('/files', (c) => {
 })
 
 /**
+ * Download project source code as a tar.gz archive.
+ * Excludes node_modules, .git, dist, build, .cache, .output, and other non-source directories.
+ * Used by the code editor UI to let users download their project files.
+ */
+app.get('/download', async (c) => {
+  try {
+    if (!existsSync(PROJECT_DIR)) {
+      return c.json({
+        error: { code: 'no_project', message: 'Project directory not found' }
+      }, 404)
+    }
+
+    // Use tar to create a gzipped archive, excluding non-source dirs
+    const excludes = [
+      'node_modules', '.git', '.next', 'dist', 'build', '.cache',
+      '.output', '.nuxt', '.turbo', '.bun', '.vite'
+    ]
+    const excludeArgs = excludes.flatMap(dir => ['--exclude', dir])
+
+    const projectName = PROJECT_ID || 'project'
+    const result = Bun.spawnSync(
+      ['tar', '-czf', '-', ...excludeArgs, '-C', PROJECT_DIR, '.'],
+      { stdout: 'pipe', stderr: 'pipe' }
+    )
+
+    if (result.exitCode !== 0) {
+      const stderr = result.stderr?.toString() || 'Unknown error'
+      console.error('[project-runtime] Download archive error:', stderr)
+      return c.json({
+        error: { code: 'archive_error', message: `Failed to create archive: ${stderr}` }
+      }, 500)
+    }
+
+    const archiveBuffer = result.stdout
+    console.log(`[project-runtime] Created download archive for project ${PROJECT_ID} (${(archiveBuffer.byteLength / 1024).toFixed(1)} KB)`)
+
+    return new Response(archiveBuffer, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/gzip',
+        'Content-Disposition': `attachment; filename="${projectName}.tar.gz"`,
+        'Content-Length': String(archiveBuffer.byteLength),
+      },
+    })
+  } catch (error: any) {
+    console.error('[project-runtime] Download error:', error)
+    return c.json({
+      error: { code: 'download_error', message: error.message || 'Failed to create download' }
+    }, 500)
+  }
+})
+
+/**
  * Get all built dist files for publishing.
  * Returns files as base64-encoded content for S3 upload.
  * Used by the publish API to upload built assets.
@@ -4748,10 +5348,12 @@ app.post('/terminal/exec', async (c) => {
         const proc = Bun.spawn(['sh', '-c', cmdConfig.command], {
           cwd: PROJECT_DIR,
           env: { ...process.env, FORCE_COLOR: '1', CI: 'true' },
+          stdout: 'pipe',
+          stderr: 'pipe',
         })
         
         // Stream stdout
-        const reader = proc.stdout.getReader()
+        const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader()
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
@@ -4759,8 +5361,8 @@ app.post('/terminal/exec', async (c) => {
         }
         
         // Stream stderr
-        if (proc.stderr) {
-          const stderrReader = proc.stderr.getReader()
+        if (proc.stderr && typeof proc.stderr !== 'number') {
+          const stderrReader = (proc.stderr as ReadableStream<Uint8Array>).getReader()
           while (true) {
             const { done, value } = await stderrReader.read()
             if (done) break
@@ -5046,10 +5648,12 @@ app.post('/tests/run', async (c) => {
           FORCE_COLOR: '1',
           CI: 'true',
         },
+        stdout: 'pipe',
+        stderr: 'pipe',
       })
 
       // Stream stdout
-      const reader = proc.stdout.getReader()
+      const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader()
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
@@ -5057,8 +5661,8 @@ app.post('/tests/run', async (c) => {
       }
       
       // Stream stderr
-      if (proc.stderr) {
-        const stderrReader = proc.stderr.getReader()
+      if (proc.stderr && typeof proc.stderr !== 'number') {
+        const stderrReader = (proc.stderr as ReadableStream<Uint8Array>).getReader()
         while (true) {
           const { done, value } = await stderrReader.read()
           if (done) break
@@ -5248,6 +5852,59 @@ app.delete('/tests/traces', async (c) => {
     return c.json({ ok: true, message: 'Test results cleared' })
   } catch (error: any) {
     return c.json({ ok: false, error: error.message }, 500)
+  }
+})
+
+// =============================================================================
+// Security Scanning API — proxied from API server in Kubernetes
+// =============================================================================
+
+import { runSecurityScan } from './security-scanner'
+
+/**
+ * POST /security/scan
+ *
+ * Runs a comprehensive security scan on the project files.
+ * In K8s, the API server proxies POST /api/projects/:id/security/scan → here.
+ *
+ * Rate limited: one concurrent scan at a time per pod.
+ */
+let _securityScanRunning = false
+let _lastScanTime = 0
+const SCAN_COOLDOWN_MS = 10_000 // 10 s cooldown between scans
+
+app.post('/security/scan', async (c) => {
+  // Rate limit: reject if a scan is already in-flight
+  if (_securityScanRunning) {
+    return c.json({
+      ok: false,
+      error: { code: 'scan_in_progress', message: 'A security scan is already running. Please wait.' },
+    }, 429)
+  }
+
+  // Cooldown: reject rapid re-scans
+  const now = Date.now()
+  if (now - _lastScanTime < SCAN_COOLDOWN_MS) {
+    const waitMs = SCAN_COOLDOWN_MS - (now - _lastScanTime)
+    return c.json({
+      ok: false,
+      error: { code: 'rate_limited', message: `Please wait ${Math.ceil(waitMs / 1000)}s before re-scanning.` },
+    }, 429)
+  }
+
+  _securityScanRunning = true
+  try {
+    const result = await runSecurityScan(PROJECT_DIR)
+    _lastScanTime = Date.now()
+    return c.json(result, result.ok ? 200 : 500)
+  } catch (error: any) {
+    console.error('[project-runtime] Security scan error:', error)
+    return c.json({
+      ok: false,
+      error: { code: 'scan_failed', message: error.message || 'Security scan failed' },
+    }, 500)
+  } finally {
+    _securityScanRunning = false
   }
 })
 
@@ -5999,3 +6656,12 @@ export default {
   idleTimeout: 120,
   websocket: websocketHandlers,
 }
+
+// Pre-warm Claude Code after server is listening.
+// In pool mode, pre-warm eagerly (the whole point is to have a warm session ready).
+// In normal mode, small delay ensures the export/listen completes first.
+setTimeout(() => {
+  sessions.prewarm().catch((err: any) => {
+    console.error('[project-runtime] Pre-warm error (non-fatal):', err.message)
+  })
+}, IS_POOL_MODE ? 1000 : 2000)

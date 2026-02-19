@@ -79,7 +79,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { cn } from "@/lib/utils"
+import { cn, formatCredits, getTotalCreditsForPlan } from "@/lib/utils"
 import { UsageTable, type UsageSummaryData, type UsageLogData } from "@/components/admin/analytics/UsageTable"
 import { useUsageLog } from "@/components/admin/hooks/useAdminApi"
 import type { AnalyticsPeriod } from "@/components/admin/analytics/PeriodSelector"
@@ -89,8 +89,16 @@ import type { IDomainStore } from "@/generated/domain"
 import { useDomainActions } from "@/generated/domain-actions"
 import { useSession } from "@/contexts/SessionProvider"
 import { InviteMemberModal, PendingInvitationsView, MyInvitationsView } from "@/components/app/workspace/members"
-import { PlanSelector } from "@/components/app/billing/PlanSelector"
+import { PlanSelector, PLAN_CREDITS, DAILY_CREDITS } from "@/components/app/billing/PlanSelector"
 import { useBillingData } from "@/hooks/useBillingData"
+import { useToast } from "@/hooks/use-toast"
+
+// =============================================================================
+// Configuration
+// =============================================================================
+
+/** External documentation site URL (env-configurable) */
+const DOCS_URL = import.meta.env.VITE_DOCS_URL || 'https://docs.shogo.ai'
 
 // =============================================================================
 // Workspace-scoped usage hooks (reuse the same UsageTable component as admin)
@@ -254,29 +262,119 @@ function NavItem({
 // ============================================================================
 // PROJECT SETTINGS TAB
 // ============================================================================
-function ProjectSettingsTab() {
-  const { currentProject, currentWorkspace } = useWorkspaceData()
+
+/** Map UI visibility values to schema AccessLevel enum */
+const VISIBILITY_TO_ACCESS: Record<string, string> = {
+  public: "anyone",
+  workspace: "authenticated",
+  private: "private",
+}
+const ACCESS_TO_VISIBILITY: Record<string, string> = {
+  anyone: "public",
+  authenticated: "workspace",
+  private: "private",
+}
+
+function ProjectSettingsTab({ projectId }: { projectId?: string }) {
+  const navigate = useNavigate()
+  const store = useSDKDomain() as IDomainStore
   const actions = useDomainActions()
   const { data: session } = useSession()
+  const { toast } = useToast()
 
-  const [name, setName] = useState(currentProject?.name || "")
+  // Resolve project from SDK store using route-param projectId
+  const project = projectId ? store?.projectCollection?.get(projectId) : undefined
+
+  // If project isn't in the store yet, try loading it
+  const [isLoadingProject, setIsLoadingProject] = useState(false)
+  useEffect(() => {
+    if (projectId && !project && store?.projectCollection && !isLoadingProject) {
+      setIsLoadingProject(true)
+      store.projectCollection.loadById(projectId).finally(() => setIsLoadingProject(false))
+    }
+  }, [projectId, project, store?.projectCollection])
+
+  const [name, setName] = useState(project?.name || "")
+  const [isRenaming, setIsRenaming] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [deleteConfirmText, setDeleteConfirmText] = useState("")
+  const [isSavingVisibility, setIsSavingVisibility] = useState(false)
 
+  // Derived values
+  const accessLevel = (project as any)?.accessLevel || "anyone"
+  const visibility = ACCESS_TO_VISIBILITY[accessLevel] || "public"
+  const subdomain = (project as any)?.publishedSubdomain || ""
+  const messagesCount = (project as any)?.chatSessions?.length ?? 0
+  const creditsUsed = ((project as any)?.usageEvents || []).reduce(
+    (sum: number, e: any) => sum + (e?.creditCost || 0),
+    0
+  )
+  const deleteConfirmRequired = project?.name || "delete"
+  const isDeleteConfirmed = deleteConfirmText === deleteConfirmRequired
+
+  // Sync name when project loads / changes
   useEffect(() => {
-    setName(currentProject?.name || "")
-  }, [currentProject?.name])
+    setName(project?.name || "")
+  }, [project?.name])
 
-  const handleSave = async () => {
-    if (!currentProject?.id) return
+  const handleRename = async () => {
+    if (!project?.id || !name.trim()) return
     setIsSaving(true)
     try {
-      await actions.updateProject(currentProject.id, {
-        name: name.trim(),
-      })
+      await actions.updateProject(project.id, { name: name.trim() })
+      setIsRenaming(false)
+      toast({ title: "Project renamed", description: `Project is now "${name.trim()}"` })
+    } catch (err: any) {
+      toast({ variant: "destructive", title: "Rename failed", description: err?.message || "Could not rename project" })
     } finally {
       setIsSaving(false)
     }
+  }
+
+  const handleVisibilityChange = async (newVisibility: string) => {
+    if (!project?.id) return
+    const newAccess = VISIBILITY_TO_ACCESS[newVisibility]
+    if (!newAccess || newAccess === accessLevel) return
+    setIsSavingVisibility(true)
+    try {
+      // accessLevel is a Project schema field — update via collection
+      await store.projectCollection.update(project.id, { accessLevel: newAccess } as any)
+      toast({ title: "Visibility updated", description: `Project is now ${newVisibility}` })
+    } catch (err: any) {
+      toast({ variant: "destructive", title: "Update failed", description: err?.message || "Could not update visibility" })
+    } finally {
+      setIsSavingVisibility(false)
+    }
+  }
+
+  const handleDeleteProject = async () => {
+    if (!project?.id) return
+    setIsDeleting(true)
+    try {
+      await actions.deleteProject(project.id)
+      toast({ title: "Project deleted" })
+      navigate("/")
+    } catch (err: any) {
+      toast({ variant: "destructive", title: "Delete failed", description: err?.message || "Could not delete project" })
+    } finally {
+      setIsDeleting(false)
+    }
+  }
+
+  const handleCopyName = () => {
+    const text = project?.name || "Untitled Project"
+    navigator.clipboard.writeText(text)
+    toast({ title: "Copied", description: "Project name copied to clipboard" })
+  }
+
+  if (isLoadingProject) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    )
   }
 
   return (
@@ -295,15 +393,29 @@ function ProjectSettingsTab() {
           <div>
             <div className="text-muted-foreground">Display name</div>
             <div className="font-medium flex items-center gap-2">
-              {currentProject?.name || "Untitled Project"}
-              <Button variant="ghost" size="icon" className="h-6 w-6">
+              {project?.name || "Untitled Project"}
+              <Button variant="ghost" size="icon" className="h-6 w-6" onClick={handleCopyName}>
                 <Copy className="h-3 w-3" />
               </Button>
             </div>
           </div>
           <div>
             <div className="text-muted-foreground">URL subdomain</div>
-            <div className="font-medium">No URL subdomain</div>
+            <div className="font-medium">
+              {subdomain ? (
+                <a
+                  href={`https://${subdomain}.shogo.one`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary hover:underline flex items-center gap-1"
+                >
+                  {subdomain}.shogo.one
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              ) : (
+                "No URL subdomain"
+              )}
+            </div>
           </div>
           <div>
             <div className="text-muted-foreground">Owner</div>
@@ -312,23 +424,23 @@ function ProjectSettingsTab() {
           <div>
             <div className="text-muted-foreground">Created at</div>
             <div className="font-medium">
-              {currentProject?.createdAt
-                ? format(new Date(currentProject.createdAt), "yyyy-MM-dd HH:mm:ss")
+              {(project as any)?.createdAt
+                ? format(new Date((project as any).createdAt), "yyyy-MM-dd HH:mm:ss")
                 : "Unknown"
               }
             </div>
           </div>
           <div>
             <div className="text-muted-foreground">Messages count</div>
-            <div className="font-medium">"0"</div>
+            <div className="font-medium">{messagesCount}</div>
           </div>
           <div>
             <div className="text-muted-foreground">AI edits count</div>
-            <div className="font-medium">"0"</div>
+            <div className="font-medium">{(project as any)?.featureSessions?.length ?? 0}</div>
           </div>
           <div>
             <div className="text-muted-foreground">Credits used</div>
-            <div className="font-medium">"0.00"</div>
+            <div className="font-medium">{creditsUsed.toFixed(2)}</div>
           </div>
         </div>
       </div>
@@ -343,7 +455,7 @@ function ProjectSettingsTab() {
               Keep your project hidden and prevent others from remixing it.
             </div>
           </div>
-          <Select defaultValue="workspace">
+          <Select value={visibility} onValueChange={handleVisibilityChange} disabled={isSavingVisibility}>
             <SelectTrigger className="w-36">
               <SelectValue />
             </SelectTrigger>
@@ -363,7 +475,18 @@ function ProjectSettingsTab() {
               Categorize your project to help others find it.
             </div>
           </div>
-          <Select>
+          <Select
+            value={(project as any)?.category || ""}
+            onValueChange={async (val) => {
+              if (!project?.id) return
+              try {
+                await store.projectCollection.update(project.id, { category: val } as any)
+                toast({ title: "Category updated", description: `Project category set to ${val}` })
+              } catch (err: any) {
+                toast({ variant: "destructive", title: "Update failed", description: err?.message || "Could not update category" })
+              }
+            }}
+          >
             <SelectTrigger className="w-36">
               <SelectValue placeholder="Select category" />
             </SelectTrigger>
@@ -377,14 +500,45 @@ function ProjectSettingsTab() {
         </div>
 
         {/* Rename project */}
-        <div className="flex items-start justify-between p-4 bg-card rounded-lg border border-border">
-          <div>
-            <div className="font-medium">Rename project</div>
-            <div className="text-sm text-muted-foreground">
-              Update your project's title.
+        <div className="p-4 bg-card rounded-lg border border-border">
+          <div className="flex items-start justify-between">
+            <div>
+              <div className="font-medium">Rename project</div>
+              <div className="text-sm text-muted-foreground">
+                Update your project's title.
+              </div>
             </div>
+            {!isRenaming && (
+              <Button variant="outline" size="sm" onClick={() => setIsRenaming(true)}>
+                Rename
+              </Button>
+            )}
           </div>
-          <Button variant="outline" size="sm">Rename</Button>
+          {isRenaming && (
+            <div className="flex items-center gap-2 mt-3">
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Project name"
+                className="flex-1"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleRename()
+                  if (e.key === "Escape") { setIsRenaming(false); setName(project?.name || "") }
+                }}
+              />
+              <Button size="sm" onClick={handleRename} disabled={isSaving || !name.trim()}>
+                {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => { setIsRenaming(false); setName(project?.name || "") }}
+              >
+                Cancel
+              </Button>
+            </div>
+          )}
         </div>
 
         {/* Remix project */}
@@ -395,7 +549,9 @@ function ProjectSettingsTab() {
               Duplicate this app in a new project.
             </div>
           </div>
-          <Button variant="outline" size="sm">Remix</Button>
+          <Button variant="outline" size="sm" disabled>
+            Remix
+          </Button>
         </div>
 
         {/* Transfer */}
@@ -424,6 +580,49 @@ function ProjectSettingsTab() {
           </Button>
         </div>
       </div>
+
+      {/* Delete Project Confirmation Dialog */}
+      <AlertDialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-destructive">Delete project</AlertDialogTitle>
+            <AlertDialogDescription className="space-y-3">
+              <p>
+                This action <strong>cannot be undone</strong>. This will permanently delete the
+                project <strong>{project?.name}</strong> and all its data including features,
+                chat sessions, and usage history.
+              </p>
+              <p className="pt-2">
+                Please type <strong>{deleteConfirmRequired}</strong> to confirm.
+              </p>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <Input
+            value={deleteConfirmText}
+            onChange={(e) => setDeleteConfirmText(e.target.value)}
+            placeholder={`Type "${deleteConfirmRequired}" to confirm`}
+          />
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeleting} onClick={() => setDeleteConfirmText("")}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteProject}
+              disabled={!isDeleteConfirmed || isDeleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {isDeleting ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                "Delete project"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
@@ -518,7 +717,12 @@ function KnowledgeTab() {
           </p>
         </div>
         <Button variant="outline" size="sm" asChild>
-          <a href="#" className="flex items-center gap-2">
+          <a 
+            href={DOCS_URL} 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="flex items-center gap-2"
+          >
             <BookOpen className="h-3 w-3" />
             Docs
           </a>
@@ -952,7 +1156,7 @@ function PeopleTab() {
           </p>
         </div>
         <Button variant="outline" size="sm" asChild>
-          <a href="https://docs-staging.shogo.ai/" target="_blank" rel="noopener noreferrer" className="flex items-center gap-2">
+          <a href={DOCS_URL} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2">
             <BookOpen className="h-3 w-3" />
             Docs
           </a>
@@ -1202,8 +1406,8 @@ function BillingTab() {
     ? subscription.planId.charAt(0).toUpperCase() + subscription.planId.slice(1)
     : "Free"
 
-  const creditsRemaining = effectiveBalance?.total ?? (hasActiveSubscription ? 105 : 5)
-  const creditsTotal = hasActiveSubscription ? 105 : 5
+  const creditsRemaining = effectiveBalance?.total ?? 5
+  const creditsTotal = getTotalCreditsForPlan(subscription?.planId, PLAN_CREDITS, DAILY_CREDITS)
 
   return (
     <div className="space-y-6">
@@ -1215,7 +1419,12 @@ function BillingTab() {
           </p>
         </div>
         <Button variant="outline" size="sm" asChild>
-          <a href="#" className="flex items-center gap-2">
+          <a 
+            href={DOCS_URL} 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="flex items-center gap-2"
+          >
             <BookOpen className="h-3 w-3" />
             Docs
           </a>
@@ -1241,12 +1450,12 @@ function BillingTab() {
         <div className="p-4 bg-card rounded-lg border border-border space-y-3">
           <div className="flex justify-between">
             <span className="text-sm text-muted-foreground">Credits remaining</span>
-            <span className="text-sm font-medium">{creditsRemaining.toFixed(1)} of {creditsTotal}</span>
+            <span className="text-sm font-medium">{formatCredits(creditsRemaining)} of {creditsTotal}</span>
           </div>
           <Progress value={(creditsRemaining / creditsTotal) * 100} className="h-2" />
           {effectiveBalance && (
             <div className="text-xs text-muted-foreground">
-              Daily: {effectiveBalance.dailyCredits.toFixed(1)} • Monthly: {effectiveBalance.monthlyCredits.toFixed(1)}
+              Daily: {formatCredits(effectiveBalance.dailyCredits)} • Monthly: {formatCredits(effectiveBalance.monthlyCredits)}
             </div>
           )}
           <div className="space-y-1 text-xs text-muted-foreground">
@@ -1302,9 +1511,7 @@ function ProjectBreakdown({ workspaceId, period }: { workspaceId: string | undef
   const endIndex = startIndex + itemsPerPage
   const paginatedProjects = projectUsage?.slice(startIndex, endIndex) || []
   
-  const formatCredits = (credits: number) => {
-    return credits % 1 === 0 ? `${credits}` : credits.toFixed(1)
-  }
+  // Using shared formatCredits from @/lib/utils
   
   return (
     <div className="bg-card rounded-lg border border-border">
@@ -1394,6 +1601,20 @@ function UsageTab() {
   const [period, setPeriod] = useState<"7d" | "30d" | "90d" | "1y">("30d")
   const [logPage, setLogPage] = useState(1)
 
+  const { creditLedger } = useBillingData(workspaceId)
+
+  // Compute next monthly reset date from anniversaryDay
+  const nextResetLabel = useMemo(() => {
+    const anniversaryDay = creditLedger?.anniversaryDay
+    if (!anniversaryDay) return null
+    const now = new Date()
+    const next = new Date(now.getFullYear(), now.getMonth(), anniversaryDay)
+    if (next <= now) {
+      next.setMonth(next.getMonth() + 1)
+    }
+    return format(next, 'd MMM yyyy')
+  }, [creditLedger])
+
   // Workspace-scoped usage data
   const basePath = workspaceId ? `/api/workspaces/${workspaceId}` : ''
   const summaryResult = useWorkspaceUsageSummary(basePath, period)
@@ -1409,7 +1630,12 @@ function UsageTab() {
           </p>
         </div>
         <Button variant="outline" size="sm" asChild>
-          <a href="#" className="flex items-center gap-2">
+          <a 
+            href={DOCS_URL} 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="flex items-center gap-2"
+          >
             <BookOpen className="h-3 w-3" />
             Docs
           </a>
@@ -1425,7 +1651,11 @@ function UsageTab() {
             </div>
             <div>
               <div className="font-medium">Cloud + AI</div>
-              <div className="text-sm text-muted-foreground">Monthly included usage resets 1 Feb 2026</div>
+              <div className="text-sm text-muted-foreground">
+                {nextResetLabel
+                  ? `Monthly included usage resets ${nextResetLabel}`
+                  : 'Monthly included usage resets on your billing anniversary'}
+              </div>
             </div>
           </div>
           <div className="mt-4 flex items-center gap-2">
@@ -1495,8 +1725,8 @@ function UsageTab() {
       <ProjectBreakdown workspaceId={workspaceId} period={period} />
 
       <p className="text-sm text-muted-foreground">
-        This is a temporary offering until the beginning of 2026 as we refine our pricing model.{" "}
-        <a href="#" className="text-primary hover:underline">Read more</a>
+        Usage is included with your plan. Upgrade for higher limits and additional features.{" "}
+        <a href="/billing" className="text-primary hover:underline">View plans</a>
       </p>
     </div>
   )
@@ -1966,7 +2196,12 @@ function LabsTab() {
           </p>
         </div>
         <Button variant="outline" size="sm" asChild>
-          <a href="#" className="flex items-center gap-2">
+          <a 
+            href={DOCS_URL} 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="flex items-center gap-2"
+          >
             <BookOpen className="h-3 w-3" />
             Docs
           </a>
@@ -2106,7 +2341,12 @@ function GitHubTab() {
           </p>
         </div>
         <Button variant="outline" size="sm" asChild>
-          <a href="#" className="flex items-center gap-2">
+          <a 
+            href={DOCS_URL} 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="flex items-center gap-2"
+          >
             <BookOpen className="h-3 w-3" />
             Docs
           </a>
@@ -2238,7 +2478,7 @@ export const SettingsPage = observer(function SettingsPage() {
       {/* Content */}
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-4xl mx-auto p-8">
-          {activeTab === "project" && <ProjectSettingsTab />}
+          {activeTab === "project" && <ProjectSettingsTab projectId={projectId} />}
           {activeTab === "domains" && <DomainsTab />}
           {activeTab === "knowledge" && <KnowledgeTab />}
           {activeTab === "workspace" && <WorkspaceSettingsTab />}

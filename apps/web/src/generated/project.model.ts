@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Auto-generated Project MST Model
  *
@@ -35,6 +36,8 @@ export const ProjectModel = types
     publishedSubdomain: types.optional(types.string, ""),
     publishedAt: types.optional(types.number, 0),
     accessLevel: types.enumeration("AccessLevel", ["anyone", "authenticated", "private"]),
+    category: types.optional(types.string, ""),
+    type: types.optional(types.enumeration("ProjectType", ["APP", "AGENT"]), "APP"),
     siteTitle: types.optional(types.string, ""),
     siteDescription: types.optional(types.string, ""),
     workspace: types.safeReference(types.late(() => WorkspaceModel)),

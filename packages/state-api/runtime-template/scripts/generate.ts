@@ -9,7 +9,7 @@
  * You can also run it manually if needed.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'fs'
 import { join } from 'path'
 
 // Try to import from the monorepo first (for local development), then from npm package
@@ -68,6 +68,76 @@ function generateHooksTemplate(models: PrismaModel[]): string {
   lines.push('')
 
   return lines.join('\n')
+}
+
+/**
+ * Convert a PascalCase model name to kebab-case filename prefix.
+ * e.g., "MenuItem" → "menu-item", "BusinessPlan" → "business-plan"
+ */
+function toFileName(name: string): string {
+  return name.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase()
+}
+
+/**
+ * Clean up stale generated files from previous models.
+ *
+ * When a user changes their Prisma schema (e.g., from Category/Transaction/Budget
+ * to MenuItem/FixedCost/BusinessPlan), the old per-model files remain on disk.
+ * This causes import errors in the generated index/routes files.
+ *
+ * We clean up:
+ * - *.routes.{ts,tsx} files that don't match current models
+ * - *.hooks.{ts,tsx} files that don't match current models (with warning)
+ * - index.tsx if we're generating index.ts (Bun resolves .tsx over .ts)
+ */
+function cleanupStaleGeneratedFiles(outputDir: string, models: PrismaModel[]): void {
+  if (!existsSync(outputDir)) return
+
+  const expectedFileNames = new Set(models.map(m => toFileName(m.name)))
+  const files = readdirSync(outputDir)
+  const staleFiles: string[] = []
+
+  for (const file of files) {
+    // Check per-model route files: {model-name}.routes.{ts,tsx}
+    const routeMatch = file.match(/^(.+)\.routes\.(ts|tsx)$/)
+    if (routeMatch) {
+      const modelFileName = routeMatch[1]
+      if (!expectedFileNames.has(modelFileName)) {
+        staleFiles.push(file)
+      }
+      continue
+    }
+
+    // Check per-model hook files: {model-name}.hooks.{ts,tsx}
+    const hookMatch = file.match(/^(.+)\.hooks\.(ts|tsx)$/)
+    if (hookMatch) {
+      const modelFileName = hookMatch[1]
+      if (!expectedFileNames.has(modelFileName)) {
+        staleFiles.push(file)
+      }
+      continue
+    }
+
+    // Clean up index.tsx if we're about to write index.ts
+    // Bun's module resolution prefers .tsx over .ts, causing conflicts
+    if (file === 'index.tsx') {
+      staleFiles.push(file)
+      continue
+    }
+  }
+
+  if (staleFiles.length > 0) {
+    console.log(`   🧹 Cleaning up ${staleFiles.length} stale generated file(s):`)
+    for (const file of staleFiles) {
+      const filePath = join(outputDir, file)
+      try {
+        unlinkSync(filePath)
+        console.log(`      ✗ ${file} (deleted)`)
+      } catch (err: any) {
+        console.warn(`      ⚠️ Failed to delete ${file}: ${err.message}`)
+      }
+    }
+  }
 }
 
 /**
@@ -175,6 +245,9 @@ async function main() {
     writeFileSync(join(OUTPUT_DIR, 'domain.ts'), generateDomainStore(models))
     console.log('   domain.ts')
 
+    // Clean up stale generated files from previous models
+    cleanupStaleGeneratedFiles(OUTPUT_DIR, models)
+
     // Generate server-side Hono route files (per-model CRUD)
     const { routes, hooks: routeHooks } = generateRoutes(models, { fileExtension: 'ts' })
 
@@ -243,7 +316,7 @@ async function main() {
       }
     }
 
-    // Run db:push to apply schema changes to database
+    // Run db:push to apply schema changes to database (non-destructive)
     console.log('')
     console.log('Pushing schema to database...')
     const dbPush = Bun.spawn(['bun', 'run', 'db:push'], {
@@ -252,13 +325,31 @@ async function main() {
       stderr: 'pipe',
     })
     
-    const exitCode = await dbPush.exited
-    if (exitCode !== 0) {
-      const stderr = await new Response(dbPush.stderr).text()
-      console.error('db:push failed:', stderr)
-      process.exit(1)
+    const pushExitCode = await dbPush.exited
+    if (pushExitCode !== 0) {
+      const pushStderr = await new Response(dbPush.stderr).text()
+      console.warn('db:push failed (incompatible schema change), falling back to prisma migrate dev...')
+      console.warn('   Reason:', pushStderr.split('\n')[0])
+
+      const migrate = Bun.spawn(['bunx', '--bun', 'prisma', 'migrate', 'dev', '--name', 'auto'], {
+        cwd: PROJECT_DIR,
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+
+      const migrateExitCode = await migrate.exited
+      if (migrateExitCode !== 0) {
+        const migrateStderr = await new Response(migrate.stderr).text()
+        console.error('prisma migrate dev also failed:', migrateStderr)
+        console.error('')
+        console.error('The schema change may require manual intervention.')
+        console.error('Your existing data has NOT been deleted.')
+        process.exit(1)
+      }
+      console.log('   Database schema updated via migration (existing data preserved)')
+    } else {
+      console.log('   Database schema updated')
     }
-    console.log('   Database schema updated')
 
     // Resume the watcher (triggers fresh build + restarts watch mode)
     if (watcherWasPaused) {

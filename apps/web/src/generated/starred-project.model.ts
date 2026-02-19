@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Auto-generated StarredProject MST Model
  *

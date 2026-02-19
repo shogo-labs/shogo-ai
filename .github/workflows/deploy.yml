@@ -152,6 +152,10 @@ jobs:
             dockerfile: packages/project-runtime/Dockerfile
             ecr_name: project-runtime
             build_args: ""
+          - image: agent-runtime
+            dockerfile: packages/agent-runtime/Dockerfile
+            ecr_name: agent-runtime
+            build_args: ""
           - image: docs
             dockerfile: apps/docs/Dockerfile
             ecr_name: shogo-docs
@@ -162,8 +166,8 @@ jobs:
       contents: read
 
     steps:
-      - name: Free disk space (project-runtime only)
-        if: matrix.image == 'project-runtime'
+      - name: Free disk space (large runtime images)
+        if: matrix.image == 'project-runtime' || matrix.image == 'agent-runtime'
         uses: jlumbroso/free-disk-space@main
         with:
           # Frees ~31GB - keeps only what's needed for Docker builds
@@ -257,20 +261,50 @@ jobs:
 
       - name: Create or update API secrets
         run: |
-          # Create or update the api-secrets secret with ANTHROPIC_API_KEY
-          # BETTER_AUTH_SECRET is optional - if not set in GitHub, it will use the value from kustomization
+          # Build the api-secrets secret with all required keys
+          # Optional secrets are included only when set in GitHub environment
+          SECRET_ARGS=(
+            --from-literal=ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}"
+          )
+          
+          # Better Auth secret (optional)
           if [ -n "${{ secrets.BETTER_AUTH_SECRET }}" ]; then
-            kubectl create secret generic api-secrets \
-              --namespace=${{ env.NS_SYSTEM }} \
-              --from-literal=ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}" \
-              --from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}" \
-              --dry-run=client -o yaml | kubectl apply -f -
-          else
-            kubectl create secret generic api-secrets \
-              --namespace=${{ env.NS_SYSTEM }} \
-              --from-literal=ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}" \
-              --dry-run=client -o yaml | kubectl apply -f -
+            SECRET_ARGS+=(--from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}")
           fi
+          
+          # Stripe secrets (optional)
+          if [ -n "${{ secrets.STRIPE_SECRET_KEY }}" ]; then
+            SECRET_ARGS+=(--from-literal=STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}")
+          fi
+          if [ -n "${{ secrets.STRIPE_WEBHOOK_SECRET }}" ]; then
+            SECRET_ARGS+=(--from-literal=STRIPE_WEBHOOK_SECRET="${{ secrets.STRIPE_WEBHOOK_SECRET }}")
+          fi
+          
+          # GitHub App secrets (optional - for Git sync integration)
+          # Note: Uses GH_ prefix because GitHub Actions reserves the GITHUB_ prefix
+          if [ -n "${{ secrets.GH_APP_ID }}" ]; then
+            SECRET_ARGS+=(--from-literal=GH_APP_ID="${{ secrets.GH_APP_ID }}")
+          fi
+          if [ -n "${{ secrets.GH_APP_CLIENT_ID }}" ]; then
+            SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_ID="${{ secrets.GH_APP_CLIENT_ID }}")
+          fi
+          if [ -n "${{ secrets.GH_APP_CLIENT_SECRET }}" ]; then
+            SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_SECRET="${{ secrets.GH_APP_CLIENT_SECRET }}")
+          fi
+          if [ -n "${{ secrets.GH_APP_PRIVATE_KEY }}" ]; then
+            SECRET_ARGS+=(--from-literal=GH_APP_PRIVATE_KEY="${{ secrets.GH_APP_PRIVATE_KEY }}")
+          fi
+          if [ -n "${{ secrets.GH_APP_WEBHOOK_SECRET }}" ]; then
+            SECRET_ARGS+=(--from-literal=GH_APP_WEBHOOK_SECRET="${{ secrets.GH_APP_WEBHOOK_SECRET }}")
+          fi
+          if [ -n "${{ secrets.GH_APP_SLUG }}" ]; then
+            SECRET_ARGS+=(--from-literal=GH_APP_SLUG="${{ secrets.GH_APP_SLUG }}")
+          fi
+          
+          kubectl create secret generic api-secrets \
+            --namespace=${{ env.NS_SYSTEM }} \
+            "${SECRET_ARGS[@]}" \
+            --dry-run=client -o yaml | kubectl apply -f -
           
           echo "✅ API secrets created/updated in ${{ env.NS_SYSTEM }} namespace"
           
@@ -341,8 +375,8 @@ jobs:
 
       - name: Restart image prepuller
         run: |
-          # Restart the image-prepuller DaemonSet to pull the new project-runtime image
-          # This ensures the new image is pre-pulled on all nodes for fast cold starts
+          # Restart the image-prepuller DaemonSet to pull new project-runtime and agent-runtime images
+          # This ensures both images are pre-pulled on all nodes for fast cold starts
           echo "🔄 Restarting image-prepuller to pull new project-runtime image..."
           kubectl rollout restart daemonset/image-prepuller -n ${{ env.NS_SYSTEM }} || echo "Image prepuller not found, skipping"
           
@@ -382,6 +416,7 @@ jobs:
           echo "| MCP | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| API | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Web | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Agent Runtime | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Docs | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Endpoints" >> $GITHUB_STEP_SUMMARY

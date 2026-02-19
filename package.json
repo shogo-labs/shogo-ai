@@ -13,7 +13,7 @@
     "web:nohmr": "bun run --cwd apps/web dev:nohmr",
     "web:build": "bun run --cwd apps/web build",
     "web:preview": "bun run --cwd apps/web preview",
-    "api:dev": "bun --watch apps/api/src/server.ts",
+    "api:dev": "PREWARM_CLAUDE_CODE=false bun --watch apps/api/src/server.ts",
     "api:start": "bun apps/api/src/server.ts",
     "mcp:http": "bun run packages/mcp/src/server-http.ts",
     "mcp:stdio": "bun run packages/mcp/src/server.ts",
@@ -45,11 +45,13 @@
     "docker:prod:down": "docker-compose down",
     "screenshots:templates": "bun run scripts/capture-template-screenshots.ts",
     "docs:dev": "bun run --cwd apps/docs dev",
-    "docs:build": "bun run --cwd apps/docs build"
+    "docs:build": "bun run --cwd apps/docs build",
+    "postinstall": "[ -f scripts/patch-claude-sdk.ts ] && bun scripts/patch-claude-sdk.ts || true"
   },
   "devDependencies": {
     "@prisma/adapter-libsql": "^7.3.0",
     "@types/jsonwebtoken": "^9.0.10",
+    "concurrently": "^9.2.1",
     "jsonwebtoken": "^9.0.3",
     "playwright": "^1.57.0",
     "prisma": "^7.3.0",

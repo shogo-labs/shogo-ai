@@ -5,7 +5,7 @@
 #
 # Architecture:
 # Each project pod contains TWO containers:
-# 1. project-runtime: Claude Code agent + MCP (wavesmith) + Vite
+# 1. project-runtime: Claude Code agent + MCP (shogo) + Vite
 # 2. postgres: PostgreSQL 16 sidecar for per-project database
 #
 # Key features:

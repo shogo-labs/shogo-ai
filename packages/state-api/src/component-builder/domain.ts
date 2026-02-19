@@ -7,7 +7,7 @@
  * collection queries (findByCategory, findByName), and priority-based binding resolution.
  *
  * Enables self-describing component infrastructure where UI components,
- * registries, bindings, and compositions are Wavesmith entities that Claude
+ * registries, bindings, and compositions are Shogo entities that Claude
  * can query and modify via MCP.
  *
  * Entities:

@@ -15,8 +15,8 @@
  */
 
 import { parseArgs } from 'util'
-import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs'
-import { resolve, dirname } from 'path'
+import { writeFileSync, readFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from 'fs'
+import { resolve, dirname, basename } from 'path'
 import { execSync } from 'child_process'
 import { generateFromPrisma, type GenerateOptions, type OutputConfig } from '../src/generators/prisma-generator'
 import { 
@@ -92,6 +92,76 @@ const { values, positionals } = parseArgs({
   },
   allowPositionals: true,
 })
+
+// ============================================================================
+// Cleanup stale generated files
+// ============================================================================
+
+/**
+ * Clean up stale per-model generated files from previous schemas.
+ *
+ * When models change (e.g., template had Category/Transaction/Budget,
+ * user's schema has MenuItem/FixedCost/BusinessPlan), old per-model files
+ * remain on disk and cause import errors. This removes them.
+ */
+function cleanupStaleGeneratedFiles(outputDir: string, newFiles: { path: string }[]): void {
+  const absOutputDir = resolve(outputDir)
+  if (!existsSync(absOutputDir)) return
+
+  // Build set of filenames we're about to write
+  const expectedFiles = new Set<string>()
+  for (const file of newFiles) {
+    const absPath = file.path.startsWith('/') ? file.path : resolve(file.path)
+    // Only track files in this output directory
+    if (absPath.startsWith(absOutputDir)) {
+      expectedFiles.add(basename(absPath))
+    }
+  }
+
+  const existingFiles = readdirSync(absOutputDir)
+  const staleFiles: string[] = []
+
+  // Per-model generated file patterns that should be cleaned up
+  const generatedPatterns = [
+    /^.+\.routes\.(ts|tsx)$/,
+    /^.+\.hooks\.(ts|tsx)$/,
+    /^.+\.types\.(ts|tsx)$/,
+    /^.+\.store\.(ts|tsx)$/,
+    /^.+\.model\.(ts|tsx)$/,
+    /^.+\.collection\.(ts|tsx)$/,
+  ]
+
+  for (const file of existingFiles) {
+    // Skip if it's a file we're about to write
+    if (expectedFiles.has(file)) continue
+
+    // Check if it matches a generated per-model file pattern
+    const isGenerated = generatedPatterns.some(p => p.test(file))
+    if (isGenerated) {
+      staleFiles.push(file)
+      continue
+    }
+
+    // Clean up index.tsx if we're about to write index.ts
+    // Bun's module resolution prefers .tsx over .ts, causing conflicts
+    if (file === 'index.tsx' && expectedFiles.has('index.ts')) {
+      staleFiles.push(file)
+      continue
+    }
+  }
+
+  if (staleFiles.length > 0) {
+    console.log(`   🧹 Cleaning up ${staleFiles.length} stale generated file(s):`)
+    for (const file of staleFiles) {
+      try {
+        unlinkSync(resolve(absOutputDir, file))
+        console.log(`      ✗ ${file} (deleted)`)
+      } catch (err: any) {
+        console.warn(`      ⚠️ Failed to delete ${file}: ${err.message}`)
+      }
+    }
+  }
+}
 
 // ============================================================================
 // Help
@@ -424,7 +494,67 @@ async function main() {
 
   console.log('')
 
-  // Generate
+  // Detect if running inside a Shogo project-runtime environment.
+  // When PORT is set and we're inside a pod, pause the Vite build watcher
+  // to prevent crashes from rapid file writes during code generation.
+  // The resume call at the end triggers a fresh build + backend server restart.
+  const runtimePort = process.env.RUNTIME_PORT || process.env.PORT
+  const isInsideRuntime = !!runtimePort && existsSync(resolve(cwd, 'server.tsx'))
+  
+  if (isInsideRuntime) {
+    console.log(`📡 Detected project-runtime (port ${runtimePort})`)
+  }
+  
+  // ── Step 1: Pause watcher (if inside runtime) ──────────────────────────
+  if (isInsideRuntime) {
+    try {
+      console.log('⏸️  Pausing build watcher...')
+      await fetch(`http://localhost:${runtimePort}/preview/watch/pause`, { method: 'POST' })
+    } catch {
+      console.log('   (watcher not running or unreachable - continuing)')
+    }
+  }
+  
+  // ── Step 2: Run prisma generate + db push ──────────────────────────────
+  // Always regenerate the Prisma client and push schema changes to the database.
+  // This ensures the generated routes have matching DB tables and up-to-date types.
+  const hasPrisma = existsSync(schemaPath)
+  if (hasPrisma) {
+    console.log('🔧 Updating Prisma client and database...')
+    
+    try {
+      console.log('   Running prisma generate...')
+      execSync('bunx --bun prisma generate', {
+        cwd,
+        stdio: values.verbose ? 'inherit' : 'pipe',
+        env: process.env,
+      })
+      console.log('   ✓ Prisma client generated')
+    } catch (err) {
+      console.warn(`   ⚠️ prisma generate failed: ${err instanceof Error ? err.message : err}`)
+    }
+    
+    // Push schema to database (only if DATABASE_URL is set)
+    if (process.env.DATABASE_URL) {
+      try {
+        console.log('   Running prisma db push...')
+        execSync('bunx --bun prisma db push --accept-data-loss', {
+          cwd,
+          stdio: values.verbose ? 'inherit' : 'pipe',
+          env: process.env,
+        })
+        console.log('   ✓ Database schema synced')
+      } catch (err) {
+        console.warn(`   ⚠️ prisma db push failed: ${err instanceof Error ? err.message : err}`)
+      }
+    } else {
+      console.log('   ⊘ Skipping db push (no DATABASE_URL)')
+    }
+    
+    console.log('')
+  }
+  
+  // ── Step 3: Generate SDK files ─────────────────────────────────────────
   try {
     const options: GenerateOptions = {
       schemaPath,
@@ -439,6 +569,17 @@ async function main() {
     }
 
     const result = await generateFromPrisma(options)
+
+    // Clean up stale generated files from previous models
+    if (outputs) {
+      for (const output of outputs) {
+        const absDir = output.dir.startsWith('/') ? output.dir : resolve(cwd, output.dir)
+        cleanupStaleGeneratedFiles(absDir, result.files)
+      }
+    } else if (outputDir) {
+      const absDir = outputDir.startsWith('/') ? outputDir : resolve(cwd, outputDir)
+      cleanupStaleGeneratedFiles(absDir, result.files)
+    }
 
     // Write files
     for (const file of result.files) {
@@ -513,40 +654,42 @@ async function main() {
     }
 
     console.log('')
-    console.log('Next steps:')
-    if (outputs) {
-      const hasRoutes = outputs.some(o => o.generate.includes('routes'))
-      const hasStores = outputs.some(o => o.generate.includes('stores'))
-      const hasDocs = outputs.some(o => o.generate.includes('docs'))
-      const skipDocsBuild = values['no-docs-build'] as boolean
-      let step = 1
-      
-      if (hasRoutes) {
-        console.log(`  ${step++}. Customize hooks in your API generated/*.hooks.ts files`)
-        console.log(`  ${step++}. Mount routes with createAllRoutes(prisma) in your server`)
-      }
-      if (hasStores) {
-        console.log(`  ${step++}. Import stores and use with DomainProvider in your app`)
-      }
-      if (hasDocs && skipDocsBuild) {
-        const docsDir = outputs.find(o => o.generate.includes('docs'))?.dir || './docs'
-        console.log(`  ${step++}. Install docs dependencies: cd ${docsDir} && bun install`)
-        console.log(`  ${step++}. Build docs site: cd ${docsDir} && bunx docusaurus build`)
-      } else if (hasDocs) {
-        const docsDir = outputs.find(o => o.generate.includes('docs'))?.dir || './docs'
-        console.log(`  ${step++}. Serve docs: bunx serve ${docsDir}/build`)
-      }
-    } else {
-      console.log('  1. Review generated hooks in hooks.ts')
-      console.log('  2. Import and use generated code in your app')
-    }
 
   } catch (error) {
     console.error('')
     console.error('❌ Generation failed:')
     console.error(`   ${error instanceof Error ? error.message : error}`)
+    
+    // Still try to resume watcher even if generation failed
+    if (isInsideRuntime) {
+      try {
+        await fetch(`http://localhost:${runtimePort}/preview/watch/resume`, { method: 'POST' })
+      } catch { /* ignore */ }
+    }
+    
     process.exit(1)
   }
+  
+  // ── Step 4: Resume watcher (if inside runtime) ─────────────────────────
+  // This triggers a fresh Vite build AND restarts the backend API server,
+  // ensuring new routes are served immediately.
+  if (isInsideRuntime) {
+    try {
+      console.log('▶️  Resuming build watcher (triggers rebuild + backend restart)...')
+      const res = await fetch(`http://localhost:${runtimePort}/preview/watch/resume`, { method: 'POST' })
+      const data = await res.json() as { resumed?: boolean; buildSuccess?: boolean }
+      if (data.buildSuccess) {
+        console.log('   ✓ Build succeeded and backend restarted')
+      } else if (data.resumed) {
+        console.log('   ✓ Watcher resumed (build in progress)')
+      }
+    } catch {
+      console.log('   ⚠️ Could not resume watcher - you may need to rebuild manually')
+    }
+  }
+  
+  console.log('')
+  console.log('✅ Done!')
 }
 
 main()

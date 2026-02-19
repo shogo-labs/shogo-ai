@@ -1,5 +1,6 @@
 import type { Todo } from '../App'
 import { TodoItem } from './TodoItem'
+import { ListChecks } from 'lucide-react'
 
 interface TodoListProps {
   todos: Todo[]
@@ -10,50 +11,24 @@ interface TodoListProps {
 export function TodoList({ todos, onToggle, onDelete }: TodoListProps) {
   if (todos.length === 0) {
     return (
-      <div style={styles.empty}>
-        <p>No todos yet!</p>
-        <p style={styles.emptyHint}>Add one above to get started.</p>
+      <div className="flex flex-col items-center justify-center py-12 text-center">
+        <ListChecks className="h-12 w-12 text-muted-foreground/40 mb-3" />
+        <p className="text-sm text-muted-foreground">No todos yet</p>
+        <p className="text-xs text-muted-foreground mt-1">Add one above to get started.</p>
       </div>
     )
   }
 
-  const completedCount = todos.filter((t) => t.completed).length
-
   return (
-    <div>
-      <div style={styles.stats}>
-        {completedCount} of {todos.length} completed
-      </div>
-      <ul style={styles.list}>
-        {todos.map((todo) => (
-          <TodoItem
-            key={todo.id}
-            todo={todo}
-            onToggle={() => onToggle(todo.id)}
-            onDelete={() => onDelete(todo.id)}
-          />
-        ))}
-      </ul>
-    </div>
+    <ul className="space-y-2">
+      {todos.map((todo) => (
+        <TodoItem
+          key={todo.id}
+          todo={todo}
+          onToggle={() => onToggle(todo.id)}
+          onDelete={() => onDelete(todo.id)}
+        />
+      ))}
+    </ul>
   )
-}
-
-const styles: Record<string, React.CSSProperties> = {
-  empty: {
-    textAlign: 'center',
-    padding: '3rem 1rem',
-    color: '#888',
-  },
-  emptyHint: {
-    fontSize: '0.875rem',
-    marginTop: '0.5rem',
-  },
-  stats: {
-    fontSize: '0.875rem',
-    color: '#888',
-    marginBottom: '1rem',
-  },
-  list: {
-    listStyle: 'none',
-  },
 }

@@ -1,0 +1,148 @@
+/**
+ * Warm Pool Mode — Integration Test for Project Runtime
+ *
+ * Tests the pool mode lifecycle of the project-runtime:
+ * 1. Start server with PROJECT_ID=__POOL__ (pool mode)
+ * 2. Verify health check shows pool mode
+ * 3. POST /pool/assign with a project identity
+ * 4. Verify health check shows assigned project
+ *
+ * Run:
+ *   bun test packages/project-runtime/src/__tests__/warm-pool.test.ts
+ */
+
+import { describe, test, expect, beforeAll, afterAll } from 'bun:test'
+import { spawn, type Subprocess } from 'bun'
+import { mkdirSync, rmSync } from 'fs'
+import { join } from 'path'
+
+const TEST_PORT = 19_000 + Math.floor(Math.random() * 100)
+const TEST_PROJECT_DIR = `/tmp/test-warm-pool-project-${TEST_PORT}`
+const SERVER_PATH = join(import.meta.dir, '..', 'server.ts')
+
+let serverProc: Subprocess | null = null
+
+async function waitForServer(port: number, timeoutMs = 20_000): Promise<void> {
+  const start = Date.now()
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const resp = await fetch(`http://localhost:${port}/health`, {
+        signal: AbortSignal.timeout(1000),
+      })
+      if (resp.ok) return
+    } catch {
+      // not ready yet
+    }
+    await Bun.sleep(500)
+  }
+  throw new Error(`Server on port ${port} did not start within ${timeoutMs}ms`)
+}
+
+describe('Project Runtime — Warm Pool Mode', () => {
+  beforeAll(async () => {
+    rmSync(TEST_PROJECT_DIR, { recursive: true, force: true })
+    mkdirSync(TEST_PROJECT_DIR, { recursive: true })
+
+    serverProc = spawn({
+      cmd: ['bun', 'run', SERVER_PATH],
+      env: {
+        ...process.env,
+        PROJECT_ID: '__POOL__',
+        WARM_POOL_MODE: 'true',
+        PROJECT_DIR: TEST_PROJECT_DIR,
+        PORT: String(TEST_PORT),
+        SCHEMAS_PATH: '/tmp/test-schemas',
+        // Disable things that need real infrastructure
+        S3_WORKSPACES_BUCKET: '',
+        S3_BUCKET: '',
+        AI_PROXY_URL: '',
+        AI_PROXY_TOKEN: '',
+        FAST_START_MODE: 'false',
+        POSTGRES_S3_BACKUP_ENABLED: 'false',
+        ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || 'test-key',
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+
+    await waitForServer(TEST_PORT)
+  }, 25_000)
+
+  afterAll(() => {
+    if (serverProc) {
+      serverProc.kill()
+      serverProc = null
+    }
+    rmSync(TEST_PROJECT_DIR, { recursive: true, force: true })
+  })
+
+  test('health check shows pool mode', async () => {
+    const resp = await fetch(`http://localhost:${TEST_PORT}/health`)
+    expect(resp.ok).toBe(true)
+
+    const data = (await resp.json()) as any
+    expect(data.status).toBe('ok')
+    expect(data.poolMode).toBe(true)
+    expect(data.projectId).toBe('__POOL__')
+  })
+
+  test('ready check passes in pool mode', async () => {
+    const resp = await fetch(`http://localhost:${TEST_PORT}/ready`)
+    expect(resp.ok).toBe(true)
+  })
+
+  test('rejects /pool/assign without projectId', async () => {
+    const resp = await fetch(`http://localhost:${TEST_PORT}/pool/assign`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    expect(resp.status).toBe(400)
+
+    const data = (await resp.json()) as any
+    expect(data.error).toContain('projectId')
+  })
+
+  test('assigns a project via /pool/assign', async () => {
+    const testProjectId = `test-proj-${Date.now()}`
+
+    const resp = await fetch(`http://localhost:${TEST_PORT}/pool/assign`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        projectId: testProjectId,
+        env: {
+          SOME_CUSTOM_VAR: 'hello-from-pool',
+        },
+      }),
+    })
+
+    expect(resp.ok).toBe(true)
+    const data = (await resp.json()) as any
+    expect(data.ok).toBe(true)
+    expect(data.projectId).toBe(testProjectId)
+    expect(typeof data.durationMs).toBe('number')
+  }, 30_000)
+
+  test('health check shows assigned project after assignment', async () => {
+    const resp = await fetch(`http://localhost:${TEST_PORT}/health`)
+    expect(resp.ok).toBe(true)
+
+    const data = (await resp.json()) as any
+    expect(data.status).toBe('ok')
+    expect(data.poolMode).toBe(false)
+    expect(data.projectId).toContain('test-proj-')
+  })
+
+  test('rejects second /pool/assign (already assigned)', async () => {
+    const resp = await fetch(`http://localhost:${TEST_PORT}/pool/assign`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId: 'another-project' }),
+    })
+    expect(resp.status).toBe(400)
+
+    const data = (await resp.json()) as any
+    expect(data.error).toContain('Already assigned')
+  })
+})

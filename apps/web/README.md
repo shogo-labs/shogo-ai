@@ -28,7 +28,7 @@ bun run typecheck  # Type check
 
 Raw MobX-State-Tree observer pattern in React. Shows reactive updates when MST state changes without abstraction layers.
 
-### Unit 2: Wavesmith Meta-System
+### Unit 2: Shogo Meta-System
 
 **Route**: `/unit2`
 

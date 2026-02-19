@@ -50,6 +50,8 @@ export type EvalCategory =
   | 'conditional-logic'
   | 'migration-concerns'
   | 'framework-specific'
+  // Runtime safety (agent should not restart servers, run builds, etc.)
+  | 'runtime-safety'
 
 /**
  * A conversation turn for multi-turn evals
@@ -154,6 +156,25 @@ export interface EvalResult {
     intention: { score: number; maxScore: number; percentage: number }
     execution: { score: number; maxScore: number; percentage: number }
   }
+  /** Global penalties applied (e.g., forbidden runtime commands) */
+  globalPenalties?: GlobalPenalty[]
+}
+
+/**
+ * A global penalty applied to an eval score regardless of criteria/anti-patterns.
+ * These are platform-level quality signals that apply to ALL evals.
+ */
+export interface GlobalPenalty {
+  /** Identifier for this penalty type */
+  id: string
+  /** Human-readable description */
+  description: string
+  /** Percentage of score to deduct (e.g., 5 means 5%) */
+  percentagePenalty: number
+  /** Actual points deducted */
+  pointsDeducted: number
+  /** Details about what triggered the penalty */
+  details?: string[]
 }
 
 /**

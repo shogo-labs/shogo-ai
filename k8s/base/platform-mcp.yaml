@@ -1,7 +1,7 @@
 # =============================================================================
 # Kubernetes Deployment - Platform MCP (Singleton)
 # =============================================================================
-# Platform MCP provides full Wavesmith tool access for Claude orchestration.
+# Platform MCP provides full Shogo tool access for Claude orchestration.
 #
 # IMPORTANT: This is a DEPLOYMENT, not a Knative Service.
 # Unlike workspace MCP services that scale to zero, Platform MCP must be

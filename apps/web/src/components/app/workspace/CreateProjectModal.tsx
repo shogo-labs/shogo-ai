@@ -20,7 +20,7 @@
  */
 
 import { useState, useRef } from "react"
-import { Loader2 } from "lucide-react"
+import { Loader2, AppWindow, Bot } from "lucide-react"
 
 import {
   Dialog,
@@ -65,6 +65,7 @@ export function CreateProjectModal({ open, onOpenChange, workspaceId, onSuccess 
   const { data: session } = useSession()
 
   // Form state
+  const [projectType, setProjectType] = useState<"APP" | "AGENT">("APP")
   const [name, setName] = useState("")
   const [description, setDescription] = useState("")
 
@@ -109,10 +110,12 @@ export function CreateProjectModal({ open, onOpenChange, workspaceId, onSuccess 
         name.trim(),
         workspaceId,
         description.trim() || undefined,
-        userId
+        userId,
+        projectType
       )
 
       // Reset form
+      setProjectType("APP")
       setName("")
       setDescription("")
 
@@ -134,6 +137,7 @@ export function CreateProjectModal({ open, onOpenChange, workspaceId, onSuccess 
   const handleOpenChange = (newOpen: boolean) => {
     if (!newOpen) {
       // Reset form when closing
+      setProjectType("APP")
       setName("")
       setDescription("")
       setError(null)
@@ -166,6 +170,45 @@ export function CreateProjectModal({ open, onOpenChange, workspaceId, onSuccess 
           }}
         >
           <div className="grid gap-4 py-4">
+            {/* Project Type Selector */}
+            <div className="grid gap-2">
+              <Label>Type</Label>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setProjectType("APP")}
+                  disabled={isSubmitting}
+                  className={`flex flex-col items-center gap-2 p-4 rounded-lg border-2 transition-colors text-left ${
+                    projectType === "APP"
+                      ? "border-primary bg-primary/5"
+                      : "border-border hover:border-muted-foreground/50"
+                  }`}
+                >
+                  <AppWindow className={`h-6 w-6 ${projectType === "APP" ? "text-primary" : "text-muted-foreground"}`} />
+                  <div className="text-center">
+                    <div className="text-sm font-medium">App Builder</div>
+                    <div className="text-xs text-muted-foreground">Build a web application</div>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setProjectType("AGENT")}
+                  disabled={isSubmitting}
+                  className={`flex flex-col items-center gap-2 p-4 rounded-lg border-2 transition-colors text-left ${
+                    projectType === "AGENT"
+                      ? "border-primary bg-primary/5"
+                      : "border-border hover:border-muted-foreground/50"
+                  }`}
+                >
+                  <Bot className={`h-6 w-6 ${projectType === "AGENT" ? "text-primary" : "text-muted-foreground"}`} />
+                  <div className="text-center">
+                    <div className="text-sm font-medium">Agent Builder</div>
+                    <div className="text-xs text-muted-foreground">Build a personal AI agent</div>
+                  </div>
+                </button>
+              </div>
+            </div>
+
             {/* Name Field (Required) */}
             <div className="grid gap-2">
               <Label htmlFor="project-name">
@@ -175,7 +218,7 @@ export function CreateProjectModal({ open, onOpenChange, workspaceId, onSuccess 
                 id="project-name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="e.g., My New App"
+                placeholder={projectType === "AGENT" ? "e.g., My GitHub Monitor" : "e.g., My New App"}
                 disabled={isSubmitting}
                 autoFocus
               />

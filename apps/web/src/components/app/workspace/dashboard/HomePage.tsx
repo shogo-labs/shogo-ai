@@ -18,10 +18,11 @@ import { useState, useRef, type RefObject } from "react"
 import { observer } from "mobx-react-lite"
 import { useNavigate } from "react-router-dom"
 import { Sparkles, ChevronRight, Loader2 } from "lucide-react"
+import type { ProjectType } from "@/components/app/chat/CompactChatInput"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { ChatPanel } from "@/components/app/chat/ChatPanel"
-import { TemplateCard, formatTemplateName } from "./TemplateCard"
+import { TemplateCard, formatTemplateName, type TemplateMetadata } from "./TemplateCard"
 import { TemplatePreviewModal } from "./TemplatePreviewModal"
 import { useTemplates } from "@/hooks/useTemplates"
 import { useProjectTheme } from "@/hooks/useProjectTheme"
@@ -33,8 +34,8 @@ export type TransitionPhase = 'idle' | 'commit' | 'dissolve' | 'transform' | 'em
 interface HomePageProps {
   /** User's display name for personalized greeting */
   userName?: string
-  /** Callback when a new prompt is submitted (includes selected themeId) */
-  onPromptSubmit?: (prompt: string, imageData?: string[], themeId?: string) => void
+  /** Callback when a new prompt is submitted (includes selected themeId and project type) */
+  onPromptSubmit?: (prompt: string, imageData?: string[], themeId?: string, projectType?: ProjectType) => void
   /** Callback when a template is selected - receives template name, display name, and themeId */
   onTemplateSelect?: (templateName: string, displayName: string, themeId?: string) => void
   /** Loading state - true when creating project/feature from prompt */
@@ -68,6 +69,8 @@ export const HomePage = observer(function HomePage({
   const navigate = useNavigate()
   // Prompt state managed here so suggestions can pre-fill
   const [prompt, setPrompt] = useState("")
+  // Project type toggle: App or Agent
+  const [projectType, setProjectType] = useState<ProjectType>("APP")
   // Internal ref for ChatPanel if external ref not provided
   const internalInputRef = useRef<HTMLDivElement>(null)
   const chatPanelRef = inputRef ?? internalInputRef
@@ -223,12 +226,14 @@ export const HomePage = observer(function HomePage({
             mode="compact"
             featureId={null}
             phase={null}
-            onCompactSubmit={(p) => onPromptSubmit?.(p, currentThemeId !== 'default' ? currentThemeId : undefined)}
+            onCompactSubmit={(p) => onPromptSubmit?.(p, currentThemeId !== 'default' ? currentThemeId : undefined, projectType)}
             compactValue={prompt}
             onCompactValueChange={setPrompt}
             selectedThemeId={currentThemeId}
             onSelectTheme={selectTheme}
             onCreateTheme={() => setIsThemeEditorOpen(true)}
+            projectType={projectType}
+            onProjectTypeChange={setProjectType}
           />
         </div>
 

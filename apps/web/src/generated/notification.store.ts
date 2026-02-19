@@ -6,22 +6,22 @@
 
 import { OptimisticStore } from "@shogo-ai/sdk"
 import type { HttpClient } from "@shogo-ai/sdk"
-import type { NotificationType } from "./notification.types"
+import type { Notification } from "./notification.types"
 
 // Store instance (singleton)
-let _store: OptimisticStore<NotificationType> | null = null
+let _store: OptimisticStore<Notification> | null = null
 
 /**
  * Get or create the Notification store
  *
  * @param http - HttpClient instance (required on first call)
  */
-export function getNotificationStore(http?: HttpClient): OptimisticStore<NotificationType> {
+export function getNotificationStore(http?: HttpClient): OptimisticStore<Notification> {
   if (!_store) {
     if (!http) {
       throw new Error("HttpClient required to initialize NotificationStore")
     }
-    _store = new OptimisticStore<NotificationType>({
+    _store = new OptimisticStore<Notification>({
       http,
       endpoint: "/api/notifications",
     })
@@ -37,4 +37,4 @@ export function resetNotificationStore(): void {
 }
 
 // Convenience export for direct import
-export type { NotificationType }
+export type { Notification }

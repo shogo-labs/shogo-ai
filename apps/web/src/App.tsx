@@ -23,10 +23,11 @@ import { AdminUserDetail } from './components/admin/pages/AdminUserDetail'
 import { AdminWorkspaces } from './components/admin/pages/AdminWorkspaces'
 import { AdminAnalytics } from './components/admin/pages/AdminAnalytics'
 import { EnvironmentProvider, createEnvironment } from './contexts/EnvironmentContext'
-import { WavesmithMetaStoreProvider } from './contexts/WavesmithMetaStoreContext'
+import { ShogoMetaStoreProvider } from './contexts/ShogoMetaStoreContext'
 import { SessionProvider, useSessionContext } from './contexts/SessionProvider'
 import { createBackendRegistry, teamsDomain, teamsMultiTenancyDomain, chatDomain, studioCoreDomain, studioChatDomain, platformFeaturesDomain, betterAuthDomain, componentBuilderDomain, billingDomain, BetterAuthService, AuthorizationService, MemoryBackend } from '@shogo/state-api'
 import { APIPersistence } from './persistence/APIPersistence'
+import { identifyHotjarUser } from './lib/hotjar'
 // SDK-based provider for new/migrated code
 import { SDKDomainProvider as SDKProvider } from './contexts/SDKDomainProvider'
 // Legacy provider for backward compatibility
@@ -119,6 +120,18 @@ function AppWithSession() {
     apiPersistence.setUserId(currentUserId ?? null)
   }, [currentUserId])
 
+  // Identify user in Hotjar/Contentsquare for session recordings
+  // NOTE: We intentionally do NOT send email/PII to third-party analytics (GDPR).
+  // Only the opaque userId is sent for session linking.
+  const userName = session.data?.user?.name
+  useEffect(() => {
+    if (currentUserId) {
+      identifyHotjarUser(currentUserId, {
+        name: userName ?? '',
+      })
+    }
+  }, [currentUserId, userName])
+
   // Use the stable ref value, or 'anonymous' only if we've never seen a user
   const authKey = lastKnownUserIdRef.current ?? 'anonymous'
 
@@ -129,7 +142,7 @@ function AppWithSession() {
         {/* SDK provider for new code using useSDKDomain() */}
         <SDKProvider key={`sdk-${authKey}`}>
           <SchemaLoadingGate>
-            <WavesmithMetaStoreProvider>
+            <ShogoMetaStoreProvider>
               <AuthProvider authService={betterAuthService}>
                 <Routes>
                   {/* Super Admin Portal - separate layout */}
@@ -195,7 +208,7 @@ function AppWithSession() {
                   </Route>
                 </Routes>
               </AuthProvider>
-            </WavesmithMetaStoreProvider>
+            </ShogoMetaStoreProvider>
           </SchemaLoadingGate>
         </SDKProvider>
       </LegacyDomainProvider>

@@ -31,14 +31,20 @@ COPY tsconfig.base.json ./
 # Copy package.json files for dependency resolution
 COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/mcp/package.json ./packages/mcp/
+COPY packages/project-runtime/package.json ./packages/project-runtime/
+COPY packages/agent-runtime/package.json ./packages/agent-runtime/
+COPY packages/shared-runtime/package.json ./packages/shared-runtime/
 COPY packages/sdk/package.json ./packages/sdk/
 COPY apps/web/package.json ./apps/web/
 COPY apps/api/package.json ./apps/api/
 
+# Copy scripts needed for postinstall
+COPY scripts ./scripts
+
 # Install all dependencies
 RUN bun install
 
-# Copy source code (including mcp for raw imports in WavesmithMetaDemo)
+# Copy source code (including mcp for raw imports in ShogoMetaDemo)
 COPY packages/state-api ./packages/state-api
 COPY packages/mcp ./packages/mcp
 COPY packages/sdk ./packages/sdk

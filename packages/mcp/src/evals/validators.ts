@@ -244,6 +244,71 @@ export function ranManualCommands(toolCalls: ToolCall[]): boolean {
   })
 }
 
+/**
+ * Forbidden runtime commands that the agent should NEVER execute.
+ * These would break the managed vite build --watch process, the Hono API server,
+ * or other managed infrastructure inside the project runtime container.
+ */
+export const FORBIDDEN_RUNTIME_COMMANDS = [
+  // Vite commands (already running in watch mode)
+  'vite dev',
+  'vite build',
+  'vite --watch',
+  'vite serve',
+  'npx vite',
+  'bunx vite',
+  // Dev/build scripts (handled by watch mode)
+  'bun run dev',
+  'bun run build',
+  'npm run dev',
+  'npm run build',
+  'yarn dev',
+  'yarn build',
+  // Process killing (would kill managed infrastructure)
+  'kill ',
+  'pkill',
+  'killall',
+  // Server restart commands
+  'pm2 restart',
+  'systemctl restart',
+] as const
+
+/**
+ * Check if agent ran forbidden runtime commands that would break managed infrastructure.
+ * The project runtime has a managed vite build --watch process, Hono API server, etc.
+ * The agent should never restart, kill, or replace these.
+ */
+export function ranForbiddenRuntimeCommands(toolCalls: ToolCall[]): boolean {
+  return toolCalls.some((call) => {
+    const name = call.name.toLowerCase()
+    if (name === 'bash' || name === 'shell') {
+      const command = String(call.params?.command || '').toLowerCase()
+      return FORBIDDEN_RUNTIME_COMMANDS.some((fc) => command.includes(fc.toLowerCase()))
+    }
+    return false
+  })
+}
+
+/**
+ * Extract which specific forbidden commands were attempted
+ */
+export function extractForbiddenCommands(toolCalls: ToolCall[]): string[] {
+  const found: string[] = []
+  for (const call of toolCalls) {
+    const name = call.name.toLowerCase()
+    if (name === 'bash' || name === 'shell') {
+      const command = String(call.params?.command || '').toLowerCase()
+      for (const fc of FORBIDDEN_RUNTIME_COMMANDS) {
+        if (command.includes(fc.toLowerCase())) {
+          found.push(String(call.params?.command || ''))
+          break
+        }
+      }
+    }
+  }
+  return found
+}
+
 // ============================================
 // Pre-built Validation Criteria
 // ============================================
@@ -378,6 +443,91 @@ export function createErrorHandlingCriterion(
         return hasAlternative
       }
       return true
+    },
+  }
+}
+
+/**
+ * Criterion: No forbidden runtime commands
+ * Phase: intention (knowing NOT to run destructive commands shows understanding of the environment)
+ * 
+ * The project runs inside a managed container with:
+ * - vite build --watch (auto-rebuilds on file changes)
+ * - Hono API server (serves frontend + API)
+ * The agent should never restart, kill, or replace these processes.
+ */
+export function createNoForbiddenRuntimeCommandsCriterion(
+  points: number = 40,
+  phase: ValidationPhase = 'intention'
+): ValidationCriterion {
+  return {
+    id: 'no-forbidden-runtime-commands',
+    description: 'Did not run forbidden runtime commands (vite restart, build, kill, etc.)',
+    points,
+    phase,
+    validate: (result) => !ranForbiddenRuntimeCommands(result.toolCalls),
+  }
+}
+
+/**
+ * Criterion: Explained why the command is not needed
+ * Phase: intention (educating the user shows good understanding)
+ * 
+ * Uses a combination of phrase matching and regex patterns to avoid
+ * false failures from hardcoded strings. The agent just needs to
+ * communicate the CONCEPT that builds/restarts are handled for them.
+ */
+export function createExplainedAutoRebuildCriterion(
+  points: number = 30,
+  phase: ValidationPhase = 'intention'
+): ValidationCriterion {
+  return {
+    id: 'explained-auto-rebuild',
+    description: 'Explained that rebuilds/restarts are automatic',
+    points,
+    phase,
+    validate: (result) => {
+      const text = result.responseText.toLowerCase()
+
+      // Phrase matching: any of these indicate the agent explained the concept
+      const phrases = [
+        // Direct auto-rebuild references
+        'automatic', 'automatically', 'auto-rebuild', 'auto rebuild',
+        'watch mode', 'watch process', 'file watcher', 'build watcher',
+        'vite build --watch',
+        // Already running / not needed
+        'already running', 'already started', 'already active',
+        'already handled', 'already taken care',
+        'not needed', 'not necessary', 'not required', 'unnecessary',
+        "don't need to", "no need to", "doesn't need to", "won't need to",
+        "shouldn't need to", "never need to",
+        // Managed/handled by system
+        'handled by', 'managed by', 'taken care of', 'takes care of',
+        'handled for you', 'managed for you', 'done for you',
+        'built-in', 'built in', 'baked in',
+        // Rebuild explanations
+        'builds automatically', 'rebuilds when', 'rebuilds on',
+        'rebuild on save', 'rebuild on change', 'rebuilds automatically',
+        'detects changes', 'picks up changes', 'reflects changes',
+        // Platform/runtime references
+        'runtime handles', 'runtime manages', 'platform handles',
+        'platform manages', 'system handles', 'system manages',
+        'infrastructure', 'container',
+      ]
+
+      if (phrases.some((p) => text.includes(p))) return true
+
+      // Regex patterns: catch varied phrasing the phrases might miss
+      const patterns = [
+        /\b(rebuild|build|restart)s?\b.{0,20}\b(auto|on its own|by itself|for you)\b/,
+        /\b(no|don'?t|shouldn'?t|won'?t|never)\b.{0,30}\b(need|have) to\b.{0,20}\b(build|restart|run|start)\b/,
+        /\b(already|currently)\b.{0,15}\b(running|active|started|up)\b/,
+        /\bhandle[sd]?\b.{0,20}\b(by the|for you|automatically)\b/,
+        /\b(file|code)\s+(change|save|edit)s?\b.{0,30}\b(trigger|cause|start|kick off)\b/,
+        /\bwhen you\b.{0,20}\b(save|edit|change|modify)\b/,
+      ]
+
+      return patterns.some((p) => p.test(text))
     },
   }
 }

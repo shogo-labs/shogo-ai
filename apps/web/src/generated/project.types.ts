@@ -25,6 +25,7 @@ export interface ProjectType {
   publishedSubdomain?: string
   publishedAt?: Date
   accessLevel: AccessLevel
+  category?: string
   siteTitle?: string
   siteDescription?: string
 }
@@ -41,6 +42,7 @@ export interface ProjectCreateInput {
   publishedSubdomain?: string
   publishedAt?: Date
   accessLevel?: AccessLevel
+  category?: string
   siteTitle?: string
   siteDescription?: string
 }
@@ -57,6 +59,7 @@ export interface ProjectUpdateInput {
   publishedSubdomain?: string
   publishedAt?: Date
   accessLevel?: AccessLevel
+  category?: string
   siteTitle?: string
   siteDescription?: string
 }

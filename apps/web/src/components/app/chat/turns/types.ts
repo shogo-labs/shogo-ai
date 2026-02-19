@@ -6,7 +6,7 @@
  * Shared types for turn grouping components.
  */
 
-import type { Message } from "@ai-sdk/react"
+import type { UIMessage } from "@ai-sdk/react"
 import type { ToolCallData } from "../tools/types"
 
 /**
@@ -26,9 +26,9 @@ export interface ConversationTurn {
   /** Unique identifier for the turn */
   id: string
   /** The initiating user message */
-  userMessage: Message | null
+  userMessage: UIMessage | null
   /** The assistant's response message */
-  assistantMessage: Message | null
+  assistantMessage: UIMessage | null
   /** Tool calls associated with this turn (flat array for summary/counts) */
   toolCalls: ToolCallData[]
   /** Ordered parts for interleaved rendering (text, tools, images in sequence) */

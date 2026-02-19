@@ -193,7 +193,7 @@ describe("Provider hierarchy remains correct after nuqs integration", () => {
     expect(appSource).toMatch(/<EnvironmentProvider/)
     expect(appSource).toMatch(/<DomainProvider/)
     expect(appSource).toMatch(/<AuthProvider/)
-    expect(appSource).toMatch(/<WavesmithMetaStoreProvider/)
+    expect(appSource).toMatch(/<ShogoMetaStoreProvider/)
     expect(appSource).toMatch(/<Routes>/)
   })
 

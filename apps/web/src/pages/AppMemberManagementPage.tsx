@@ -24,7 +24,7 @@ import { useSession } from "@/contexts/SessionProvider"
  */
 export const AppMemberManagementPage = observer(function AppMemberManagementPage() {
   // Get current org and role from workspace context
-  const { currentOrg, currentOrgRole, isLoading } = useWorkspaceData()
+  const { currentWorkspace: currentOrg, currentWorkspaceRole: currentOrgRole, isLoading } = useWorkspaceData()
 
   // Get current user session
   const { data: session } = useSession()

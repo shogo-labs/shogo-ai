@@ -34,6 +34,7 @@ import * as databaseService from '../services/database.service'
 
 const NAMESPACE = process.env.PROJECT_NAMESPACE || "shogo-workspaces"
 const PROJECT_RUNTIME_IMAGE = process.env.PROJECT_RUNTIME_IMAGE || "ghcr.io/shogo-ai/project-runtime:latest"
+const AGENT_RUNTIME_IMAGE = process.env.AGENT_RUNTIME_IMAGE || "ghcr.io/shogo-ai/agent-runtime:latest"
 const KNATIVE_GROUP = "serving.knative.dev"
 const KNATIVE_VERSION = "v1"
 
@@ -712,10 +713,22 @@ export class KnativeProjectManager {
    * Includes PostgreSQL sidecar container for per-project database.
    */
   private async buildKnativeService(projectId: string): Promise<any> {
-    // Build environment variables for project-runtime container
+    // Look up project type to select the correct runtime image
+    const { prisma } = await import('./prisma')
+    const projectRecord = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { type: true },
+    })
+    const isAgentProject = projectRecord?.type === 'AGENT'
+    const runtimeImage = isAgentProject ? AGENT_RUNTIME_IMAGE : this.image
+    const runtimeComponent = isAgentProject ? 'agent-runtime' : 'project-runtime'
+    const workDir = isAgentProject ? '/app/agent' : '/app/project'
+
+    // Build environment variables for runtime container
     const env: any[] = [
       { name: "PROJECT_ID", value: projectId },
-      { name: "PROJECT_DIR", value: "/app/project" },
+      { name: "PROJECT_DIR", value: workDir },
+      ...(isAgentProject ? [{ name: "AGENT_DIR", value: workDir }] : []),
       { name: "SCHEMAS_PATH", value: "/app/.schemas" },
       // Auth secret for validating preview JWT tokens
       {
@@ -780,6 +793,8 @@ export class KnativeProjectManager {
 
     // Add PostgreSQL DATABASE_URL for shared CloudNativePG cluster
     // Database is provisioned per-project on the shared projects-pg cluster
+    // Credentials are stored in a K8s Secret and referenced via secretKeyRef
+    // so that password rotation doesn't require pod recreation
     if (this.postgresEnabled) {
       // Retry database provisioning up to 3 times (CNPG cluster may be briefly unavailable)
       let dbInfo: Awaited<ReturnType<typeof databaseService.provisionDatabase>> | null = null
@@ -796,11 +811,30 @@ export class KnativeProjectManager {
       }
 
       if (dbInfo) {
-        env.push({
-          name: "DATABASE_URL",
-          value: dbInfo.connectionUrl,
-        })
-        console.log(`[KnativeProjectManager] Provisioned database "${dbInfo.databaseName}" for project ${projectId}`)
+        const credSecretName = databaseService.dbSecretName(projectId)
+        // If the Secret was created (password is non-empty), reference it via secretKeyRef.
+        // This is the preferred path: password lives only in the Secret, not in the ksvc spec.
+        // If the Secret wasn't created (legacy project, empty password), fall back to inline value.
+        if (dbInfo.password) {
+          env.push({
+            name: "DATABASE_URL",
+            valueFrom: {
+              secretKeyRef: {
+                name: credSecretName,
+                key: "database-url",
+              },
+            },
+          })
+          console.log(`[KnativeProjectManager] Provisioned database "${dbInfo.databaseName}" for project ${projectId} (credentials in Secret "${credSecretName}")`)
+        } else {
+          // Legacy fallback: K8s Secret doesn't exist yet. Use inline value.
+          // This path is temporary — the migration script will create the missing Secrets.
+          env.push({
+            name: "DATABASE_URL",
+            value: dbInfo.connectionUrl,
+          })
+          console.log(`[KnativeProjectManager] Provisioned database "${dbInfo.databaseName}" for project ${projectId} (legacy: inline credentials)`)
+        }
       } else {
         // DATABASE_URL is required for all templates — fail the project creation
         throw new Error(`Failed to provision database for project ${projectId} after 3 attempts. Check CloudNativePG cluster health.`)
@@ -844,8 +878,8 @@ export class KnativeProjectManager {
     // Build containers array
     const containers: any[] = [
       {
-        name: "project-runtime",
-        image: this.image,
+        name: runtimeComponent,
+        image: runtimeImage,
         imagePullPolicy: "Always", // Always pull to get latest staging-latest tag
         ports: [{ containerPort: 8080, name: "http1" }],
         env,
@@ -853,7 +887,7 @@ export class KnativeProjectManager {
           requests: { memory: "256Mi", cpu: "100m" },
           limits: { memory: this.memoryLimit, cpu: this.cpuLimit },
         },
-        volumeMounts: [{ name: "project-data", mountPath: "/app/project" }],
+        volumeMounts: [{ name: "project-data", mountPath: workDir }],
         // Readiness probe - optimized for fast start mode
         // With fast start, /health passes in ~2s, /ready passes after build (~5-10s)
         // Lower initialDelay + higher failureThreshold allows for background build time
@@ -909,7 +943,7 @@ export class KnativeProjectManager {
         labels: {
           "app.kubernetes.io/part-of": "shogo",
           "shogo.io/project": projectId,
-          "shogo.io/component": "project-runtime",
+          "shogo.io/component": runtimeComponent,
         },
       },
       spec: {
@@ -988,6 +1022,14 @@ const PENDING_REQUEST_CLEANUP_MS = 5 * 60 * 1000
  * 
  * This function deduplicates concurrent requests - if multiple requests come in
  * for the same project while it's starting, they all share the same wait promise.
+ *
+ * Warm Pool integration:
+ * When a project doesn't have a running Knative Service, this function attempts
+ * to claim a warm pod from the pool first. If a warm pod is available:
+ * 1. The warm pod is assigned the project identity (instant)
+ * 2. The warm pod URL is returned immediately
+ * 3. The real Knative Service is created in the background (for future cold starts)
+ * If no warm pod is available, falls back to cold start.
  */
 export async function getProjectPodUrl(projectId: string): Promise<string> {
   if (!isKubernetes()) {
@@ -1011,21 +1053,34 @@ export async function getProjectPodUrl(projectId: string): Promise<string> {
   const workPromise = (async (): Promise<string> => {
     try {
       const manager = getKnativeProjectManager()
+
+      // Check if this project is already served by a warm pool pod
+      const { getWarmPoolController } = await import('./warm-pool-controller')
+      const warmPool = getWarmPoolController()
+      const warmUrl = warmPool.getAssignedUrl(projectId)
+      if (warmUrl) {
+        console.log(`[KnativeProjectManager] Project ${projectId} served by warm pool (elapsed: ${Date.now() - totalStartTime}ms)`)
+        return warmUrl
+      }
+
       const status = await manager.getStatus(projectId)
 
       if (!status.exists) {
-        // Create the project pod
-        console.log(`[KnativeProjectManager] Project ${projectId} does not exist, creating... (elapsed: ${Date.now() - totalStartTime}ms)`)
+        // Project doesn't have a Knative Service — try warm pool first
+        const warmPodUrl = await tryClaimWarmPod(projectId, manager)
+        if (warmPodUrl) {
+          const totalDuration = Date.now() - totalStartTime
+          console.log(`[KnativeProjectManager] getProjectPodUrl completed for ${projectId} via warm pool in ${totalDuration}ms`)
+          return warmPodUrl
+        }
+
+        // No warm pod available — fall back to cold start
+        console.log(`[KnativeProjectManager] Project ${projectId} does not exist, creating (cold start)... (elapsed: ${Date.now() - totalStartTime}ms)`)
         await manager.createProject(projectId)
-        // Wait for the pod to be ready before returning the URL
-        // This prevents "connection refused" errors when proxying immediately after creation
-        // Timeout: 180s to account for image pull (can take 60-90s for 1GB images)
         console.log(`[KnativeProjectManager] Waiting for project ${projectId} to be ready... (elapsed: ${Date.now() - totalStartTime}ms)`)
         await manager.waitForReady(projectId, 180000)
       } else if (!status.ready) {
         // Pod exists but isn't ready (cold start from scale-to-zero)
-        // Wait for it to become ready
-        // Timeout: 120s to account for image pull during cold starts
         console.log(`[KnativeProjectManager] Project ${projectId} exists but not ready (cold start), waiting... (elapsed: ${Date.now() - totalStartTime}ms)`)
         await manager.waitForReady(projectId, 120000)
       } else {
@@ -1057,4 +1112,60 @@ export async function getProjectPodUrl(projectId: string): Promise<string> {
   }, PENDING_REQUEST_CLEANUP_MS)
 
   return workPromise
+}
+
+/**
+ * Attempt to claim a warm pod for a project.
+ * If successful, assigns the project to the warm pod and kicks off
+ * background creation of the real Knative Service.
+ * Returns the warm pod URL on success, null on failure/unavailability.
+ */
+async function tryClaimWarmPod(
+  projectId: string,
+  manager: KnativeProjectManager
+): Promise<string | null> {
+  try {
+    const { getWarmPoolController } = await import('./warm-pool-controller')
+    const warmPool = getWarmPoolController()
+    const poolStatus = warmPool.getStatus()
+    if (!poolStatus.enabled) return null
+
+    // Determine runtime type
+    const { prisma } = await import('./prisma')
+    const projectRecord = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { type: true },
+    })
+    const runtimeType = projectRecord?.type === 'AGENT' ? 'agent' as const : 'project' as const
+
+    // Try to claim a warm pod
+    const pod = warmPool.claim(runtimeType)
+    if (!pod) {
+      console.log(`[KnativeProjectManager] No warm ${runtimeType} pod available for ${projectId}`)
+      return null
+    }
+
+    console.log(`[KnativeProjectManager] Claimed warm pod ${pod.serviceName} for ${projectId}`)
+
+    // Build project-specific env vars
+    const envVars = await warmPool.buildProjectEnv(projectId)
+
+    // Assign the project to the warm pod (sends /pool/assign)
+    await warmPool.assign(pod, projectId, envVars)
+
+    // Create the real Knative Service in the background so future
+    // cold starts (after the warm pod scales to zero) work correctly.
+    // This is fire-and-forget — the warm pod is already serving.
+    manager.createProject(projectId).catch((err) => {
+      console.error(
+        `[KnativeProjectManager] Background createProject for ${projectId} failed:`,
+        err.message
+      )
+    })
+
+    return pod.url
+  } catch (err: any) {
+    console.error(`[KnativeProjectManager] Warm pool claim failed for ${projectId}:`, err.message)
+    return null
+  }
 }

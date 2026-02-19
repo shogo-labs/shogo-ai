@@ -66,6 +66,8 @@ export interface ProjectTopBarProps {
   onOpenPreview?: () => void
   onOpenExternal?: () => void
   onOpenCode?: () => void
+  isOpeningExternal?: boolean
+  isAgentProject?: boolean
   className?: string
 }
 
@@ -106,6 +108,8 @@ export function ProjectTopBar({
   onOpenPreview,
   onOpenExternal,
   onOpenCode,
+  isOpeningExternal = false,
+  isAgentProject = false,
   className,
 }: ProjectTopBarProps) {
   const navigate = useNavigate()
@@ -217,8 +221,8 @@ export function ProjectTopBar({
         </Button>
       </div>
 
-      {/* Center Section: Preview controls */}
-      <div className="hidden md:flex items-center">
+      {/* Center Section: Preview controls (hidden for agent projects) */}
+      {!isAgentProject && <div className="hidden md:flex items-center">
         <PreviewControls
           currentViewport={currentViewport}
           onViewportChange={onViewportChange}
@@ -228,8 +232,9 @@ export function ProjectTopBar({
           onOpenPreview={onOpenPreview}
           onOpenExternal={onOpenExternal}
           onOpenCode={onOpenCode}
+          isOpeningExternal={isOpeningExternal}
         />
-      </div>
+      </div>}
 
       {/* Right Section: Share, GitHub, Upgrade, Publish */}
       <div className="flex items-center gap-1.5">

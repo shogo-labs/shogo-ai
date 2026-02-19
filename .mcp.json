@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "wavesmith": {
+    "shogo": {
       "command": "bun",
       "args": [
         "run",

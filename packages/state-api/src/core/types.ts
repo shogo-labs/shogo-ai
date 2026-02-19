@@ -1,5 +1,5 @@
 /**
- * Core type definitions and generic patterns for the Wavesmith State API
+ * Core type definitions and generic patterns for the Shogo State API
  */
 
 import type { Instance, SnapshotIn, SnapshotOut, IAnyModelType } from 'mobx-state-tree'
@@ -68,7 +68,7 @@ export interface SchemaMetadata {
 /**
  * Type for arkType schema definitions with metadata
  */
-export interface WavesmithSchema<T = any> {
+export interface ShogoSchema<T = any> {
   schema: ArkTypeSchema<T>
   metadata: SchemaMetadata
 }

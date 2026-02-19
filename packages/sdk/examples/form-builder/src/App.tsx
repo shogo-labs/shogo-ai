@@ -6,6 +6,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { observer } from 'mobx-react-lite'
 import { useStores } from './stores'
 import { AuthGate } from './components/AuthGate'
+import { api, configureApiClient } from './generated/api-client'
 
 interface FieldType {
   id: string
@@ -83,13 +84,19 @@ const Dashboard = observer(function Dashboard({ route, setRoute }: { route: stri
   const [editingForm, setEditingForm] = useState<FormType | null>(null)
   const [viewingSubmissions, setViewingSubmissions] = useState<{ form: FormType; submissions: SubmissionType[] } | null>(null)
 
+  // Configure API client with user context
+  useEffect(() => {
+    if (auth.user) {
+      configureApiClient({ userId: auth.user.id })
+    }
+  }, [auth.user?.id])
+
   const fetchForms = useCallback(async () => {
     if (!auth.user) return
     try {
-      const res = await fetch(`/api/forms?userId=${auth.user.id}`)
-      if (res.ok) {
-        const data = await res.json()
-        setForms(data.items || [])
+      const result = await api.form.list()
+      if (result.ok) {
+        setForms((result.items || []) as any)
       }
     } catch (err) {
       console.error('Failed to fetch forms:', err)
@@ -103,12 +110,8 @@ const Dashboard = observer(function Dashboard({ route, setRoute }: { route: stri
   const handleCreateForm = async (name: string, slug: string) => {
     if (!auth.user) return
     try {
-      const res = await fetch('/api/forms', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, slug, userId: auth.user.id }),
-      })
-      if (res.ok) {
+      const result = await api.form.create({ name, slug, userId: auth.user.id } as any)
+      if (result.ok) {
         setShowAddForm(false)
         fetchForms()
       }
@@ -119,12 +122,13 @@ const Dashboard = observer(function Dashboard({ route, setRoute }: { route: stri
 
   const handleDeleteForm = async (id: string) => {
     if (!confirm('Delete this form and all submissions?')) return
-    await fetch(`/api/forms/${id}`, { method: 'DELETE' })
+    await api.form.delete(id)
     fetchForms()
   }
 
   const handleEditForm = async (formId: string) => {
     try {
+      // Custom endpoint - not covered by generated API client
       const res = await fetch(`/api/forms/${formId}/full`)
       if (res.ok) {
         const form = await res.json()
@@ -137,10 +141,9 @@ const Dashboard = observer(function Dashboard({ route, setRoute }: { route: stri
 
   const handleViewSubmissions = async (form: FormType) => {
     try {
-      const res = await fetch(`/api/submissions?formId=${form.id}&include=responses.field`)
-      if (res.ok) {
-        const data = await res.json()
-        setViewingSubmissions({ form, submissions: data.items || [] })
+      const result = await api.submission.list({ where: { formId: form.id }, params: { include: 'responses.field' } })
+      if (result.ok) {
+        setViewingSubmissions({ form, submissions: (result.items || []) as any })
       }
     } catch (err) {
       console.error('Failed to fetch submissions:', err)
@@ -264,11 +267,7 @@ function FormEditor({ form, onBack }: { form: FormType; onBack: () => void }) {
 
   const handleUpdateForm = async (updates: Partial<FormType>) => {
     try {
-      await fetch(`/api/forms/${form.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updates),
-      })
+      await api.form.update(form.id, updates as any)
       setFormSettings({ ...formSettings, ...updates })
     } catch (err) {
       console.error('Failed to update form:', err)
@@ -278,14 +277,9 @@ function FormEditor({ form, onBack }: { form: FormType; onBack: () => void }) {
   const handleAddField = async (data: Partial<FieldType>) => {
     try {
       const maxPos = Math.max(0, ...fields.map(f => f.position))
-      const res = await fetch('/api/fields', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...data, formId: form.id, position: maxPos + 1 }),
-      })
-      if (res.ok) {
-        const newField = await res.json()
-        setFields([...fields, newField])
+      const result = await api.field.create({ ...data, formId: form.id, position: maxPos + 1 } as any)
+      if (result.ok && result.data) {
+        setFields([...fields, result.data as FieldType])
         setShowAddField(false)
       }
     } catch (err) {
@@ -294,7 +288,7 @@ function FormEditor({ form, onBack }: { form: FormType; onBack: () => void }) {
   }
 
   const handleDeleteField = async (fieldId: string) => {
-    await fetch(`/api/fields/${fieldId}`, { method: 'DELETE' })
+    await api.field.delete(fieldId)
     setFields(fields.filter(f => f.id !== fieldId))
   }
 

@@ -6,6 +6,32 @@ import { useState, useEffect, useCallback } from 'react'
 import { observer } from 'mobx-react-lite'
 import { useStores } from './stores'
 import { AuthGate } from './components/AuthGate'
+import { api, configureApiClient } from './generated/api-client'
+import {
+  CalendarDays,
+  Plus,
+  Trash2,
+  LogOut,
+  Loader2,
+  Clock,
+  DollarSign,
+  Check,
+  X,
+  Link,
+  ArrowLeft,
+  Briefcase,
+  Copy,
+  Mail,
+  Phone,
+  StickyNote,
+} from 'lucide-react'
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 interface ServiceType {
   id: string
@@ -66,23 +92,29 @@ export default function App() {
 
 const Dashboard = observer(function Dashboard() {
   const { auth } = useStores()
-  const [tab, setTab] = useState<'bookings' | 'services' | 'availability'>('bookings')
   const [services, setServices] = useState<ServiceType[]>([])
   const [bookings, setBookings] = useState<BookingType[]>([])
   const [timeSlots, setTimeSlots] = useState<TimeSlotType[]>([])
   const [loading, setLoading] = useState(true)
 
+  // Configure API client with user context
+  useEffect(() => {
+    if (auth.user) {
+      configureApiClient({ userId: auth.user.id })
+    }
+  }, [auth.user?.id])
+
   const fetchData = useCallback(async () => {
     if (!auth.user) return
     try {
       const [svcRes, bookRes, slotRes] = await Promise.all([
-        fetch(`/api/services?userId=${auth.user.id}`),
-        fetch(`/api/bookings?userId=${auth.user.id}&include=service`),
-        fetch(`/api/timeslots?userId=${auth.user.id}`),
+        api.service.list(),
+        api.booking.list({ params: { include: 'service' } }),
+        api.timeSlot.list(),
       ])
-      if (svcRes.ok) { const d = await svcRes.json(); setServices(d.items || []) }
-      if (bookRes.ok) { const d = await bookRes.json(); setBookings(d.items || []) }
-      if (slotRes.ok) { const d = await slotRes.json(); setTimeSlots(d.items || []) }
+      if (svcRes.ok) { setServices((svcRes.items || []) as any) }
+      if (bookRes.ok) { setBookings((bookRes.items || []) as any) }
+      if (slotRes.ok) { setTimeSlots((slotRes.items || []) as any) }
     } catch (err) {
       console.error('Failed to fetch:', err)
     } finally {
@@ -93,59 +125,98 @@ const Dashboard = observer(function Dashboard() {
   useEffect(() => { fetchData() }, [fetchData])
 
   if (loading) {
-    return <div className="min-h-screen flex items-center justify-center"><p className="text-gray-500">Loading...</p></div>
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center gap-3">
+        <Loader2 className="h-8 w-8 animate-spin text-violet-500" />
+        <p className="text-sm text-muted-foreground">Loading...</p>
+      </div>
+    )
   }
 
   const shareLink = `${window.location.origin}/#/book/${auth.user?.id}`
 
   return (
-    <div className="min-h-screen">
-      <header className="bg-white border-b border-gray-200 px-6 py-4 flex justify-between items-center">
-        <h1 className="text-2xl font-bold text-gray-900">📅 Booking App</h1>
+    <div className="min-h-screen bg-muted/30">
+      {/* Sticky header */}
+      <header className="sticky top-0 z-50 bg-background border-b px-6 py-3 flex justify-between items-center">
+        <div className="flex items-center gap-3">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-violet-100">
+            <CalendarDays className="h-5 w-5 text-violet-600" />
+          </div>
+          <h1 className="text-xl font-bold">Booking App</h1>
+        </div>
         <div className="flex items-center gap-4">
-          <span className="text-gray-500">{auth.user?.name || auth.user?.email}</span>
-          <button onClick={() => auth.signOut()} className="px-4 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50">Sign Out</button>
+          <span className="text-sm text-muted-foreground">{auth.user?.name || auth.user?.email}</span>
+          <Button variant="outline" size="sm" onClick={() => auth.signOut()}>
+            <LogOut className="h-4 w-4" />
+            Sign Out
+          </Button>
         </div>
       </header>
 
-      <div className="max-w-4xl mx-auto p-6">
+      <div className="max-w-4xl mx-auto p-6 space-y-6">
         {/* Share link */}
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
-          <p className="text-sm text-blue-600 mb-2">Share your booking link:</p>
-          <code className="text-xs bg-white px-3 py-2 rounded border border-blue-200 block truncate">{shareLink}</code>
-        </div>
+        <Card className="bg-violet-50 border-violet-200">
+          <CardContent className="flex items-center gap-3 py-0">
+            <Link className="h-5 w-5 text-violet-600 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-violet-700 mb-1">Share your booking link</p>
+              <code className="text-xs bg-white px-3 py-1.5 rounded border border-violet-200 block truncate font-mono">
+                {shareLink}
+              </code>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="text-violet-600 hover:text-violet-700 shrink-0"
+              onClick={() => navigator.clipboard.writeText(shareLink)}
+            >
+              <Copy className="h-4 w-4" />
+            </Button>
+          </CardContent>
+        </Card>
 
         {/* Tabs */}
-        <div className="flex gap-4 mb-6">
-          {(['bookings', 'services', 'availability'] as const).map(t => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${tab === t ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
-              style={tab === t ? { backgroundColor: '#8b5cf6' } : {}}
-            >
-              {t === 'bookings' ? '📋 Bookings' : t === 'services' ? '🛠 Services' : '⏰ Availability'}
-            </button>
-          ))}
-        </div>
+        <Tabs defaultValue="bookings">
+          <TabsList>
+            <TabsTrigger value="bookings" className="gap-1.5">
+              <CalendarDays className="h-4 w-4" />
+              Bookings
+            </TabsTrigger>
+            <TabsTrigger value="services" className="gap-1.5">
+              <Briefcase className="h-4 w-4" />
+              Services
+            </TabsTrigger>
+            <TabsTrigger value="availability" className="gap-1.5">
+              <Clock className="h-4 w-4" />
+              Availability
+            </TabsTrigger>
+          </TabsList>
 
-        {tab === 'bookings' && <BookingsTab bookings={bookings} onUpdate={fetchData} />}
-        {tab === 'services' && <ServicesTab services={services} userId={auth.user!.id} onUpdate={fetchData} />}
-        {tab === 'availability' && <AvailabilityTab timeSlots={timeSlots} userId={auth.user!.id} onUpdate={fetchData} />}
+          <TabsContent value="bookings">
+            <BookingsTab bookings={bookings} onUpdate={fetchData} />
+          </TabsContent>
+          <TabsContent value="services">
+            <ServicesTab services={services} userId={auth.user!.id} onUpdate={fetchData} />
+          </TabsContent>
+          <TabsContent value="availability">
+            <AvailabilityTab timeSlots={timeSlots} userId={auth.user!.id} onUpdate={fetchData} />
+          </TabsContent>
+        </Tabs>
 
-        <footer className="text-center text-gray-400 text-sm mt-8">Built with @shogo-ai/sdk + Hono</footer>
+        <footer className="text-center text-sm text-muted-foreground pt-4 pb-2">
+          Built with @shogo-ai/sdk + Hono
+        </footer>
       </div>
     </div>
   )
 })
 
+/* ─────────────────────── Bookings Tab ─────────────────────── */
+
 function BookingsTab({ bookings, onUpdate }: { bookings: BookingType[]; onUpdate: () => void }) {
   const handleUpdateStatus = async (id: string, status: string) => {
-    await fetch(`/api/bookings/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status }),
-    })
+    await api.booking.update(id, { status } as any)
     onUpdate()
   }
 
@@ -153,121 +224,199 @@ function BookingsTab({ bookings, onUpdate }: { bookings: BookingType[]; onUpdate
 
   return (
     <div className="space-y-4">
-      <h2 className="text-xl font-semibold text-gray-900">Upcoming Bookings</h2>
+      <h2 className="text-lg font-semibold">Upcoming Bookings</h2>
+
       {sortedBookings.length === 0 ? (
-        <p className="text-gray-400 text-center py-8">No bookings yet.</p>
+        <Card className="py-12">
+          <CardContent className="flex flex-col items-center justify-center text-center gap-3">
+            <CalendarDays className="h-10 w-10 text-muted-foreground/40" />
+            <p className="text-muted-foreground">No bookings yet.</p>
+          </CardContent>
+        </Card>
       ) : (
         sortedBookings.map(booking => (
-          <div key={booking.id} className={`bg-white rounded-xl p-5 shadow-sm border-l-4 ${
-            booking.status === 'CONFIRMED' ? 'border-green-500' :
-            booking.status === 'PENDING' ? 'border-yellow-200' :
-            booking.status === 'CANCELLED' ? 'border-red-200' : 'border-gray-200'
-          }`}>
-            <div className="flex justify-between items-start">
-              <div>
-                <h3 className="font-semibold text-gray-900">{booking.customerName}</h3>
-                <p className="text-sm text-gray-500">{booking.customerEmail}</p>
-                <p className="text-sm text-gray-600 mt-2">
-                  {new Date(booking.startTime).toLocaleDateString()} {new Date(booking.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - {new Date(booking.endTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </p>
-                {booking.service && (
-                  <span className="inline-block mt-2 text-xs px-2 py-1 rounded" style={{ backgroundColor: booking.service.color + '20', color: booking.service.color }}>
-                    {booking.service.name}
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                <span className={`text-xs px-2 py-1 rounded uppercase tracking-wider ${
-                  booking.status === 'CONFIRMED' ? 'bg-green-100 text-green-600' :
-                  booking.status === 'PENDING' ? 'bg-yellow-50 text-yellow-600' :
-                  booking.status === 'CANCELLED' ? 'bg-red-50 text-red-500' : 'bg-gray-100 text-gray-500'
-                }`}>
-                  {booking.status}
-                </span>
+          <Card
+            key={booking.id}
+            className={`border-l-4 ${
+              booking.status === 'CONFIRMED' ? 'border-l-green-500' :
+              booking.status === 'PENDING' ? 'border-l-yellow-400' :
+              booking.status === 'CANCELLED' ? 'border-l-red-400' : 'border-l-muted'
+            }`}
+          >
+            <CardContent className="py-0">
+              <div className="flex justify-between items-start gap-4">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 mb-1">
+                    <h3 className="font-semibold truncate">{booking.customerName}</h3>
+                    <Badge
+                      variant="outline"
+                      className={
+                        booking.status === 'CONFIRMED' ? 'border-green-200 bg-green-50 text-green-700' :
+                        booking.status === 'PENDING' ? 'border-yellow-200 bg-yellow-50 text-yellow-700' :
+                        booking.status === 'CANCELLED' ? 'border-red-200 bg-red-50 text-red-600' :
+                        ''
+                      }
+                    >
+                      {booking.status}
+                    </Badge>
+                  </div>
+
+                  <div className="flex items-center gap-1 text-sm text-muted-foreground">
+                    <Mail className="h-3.5 w-3.5" />
+                    {booking.customerEmail}
+                  </div>
+
+                  <div className="flex items-center gap-1 text-sm text-muted-foreground mt-1">
+                    <Clock className="h-3.5 w-3.5" />
+                    {new Date(booking.startTime).toLocaleDateString()}{' '}
+                    {new Date(booking.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} -{' '}
+                    {new Date(booking.endTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </div>
+
+                  {booking.service && (
+                    <Badge
+                      variant="outline"
+                      className="mt-2"
+                      style={{ backgroundColor: booking.service.color + '20', color: booking.service.color, borderColor: booking.service.color + '40' }}
+                    >
+                      {booking.service.name}
+                    </Badge>
+                  )}
+
+                  {booking.notes && (
+                    <div className="flex items-start gap-1 text-sm text-muted-foreground mt-2 italic">
+                      <StickyNote className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                      &ldquo;{booking.notes}&rdquo;
+                    </div>
+                  )}
+
+                  <p className="text-xs text-muted-foreground mt-2 font-mono">Code: {booking.confirmationCode}</p>
+                </div>
+
                 {booking.status === 'PENDING' && (
-                  <>
-                    <button onClick={() => handleUpdateStatus(booking.id, 'CONFIRMED')} className="text-xs px-2 py-1 bg-green-600 text-white rounded hover:bg-green-700">Confirm</button>
-                    <button onClick={() => handleUpdateStatus(booking.id, 'CANCELLED')} className="text-xs px-2 py-1 bg-red-50 text-red-600 rounded hover:bg-red-100">Cancel</button>
-                  </>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <Button
+                      size="sm"
+                      className="bg-green-600 hover:bg-green-700"
+                      onClick={() => handleUpdateStatus(booking.id, 'CONFIRMED')}
+                    >
+                      <Check className="h-4 w-4" />
+                      Confirm
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                      onClick={() => handleUpdateStatus(booking.id, 'CANCELLED')}
+                    >
+                      <X className="h-4 w-4" />
+                      Cancel
+                    </Button>
+                  </div>
                 )}
               </div>
-            </div>
-            {booking.notes && <p className="text-sm text-gray-500 mt-2 italic">"{booking.notes}"</p>}
-            <p className="text-xs text-gray-400 mt-2">Code: {booking.confirmationCode}</p>
-          </div>
+            </CardContent>
+          </Card>
         ))
       )}
     </div>
   )
 }
 
+/* ─────────────────────── Services Tab ─────────────────────── */
+
 function ServicesTab({ services, userId, onUpdate }: { services: ServiceType[]; userId: string; onUpdate: () => void }) {
   const [showAdd, setShowAdd] = useState(false)
 
   const handleAdd = async (data: Partial<ServiceType>) => {
-    await fetch('/api/services', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...data, userId }),
-    })
+    await api.service.create({ ...data, userId } as any)
     setShowAdd(false)
     onUpdate()
   }
 
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this service?')) return
-    await fetch(`/api/services/${id}`, { method: 'DELETE' })
+    await api.service.delete(id)
     onUpdate()
   }
 
   const handleToggle = async (id: string, isActive: boolean) => {
-    await fetch(`/api/services/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ isActive: !isActive }),
-    })
+    await api.service.update(id, { isActive: !isActive } as any)
     onUpdate()
   }
 
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center">
-        <h2 className="text-xl font-semibold text-gray-900">Services</h2>
-        <button onClick={() => setShowAdd(true)} className="px-4 py-2 text-white rounded-lg text-sm font-medium" style={{ backgroundColor: '#8b5cf6' }}>
-          + Add Service
-        </button>
+        <h2 className="text-lg font-semibold">Services</h2>
+        <Button className="bg-violet-600 hover:bg-violet-700" onClick={() => setShowAdd(true)}>
+          <Plus className="h-4 w-4" />
+          Add Service
+        </Button>
       </div>
 
       {showAdd && <AddServiceForm onAdd={handleAdd} onCancel={() => setShowAdd(false)} />}
 
       {services.length === 0 ? (
-        <p className="text-gray-400 text-center py-8">No services yet. Add your first service!</p>
+        <Card className="py-12">
+          <CardContent className="flex flex-col items-center justify-center text-center gap-3">
+            <Briefcase className="h-10 w-10 text-muted-foreground/40" />
+            <p className="text-muted-foreground">No services yet. Add your first service!</p>
+          </CardContent>
+        </Card>
       ) : (
-        <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
+        <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">
           {services.map(service => (
-            <div key={service.id} className={`bg-white rounded-xl p-5 shadow-sm border-l-4 ${service.isActive ? '' : 'opacity-50'}`} style={{ borderColor: service.color }}>
-              <div className="flex justify-between items-start">
-                <h3 className="font-semibold text-gray-900">{service.name}</h3>
-                <button onClick={() => handleDelete(service.id)} className="text-gray-400 hover:text-red-500">×</button>
-              </div>
-              {service.description && <p className="text-sm text-gray-500 mt-1">{service.description}</p>}
-              <div className="mt-3 flex justify-between items-center text-sm">
-                <span className="text-gray-600">{service.duration} min</span>
-                <span className="font-semibold" style={{ color: service.color }}>{service.currency} {service.price}</span>
-              </div>
-              <button
-                onClick={() => handleToggle(service.id, service.isActive)}
-                className={`mt-3 w-full text-xs py-1 rounded ${service.isActive ? 'bg-gray-100 text-gray-600' : 'bg-green-100 text-green-600'}`}
-              >
-                {service.isActive ? 'Deactivate' : 'Activate'}
-              </button>
-            </div>
+            <Card
+              key={service.id}
+              className={`border-l-4 ${!service.isActive ? 'opacity-50' : ''}`}
+              style={{ borderLeftColor: service.color }}
+            >
+              <CardHeader className="pb-0">
+                <div className="flex justify-between items-start">
+                  <CardTitle className="text-base">{service.name}</CardTitle>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    className="text-muted-foreground hover:text-red-500"
+                    onClick={() => handleDelete(service.id)}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+                {service.description && (
+                  <CardDescription>{service.description}</CardDescription>
+                )}
+              </CardHeader>
+              <CardContent>
+                <div className="flex justify-between items-center text-sm">
+                  <span className="flex items-center gap-1 text-muted-foreground">
+                    <Clock className="h-3.5 w-3.5" />
+                    {service.duration} min
+                  </span>
+                  <span className="flex items-center gap-1 font-semibold" style={{ color: service.color }}>
+                    <DollarSign className="h-3.5 w-3.5" />
+                    {service.currency} {service.price}
+                  </span>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full mt-3"
+                  onClick={() => handleToggle(service.id, service.isActive)}
+                >
+                  {service.isActive ? 'Deactivate' : 'Activate'}
+                </Button>
+              </CardContent>
+            </Card>
           ))}
         </div>
       )}
     </div>
   )
 }
+
+/* ─────────────────────── Add Service Form ─────────────────────── */
 
 function AddServiceForm({ onAdd, onCancel }: { onAdd: (data: Partial<ServiceType>) => void; onCancel: () => void }) {
   const [name, setName] = useState('')
@@ -277,40 +426,60 @@ function AddServiceForm({ onAdd, onCancel }: { onAdd: (data: Partial<ServiceType
   const [color, setColor] = useState('#8B5CF6')
 
   return (
-    <div className="bg-white rounded-xl p-5 shadow-sm">
-      <h3 className="font-semibold text-gray-900 mb-4">Add Service</h3>
-      <div className="space-y-3">
-        <input type="text" placeholder="Service name *" value={name} onChange={(e) => setName(e.target.value)} className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm" />
-        <input type="text" placeholder="Description" value={description} onChange={(e) => setDescription(e.target.value)} className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm" />
+    <Card>
+      <CardHeader>
+        <CardTitle>Add Service</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="space-y-2">
+          <Label htmlFor="svc-name">Service name *</Label>
+          <Input id="svc-name" placeholder="e.g. Consultation" value={name} onChange={(e) => setName(e.target.value)} />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="svc-desc">Description</Label>
+          <Input id="svc-desc" placeholder="Brief description" value={description} onChange={(e) => setDescription(e.target.value)} />
+        </div>
         <div className="grid grid-cols-3 gap-3">
-          <input type="number" placeholder="Duration (min)" value={duration} onChange={(e) => setDuration(e.target.value)} className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm" />
-          <input type="number" placeholder="Price" value={price} onChange={(e) => setPrice(e.target.value)} step="0.01" className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm" />
-          <input type="color" value={color} onChange={(e) => setColor(e.target.value)} className="w-full h-12 rounded-lg cursor-pointer" />
+          <div className="space-y-2">
+            <Label htmlFor="svc-dur">Duration (min)</Label>
+            <Input id="svc-dur" type="number" value={duration} onChange={(e) => setDuration(e.target.value)} />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="svc-price">Price</Label>
+            <Input id="svc-price" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="svc-color">Color</Label>
+            <Input id="svc-color" type="color" value={color} onChange={(e) => setColor(e.target.value)} className="h-9 p-1 cursor-pointer" />
+          </div>
         </div>
-        <div className="flex gap-2">
-          <button onClick={() => name && onAdd({ name, description: description || null, duration: parseInt(duration), price: parseFloat(price), color })} className="px-4 py-2 text-white rounded-lg text-sm" style={{ backgroundColor: '#8b5cf6' }}>Add</button>
-          <button onClick={onCancel} className="px-4 py-2 border border-gray-200 rounded-lg text-sm hover:bg-gray-50">Cancel</button>
+        <div className="flex gap-2 pt-2">
+          <Button
+            className="bg-violet-600 hover:bg-violet-700"
+            onClick={() => name && onAdd({ name, description: description || null, duration: parseInt(duration), price: parseFloat(price), color })}
+          >
+            Add
+          </Button>
+          <Button variant="outline" onClick={onCancel}>Cancel</Button>
         </div>
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   )
 }
+
+/* ─────────────────────── Availability Tab ─────────────────────── */
 
 function AvailabilityTab({ timeSlots, userId, onUpdate }: { timeSlots: TimeSlotType[]; userId: string; onUpdate: () => void }) {
   const [showAdd, setShowAdd] = useState(false)
 
   const handleAdd = async (data: { dayOfWeek: number; startTime: string; endTime: string }) => {
-    await fetch('/api/timeslots', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...data, userId }),
-    })
+    await api.timeSlot.create({ ...data, userId } as any)
     setShowAdd(false)
     onUpdate()
   }
 
   const handleDelete = async (id: string) => {
-    await fetch(`/api/timeslots/${id}`, { method: 'DELETE' })
+    await api.timeSlot.delete(id)
     onUpdate()
   }
 
@@ -322,38 +491,50 @@ function AvailabilityTab({ timeSlots, userId, onUpdate }: { timeSlots: TimeSlotT
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center">
-        <h2 className="text-xl font-semibold text-gray-900">Availability</h2>
-        <button onClick={() => setShowAdd(true)} className="px-4 py-2 text-white rounded-lg text-sm font-medium" style={{ backgroundColor: '#8b5cf6' }}>
-          + Add Time Slot
-        </button>
+        <h2 className="text-lg font-semibold">Availability</h2>
+        <Button className="bg-violet-600 hover:bg-violet-700" onClick={() => setShowAdd(true)}>
+          <Plus className="h-4 w-4" />
+          Add Time Slot
+        </Button>
       </div>
 
       {showAdd && <AddTimeSlotForm onAdd={handleAdd} onCancel={() => setShowAdd(false)} />}
 
-      <div className="bg-white rounded-xl p-5 shadow-sm">
-        {slotsByDay.map(({ day, slots }) => (
-          <div key={day} className="py-3 border-b border-gray-100 last:border-0">
-            <div className="flex items-center gap-4">
-              <span className="w-24 font-medium text-gray-700">{day}</span>
+      <Card>
+        <CardContent>
+          {slotsByDay.map(({ day, slots }) => (
+            <div key={day} className="py-3 border-b last:border-0 flex items-center gap-4">
+              <span className="w-24 font-medium text-sm">{day}</span>
               <div className="flex-1 flex flex-wrap gap-2">
                 {slots.length === 0 ? (
-                  <span className="text-gray-400 text-sm">No availability</span>
+                  <span className="text-muted-foreground text-sm">No availability</span>
                 ) : (
                   slots.map(slot => (
-                    <span key={slot.id} className="inline-flex items-center gap-1 text-sm bg-green-50 text-green-600 px-2 py-1 rounded">
+                    <Badge
+                      key={slot.id}
+                      variant="outline"
+                      className="border-green-200 bg-green-50 text-green-700 gap-1"
+                    >
                       {slot.startTime} - {slot.endTime}
-                      <button onClick={() => handleDelete(slot.id)} className="text-green-400 hover:text-red-500">×</button>
-                    </span>
+                      <button
+                        onClick={() => handleDelete(slot.id)}
+                        className="ml-1 text-green-400 hover:text-red-500 transition-colors"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </Badge>
                   ))
                 )}
               </div>
             </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </CardContent>
+      </Card>
     </div>
   )
 }
+
+/* ─────────────────────── Add Time Slot Form ─────────────────────── */
 
 function AddTimeSlotForm({ onAdd, onCancel }: { onAdd: (data: { dayOfWeek: number; startTime: string; endTime: string }) => void; onCancel: () => void }) {
   const [dayOfWeek, setDayOfWeek] = useState('1')
@@ -361,22 +542,49 @@ function AddTimeSlotForm({ onAdd, onCancel }: { onAdd: (data: { dayOfWeek: numbe
   const [endTime, setEndTime] = useState('17:00')
 
   return (
-    <div className="bg-white rounded-xl p-5 shadow-sm">
-      <h3 className="font-semibold text-gray-900 mb-4">Add Time Slot</h3>
-      <div className="grid grid-cols-3 gap-3">
-        <select value={dayOfWeek} onChange={(e) => setDayOfWeek(e.target.value)} className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm bg-white">
-          {DAYS.map((d, i) => <option key={i} value={i}>{d}</option>)}
-        </select>
-        <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm" />
-        <input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm" />
-      </div>
-      <div className="flex gap-2 mt-3">
-        <button onClick={() => onAdd({ dayOfWeek: parseInt(dayOfWeek), startTime, endTime })} className="px-4 py-2 text-white rounded-lg text-sm" style={{ backgroundColor: '#8b5cf6' }}>Add</button>
-        <button onClick={onCancel} className="px-4 py-2 border border-gray-200 rounded-lg text-sm hover:bg-gray-50">Cancel</button>
-      </div>
-    </div>
+    <Card>
+      <CardHeader>
+        <CardTitle>Add Time Slot</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-3 gap-3">
+          <div className="space-y-2">
+            <Label>Day</Label>
+            <Select value={dayOfWeek} onValueChange={setDayOfWeek}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {DAYS.map((d, i) => (
+                  <SelectItem key={i} value={String(i)}>{d}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="slot-start">Start</Label>
+            <Input id="slot-start" type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="slot-end">End</Label>
+            <Input id="slot-end" type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <Button
+            className="bg-violet-600 hover:bg-violet-700"
+            onClick={() => onAdd({ dayOfWeek: parseInt(dayOfWeek), startTime, endTime })}
+          >
+            Add
+          </Button>
+          <Button variant="outline" onClick={onCancel}>Cancel</Button>
+        </div>
+      </CardContent>
+    </Card>
   )
 }
+
+/* ─────────────────────── Public Booking Page ─────────────────────── */
 
 function PublicBookingPage({ userId }: { userId: string }) {
   const [provider, setProvider] = useState<{ name: string; email: string } | null>(null)
@@ -412,30 +620,64 @@ function PublicBookingPage({ userId }: { userId: string }) {
     load()
   }, [userId])
 
-  if (loading) return <div className="min-h-screen flex items-center justify-center"><p className="text-gray-500">Loading...</p></div>
-  if (error) return <div className="min-h-screen flex items-center justify-center"><p className="text-red-500">{error}</p></div>
+  if (loading) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center gap-3 bg-gradient-to-br from-violet-500 to-purple-700">
+        <Loader2 className="h-8 w-8 animate-spin text-white" />
+        <p className="text-sm text-white/70">Loading...</p>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-violet-500 to-purple-700">
+        <Card className="w-full max-w-md text-center">
+          <CardContent>
+            <p className="text-destructive">{error}</p>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
 
   if (bookingSuccess) {
     return (
-      <div className="min-h-screen flex items-center justify-center p-4" style={{ background: 'linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%)' }}>
-        <div className="bg-white rounded-xl shadow-lg p-6 w-full max-w-md text-center">
-          <div className="text-4xl mb-4">✅</div>
-          <h1 className="text-2xl font-bold text-gray-900 mb-2">Booking Confirmed!</h1>
-          <p className="text-gray-500 mb-4">Your confirmation code:</p>
-          <code className="text-xl font-mono bg-gray-100 px-4 py-2 rounded">{bookingSuccess.code}</code>
-          <p className="text-sm text-gray-400 mt-4">You'll receive a confirmation email shortly.</p>
-        </div>
+      <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-violet-500 to-purple-700">
+        <Card className="w-full max-w-md text-center">
+          <CardContent className="flex flex-col items-center gap-4 pt-2">
+            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-green-100">
+              <Check className="h-8 w-8 text-green-600" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-bold mb-2">Booking Confirmed!</h1>
+              <p className="text-muted-foreground mb-4">Your confirmation code:</p>
+              <code className="text-xl font-mono bg-muted px-4 py-2 rounded-lg">{bookingSuccess.code}</code>
+            </div>
+            <p className="text-sm text-muted-foreground">You&apos;ll receive a confirmation email shortly.</p>
+          </CardContent>
+        </Card>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen p-4" style={{ background: 'linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%)' }}>
-      <div className="max-w-2xl mx-auto">
-        <div className="bg-white rounded-xl shadow-lg p-6 mb-4">
-          <h1 className="text-2xl font-bold text-gray-900 mb-1">📅 Book with {provider?.name}</h1>
-          <p className="text-gray-500">Select a service to book an appointment.</p>
-        </div>
+    <div className="min-h-screen p-4 bg-gradient-to-br from-violet-500 to-purple-700">
+      <div className="max-w-2xl mx-auto space-y-4">
+        {/* Provider header */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-3">
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-violet-100">
+                <CalendarDays className="h-6 w-6 text-violet-600" />
+              </div>
+              <div>
+                <CardTitle className="text-xl">Book with {provider?.name}</CardTitle>
+                <CardDescription>Select a service to book an appointment.</CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+        </Card>
 
         {selectedService ? (
           <BookingForm
@@ -445,26 +687,39 @@ function PublicBookingPage({ userId }: { userId: string }) {
             onSuccess={(code) => setBookingSuccess({ code })}
           />
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-3">
             {services.length === 0 ? (
-              <div className="bg-white rounded-xl p-6 text-center text-gray-500">No services available.</div>
+              <Card className="py-12">
+                <CardContent className="flex flex-col items-center justify-center text-center gap-3">
+                  <Briefcase className="h-10 w-10 text-muted-foreground/40" />
+                  <p className="text-muted-foreground">No services available.</p>
+                </CardContent>
+              </Card>
             ) : (
               services.map(svc => (
-                <div
+                <Card
                   key={svc.id}
+                  className="border-l-4 cursor-pointer hover:shadow-md transition-shadow"
+                  style={{ borderLeftColor: svc.color }}
                   onClick={() => setSelectedService(svc)}
-                  className="bg-white rounded-xl p-5 shadow-sm cursor-pointer hover:shadow-md transition border-l-4"
-                  style={{ borderColor: svc.color }}
                 >
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <h3 className="font-semibold text-gray-900">{svc.name}</h3>
-                      {svc.description && <p className="text-sm text-gray-500 mt-1">{svc.description}</p>}
-                      <p className="text-sm text-gray-600 mt-2">{svc.duration} min</p>
+                  <CardContent className="py-0">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <h3 className="font-semibold">{svc.name}</h3>
+                        {svc.description && <p className="text-sm text-muted-foreground mt-1">{svc.description}</p>}
+                        <div className="flex items-center gap-1 text-sm text-muted-foreground mt-2">
+                          <Clock className="h-3.5 w-3.5" />
+                          {svc.duration} min
+                        </div>
+                      </div>
+                      <span className="font-semibold flex items-center gap-1" style={{ color: svc.color }}>
+                        <DollarSign className="h-4 w-4" />
+                        {svc.currency} {svc.price}
+                      </span>
                     </div>
-                    <span className="font-semibold" style={{ color: svc.color }}>{svc.currency} {svc.price}</span>
-                  </div>
-                </div>
+                  </CardContent>
+                </Card>
               ))
             )}
           </div>
@@ -473,6 +728,8 @@ function PublicBookingPage({ userId }: { userId: string }) {
     </div>
   )
 }
+
+/* ─────────────────────── Booking Form ─────────────────────── */
 
 function BookingForm({ service, userId, onBack, onSuccess }: { service: ServiceType; userId: string; onBack: () => void; onSuccess: (code: string) => void }) {
   const [name, setName] = useState('')
@@ -523,25 +780,82 @@ function BookingForm({ service, userId, onBack, onSuccess }: { service: ServiceT
   }
 
   return (
-    <div className="bg-white rounded-xl shadow-lg p-6">
-      <button onClick={onBack} className="text-gray-500 hover:text-gray-700 mb-4">← Back to services</button>
-      <h2 className="text-xl font-semibold text-gray-900 mb-1">{service.name}</h2>
-      <p className="text-sm text-gray-500 mb-4">{service.duration} min • {service.currency} {service.price}</p>
+    <Card>
+      <CardHeader>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="w-fit -ml-2 text-muted-foreground"
+          onClick={onBack}
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Back to services
+        </Button>
+        <CardTitle>{service.name}</CardTitle>
+        <CardDescription className="flex items-center gap-3">
+          <span className="flex items-center gap-1"><Clock className="h-3.5 w-3.5" /> {service.duration} min</span>
+          <span className="flex items-center gap-1" style={{ color: service.color }}><DollarSign className="h-3.5 w-3.5" /> {service.currency} {service.price}</span>
+        </CardDescription>
+      </CardHeader>
 
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <input type="text" placeholder="Your name *" value={name} onChange={(e) => setName(e.target.value)} required className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm" />
-        <input type="email" placeholder="Email address *" value={email} onChange={(e) => setEmail(e.target.value)} required className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm" />
-        <input type="tel" placeholder="Phone (optional)" value={phone} onChange={(e) => setPhone(e.target.value)} className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm" />
-        <div className="grid grid-cols-2 gap-4">
-          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} required min={new Date().toISOString().split('T')[0]} className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm" />
-          <input type="time" value={time} onChange={(e) => setTime(e.target.value)} required className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm" />
-        </div>
-        <textarea placeholder="Notes (optional)" value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} className="w-full px-4 py-3 border border-gray-200 rounded-lg text-sm" />
-        {error && <p className="text-red-500 text-sm">{error}</p>}
-        <button type="submit" disabled={loading} className="w-full px-4 py-3 text-white rounded-lg font-medium disabled:opacity-50" style={{ backgroundColor: '#8b5cf6' }}>
-          {loading ? 'Booking...' : 'Confirm Booking'}
-        </button>
-      </form>
-    </div>
+      <CardContent>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="book-name">Your name *</Label>
+            <Input id="book-name" placeholder="John Doe" value={name} onChange={(e) => setName(e.target.value)} required />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="book-email">Email address *</Label>
+            <Input id="book-email" type="email" placeholder="john@example.com" value={email} onChange={(e) => setEmail(e.target.value)} required />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="book-phone">Phone (optional)</Label>
+            <Input id="book-phone" type="tel" placeholder="+1 (555) 000-0000" value={phone} onChange={(e) => setPhone(e.target.value)} />
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="book-date">Date *</Label>
+              <Input id="book-date" type="date" value={date} onChange={(e) => setDate(e.target.value)} required min={new Date().toISOString().split('T')[0]} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="book-time">Time *</Label>
+              <Input id="book-time" type="time" value={time} onChange={(e) => setTime(e.target.value)} required />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="book-notes">Notes (optional)</Label>
+            <textarea
+              id="book-notes"
+              placeholder="Any additional information..."
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              rows={3}
+              className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none disabled:cursor-not-allowed disabled:opacity-50"
+            />
+          </div>
+
+          {error && <p className="text-sm text-destructive">{error}</p>}
+
+          <Button
+            type="submit"
+            disabled={loading}
+            className="w-full bg-violet-600 hover:bg-violet-700"
+          >
+            {loading ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Booking...
+              </>
+            ) : (
+              'Confirm Booking'
+            )}
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
   )
 }

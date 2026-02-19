@@ -57,6 +57,7 @@ export const ModelName = {
   Verification: 'Verification',
   Workspace: 'Workspace',
   Project: 'Project',
+  AgentConfig: 'AgentConfig',
   ProjectCheckpoint: 'ProjectCheckpoint',
   GitHubConnection: 'GitHubConnection',
   StarredProject: 'StarredProject',
@@ -194,11 +195,28 @@ export const ProjectScalarFieldEnum = {
   publishedSubdomain: 'publishedSubdomain',
   publishedAt: 'publishedAt',
   accessLevel: 'accessLevel',
+  category: 'category',
+  type: 'type',
   siteTitle: 'siteTitle',
   siteDescription: 'siteDescription'
 } as const
 
 export type ProjectScalarFieldEnum = (typeof ProjectScalarFieldEnum)[keyof typeof ProjectScalarFieldEnum]
+
+
+export const AgentConfigScalarFieldEnum = {
+  id: 'id',
+  projectId: 'projectId',
+  heartbeatInterval: 'heartbeatInterval',
+  heartbeatEnabled: 'heartbeatEnabled',
+  channels: 'channels',
+  modelProvider: 'modelProvider',
+  modelName: 'modelName',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type AgentConfigScalarFieldEnum = (typeof AgentConfigScalarFieldEnum)[keyof typeof AgentConfigScalarFieldEnum]
 
 
 export const ProjectCheckpointScalarFieldEnum = {

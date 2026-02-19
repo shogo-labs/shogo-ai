@@ -4,8 +4,10 @@ import { useStores } from './stores'
 import { AuthGate } from './components/AuthGate'
 import { TodoList } from './components/TodoList'
 import { AddTodo } from './components/AddTodo'
-
-const API_BASE = '/api'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { CheckSquare, LogOut, Loader2, AlertCircle, X } from 'lucide-react'
+import { api, configureApiClient } from './generated/api-client'
 
 export interface Todo {
   id: string
@@ -16,24 +18,27 @@ export interface Todo {
   updatedAt: string
 }
 
-// Main todo list component (only shown when authenticated)
 const TodoApp = observer(function TodoApp() {
   const { auth } = useStores()
   const [todos, setTodos] = useState<Todo[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  // Configure API client with user context
+  useEffect(() => {
+    if (auth.user) {
+      configureApiClient({ userId: auth.user.id })
+    }
+  }, [auth.user?.id])
+
   const fetchTodos = async () => {
     if (!auth.user) return
-
     try {
-      // Fetch only todos for the current user
-      const res = await fetch(`${API_BASE}/todos?userId=${auth.user.id}`)
-      const data = await res.json()
-      if (data.ok) {
-        setTodos(data.items)
+      const result = await api.todo.list()
+      if (result.ok) {
+        setTodos((result.items || []) as any)
       } else {
-        setError(data.error?.message || 'Failed to fetch todos')
+        setError(result.error?.message || 'Failed to fetch todos')
       }
     } catch (err) {
       setError('Network error')
@@ -48,18 +53,12 @@ const TodoApp = observer(function TodoApp() {
 
   const addTodo = async (title: string) => {
     if (!auth.user) return
-
     try {
-      const res = await fetch(`${API_BASE}/todos`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, userId: auth.user.id }),
-      })
-      const data = await res.json()
-      if (data.ok) {
-        setTodos((prev) => [data.data, ...prev])
+      const result = await api.todo.create({ title, userId: auth.user.id })
+      if (result.ok && result.data) {
+        setTodos((prev) => [result.data as any, ...prev])
       } else {
-        setError(data.error?.message || 'Failed to add todo')
+        setError(result.error?.message || 'Failed to add todo')
       }
     } catch (err) {
       setError('Network error')
@@ -69,16 +68,10 @@ const TodoApp = observer(function TodoApp() {
   const toggleTodo = async (id: string) => {
     const todo = todos.find((t) => t.id === id)
     if (!todo) return
-
     try {
-      const res = await fetch(`${API_BASE}/todos/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ completed: !todo.completed }),
-      })
-      const data = await res.json()
-      if (data.ok) {
-        setTodos((prev) => prev.map((t) => (t.id === id ? data.data : t)))
+      const result = await api.todo.update(id, { completed: !todo.completed })
+      if (result.ok && result.data) {
+        setTodos((prev) => prev.map((t) => (t.id === id ? (result.data as any) : t)))
       }
     } catch (err) {
       setError('Network error')
@@ -87,9 +80,8 @@ const TodoApp = observer(function TodoApp() {
 
   const deleteTodo = async (id: string) => {
     try {
-      const res = await fetch(`${API_BASE}/todos/${id}`, { method: 'DELETE' })
-      const data = await res.json()
-      if (data.ok) {
+      const result = await api.todo.delete(id)
+      if (result.ok) {
         setTodos((prev) => prev.filter((t) => t.id !== id))
       }
     } catch (err) {
@@ -97,109 +89,66 @@ const TodoApp = observer(function TodoApp() {
     }
   }
 
-  const handleLogout = () => {
-    auth.signOut()
-    setTodos([])
-  }
+  const completedCount = todos.filter((t) => t.completed).length
 
   return (
-    <div style={styles.container}>
-      <div style={styles.header}>
-        <div>
-          <h1 style={styles.title}>Todo App</h1>
-          <p style={styles.subtitle}>
-            Welcome, <strong>{auth.user?.name || auth.user?.email}</strong>
-          </p>
-        </div>
-        <button onClick={handleLogout} style={styles.logoutButton}>
-          Sign Out
-        </button>
-      </div>
+    <div className="min-h-screen flex items-center justify-center p-4">
+      <Card className="w-full max-w-lg">
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <CheckSquare className="h-5 w-5" />
+              <CardTitle>Todo App</CardTitle>
+            </div>
+            <Button variant="ghost" size="sm" onClick={() => { auth.signOut(); setTodos([]) }}>
+              <LogOut className="h-4 w-4" />
+              Sign Out
+            </Button>
+          </div>
+          <CardDescription>
+            Welcome, <span className="font-medium text-foreground">{auth.user?.name || auth.user?.email}</span>
+          </CardDescription>
+        </CardHeader>
 
-      {error && (
-        <div style={styles.error}>
-          {error}
-          <button onClick={() => setError(null)} style={styles.errorClose}>×</button>
-        </div>
-      )}
+        <CardContent className="space-y-4">
+          {error && (
+            <div className="flex items-center justify-between rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="h-4 w-4" />
+                {error}
+              </div>
+              <button onClick={() => setError(null)} className="cursor-pointer">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
 
-      <AddTodo onAdd={addTodo} />
+          <AddTodo onAdd={addTodo} />
 
-      {loading ? (
-        <p style={styles.loading}>Loading...</p>
-      ) : (
-        <TodoList todos={todos} onToggle={toggleTodo} onDelete={deleteTodo} />
-      )}
+          {loading ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : (
+            <>
+              {todos.length > 0 && (
+                <p className="text-sm text-muted-foreground">
+                  {completedCount} of {todos.length} completed
+                </p>
+              )}
+              <TodoList todos={todos} onToggle={toggleTodo} onDelete={deleteTodo} />
+            </>
+          )}
+        </CardContent>
+      </Card>
     </div>
   )
 })
 
-// Root App component with AuthGate
 export default function App() {
   return (
     <AuthGate>
       <TodoApp />
     </AuthGate>
   )
-}
-
-const styles: Record<string, React.CSSProperties> = {
-  container: {
-    background: 'white',
-    borderRadius: '16px',
-    padding: '2rem',
-    boxShadow: '0 10px 40px rgba(0,0,0,0.2)',
-    maxWidth: '500px',
-    margin: '2rem auto',
-  },
-  header: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: '1.5rem',
-  },
-  title: {
-    fontSize: '2rem',
-    fontWeight: 700,
-    color: '#333',
-    marginBottom: '0.25rem',
-    margin: 0,
-  },
-  subtitle: {
-    color: '#888',
-    margin: '0.25rem 0 0 0',
-    fontSize: '0.875rem',
-  },
-  logoutButton: {
-    padding: '0.5rem 1rem',
-    backgroundColor: '#f3f4f6',
-    color: '#374151',
-    border: '1px solid #d1d5db',
-    borderRadius: '6px',
-    fontSize: '0.875rem',
-    cursor: 'pointer',
-    transition: 'background-color 0.15s',
-  },
-  error: {
-    background: '#fee2e2',
-    color: '#dc2626',
-    padding: '0.75rem 1rem',
-    borderRadius: '8px',
-    marginBottom: '1rem',
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  errorClose: {
-    background: 'none',
-    border: 'none',
-    fontSize: '1.25rem',
-    cursor: 'pointer',
-    color: '#dc2626',
-  },
-  loading: {
-    textAlign: 'center',
-    color: '#888',
-    padding: '2rem',
-  },
 }

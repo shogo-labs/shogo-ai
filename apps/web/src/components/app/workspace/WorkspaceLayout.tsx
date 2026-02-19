@@ -50,8 +50,9 @@ function createProjectViaApi(data: {
   workspaceId: string
   description?: string
   createdBy: string
+  type?: "APP" | "AGENT"
 }) {
-  return apiPost<{ id: string; name: string }>("/api/projects", {
+  return apiPost<{ id: string; name: string; type?: string }>("/api/projects", {
     name: data.name,
     workspaceId: data.workspaceId,
     description: data.description,
@@ -60,6 +61,7 @@ function createProjectViaApi(data: {
     status: "draft",
     accessLevel: "anyone",
     schemas: [],
+    type: data.type || "APP",
   })
 }
 
@@ -121,11 +123,12 @@ export function WorkspaceLayout() {
    * Creates a project + chat session via API, then navigates with the initial prompt.
    * If a theme is selected (non-default), it's appended to the prompt so the AI applies it.
    */
-  const handlePromptSubmit = useCallback(async (prompt: string, imageData?: string[], themeId?: string) => {
+  const handlePromptSubmit = useCallback(async (prompt: string, imageData?: string[], themeId?: string, projectType?: "APP" | "AGENT") => {
     const userId = session?.user?.id
     const workspaceId = currentWorkspace?.id
     if (!userId || !workspaceId) return
 
+    const type = projectType || "APP"
     setIsCreatingFromPrompt(true)
     try {
       const projectName = generateProjectNameFromPrompt(prompt)
@@ -134,6 +137,7 @@ export function WorkspaceLayout() {
         name: projectName,
         workspaceId,
         createdBy: userId,
+        type,
       })
 
       const chatSession = await createChatSessionViaApi({
@@ -142,14 +146,18 @@ export function WorkspaceLayout() {
         contextId: newProject.id,
       })
 
-      // If a theme is selected, append it to the initial message so the AI applies it
-      const initialMessage = themeId
-        ? `${prompt}\n\nPlease use the "${themeId}" theme for this project. Apply the theme CSS variables to src/index.css.`
-        : prompt
+      let initialMessage: string
+      if (type === "AGENT") {
+        initialMessage = `${prompt}\n\nThis is an AGENT project. Please configure the agent workspace files (AGENTS.md, IDENTITY.md, HEARTBEAT.md, MEMORY.md, config.json) based on the description above.`
+      } else if (themeId) {
+        initialMessage = `${prompt}\n\nPlease use the "${themeId}" theme for this project. Apply the theme CSS variables to src/index.css.`
+      } else {
+        initialMessage = prompt
+      }
 
       navigate(`/projects/${newProject.id}?chatSessionId=${chatSession.id}`, {
         state: {
-          project: { id: newProject.id, name: newProject.name },
+          project: { id: newProject.id, name: newProject.name, type },
           chatSessionId: chatSession.id,
           initialMessage,
           initialImageData: imageData,

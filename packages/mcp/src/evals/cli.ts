@@ -33,6 +33,7 @@ import {
   EDGE_CASE_EVALS,
   ALL_BUSINESS_USER_EVALS,
   MULTI_TURN_COHERENCE_EVALS,
+  RUNTIME_SAFETY_EVALS,
   type EvalCategory,
   type AgentEval,
 } from './index'
@@ -107,7 +108,7 @@ Examples:
 Workflow for Prompt Optimization:
   1. Start agent: bun run api:dev (in another terminal)
   2. Establish baseline: bun run packages/mcp/src/evals/cli.ts baseline
-  3. Make prompt changes in apps/api/src/prompts/persona-prompts.ts
+  3. Make prompt changes in packages/project-runtime/src/system-prompt.ts
   4. Run evals: bun run packages/mcp/src/evals/cli.ts run --label "your-change" --save
   5. Review comparison report
   6. Iterate until metrics improve
@@ -146,7 +147,7 @@ async function main() {
   const jsonOutput = hasFlag('json')
   const includeExtended = hasFlag('extended')
   const saveResults = hasFlag('save')
-  const category = getArg('category') as EvalCategory | undefined
+  const category = getArg('category') as EvalCategory | 'business' | 'business-user' | 'multiturn' | undefined
   // Default to Shogo agent in project-runtime (has template tools)
   // Platform /api/chat uses persona prompts without template tools
   const endpoint = getArg('endpoint') || 'http://localhost:6300/agent/chat'
@@ -247,6 +248,10 @@ async function main() {
           case 'multiturn':
             evalsToRun = [...MULTI_TURN_COHERENCE_EVALS]
             suiteName = 'Multi-Turn Coherence'
+            break
+          case 'runtime-safety':
+            evalsToRun = [...RUNTIME_SAFETY_EVALS]
+            suiteName = 'Runtime Safety'
             break
           default:
             evalsToRun = ALL_EVALS.filter(e => e.category === category)

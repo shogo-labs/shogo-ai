@@ -189,10 +189,16 @@ export const FolderCollection = types
         const tempId = `temp-${crypto.randomUUID()}`
         const now = Date.now()
 
-        // Create optimistic item
+        // Normalize parentId: null -> undefined for MST (MST doesn't accept null, but API expects null)
+        const normalizedInput = {
+          ...input,
+          parentId: input.parentId === null ? undefined : input.parentId,
+        }
+
+        // Create optimistic item with normalized input for MST
         const optimistic = {
           id: tempId,
-          ...input,
+          ...normalizedInput,
           createdAt: now,
           updatedAt: now,
         }
@@ -204,6 +210,7 @@ export const FolderCollection = types
 
         try {
           const env = getEnv<ISDKEnvironment>(self)
+          // Send original input to API (with null if provided, as API expects)
           const response = yield env.http.post<{ ok: boolean; data?: any }>(ENDPOINT, input)
 
           if (!response.data?.ok || !response.data.data) {
@@ -343,8 +350,8 @@ function transformForMST(obj: any): any {
       result[key] = new Date(value).getTime()
     }
     // For relation fields, extract only the ID (for safeReference)
-    else if (relationFields.includes(key) && value && typeof value === "object" && !Array.isArray(value) && value.id) {
-      result[key] = value.id
+    else if (relationFields.includes(key) && value && typeof value === "object" && !Array.isArray(value) && (value as any).id) {
+      result[key] = (value as any).id
     }
     // For array relation fields, extract IDs
     else if (relationFields.includes(key) && Array.isArray(value)) {
@@ -353,9 +360,9 @@ function transformForMST(obj: any): any {
     // Skip nested objects that are not relations (they might be JSON fields)
     else if (value && typeof value === "object" && !Array.isArray(value)) {
       // Only include if it has an id (likely a reference) or is a plain data object
-      if (value.id && !relationFields.includes(key)) {
+      if ((value as any).id && !relationFields.includes(key)) {
         result[key] = value // Keep as-is for JSON fields
-      } else if (!value.id) {
+      } else if (!(value as any).id) {
         result[key] = value // Keep plain objects (like metadata)
       }
       // If it has an id but is a relation field, we already handled it above

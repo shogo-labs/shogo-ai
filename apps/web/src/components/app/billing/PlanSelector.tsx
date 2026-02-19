@@ -15,6 +15,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
+// Central plan credit config — base tier monthly credits per plan
+// Must match apps/api/src/config/credit-plans.ts
+export const PLAN_CREDITS: Record<string, number> = { free: 50, pro: 100, business: 100, enterprise: 10000 }
+export const DAILY_CREDITS = 5
+
 // Plan tier definitions
 export const PRO_TIERS = [
   { credits: 100, monthly: 25, annual: 250 },
@@ -182,11 +187,11 @@ export function PlanSelector({
       {/* Billing Interval Toggle */}
       <div className="flex justify-center">
         <Tabs value={billingInterval} onValueChange={(v) => setBillingInterval(v as "monthly" | "annual")}>
-          <TabsList>
-            <TabsTrigger value="monthly">Monthly</TabsTrigger>
-            <TabsTrigger value="annual">
+          <TabsList className="bg-muted/60 border border-border p-1">
+            <TabsTrigger value="monthly" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm px-4">Monthly</TabsTrigger>
+            <TabsTrigger value="annual" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm px-4">
               Annual
-              <Badge variant="secondary" className="ml-2 text-xs">Save ~17%</Badge>
+              <Badge variant="secondary" className="ml-2 text-xs data-[state=active]:bg-primary-foreground/20">Save ~17%</Badge>
             </TabsTrigger>
           </TabsList>
         </Tabs>

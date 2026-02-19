@@ -69,8 +69,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { cn } from "@/lib/utils"
+import { cn, formatCredits, getTotalCreditsForPlan } from "@/lib/utils"
 import { useWorkspaceData } from "../workspace"
+import { useBillingData } from "@/hooks/useBillingData"
+import { PLAN_CREDITS, DAILY_CREDITS } from "@/components/app/billing/PlanSelector"
 import { useSDKDomain, useDomains } from "@/contexts/DomainProvider"
 import { useDomainActions } from "@/generated/domain-actions"
 import type { IDomainStore } from "@/generated/domain"
@@ -753,11 +755,15 @@ function PeopleTab() {
 // Billing Tab
 function BillingTab({ onClose }: { onClose?: () => void }) {
   const navigate = useNavigate()
+  const { currentWorkspace } = useWorkspaceData()
+  const { subscription, effectiveBalance } = useBillingData(currentWorkspace?.id)
 
-  // Mock data - would come from billing domain
-  const planType = "Free"
-  const creditsUsed = 0
-  const creditsTotal = 5
+  const planType = subscription
+    ? subscription.planId.charAt(0).toUpperCase() + subscription.planId.slice(1)
+    : "Free"
+
+  const creditsRemaining = effectiveBalance?.total ?? 5
+  const creditsTotal = getTotalCreditsForPlan(subscription?.planId, PLAN_CREDITS, DAILY_CREDITS)
 
   const handleNavigateToBilling = () => {
     onClose?.()
@@ -794,9 +800,9 @@ function BillingTab({ onClose }: { onClose?: () => void }) {
         <div className="space-y-2">
           <div className="flex justify-between text-sm">
             <span className="text-muted-foreground">Credits remaining</span>
-            <span className="font-medium">{creditsTotal - creditsUsed} of {creditsTotal}</span>
+            <span className="font-medium">{formatCredits(creditsRemaining)} of {creditsTotal}</span>
           </div>
-          <Progress value={((creditsTotal - creditsUsed) / creditsTotal) * 100} className="h-2" />
+          <Progress value={(creditsRemaining / creditsTotal) * 100} className="h-2" />
           <p className="text-xs text-muted-foreground">
             Daily credits reset at midnight UTC
           </p>

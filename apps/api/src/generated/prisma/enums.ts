@@ -45,6 +45,24 @@ export const AccessLevel = {
 export type AccessLevel = (typeof AccessLevel)[keyof typeof AccessLevel]
 
 
+export const ProjectCategory = {
+  app: 'app',
+  website: 'website',
+  tool: 'tool',
+  game: 'game'
+} as const
+
+export type ProjectCategory = (typeof ProjectCategory)[keyof typeof ProjectCategory]
+
+
+export const ProjectType = {
+  APP: 'APP',
+  AGENT: 'AGENT'
+} as const
+
+export type ProjectType = (typeof ProjectType)[keyof typeof ProjectType]
+
+
 export const MemberRole = {
   owner: 'owner',
   admin: 'admin',

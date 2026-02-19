@@ -40,7 +40,7 @@ import {
   Loader2,
   Shield,
 } from "lucide-react"
-import { cn } from "@/lib/utils"
+import { cn, formatCredits } from "@/lib/utils"
 import { useSessionContext } from "@/contexts/SessionProvider"
 import { Button } from "@/components/ui/button"
 import {
@@ -91,6 +91,7 @@ import type { IDomainStore } from "@/generated/domain"
 import { useDomainActions } from "@/generated/domain-actions"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { useToast } from "@/hooks/use-toast"
+import { useBillingData } from "@/hooks/useBillingData"
 import { LogOut, User, Sun, Moon, Monitor } from "lucide-react"
 
 /**
@@ -774,6 +775,7 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
   }, [store])
 
   const subscription = getActiveSubscription(currentWorkspace?.id)
+  const { effectiveBalance } = useBillingData(currentWorkspace?.id)
 
   // Determine if current workspace is on a paid plan
   const isPaidPlan = useMemo(() => {
@@ -1083,7 +1085,11 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
             >
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium">Upgrade to Pro</div>
-                <div className="text-xs text-muted-foreground">Unlock more benefits</div>
+                <div className="text-xs text-muted-foreground">
+                  {effectiveBalance
+                    ? `${formatCredits(effectiveBalance.total)} credits left`
+                    : 'Unlock more benefits'}
+                </div>
               </div>
               <Plus className="h-4 w-4 text-primary" />
             </Link>

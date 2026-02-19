@@ -16,6 +16,7 @@ import { prisma } from "../lib/prisma"
 import type { IRuntimeManager } from "../lib/runtime"
 import { calculateCreditCost, proxyModelToBillingModel } from "../lib/credit-cost"
 import * as billingService from "../services/billing.service"
+import { setProjectUser } from "../lib/project-user-context"
 
 // Environment detection
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
@@ -58,6 +59,10 @@ async function trackUsageFromStream(
   let toolCallCount = 0
   const toolCalls: { toolName: string; args: string }[] = []
   let lastUsage: { promptTokens?: number; completionTokens?: number; totalTokens?: number } | null = null
+
+  // server-side-persistence: Accumulate assistant message content for DB persistence
+  let accumulatedText = ''
+  const toolCallDetails: { toolCallId: string; toolName: string; input: any }[] = []
 
   try {
     while (true) {
@@ -109,12 +114,26 @@ async function trackUsageFromStream(
         // UI Message Stream protocol uses { type: "..." } format
         const type = data.type
 
+        // server-side-persistence: Accumulate text content from stream
+        if (type === 'text-delta' && data.delta) {
+          accumulatedText += data.delta
+        }
+
         // Track tool calls
         if (type === 'tool-call-start' || type === 'tool-call') {
           toolCallCount++
           toolCalls.push({
             toolName: data.toolName || data.name || 'unknown',
             args: typeof data.args === 'string' ? data.args : JSON.stringify(data.args || {}),
+          })
+        }
+
+        // server-side-persistence: Capture finalized tool call details for message parts
+        if (type === 'tool-input-available') {
+          toolCallDetails.push({
+            toolCallId: data.toolCallId || `tool-${Date.now()}`,
+            toolName: data.toolName || 'unknown',
+            input: data.input || {},
           })
         }
 
@@ -229,6 +248,43 @@ async function trackUsageFromStream(
       console.error("[ProjectChat] Failed to log tool calls:", err)
     }
   }
+
+  // server-side-persistence: Persist assistant message to database
+  // This ensures messages survive page refreshes and client disconnects.
+  if (chatSessionId && (accumulatedText || toolCallDetails.length > 0)) {
+    try {
+      const session = await prisma.chatSession.findUnique({ where: { id: chatSessionId } })
+      if (session) {
+        // Build parts array matching the frontend's expected format
+        const parts: any[] = []
+        if (accumulatedText) {
+          parts.push({ type: 'text', text: accumulatedText })
+        }
+        for (const tc of toolCallDetails) {
+          parts.push({
+            type: 'dynamic-tool',
+            toolCallId: tc.toolCallId,
+            toolName: tc.toolName,
+            input: tc.input,
+            output: { success: true },
+            state: 'output-available',
+          })
+        }
+
+        await prisma.chatMessage.create({
+          data: {
+            sessionId: chatSessionId,
+            role: 'assistant',
+            content: accumulatedText,
+            parts: parts.length > 0 ? JSON.stringify(parts) : undefined,
+          },
+        })
+        console.log(`[ProjectChat] 💾 Persisted assistant message (${accumulatedText.length} chars, ${toolCallDetails.length} tool calls) for session ${chatSessionId}`)
+      }
+    } catch (err) {
+      console.error("[ProjectChat] Failed to persist assistant message:", err)
+    }
+  }
 }
 
 // =============================================================================
@@ -336,6 +392,14 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         )
       }
 
+      // Pre-check credits before proxying to runtime
+      if (!await billingService.hasCredits(project.workspaceId)) {
+        return c.json(
+          { error: { code: "insufficient_credits", message: "You've run out of credits. Please upgrade your plan to continue." } },
+          402
+        )
+      }
+
       // Get project pod URL
       // This will create the pod if needed and wait for it to be ready
       let podUrl: string
@@ -367,9 +431,25 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       console.log(`[ProjectChat] Proxying to: ${podUrl}/agent/chat`)
 
       // Get the request body and parse for billing context
-      const body = await c.req.text()
+      let body = await c.req.text()
       let parsedBody: any = {}
       try { parsedBody = JSON.parse(body) } catch { /* not JSON, that's fine */ }
+
+      // Enforce basic agent mode for free-plan workspaces (server-side guard)
+      if (parsedBody.agentMode && parsedBody.agentMode !== 'basic') {
+        const isPaid = await billingService.hasPaidSubscription(project.workspaceId)
+        if (!isPaid) {
+          parsedBody.agentMode = 'basic'
+          body = JSON.stringify(parsedBody)
+        }
+      }
+
+      // Track the user who initiated this chat so AI proxy requests from the
+      // runtime (which use a generic 'system' token) can be attributed correctly.
+      const billingUserId = parsedBody?.userId || c.req.header("X-Billing-User-Id")
+      if (billingUserId && billingUserId !== 'system') {
+        setProjectUser(projectId, billingUserId)
+      }
 
       // Forward headers
       const headers: Record<string, string> = {
@@ -489,6 +569,45 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         { error: { code: "proxy_error", message: error.message || "Proxy failed" } },
         500
       )
+    }
+  })
+
+  /**
+   * POST /projects/:projectId/chat/stop - Stop/interrupt active generation
+   * Proxies to the project runtime's /agent/stop endpoint
+   */
+  router.post("/projects/:projectId/chat/stop", async (c) => {
+    const projectId = c.req.param("projectId")
+    console.log(`[ProjectChat] Received stop request for project: ${projectId}`)
+
+    try {
+      const project = await validateProject(projectId)
+      if (!project) {
+        return c.json(
+          { error: { code: "project_not_found", message: "Project not found" } },
+          404
+        )
+      }
+
+      let podUrl: string
+      try {
+        podUrl = await getProjectUrl(projectId)
+      } catch {
+        return c.json({ success: true, message: "No active runtime to stop" })
+      }
+
+      const body = await c.req.text()
+      const response = await fetch(`${podUrl}/agent/stop`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: body || "{}",
+      })
+
+      const result = await response.json()
+      return c.json(result)
+    } catch (error: any) {
+      console.error("[ProjectChat] Stop error:", error)
+      return c.json({ success: false, error: error.message }, 500)
     }
   })
 

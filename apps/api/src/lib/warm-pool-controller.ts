@@ -1,0 +1,724 @@
+/**
+ * Warm Pool Controller
+ *
+ * Maintains a pool of pre-started, generic runtime pods to eliminate cold start
+ * latency for users. Instead of creating a Knative Service from scratch (which
+ * requires container scheduling, image extraction, and application boot), the
+ * warm pool keeps N pods already running in "pool mode."
+ *
+ * When a user needs a pod:
+ * 1. Claim a warm pod from the pool (instant)
+ * 2. POST /pool/assign to the warm pod with project-specific config
+ * 3. The pod reconfigures itself in-place (loads S3 data, starts gateway, etc.)
+ * 4. Return the warm pod URL immediately — user gets instant service
+ * 5. In the background, create the real `project-{id}` Knative Service so
+ *    future cold starts work correctly with the right env vars
+ * 6. Once the real service has a pod running, delete the warm pool service
+ *
+ * Pool pods run with PROJECT_ID=__POOL__, do generic init (start Hono,
+ * pre-warm Claude Code session, load deps into memory), and wait for assignment.
+ */
+
+import * as k8s from '@kubernetes/client-node'
+import * as fs from 'fs'
+import { generateProxyToken } from './ai-proxy-token'
+import * as databaseService from '../services/database.service'
+
+// =============================================================================
+// Configuration
+// =============================================================================
+
+const NAMESPACE = process.env.PROJECT_NAMESPACE || 'shogo-workspaces'
+const PROJECT_RUNTIME_IMAGE =
+  process.env.PROJECT_RUNTIME_IMAGE || 'ghcr.io/shogo-ai/project-runtime:latest'
+const AGENT_RUNTIME_IMAGE =
+  process.env.AGENT_RUNTIME_IMAGE || 'ghcr.io/shogo-ai/agent-runtime:latest'
+const KNATIVE_GROUP = 'serving.knative.dev'
+const KNATIVE_VERSION = 'v1'
+
+const WARM_POOL_ENABLED = process.env.WARM_POOL_ENABLED !== 'false'
+const WARM_POOL_PROJECT_SIZE = parseInt(process.env.WARM_POOL_PROJECT_SIZE || '2', 10)
+const WARM_POOL_AGENT_SIZE = parseInt(process.env.WARM_POOL_AGENT_SIZE || '2', 10)
+const WARM_POOL_RECONCILE_INTERVAL = parseInt(
+  process.env.WARM_POOL_RECONCILE_INTERVAL || '30000',
+  10
+)
+const WARM_POOL_MAX_AGE_MS = parseInt(
+  process.env.WARM_POOL_MAX_AGE_MS || String(30 * 60 * 1000),
+  10
+)
+
+const POOL_PROJECT_ID = '__POOL__'
+const POOL_LABEL_KEY = 'shogo.io/warm-pool'
+const POOL_TYPE_LABEL_KEY = 'shogo.io/warm-pool-type'
+const POOL_STATUS_LABEL_KEY = 'shogo.io/warm-pool-status'
+
+export type RuntimeType = 'project' | 'agent'
+
+export interface WarmPodInfo {
+  id: string
+  serviceName: string
+  type: RuntimeType
+  url: string
+  createdAt: number
+  ready: boolean
+}
+
+export interface WarmPoolConfig {
+  projectPoolSize?: number
+  agentPoolSize?: number
+  reconcileIntervalMs?: number
+  maxPodAgeMs?: number
+  namespace?: string
+}
+
+// =============================================================================
+// Kubernetes Client (reuse from knative-project-manager pattern)
+// =============================================================================
+
+let k8sCustomApi: k8s.CustomObjectsApi | null = null
+let k8sCoreApi: k8s.CoreV1Api | null = null
+
+function getKubeConfig(): k8s.KubeConfig {
+  const kc = new k8s.KubeConfig()
+
+  const serviceAccountDir = '/var/run/secrets/kubernetes.io/serviceaccount'
+  const caPath = `${serviceAccountDir}/ca.crt`
+  const tokenPath = `${serviceAccountDir}/token`
+
+  if (fs.existsSync(caPath) && fs.existsSync(tokenPath)) {
+    const ca = fs.readFileSync(caPath, 'utf8')
+    const token = fs.readFileSync(tokenPath, 'utf8')
+    const host = `https://${process.env.KUBERNETES_SERVICE_HOST}:${process.env.KUBERNETES_SERVICE_PORT}`
+
+    kc.loadFromOptions({
+      clusters: [
+        {
+          name: 'in-cluster',
+          server: host,
+          caData: Buffer.from(ca).toString('base64'),
+          skipTLSVerify: true,
+        },
+      ],
+      users: [{ name: 'in-cluster', token }],
+      contexts: [{ name: 'in-cluster', cluster: 'in-cluster', user: 'in-cluster' }],
+      currentContext: 'in-cluster',
+    })
+  } else {
+    kc.loadFromDefault()
+  }
+
+  return kc
+}
+
+function getCustomApi(): k8s.CustomObjectsApi {
+  if (!k8sCustomApi) {
+    const kc = getKubeConfig()
+    k8sCustomApi = kc.makeApiClient(k8s.CustomObjectsApi)
+  }
+  return k8sCustomApi
+}
+
+// =============================================================================
+// WarmPoolController
+// =============================================================================
+
+export class WarmPoolController {
+  private namespace: string
+  private poolSize: { project: number; agent: number }
+  private reconcileIntervalMs: number
+  private maxPodAgeMs: number
+  private reconcileTimer: ReturnType<typeof setInterval> | null = null
+
+  /** Available (unassigned) warm pods, keyed by a unique id */
+  private available = new Map<string, WarmPodInfo>()
+
+  /**
+   * Assigned warm pods: projectId -> warm pod info.
+   * Used for routing while the real Knative Service is being created in the background.
+   */
+  private assigned = new Map<string, WarmPodInfo>()
+
+  /** Pending warm pod creations to avoid duplicate reconciliation */
+  private pendingCreations = new Set<string>()
+
+  private started = false
+
+  constructor(config: WarmPoolConfig = {}) {
+    this.namespace = config.namespace || NAMESPACE
+    this.poolSize = {
+      project: config.projectPoolSize ?? WARM_POOL_PROJECT_SIZE,
+      agent: config.agentPoolSize ?? WARM_POOL_AGENT_SIZE,
+    }
+    this.reconcileIntervalMs = config.reconcileIntervalMs ?? WARM_POOL_RECONCILE_INTERVAL
+    this.maxPodAgeMs = config.maxPodAgeMs ?? WARM_POOL_MAX_AGE_MS
+  }
+
+  async start(): Promise<void> {
+    if (!WARM_POOL_ENABLED) {
+      console.log('[WarmPool] Warm pool disabled (WARM_POOL_ENABLED=false)')
+      return
+    }
+
+    console.log(
+      `[WarmPool] Starting warm pool controller (project: ${this.poolSize.project}, agent: ${this.poolSize.agent})`
+    )
+    this.started = true
+
+    // Initial reconciliation
+    await this.reconcile().catch((err) => {
+      console.error('[WarmPool] Initial reconciliation failed:', err.message)
+    })
+
+    // Periodic reconciliation
+    this.reconcileTimer = setInterval(() => {
+      this.reconcile().catch((err) => {
+        console.error('[WarmPool] Reconciliation error:', err.message)
+      })
+    }, this.reconcileIntervalMs)
+  }
+
+  async stop(): Promise<void> {
+    this.started = false
+    if (this.reconcileTimer) {
+      clearInterval(this.reconcileTimer)
+      this.reconcileTimer = null
+    }
+    console.log('[WarmPool] Stopped warm pool controller')
+  }
+
+  /**
+   * Reconcile the pool: ensure we have the target number of warm pods per type.
+   * Also cleans up pods that are too old (to prevent stale pre-warmed sessions).
+   */
+  async reconcile(): Promise<void> {
+    if (!this.started) return
+
+    // Discover existing warm pool services from Kubernetes
+    await this.discoverExistingPods()
+
+    // Clean up stale pods (older than maxPodAgeMs).
+    // Limit to 1 deletion per pool type per cycle so replacements are created
+    // before all warm pods are gone (prevents empty-pool cold starts).
+    const now = Date.now()
+    const recycledTypes = new Set<string>()
+    for (const [id, pod] of this.available) {
+      if (now - pod.createdAt > this.maxPodAgeMs) {
+        if (recycledTypes.has(pod.type)) continue
+        recycledTypes.add(pod.type)
+        console.log(
+          `[WarmPool] Recycling stale warm pod ${pod.serviceName} (age: ${Math.round(
+            (now - pod.createdAt) / 1000
+          )}s)`
+        )
+        this.available.delete(id)
+        this.deleteWarmPodService(pod.serviceName).catch((err) => {
+          console.error(`[WarmPool] Failed to delete stale pod ${pod.serviceName}:`, err.message)
+        })
+      }
+    }
+
+    // Clean up assigned pods whose real Knative Service is now running
+    for (const [projectId, pod] of this.assigned) {
+      const realServiceReady = await this.isRealServiceReady(projectId)
+      if (realServiceReady) {
+        console.log(
+          `[WarmPool] Real service for ${projectId} is ready, cleaning up warm pod ${pod.serviceName}`
+        )
+        this.assigned.delete(projectId)
+        this.deleteWarmPodService(pod.serviceName).catch((err) => {
+          console.error(
+            `[WarmPool] Failed to delete assigned pod ${pod.serviceName}:`,
+            err.message
+          )
+        })
+      }
+    }
+
+    // Count available pods per type
+    const counts: Record<RuntimeType, number> = { project: 0, agent: 0 }
+    for (const pod of this.available.values()) {
+      counts[pod.type]++
+    }
+
+    // Create missing warm pods
+    for (const type of ['project', 'agent'] as const) {
+      const deficit = this.poolSize[type] - counts[type]
+      for (let i = 0; i < deficit; i++) {
+        const id = crypto.randomUUID().slice(0, 8)
+        if (this.pendingCreations.has(`${type}-${id}`)) continue
+
+        this.pendingCreations.add(`${type}-${id}`)
+        this.createWarmPod(type, id)
+          .then((pod) => {
+            if (pod) {
+              this.available.set(pod.id, pod)
+              console.log(
+                `[WarmPool] Created warm pod ${pod.serviceName} (pool: ${type}, available: ${counts[type] + 1}/${this.poolSize[type]})`
+              )
+            }
+          })
+          .catch((err) => {
+            console.error(`[WarmPool] Failed to create warm ${type} pod:`, err.message)
+          })
+          .finally(() => {
+            this.pendingCreations.delete(`${type}-${id}`)
+          })
+      }
+    }
+  }
+
+  /**
+   * Claim a warm pod for assignment to a project.
+   * Returns null if no warm pods of the requested type are available.
+   */
+  claim(type: RuntimeType): WarmPodInfo | null {
+    // Find the oldest available pod of the requested type
+    let oldest: WarmPodInfo | null = null
+    let oldestId: string | null = null
+
+    for (const [id, pod] of this.available) {
+      if (pod.type !== type) continue
+      if (!pod.ready) continue
+      if (!oldest || pod.createdAt < oldest.createdAt) {
+        oldest = pod
+        oldestId = id
+      }
+    }
+
+    if (oldest && oldestId) {
+      this.available.delete(oldestId)
+      console.log(
+        `[WarmPool] Claimed warm pod ${oldest.serviceName} for ${type} (remaining: ${this.countAvailable(type)}/${this.poolSize[type]})`
+      )
+      // Trigger async replenishment
+      this.reconcile().catch((err) => {
+        console.error('[WarmPool] Replenishment reconcile error:', err.message)
+      })
+      return oldest
+    }
+
+    return null
+  }
+
+  /**
+   * Assign a claimed warm pod to a specific project.
+   * Sends the /pool/assign request and stores the mapping for routing.
+   */
+  async assign(
+    pod: WarmPodInfo,
+    projectId: string,
+    envVars: Record<string, string>
+  ): Promise<void> {
+    const startTime = Date.now()
+
+    try {
+      const response = await fetch(`${pod.url}/pool/assign`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId, env: envVars }),
+        signal: AbortSignal.timeout(30000),
+      })
+
+      if (!response.ok) {
+        const body = await response.text()
+        throw new Error(`Assignment failed (${response.status}): ${body}`)
+      }
+
+      this.assigned.set(projectId, pod)
+      console.log(
+        `[WarmPool] Assigned ${pod.serviceName} to project ${projectId} in ${Date.now() - startTime}ms`
+      )
+    } catch (err: any) {
+      console.error(
+        `[WarmPool] Failed to assign ${pod.serviceName} to ${projectId}:`,
+        err.message
+      )
+      throw err
+    }
+  }
+
+  /**
+   * Get the URL for a project that's currently served by an assigned warm pod.
+   * Returns null if the project isn't on a warm pod.
+   */
+  getAssignedUrl(projectId: string): string | null {
+    const pod = this.assigned.get(projectId)
+    return pod?.url ?? null
+  }
+
+  /**
+   * Check if a project is currently being served by a warm pod.
+   */
+  isAssigned(projectId: string): boolean {
+    return this.assigned.has(projectId)
+  }
+
+  /**
+   * Get pool status for monitoring/debugging.
+   */
+  getStatus(): {
+    enabled: boolean
+    available: { project: number; agent: number }
+    assigned: number
+    targetSize: { project: number; agent: number }
+  } {
+    return {
+      enabled: WARM_POOL_ENABLED && this.started,
+      available: {
+        project: this.countAvailable('project'),
+        agent: this.countAvailable('agent'),
+      },
+      assigned: this.assigned.size,
+      targetSize: this.poolSize,
+    }
+  }
+
+  // ===========================================================================
+  // Private helpers
+  // ===========================================================================
+
+  private countAvailable(type: RuntimeType): number {
+    let count = 0
+    for (const pod of this.available.values()) {
+      if (pod.type === type && pod.ready) count++
+    }
+    return count
+  }
+
+  /**
+   * Build the environment variables needed for assigning a project to a warm pod.
+   * This gathers everything a project pod needs: DATABASE_URL, AI_PROXY_TOKEN, S3 config, etc.
+   */
+  async buildProjectEnv(projectId: string): Promise<Record<string, string>> {
+    const env: Record<string, string> = {
+      PROJECT_ID: projectId,
+    }
+
+    // AI Proxy token
+    try {
+      const { prisma } = await import('./prisma')
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { workspaceId: true },
+      })
+      if (project) {
+        env.AI_PROXY_TOKEN = await generateProxyToken(
+          projectId,
+          project.workspaceId,
+          'system',
+          7 * 24 * 60 * 60 * 1000
+        )
+      }
+    } catch (err: any) {
+      console.error(`[WarmPool] Failed to generate proxy token for ${projectId}:`, err.message)
+    }
+
+    // Database URL
+    try {
+      const dbInfo = await databaseService.provisionDatabase(projectId)
+      if (dbInfo) {
+        env.DATABASE_URL = dbInfo.connectionUrl
+      }
+    } catch (err: any) {
+      console.error(`[WarmPool] Failed to provision database for ${projectId}:`, err.message)
+    }
+
+    // S3 config
+    if (process.env.S3_WORKSPACES_BUCKET) {
+      env.S3_WORKSPACES_BUCKET = process.env.S3_WORKSPACES_BUCKET
+      env.S3_REGION = process.env.S3_REGION || 'us-east-1'
+      env.S3_WATCH_ENABLED = 'true'
+      env.S3_SYNC_INTERVAL = '30000'
+      if (process.env.S3_ENDPOINT) env.S3_ENDPOINT = process.env.S3_ENDPOINT
+      if (process.env.S3_FORCE_PATH_STYLE === 'true') env.S3_FORCE_PATH_STYLE = 'true'
+    }
+
+    return env
+  }
+
+  /**
+   * Discover existing warm pool Knative Services from Kubernetes.
+   * Syncs the in-memory pool with actual cluster state.
+   */
+  private async discoverExistingPods(): Promise<void> {
+    try {
+      const api = getCustomApi()
+      const response = await api.listNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: KNATIVE_VERSION,
+        namespace: this.namespace,
+        plural: 'services',
+        labelSelector: `${POOL_LABEL_KEY}=true`,
+      })
+
+      const items = (response as any).items || []
+      const discoveredIds = new Set<string>()
+
+      for (const service of items) {
+        const name = service.metadata?.name
+        const labels = service.metadata?.labels || {}
+        const type = labels[POOL_TYPE_LABEL_KEY] as RuntimeType
+        const status = labels[POOL_STATUS_LABEL_KEY]
+        const createdAt = new Date(service.metadata?.creationTimestamp).getTime()
+        const id = name
+
+        if (!name || !type) continue
+        discoveredIds.add(id)
+
+        // Skip if already tracked
+        if (this.available.has(id)) continue
+        // Skip if assigned to a project
+        if (status === 'assigned') continue
+
+        // Check readiness
+        const conditions = service.status?.conditions || []
+        const readyCondition = conditions.find((c: any) => c.type === 'Ready')
+        const ready = readyCondition?.status === 'True'
+
+        const url = `http://${name}.${this.namespace}.svc.cluster.local`
+
+        this.available.set(id, {
+          id,
+          serviceName: name,
+          type,
+          url,
+          createdAt,
+          ready,
+        })
+      }
+
+      // Remove from in-memory map any pods that no longer exist in k8s
+      for (const [id] of this.available) {
+        if (!discoveredIds.has(id)) {
+          this.available.delete(id)
+        }
+      }
+    } catch (err: any) {
+      console.error('[WarmPool] Failed to discover existing pods:', err.message)
+    }
+  }
+
+  /**
+   * Create a warm pool Knative Service.
+   */
+  private async createWarmPod(type: RuntimeType, id: string): Promise<WarmPodInfo | null> {
+    const serviceName = `warm-pool-${type}-${id}`
+    const image = type === 'agent' ? AGENT_RUNTIME_IMAGE : PROJECT_RUNTIME_IMAGE
+    const workDir = type === 'agent' ? '/app/agent' : '/app/project'
+
+    const env: Array<{ name: string; value?: string; valueFrom?: any }> = [
+      { name: 'PROJECT_ID', value: POOL_PROJECT_ID },
+      { name: 'PROJECT_DIR', value: workDir },
+      ...(type === 'agent' ? [{ name: 'AGENT_DIR', value: workDir }] : []),
+      { name: 'SCHEMAS_PATH', value: '/app/.schemas' },
+      { name: 'WARM_POOL_MODE', value: 'true' },
+    ]
+
+    // AI Proxy URL (no token yet — assigned later)
+    const systemNamespace = process.env.SYSTEM_NAMESPACE || 'shogo-staging-system'
+    const apiUrl =
+      process.env.API_URL ||
+      process.env.SHOGO_API_URL ||
+      `http://api.${systemNamespace}.svc.cluster.local`
+    env.push({ name: 'AI_PROXY_URL', value: `${apiUrl}/api/ai/v1` })
+
+    // S3 config for the runtime (but no project data to sync yet)
+    if (process.env.S3_WORKSPACES_BUCKET) {
+      env.push({ name: 'S3_WORKSPACES_BUCKET', value: process.env.S3_WORKSPACES_BUCKET })
+      env.push({ name: 'S3_REGION', value: process.env.S3_REGION || 'us-east-1' })
+      if (process.env.S3_ENDPOINT) {
+        env.push({ name: 'S3_ENDPOINT', value: process.env.S3_ENDPOINT })
+      }
+      if (process.env.S3_FORCE_PATH_STYLE === 'true') {
+        env.push({ name: 'S3_FORCE_PATH_STYLE', value: 'true' })
+      }
+      // AWS credentials
+      env.push({
+        name: 'AWS_ACCESS_KEY_ID',
+        valueFrom: {
+          secretKeyRef: { name: 's3-credentials', key: 'access-key', optional: true },
+        },
+      })
+      env.push({
+        name: 'AWS_SECRET_ACCESS_KEY',
+        valueFrom: {
+          secretKeyRef: { name: 's3-credentials', key: 'secret-key', optional: true },
+        },
+      })
+    }
+
+    const service = {
+      apiVersion: `${KNATIVE_GROUP}/${KNATIVE_VERSION}`,
+      kind: 'Service',
+      metadata: {
+        name: serviceName,
+        namespace: this.namespace,
+        labels: {
+          'app.kubernetes.io/part-of': 'shogo',
+          [POOL_LABEL_KEY]: 'true',
+          [POOL_TYPE_LABEL_KEY]: type,
+          [POOL_STATUS_LABEL_KEY]: 'available',
+          'shogo.io/component': type === 'agent' ? 'agent-runtime' : 'project-runtime',
+        },
+      },
+      spec: {
+        template: {
+          metadata: {
+            annotations: {
+              'autoscaling.knative.dev/min-scale': '1',
+              'autoscaling.knative.dev/max-scale': '1',
+            },
+          },
+          spec: {
+            timeoutSeconds: 600,
+            securityContext: { fsGroup: 999 },
+            containers: [
+              {
+                name: type === 'agent' ? 'agent-runtime' : 'project-runtime',
+                image,
+                imagePullPolicy: 'Always',
+                ports: [{ containerPort: 8080, name: 'http1' }],
+                env,
+                resources: {
+                  requests: { memory: '256Mi', cpu: '100m' },
+                  limits: { memory: '2Gi', cpu: '1000m' },
+                },
+                volumeMounts: [{ name: 'project-data', mountPath: workDir }],
+                readinessProbe: {
+                  httpGet: { path: '/ready', port: 8080 },
+                  initialDelaySeconds: 1,
+                  periodSeconds: 2,
+                  timeoutSeconds: 2,
+                  successThreshold: 1,
+                  failureThreshold: 30,
+                },
+                livenessProbe: {
+                  httpGet: { path: '/health', port: 8080 },
+                  initialDelaySeconds: 5,
+                  periodSeconds: 10,
+                  timeoutSeconds: 5,
+                  successThreshold: 1,
+                  failureThreshold: 3,
+                },
+              },
+            ],
+            volumes: [
+              {
+                name: 'project-data',
+                emptyDir: { sizeLimit: '2Gi' },
+              },
+            ],
+          },
+        },
+      },
+    }
+
+    const api = getCustomApi()
+    try {
+      await api.createNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: KNATIVE_VERSION,
+        namespace: this.namespace,
+        plural: 'services',
+        body: service,
+      })
+    } catch (err: any) {
+      const statusCode = err?.response?.statusCode || err?.statusCode || err?.body?.code
+      if (
+        statusCode === 409 ||
+        err?.message?.includes('already exists') ||
+        err?.body?.reason === 'AlreadyExists'
+      ) {
+        console.log(`[WarmPool] Warm pod ${serviceName} already exists`)
+      } else {
+        throw err
+      }
+    }
+
+    const url = `http://${serviceName}.${this.namespace}.svc.cluster.local`
+    return {
+      id: serviceName,
+      serviceName,
+      type,
+      url,
+      createdAt: Date.now(),
+      ready: false, // will be updated by discovery on next reconcile
+    }
+  }
+
+  /**
+   * Delete a warm pool Knative Service.
+   */
+  private async deleteWarmPodService(serviceName: string): Promise<void> {
+    try {
+      const api = getCustomApi()
+      await api.deleteNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: KNATIVE_VERSION,
+        namespace: this.namespace,
+        plural: 'services',
+        name: serviceName,
+      })
+      console.log(`[WarmPool] Deleted warm pod service: ${serviceName}`)
+    } catch (err: any) {
+      if (err?.code !== 404 && err?.response?.statusCode !== 404) {
+        throw err
+      }
+    }
+  }
+
+  /**
+   * Check if the real project Knative Service (project-{id}) is ready.
+   */
+  private async isRealServiceReady(projectId: string): Promise<boolean> {
+    try {
+      const api = getCustomApi()
+      const response = await api.getNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: KNATIVE_VERSION,
+        namespace: this.namespace,
+        plural: 'services',
+        name: `project-${projectId}`,
+      })
+
+      const service = response as any
+      const conditions = service.status?.conditions || []
+      const readyCondition = conditions.find((c: any) => c.type === 'Ready')
+      if (readyCondition?.status !== 'True') return false
+
+      // Double-check with health probe
+      const url = `http://project-${projectId}.${this.namespace}.svc.cluster.local`
+      const healthResp = await fetch(`${url}/ready`, {
+        method: 'GET',
+        signal: AbortSignal.timeout(3000),
+      })
+      return healthResp.ok
+    } catch {
+      return false
+    }
+  }
+}
+
+// =============================================================================
+// Singleton
+// =============================================================================
+
+let _controller: WarmPoolController | null = null
+
+export function getWarmPoolController(): WarmPoolController {
+  if (!_controller) {
+    _controller = new WarmPoolController()
+  }
+  return _controller
+}
+
+/**
+ * Initialize and start the warm pool controller.
+ * Call this at API server startup (in Kubernetes only).
+ */
+export async function startWarmPool(): Promise<WarmPoolController> {
+  const controller = getWarmPoolController()
+  await controller.start()
+  return controller
+}

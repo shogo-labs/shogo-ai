@@ -90,7 +90,7 @@ export default defineConfig(({ mode }) => {
         // shadcn/ui path alias
         '@': path.resolve(__dirname, './src'),
         // For ?raw imports that reference ../../../../src/
-        // The WavesmithMetaDemo expects src/ to be 4 levels up from apps/web/src/components/Unit2_*/
+        // The ShogoMetaDemo expects src/ to be 4 levels up from apps/web/src/components/Unit2_*/
         // We remap so that ../../../../src resolves to packages/state-api/src
       },
     },

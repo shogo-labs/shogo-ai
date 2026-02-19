@@ -8,7 +8,7 @@
 
 import { useState, useCallback, useMemo } from "react"
 import { cn } from "@/lib/utils"
-import type { Message } from "@ai-sdk/react"
+import type { UIMessage } from "@ai-sdk/react"
 import { Streamdown } from "streamdown"
 import { InlineToolWidget } from "./InlineToolWidget"
 import { AskUserQuestionWidget } from "./AskUserQuestionWidget"
@@ -19,7 +19,7 @@ import { useChatContextSafe } from "../ChatContext"
 
 export interface AssistantContentProps {
   /** The assistant message to render */
-  message: Message
+  message: UIMessage
   /** Whether this message is currently streaming */
   isStreaming?: boolean
   /** Optional class name */
@@ -46,7 +46,7 @@ function mapToolState(state?: string): ToolCallData["state"] {
  * Extract ordered parts from an AI SDK message.
  * Preserves the natural interleaving of text, tools, and images.
  */
-function extractOrderedParts(message: Message): MessagePart[] {
+function extractOrderedParts(message: UIMessage): MessagePart[] {
   const parts = (message as any).parts as any[] | undefined
 
   // DEBUG: Log what we're receiving
@@ -61,8 +61,8 @@ function extractOrderedParts(message: Message): MessagePart[] {
   // Fallback: single text part from content
   if (!parts || !Array.isArray(parts)) {
     // console.log("[AssistantContent] Falling back to message.content")
-    if (typeof message.content === "string" && message.content) {
-      return [{ type: "text", text: message.content, id: "text-0" }]
+    if (typeof (message as any).content === "string" && (message as any).content) {
+      return [{ type: "text", text: (message as any).content, id: "text-0" }]
     }
     return []
   }
