@@ -6,7 +6,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react'
-import { FileText, Save, RefreshCw, Eye, Pencil } from 'lucide-react'
+import { FileText, Save, RefreshCw, Eye, Pencil, Download, Upload } from 'lucide-react'
 import { Streamdown } from 'streamdown'
 import { cn } from '@/lib/utils'
 import { useAgentUrl } from '@/hooks/useAgentUrl'
@@ -37,7 +37,50 @@ export function AgentWorkspacePanel({ projectId, visible, localAgentUrl }: Agent
   const [isPreview, setIsPreview] = useState(false)
   const { refetch: getAgentUrl } = useAgentUrl(projectId, localAgentUrl)
 
+  const [isExporting, setIsExporting] = useState(false)
+  const [importRef] = useState(() => ({ current: null as HTMLInputElement | null }))
+
   const hasChanges = content !== savedContent
+
+  const handleExport = useCallback(async () => {
+    setIsExporting(true)
+    try {
+      const baseUrl = await getAgentUrl()
+      const res = await fetch(`${baseUrl}/agent/export`)
+      if (!res.ok) throw new Error('Failed to export')
+      const bundle = await res.json()
+      const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `agent-${projectId.slice(0, 8)}.shogo.json`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (err: any) {
+      setError(err.message)
+    } finally {
+      setIsExporting(false)
+    }
+  }, [getAgentUrl, projectId])
+
+  const handleImport = useCallback(async (file: File) => {
+    try {
+      const text = await file.text()
+      const bundle = JSON.parse(text)
+      const baseUrl = await getAgentUrl()
+      const res = await fetch(`${baseUrl}/agent/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(bundle),
+      })
+      if (!res.ok) throw new Error('Failed to import')
+      const data = await res.json()
+      loadFile(selectedFile)
+      setError(null)
+    } catch (err: any) {
+      setError(err.message)
+    }
+  }, [getAgentUrl, selectedFile])
 
   const loadFile = useCallback(async (filename: string) => {
     setIsLoading(true)
@@ -84,8 +127,8 @@ export function AgentWorkspacePanel({ projectId, visible, localAgentUrl }: Agent
   return (
     <div className={cn('absolute inset-0 flex', !visible && 'invisible pointer-events-none')}>
       {/* File sidebar */}
-      <div className="w-48 border-r bg-muted/30 overflow-y-auto">
-        <div className="p-2">
+      <div className="w-48 border-r bg-muted/30 overflow-y-auto flex flex-col">
+        <div className="p-2 flex-1">
           <div className="text-xs font-medium text-muted-foreground px-2 py-1">
             Workspace Files
           </div>
@@ -109,6 +152,34 @@ export function AgentWorkspacePanel({ projectId, visible, localAgentUrl }: Agent
               </div>
             </button>
           ))}
+        </div>
+        <div className="p-2 border-t space-y-1">
+          <button
+            onClick={handleExport}
+            disabled={isExporting}
+            className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+          >
+            <Download className="h-3 w-3" />
+            {isExporting ? 'Exporting...' : 'Export Agent'}
+          </button>
+          <button
+            onClick={() => importRef.current?.click()}
+            className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+          >
+            <Upload className="h-3 w-3" />
+            Import Agent
+          </button>
+          <input
+            ref={(el) => { importRef.current = el }}
+            type="file"
+            accept=".json,.shogo.json"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0]
+              if (file) handleImport(file)
+              e.target.value = ''
+            }}
+          />
         </div>
       </div>
 

@@ -391,6 +391,40 @@ export class LocalAgentRuntimeManager {
       .map(([id]) => id)
   }
 
+  /**
+   * Pre-warm MCP server npm packages for an agent so they're available offline.
+   * Reads config.json for mcpServers entries and runs `npx --yes <package>` to cache them.
+   */
+  async prewarmMCPServers(projectId: string): Promise<string[]> {
+    const agentDir = this.ensureAgentDir(projectId)
+    const configPath = join(agentDir, 'config.json')
+    if (!existsSync(configPath)) return []
+
+    try {
+      const config = JSON.parse(readFileSync(configPath, 'utf-8'))
+      const servers = config.mcpServers || {}
+      const packages: string[] = []
+
+      for (const [name, serverConfig] of Object.entries<any>(servers)) {
+        if (serverConfig.command === 'npx' && serverConfig.args?.[0]) {
+          packages.push(serverConfig.args[0])
+          this.emitLog(projectId, `[desktop] Pre-warming MCP server: ${name} (${serverConfig.args[0]})`)
+        }
+      }
+
+      return packages
+    } catch {
+      return []
+    }
+  }
+
+  /**
+   * Get the workspace directory for a project.
+   */
+  getAgentDir(projectId: string): string {
+    return join(this.config.agentsDir, projectId)
+  }
+
   async stopAll(): Promise<void> {
     await Promise.all(
       Array.from(this.runtimes.keys()).map((id) =>

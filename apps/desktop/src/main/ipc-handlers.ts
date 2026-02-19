@@ -139,6 +139,17 @@ export function registerIpcHandlers(
     return safeStorage.isEncryptionAvailable()
   })
 
+  // ── MCP server management ─────────────────────────────────────
+
+  ipcMain.handle('mcp:prewarm', async (_event, projectId: string) => {
+    try {
+      const packages = await runtimeManager.prewarmMCPServers(projectId)
+      return { ok: true, data: packages }
+    } catch (err: any) {
+      return { ok: false, error: err.message }
+    }
+  })
+
   // ── File sync ──────────────────────────────────────────────────
 
   ipcMain.handle('sync:enable', (_event, projectId: string) => {

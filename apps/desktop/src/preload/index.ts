@@ -50,6 +50,9 @@ export interface ShogoDesktopAPI {
     hasApiKey: () => Promise<boolean>
     clearApiKey: () => Promise<IpcResult>
   }
+  mcp: {
+    prewarm: (projectId: string) => Promise<IpcResult<string[]>>
+  }
   app: {
     version: () => Promise<string>
     platform: () => Promise<string>
@@ -101,6 +104,9 @@ const api: ShogoDesktopAPI = {
     setApiKey: (key) => ipcRenderer.invoke('auth:setApiKey', key),
     hasApiKey: () => ipcRenderer.invoke('auth:hasApiKey'),
     clearApiKey: () => ipcRenderer.invoke('auth:clearApiKey'),
+  },
+  mcp: {
+    prewarm: (projectId) => ipcRenderer.invoke('mcp:prewarm', projectId),
   },
   app: {
     version: () => ipcRenderer.invoke('app:version'),

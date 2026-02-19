@@ -101,6 +101,7 @@ export class AgentGateway {
     this._onLog = fn
   }
 
+
   private emitLog(line: string): void {
     const ts = new Date().toISOString()
     const formatted = `[${ts}] ${line}`
@@ -902,6 +903,16 @@ export class AgentGateway {
       case 'email': {
         const { EmailAdapter } = await import('./channels/email')
         adapter = new EmailAdapter()
+        break
+      }
+      case 'slack': {
+        const { SlackAdapter } = await import('./channels/slack')
+        adapter = new SlackAdapter(config)
+        break
+      }
+      case 'whatsapp': {
+        const { WhatsAppAdapter } = await import('./channels/whatsapp')
+        adapter = new WhatsAppAdapter(config)
         break
       }
       default:

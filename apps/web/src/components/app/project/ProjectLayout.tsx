@@ -38,6 +38,9 @@ import {
   AgentHeartbeatPanel,
   AgentChannelsPanel,
   AgentLogsPanel,
+  AgentMCPCatalogPanel,
+  AgentSetupWizard,
+  AgentAnalyticsPanel,
 } from "./agent"
 import { cn, getTotalCreditsForPlan } from "@/lib/utils"
 import { isDesktop, getDesktopAPI } from "@/lib/desktop"
@@ -1040,10 +1043,13 @@ export const ProjectLayout = observer(function ProjectLayout() {
               {(isAgentProject
                 ? [
                     { id: 'test-chat', label: 'Test Chat' },
+                    { id: 'setup', label: 'Setup Wizard' },
                     { id: 'workspace', label: 'Workspace' },
                     { id: 'skills', label: 'Skills' },
+                    { id: 'mcp-servers', label: 'MCP Servers' },
                     { id: 'heartbeat', label: 'Heartbeat' },
                     { id: 'channels', label: 'Channels' },
+                    { id: 'analytics', label: 'Analytics' },
                     { id: 'logs', label: 'Logs' },
                   ]
                 : [
@@ -1216,6 +1222,12 @@ export const ProjectLayout = observer(function ProjectLayout() {
                     visible={previewMode === 'test-chat'}
                     localAgentUrl={localAgentUrl}
                   />
+                  <AgentSetupWizard
+                    projectId={projectId || ''}
+                    visible={previewMode === 'setup'}
+                    localAgentUrl={localAgentUrl}
+                    onComplete={() => setPreviewMode('test-chat')}
+                  />
                   <AgentWorkspacePanel
                     projectId={projectId || ''}
                     visible={previewMode === 'workspace'}
@@ -1235,6 +1247,15 @@ export const ProjectLayout = observer(function ProjectLayout() {
                     projectId={projectId || ''}
                     visible={previewMode === 'channels'}
                     localAgentUrl={localAgentUrl}
+                  />
+                  <AgentMCPCatalogPanel
+                    projectId={projectId || ''}
+                    visible={previewMode === 'mcp-servers'}
+                    localAgentUrl={localAgentUrl}
+                  />
+                  <AgentAnalyticsPanel
+                    projectId={projectId || ''}
+                    visible={previewMode === 'analytics'}
                   />
                   <AgentLogsPanel
                     projectId={projectId || ''}

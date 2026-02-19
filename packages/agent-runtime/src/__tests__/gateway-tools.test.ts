@@ -180,14 +180,16 @@ describe('gateway-tools', () => {
   })
 
   describe('tool sets', () => {
-    test('createAllTools returns 8 tools', () => {
-      expect(createAllTools(createCtx())).toHaveLength(8)
+    test('createAllTools returns 10 tools', () => {
+      expect(createAllTools(createCtx())).toHaveLength(10)
       expect(createAllTools(createCtx()).find((t) => t.name === 'cron')).toBeDefined()
+      expect(createAllTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()
+      expect(createAllTools(createCtx()).find((t) => t.name === 'browser')).toBeDefined()
     })
 
     test('createHeartbeatTools excludes exec and send_message', () => {
       const hbTools = createHeartbeatTools(createCtx())
-      expect(hbTools).toHaveLength(6)
+      expect(hbTools).toHaveLength(8)
       expect(hbTools.find((t) => t.name === 'exec')).toBeUndefined()
       expect(hbTools.find((t) => t.name === 'send_message')).toBeUndefined()
       expect(hbTools.find((t) => t.name === 'cron')).toBeDefined()

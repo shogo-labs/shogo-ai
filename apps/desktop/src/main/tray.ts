@@ -41,29 +41,52 @@ export function updateTrayMenu(): void {
   const activeProjects = runtimeManager.getActiveProjects()
   const allRuntimes = runtimeManager.list()
 
+  const statusIcon = (status: string) => {
+    switch (status) {
+      case 'running': return '🟢'
+      case 'starting': return '🟡'
+      case 'error': return '🔴'
+      default: return '⚪'
+    }
+  }
+
   const agentItems: Electron.MenuItemConstructorOptions[] = allRuntimes.length > 0
-    ? allRuntimes.map((rt) => ({
-        label: `${rt.id.slice(0, 8)}... — ${rt.status}`,
-        submenu: [
-          {
-            label: rt.status === 'running' ? 'Stop' : 'Start',
-            click: () => {
-              if (rt.status === 'running') {
-                runtimeManager!.stop(rt.id).then(updateTrayMenu)
-              } else {
-                runtimeManager!.start(rt.id).then(updateTrayMenu)
-              }
+    ? allRuntimes.map((rt) => {
+        const uptime = rt.status === 'running'
+          ? ` (${Math.round((Date.now() - rt.startedAt) / 60000)}m)`
+          : ''
+        return {
+          label: `${statusIcon(rt.status)} ${rt.id.slice(0, 8)}...${uptime}`,
+          submenu: [
+            {
+              label: `Status: ${rt.status}`,
+              enabled: false,
             },
-          },
-          {
-            label: 'Restart',
-            enabled: rt.status === 'running',
-            click: () => {
-              runtimeManager!.restart(rt.id).then(updateTrayMenu)
+            {
+              label: `Port: ${rt.port}`,
+              enabled: false,
             },
-          },
-        ],
-      }))
+            { type: 'separator' as const },
+            {
+              label: rt.status === 'running' ? 'Stop Agent' : 'Start Agent',
+              click: () => {
+                if (rt.status === 'running') {
+                  runtimeManager!.stop(rt.id).then(updateTrayMenu)
+                } else {
+                  runtimeManager!.start(rt.id).then(updateTrayMenu)
+                }
+              },
+            },
+            {
+              label: 'Restart Agent',
+              enabled: rt.status === 'running',
+              click: () => {
+                runtimeManager!.restart(rt.id).then(updateTrayMenu)
+              },
+            },
+          ],
+        }
+      })
     : [{ label: 'No agents running', enabled: false }]
 
   const menu = Menu.buildFromTemplate([

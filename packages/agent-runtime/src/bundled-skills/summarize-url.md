@@ -1,22 +1,19 @@
 ---
 name: summarize-url
 version: 1.0.0
-description: Fetch and summarize the content of a URL or web page
-trigger: "summarize this url|summarize this page|summarize this article|tldr|give me the gist"
+description: Fetch a URL and provide a concise summary of the content
+trigger: "summarize|tldr|summarise|sum up"
 tools: [web_fetch]
 ---
 
 # Summarize URL
 
-When the user provides a URL or asks to summarize a page:
+When the user provides a URL to summarize:
 
-1. **Fetch** the URL content using web_fetch
-2. **Extract** the main content (skip navigation, ads, boilerplate)
-3. **Summarize** in this structure:
-   - **Title** of the page/article
-   - **TL;DR** — 1-2 sentence summary
-   - **Key Points** — 3-5 bullet points
-   - **Notable Quotes** — if any standout quotes exist
-   - **Length** — estimated reading time of original
-
-Keep the summary concise but complete. Preserve the author's intent and main arguments.
+1. Fetch the page content using web_fetch
+2. Extract the main content (ignore navigation, ads, footers)
+3. Provide a structured summary:
+   - **TL;DR:** 1-2 sentence overview
+   - **Key Points:** 3-5 bullet points
+   - **Notable Details:** Anything particularly interesting or important
+4. Keep the total summary under 200 words

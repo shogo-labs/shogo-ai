@@ -1,35 +1,34 @@
 ---
 name: code-review
 version: 1.0.0
-description: Review code files for bugs, style issues, and improvements
-trigger: "review this code|code review|check this code|audit code"
-tools: [read_file]
+description: Review code snippets or files for quality, security, and best practices
+trigger: "review code|check code|code review|review this"
+tools: [read_file, exec]
 ---
 
 # Code Review
 
-When the user asks for a code review:
+When asked to review code:
 
-1. **Read** the specified file(s)
-2. **Analyze** for:
-   - **Bugs:** Logic errors, off-by-one, null safety, race conditions
-   - **Security:** Injection risks, exposed secrets, insecure defaults
-   - **Performance:** N+1 queries, unnecessary allocations, missing caches
-   - **Style:** Naming conventions, code organization, dead code
-   - **Best practices:** Error handling, typing, documentation
-3. **Prioritize** findings by severity (Critical > High > Medium > Low)
+1. Read the provided code (from message or file)
+2. Analyze for:
+   - **Security:** SQL injection, XSS, hardcoded secrets, auth issues
+   - **Correctness:** Logic errors, edge cases, error handling
+   - **Performance:** N+1 queries, unnecessary allocations, blocking calls
+   - **Style:** Naming, structure, readability
+3. Provide actionable feedback
 
 ## Output Format
 
-### Code Review: [filename]
+### Code Review Summary
 
-**Overall:** [Good / Needs Work / Critical Issues]
+**Overall:** ✅ Looks good / ⚠️ Needs changes / 🔴 Critical issues
 
-**Critical:**
-- Line X: [description of issue]
+**Security:**
+- [Finding with severity and suggestion]
+
+**Correctness:**
+- [Finding with explanation]
 
 **Suggestions:**
-- Line Y: [improvement suggestion]
-
-**Positive:**
-- [What's done well]
+- [Improvement ideas]

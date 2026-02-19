@@ -20,10 +20,13 @@
     "@playwright/mcp": "^0.0.68",
     "@shogo/shared-runtime": "workspace:*",
     "@sinclair/typebox": "^0.34.48",
+    "@types/better-sqlite3": "^7.6.13",
     "ai": "^6.0.73",
+    "better-sqlite3": "^12.6.2",
     "hono": "^4.7.10",
     "imapflow": "^1.2.10",
     "nodemailer": "^8.0.1",
+    "playwright-core": "^1.58.2",
     "tar": "^7.4.3",
     "yaml": "^2.7.1",
     "zod": "^3.24.4"

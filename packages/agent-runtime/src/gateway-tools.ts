@@ -14,6 +14,7 @@ import { execSync } from 'child_process'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec } from './sandbox-exec'
+import { MemorySearchEngine } from './memory-search'
 
 export interface ToolContext {
   workspaceDir: string
@@ -250,11 +251,160 @@ function createMemoryWriteTool(ctx: ToolContext): AgentTool {
   }
 }
 
+function createMemorySearchTool(ctx: ToolContext): AgentTool {
+  let engine: MemorySearchEngine | null = null
+
+  function getEngine(): MemorySearchEngine {
+    if (!engine) {
+      engine = new MemorySearchEngine(ctx.workspaceDir)
+    }
+    return engine
+  }
+
+  return {
+    name: 'memory_search',
+    description:
+      'Search across all agent memory (MEMORY.md and daily logs) using hybrid keyword + semantic matching. Returns the most relevant memory chunks ranked by relevance.',
+    label: 'Search Memory',
+    parameters: Type.Object({
+      query: Type.String({ description: 'Natural language search query' }),
+      limit: Type.Optional(Type.Number({ description: 'Max results to return (default: 8)' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { query, limit = 8 } = params as { query: string; limit?: number }
+
+      try {
+        const results = getEngine().search(query, limit)
+        return textResult({
+          query,
+          results: results.map((r) => ({
+            file: r.file,
+            lines: `${r.lineStart}-${r.lineEnd}`,
+            score: Math.round(r.score * 100) / 100,
+            matchType: r.matchType,
+            content: r.chunk,
+          })),
+          totalMatches: results.length,
+        })
+      } catch (err: any) {
+        return textResult({ error: `Memory search failed: ${err.message}`, query })
+      }
+    },
+  }
+}
+
+function createBrowserTool(ctx: ToolContext): AgentTool {
+  let browser: any = null
+  let page: any = null
+
+  async function ensureBrowser() {
+    if (browser && page) return page
+    try {
+      const pw = await import('playwright-core')
+      browser = await pw.chromium.launch({ headless: true })
+      page = await browser.newPage()
+      return page
+    } catch {
+      throw new Error('Playwright is not installed. Run: bunx playwright install chromium')
+    }
+  }
+
+  async function cleanup() {
+    try { if (page) await page.close() } catch {}
+    try { if (browser) await browser.close() } catch {}
+    page = null
+    browser = null
+  }
+
+  return {
+    name: 'browser',
+    description:
+      'Control a headless browser. Actions: navigate (go to URL), click (CSS selector), fill (type into input), text (extract page text), screenshot (capture page), evaluate (run JS), close.',
+    label: 'Browser',
+    parameters: Type.Object({
+      action: Type.Union([
+        Type.Literal('navigate'),
+        Type.Literal('click'),
+        Type.Literal('fill'),
+        Type.Literal('text'),
+        Type.Literal('screenshot'),
+        Type.Literal('evaluate'),
+        Type.Literal('close'),
+      ], { description: 'Browser action to perform' }),
+      url: Type.Optional(Type.String({ description: 'URL to navigate to (for navigate action)' })),
+      selector: Type.Optional(Type.String({ description: 'CSS selector (for click/fill actions)' })),
+      value: Type.Optional(Type.String({ description: 'Text to type (for fill action) or JS to evaluate' })),
+      waitMs: Type.Optional(Type.Number({ description: 'Wait time in ms after action (default: 1000)' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { action, url, selector, value, waitMs = 1000 } = params as {
+        action: string
+        url?: string
+        selector?: string
+        value?: string
+        waitMs?: number
+      }
+
+      try {
+        if (action === 'close') {
+          await cleanup()
+          return textResult({ ok: true, action: 'close' })
+        }
+
+        const p = await ensureBrowser()
+
+        switch (action) {
+          case 'navigate': {
+            if (!url) return textResult({ error: 'url is required for navigate' })
+            await p.goto(url, { timeout: 30000, waitUntil: 'domcontentloaded' })
+            if (waitMs > 0) await p.waitForTimeout(Math.min(waitMs, 5000))
+            const title = await p.title()
+            const pageUrl = p.url()
+            return textResult({ ok: true, title, url: pageUrl })
+          }
+          case 'click': {
+            if (!selector) return textResult({ error: 'selector is required for click' })
+            await p.click(selector, { timeout: 5000 })
+            if (waitMs > 0) await p.waitForTimeout(Math.min(waitMs, 3000))
+            return textResult({ ok: true, action: 'click', selector })
+          }
+          case 'fill': {
+            if (!selector || value === undefined) return textResult({ error: 'selector and value required for fill' })
+            await p.fill(selector, value, { timeout: 5000 })
+            return textResult({ ok: true, action: 'fill', selector })
+          }
+          case 'text': {
+            const text = await p.evaluate(() => document.body.innerText)
+            const truncated = typeof text === 'string' && text.length > 50000
+              ? text.substring(0, 50000) + '\n[Truncated]'
+              : text
+            return textResult({ content: truncated, url: p.url(), title: await p.title() })
+          }
+          case 'screenshot': {
+            const screenshotPath = join(ctx.workspaceDir, 'screenshot.png')
+            await p.screenshot({ path: screenshotPath, fullPage: false })
+            return textResult({ ok: true, path: 'screenshot.png', url: p.url() })
+          }
+          case 'evaluate': {
+            if (!value) return textResult({ error: 'value (JS code) is required for evaluate' })
+            const result = await p.evaluate(value)
+            return textResult({ result, url: p.url() })
+          }
+          default:
+            return textResult({ error: `Unknown browser action: ${action}` })
+        }
+      } catch (err: any) {
+        return textResult({ error: `Browser error: ${err.message}`, action })
+      }
+    },
+  }
+}
+
 function createSendMessageTool(ctx: ToolContext): AgentTool {
   return {
     name: 'send_message',
     description:
-      'Send a message through a connected messaging channel (telegram, discord).',
+      'Send a message through a connected messaging channel (telegram, discord, slack, whatsapp, email).',
     label: 'Send Message',
     parameters: Type.Object({
       channel: Type.String({ description: 'Channel type (e.g. "telegram", "discord")' }),
@@ -375,18 +525,19 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   web_fetch: ['web_fetch'],
   web_search: ['web_fetch'],
   browser: [
+    'browser',
     'mcp_playwright_browser_navigate', 'mcp_playwright_browser_snapshot',
     'mcp_playwright_browser_click', 'mcp_playwright_browser_type',
     'mcp_playwright_browser_screenshot', 'mcp_playwright_browser_close',
   ],
-  memory: ['memory_read', 'memory_write'],
+  memory: ['memory_read', 'memory_write', 'memory_search'],
   messaging: ['send_message'],
   cron: ['cron'],
 }
 
 export const ALL_TOOL_NAMES = [
-  'exec', 'read_file', 'write_file', 'web_fetch',
-  'memory_read', 'memory_write', 'send_message', 'cron',
+  'exec', 'read_file', 'write_file', 'web_fetch', 'browser',
+  'memory_read', 'memory_write', 'memory_search', 'send_message', 'cron',
 ] as const
 
 /**
@@ -419,8 +570,10 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createReadFileTool(ctx),
     createWriteFileTool(ctx),
     createWebFetchTool(),
+    createBrowserTool(ctx),
     createMemoryReadTool(ctx),
     createMemoryWriteTool(ctx),
+    createMemorySearchTool(ctx),
     createSendMessageTool(ctx),
     createCronTool(ctx),
   ]
@@ -432,8 +585,10 @@ export function createHeartbeatTools(ctx: ToolContext): AgentTool[] {
     createReadFileTool(ctx),
     createWriteFileTool(ctx),
     createWebFetchTool(),
+    createBrowserTool(ctx),
     createMemoryReadTool(ctx),
     createMemoryWriteTool(ctx),
+    createMemorySearchTool(ctx),
     createCronTool(ctx),
   ]
 }

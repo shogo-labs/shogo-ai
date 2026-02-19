@@ -1,33 +1,31 @@
 ---
 name: web-research
 version: 1.0.0
-description: Research a topic using web search and provide a structured summary with sources
-trigger: "research|look up|find info|find out about|what do you know about"
-tools: [web_fetch, memory_write]
+description: Research a topic using web search and synthesize findings into a structured summary with sources
+trigger: "research|look up|find out about|what is|tell me about"
+tools: [web_fetch, memory_read, memory_write]
 ---
 
 # Web Research
 
-When this skill is triggered, perform thorough web research on the user's topic:
+When triggered, perform thorough web research:
 
-1. **Search:** Use web_fetch to search for the topic (try Google, Bing, or DuckDuckGo)
-2. **Deep dive:** Visit the top 3-5 most relevant results
-3. **Synthesize:** Combine findings into a structured summary with:
-   - Key facts and figures
-   - Different perspectives if applicable
-   - Timeline of events if relevant
-4. **Cite sources:** Always include URLs for every claim
-5. **Save:** Store key findings in daily memory for future reference
+1. Search for the topic using web search (try 2-3 different search queries)
+2. Visit top 3-5 relevant results using web_fetch
+3. Synthesize findings into a structured summary
+4. Include source URLs for all claims
+5. Save key findings to MEMORY.md for future reference
 
 ## Output Format
 
-### [Topic Name]
+### [Topic]
+**Key Takeaways:**
+- Bullet point 1
+- Bullet point 2
 
-**Summary:** 2-3 sentence overview
-
-**Key Findings:**
-- Finding 1 ([source](url))
-- Finding 2 ([source](url))
+**Details:**
+[Structured findings with headers]
 
 **Sources:**
-1. [Title](url) - brief description
+- [Source 1](url)
+- [Source 2](url)

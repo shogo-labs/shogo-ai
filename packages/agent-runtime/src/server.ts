@@ -307,6 +307,11 @@ const app = new Hono()
 
 app.use('*', cors({ origin: '*' }))
 
+// Register WhatsApp webhook routes (must be before any auth middleware)
+import('./channels/whatsapp').then(({ WhatsAppAdapter }) => {
+  WhatsAppAdapter.registerWebhookRoutes(app)
+}).catch(() => { /* WhatsApp adapter not available */ })
+
 // Health check
 app.get('/health', (c) =>
   c.json({
@@ -704,6 +709,156 @@ app.put('/agent/files/:filename', async (c) => {
   } catch (error: any) {
     return c.json({ error: error.message }, 500)
   }
+})
+
+// MCP Catalog endpoints — powers the "MCP Servers" tab in the web UI
+import { MCP_CATALOG, MCP_CATEGORIES } from './mcp-catalog'
+// Agent Templates API — powers the templates gallery
+import { getTemplateSummaries, TEMPLATE_CATEGORIES } from './agent-templates'
+// Agent Recipes API — powers the recipes wizard
+import { AGENT_RECIPES, RECIPE_CATEGORIES } from './agent-recipes'
+
+app.get('/agent/mcp-catalog', (c) => {
+  return c.json({ catalog: MCP_CATALOG, categories: MCP_CATEGORIES })
+})
+
+app.get('/agent/bundled-skills', (c) => {
+  const { loadBundledSkills } = require('./skills')
+  const bundled = loadBundledSkills(new Set())
+  return c.json({
+    skills: bundled.map((s: any) => ({
+      name: s.name,
+      version: s.version,
+      description: s.description,
+      trigger: s.trigger,
+      tools: s.tools,
+      content: s.content,
+    })),
+  })
+})
+
+app.post('/agent/bundled-skills/install', async (c) => {
+  const { name } = await c.req.json() as { name: string }
+  const { loadBundledSkills } = require('./skills')
+  const bundled = loadBundledSkills(new Set())
+  const skill = bundled.find((s: any) => s.name === name)
+
+  if (!skill) {
+    return c.json({ error: `Bundled skill "${name}" not found` }, 404)
+  }
+
+  const skillsDir = join(AGENT_DIR, 'skills')
+  mkdirSync(skillsDir, { recursive: true })
+  const destPath = join(skillsDir, `${name}.md`)
+
+  const { readFileSync: rfs } = require('fs')
+  const content = rfs(skill.filePath, 'utf-8')
+  writeFileSync(destPath, content, 'utf-8')
+
+  return c.json({ ok: true, installed: name })
+})
+
+app.get('/agent/templates', (c) => {
+  return c.json({ templates: getTemplateSummaries(), categories: TEMPLATE_CATEGORIES })
+})
+
+app.get('/agent/recipes', (c) => {
+  return c.json({ recipes: AGENT_RECIPES, categories: RECIPE_CATEGORIES })
+})
+
+app.post('/agent/mcp-servers/toggle', async (c) => {
+  const { serverId, enabled, env } = await c.req.json() as {
+    serverId: string
+    enabled: boolean
+    env?: Record<string, string>
+  }
+
+  const entry = MCP_CATALOG.find((e) => e.id === serverId)
+  if (!entry) {
+    return c.json({ error: `Unknown MCP server: ${serverId}` }, 400)
+  }
+
+  const configPath = join(AGENT_DIR, 'config.json')
+  let config: Record<string, any> = {}
+  if (existsSync(configPath)) {
+    config = JSON.parse(readFileSync(configPath, 'utf-8'))
+  }
+
+  config.mcpServers = config.mcpServers || {}
+
+  if (enabled) {
+    config.mcpServers[entry.id] = {
+      command: 'npx',
+      args: [entry.package, ...entry.defaultArgs],
+      ...(env && Object.keys(env).length > 0 ? { env } : {}),
+    }
+  } else {
+    delete config.mcpServers[entry.id]
+  }
+
+  writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
+  return c.json({ ok: true, serverId, enabled, servers: config.mcpServers })
+})
+
+// Agent export/import — bundle workspace into a shareable .shogo config
+app.get('/agent/export', async (c) => {
+  const exportFiles: Record<string, string> = {}
+  const exportableFiles = [
+    'AGENTS.md', 'SOUL.md', 'IDENTITY.md', 'USER.md',
+    'HEARTBEAT.md', 'MEMORY.md', 'TOOLS.md', 'config.json',
+  ]
+
+  for (const filename of exportableFiles) {
+    const filepath = join(AGENT_DIR, filename)
+    if (existsSync(filepath)) {
+      exportFiles[filename] = readFileSync(filepath, 'utf-8')
+    }
+  }
+
+  const skillsDir = join(AGENT_DIR, 'skills')
+  if (existsSync(skillsDir)) {
+    const { readdirSync } = require('fs')
+    const skillFiles = readdirSync(skillsDir) as string[]
+    for (const file of skillFiles) {
+      if (file.endsWith('.md')) {
+        exportFiles[`skills/${file}`] = readFileSync(join(skillsDir, file), 'utf-8')
+      }
+    }
+  }
+
+  const bundle = {
+    version: '1.0',
+    exportedAt: new Date().toISOString(),
+    projectId: process.env.PROJECT_ID || 'unknown',
+    files: exportFiles,
+  }
+
+  return c.json(bundle)
+})
+
+app.post('/agent/import', async (c) => {
+  const bundle = await c.req.json() as {
+    version: string
+    files: Record<string, string>
+  }
+
+  if (!bundle.files || typeof bundle.files !== 'object') {
+    return c.json({ error: 'Invalid bundle: missing files' }, 400)
+  }
+
+  const written: string[] = []
+  for (const [filename, content] of Object.entries(bundle.files)) {
+    if (filename.includes('..') || filename.startsWith('/')) {
+      continue
+    }
+    const filepath = join(AGENT_DIR, filename)
+    const dir = require('path').dirname(filepath)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(filepath, content, 'utf-8')
+    written.push(filename)
+  }
+
+  return c.json({ ok: true, imported: written.length, files: written })
 })
 
 // Console log for forwarding (matches project-runtime pattern)

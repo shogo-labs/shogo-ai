@@ -1,36 +1,33 @@
 ---
 name: github-check
 version: 1.0.0
-description: Check a GitHub repository for recent activity, issues, and PRs
-trigger: "check github|repo status|ci status|github update"
+description: Check a GitHub repository for recent activity, open issues, and PR status
+trigger: "check github|repo status|ci status|github status"
 tools: [web_fetch, exec]
 ---
 
-# GitHub Check
+# Check GitHub Repository
 
-When triggered, check the specified GitHub repository for:
+When triggered, check the specified GitHub repository:
 
-1. **Repository overview:** Stars, forks, last commit date
-2. **Open issues:** List recent open issues (last 5-10)
-3. **Pull requests:** List open PRs awaiting review
-4. **CI status:** Check if CI is passing on the default branch
-5. **Releases:** Any new releases in the last week
-
-## Approach
-
-- First try `gh` CLI if available: `gh repo view OWNER/REPO`
-- Fall back to web_fetch on GitHub web pages if CLI unavailable
-- Parse HTML or JSON responses to extract structured data
+1. Try using `gh` CLI first (exec tool) for structured data
+2. Fall back to web_fetch on GitHub web pages if CLI unavailable
+3. Report on:
+   - Repository stats (stars, forks, open issues count)
+   - Latest open issues (top 5, with labels)
+   - Open pull requests awaiting review
+   - CI/CD status on the default branch
+   - Any recent releases
 
 ## Output Format
 
-### [repo-name] Status
+**Repository:** owner/repo
+**Stars:** X | **Forks:** Y | **Open Issues:** Z
 
-**Health:** CI passing/failing | X open issues | Y open PRs
+**CI Status:** ✅ Passing / 🔴 Failing
 
 **Recent Issues:**
-- #123 Title (2h ago)
-- #122 Title (1d ago)
+- #123 Issue title (label) — 2 hours ago
 
 **Open PRs:**
-- #456 Title by @author (awaiting review)
+- #456 PR title — by @author, 1 day ago

@@ -607,44 +607,34 @@ defineTool({
 
 defineTool({
   name: 'memory_search',
-  description: 'Search across all agent memory files for a keyword or phrase',
+  description: 'Search across all agent memory files using hybrid keyword + semantic search. Returns the most relevant memory chunks ranked by relevance score.',
   inputSchema: {
     type: 'object',
     properties: {
-      query: { type: 'string', description: 'Search query' },
+      query: { type: 'string', description: 'Natural language search query' },
+      limit: { type: 'number', description: 'Max results (default: 10)' },
     },
     required: ['query'],
   },
   handler: async (input) => {
-    const query = (input.query as string).toLowerCase()
-    const results: Array<{ file: string; line: string; lineNumber: number }> = []
-
-    // Search MEMORY.md
-    const memoryPath = join(AGENT_DIR, 'MEMORY.md')
-    if (existsSync(memoryPath)) {
-      const content = readFileSync(memoryPath, 'utf-8')
-      content.split('\n').forEach((line, i) => {
-        if (line.toLowerCase().includes(query)) {
-          results.push({ file: 'MEMORY.md', line: line.trim(), lineNumber: i + 1 })
-        }
-      })
-    }
-
-    // Search daily logs
-    const memoryDir = join(AGENT_DIR, 'memory')
-    if (existsSync(memoryDir)) {
-      for (const file of readdirSync(memoryDir)) {
-        if (!file.endsWith('.md')) continue
-        const content = readFileSync(join(memoryDir, file), 'utf-8')
-        content.split('\n').forEach((line, i) => {
-          if (line.toLowerCase().includes(query)) {
-            results.push({ file: `memory/${file}`, line: line.trim(), lineNumber: i + 1 })
-          }
-        })
+    const { MemorySearchEngine } = await import('../memory-search')
+    const engine = new MemorySearchEngine(AGENT_DIR)
+    try {
+      const results = engine.search(input.query as string, (input.limit as number) || 10)
+      return {
+        query: input.query,
+        results: results.map((r) => ({
+          file: r.file,
+          lines: `${r.lineStart}-${r.lineEnd}`,
+          score: Math.round(r.score * 100) / 100,
+          matchType: r.matchType,
+          content: r.chunk,
+        })),
+        totalMatches: results.length,
       }
+    } finally {
+      engine.close()
     }
-
-    return { query: input.query, results, totalMatches: results.length }
   },
 })
 
@@ -669,37 +659,12 @@ defineTool({
 
 defineTool({
   name: 'agent_template_list',
-  description: 'List available agent starter templates',
+  description: 'List available agent starter templates. Returns templates grouped by category with descriptions and recommended MCP servers.',
   inputSchema: { type: 'object', properties: {} },
   handler: async () => {
     return {
-      templates: [
-        {
-          id: 'personal-assistant',
-          name: 'Personal Assistant',
-          description: 'General-purpose assistant with memory and heartbeat',
-        },
-        {
-          id: 'github-monitor',
-          name: 'GitHub Monitor',
-          description: 'Watches repos for issues, PRs, CI failures',
-        },
-        {
-          id: 'system-monitor',
-          name: 'System Monitor',
-          description: 'Checks server health, disk space, SSL certs, APIs',
-        },
-        {
-          id: 'slack-bot',
-          name: 'Slack Bot',
-          description: 'Team productivity bot with custom commands',
-        },
-        {
-          id: 'research-agent',
-          name: 'Research Agent',
-          description: 'Web research with periodic briefings',
-        },
-      ],
+      categories: TEMPLATE_CATEGORIES,
+      templates: getTemplateSummaries(),
     }
   },
 })
@@ -753,110 +718,19 @@ defineTool({
 })
 
 // =============================================================================
-// Agent Templates (Embedded)
+// Agent Templates (loaded from external registry)
 // =============================================================================
+
+import { getAgentTemplateById, getTemplateSummaries, TEMPLATE_CATEGORIES, type AgentTemplate as ExternalTemplate } from '../agent-templates'
 
 interface AgentTemplate {
   files: Record<string, string>
 }
 
 function getAgentTemplate(id: string): AgentTemplate | null {
-  const templates: Record<string, AgentTemplate> = {
-    'personal-assistant': {
-      files: {
-        'IDENTITY.md': `# Identity\n\n- **Name:** {{AGENT_NAME}}\n- **Emoji:** 🤖\n- **Tagline:** Your personal AI assistant\n`,
-        'SOUL.md': `# Soul\n\nYou are a helpful, reliable personal assistant. You communicate clearly, concisely, and warmly. You proactively remind about tasks and deadlines.\n\n## Boundaries\n- Never execute destructive commands without confirmation\n- Respect quiet hours\n- Keep responses concise unless asked for detail\n`,
-        'AGENTS.md': `# Agent Instructions\n\n## Core Behavior\n- Be proactive about reminders and follow-ups\n- Keep track of ongoing tasks in MEMORY.md\n- Summarize daily activity at end of day\n\n## Priorities\n1. Urgent messages — respond immediately\n2. Reminders and deadlines — check on heartbeat\n3. General requests — handle promptly\n`,
-        'USER.md': `# User\n\n- **Name:** (not set)\n- **Timezone:** UTC\n`,
-        'HEARTBEAT.md': `# Heartbeat Checklist\n\n## Reminders\n- Check for any upcoming deadlines or events\n- Review pending tasks that need follow-up\n`,
-        'config.json': JSON.stringify({
-          heartbeatInterval: 1800,
-          heartbeatEnabled: true,
-          quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
-          channels: [],
-          model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
-        }, null, 2),
-      },
-    },
-
-    'github-monitor': {
-      files: {
-        'IDENTITY.md': `# Identity\n\n- **Name:** {{AGENT_NAME}}\n- **Emoji:** 🐙\n- **Tagline:** Your GitHub watchdog\n`,
-        'SOUL.md': `# Soul\n\nYou are a focused, technical GitHub monitoring agent. You report concisely with links. You prioritize CI failures and security alerts above feature discussions.\n\n## Boundaries\n- Only alert on actionable items\n- Batch non-urgent updates into daily digests\n- Never modify repository code\n`,
-        'AGENTS.md': `# Agent Instructions\n\n## Core Behavior\n- Monitor configured GitHub repositories\n- Alert immediately on CI failures and security issues\n- Daily digest of new issues, PRs, and releases\n\n## Priorities\n1. CI failures on main/default branch — immediate alert\n2. Security advisories — immediate alert\n3. New issues labeled "critical" or "urgent" — immediate alert\n4. New PRs — daily digest\n5. New releases — daily digest\n`,
-        'USER.md': `# User\n\n- **Name:** (not set)\n- **Timezone:** UTC\n- **GitHub repos:** (configure repos to watch in HEARTBEAT.md)\n`,
-        'HEARTBEAT.md': `# Heartbeat Checklist\n\n## GitHub Monitoring (every heartbeat)\n- Check github.com/OWNER/REPO for new issues and PRs\n- Check if CI is passing on the default branch\n- Look for any new security advisories\n- Alert on anything labeled "critical" or "urgent"\n\n## Daily Digest (once per day)\n- Summarize all new issues, PRs, and releases from the last 24 hours\n- List PRs awaiting review\n`,
-        'config.json': JSON.stringify({
-          heartbeatInterval: 900,
-          heartbeatEnabled: true,
-          quietHours: { start: '00:00', end: '06:00', timezone: 'UTC' },
-          channels: [],
-          model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
-          mcpServers: {
-            playwright: { command: 'npx', args: ['@playwright/mcp@latest'] },
-          },
-        }, null, 2),
-        'skills/check-github.md': `---\nname: check-github\nversion: 1.0.0\ndescription: Check GitHub repos for new activity\ntrigger: "check github|repo status|ci status"\ntools: [web_fetch, exec, browser]\n---\n\n# Check GitHub\n\nWhen triggered, check configured GitHub repositories for:\n1. Open pull requests needing review\n2. CI/CD pipeline status on default branch\n3. New issues in the last 24 hours\n4. Any failing checks or actions\n\nProvide a concise summary with links.\n`,
-      },
-    },
-
-    'system-monitor': {
-      files: {
-        'IDENTITY.md': `# Identity\n\n- **Name:** {{AGENT_NAME}}\n- **Emoji:** 🔍\n- **Tagline:** Your infrastructure guardian\n`,
-        'SOUL.md': `# Soul\n\nYou are a vigilant systems monitoring agent. You are precise, technical, and always lead with the most critical information. You use clear severity levels: CRITICAL, WARNING, INFO.\n\n## Boundaries\n- Never restart services without explicit confirmation\n- Always include timestamps in alerts\n- Suppress duplicate alerts within 1 hour\n`,
-        'AGENTS.md': `# Agent Instructions\n\n## Core Behavior\n- Monitor system health endpoints on every heartbeat\n- Track trends (disk usage growing, memory creeping up)\n- Alert immediately on CRITICAL issues\n- Batch WARNING items into periodic summaries\n\n## Severity Levels\n- CRITICAL: Service down, disk > 95%, memory > 95%\n- WARNING: Disk > 85%, memory > 85%, high error rate\n- INFO: SSL cert expiring within 30 days, new deployment detected\n`,
-        'USER.md': `# User\n\n- **Name:** (not set)\n- **Timezone:** UTC\n`,
-        'HEARTBEAT.md': `# Heartbeat Checklist\n\n## Health Checks (every heartbeat)\n- Check https://YOUR-API.com/health returns 200\n- Check disk usage, alert if > 85%\n- Check memory usage, alert if > 85%\n- Check SSL certificate expiry for YOUR-DOMAIN.com\n\n## Log Monitoring\n- Check /var/log/app/errors.log for new errors in last 30 minutes\n- Alert on any 5xx error rate > 1%\n`,
-        'config.json': JSON.stringify({
-          heartbeatInterval: 600,
-          heartbeatEnabled: true,
-          quietHours: { start: '', end: '', timezone: 'UTC' },
-          channels: [],
-          model: { provider: 'anthropic', name: 'claude-haiku-4-5-20251001' },
-        }, null, 2),
-      },
-    },
-
-    'slack-bot': {
-      files: {
-        'IDENTITY.md': `# Identity\n\n- **Name:** {{AGENT_NAME}}\n- **Emoji:** 💬\n- **Tagline:** Your team's AI companion\n`,
-        'SOUL.md': `# Soul\n\nYou are a friendly, professional team assistant. You help with productivity, answer questions, and facilitate team communication. You use threads for long discussions.\n\n## Boundaries\n- Never share DM content in public channels\n- Keep responses under 500 words unless asked for more\n- Always be professional and inclusive\n`,
-        'AGENTS.md': `# Agent Instructions\n\n## Core Behavior\n- Respond to mentions and DMs promptly\n- Help with information lookup and summarization\n- Facilitate team standups and check-ins when asked\n\n## Skills\n- Summarize long threads\n- Look up documentation\n- Track action items from meetings\n`,
-        'USER.md': `# User\n\n- **Team:** (not set)\n- **Timezone:** UTC\n`,
-        'HEARTBEAT.md': '',
-        'config.json': JSON.stringify({
-          heartbeatInterval: 1800,
-          heartbeatEnabled: false,
-          quietHours: { start: '22:00', end: '08:00', timezone: 'UTC' },
-          channels: [],
-          model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
-        }, null, 2),
-      },
-    },
-
-    'research-agent': {
-      files: {
-        'IDENTITY.md': `# Identity\n\n- **Name:** {{AGENT_NAME}}\n- **Emoji:** 📚\n- **Tagline:** Your personal research assistant\n`,
-        'SOUL.md': `# Soul\n\nYou are a thorough, analytical research assistant. You cite sources, distinguish facts from opinions, and present findings in a structured format. You're great at synthesizing information from multiple sources.\n\n## Boundaries\n- Always cite sources with URLs\n- Clearly label speculation vs facts\n- Present balanced viewpoints on controversial topics\n`,
-        'AGENTS.md': `# Agent Instructions\n\n## Core Behavior\n- Research topics thoroughly using web search\n- Save key findings in MEMORY.md\n- Provide daily briefings on tracked topics\n\n## Output Format\n- Use headers for different topics\n- Include source links\n- Highlight key takeaways at the top\n`,
-        'USER.md': `# User\n\n- **Name:** (not set)\n- **Timezone:** UTC\n- **Research interests:** (configure in HEARTBEAT.md)\n`,
-        'HEARTBEAT.md': `# Heartbeat Checklist\n\n## Morning Briefing (daily)\n- Top 5 Hacker News stories relevant to my interests\n- Any new developments in topics I'm tracking (see MEMORY.md)\n- Notable new releases or announcements in my field\n`,
-        'config.json': JSON.stringify({
-          heartbeatInterval: 3600,
-          heartbeatEnabled: true,
-          quietHours: { start: '22:00', end: '07:00', timezone: 'UTC' },
-          channels: [],
-          model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
-          mcpServers: {
-            playwright: { command: 'npx', args: ['@playwright/mcp@latest'] },
-          },
-        }, null, 2),
-        'skills/web-research.md': `---\nname: web-research\nversion: 1.0.0\ndescription: Research a topic using web search and provide a structured summary\ntrigger: "research|look up|find out about|what is"\ntools: [web_fetch, memory_read, memory_write, browser]\n---\n\n# Web Research\n\nWhen triggered, perform thorough web research:\n1. Search for the topic using web search\n2. Visit top 3-5 relevant results\n3. Synthesize findings into a structured summary\n4. Include source URLs\n5. Save key findings to MEMORY.md\n`,
-      },
-    },
-  }
-
-  return templates[id] || null
+  const external = getAgentTemplateById(id)
+  if (!external) return null
+  return { files: external.files }
 }
 
 // =============================================================================
