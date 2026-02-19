@@ -9,7 +9,7 @@
  * The index is persisted in the agent workspace as `.memory-index.db`.
  */
 
-import Database from 'better-sqlite3'
+import { Database } from 'bun:sqlite'
 import { existsSync, readFileSync, readdirSync, mkdirSync, statSync } from 'fs'
 import { join } from 'path'
 
@@ -34,7 +34,7 @@ const CHUNK_SIZE = 6
 const CHUNK_OVERLAP = 2
 
 export class MemorySearchEngine {
-  private db: Database.Database
+  private db: Database
   private workspaceDir: string
   private initialized = false
 
@@ -42,7 +42,7 @@ export class MemorySearchEngine {
     this.workspaceDir = workspaceDir
     const dbPath = join(workspaceDir, '.memory-index.db')
     this.db = new Database(dbPath)
-    this.db.pragma('journal_mode = WAL')
+    this.db.exec('PRAGMA journal_mode = WAL')
     this.init()
   }
 
