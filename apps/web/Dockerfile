@@ -37,7 +37,7 @@ COPY packages/shared-runtime/package.json ./packages/shared-runtime/
 COPY packages/sdk/package.json ./packages/sdk/
 COPY apps/web/package.json ./apps/web/
 COPY apps/api/package.json ./apps/api/
-COPY apps/desktop/package.json ./apps/desktop/
+RUN mkdir -p apps/desktop && echo '{"name":"@shogo/desktop","version":"0.1.0","private":true}' > apps/desktop/package.json
 
 # Copy scripts needed for postinstall
 COPY scripts ./scripts
