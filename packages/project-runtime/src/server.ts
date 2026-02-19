@@ -453,35 +453,69 @@ const THEME_CSS: Record<string, { light: string; dark: string; radius: string }>
 }
 
 /**
- * Apply a theme to the project's index.css
+ * Apply a theme to the project's index.css.
+ * Output is Tailwind v4–compatible (@import "tailwindcss", @theme inline) so that
+ * utilities like border-border and bg-background work with the project's Tailwind v4 setup.
  */
 function applyThemeToProject(projectDir: string, themeId: string): void {
   const theme = THEME_CSS[themeId] || THEME_CSS.default
   const indexCssPath = join(projectDir, 'src', 'index.css')
-  
-  const themeCSS = `@tailwind base;
-@tailwind components;
-@tailwind utilities;
+  // Theme presets use HSL triplets (e.g. --border: 214.3 31.8% 91.4%); map to Tailwind v4 theme via hsl(var(--x))
+  const themeCSS = `@import "tailwindcss";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@plugin "tailwindcss-animate";
 
 /* Theme: ${themeId} */
 
-@layer base {
-  :root {
-    ${theme.light}
-    --radius: ${theme.radius}rem;
-  }
+:root {
+  ${theme.light}
+  --radius: ${theme.radius}rem;
+}
 
-  .dark {
-    ${theme.dark}
-  }
+.dark {
+  ${theme.dark}
+}
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card, 0 0% 100%));
+  --color-card-foreground: hsl(var(--card-foreground, 222.2 84% 4.9%));
+  --color-popover: hsl(var(--popover, 0 0% 100%));
+  --color-popover-foreground: hsl(var(--popover-foreground, 222.2 84% 4.9%));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground, 210 40% 98%));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
 }
 
 @layer base {
   * {
-    @apply border-border;
+    @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground antialiased;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+      Oxygen, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif;
   }
 }
 `
@@ -1257,7 +1291,7 @@ app.post('/templates/copy', async (c) => {
       return c.json(copyResult, 400)
     }
     
-    // Step 2: Apply theme if specified
+    // Step 2: Apply theme if specified.
     if (body.theme) {
       applyThemeToProject(PROJECT_DIR, body.theme)
     }
@@ -2706,10 +2740,14 @@ app.post('/preview/restart', async (c) => {
     const nodeModulesPath = join(PROJECT_DIR, 'node_modules')
     const nodeModulesExists = existsSync(nodeModulesPath)
     
-    // Check if node_modules appears complete (has key packages)
+    // Check if node_modules appears complete (has key packages AND lockfile)
+    // Without bun.lock, bun install must run to properly resolve the dependency graph.
+    // This prevents PostCSS/devDependency errors (e.g. @tailwindcss/postcss) when
+    // node_modules is copied from a template without a lockfile.
     const hasReact = existsSync(join(nodeModulesPath, 'react'))
     const hasVite = existsSync(join(nodeModulesPath, 'vite'))
-    const nodeModulesComplete = nodeModulesExists && hasReact && hasVite
+    const hasLockfile = existsSync(join(PROJECT_DIR, 'bun.lock'))
+    const nodeModulesComplete = nodeModulesExists && hasReact && hasVite && hasLockfile
     
     // Check if package.json has overrides - if so, we MUST run bun install to apply them
     // This is critical for templates using rolldown-vite via "overrides": { "vite": "npm:rolldown-vite@latest" }
@@ -3393,16 +3431,18 @@ app.post('/preview/dev', async (c) => {
     const nodeModulesExists = existsSync(nodeModulesPath)
     const hasReact = existsSync(join(nodeModulesPath, 'react'))
     const hasVite = existsSync(join(nodeModulesPath, 'vite'))
-    const nodeModulesComplete = nodeModulesExists && hasReact && hasVite
-    
+    const hasLockfile = existsSync(join(PROJECT_DIR, 'bun.lock'))
+    const nodeModulesComplete = nodeModulesExists && hasReact && hasVite && hasLockfile
+
     // Check if package.json has overrides - if so, we MUST run bun install to apply them
     // This is critical for templates using rolldown-vite via "overrides": { "vite": "npm:rolldown-vite@latest" }
     const hasOverrides = !!(packageJson.overrides || packageJson.resolutions)
     if (hasOverrides) {
       console.log('[project-runtime] Package has overrides/resolutions - will run bun install to apply them')
     }
-    
-    if (nodeModulesComplete && !hasOverrides) {
+
+    // Skip check disabled for now: always run bun install
+    if (false && nodeModulesComplete && !hasOverrides) {
       console.log('[project-runtime] ⚡ node_modules already exists - skipping bun install')
       markStep('bunInstall (skipped)')
     } else {
