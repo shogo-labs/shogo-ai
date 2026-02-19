@@ -1842,43 +1842,117 @@ function PrivacyTab() {
 // ============================================================================
 function AccountTab() {
   const { data: session, refetch } = useSession()
+  const { toast } = useToast()
   const user = session?.user
 
+  // --- localStorage helpers ---
+  const PROFILE_KEY = "shogo:account-profile"
+  const PREFS_KEY = "shogo:account-prefs"
+
+  const loadProfile = () => {
+    try {
+      const raw = localStorage.getItem(PROFILE_KEY)
+      return raw ? JSON.parse(raw) : {}
+    } catch { return {} }
+  }
+
+  const loadPrefs = () => {
+    try {
+      const raw = localStorage.getItem(PREFS_KEY)
+      return raw ? JSON.parse(raw) : {}
+    } catch { return {} }
+  }
+
+  // --- State (initialized from session + localStorage) ---
+  const savedProfile = loadProfile()
+  const savedPrefs = loadPrefs()
+
   const [name, setName] = useState(user?.name || "")
-  const [description, setDescription] = useState("")
-  const [location, setLocation] = useState("")
-  const [link, setLink] = useState("")
+  const [description, setDescription] = useState(savedProfile.description || "")
+  const [location, setLocation] = useState(savedProfile.location || "")
+  const [link, setLink] = useState(savedProfile.link || "")
   const [isSaving, setIsSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">("idle")
-  const [chatSuggestions, setChatSuggestions] = useState(true)
-  const [generationSound, setGenerationSound] = useState("first")
+  const [chatSuggestions, setChatSuggestions] = useState(savedPrefs.chatSuggestions ?? true)
+  const [generationSound, setGenerationSound] = useState(savedPrefs.generationSound || "first")
 
+  // --- Change tracking ---
   const originalName = user?.name || ""
-  const hasChanges = name !== originalName
+  const originalDescription = savedProfile.description || ""
+  const originalLocation = savedProfile.location || ""
+  const originalLink = savedProfile.link || ""
 
+  const hasNameChanges = name !== originalName
+  const hasProfileChanges =
+    description !== originalDescription ||
+    location !== originalLocation ||
+    link !== originalLink
+  const hasChanges = hasNameChanges || hasProfileChanges
+
+  // Sync name from session
   useEffect(() => {
     setName(user?.name || "")
   }, [user?.name])
 
+  // --- Preferences: auto-save on change ---
+  const handleChatSuggestionsChange = (checked: boolean) => {
+    setChatSuggestions(checked)
+    const prefs = loadPrefs()
+    localStorage.setItem(PREFS_KEY, JSON.stringify({ ...prefs, chatSuggestions: checked }))
+    toast({ description: "Preference saved." })
+  }
+
+  const handleGenerationSoundChange = (value: string) => {
+    setGenerationSound(value)
+    const prefs = loadPrefs()
+    localStorage.setItem(PREFS_KEY, JSON.stringify({ ...prefs, generationSound: value }))
+    toast({ description: "Preference saved." })
+  }
+
+  // --- Save all profile changes ---
   const handleSave = async () => {
-    if (!hasChanges || isSaving || !user?.id || !name.trim()) return
+    if (!hasChanges || isSaving || !user?.id) return
+    if (hasNameChanges && !name.trim()) return
 
     setIsSaving(true)
     setSaveStatus("idle")
 
     try {
-      const { error } = await authClient.updateUser({ name: name.trim() })
+      // Save name to API if changed
+      if (hasNameChanges) {
+        const { error } = await authClient.updateUser({ name: name.trim() })
+        if (error) {
+          throw new Error(error.message || "Update failed")
+        }
+        refetch()
+      }
 
-      if (error) {
-        throw new Error(error.message || "Update failed")
+      // Save profile fields to localStorage
+      if (hasProfileChanges) {
+        const trimmed = {
+          description: description.trim(),
+          location: location.trim(),
+          link: link.trim(),
+        }
+        localStorage.setItem(PROFILE_KEY, JSON.stringify(trimmed))
+        // Sync state to trimmed values so change tracking stays correct
+        setDescription(trimmed.description)
+        setLocation(trimmed.location)
+        setLink(trimmed.link)
       }
 
       setSaveStatus("saved")
-      refetch()
+      toast({
+        description: "Your profile has been saved.",
+      })
       setTimeout(() => setSaveStatus("idle"), 2000)
     } catch (error) {
       console.error("Failed to save account settings:", error)
       setSaveStatus("error")
+      toast({
+        variant: "destructive",
+        description: "Failed to save. Please try again.",
+      })
     } finally {
       setIsSaving(false)
     }
@@ -1957,7 +2031,7 @@ function AccountTab() {
               variant="outline"
               size="sm"
               onClick={handleSave}
-              disabled={!hasChanges || !name.trim() || isSaving}
+              disabled={!hasNameChanges || !name.trim() || isSaving}
             >
               {isSaving ? "Saving..." : "Update"}
             </Button>
@@ -2064,7 +2138,7 @@ function AccountTab() {
               Show helpful suggestions in the chat interface to enhance your experience.
             </div>
           </div>
-          <Switch checked={chatSuggestions} onCheckedChange={setChatSuggestions} />
+          <Switch checked={chatSuggestions} onCheckedChange={handleChatSuggestionsChange} />
         </div>
 
         {/* Generation complete sound */}
@@ -2083,7 +2157,7 @@ function AccountTab() {
                   name="generationSound"
                   value={option}
                   checked={generationSound === option}
-                  onChange={(e) => setGenerationSound(e.target.value)}
+                  onChange={(e) => handleGenerationSoundChange(e.target.value)}
                   className="h-4 w-4"
                 />
                 <span className="text-sm capitalize">
@@ -2187,20 +2261,40 @@ function AccountTab() {
 
       {/* Save changes bar */}
       {hasChanges && (
-        <div className="flex items-center justify-end gap-2 pt-4 border-t border-border">
-          <Button variant="outline" onClick={() => setName(originalName)} disabled={isSaving}>
-            Cancel
-          </Button>
-          <Button onClick={handleSave} disabled={!hasChanges || !name.trim() || isSaving}>
-            {isSaving ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Saving...
-              </>
-            ) : (
-              "Save changes"
-            )}
-          </Button>
+        <div className="sticky bottom-0 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 border-t border-border -mx-4 px-4 py-3 flex items-center justify-between">
+          <p className="text-sm text-muted-foreground">You have unsaved changes</p>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setName(originalName)
+                setDescription(originalDescription)
+                setLocation(originalLocation)
+                setLink(originalLink)
+              }}
+              disabled={isSaving}
+            >
+              Discard
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleSave}
+              disabled={!hasChanges || (hasNameChanges && !name.trim()) || isSaving}
+            >
+              {isSaving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <Check className="mr-2 h-4 w-4" />
+                  Save changes
+                </>
+              )}
+            </Button>
+          </div>
         </div>
       )}
     </div>
