@@ -84,10 +84,11 @@ import { UsageTable, type UsageSummaryData, type UsageLogData } from "@/componen
 import { useUsageLog } from "@/components/admin/hooks/useAdminApi"
 import type { AnalyticsPeriod } from "@/components/admin/analytics/PeriodSelector"
 import { useWorkspaceData } from "@/components/app/workspace"
-import { useDomains, useSDKDomain } from "@/contexts/DomainProvider"
+import { useSDKDomain } from "@/contexts/DomainProvider"
 import type { IDomainStore } from "@/generated/domain"
 import { useDomainActions } from "@/generated/domain-actions"
 import { useSession } from "@/contexts/SessionProvider"
+import { authClient } from "@/auth/client"
 import { InviteMemberModal, PendingInvitationsView, MyInvitationsView } from "@/components/app/workspace/members"
 import { PlanSelector, PLAN_CREDITS, DAILY_CREDITS } from "@/components/app/billing/PlanSelector"
 import { useBillingData } from "@/hooks/useBillingData"
@@ -1840,44 +1841,118 @@ function PrivacyTab() {
 // ACCOUNT TAB
 // ============================================================================
 function AccountTab() {
-  const { data: session } = useSession()
-  const { auth } = useDomains()
+  const { data: session, refetch } = useSession()
+  const { toast } = useToast()
   const user = session?.user
 
+  // --- localStorage helpers ---
+  const PROFILE_KEY = "shogo:account-profile"
+  const PREFS_KEY = "shogo:account-prefs"
+
+  const loadProfile = () => {
+    try {
+      const raw = localStorage.getItem(PROFILE_KEY)
+      return raw ? JSON.parse(raw) : {}
+    } catch { return {} }
+  }
+
+  const loadPrefs = () => {
+    try {
+      const raw = localStorage.getItem(PREFS_KEY)
+      return raw ? JSON.parse(raw) : {}
+    } catch { return {} }
+  }
+
+  // --- State (initialized from session + localStorage) ---
+  const savedProfile = loadProfile()
+  const savedPrefs = loadPrefs()
+
   const [name, setName] = useState(user?.name || "")
-  const [description, setDescription] = useState("")
-  const [location, setLocation] = useState("")
-  const [link, setLink] = useState("")
+  const [description, setDescription] = useState(savedProfile.description || "")
+  const [location, setLocation] = useState(savedProfile.location || "")
+  const [link, setLink] = useState(savedProfile.link || "")
   const [isSaving, setIsSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">("idle")
-  const [chatSuggestions, setChatSuggestions] = useState(true)
-  const [generationSound, setGenerationSound] = useState("first")
+  const [chatSuggestions, setChatSuggestions] = useState(savedPrefs.chatSuggestions ?? true)
+  const [generationSound, setGenerationSound] = useState(savedPrefs.generationSound || "first")
 
+  // --- Change tracking ---
   const originalName = user?.name || ""
-  const hasChanges = name !== originalName
+  const originalDescription = savedProfile.description || ""
+  const originalLocation = savedProfile.location || ""
+  const originalLink = savedProfile.link || ""
 
+  const hasNameChanges = name !== originalName
+  const hasProfileChanges =
+    description !== originalDescription ||
+    location !== originalLocation ||
+    link !== originalLink
+  const hasChanges = hasNameChanges || hasProfileChanges
+
+  // Sync name from session
   useEffect(() => {
     setName(user?.name || "")
-    setSaveStatus("idle")
   }, [user?.name])
 
+  // --- Preferences: auto-save on change ---
+  const handleChatSuggestionsChange = (checked: boolean) => {
+    setChatSuggestions(checked)
+    const prefs = loadPrefs()
+    localStorage.setItem(PREFS_KEY, JSON.stringify({ ...prefs, chatSuggestions: checked }))
+    toast({ description: "Preference saved." })
+  }
+
+  const handleGenerationSoundChange = (value: string) => {
+    setGenerationSound(value)
+    const prefs = loadPrefs()
+    localStorage.setItem(PREFS_KEY, JSON.stringify({ ...prefs, generationSound: value }))
+    toast({ description: "Preference saved." })
+  }
+
+  // --- Save all profile changes ---
   const handleSave = async () => {
     if (!hasChanges || isSaving || !user?.id) return
+    if (hasNameChanges && !name.trim()) return
 
     setIsSaving(true)
     setSaveStatus("idle")
 
     try {
-      await auth?.userCollection?.updateOne(user.id, {
-        name: name.trim(),
-        updatedAt: new Date().toISOString(),
-      })
+      // Save name to API if changed
+      if (hasNameChanges) {
+        const { error } = await authClient.updateUser({ name: name.trim() })
+        if (error) {
+          throw new Error(error.message || "Update failed")
+        }
+        refetch()
+      }
+
+      // Save profile fields to localStorage
+      if (hasProfileChanges) {
+        const trimmed = {
+          description: description.trim(),
+          location: location.trim(),
+          link: link.trim(),
+        }
+        localStorage.setItem(PROFILE_KEY, JSON.stringify(trimmed))
+        // Sync state to trimmed values so change tracking stays correct
+        setDescription(trimmed.description)
+        setLocation(trimmed.location)
+        setLink(trimmed.link)
+      }
 
       setSaveStatus("saved")
+      toast({
+        description: "Your profile has been saved.",
+      })
       setTimeout(() => setSaveStatus("idle"), 2000)
     } catch (error) {
       console.error("Failed to save account settings:", error)
       setSaveStatus("error")
+      toast({
+        variant: "destructive",
+        description: "Failed to save. Please try again.",
+      })
     } finally {
       setIsSaving(false)
     }
@@ -1943,11 +2018,37 @@ function AccountTab() {
             </div>
           </div>
           <div className="flex gap-2">
-            <Input value={user?.id?.slice(0, 20) || ""} disabled className="flex-1" />
-            <Button variant="outline" size="sm">Update</Button>
+            <Input
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value)
+                setSaveStatus("idle")
+              }}
+              placeholder="Enter a username"
+              className="flex-1"
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleSave}
+              disabled={!hasNameChanges || !name.trim() || isSaving}
+            >
+              {isSaving ? "Saving..." : "Update"}
+            </Button>
           </div>
-          <a href="#" className="text-sm text-primary hover:underline flex items-center gap-1">
-            shogo.dev/@{user?.id?.slice(0, 12)}
+          {saveStatus === "saved" && (
+            <p className="text-xs text-green-600">Name updated successfully!</p>
+          )}
+          {saveStatus === "error" && (
+            <p className="text-xs text-destructive">Failed to update. Please try again.</p>
+          )}
+          <a
+            href={`https://shogo.dev/@${encodeURIComponent(name || user?.id?.slice(0, 12) || "")}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sm text-primary hover:underline flex items-center gap-1"
+          >
+            shogo.dev/@{name || user?.id?.slice(0, 12)}
             <ExternalLink className="h-3 w-3" />
           </a>
         </div>
@@ -2037,7 +2138,7 @@ function AccountTab() {
               Show helpful suggestions in the chat interface to enhance your experience.
             </div>
           </div>
-          <Switch checked={chatSuggestions} onCheckedChange={setChatSuggestions} />
+          <Switch checked={chatSuggestions} onCheckedChange={handleChatSuggestionsChange} />
         </div>
 
         {/* Generation complete sound */}
@@ -2056,7 +2157,7 @@ function AccountTab() {
                   name="generationSound"
                   value={option}
                   checked={generationSound === option}
-                  onChange={(e) => setGenerationSound(e.target.value)}
+                  onChange={(e) => handleGenerationSoundChange(e.target.value)}
                   className="h-4 w-4"
                 />
                 <span className="text-sm capitalize">
@@ -2160,20 +2261,40 @@ function AccountTab() {
 
       {/* Save changes bar */}
       {hasChanges && (
-        <div className="flex items-center justify-end gap-2 pt-4 border-t border-border">
-          <Button variant="outline" onClick={() => setName(originalName)} disabled={isSaving}>
-            Cancel
-          </Button>
-          <Button onClick={handleSave} disabled={isSaving}>
-            {isSaving ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Saving...
-              </>
-            ) : (
-              "Save changes"
-            )}
-          </Button>
+        <div className="sticky bottom-0 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 border-t border-border -mx-4 px-4 py-3 flex items-center justify-between">
+          <p className="text-sm text-muted-foreground">You have unsaved changes</p>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setName(originalName)
+                setDescription(originalDescription)
+                setLocation(originalLocation)
+                setLink(originalLink)
+              }}
+              disabled={isSaving}
+            >
+              Discard
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleSave}
+              disabled={!hasChanges || (hasNameChanges && !name.trim()) || isSaving}
+            >
+              {isSaving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <Check className="mr-2 h-4 w-4" />
+                  Save changes
+                </>
+              )}
+            </Button>
+          </div>
         </div>
       )}
     </div>
