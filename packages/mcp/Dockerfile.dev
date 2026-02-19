@@ -19,6 +19,9 @@ COPY tsconfig.base.json ./
 # Copy package.json files for dependency resolution
 COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/mcp/package.json ./packages/mcp/
+COPY apps/web/package.json ./apps/web/
+COPY apps/api/package.json ./apps/api/
+COPY apps/desktop/package.json ./apps/desktop/
 
 # Copy scripts needed for postinstall
 COPY scripts ./scripts

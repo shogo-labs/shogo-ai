@@ -30,6 +30,7 @@ COPY packages/shared-runtime/package.json ./packages/shared-runtime/
 COPY packages/sdk/package.json ./packages/sdk/
 COPY apps/web/package.json ./apps/web/
 COPY apps/api/package.json ./apps/api/
+COPY apps/desktop/package.json ./apps/desktop/
 
 # Copy scripts needed for postinstall (patch-claude-sdk runs during bun install)
 COPY scripts ./scripts

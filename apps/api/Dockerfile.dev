@@ -40,6 +40,8 @@ COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/mcp/package.json ./packages/mcp/
 COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY apps/api/package.json ./apps/api/
+COPY apps/web/package.json ./apps/web/
+COPY apps/desktop/package.json ./apps/desktop/
 
 # Copy scripts needed for postinstall
 COPY scripts ./scripts
