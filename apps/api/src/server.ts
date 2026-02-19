@@ -2482,7 +2482,7 @@ app.get('/api/projects/:projectId/database/url', async (c) => {
   
   if (isKubernetes()) {
     if (await getProjectType(projectId) === 'AGENT') {
-      return c.json({ url: null, error: { code: 'not_supported', message: 'Database not available for agent projects' } })
+      return c.json({ url: null, status: 'error', error: { code: 'not_supported', message: 'Database not available for agent projects' } }, 400)
     }
     // In Kubernetes: Proxy to project-runtime pod
     try {
