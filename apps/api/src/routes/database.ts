@@ -250,13 +250,13 @@ export function databaseRoutes(config: DatabaseRoutesConfig) {
     const projectId = c.req.param("projectId")
     const projectDir = join(workspacesDir, projectId)
 
-    // If project directory doesn't exist yet, return status indicating not ready
+    // If project directory doesn't exist yet, return error status
     if (!existsSync(projectDir)) {
       return c.json({
         url: null,
         status: 'not_initialized',
-        message: 'Project directory not yet initialized. Start the project runtime first.'
-      }, 200)
+        error: { code: 'project_not_found', message: 'Project directory not yet initialized. Start the project runtime first.' }
+      }, 404)
     }
 
     // Check if Prisma schema exists

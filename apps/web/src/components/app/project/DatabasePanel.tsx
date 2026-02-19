@@ -55,6 +55,13 @@ interface DatabaseStatus {
   }
 }
 
+/**
+ * Known permanent error codes that should NOT be retried.
+ */
+const PERMANENT_ERROR_CODES = new Set([
+  'not_supported',
+])
+
 export interface DatabasePanelProps {
   /** Project ID to load database for */
   projectId: string
@@ -110,14 +117,28 @@ export function DatabasePanel({
       const response = await fetch(`/api/projects/${projectId}/database/url`)
       const data: DatabaseStatus = await response.json()
 
-      if (!response.ok) {
-        const errorCode = data.error?.code || ''
-        const errorMessage = data.error?.message || 'Failed to start Prisma Studio'
+      // Extract error info from response body (works for both ok and non-ok responses)
+      const errorCode = data.error?.code || ''
+      const errorMessage = data.error?.message || ''
+
+      // Check for errors: either HTTP error OR body contains error field OR URL is null
+      const hasError = !response.ok || data.error || !data.url
+
+      if (hasError) {
+        const displayMessage = errorMessage || 'Failed to start Prisma Studio'
 
         // "No Prisma schema" is a permanent state - don't retry
-        if (errorMessage.includes('No Prisma schema') || errorCode === 'no_prisma_schema') {
+        if (displayMessage.includes('No Prisma schema') || errorCode === 'no_prisma_schema') {
           noPrismaSchemaRef.current = true
-          setError(errorMessage)
+          setError(displayMessage)
+          setStatus('error')
+          setIsLoading(false)
+          return
+        }
+
+        // Permanent errors that should NOT be retried
+        if (PERMANENT_ERROR_CODES.has(errorCode)) {
+          setError(displayMessage)
           setStatus('error')
           setIsLoading(false)
           return
@@ -127,8 +148,11 @@ export function DatabasePanel({
         const isTransientError = 
           errorCode === 'project_not_found' ||
           errorCode === 'pod_unavailable' ||
-          errorMessage.includes('not found') ||
-          errorMessage.includes('starting') ||
+          errorCode === 'pod_starting' ||
+          errorCode === 'pod_timeout' ||
+          displayMessage.includes('not found') ||
+          displayMessage.includes('starting') ||
+          displayMessage.includes('unavailable') ||
           response.status === 504 ||  // Gateway Timeout - pod starting
           response.status === 503 ||
           response.status === 502
@@ -151,13 +175,13 @@ export function DatabasePanel({
         }
 
         // After max retries or non-transient error, show error state
-        setError(errorMessage)
+        setError(displayMessage)
         setStatus('error')
         setIsLoading(false)
         return
       }
 
-      // Success - reset retry count
+      // Success - reset retry count and set the studio URL
       retryCountRef.current = 0
       setStudioUrl(data.url)
       setStatus(data.status)
@@ -234,6 +258,7 @@ export function DatabasePanel({
     noPrismaSchemaRef.current = false
     setError(null)
     setStudioUrl(null)
+    setIframeLoaded(false)
     
     fetchStudioUrl()
 
@@ -251,6 +276,20 @@ export function DatabasePanel({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]) // Only depend on projectId, not fetchStudioUrl
+
+  // Iframe load timeout - if iframe doesn't load within 20s, show error
+  useEffect(() => {
+    if (!studioUrl || iframeLoaded) return
+
+    const timeout = setTimeout(() => {
+      if (!iframeLoaded) {
+        setError('Prisma Studio took too long to load. The database service may be unavailable.')
+        setIsLoading(false)
+      }
+    }, 20000)
+
+    return () => clearTimeout(timeout)
+  }, [studioUrl, iframeLoaded])
 
   // Error state - no Prisma schema
   if (error && error.includes('No Prisma schema')) {
@@ -294,7 +333,14 @@ export function DatabasePanel({
             </p>
           </div>
           <button
-            onClick={() => fetchStudioUrl()}
+            onClick={() => {
+              retryCountRef.current = 0
+              noPrismaSchemaRef.current = false
+              setError(null)
+              setStudioUrl(null)
+              setIframeLoaded(false)
+              fetchStudioUrl()
+            }}
             className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
           >
             <RefreshCw className="h-4 w-4" />
@@ -317,6 +363,43 @@ export function DatabasePanel({
           <div className="text-sm text-muted-foreground">
             Starting Prisma Studio...
           </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Fallback state - not loading, no error, but no studio URL either
+  // This prevents the blank page that was previously shown
+  if (!studioUrl) {
+    return (
+      <div className={cn(
+        "flex flex-col items-center justify-center h-full w-full bg-muted/30",
+        className
+      )}>
+        <div className="flex flex-col items-center gap-4 p-8 max-w-md text-center">
+          <Database className="h-12 w-12 text-muted-foreground" />
+          <div>
+            <h3 className="text-lg font-semibold text-foreground">
+              Database Unavailable
+            </h3>
+            <p className="text-sm text-muted-foreground mt-1">
+              Could not connect to the database service. The project may still be starting up.
+            </p>
+          </div>
+          <button
+            onClick={() => {
+              retryCountRef.current = 0
+              noPrismaSchemaRef.current = false
+              setError(null)
+              setStudioUrl(null)
+              setIframeLoaded(false)
+              fetchStudioUrl()
+            }}
+            className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Retry
+          </button>
         </div>
       </div>
     )
