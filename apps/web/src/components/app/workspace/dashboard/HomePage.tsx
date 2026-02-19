@@ -35,7 +35,7 @@ interface HomePageProps {
   /** User's display name for personalized greeting */
   userName?: string
   /** Callback when a new prompt is submitted (includes selected themeId and project type) */
-  onPromptSubmit?: (prompt: string, themeId?: string, projectType?: ProjectType) => void
+  onPromptSubmit?: (prompt: string, imageData?: string[], themeId?: string, projectType?: ProjectType) => void
   /** Callback when a template is selected - receives template name, display name, and themeId */
   onTemplateSelect?: (templateName: string, displayName: string, themeId?: string) => void
   /** Loading state - true when creating project/feature from prompt */

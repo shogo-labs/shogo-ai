@@ -300,10 +300,9 @@ export const CompactChatInput = forwardRef<HTMLDivElement, CompactChatInputProps
 
       onSubmit(trimmedContent, fileData)
       
-      // Clear files after submit
-      setPendingFiles([])
-      setFileError(null)
-      // Don't clear text - let parent handle state after navigation
+      // Don't clear files or text - the component will unmount on navigation.
+      // Clearing them immediately causes the image previews to flash away
+      // before the user is redirected to the project page.
     }, [value, disabled, isLoading, onSubmit, pendingFiles, isProcessingFiles])
 
     const handleKeyDown = useCallback(

@@ -123,7 +123,7 @@ export function WorkspaceLayout() {
    * Creates a project + chat session via API, then navigates with the initial prompt.
    * If a theme is selected (non-default), it's appended to the prompt so the AI applies it.
    */
-  const handlePromptSubmit = useCallback(async (prompt: string, themeId?: string, projectType?: "APP" | "AGENT") => {
+  const handlePromptSubmit = useCallback(async (prompt: string, imageData?: string[], themeId?: string, projectType?: "APP" | "AGENT") => {
     const userId = session?.user?.id
     const workspaceId = currentWorkspace?.id
     if (!userId || !workspaceId) return
@@ -160,6 +160,7 @@ export function WorkspaceLayout() {
           project: { id: newProject.id, name: newProject.name, type },
           chatSessionId: chatSession.id,
           initialMessage,
+          initialImageData: imageData,
         },
       })
     } catch (error) {
