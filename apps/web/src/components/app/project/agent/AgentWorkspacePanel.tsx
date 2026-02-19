@@ -6,7 +6,8 @@
  */
 
 import { useState, useEffect, useCallback } from 'react'
-import { FileText, Save, RefreshCw } from 'lucide-react'
+import { FileText, Save, RefreshCw, Eye, Pencil } from 'lucide-react'
+import { Streamdown } from 'streamdown'
 import { cn } from '@/lib/utils'
 
 const WORKSPACE_FILES = [
@@ -31,6 +32,7 @@ export function AgentWorkspacePanel({ projectId, visible }: AgentWorkspacePanelP
   const [isLoading, setIsLoading] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [isPreview, setIsPreview] = useState(false)
 
   const hasChanges = content !== savedContent
 
@@ -123,6 +125,19 @@ export function AgentWorkspacePanel({ projectId, visible }: AgentWorkspacePanelP
           )}
           <div className="ml-auto flex items-center gap-1">
             <button
+              onClick={() => setIsPreview(!isPreview)}
+              className={cn(
+                'flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors',
+                isPreview
+                  ? 'bg-primary/10 text-primary'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+              )}
+              title={isPreview ? 'Edit' : 'Preview'}
+            >
+              {isPreview ? <Pencil className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+              {isPreview ? 'Edit' : 'Preview'}
+            </button>
+            <button
               onClick={() => loadFile(selectedFile)}
               className="p-1 rounded hover:bg-muted text-muted-foreground"
               title="Refresh"
@@ -146,14 +161,24 @@ export function AgentWorkspacePanel({ projectId, visible }: AgentWorkspacePanelP
           </div>
         )}
 
-        <textarea
-          value={content}
-          onChange={(e) => setContent(e.target.value)}
-          className="flex-1 p-4 font-mono text-sm bg-background resize-none focus:outline-none"
-          placeholder={`Edit ${selectedFile}...`}
-          disabled={isLoading}
-          spellCheck={false}
-        />
+        {isPreview ? (
+          <div className="flex-1 overflow-y-auto p-4 text-sm">
+            {content ? (
+              <Streamdown>{content}</Streamdown>
+            ) : (
+              <p className="text-muted-foreground italic">Nothing to preview</p>
+            )}
+          </div>
+        ) : (
+          <textarea
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            className="flex-1 p-4 font-mono text-sm bg-background resize-none focus:outline-none"
+            placeholder={`Edit ${selectedFile}...`}
+            disabled={isLoading}
+            spellCheck={false}
+          />
+        )}
       </div>
     </div>
   )

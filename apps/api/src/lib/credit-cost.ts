@@ -20,6 +20,8 @@
  * - Opus: 1.0 credits
  */
 
+export const CREDIT_MARKUP_FACTOR = 1.2
+
 export const MODEL_CREDIT_CONFIG = {
   haiku: {
     creditsPerTokenBatch: 0.025,
@@ -81,8 +83,8 @@ export function calculateCreditCost(
 
   const config = MODEL_CREDIT_CONFIG[model]
 
-  // Calculate raw credits based on tokens
-  const rawCredits = (totalTokens / config.tokenBatchSize) * config.creditsPerTokenBatch
+  // Calculate raw credits based on tokens, with markup
+  const rawCredits = (totalTokens / config.tokenBatchSize) * config.creditsPerTokenBatch * CREDIT_MARKUP_FACTOR
 
   // Round up to nearest 0.1
   const rounded = Math.ceil(rawCredits * 10) / 10

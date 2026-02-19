@@ -181,7 +181,7 @@ async function trackUsageFromStream(
   const workspaceId = requestBody?.workspaceId || project.workspaceId
   const userId = requestBody?.userId || 'system'
   const agentMode = requestBody?.agentMode || 'advanced'
-  const chatSessionId = requestBody?.ccSessionId || null
+  const chatSessionId = requestBody?.chatSessionId || null
 
   const inputTokens = lastUsage?.promptTokens || 0
   const outputTokens = lastUsage?.completionTokens || 0

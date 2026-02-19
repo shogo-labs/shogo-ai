@@ -468,22 +468,77 @@ app.post('/agent/chat', async (c) => {
 })
 
 // Test chat endpoint — send a message to the running agent (not the builder)
+// Supports both legacy { message } and AI SDK { messages } formats.
+// Returns an AI SDK UI message stream so the frontend can use useChat().
 app.post('/agent/test', async (c) => {
   if (!agentGateway) {
     return c.json({ error: 'Agent gateway not running' }, 503)
   }
 
-  const { message } = await c.req.json()
-  if (!message || typeof message !== 'string') {
+  const body = await c.req.json()
+
+  // Accept AI SDK format ({ messages: [...] }) or legacy format ({ message: string })
+  let userText: string | undefined
+  if (body.messages && Array.isArray(body.messages)) {
+    const last = [...body.messages].reverse().find((m: any) => m.role === 'user')
+    userText = typeof last?.content === 'string' ? last.content : undefined
+  } else {
+    userText = typeof body.message === 'string' ? body.message : undefined
+  }
+
+  if (!userText) {
     return c.json({ error: 'message (string) is required' }, 400)
   }
 
-  try {
-    const response = await agentGateway.processTestMessage(message)
-    return c.json({ response })
-  } catch (error: any) {
-    return c.json({ error: error.message }, 500)
+  const stream = createUIMessageStream({
+    execute: async ({ writer }) => {
+      try {
+        writer.write({ type: 'start-step' })
+        await agentGateway!.processTestMessageStream(userText!, writer)
+        writer.write({ type: 'finish-step' })
+        writer.write({ type: 'finish', finishReason: 'stop' })
+      } catch (error: any) {
+        writer.write({ type: 'error', errorText: error.message || 'Agent test error' } as any)
+      }
+    },
+  })
+
+  return createUIMessageStreamResponse({ stream })
+})
+
+// Retrieve test chat history so the UI can restore past messages
+app.get('/agent/test/history', async (c) => {
+  if (!agentGateway) {
+    return c.json({ messages: [] })
   }
+
+  const session = agentGateway.getSessionManager().get('test')
+  if (!session || session.messages.length === 0) {
+    return c.json({ messages: [] })
+  }
+
+  const simplified: Array<{ id: string; role: string; content: string }> = []
+  for (const msg of session.messages) {
+    if (msg.role === 'user') {
+      // Strip internal prompt wrappers to show the original user text
+      const raw = typeof msg.content === 'string' ? msg.content : ''
+      const userMatch = raw.match(/\[User Message\]\n([\s\S]+)$/)
+      const testMatch = raw.match(/\[Test Chat — User Message\]\n[\s\S]*?\n\n([\s\S]+)$/)
+      const displayText = userMatch?.[1]?.trim() || testMatch?.[1]?.trim() || raw
+      simplified.push({ id: `h-${simplified.length}`, role: 'user', content: displayText })
+    } else if (msg.role === 'assistant') {
+      const parts = (msg as any).content as any[] | undefined
+      const text = parts
+        ?.filter((p: any) => p.type === 'text')
+        .map((p: any) => p.text)
+        .join('\n') || ''
+      if (text) {
+        simplified.push({ id: `h-${simplified.length}`, role: 'assistant', content: text })
+      }
+    }
+  }
+
+  return c.json({ messages: simplified })
 })
 
 // ---------------------------------------------------------------------------

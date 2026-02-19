@@ -597,6 +597,57 @@ export class AgentGateway {
     return response
   }
 
+  /**
+   * Streaming variant of processTestMessage that pipes text deltas and
+   * tool call events to a UI message stream writer (AI SDK protocol).
+   */
+  async processTestMessageStream(
+    text: string,
+    writer: { write(chunk: Record<string, any>): void },
+  ): Promise<void> {
+    this.emitLog(`Test message received (stream): "${text.substring(0, 100)}"`)
+
+    if (this.isUnconfigured()) {
+      this.emitLog('Agent is not configured — returning setup guidance')
+      const msg = 'This agent has not been configured yet. Use the builder chat (left panel) to describe what you want your agent to do — it will set up the identity, skills, and heartbeat for you.'
+      const tid = `text-${Date.now()}`
+      writer.write({ type: 'text-start', id: tid })
+      writer.write({ type: 'text-delta', id: tid, delta: msg })
+      writer.write({ type: 'text-end', id: tid })
+      return
+    }
+
+    const matchedSkill = matchSkill(this.skills, text)
+    let prompt: string
+
+    if (matchedSkill) {
+      this.emitLog(`Matched skill: ${matchedSkill.name}`)
+      prompt = `[Skill: ${matchedSkill.name}]\n${matchedSkill.content}\n\n[User Message]\n${text}`
+    } else {
+      prompt = `[Test Chat — User Message]\nThis is a direct message from a user testing the agent, NOT a heartbeat trigger. Respond conversationally and helpfully. Do NOT respond with HEARTBEAT_OK.\n\n${text}`
+    }
+
+    const response = await this.agentTurn(prompt, 'test', false, undefined, writer)
+    this.emitLog(`Test response (stream): "${response.substring(0, 100)}"`)
+
+    this.sessionManager.addMessages(
+      'test',
+      userMessage(prompt),
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: response }],
+        api: 'anthropic-messages',
+        provider: this.config.model.provider,
+        model: this.config.model.name,
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        stopReason: 'stop',
+        timestamp: Date.now(),
+      } as any
+    )
+
+    this.appendDailyMemory(`test: "${text.substring(0, 100)}" -> "${response.substring(0, 100)}"`)
+  }
+
   async processWebhookMessage(text: string): Promise<string> {
     return this.agentTurn(text, 'webhook')
   }
@@ -627,6 +678,7 @@ export class AgentGateway {
     sessionId: string = 'default',
     isHeartbeat: boolean = false,
     streamTarget?: { adapter: ChannelAdapter; channelId: string },
+    uiWriter?: { write(chunk: Record<string, any>): void },
   ): Promise<string> {
     const systemPrompt = this.loadBootstrapContext()
     const session = this.sessionManager.getOrCreate(sessionId)
@@ -674,6 +726,9 @@ export class AgentGateway {
       )
     }
 
+    // UI stream writer: track current text block for delta streaming
+    let uiTextId: string | null = null
+
     try {
       const hookEmitter = this.hookEmitter
       const result = await runAgentLoop({
@@ -689,8 +744,27 @@ export class AgentGateway {
         onToolCall: (name, input) => {
           console.log(`[AgentGateway] Tool call: ${name}`, JSON.stringify(input).substring(0, 200))
         },
-        onTextDelta: chunker ? (delta) => chunker!.push(delta) : undefined,
+        onTextDelta: (delta) => {
+          if (chunker) chunker.push(delta)
+          if (uiWriter) {
+            if (!uiTextId) {
+              uiTextId = `text-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+              uiWriter.write({ type: 'text-start', id: uiTextId })
+            }
+            uiWriter.write({ type: 'text-delta', id: uiTextId, delta })
+          }
+        },
         onBeforeToolCall: async (toolName, args, toolCallId) => {
+          // Close any open text block before a tool call
+          if (uiWriter && uiTextId) {
+            uiWriter.write({ type: 'text-end', id: uiTextId })
+            uiTextId = null
+          }
+          if (uiWriter) {
+            uiWriter.write({ type: 'tool-input-start', toolCallId, toolName, dynamic: true })
+            uiWriter.write({ type: 'tool-input-delta', toolCallId, inputTextDelta: JSON.stringify(args) })
+            uiWriter.write({ type: 'tool-input-available', toolCallId, toolName, input: args, dynamic: true })
+          }
           await hookEmitter.emit(
             HookEmitter.createEvent('tool', 'before', sessionId, {
               toolName, args, toolCallId, workspaceDir: this.workspaceDir,
@@ -698,6 +772,13 @@ export class AgentGateway {
           )
         },
         onAfterToolCall: async (toolName, args, result, isError, toolCallId) => {
+          if (uiWriter) {
+            uiWriter.write({
+              type: 'tool-output-available',
+              toolCallId,
+              output: isError ? { error: typeof result === 'string' ? result : JSON.stringify(result) } : (result ?? { success: true }),
+            })
+          }
           await hookEmitter.emit(
             HookEmitter.createEvent('tool', 'after', sessionId, {
               toolName, args, result, isError, toolCallId, workspaceDir: this.workspaceDir,
@@ -721,6 +802,12 @@ export class AgentGateway {
       // Flush any remaining buffered text
       chunker?.flush()
       chunker?.dispose()
+
+      // Close any open UI text block
+      if (uiWriter && uiTextId) {
+        uiWriter.write({ type: 'text-end', id: uiTextId })
+        uiTextId = null
+      }
 
       if (result.loopBreak) {
         console.warn(
