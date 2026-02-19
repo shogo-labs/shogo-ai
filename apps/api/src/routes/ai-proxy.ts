@@ -679,6 +679,7 @@ async function proxyOpenAINonStream(
 
 import { calculateCreditCost, proxyModelToBillingModel } from '../lib/credit-cost'
 import * as billingService from '../services/billing.service'
+import { getProjectUser } from '../lib/project-user-context'
 
 /**
  * Charge credits and log usage event (fire-and-forget).
@@ -709,10 +710,13 @@ async function chargeAndLogUsage(
     }
 
     if (creditCost > 0) {
+      // Prefer the real user from the per-project context (set by project-chat)
+      // over the token's userId which is typically 'system' for runtime tokens
+      const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
       const result = await billingService.consumeCredits(
         tokenPayload.workspaceId,
         tokenPayload.projectId || null,
-        tokenPayload.userId || 'system',
+        billingUserId,
         'ai_proxy_completion',
         creditCost,
         actionMetadata

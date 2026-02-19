@@ -19,6 +19,7 @@ import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { PlanSelector, PLAN_CREDITS, DAILY_CREDITS } from "@/components/app/billing/PlanSelector"
 import { ManageBillingDialog } from "@/components/app/billing/ManageBillingDialog"
+import { formatCredits, getTotalCreditsForPlan } from "@/lib/utils"
 
 export const AppBillingPage = observer(function AppBillingPage() {
   const { data: session, isPending: isAuthLoading } = useSession()
@@ -62,7 +63,7 @@ export const AppBillingPage = observer(function AppBillingPage() {
 
   // Calculate credits from actual ledger data
   const creditsRemaining = effectiveBalance?.total ?? 5
-  const creditsTotal = (subscription ? PLAN_CREDITS[subscription.planId as string] ?? PLAN_CREDITS.free : PLAN_CREDITS.free) + DAILY_CREDITS
+  const creditsTotal = getTotalCreditsForPlan(subscription?.planId, PLAN_CREDITS, DAILY_CREDITS)
 
   // Get plan name
   const planName = subscription
@@ -156,7 +157,7 @@ export const AppBillingPage = observer(function AppBillingPage() {
               <div>
                 <p className="text-sm font-medium mb-1">Credits remaining</p>
                 <p className="text-2xl font-bold">
-                  {creditsRemaining} of {creditsTotal}
+                  {formatCredits(creditsRemaining)} of {creditsTotal}
                 </p>
               </div>
               <div className="space-y-2">

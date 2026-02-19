@@ -79,7 +79,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { cn } from "@/lib/utils"
+import { cn, formatCredits, getTotalCreditsForPlan } from "@/lib/utils"
 import { UsageTable, type UsageSummaryData, type UsageLogData } from "@/components/admin/analytics/UsageTable"
 import { useUsageLog } from "@/components/admin/hooks/useAdminApi"
 import type { AnalyticsPeriod } from "@/components/admin/analytics/PeriodSelector"
@@ -89,7 +89,7 @@ import type { IDomainStore } from "@/generated/domain"
 import { useDomainActions } from "@/generated/domain-actions"
 import { useSession } from "@/contexts/SessionProvider"
 import { InviteMemberModal, PendingInvitationsView, MyInvitationsView } from "@/components/app/workspace/members"
-import { PlanSelector } from "@/components/app/billing/PlanSelector"
+import { PlanSelector, PLAN_CREDITS, DAILY_CREDITS } from "@/components/app/billing/PlanSelector"
 import { useBillingData } from "@/hooks/useBillingData"
 import { useToast } from "@/hooks/use-toast"
 
@@ -1406,8 +1406,8 @@ function BillingTab() {
     ? subscription.planId.charAt(0).toUpperCase() + subscription.planId.slice(1)
     : "Free"
 
-  const creditsRemaining = effectiveBalance?.total ?? (hasActiveSubscription ? 105 : 5)
-  const creditsTotal = hasActiveSubscription ? 105 : 5
+  const creditsRemaining = effectiveBalance?.total ?? 5
+  const creditsTotal = getTotalCreditsForPlan(subscription?.planId, PLAN_CREDITS, DAILY_CREDITS)
 
   return (
     <div className="space-y-6">
@@ -1450,12 +1450,12 @@ function BillingTab() {
         <div className="p-4 bg-card rounded-lg border border-border space-y-3">
           <div className="flex justify-between">
             <span className="text-sm text-muted-foreground">Credits remaining</span>
-            <span className="text-sm font-medium">{creditsRemaining.toFixed(1)} of {creditsTotal}</span>
+            <span className="text-sm font-medium">{formatCredits(creditsRemaining)} of {creditsTotal}</span>
           </div>
           <Progress value={(creditsRemaining / creditsTotal) * 100} className="h-2" />
           {effectiveBalance && (
             <div className="text-xs text-muted-foreground">
-              Daily: {effectiveBalance.dailyCredits.toFixed(1)} • Monthly: {effectiveBalance.monthlyCredits.toFixed(1)}
+              Daily: {formatCredits(effectiveBalance.dailyCredits)} • Monthly: {formatCredits(effectiveBalance.monthlyCredits)}
             </div>
           )}
           <div className="space-y-1 text-xs text-muted-foreground">
@@ -1511,9 +1511,7 @@ function ProjectBreakdown({ workspaceId, period }: { workspaceId: string | undef
   const endIndex = startIndex + itemsPerPage
   const paginatedProjects = projectUsage?.slice(startIndex, endIndex) || []
   
-  const formatCredits = (credits: number) => {
-    return credits % 1 === 0 ? `${credits}` : credits.toFixed(1)
-  }
+  // Using shared formatCredits from @/lib/utils
   
   return (
     <div className="bg-card rounded-lg border border-border">
@@ -1603,6 +1601,20 @@ function UsageTab() {
   const [period, setPeriod] = useState<"7d" | "30d" | "90d" | "1y">("30d")
   const [logPage, setLogPage] = useState(1)
 
+  const { creditLedger } = useBillingData(workspaceId)
+
+  // Compute next monthly reset date from anniversaryDay
+  const nextResetLabel = useMemo(() => {
+    const anniversaryDay = creditLedger?.anniversaryDay
+    if (!anniversaryDay) return null
+    const now = new Date()
+    const next = new Date(now.getFullYear(), now.getMonth(), anniversaryDay)
+    if (next <= now) {
+      next.setMonth(next.getMonth() + 1)
+    }
+    return format(next, 'd MMM yyyy')
+  }, [creditLedger])
+
   // Workspace-scoped usage data
   const basePath = workspaceId ? `/api/workspaces/${workspaceId}` : ''
   const summaryResult = useWorkspaceUsageSummary(basePath, period)
@@ -1639,7 +1651,11 @@ function UsageTab() {
             </div>
             <div>
               <div className="font-medium">Cloud + AI</div>
-              <div className="text-sm text-muted-foreground">Monthly included usage resets 1 Feb 2026</div>
+              <div className="text-sm text-muted-foreground">
+                {nextResetLabel
+                  ? `Monthly included usage resets ${nextResetLabel}`
+                  : 'Monthly included usage resets on your billing anniversary'}
+              </div>
             </div>
           </div>
           <div className="mt-4 flex items-center gap-2">
@@ -1709,8 +1725,8 @@ function UsageTab() {
       <ProjectBreakdown workspaceId={workspaceId} period={period} />
 
       <p className="text-sm text-muted-foreground">
-        This is a temporary offering until the beginning of 2026 as we refine our pricing model.{" "}
-        <a href="#" className="text-primary hover:underline">Read more</a>
+        Usage is included with your plan. Upgrade for higher limits and additional features.{" "}
+        <a href="/billing" className="text-primary hover:underline">View plans</a>
       </p>
     </div>
   )

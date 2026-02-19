@@ -6,7 +6,7 @@
  */
 
 import { useState } from "react"
-import { CreditCard, FileText, Loader2 } from "lucide-react"
+import { AlertCircle, CreditCard, FileText, Loader2 } from "lucide-react"
 
 import {
   Dialog,
@@ -32,13 +32,14 @@ export function ManageBillingDialog({
 }: ManageBillingDialogProps) {
   const [isLoading, setIsLoading] = useState(false)
   const [loadingAction, setLoadingAction] = useState<"billing" | "invoices" | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
   const handleOpenPortal = async (action: "billing" | "invoices") => {
     setIsLoading(true)
     setLoadingAction(action)
+    setError(null)
 
     try {
-      // Create portal session with return URL
       const returnUrl = `${window.location.origin}/app/billing`
       const response = await fetch(`/api/billing/portal?workspaceId=${workspaceId}`, {
         method: 'POST',
@@ -51,17 +52,19 @@ export function ManageBillingDialog({
 
       if (data.error) {
         console.error('Failed to open portal:', data.error)
-        alert('Failed to open billing portal. Please try again.')
+        const message = data.error.code === 'stripe_not_configured'
+          ? 'Billing portal is not available yet. Please try again later.'
+          : 'Failed to open billing portal. Please try again.'
+        setError(message)
         return
       }
 
       if (data.url) {
-        // Redirect to Stripe portal
         window.location.href = data.url
       }
     } catch (err) {
       console.error('Failed to open portal:', err)
-      alert('Failed to open billing portal. Please try again.')
+      setError('Failed to open billing portal. Please try again.')
     } finally {
       setIsLoading(false)
       setLoadingAction(null)
@@ -69,7 +72,7 @@ export function ManageBillingDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(v) => { setError(null); onOpenChange(v) }}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Manage plan</DialogTitle>
@@ -77,6 +80,14 @@ export function ManageBillingDialog({
         </DialogHeader>
 
         <div className="space-y-4">
+          {/* Error Banner */}
+          {error && (
+            <div className="flex items-start gap-2 p-3 bg-destructive/10 border border-destructive/30 rounded-md text-destructive text-sm">
+              <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+
           {/* Current Plan Display */}
           <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg">
             <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center">
