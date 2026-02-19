@@ -2,7 +2,7 @@
   "name": "shogo-ai",
   "private": true,
   "packageManager": "bun@1.3.6",
-  "workspaces": ["packages/*", "apps/web", "apps/api"],
+  "workspaces": ["packages/*", "apps/web", "apps/api", "apps/desktop"],
   "scripts": {
     "build": "turbo build",
     "dev": "turbo dev",
@@ -44,6 +44,9 @@
     "docker:prod:build": "docker-compose up --build",
     "docker:prod:down": "docker-compose down",
     "screenshots:templates": "bun run scripts/capture-template-screenshots.ts",
+    "desktop:dev": "cd apps/desktop && electron-vite dev",
+    "desktop:build": "cd apps/desktop && electron-vite build",
+    "desktop:dist": "bun run web:build && cd apps/desktop && electron-vite build && electron-builder",
     "docs:dev": "bun run --cwd apps/docs dev",
     "docs:build": "bun run --cwd apps/docs build",
     "postinstall": "[ -f scripts/patch-claude-sdk.ts ] && bun scripts/patch-claude-sdk.ts || true"

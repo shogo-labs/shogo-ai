@@ -1,0 +1,72 @@
+appId: ai.shogo.desktop
+productName: Shogo
+copyright: Copyright © 2026 Shogo AI
+
+directories:
+  buildResources: resources
+  output: release
+
+files:
+  - out/**/*
+  - package.json
+
+# Bundle pre-built web app + agent-runtime as extra resources.
+# Build order before running electron-builder:
+#   1. cd apps/web && bun run build        (produces apps/web/dist/)
+#   2. cd packages/agent-runtime && bun run build
+#   3. cd packages/mcp && bun run build
+#   4. cd apps/desktop && bun run build && bun run dist
+extraResources:
+  - from: ../web/dist/
+    to: web-dist/
+    filter:
+      - "**/*"
+  - from: ../../packages/agent-runtime/dist/
+    to: agent-runtime/
+    filter:
+      - "**/*"
+  - from: ../../packages/mcp/dist/
+    to: mcp/
+    filter:
+      - "**/*"
+
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+    - target: zip
+      arch:
+        - x64
+        - arm64
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: resources/entitlements.mac.plist
+  entitlementsInherit: resources/entitlements.mac.plist
+  notarize: false
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: ${productName}-Setup-${version}.${ext}
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  category: Development
+
+publish:
+  provider: github
+  owner: shogo-ai
+  repo: shogo-ai
