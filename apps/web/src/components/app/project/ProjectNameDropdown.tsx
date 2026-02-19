@@ -10,6 +10,7 @@
 
 import { useState, useCallback } from "react"
 import { useNavigate } from "react-router-dom"
+import { formatCredits } from "@/lib/utils"
 import {
   ChevronDown,
   ChevronLeft,
@@ -195,7 +196,7 @@ export function ProjectNameDropdown({
             <div className="space-y-1.5">
               <div className="flex items-center justify-between text-sm">
                 <span>Credits</span>
-                <span className="text-emerald-500 font-medium">{credits} left</span>
+                <span className="text-emerald-500 font-medium">{formatCredits(credits ?? 0)} left</span>
               </div>
               <Progress value={creditsPercentage} className="h-1.5 bg-muted" />
               <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
