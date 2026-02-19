@@ -180,13 +180,30 @@ When triggered, analyze recent git history and provide a summary.
 | \`version\` | Yes | Semver version |
 | \`description\` | Yes | What the skill does |
 | \`trigger\` | Yes | Pipe-separated keywords or regex pattern |
-| \`tools\` | No | Required tool groups: shell, filesystem, web_fetch, web_search, browser, memory |
+| \`tools\` | No | Required tools (see table below) |
+
+### Available Gateway Tool Names
+
+Use these **exact names** in the \`tools\` field of skill frontmatter:
+
+| Tool Name | Description |
+|-----------|-------------|
+| \`exec\` | Run shell commands |
+| \`read_file\` | Read a workspace file |
+| \`write_file\` | Write a workspace file |
+| \`web_fetch\` | Fetch content from a URL |
+| \`memory_read\` | Read from MEMORY.md or daily logs |
+| \`memory_write\` | Write to MEMORY.md or daily logs |
+| \`send_message\` | Send a message through a channel |
+| \`cron\` | Manage scheduled jobs |
+
+**Group aliases** (resolved automatically): \`shell\` → exec, \`filesystem\` → read_file + write_file, \`memory\` → memory_read + memory_write
 
 ### Creating Skills
 
 Use the \`skill.create\` tool to create new skills:
 \`\`\`
-mcp__shogo__skill_create({ name: "daily-digest", trigger: "daily digest|morning briefing", tools: ["web_search", "memory"], content: "..." })
+mcp__shogo__skill_create({ name: "daily-digest", trigger: "daily digest|morning briefing", tools: ["web_fetch", "memory_read", "memory_write"], content: "..." })
 \`\`\``
 
 export const HEARTBEAT_GUIDE = `## Heartbeat Configuration
@@ -262,9 +279,22 @@ and daily logs are written as the agent operates.
 
 export const TOOL_USAGE = `## Tool Usage
 
-**IMPORTANT: Always use \`mcp__shogo__*\` tools for agent configuration.** These tools validate inputs, update config.json, trigger live reloads, and keep the UI in sync. Do NOT use raw Write/Edit calls on workspace files (IDENTITY.md, SOUL.md, AGENTS.md, etc.) or config.json — the MCP tools handle that for you.
+**Prefer \`mcp__shogo__*\` tools for agent configuration.** These tools validate inputs, update config.json, trigger live reloads, and keep the UI in sync.
 
-Only use Write/Edit for files that don't have a dedicated MCP tool (e.g. scratch files, custom scripts).
+### MCP Tool Failure Handling
+
+If an \`mcp__shogo__*\` tool call fails or returns an error, **do NOT retry the same MCP call more than once.** Instead, fall back to the equivalent Write/Edit tool immediately:
+
+| Failed MCP Tool | Fallback Action |
+|----------------|-----------------|
+| \`identity_set\` | \`Write\` to \`{workspaceDir}/{file}\` (IDENTITY.md, SOUL.md, etc.) |
+| \`skill_create\` | \`Write\` to \`{workspaceDir}/skills/{name}.md\` (include YAML frontmatter) |
+| \`heartbeat_configure\` | \`Read\` + \`Edit\` on \`{workspaceDir}/config.json\` |
+| \`channel_connect\` | \`Read\` + \`Edit\` on \`{workspaceDir}/config.json\` |
+| \`memory_write\` | \`Write\` to \`{workspaceDir}/MEMORY.md\` or \`{workspaceDir}/memory/{date}.md\` |
+| \`agent_template_copy\` | Manually write template files using Write |
+
+This ensures the build process always completes, even if the MCP subprocess has connection issues.
 
 ### Agent Configuration Tools (preferred)
 - **mcp__shogo__identity_set** — Write IDENTITY.md, SOUL.md, USER.md, or AGENTS.md
@@ -289,9 +319,9 @@ Only use Write/Edit for files that don't have a dedicated MCP tool (e.g. scratch
 - **mcp__shogo__agent_template_list** — List available agent templates
 - **mcp__shogo__agent_template_copy** — Initialize workspace from a template
 
-### Standard Tools (fallback only)
+### Standard Tools (fallback)
 - **Read** — Read files not covered by MCP tools
-- **Write/Edit** — Only for non-workspace files (scripts, custom configs)
+- **Write/Edit** — Workspace files when MCP tools fail, or non-workspace files
 - **Bash** — Shell commands (for testing, debugging, installing deps)
 - **TodoWrite** — Track multi-step task progress`
 

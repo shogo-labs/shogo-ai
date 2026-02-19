@@ -55,6 +55,19 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
   const sessionCache = new Map<string, SDKSession>()
   const activeSessions = new Set<string>()
   const activeQueries = new Map<string, AsyncGenerator<any, void>>()
+  const sessionLocks = new Map<string, Promise<void>>()
+  let prewarmAborted = false
+
+  /**
+   * Serialize operations on a given model's session to prevent
+   * race conditions between interrupt, getOrCreate, and prewarm.
+   */
+  function withLock(model: string, fn: () => Promise<void>): Promise<void> {
+    const prev = sessionLocks.get(model) ?? Promise.resolve()
+    const next = prev.then(fn, fn)
+    sessionLocks.set(model, next)
+    return next
+  }
 
   function getOrCreate(modelName: ModelTier): SDKSession {
     const existing = sessionCache.get(modelName)
@@ -83,35 +96,40 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
    * and remove it from cache. The next getOrCreate() creates a fresh session.
    */
   async function interrupt(modelName: string): Promise<void> {
-    console.log(`[${logPrefix}] Interrupting active session for ${modelName}`)
+    return withLock(modelName, async () => {
+      console.log(`[${logPrefix}] Interrupting active session for ${modelName}`)
 
-    const activeQuery = activeQueries.get(modelName)
-    if (activeQuery) {
-      try { await activeQuery.return(undefined as any) } catch {}
-      activeQueries.delete(modelName)
-    }
-
-    const session = sessionCache.get(modelName)
-    if (session) {
-      try {
-        ;(session as any).close?.()
-        console.log(`[${logPrefix}] Closed session for ${modelName}`)
-      } catch (err) {
-        console.warn(`[${logPrefix}] Error closing session for ${modelName}:`, err)
+      const activeQuery = activeQueries.get(modelName)
+      if (activeQuery) {
+        try { await activeQuery.return(undefined as any) } catch {}
+        activeQueries.delete(modelName)
       }
-      sessionCache.delete(modelName)
-    }
 
-    activeSessions.delete(modelName)
-    console.log(`[${logPrefix}] Session cleanup complete for ${modelName}`)
+      const session = sessionCache.get(modelName)
+      if (session) {
+        try {
+          ;(session as any).close?.()
+          console.log(`[${logPrefix}] Closed session for ${modelName}`)
+        } catch (err) {
+          console.warn(`[${logPrefix}] Error closing session for ${modelName}:`, err)
+        }
+        sessionCache.delete(modelName)
+      }
+
+      activeSessions.delete(modelName)
+      console.log(`[${logPrefix}] Session cleanup complete for ${modelName}`)
+    })
   }
 
   /**
    * Pre-warm: create a session and send a ping to initialize the CLI subprocess
    * and load MCP servers, so the first real chat message doesn't pay cold-start cost.
+   *
+   * Aborts immediately if a real chat request activates the session.
    */
   async function prewarm(): Promise<void> {
     const startTime = performance.now()
+    prewarmAborted = false
 
     if (activeSessions.has(defaultModel)) {
       console.log(`[${logPrefix}] Pre-warm skipped — session ${defaultModel} is already active`)
@@ -122,7 +140,7 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
     try {
       const session = getOrCreate(defaultModel)
 
-      if (activeSessions.has(defaultModel)) {
+      if (activeSessions.has(defaultModel) || prewarmAborted) {
         console.log(`[${logPrefix}] Pre-warm aborted — session ${defaultModel} became active`)
         return
       }
@@ -132,6 +150,10 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
 
       for await (const msg of session.stream()) {
         if (msg.type === 'result') break
+        if (prewarmAborted) {
+          console.log(`[${logPrefix}] Pre-warm interrupted by incoming request`)
+          break
+        }
       }
       activeSessions.delete(defaultModel)
 
@@ -149,7 +171,10 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
     interrupt,
     prewarm,
     isActive: (model: string) => activeSessions.has(model),
-    markActive: (model: string) => activeSessions.add(model),
+    markActive: (model: string) => {
+      prewarmAborted = true
+      activeSessions.add(model)
+    },
     markInactive: (model: string) => activeSessions.delete(model),
     setActiveQuery: (model: string, query: AsyncGenerator<any, void>) => activeQueries.set(model, query),
     deleteActiveQuery: (model: string) => activeQueries.delete(model),

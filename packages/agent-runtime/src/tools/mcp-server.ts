@@ -13,6 +13,26 @@ import { join, extname } from 'path'
 const AGENT_DIR = process.env.AGENT_DIR || '/app/agent'
 const PROJECT_ID = process.env.PROJECT_ID || 'unknown'
 
+function ensureAgentDir(): void {
+  try {
+    mkdirSync(AGENT_DIR, { recursive: true })
+  } catch (err: any) {
+    console.error(`[MCP] FATAL: Cannot create AGENT_DIR "${AGENT_DIR}": ${err.message}`)
+    process.exit(1)
+  }
+
+  try {
+    const testFile = join(AGENT_DIR, '.mcp-probe')
+    writeFileSync(testFile, 'ok', 'utf-8')
+    unlinkSync(testFile)
+  } catch (err: any) {
+    console.error(`[MCP] FATAL: AGENT_DIR "${AGENT_DIR}" is not writable: ${err.message}`)
+    process.exit(1)
+  }
+}
+
+ensureAgentDir()
+
 // =============================================================================
 // Tool definitions (MCP protocol over stdio)
 // =============================================================================
@@ -129,6 +149,31 @@ defineTool({
   },
 })
 
+const VALID_TOOL_GROUPS = ['shell', 'filesystem', 'web_fetch', 'web_search', 'browser', 'memory', 'messaging', 'cron']
+const VALID_TOOL_NAMES = ['exec', 'read_file', 'write_file', 'web_fetch', 'memory_read', 'memory_write', 'send_message', 'cron']
+const TOOL_GROUP_TO_NAMES: Record<string, string[]> = {
+  shell: ['exec'],
+  filesystem: ['read_file', 'write_file'],
+  web_fetch: ['web_fetch'],
+  web_search: ['web_fetch'],
+  browser: ['web_fetch'],
+  memory: ['memory_read', 'memory_write'],
+  messaging: ['send_message'],
+  cron: ['cron'],
+}
+
+function normalizeToolRefs(refs: string[]): string[] {
+  const normalized = new Set<string>()
+  for (const ref of refs) {
+    if (TOOL_GROUP_TO_NAMES[ref]) {
+      for (const name of TOOL_GROUP_TO_NAMES[ref]) normalized.add(name)
+    } else if (VALID_TOOL_NAMES.includes(ref)) {
+      normalized.add(ref)
+    }
+  }
+  return [...normalized]
+}
+
 defineTool({
   name: 'skill_create',
   description: 'Create a new agent skill as a Markdown file with YAML frontmatter',
@@ -141,7 +186,7 @@ defineTool({
       tools: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Required tool groups',
+        description: `Tool names or groups. Groups: ${VALID_TOOL_GROUPS.join(', ')}. Individual: ${VALID_TOOL_NAMES.join(', ')}`,
       },
       content: { type: 'string', description: 'Skill instructions (Markdown body)' },
     },
@@ -158,20 +203,21 @@ defineTool({
       return { error: `Skill "${input.name}" already exists. Use skill_edit to modify it.` }
     }
 
-    const toolsArr = Array.isArray(input.tools) ? input.tools : []
+    const rawTools = Array.isArray(input.tools) ? input.tools : []
+    const resolvedTools = normalizeToolRefs(rawTools)
     const skillContent = `---
 name: ${input.name}
 version: 1.0.0
 description: ${input.description || ''}
 trigger: "${input.trigger}"
-tools: [${toolsArr.join(', ')}]
+tools: [${resolvedTools.join(', ')}]
 ---
 
 ${input.content}
 `
 
     writeFileSync(filepath, skillContent, 'utf-8')
-    return { ok: true, file: filename }
+    return { ok: true, file: filename, tools: resolvedTools }
   },
 })
 
@@ -595,21 +641,36 @@ defineTool({
     const templateId = input.template as string
     const agentName = (input.name as string) || 'My Agent'
 
-    // Templates are embedded in code (no filesystem lookup needed)
     const templateData = getAgentTemplate(templateId)
     if (!templateData) {
       return { error: `Template "${templateId}" not found` }
     }
 
-    // Write workspace files from template
+    mkdirSync(AGENT_DIR, { recursive: true })
+
+    const written: string[] = []
+    const errors: string[] = []
+
     for (const [filename, content] of Object.entries(templateData.files)) {
-      const filepath = join(AGENT_DIR, filename)
-      mkdirSync(join(AGENT_DIR, ...filename.split('/').slice(0, -1)), { recursive: true })
-      const resolvedContent = content.replace(/\{\{AGENT_NAME\}\}/g, agentName)
-      writeFileSync(filepath, resolvedContent, 'utf-8')
+      try {
+        const filepath = join(AGENT_DIR, filename)
+        const parentDir = filepath.substring(0, filepath.lastIndexOf('/'))
+        if (parentDir && parentDir !== AGENT_DIR) {
+          mkdirSync(parentDir, { recursive: true })
+        }
+        const resolvedContent = content.replace(/\{\{AGENT_NAME\}\}/g, agentName)
+        writeFileSync(filepath, resolvedContent, 'utf-8')
+        written.push(filename)
+      } catch (err: any) {
+        errors.push(`${filename}: ${err.message}`)
+      }
     }
 
-    return { ok: true, template: templateId, name: agentName }
+    if (errors.length > 0) {
+      return { ok: written.length > 0, template: templateId, name: agentName, written, errors }
+    }
+
+    return { ok: true, template: templateId, name: agentName, filesWritten: written.length }
   },
 })
 
@@ -654,7 +715,7 @@ function getAgentTemplate(id: string): AgentTemplate | null {
           channels: [],
           model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
         }, null, 2),
-        'skills/check-github.md': `---\nname: check-github\nversion: 1.0.0\ndescription: Check GitHub repos for new activity\ntrigger: "check github|repo status|ci status"\ntools: [web_fetch, shell]\n---\n\n# Check GitHub\n\nWhen triggered, check configured GitHub repositories for:\n1. Open pull requests needing review\n2. CI/CD pipeline status on default branch\n3. New issues in the last 24 hours\n4. Any failing checks or actions\n\nProvide a concise summary with links.\n`,
+        'skills/check-github.md': `---\nname: check-github\nversion: 1.0.0\ndescription: Check GitHub repos for new activity\ntrigger: "check github|repo status|ci status"\ntools: [web_fetch, exec]\n---\n\n# Check GitHub\n\nWhen triggered, check configured GitHub repositories for:\n1. Open pull requests needing review\n2. CI/CD pipeline status on default branch\n3. New issues in the last 24 hours\n4. Any failing checks or actions\n\nProvide a concise summary with links.\n`,
       },
     },
 
@@ -706,7 +767,7 @@ function getAgentTemplate(id: string): AgentTemplate | null {
           channels: [],
           model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
         }, null, 2),
-        'skills/web-research.md': `---\nname: web-research\nversion: 1.0.0\ndescription: Research a topic using web search and provide a structured summary\ntrigger: "research|look up|find out about|what is"\ntools: [web_search, web_fetch, memory]\n---\n\n# Web Research\n\nWhen triggered, perform thorough web research:\n1. Search for the topic using web search\n2. Visit top 3-5 relevant results\n3. Synthesize findings into a structured summary\n4. Include source URLs\n5. Save key findings to MEMORY.md\n`,
+        'skills/web-research.md': `---\nname: web-research\nversion: 1.0.0\ndescription: Research a topic using web search and provide a structured summary\ntrigger: "research|look up|find out about|what is"\ntools: [web_fetch, memory_read, memory_write]\n---\n\n# Web Research\n\nWhen triggered, perform thorough web research:\n1. Search for the topic using web search\n2. Visit top 3-5 relevant results\n3. Synthesize findings into a structured summary\n4. Include source URLs\n5. Save key findings to MEMORY.md\n`,
       },
     },
   }
@@ -773,13 +834,15 @@ async function handleRequest(request: {
 
 // Stdio transport
 async function main() {
+  console.error(`[MCP] Server starting — AGENT_DIR=${AGENT_DIR}, PROJECT_ID=${PROJECT_ID}, tools=${tools.length}`)
+
   const decoder = new TextDecoder()
   let buffer = ''
+  let requestCount = 0
 
   for await (const chunk of Bun.stdin.stream()) {
     buffer += decoder.decode(chunk)
 
-    // Process complete JSON-RPC messages
     while (true) {
       const headerEnd = buffer.indexOf('\r\n\r\n')
       if (headerEnd === -1) break
@@ -800,9 +863,14 @@ async function main() {
 
       try {
         const request = JSON.parse(body)
+        requestCount++
+
+        if (request.method === 'tools/call') {
+          console.error(`[MCP] Tool call #${requestCount}: ${request.params?.name}`)
+        }
+
         const result = await handleRequest(request)
 
-        // Notifications (no id) don't get responses
         if (request.id === undefined) continue
 
         const response = JSON.stringify({
@@ -815,11 +883,32 @@ async function main() {
         process.stdout.write(
           `Content-Length: ${responseBytes.length}\r\n\r\n${response}`
         )
+
+        if (request.method === 'tools/call') {
+          const isError = result?.isError || result?.content?.[0]?.text?.startsWith('Error:')
+          console.error(`[MCP] Tool call #${requestCount} ${request.params?.name}: ${isError ? 'FAILED' : 'OK'}`)
+        }
       } catch (error: any) {
-        console.error('[MCP] Parse error:', error.message)
+        console.error(`[MCP] Request #${requestCount} parse error:`, error.message)
+
+        // Return proper JSON-RPC error if we can extract an id
+        try {
+          const partial = JSON.parse(body)
+          if (partial.id !== undefined) {
+            const errResponse = JSON.stringify({
+              jsonrpc: '2.0',
+              id: partial.id,
+              error: { code: -32700, message: `Parse error: ${error.message}` },
+            })
+            const errBytes = new TextEncoder().encode(errResponse)
+            process.stdout.write(`Content-Length: ${errBytes.length}\r\n\r\n${errResponse}`)
+          }
+        } catch {}
       }
     }
   }
+
+  console.error(`[MCP] Stdin stream ended after ${requestCount} requests`)
 }
 
 main().catch((error) => {

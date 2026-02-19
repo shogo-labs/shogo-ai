@@ -8,6 +8,7 @@
 
 import { existsSync, readdirSync, readFileSync } from 'fs'
 import { join, extname } from 'path'
+import { resolveToolNames } from './gateway-tools'
 
 export interface Skill {
   name: string
@@ -81,12 +82,13 @@ export function loadSkills(skillsDir: string): Skill[] {
         continue
       }
 
+      const rawTools = Array.isArray(metadata.tools) ? metadata.tools : []
       skills.push({
         name: metadata.name,
         version: metadata.version || '1.0.0',
         description: metadata.description || '',
         trigger: metadata.trigger,
-        tools: Array.isArray(metadata.tools) ? metadata.tools : [],
+        tools: resolveToolNames(rawTools),
         content,
         filePath,
       })

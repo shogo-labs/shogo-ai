@@ -362,6 +362,47 @@ function createCronTool(ctx: ToolContext): AgentTool {
 }
 
 // ---------------------------------------------------------------------------
+// Tool Group Mapping
+// ---------------------------------------------------------------------------
+
+/**
+ * Maps group names (used in skill frontmatter) to individual gateway tool names.
+ * Skills can reference either group names or individual tool names.
+ */
+export const TOOL_GROUP_MAP: Record<string, string[]> = {
+  shell: ['exec'],
+  filesystem: ['read_file', 'write_file'],
+  web_fetch: ['web_fetch'],
+  web_search: ['web_fetch'],
+  browser: ['web_fetch'],
+  memory: ['memory_read', 'memory_write'],
+  messaging: ['send_message'],
+  cron: ['cron'],
+}
+
+export const ALL_TOOL_NAMES = [
+  'exec', 'read_file', 'write_file', 'web_fetch',
+  'memory_read', 'memory_write', 'send_message', 'cron',
+] as const
+
+/**
+ * Resolve a list of tool references (group names or individual names)
+ * to a deduplicated list of individual gateway tool names.
+ */
+export function resolveToolNames(refs: string[]): string[] {
+  const resolved = new Set<string>()
+  for (const ref of refs) {
+    const group = TOOL_GROUP_MAP[ref]
+    if (group) {
+      for (const name of group) resolved.add(name)
+    } else if ((ALL_TOOL_NAMES as readonly string[]).includes(ref)) {
+      resolved.add(ref)
+    }
+  }
+  return [...resolved]
+}
+
+// ---------------------------------------------------------------------------
 // Factory Functions
 // ---------------------------------------------------------------------------
 

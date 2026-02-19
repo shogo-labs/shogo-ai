@@ -256,11 +256,24 @@ let sessions = createSessionManager({
 // Write CLAUDE.md for Claude Code to load
 // =============================================================================
 
+function verifyMcpServerPath(): boolean {
+  if (!existsSync(MCP_SERVER_PATH)) {
+    console.error(`[agent-runtime] WARNING: MCP server not found at ${MCP_SERVER_PATH}`)
+    return false
+  }
+  return true
+}
+
 function writeAgentConfigFiles(): void {
   const claudeMdPath = resolve(AGENT_DIR, 'CLAUDE.md')
   const systemPromptContent = buildAgentSystemPrompt(AGENT_DIR)
   writeFileSync(claudeMdPath, systemPromptContent, 'utf-8')
   logTiming('Wrote CLAUDE.md')
+
+  const mcpServerValid = verifyMcpServerPath()
+  if (!mcpServerValid) {
+    logTiming('WARNING: MCP server path invalid — builder will use Write/Edit fallback')
+  }
 
   const mcpConfig = {
     mcpServers: {
@@ -401,6 +414,8 @@ const chatSchema = z.object({
   themeContext: z.string().optional(),
 })
 
+const activeChatRequests = new Map<string, { startedAt: number; abortController: AbortController }>()
+
 app.post('/agent/chat', async (c) => {
   const body = await c.req.json()
   console.log('[agent-runtime] /agent/chat received body keys:', Object.keys(body))
@@ -415,6 +430,17 @@ app.post('/agent/chat', async (c) => {
 
   const { messages, system, agentMode } = parsed.data
   const modelName = getModelFromAgentMode(agentMode)
+
+  const existingRequest = activeChatRequests.get(modelName)
+  if (existingRequest) {
+    const elapsed = Date.now() - existingRequest.startedAt
+    console.log(`[agent-runtime] Cancelling previous ${modelName} chat request (running for ${elapsed}ms)`)
+    existingRequest.abortController.abort()
+    activeChatRequests.delete(modelName)
+  }
+
+  const abortController = new AbortController()
+  activeChatRequests.set(modelName, { startedAt: Date.now(), abortController })
 
   if (sessions.isActive(modelName)) {
     await sessions.interrupt(modelName)
@@ -452,12 +478,19 @@ app.post('/agent/chat', async (c) => {
           onQueryCreated: (query) => sessions.setActiveQuery(modelName, query),
         })
       } catch (error: any) {
-        console.error('[agent-runtime] Chat error:', error.message)
+        if (abortController.signal.aborted) {
+          console.log(`[agent-runtime] Chat for ${modelName} was superseded by a new request`)
+        } else {
+          console.error('[agent-runtime] Chat error:', error.message)
+        }
         writer.write({
           type: 'error',
-          errorText: error.message || 'Agent chat error',
+          errorText: abortController.signal.aborted
+            ? 'Request superseded by a new message'
+            : (error.message || 'Agent chat error'),
         } as any)
       } finally {
+        activeChatRequests.delete(modelName)
         sessions.markInactive(modelName)
         sessions.deleteActiveQuery(modelName)
       }
