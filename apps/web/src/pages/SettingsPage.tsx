@@ -84,10 +84,11 @@ import { UsageTable, type UsageSummaryData, type UsageLogData } from "@/componen
 import { useUsageLog } from "@/components/admin/hooks/useAdminApi"
 import type { AnalyticsPeriod } from "@/components/admin/analytics/PeriodSelector"
 import { useWorkspaceData } from "@/components/app/workspace"
-import { useDomains, useSDKDomain } from "@/contexts/DomainProvider"
+import { useSDKDomain } from "@/contexts/DomainProvider"
 import type { IDomainStore } from "@/generated/domain"
 import { useDomainActions } from "@/generated/domain-actions"
 import { useSession } from "@/contexts/SessionProvider"
+import { authClient } from "@/auth/client"
 import { InviteMemberModal, PendingInvitationsView, MyInvitationsView } from "@/components/app/workspace/members"
 import { PlanSelector, PLAN_CREDITS, DAILY_CREDITS } from "@/components/app/billing/PlanSelector"
 import { useBillingData } from "@/hooks/useBillingData"
@@ -1840,8 +1841,7 @@ function PrivacyTab() {
 // ACCOUNT TAB
 // ============================================================================
 function AccountTab() {
-  const { data: session } = useSession()
-  const { auth } = useDomains()
+  const { data: session, refetch } = useSession()
   const user = session?.user
 
   const [name, setName] = useState(user?.name || "")
@@ -1858,22 +1858,23 @@ function AccountTab() {
 
   useEffect(() => {
     setName(user?.name || "")
-    setSaveStatus("idle")
   }, [user?.name])
 
   const handleSave = async () => {
-    if (!hasChanges || isSaving || !user?.id) return
+    if (!hasChanges || isSaving || !user?.id || !name.trim()) return
 
     setIsSaving(true)
     setSaveStatus("idle")
 
     try {
-      await auth?.userCollection?.updateOne(user.id, {
-        name: name.trim(),
-        updatedAt: new Date().toISOString(),
-      })
+      const { error } = await authClient.updateUser({ name: name.trim() })
+
+      if (error) {
+        throw new Error(error.message || "Update failed")
+      }
 
       setSaveStatus("saved")
+      refetch()
       setTimeout(() => setSaveStatus("idle"), 2000)
     } catch (error) {
       console.error("Failed to save account settings:", error)
@@ -1943,11 +1944,37 @@ function AccountTab() {
             </div>
           </div>
           <div className="flex gap-2">
-            <Input value={user?.id?.slice(0, 20) || ""} disabled className="flex-1" />
-            <Button variant="outline" size="sm">Update</Button>
+            <Input
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value)
+                setSaveStatus("idle")
+              }}
+              placeholder="Enter a username"
+              className="flex-1"
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleSave}
+              disabled={!hasChanges || !name.trim() || isSaving}
+            >
+              {isSaving ? "Saving..." : "Update"}
+            </Button>
           </div>
-          <a href="#" className="text-sm text-primary hover:underline flex items-center gap-1">
-            shogo.dev/@{user?.id?.slice(0, 12)}
+          {saveStatus === "saved" && (
+            <p className="text-xs text-green-600">Name updated successfully!</p>
+          )}
+          {saveStatus === "error" && (
+            <p className="text-xs text-destructive">Failed to update. Please try again.</p>
+          )}
+          <a
+            href={`https://shogo.dev/@${encodeURIComponent(name || user?.id?.slice(0, 12) || "")}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sm text-primary hover:underline flex items-center gap-1"
+          >
+            shogo.dev/@{name || user?.id?.slice(0, 12)}
             <ExternalLink className="h-3 w-3" />
           </a>
         </div>
@@ -2164,7 +2191,7 @@ function AccountTab() {
           <Button variant="outline" onClick={() => setName(originalName)} disabled={isSaving}>
             Cancel
           </Button>
-          <Button onClick={handleSave} disabled={isSaving}>
+          <Button onClick={handleSave} disabled={!hasChanges || !name.trim() || isSaving}>
             {isSaving ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
