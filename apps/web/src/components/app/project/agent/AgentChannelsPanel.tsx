@@ -8,6 +8,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { MessageSquare, RefreshCw, CheckCircle, XCircle, ExternalLink } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useAgentUrl } from '@/hooks/useAgentUrl'
 
 interface ChannelInfo {
   type: string
@@ -19,6 +20,7 @@ interface ChannelInfo {
 interface AgentChannelsPanelProps {
   projectId: string
   visible: boolean
+  localAgentUrl?: string | null
 }
 
 const CHANNEL_INFO: Record<string, { name: string; icon: string; setupUrl: string }> = {
@@ -39,19 +41,17 @@ const CHANNEL_INFO: Record<string, { name: string; icon: string; setupUrl: strin
   },
 }
 
-export function AgentChannelsPanel({ projectId, visible }: AgentChannelsPanelProps) {
+export function AgentChannelsPanel({ projectId, visible, localAgentUrl }: AgentChannelsPanelProps) {
   const [channels, setChannels] = useState<ChannelInfo[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const { refetch: getAgentUrl } = useAgentUrl(projectId, localAgentUrl)
 
   const loadChannels = useCallback(async () => {
     setIsLoading(true)
     setError(null)
     try {
-      const sandboxRes = await fetch(`/api/projects/${projectId}/sandbox/url`)
-      if (!sandboxRes.ok) throw new Error('Agent not running')
-      const sandboxData = await sandboxRes.json()
-      const baseUrl = sandboxData.agentUrl || sandboxData.url
+      const baseUrl = await getAgentUrl()
 
       const res = await fetch(`${baseUrl}/agent/status`)
       if (!res.ok) throw new Error('Agent not reachable')
@@ -62,7 +62,7 @@ export function AgentChannelsPanel({ projectId, visible }: AgentChannelsPanelPro
     } finally {
       setIsLoading(false)
     }
-  }, [projectId])
+  }, [getAgentUrl])
 
   useEffect(() => {
     if (visible) loadChannels()

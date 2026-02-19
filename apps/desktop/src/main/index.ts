@@ -3,10 +3,18 @@ import { join } from 'path'
 import { existsSync } from 'fs'
 import { registerIpcHandlers } from './ipc-handlers'
 import { LocalAgentRuntimeManager } from './runtime-manager'
+import { FileSyncManager } from './file-sync-manager'
 import { createTray } from './tray'
 import { setupAutoUpdater } from './auto-updater'
 
 const isDev = !app.isPackaged
+
+// Enable Chrome DevTools Protocol on port 9222 so external tools
+// (e.g. chrome-devtools MCP) can connect to the renderer process.
+// Must be called before app.whenReady().
+if (isDev) {
+  app.commandLine.appendSwitch('remote-debugging-port', '9222')
+}
 
 /**
  * Resolve the URL/path for the web app.
@@ -26,6 +34,7 @@ const API_URL = process.env.API_URL || 'http://localhost:8002'
 
 let mainWindow: BrowserWindow | null = null
 let runtimeManager: LocalAgentRuntimeManager | null = null
+let syncManager: FileSyncManager | null = null
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -38,7 +47,7 @@ function createWindow(): void {
     trafficLightPosition: { x: 16, y: 16 },
     backgroundColor: '#09090b',
     webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
+      preload: join(__dirname, '../preload/index.mjs'),
       sandbox: false,
       contextIsolation: true,
       nodeIntegration: false,
@@ -94,7 +103,11 @@ app.whenReady().then(async () => {
 
   runtimeManager = new LocalAgentRuntimeManager()
   runtimeManager.setApiUrl(API_URL)
-  registerIpcHandlers(runtimeManager, () => mainWindow)
+
+  syncManager = new FileSyncManager()
+  syncManager.setApiUrl(API_URL)
+
+  registerIpcHandlers(runtimeManager, syncManager, () => mainWindow)
 
   createWindow()
   createTray(runtimeManager, () => {
@@ -127,6 +140,9 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', async () => {
+  if (syncManager) {
+    syncManager.stopAll()
+  }
   if (runtimeManager) {
     await runtimeManager.stopAll()
   }

@@ -158,6 +158,8 @@ export interface ChatPanelProps {
   userId?: string
   /** Project ID for Claude Code working directory context */
   projectId?: string
+  /** Local agent runtime URL when running in Electron desktop mode */
+  localAgentUrl?: string | null
   /** Children to render inside ChatContextProvider */
   children?: React.ReactNode
   /** Optional class name */
@@ -603,6 +605,7 @@ export const ChatPanel = observer(function ChatPanel({
   workspaceId,
   userId,
   projectId,
+  localAgentUrl,
   children,
   className,
   onSchemaRefresh,
@@ -867,12 +870,16 @@ export const ChatPanel = observer(function ChatPanel({
   // chat-session-sync-fix: v3 API requires DefaultChatTransport for proper metadata handling
   // The transport must be memoized to prevent re-creation on every render
   // pod-per-project: Use project-specific endpoint when projectId is available
-  // This routes chat requests to the dedicated project pod via Knative
+  // Desktop mode: route to local agent-runtime when localAgentUrl is provided
   const chatTransport = useMemo(
     () => new DefaultChatTransport({ 
-      api: projectId ? `/api/projects/${projectId}/chat` : "/api/chat" 
+      api: localAgentUrl
+        ? `${localAgentUrl}/agent/chat`
+        : projectId
+          ? `/api/projects/${projectId}/chat`
+          : "/api/chat"
     }),
-    [projectId]
+    [projectId, localAgentUrl]
   )
 
   // AI SDK useChat hook (v3 API - chat-session-sync-fix)
@@ -1438,8 +1445,13 @@ export const ChatPanel = observer(function ChatPanel({
     stop()
 
     // 2. Fire-and-forget: tell the backend to interrupt the active SDK session
-    if (projectId) {
-      fetch(`/api/projects/${projectId}/chat/stop`, {
+    const stopUrl = localAgentUrl
+      ? `${localAgentUrl}/agent/chat/stop`
+      : projectId
+        ? `/api/projects/${projectId}/chat/stop`
+        : null
+    if (stopUrl) {
+      fetch(stopUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),

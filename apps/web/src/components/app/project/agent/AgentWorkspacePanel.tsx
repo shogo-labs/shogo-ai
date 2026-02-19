@@ -9,6 +9,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { FileText, Save, RefreshCw, Eye, Pencil } from 'lucide-react'
 import { Streamdown } from 'streamdown'
 import { cn } from '@/lib/utils'
+import { useAgentUrl } from '@/hooks/useAgentUrl'
 
 const WORKSPACE_FILES = [
   { id: 'AGENTS.md', label: 'Instructions', description: 'Operating rules and priorities' },
@@ -23,9 +24,10 @@ const WORKSPACE_FILES = [
 interface AgentWorkspacePanelProps {
   projectId: string
   visible: boolean
+  localAgentUrl?: string | null
 }
 
-export function AgentWorkspacePanel({ projectId, visible }: AgentWorkspacePanelProps) {
+export function AgentWorkspacePanel({ projectId, visible, localAgentUrl }: AgentWorkspacePanelProps) {
   const [selectedFile, setSelectedFile] = useState(WORKSPACE_FILES[0].id)
   const [content, setContent] = useState('')
   const [savedContent, setSavedContent] = useState('')
@@ -33,15 +35,9 @@ export function AgentWorkspacePanel({ projectId, visible }: AgentWorkspacePanelP
   const [isSaving, setIsSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [isPreview, setIsPreview] = useState(false)
+  const { refetch: getAgentUrl } = useAgentUrl(projectId, localAgentUrl)
 
   const hasChanges = content !== savedContent
-
-  const getAgentUrl = useCallback(async () => {
-    const sandboxRes = await fetch(`/api/projects/${projectId}/sandbox/url`)
-    if (!sandboxRes.ok) throw new Error('Agent not running')
-    const sandboxData = await sandboxRes.json()
-    return sandboxData.agentUrl || sandboxData.url
-  }, [projectId])
 
   const loadFile = useCallback(async (filename: string) => {
     setIsLoading(true)

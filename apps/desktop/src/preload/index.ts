@@ -15,6 +15,13 @@ export interface AgentRuntimeInfo {
   error?: string
 }
 
+export interface SyncStatus {
+  state: 'idle' | 'syncing' | 'error' | 'disabled'
+  lastSyncedAt: number | null
+  fileCount: number
+  error?: string
+}
+
 export interface ShogoDesktopAPI {
   runtime: {
     start: (projectId: string) => Promise<IpcResult<AgentRuntimeInfo>>
@@ -24,6 +31,14 @@ export interface ShogoDesktopAPI {
     list: () => Promise<AgentRuntimeInfo[]>
     logs: (projectId: string) => Promise<string[]>
     onLog: (cb: (projectId: string, line: string) => void) => () => void
+  }
+  sync: {
+    enable: (projectId: string) => Promise<void>
+    disable: (projectId: string) => Promise<void>
+    status: (projectId: string) => Promise<SyncStatus>
+    trigger: (projectId: string) => Promise<void>
+    pull: (projectId: string) => Promise<void>
+    onStatus: (cb: (projectId: string, status: SyncStatus) => void) => () => void
   }
   settings: {
     get: (key: string) => Promise<unknown>
@@ -58,6 +73,22 @@ const api: ShogoDesktopAPI = {
       ipcRenderer.on('runtime:log', handler)
       return () => {
         ipcRenderer.removeListener('runtime:log', handler)
+      }
+    },
+  },
+  sync: {
+    enable: (projectId) => ipcRenderer.invoke('sync:enable', projectId),
+    disable: (projectId) => ipcRenderer.invoke('sync:disable', projectId),
+    status: (projectId) => ipcRenderer.invoke('sync:status', projectId),
+    trigger: (projectId) => ipcRenderer.invoke('sync:trigger', projectId),
+    pull: (projectId) => ipcRenderer.invoke('sync:pull', projectId),
+    onStatus: (cb) => {
+      const handler = (_event: Electron.IpcRendererEvent, projectId: string, status: SyncStatus) => {
+        cb(projectId, status)
+      }
+      ipcRenderer.on('sync:onStatus', handler)
+      return () => {
+        ipcRenderer.removeListener('sync:onStatus', handler)
       }
     },
   },

@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
 import type { LocalAgentRuntimeManager } from './runtime-manager'
+import type { FileSyncManager } from './file-sync-manager'
 
 const SETTINGS_PATH = () => join(app.getPath('userData'), 'settings.json')
 
@@ -24,6 +25,7 @@ function saveSettings(settings: Record<string, unknown>): void {
 
 export function registerIpcHandlers(
   runtimeManager: LocalAgentRuntimeManager,
+  syncManager: FileSyncManager,
   getMainWindow: () => BrowserWindow | null,
 ): void {
   // ── Runtime lifecycle ──────────────────────────────────────────────
@@ -135,5 +137,36 @@ export function registerIpcHandlers(
 
   ipcMain.handle('app:isEncryptionAvailable', () => {
     return safeStorage.isEncryptionAvailable()
+  })
+
+  // ── File sync ──────────────────────────────────────────────────
+
+  ipcMain.handle('sync:enable', (_event, projectId: string) => {
+    const localDir = join(app.getPath('home'), 'shogo-agents', projectId)
+    syncManager.enableSync(projectId, localDir)
+  })
+
+  ipcMain.handle('sync:disable', (_event, projectId: string) => {
+    syncManager.disableSync(projectId)
+  })
+
+  ipcMain.handle('sync:status', (_event, projectId: string) => {
+    return syncManager.getSyncStatus(projectId)
+  })
+
+  ipcMain.handle('sync:trigger', async (_event, projectId: string) => {
+    await syncManager.triggerSync(projectId)
+  })
+
+  ipcMain.handle('sync:pull', async (_event, projectId: string) => {
+    await syncManager.pullFromCloud(projectId)
+  })
+
+  // Forward sync status events to renderer
+  syncManager.onStatus((projectId, status) => {
+    const win = getMainWindow()
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('sync:onStatus', projectId, status)
+    }
   })
 }

@@ -46,7 +46,7 @@ export class LocalAgentRuntimeManager {
   constructor(overrides?: Partial<RuntimeConfig>) {
     const defaultAgentsDir = join(app.getPath('home'), 'shogo-agents')
     this.config = {
-      basePort: 6200,
+      basePort: 7200,
       maxRuntimes: 10,
       healthCheckIntervalMs: 30_000,
       agentsDir: defaultAgentsDir,
@@ -413,6 +413,13 @@ export class LocalAgentRuntimeManager {
       const runtime = this.runtimes.get(projectId)
       if (runtime?.status === 'error') {
         throw new Error(runtime.error || 'Agent process failed to start')
+      }
+
+      // Verify the spawned process is still alive
+      if (runtime?.process && runtime.process.exitCode !== null) {
+        throw new Error(
+          `Agent process exited prematurely with code ${runtime.process.exitCode}`,
+        )
       }
 
       try {

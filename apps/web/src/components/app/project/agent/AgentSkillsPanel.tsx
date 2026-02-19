@@ -8,6 +8,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Zap, Plus, Trash2, RefreshCw, Edit } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useAgentUrl } from '@/hooks/useAgentUrl'
 
 interface Skill {
   file: string
@@ -19,21 +20,20 @@ interface Skill {
 interface AgentSkillsPanelProps {
   projectId: string
   visible: boolean
+  localAgentUrl?: string | null
 }
 
-export function AgentSkillsPanel({ projectId, visible }: AgentSkillsPanelProps) {
+export function AgentSkillsPanel({ projectId, visible, localAgentUrl }: AgentSkillsPanelProps) {
   const [skills, setSkills] = useState<Skill[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const { refetch: getAgentUrl } = useAgentUrl(projectId, localAgentUrl)
 
   const loadSkills = useCallback(async () => {
     setIsLoading(true)
     setError(null)
     try {
-      const sandboxRes = await fetch(`/api/projects/${projectId}/sandbox/url`)
-      if (!sandboxRes.ok) throw new Error('Agent not running')
-      const sandboxData = await sandboxRes.json()
-      const baseUrl = sandboxData.agentUrl || sandboxData.url
+      const baseUrl = await getAgentUrl()
 
       const res = await fetch(`${baseUrl}/agent/status`)
       if (!res.ok) throw new Error('Agent not reachable')
@@ -52,7 +52,7 @@ export function AgentSkillsPanel({ projectId, visible }: AgentSkillsPanelProps) 
     } finally {
       setIsLoading(false)
     }
-  }, [projectId])
+  }, [getAgentUrl])
 
   useEffect(() => {
     if (visible) loadSkills()

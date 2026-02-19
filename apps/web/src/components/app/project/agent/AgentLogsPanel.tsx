@@ -8,26 +8,26 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { ScrollText, RefreshCw, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useAgentUrl } from '@/hooks/useAgentUrl'
 
 interface AgentLogsPanelProps {
   projectId: string
   visible: boolean
+  localAgentUrl?: string | null
 }
 
-export function AgentLogsPanel({ projectId, visible }: AgentLogsPanelProps) {
+export function AgentLogsPanel({ projectId, visible, localAgentUrl }: AgentLogsPanelProps) {
   const [logs, setLogs] = useState<string[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const scrollRef = useRef<HTMLDivElement>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const { refetch: getAgentUrl } = useAgentUrl(projectId, localAgentUrl)
 
   const loadLogs = useCallback(async () => {
     try {
-      const sandboxRes = await fetch(`/api/projects/${projectId}/sandbox/url`)
-      if (!sandboxRes.ok) return
-      const sandboxData = await sandboxRes.json()
-      const baseUrl = sandboxData.agentUrl || sandboxData.url
+      const baseUrl = await getAgentUrl()
 
       const res = await fetch(`${baseUrl}/console-log`)
       if (!res.ok) return
@@ -37,7 +37,7 @@ export function AgentLogsPanel({ projectId, visible }: AgentLogsPanelProps) {
     } catch (err: any) {
       if (!error) setError(err.message)
     }
-  }, [projectId, error])
+  }, [getAgentUrl, error])
 
   useEffect(() => {
     if (visible) {

@@ -40,6 +40,7 @@ import {
   AgentLogsPanel,
 } from "./agent"
 import { cn, getTotalCreditsForPlan } from "@/lib/utils"
+import { isDesktop, getDesktopAPI } from "@/lib/desktop"
 import { PLAN_CREDITS, DAILY_CREDITS } from "../billing/PlanSelector"
 import { useSession } from "@/contexts/SessionProvider"
 import type { ViewportSize } from "./PreviewControls"
@@ -135,6 +136,9 @@ export const ProjectLayout = observer(function ProjectLayout() {
   // Auto-scan trigger — incremented after AI code generation to auto-run security scan
   const [autoScanTrigger, setAutoScanTrigger] = useState(0)
 
+  // Desktop local runtime URL — resolved once via IPC and shared with child panels
+  const [localAgentUrl, setLocalAgentUrl] = useState<string | null>(null)
+
   // Build error state - shared between RuntimePreviewPanel and TerminalPanel
   const [buildError, setBuildError] = useState<string | null>(null)
   const [buildErrorContext, setBuildErrorContext] = useState<{
@@ -184,6 +188,41 @@ export const ProjectLayout = observer(function ProjectLayout() {
       setPreviewMode(currentType === 'AGENT' ? 'test-chat' : 'runtime')
     }
   }, [project?.type])
+
+  // Desktop: start local agent runtime when opening an AGENT project
+  useEffect(() => {
+    if (!isDesktop() || !projectId || !isAgentProject) return
+
+    let cancelled = false
+    const desktop = getDesktopAPI()
+
+    ;(async () => {
+      try {
+        const info = await desktop.runtime.status(projectId)
+        if (cancelled) return
+
+        if (info?.status === 'running') {
+          setLocalAgentUrl(info.url)
+          return
+        }
+
+        const result = await desktop.runtime.start(projectId)
+        if (cancelled) return
+
+        if (result.ok && result.data) {
+          setLocalAgentUrl(result.data.url)
+        } else {
+          console.error('[ProjectLayout] Failed to start local runtime:', result.error)
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.error('[ProjectLayout] Error starting local runtime:', err)
+        }
+      }
+    })()
+
+    return () => { cancelled = true }
+  }, [projectId, isAgentProject])
 
   // Transition overlay state - for animating from homepage to chat panel
   const chatInputContainerRef = useRef<HTMLDivElement>(null)
@@ -908,6 +947,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
           isOpeningExternal={isOpeningExternal}
           isAgentProject={isAgentProject}
           projectSubtitle={isAgentProject ? "Agent project" : undefined}
+          syncProjectId={isDesktop() && isAgentProject ? projectId : undefined}
           // Publish callbacks
           onPublish={handlePublish}
           onUnpublish={handleUnpublish}
@@ -964,6 +1004,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 workspaceId={project?.workspaceId}
                 userId={session?.user?.id}
                 projectId={projectId}
+                localAgentUrl={localAgentUrl}
                 className="flex-1 min-h-0"
                 initialMessage={transitionState?.initialMessage}
                 inputContainerRef={chatInputContainerRef}
@@ -1173,26 +1214,32 @@ export const ProjectLayout = observer(function ProjectLayout() {
                   <AgentTestChatPanel
                     projectId={projectId || ''}
                     visible={previewMode === 'test-chat'}
+                    localAgentUrl={localAgentUrl}
                   />
                   <AgentWorkspacePanel
                     projectId={projectId || ''}
                     visible={previewMode === 'workspace'}
+                    localAgentUrl={localAgentUrl}
                   />
                   <AgentSkillsPanel
                     projectId={projectId || ''}
                     visible={previewMode === 'skills'}
+                    localAgentUrl={localAgentUrl}
                   />
                   <AgentHeartbeatPanel
                     projectId={projectId || ''}
                     visible={previewMode === 'heartbeat'}
+                    localAgentUrl={localAgentUrl}
                   />
                   <AgentChannelsPanel
                     projectId={projectId || ''}
                     visible={previewMode === 'channels'}
+                    localAgentUrl={localAgentUrl}
                   />
                   <AgentLogsPanel
                     projectId={projectId || ''}
                     visible={previewMode === 'logs'}
+                    localAgentUrl={localAgentUrl}
                   />
                 </>
               )}

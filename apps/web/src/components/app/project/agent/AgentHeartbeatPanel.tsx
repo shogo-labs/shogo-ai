@@ -8,6 +8,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Heart, Play, RefreshCw, Clock, CheckCircle, AlertTriangle } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useAgentUrl } from '@/hooks/useAgentUrl'
 
 interface HeartbeatStatus {
   enabled: boolean
@@ -20,23 +21,22 @@ interface HeartbeatStatus {
 interface AgentHeartbeatPanelProps {
   projectId: string
   visible: boolean
+  localAgentUrl?: string | null
 }
 
-export function AgentHeartbeatPanel({ projectId, visible }: AgentHeartbeatPanelProps) {
+export function AgentHeartbeatPanel({ projectId, visible, localAgentUrl }: AgentHeartbeatPanelProps) {
   const [status, setStatus] = useState<HeartbeatStatus | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [isTriggering, setIsTriggering] = useState(false)
   const [triggerResult, setTriggerResult] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const { refetch: getAgentUrl } = useAgentUrl(projectId, localAgentUrl)
 
   const loadStatus = useCallback(async () => {
     setIsLoading(true)
     setError(null)
     try {
-      const sandboxRes = await fetch(`/api/projects/${projectId}/sandbox/url`)
-      if (!sandboxRes.ok) throw new Error('Agent not running')
-      const sandboxData = await sandboxRes.json()
-      const baseUrl = sandboxData.agentUrl || sandboxData.url
+      const baseUrl = await getAgentUrl()
 
       const res = await fetch(`${baseUrl}/agent/status`)
       if (!res.ok) throw new Error('Agent not reachable')
@@ -47,16 +47,13 @@ export function AgentHeartbeatPanel({ projectId, visible }: AgentHeartbeatPanelP
     } finally {
       setIsLoading(false)
     }
-  }, [projectId])
+  }, [getAgentUrl])
 
   const triggerHeartbeat = async () => {
     setIsTriggering(true)
     setTriggerResult(null)
     try {
-      const sandboxRes = await fetch(`/api/projects/${projectId}/sandbox/url`)
-      if (!sandboxRes.ok) throw new Error('Agent not running')
-      const sandboxData = await sandboxRes.json()
-      const baseUrl = sandboxData.agentUrl || sandboxData.url
+      const baseUrl = await getAgentUrl()
 
       const res = await fetch(`${baseUrl}/agent/heartbeat/trigger`, { method: 'POST' })
       const data = await res.json()

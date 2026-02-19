@@ -17,6 +17,7 @@ import { AssistantContent } from '../../chat/turns/AssistantContent'
 interface AgentTestChatPanelProps {
   projectId: string
   visible: boolean
+  localAgentUrl?: string | null
 }
 
 /** Extract display text from a UIMessage for user messages. */
@@ -32,15 +33,21 @@ function getUserText(msg: UIMessage): string {
   return typeof content === 'string' ? content : ''
 }
 
-export function AgentTestChatPanel({ projectId, visible }: AgentTestChatPanelProps) {
+export function AgentTestChatPanel({ projectId, visible, localAgentUrl }: AgentTestChatPanelProps) {
   const [agentUrl, setAgentUrl] = useState<string | null>(null)
   const [urlError, setUrlError] = useState<string | null>(null)
   const [inputValue, setInputValue] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  // Fetch the agent runtime URL
+  // Resolve agent URL: prefer local desktop runtime, fall back to cloud sandbox
   useEffect(() => {
+    if (localAgentUrl) {
+      setAgentUrl(localAgentUrl)
+      setUrlError(null)
+      return
+    }
+
     if (!projectId) return
     let cancelled = false
 
@@ -59,7 +66,7 @@ export function AgentTestChatPanel({ projectId, visible }: AgentTestChatPanelPro
     })()
 
     return () => { cancelled = true }
-  }, [projectId])
+  }, [projectId, localAgentUrl])
 
   const transport = useMemo(() => {
     if (!agentUrl) return null
