@@ -44,6 +44,7 @@ import { routeHooks } from './generated/hooks'
 import { prisma } from './lib/prisma'
 // Auth middleware for generated routes
 import { authMiddleware, requireAuth } from './middleware/auth'
+import { tracingMiddleware } from './middleware/tracing'
 
 // Runtime manager singleton for project Vite runtimes
 let runtimeManager: IRuntimeManager | null = null
@@ -719,6 +720,9 @@ async function prewarmClaudeCode() {
 }
 
 const app = new Hono()
+
+// OpenTelemetry tracing — must be first middleware so all requests get spans
+app.use('*', tracingMiddleware)
 
 // =============================================================================
 // Global Error Handling
@@ -3751,6 +3755,12 @@ async function gracefulShutdown(signal: string) {
   console.log('[Server] Stopping all Prisma Studio instances...')
   stopAllPrismaStudios()
   console.log('[Server] All Prisma Studios stopped')
+
+  // Flush pending OTEL spans before exit
+  try {
+    const { shutdownTracing } = await import('./instrumentation')
+    await shutdownTracing()
+  } catch (_) { /* instrumentation may not be loaded */ }
 
   console.log('[Server] Shutdown complete')
   process.exit(0)

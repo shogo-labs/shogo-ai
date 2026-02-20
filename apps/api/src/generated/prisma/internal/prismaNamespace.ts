@@ -80,12 +80,12 @@ export type PrismaVersion = {
 }
 
 /**
- * Prisma Client JS version: 7.3.0
- * Query Engine version: 9d6ad21cbbceab97458517b147a6a09ff43aa735
+ * Prisma Client JS version: 7.4.1
+ * Query Engine version: 55ae170b1ced7fc6ed07a15f110549408c501bb3
  */
 export const prismaVersion: PrismaVersion = {
-  client: "7.3.0",
-  engine: "9d6ad21cbbceab97458517b147a6a09ff43aa735"
+  client: "7.4.1",
+  engine: "55ae170b1ced7fc6ed07a15f110549408c501bb3"
 }
 
 /**

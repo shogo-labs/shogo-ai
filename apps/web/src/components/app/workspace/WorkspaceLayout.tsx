@@ -150,7 +150,7 @@ export function WorkspaceLayout() {
       if (type === "AGENT") {
         initialMessage = `${prompt}\n\nThis is an AGENT project. Please configure the agent workspace files (AGENTS.md, IDENTITY.md, HEARTBEAT.md, MEMORY.md, config.json) based on the description above.`
       } else if (themeId) {
-        initialMessage = `${prompt}\n\nPlease use the "${themeId}" theme for this project. Apply the theme CSS variables to src/index.css.`
+        initialMessage = prompt
       } else {
         initialMessage = prompt
       }

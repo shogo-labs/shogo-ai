@@ -795,6 +795,21 @@ resource "kubernetes_secret" "api_secrets" {
   )
 }
 
+# SigNoz credentials for application-level OTEL tracing
+resource "kubernetes_secret" "signoz_credentials" {
+  count      = var.bootstrap_mode || var.signoz_ingestion_key == "" ? 0 : 1
+  depends_on = [kubernetes_namespace.shogo_system]
+
+  metadata {
+    name      = "signoz-credentials"
+    namespace = "shogo-staging-system"
+  }
+
+  data = {
+    SIGNOZ_INGESTION_KEY = var.signoz_ingestion_key
+  }
+}
+
 # Anthropic credentials for project pods (shogo-staging-workspaces namespace)
 resource "kubernetes_secret" "anthropic_credentials_workspaces" {
   count      = var.bootstrap_mode || var.anthropic_api_key == "" ? 0 : 1
@@ -1124,6 +1139,17 @@ resource "null_resource" "knative_services" {
                     value: ""
                   - name: PUBLISH_DOMAIN
                     value: "${var.publish_domain}"
+                  # OpenTelemetry tracing → SigNoz Cloud
+                  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                    value: "https://${var.signoz_endpoint}"
+                  - name: OTEL_SERVICE_NAME
+                    value: "shogo-api"
+                  - name: SIGNOZ_INGESTION_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: signoz-credentials
+                        key: SIGNOZ_INGESTION_KEY
+                        optional: true
                 resources:
                   requests:
                     memory: "512Mi"

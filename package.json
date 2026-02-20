@@ -13,7 +13,7 @@
     "web:nohmr": "bun run --cwd apps/web dev:nohmr",
     "web:build": "bun run --cwd apps/web build",
     "web:preview": "bun run --cwd apps/web preview",
-    "api:dev": "PREWARM_CLAUDE_CODE=false bun --watch apps/api/src/server.ts",
+    "api:dev": "PREWARM_CLAUDE_CODE=false bun --watch apps/api/src/entry.ts",
     "api:start": "bun apps/api/src/server.ts",
     "mcp:http": "bun run packages/mcp/src/server-http.ts",
     "mcp:stdio": "bun run packages/mcp/src/server.ts",

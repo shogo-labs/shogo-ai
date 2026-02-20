@@ -141,5 +141,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 # Run API server
 WORKDIR /app/apps/api
 ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["bun", "run", "src/server.ts"]
+CMD ["bun", "run", "src/entry.ts"]
 
