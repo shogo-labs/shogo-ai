@@ -99,9 +99,8 @@ COPY apps/desktop/package.json ./apps/desktop/
 
 COPY scripts ./scripts
 
-RUN --mount=type=cache,target=/root/.bun/install/cache \
-    bun install && \
-    echo "deps: full install (not --production) — $(ls node_modules/ | wc -l) packages"
+RUN bun install && \
+    echo "Installed $(ls node_modules/ | wc -l) packages (full install, not --production)"
 
 # =============================================================================
 # Stage 3: template-deps — pre-install and pre-build all templates
