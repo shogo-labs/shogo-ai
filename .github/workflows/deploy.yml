@@ -110,84 +110,75 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
-      - name: Detect path changes
-        uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            shared:
-              - 'package.json'
-              - 'bun.lock'
-              - 'tsconfig.base.json'
-              - 'scripts/**'
-            state_api:
-              - 'packages/state-api/**'
-            mcp_pkg:
-              - 'packages/mcp/**'
-            sdk:
-              - 'packages/sdk/**'
-            shared_runtime:
-              - 'packages/shared-runtime/**'
-            project_runtime_pkg:
-              - 'packages/project-runtime/**'
-            agent_runtime_pkg:
-              - 'packages/agent-runtime/**'
-            api_app:
-              - 'apps/api/**'
-              - 'prisma/**'
-              - 'prisma.config.ts'
-            web_app:
-              - 'apps/web/**'
-              - '.claude/skills/**'
-            docs_app:
-              - 'apps/docs/**'
-
-      - name: Build dynamic matrix
+      - name: Detect changed paths and build matrix
         id: set-matrix
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           FORCE_ALL="${{ github.event_name == 'workflow_dispatch' }}"
 
-          SHARED="${{ steps.filter.outputs.shared }}"
-          STATE_API="${{ steps.filter.outputs.state_api }}"
-          MCP_PKG="${{ steps.filter.outputs.mcp_pkg }}"
-          SDK="${{ steps.filter.outputs.sdk }}"
-          SHARED_RUNTIME="${{ steps.filter.outputs.shared_runtime }}"
-          PROJECT_RUNTIME_PKG="${{ steps.filter.outputs.project_runtime_pkg }}"
-          AGENT_RUNTIME_PKG="${{ steps.filter.outputs.agent_runtime_pkg }}"
-          API_APP="${{ steps.filter.outputs.api_app }}"
-          WEB_APP="${{ steps.filter.outputs.web_app }}"
-          DOCS_APP="${{ steps.filter.outputs.docs_app }}"
+          if [ "$FORCE_ALL" = "true" ]; then
+            echo "🔧 workflow_dispatch — forcing all image builds"
+            CHANGED=""
+          elif [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            CHANGED=$(git diff --name-only "$BEFORE_SHA" HEAD)
+            echo "📂 Comparing $BEFORE_SHA..HEAD (push event)"
+          else
+            CHANGED=$(git diff --name-only HEAD~1 HEAD)
+            echo "📂 Comparing HEAD~1..HEAD (fallback)"
+          fi
+
+          echo ""
+          echo "Changed files:"
+          echo "$CHANGED"
+          echo ""
+
+          has_match() {
+            [ "$FORCE_ALL" = "true" ] && { echo "true"; return; }
+            echo "$CHANGED" | grep -qE "$1" && echo "true" || echo "false"
+          }
+
+          SHARED=$(has_match '^(package\.json|bun\.lock|tsconfig\.base\.json|scripts/)')
+          STATE_API=$(has_match '^packages/state-api/')
+          MCP_PKG=$(has_match '^packages/mcp/')
+          SDK=$(has_match '^packages/sdk/')
+          SHARED_RUNTIME=$(has_match '^packages/shared-runtime/')
+          PROJECT_RUNTIME_PKG=$(has_match '^packages/project-runtime/')
+          AGENT_RUNTIME_PKG=$(has_match '^packages/agent-runtime/')
+          API_APP=$(has_match '^(apps/api/|prisma/|prisma\.config\.ts)')
+          WEB_APP=$(has_match '^(apps/web/|\.claude/skills/)')
+          DOCS_APP=$(has_match '^apps/docs/')
 
           MCP_CHANGED=false
-          if [ "$FORCE_ALL" = "true" ] || [ "$SHARED" = "true" ] || [ "$STATE_API" = "true" ] || [ "$MCP_PKG" = "true" ]; then
+          if [ "$SHARED" = "true" ] || [ "$STATE_API" = "true" ] || [ "$MCP_PKG" = "true" ]; then
             MCP_CHANGED=true
           fi
 
           API_CHANGED=false
-          if [ "$FORCE_ALL" = "true" ] || [ "$SHARED" = "true" ] || [ "$STATE_API" = "true" ] || [ "$MCP_PKG" = "true" ] || [ "$SDK" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$PROJECT_RUNTIME_PKG" = "true" ] || [ "$AGENT_RUNTIME_PKG" = "true" ] || [ "$API_APP" = "true" ]; then
+          if [ "$SHARED" = "true" ] || [ "$STATE_API" = "true" ] || [ "$MCP_PKG" = "true" ] || [ "$SDK" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$PROJECT_RUNTIME_PKG" = "true" ] || [ "$AGENT_RUNTIME_PKG" = "true" ] || [ "$API_APP" = "true" ]; then
             API_CHANGED=true
           fi
 
           WEB_CHANGED=false
-          if [ "$FORCE_ALL" = "true" ] || [ "$SHARED" = "true" ] || [ "$STATE_API" = "true" ] || [ "$MCP_PKG" = "true" ] || [ "$SDK" = "true" ] || [ "$WEB_APP" = "true" ]; then
+          if [ "$SHARED" = "true" ] || [ "$STATE_API" = "true" ] || [ "$MCP_PKG" = "true" ] || [ "$SDK" = "true" ] || [ "$WEB_APP" = "true" ]; then
             WEB_CHANGED=true
           fi
 
           PROJECT_RUNTIME_CHANGED=false
-          if [ "$FORCE_ALL" = "true" ] || [ "$SHARED" = "true" ] || [ "$STATE_API" = "true" ] || [ "$MCP_PKG" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$PROJECT_RUNTIME_PKG" = "true" ] || [ "$SDK" = "true" ]; then
+          if [ "$SHARED" = "true" ] || [ "$STATE_API" = "true" ] || [ "$MCP_PKG" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$PROJECT_RUNTIME_PKG" = "true" ] || [ "$SDK" = "true" ]; then
             PROJECT_RUNTIME_CHANGED=true
           fi
 
           AGENT_RUNTIME_CHANGED=false
-          if [ "$FORCE_ALL" = "true" ] || [ "$SHARED" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$AGENT_RUNTIME_PKG" = "true" ]; then
+          if [ "$SHARED" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$AGENT_RUNTIME_PKG" = "true" ]; then
             AGENT_RUNTIME_CHANGED=true
           fi
 
           # docs Dockerfile doesn't use workspace root lockfile — only triggered by its own changes
           DOCS_CHANGED=false
-          if [ "$FORCE_ALL" = "true" ] || [ "$DOCS_APP" = "true" ]; then
+          if [ "$DOCS_APP" = "true" ]; then
             DOCS_CHANGED=true
           fi
 
@@ -220,6 +211,7 @@ jobs:
             echo "matrix={\"include\":[$ENTRIES]}" >> $GITHUB_OUTPUT
           fi
 
+          echo ""
           echo "📊 Changes detected:"
           echo "  mcp: $MCP_CHANGED"
           echo "  api: $API_CHANGED"
