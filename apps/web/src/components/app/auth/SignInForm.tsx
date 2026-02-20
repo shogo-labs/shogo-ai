@@ -9,6 +9,7 @@
 
 import { useState, type FormEvent } from "react"
 import { observer } from "mobx-react-lite"
+import { Eye, EyeOff } from "lucide-react"
 import { useDomains } from "@/contexts/DomainProvider"
 import { useSession } from "@/contexts/SessionProvider"
 import { clearUserLocalStorage } from "@/lib/clear-user-storage"
@@ -36,6 +37,7 @@ export const SignInForm = observer(function SignInForm({ onSuccess }: SignInForm
   const session = useSession()
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
+  const [showPassword, setShowPassword] = useState(false)
 
   const isLoading = auth.authStatus === "loading"
 
@@ -92,16 +94,32 @@ export const SignInForm = observer(function SignInForm({ onSuccess }: SignInForm
             Forgot password?
           </a>
         </div>
-        <Input
-          id="signin-password"
-          type="password"
-          placeholder="Enter your password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          disabled={isLoading}
-          required
-          autoComplete="current-password"
-        />
+        <div className="relative">
+          <Input
+            id="signin-password"
+            type={showPassword ? "text" : "password"}
+            placeholder="Enter your password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            disabled={isLoading}
+            required
+            autoComplete="current-password"
+            className="pr-10"
+          />
+          <button
+            type="button"
+            onClick={() => setShowPassword(!showPassword)}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+            disabled={isLoading}
+            aria-label={showPassword ? "Hide password" : "Show password"}
+          >
+            {showPassword ? (
+              <EyeOff className="h-4 w-4" />
+            ) : (
+              <Eye className="h-4 w-4" />
+            )}
+          </button>
+        </div>
       </div>
 
       <Button
