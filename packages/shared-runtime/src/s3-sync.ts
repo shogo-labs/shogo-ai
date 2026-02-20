@@ -545,11 +545,9 @@ export class S3Sync {
   /**
    * Upload project-src.tar.gz (everything EXCEPT node_modules).
    * This is small (~2-10MB) and fast to create.
+   * Skips the S3 upload if the archive hash hasn't changed since the last upload.
    */
   private async uploadProjectArchive(): Promise<void> {
-    const archiveKey = this.getProjectArchiveKey()
-    console.log(`[S3Sync] Uploading project archive to s3://${this.config.bucket}/${archiveKey}`)
-
     const startTime = Date.now()
     const tempArchive = join('/tmp', `project-${this.config.prefix}-src-upload.tar.gz`)
 
@@ -560,11 +558,6 @@ export class S3Sync {
       console.log(`[S3Sync] No project files to include after filtering`)
       return
     }
-
-    // Log breakdown
-    const outputFiles = filesToInclude.filter(f => f.includes('/dist/')).length
-    const sourceFiles = filesToInclude.length - outputFiles
-    console.log(`[S3Sync] Project archive: ${sourceFiles} source, ${outputFiles} build output`)
 
     // Clear pending uploads before archiving
     this.pendingUploads.clear()
@@ -581,12 +574,21 @@ export class S3Sync {
     )
 
     const archiveTime = Date.now() - startTime
-    const archiveStats = statSync(tempArchive)
-    console.log(`[S3Sync] Created project archive in ${archiveTime}ms (${this.formatBytes(archiveStats.size)})`)
+    const archiveContent = await readFile(tempArchive)
+    const archiveSize = archiveContent.length
+    console.log(`[S3Sync] Created project archive in ${archiveTime}ms (${this.formatBytes(archiveSize)})`)
+
+    // Hash the archive and skip upload if unchanged
+    const archiveHash = createHash('sha256').update(archiveContent).digest('hex')
+    if (archiveHash === this.lastUploadHash) {
+      console.log(`[S3Sync] Project archive unchanged (hash=${archiveHash.slice(0, 12)}), skipping upload`)
+      await unlink(tempArchive).catch(() => {})
+      return
+    }
 
     // Upload to S3
+    const archiveKey = this.getProjectArchiveKey()
     const uploadStart = Date.now()
-    const archiveContent = await readFile(tempArchive)
 
     await this.client.send(new PutObjectCommand({
       Bucket: this.config.bucket,
@@ -596,13 +598,14 @@ export class S3Sync {
     }))
 
     const uploadTime = Date.now() - uploadStart
-    console.log(`[S3Sync] Uploaded project archive in ${uploadTime}ms`)
+    this.lastUploadHash = archiveHash
+    console.log(`[S3Sync] Uploaded project archive in ${uploadTime}ms (hash=${archiveHash.slice(0, 12)})`)
 
     // Cleanup
     await unlink(tempArchive).catch(() => {})
 
     this.stats.uploaded = filesToInclude.length
-    this.stats.archiveSize = archiveStats.size
+    this.stats.archiveSize = archiveSize
   }
 
   /**
