@@ -887,7 +887,7 @@ export class KnativeProjectManager {
         ports: [{ containerPort: 8080, name: "http1" }],
         env,
         resources: {
-          requests: { memory: "256Mi", cpu: "100m" },
+          requests: { memory: "768Mi", cpu: "100m" },
           limits: { memory: this.memoryLimit, cpu: this.cpuLimit },
         },
         volumeMounts: [{ name: "project-data", mountPath: workDir }],
@@ -903,7 +903,7 @@ export class KnativeProjectManager {
           periodSeconds: 2,
           timeoutSeconds: 2,
           successThreshold: 1,
-          failureThreshold: 30, // Allow up to 60s for build to complete
+          failureThreshold: 90, // Allow up to 180s for S3 restore + build on large projects
         },
         // Liveness probe - checks if the pod is still alive
         // /health endpoint always passes quickly with fast start mode
