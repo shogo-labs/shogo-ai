@@ -3514,8 +3514,8 @@ app.post('/api/billing/checkout', async (c) => {
 
     // Include workspace ID in URLs for proper navigation after checkout
     const frontendUrl = getFrontendUrl()
-    const successUrl = `${frontendUrl}/app?workspace=${workspaceId}&checkout=success&session_id={CHECKOUT_SESSION_ID}`
-    const cancelUrl = `${frontendUrl}/app?workspace=${workspaceId}&checkout=canceled`
+    const successUrl = `${frontendUrl}/?workspace=${workspaceId}&checkout=success&session_id={CHECKOUT_SESSION_ID}`
+    const cancelUrl = `${frontendUrl}/?workspace=${workspaceId}&checkout=canceled`
 
     // Create Stripe checkout session
     const session = await stripe.checkout.sessions.create({
