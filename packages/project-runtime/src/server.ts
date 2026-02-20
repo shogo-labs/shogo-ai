@@ -819,6 +819,7 @@ function buildProjectSessionOptions(modelName: ModelTier): V2SessionOptions {
       'mcp__shogo__template_list',
       'mcp__shogo__template_copy',
     ],
+    disallowedTools: ['EnterPlanMode', 'ExitPlanMode', 'SendMessage', 'TeamCreate', 'TeamDelete'],
     permissionMode: 'default',
   }
 }

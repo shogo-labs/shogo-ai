@@ -221,6 +221,7 @@ function buildAgentSessionOptions(modelName: ModelTier): V2SessionOptions {
       'Read', 'Write', 'Edit', 'MultiEdit', 'Bash',
       'TodoWrite', 'Glob', 'Grep', 'mcp__shogo__*',
     ],
+    disallowedTools: ['EnterPlanMode', 'ExitPlanMode', 'SendMessage', 'TeamCreate', 'TeamDelete'],
     permissionMode: 'bypassPermissions' as const,
     allowDangerouslySkipPermissions: true,
     settingSources: ['project' as const, 'local' as const],
