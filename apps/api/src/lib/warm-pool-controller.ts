@@ -149,6 +149,9 @@ export class WarmPoolController {
 
   private started = false
 
+  /** Burst detection: timer for rapid replenishment after multiple claims */
+  private burstReconcileTimer: ReturnType<typeof setTimeout> | null = null
+
   constructor(config: WarmPoolConfig = {}) {
     this.namespace = config.namespace || NAMESPACE
     this.poolSize = {
@@ -188,6 +191,10 @@ export class WarmPoolController {
     if (this.reconcileTimer) {
       clearInterval(this.reconcileTimer)
       this.reconcileTimer = null
+    }
+    if (this.burstReconcileTimer) {
+      clearTimeout(this.burstReconcileTimer)
+      this.burstReconcileTimer = null
     }
     console.log('[WarmPool] Stopped warm pool controller')
   }
@@ -246,20 +253,33 @@ export class WarmPoolController {
       counts[pod.type]++
     }
 
-    // Create missing warm pods
+    // Also count pending creations to avoid over-provisioning
+    const pending: Record<RuntimeType, number> = { project: 0, agent: 0 }
+    for (const key of this.pendingCreations) {
+      const type = key.startsWith('project-') ? 'project' : 'agent' as RuntimeType
+      pending[type]++
+    }
+
+    // Create missing warm pods (deficit = target - available - pending)
     for (const type of ['project', 'agent'] as const) {
-      const deficit = this.poolSize[type] - counts[type]
+      const deficit = this.poolSize[type] - counts[type] - pending[type]
+      if (deficit > 0) {
+        console.log(
+          `[WarmPool] Replenishing ${type}: creating ${deficit} pods (available: ${counts[type]}, pending: ${pending[type]}, target: ${this.poolSize[type]})`
+        )
+      }
       for (let i = 0; i < deficit; i++) {
         const id = crypto.randomUUID().slice(0, 8)
-        if (this.pendingCreations.has(`${type}-${id}`)) continue
+        const creationKey = `${type}-${id}`
+        if (this.pendingCreations.has(creationKey)) continue
 
-        this.pendingCreations.add(`${type}-${id}`)
+        this.pendingCreations.add(creationKey)
         this.createWarmPod(type, id)
           .then((pod) => {
             if (pod) {
               this.available.set(pod.id, pod)
               console.log(
-                `[WarmPool] Created warm pod ${pod.serviceName} (pool: ${type}, available: ${counts[type] + 1}/${this.poolSize[type]})`
+                `[WarmPool] Created warm pod ${pod.serviceName} (pool: ${type}, now available: ${this.countAvailable(type)}/${this.poolSize[type]})`
               )
             }
           })
@@ -267,7 +287,7 @@ export class WarmPoolController {
             console.error(`[WarmPool] Failed to create warm ${type} pod:`, err.message)
           })
           .finally(() => {
-            this.pendingCreations.delete(`${type}-${id}`)
+            this.pendingCreations.delete(creationKey)
           })
       }
     }
@@ -276,6 +296,11 @@ export class WarmPoolController {
   /**
    * Claim a warm pod for assignment to a project.
    * Returns null if no warm pods of the requested type are available.
+   *
+   * Includes burst detection: when the pool drops below 50%, triggers
+   * immediate parallel pod creation instead of waiting for the next
+   * 30s reconcile cycle. This handles thundering-herd scenarios where
+   * multiple users arrive simultaneously (e.g. dry runs).
    */
   claim(type: RuntimeType): WarmPodInfo | null {
     // Find the oldest available pod of the requested type
@@ -293,17 +318,48 @@ export class WarmPoolController {
 
     if (oldest && oldestId) {
       this.available.delete(oldestId)
+      const remaining = this.countAvailable(type)
+      const target = this.poolSize[type]
+      const utilization = 1 - remaining / target
+
       console.log(
-        `[WarmPool] Claimed warm pod ${oldest.serviceName} for ${type} (remaining: ${this.countAvailable(type)}/${this.poolSize[type]})`
+        `[WarmPool] Claimed warm pod ${oldest.serviceName} for ${type} (remaining: ${remaining}/${target}, utilization: ${Math.round(utilization * 100)}%)`
       )
-      // Trigger async replenishment
-      this.reconcile().catch((err) => {
-        console.error('[WarmPool] Replenishment reconcile error:', err.message)
-      })
+
+      // Burst detection: if pool is more than 50% depleted, schedule
+      // an immediate reconcile (debounced to 500ms so concurrent claims
+      // within the same burst batch into one reconcile pass)
+      if (utilization >= 0.5) {
+        console.warn(
+          `[WarmPool] BURST DETECTED: ${type} pool at ${Math.round(utilization * 100)}% utilization — scheduling immediate replenishment`
+        )
+        this.scheduleBurstReconcile()
+      } else {
+        // Normal replenishment via regular reconcile
+        this.reconcile().catch((err) => {
+          console.error('[WarmPool] Replenishment reconcile error:', err.message)
+        })
+      }
+
       return oldest
     }
 
     return null
+  }
+
+  /**
+   * Schedule a burst reconcile — debounced so multiple rapid claims
+   * within 500ms batch into a single reconcile pass.
+   */
+  private scheduleBurstReconcile(): void {
+    if (this.burstReconcileTimer) return // already scheduled
+    this.burstReconcileTimer = setTimeout(() => {
+      this.burstReconcileTimer = null
+      console.log('[WarmPool] Executing burst reconcile...')
+      this.reconcile().catch((err) => {
+        console.error('[WarmPool] Burst reconcile error:', err.message)
+      })
+    }, 500)
   }
 
   /**

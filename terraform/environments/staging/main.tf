@@ -1154,11 +1154,11 @@ resource "null_resource" "knative_services" {
                     value: ""
                   - name: PUBLISH_DOMAIN
                     value: "${var.publish_domain}"
-                  # Warm pool sizing (scale up for concurrent users)
+                  # Warm pool sizing (8+8 to handle 15+ concurrent users during dry runs)
                   - name: WARM_POOL_PROJECT_SIZE
-                    value: "4"
+                    value: "8"
                   - name: WARM_POOL_AGENT_SIZE
-                    value: "4"
+                    value: "8"
                   - name: WARM_POOL_MAX_AGE_MS
                     value: "3600000"
                   # OpenTelemetry tracing → SigNoz Cloud

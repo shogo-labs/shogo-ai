@@ -545,8 +545,8 @@ describe('WarmPoolController', () => {
       const pod = controller.claim('project')
       expect(pod).not.toBeNull()
 
-      // Give the async replenishment reconcile time to fire
-      await new Promise(resolve => setTimeout(resolve, 300))
+      // Give the burst reconcile time to fire (debounced to 500ms)
+      await new Promise(resolve => setTimeout(resolve, 700))
 
       // Should have tried to create replacement pod(s)
       expect(mockK8sCustomApi.createNamespacedCustomObject).toHaveBeenCalled()

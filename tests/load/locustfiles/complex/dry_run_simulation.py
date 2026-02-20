@@ -68,17 +68,32 @@ class DryRunUser(HttpUser):
             logger.info(f"User {self.user_id} authenticated")
         else:
             logger.warning(f"User {self.user_id} failed to authenticate")
+            return
+
+        # Fetch workspace ID (auto-created on signup)
+        with self.client.get(
+            "/api/workspaces",
+            catch_response=True,
+            name="/api/workspaces",
+        ) as response:
+            if response.status_code == 200:
+                data = response.json()
+                items = data.get("items", [])
+                if items:
+                    self.workspace_id = items[0]["id"]
+                    response.success()
+                    logger.info(f"User {self.user_id} workspace: {self.workspace_id}")
+                else:
+                    response.failure("No workspaces found")
+            else:
+                response.failure(f"Workspaces failed: {response.status_code}")
 
     @task(5)
     @tag("cold-start", "project")
     def create_project_and_wait(self):
         """Create a new project and measure cold start time."""
-        if not self.authenticated:
+        if not self.authenticated or not self.workspace_id:
             return
-
-        template = random.choice([
-            "todo-app", "expense-tracker", "crm", "kanban", "ai-chat"
-        ])
 
         start = time.time()
 
@@ -86,8 +101,7 @@ class DryRunUser(HttpUser):
             "/api/projects",
             json={
                 "name": f"dry-run-{self.user_id}-{int(time.time())}",
-                "template": template,
-                "description": "Load test project",
+                "workspaceId": self.workspace_id,
             },
             catch_response=True,
             name="/api/projects [create]",
@@ -98,7 +112,11 @@ class DryRunUser(HttpUser):
 
             try:
                 data = response.json()
-                project_id = data.get("id") or data.get("project", {}).get("id")
+                project_id = (
+                    data.get("data", {}).get("id")
+                    or data.get("id")
+                    or data.get("project", {}).get("id")
+                )
             except Exception:
                 response.failure("Could not parse project response")
                 return
@@ -170,15 +188,25 @@ class DryRunUser(HttpUser):
 
         project_id = random.choice(self.project_ids)
 
+        prompts = [
+            "List the files in this project.",
+            "What does the main component do?",
+            "How is routing configured?",
+            "Explain the data model.",
+        ]
+
         with self.client.post(
             f"/api/projects/{project_id}/chat",
             json={
-                "message": "List the files in this project and explain the architecture.",
+                "messages": [
+                    {"role": "user", "content": random.choice(prompts)}
+                ],
                 "sessionId": f"loadtest-{self.user_id}-{int(time.time())}",
+                "agentMode": "basic",
             },
             catch_response=True,
             name="/api/projects/:id/chat",
-            timeout=30,
+            timeout=60,
         ) as response:
             if response.status_code == 200:
                 response.success()
@@ -186,6 +214,8 @@ class DryRunUser(HttpUser):
                 response.failure("503: Project pod not ready")
             elif response.status_code == 504:
                 response.failure("504: Gateway timeout (AI proxy)")
+            elif response.status_code == 402:
+                response.success()  # Credits exhausted, don't count as failure
             else:
                 response.failure(f"Chat failed: {response.status_code}")
 
