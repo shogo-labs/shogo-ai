@@ -78,6 +78,7 @@ import { useDomainActions } from "@/generated/domain-actions"
 import type { IDomainStore } from "@/generated/domain"
 import { useSession } from "@/contexts/SessionProvider"
 import { InviteMemberModal } from "../workspace/members/InviteMemberModal"
+import { isValidDisplayName, getDisplayNameError } from "@/lib/sanitize"
 
 type TabId = "workspace" | "people" | "billing" | "account" | "integrations"
 
@@ -832,7 +833,9 @@ function AccountTab() {
   // Track original values for change detection
   const originalName = user?.name || ""
   const hasChanges = name !== originalName
-  const isValid = name.trim().length > 0
+  const nameError = getDisplayNameError(name)
+  const isNameSafe = isValidDisplayName(name)
+  const isValid = name.trim().length > 0 && isNameSafe
 
   // Reset form when user data changes
   useEffect(() => {
@@ -917,9 +920,12 @@ function AccountTab() {
                 setSaveStatus("idle")
               }}
               placeholder="Enter your name"
-              className="max-w-md"
+              className={cn("max-w-md", nameError && name.length > 0 && "border-red-500 focus-visible:ring-red-500")}
               maxLength={100}
             />
+            {nameError && name.length > 0 && (
+              <p className="text-xs text-red-500">{nameError}</p>
+            )}
             {saveStatus === "saved" && (
               <p className="text-xs text-green-600">Changes saved successfully!</p>
             )}

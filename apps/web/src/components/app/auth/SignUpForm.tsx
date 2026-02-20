@@ -14,6 +14,7 @@ import { observer } from "mobx-react-lite"
 import { useDomains } from "@/contexts/DomainProvider"
 import { useSession } from "@/contexts/SessionProvider"
 import { clearUserLocalStorage } from "@/lib/clear-user-storage"
+import { isValidDisplayName, getDisplayNameError } from "@/lib/sanitize"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -128,8 +129,14 @@ export const SignUpForm = observer(function SignUpForm() {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [emailTouched, setEmailTouched] = useState(false)
+  const [nameTouched, setNameTouched] = useState(false)
 
   const isLoading = auth.authStatus === "loading"
+
+  // Name validation — reject HTML/script content (XSS prevention)
+  const nameError = useMemo(() => getDisplayNameError(name), [name])
+  const isNameValid = useMemo(() => isValidDisplayName(name), [name])
+  const showNameError = nameTouched && name.length > 0 && !isNameValid
 
   // Email validation
   const isEmailValid = useMemo(() => isValidEmail(email), [email])
@@ -139,7 +146,7 @@ export const SignUpForm = observer(function SignUpForm() {
   const passwordStrength = useMemo(() => getPasswordStrength(password), [password])
 
   // Form validity
-  const isFormValid = name.trim().length > 0 && isEmailValid && password.length >= 8
+  const isFormValid = isNameValid && isEmailValid && password.length >= 8
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -178,8 +185,19 @@ export const SignUpForm = observer(function SignUpForm() {
           placeholder="Enter your name"
           value={name}
           onChange={(e) => setName(e.target.value)}
+          onBlur={() => setNameTouched(true)}
           disabled={isLoading}
+          maxLength={100}
+          className={cn(
+            showNameError && "border-red-500 focus-visible:ring-red-500"
+          )}
         />
+        {showNameError && nameError && (
+          <p className="text-xs text-red-500 flex items-center gap-1">
+            <AlertCircle className="h-3 w-3" />
+            {nameError}
+          </p>
+        )}
       </div>
 
       <div className="space-y-2">

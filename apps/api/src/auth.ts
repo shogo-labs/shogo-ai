@@ -17,6 +17,19 @@ import { Pool } from "pg"
 import { createPersonalWorkspace } from "./services/workspace.service"
 import { sendWelcomeEmail } from "./services/email.service"
 
+/**
+ * Strip HTML tags and angle brackets from user input.
+ * Server-side safety net against XSS — even if client-side validation is bypassed,
+ * no HTML/script content will be stored in the database.
+ */
+function sanitizeName(name: string | undefined | null): string {
+  if (!name) return ""
+  return name
+    .replace(/<[^>]*>/g, "")
+    .replace(/[<>]/g, "")
+    .trim()
+}
+
 // Port configuration from environment
 const API_PORT = process.env.API_PORT || "8002"
 const VITE_PORT = process.env.VITE_PORT || "3000"
@@ -141,6 +154,16 @@ export const auth = betterAuth({
     user: {
       create: {
         /**
+         * Before creating a user, sanitize the name to prevent stored XSS.
+         * Strips any HTML tags and angle brackets from the name field.
+         */
+        before: async (user) => {
+          if (user.name) {
+            user.name = sanitizeName(user.name)
+          }
+          return { data: user }
+        },
+        /**
          * After a new user is created, automatically create their personal workspace.
          * This ensures every user has at least one workspace to work in immediately after signup.
          *
@@ -172,6 +195,18 @@ export const auth = betterAuth({
               error instanceof Error ? error.message : String(error)
             )
           }
+        },
+      },
+      update: {
+        /**
+         * Before updating a user, sanitize the name to prevent stored XSS.
+         * This covers profile name changes via settings pages.
+         */
+        before: async (user) => {
+          if (user.name) {
+            user.name = sanitizeName(user.name)
+          }
+          return { data: user }
         },
       },
     },
