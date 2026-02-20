@@ -141,7 +141,7 @@ function getPlaceholderGradient(name: string): string {
 // ============================================================================
 
 /** Wrapper that makes a project card draggable */
-function DraggableProjectCard({ project, children }: { project: Project; children: React.ReactNode }) {
+function DraggableProjectCard({ project, children }: { project: Project; children: (dragHandleProps: Record<string, unknown>) => React.ReactNode }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `project-${project.id}`,
     data: { type: "project", project },
@@ -151,19 +151,8 @@ function DraggableProjectCard({ project, children }: { project: Project; childre
     <div
       ref={setNodeRef}
       style={{ opacity: isDragging ? 0.4 : 1 }}
-      className="relative"
     >
-      {/* Drag handle overlay - visible on hover */}
-      <div
-        {...listeners}
-        {...attributes}
-        className="absolute top-2 left-2 z-10 p-1 rounded-md bg-black/40 text-white/80 opacity-0 hover:opacity-100 cursor-grab active:cursor-grabbing transition-opacity"
-        title="Drag to move to a folder"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <GripVertical className="h-3.5 w-3.5" />
-      </div>
-      {children}
+      {children({ ...listeners, ...attributes })}
     </div>
   )
 }
@@ -1009,6 +998,7 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
             {/* Project cards (draggable) */}
             {filteredProjects.map((project) => (
               <DraggableProjectCard key={project.id} project={project}>
+                {(dragHandleProps) => (
                 <div
                   onClick={() => {
                   if (isSelectMode) {
@@ -1032,6 +1022,18 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
                     <div className="absolute inset-0 flex items-center justify-center">
                       <FolderOpen className="h-10 w-10 text-white/30" />
                     </div>
+
+                    {/* Drag handle - inside card so it's clipped by overflow-hidden */}
+                    {!isSelectMode && (
+                      <div
+                        {...dragHandleProps}
+                        className="absolute top-2 left-2 z-10 p-1 rounded-md bg-black/40 text-white/80 opacity-0 group-hover:opacity-100 cursor-grab active:cursor-grabbing transition-opacity"
+                        title="Drag to move to a folder"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <GripVertical className="h-3.5 w-3.5" />
+                      </div>
+                    )}
 
                     {/* Checkbox in select mode */}
                   {isSelectMode && (
@@ -1124,6 +1126,7 @@ export const AllProjectsPage = observer(function AllProjectsPage() {
                   )}
                   </div>
                 </div>
+                )}
               </DraggableProjectCard>
             ))}
           </div>
