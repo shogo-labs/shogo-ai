@@ -304,6 +304,22 @@ export function AssistantContent({
 
         return null
       })}
+
+      {/* Thinking indicator — visible while the agent is still streaming */}
+      {isStreaming && (
+        <div
+          data-testid="thinking-indicator"
+          aria-label="Agent is running"
+          aria-busy="true"
+          className="flex items-center gap-1.5 px-3 py-2 text-muted-foreground"
+        >
+          <span className="relative flex h-2 w-2">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-muted-foreground/40" />
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-muted-foreground/60" />
+          </span>
+          <span className="text-[11px] animate-pulse">Running…</span>
+        </div>
+      )}
     </div>
   )
 }
