@@ -92,6 +92,141 @@ jobs:
           fi
 
   # ===========================================================================
+  # Stage 0.5: Detect Changes - Skip image builds when code hasn't changed
+  # ===========================================================================
+  detect-changes:
+    name: Detect Changed Images
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      has_changes: ${{ steps.set-matrix.outputs.has_changes }}
+      mcp_changed: ${{ steps.set-matrix.outputs.mcp_changed }}
+      api_changed: ${{ steps.set-matrix.outputs.api_changed }}
+      web_changed: ${{ steps.set-matrix.outputs.web_changed }}
+      project_runtime_changed: ${{ steps.set-matrix.outputs.project_runtime_changed }}
+      agent_runtime_changed: ${{ steps.set-matrix.outputs.agent_runtime_changed }}
+      docs_changed: ${{ steps.set-matrix.outputs.docs_changed }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Detect path changes
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            shared:
+              - 'package.json'
+              - 'bun.lock'
+              - 'tsconfig.base.json'
+              - 'scripts/**'
+            state_api:
+              - 'packages/state-api/**'
+            mcp_pkg:
+              - 'packages/mcp/**'
+            sdk:
+              - 'packages/sdk/**'
+            shared_runtime:
+              - 'packages/shared-runtime/**'
+            project_runtime_pkg:
+              - 'packages/project-runtime/**'
+            agent_runtime_pkg:
+              - 'packages/agent-runtime/**'
+            api_app:
+              - 'apps/api/**'
+              - 'prisma/**'
+              - 'prisma.config.ts'
+            web_app:
+              - 'apps/web/**'
+              - '.claude/skills/**'
+            docs_app:
+              - 'apps/docs/**'
+
+      - name: Build dynamic matrix
+        id: set-matrix
+        run: |
+          FORCE_ALL="${{ github.event_name == 'workflow_dispatch' }}"
+
+          SHARED="${{ steps.filter.outputs.shared }}"
+          STATE_API="${{ steps.filter.outputs.state_api }}"
+          MCP_PKG="${{ steps.filter.outputs.mcp_pkg }}"
+          SDK="${{ steps.filter.outputs.sdk }}"
+          SHARED_RUNTIME="${{ steps.filter.outputs.shared_runtime }}"
+          PROJECT_RUNTIME_PKG="${{ steps.filter.outputs.project_runtime_pkg }}"
+          AGENT_RUNTIME_PKG="${{ steps.filter.outputs.agent_runtime_pkg }}"
+          API_APP="${{ steps.filter.outputs.api_app }}"
+          WEB_APP="${{ steps.filter.outputs.web_app }}"
+          DOCS_APP="${{ steps.filter.outputs.docs_app }}"
+
+          MCP_CHANGED=false
+          if [ "$FORCE_ALL" = "true" ] || [ "$SHARED" = "true" ] || [ "$STATE_API" = "true" ] || [ "$MCP_PKG" = "true" ]; then
+            MCP_CHANGED=true
+          fi
+
+          API_CHANGED=false
+          if [ "$FORCE_ALL" = "true" ] || [ "$SHARED" = "true" ] || [ "$STATE_API" = "true" ] || [ "$MCP_PKG" = "true" ] || [ "$SDK" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$PROJECT_RUNTIME_PKG" = "true" ] || [ "$AGENT_RUNTIME_PKG" = "true" ] || [ "$API_APP" = "true" ]; then
+            API_CHANGED=true
+          fi
+
+          WEB_CHANGED=false
+          if [ "$FORCE_ALL" = "true" ] || [ "$SHARED" = "true" ] || [ "$STATE_API" = "true" ] || [ "$MCP_PKG" = "true" ] || [ "$SDK" = "true" ] || [ "$WEB_APP" = "true" ]; then
+            WEB_CHANGED=true
+          fi
+
+          PROJECT_RUNTIME_CHANGED=false
+          if [ "$FORCE_ALL" = "true" ] || [ "$SHARED" = "true" ] || [ "$STATE_API" = "true" ] || [ "$MCP_PKG" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$PROJECT_RUNTIME_PKG" = "true" ] || [ "$SDK" = "true" ]; then
+            PROJECT_RUNTIME_CHANGED=true
+          fi
+
+          AGENT_RUNTIME_CHANGED=false
+          if [ "$FORCE_ALL" = "true" ] || [ "$SHARED" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$AGENT_RUNTIME_PKG" = "true" ]; then
+            AGENT_RUNTIME_CHANGED=true
+          fi
+
+          # docs Dockerfile doesn't use workspace root lockfile — only triggered by its own changes
+          DOCS_CHANGED=false
+          if [ "$FORCE_ALL" = "true" ] || [ "$DOCS_APP" = "true" ]; then
+            DOCS_CHANGED=true
+          fi
+
+          echo "mcp_changed=$MCP_CHANGED" >> $GITHUB_OUTPUT
+          echo "api_changed=$API_CHANGED" >> $GITHUB_OUTPUT
+          echo "web_changed=$WEB_CHANGED" >> $GITHUB_OUTPUT
+          echo "project_runtime_changed=$PROJECT_RUNTIME_CHANGED" >> $GITHUB_OUTPUT
+          echo "agent_runtime_changed=$AGENT_RUNTIME_CHANGED" >> $GITHUB_OUTPUT
+          echo "docs_changed=$DOCS_CHANGED" >> $GITHUB_OUTPUT
+
+          ENTRIES=""
+          add_entry() {
+            [ -n "$ENTRIES" ] && ENTRIES="$ENTRIES,"
+            ENTRIES="$ENTRIES$1"
+          }
+
+          [ "$MCP_CHANGED" = "true" ] && add_entry '{"image":"mcp","dockerfile":"packages/mcp/Dockerfile","ecr_name":"shogo-mcp","build_args":""}'
+          [ "$API_CHANGED" = "true" ] && add_entry '{"image":"api","dockerfile":"apps/api/Dockerfile","ecr_name":"shogo-api","build_args":"api"}'
+          [ "$WEB_CHANGED" = "true" ] && add_entry '{"image":"web","dockerfile":"apps/web/Dockerfile","ecr_name":"shogo-web","build_args":"web"}'
+          [ "$PROJECT_RUNTIME_CHANGED" = "true" ] && add_entry '{"image":"project-runtime","dockerfile":"packages/project-runtime/Dockerfile","ecr_name":"project-runtime","build_args":""}'
+          [ "$AGENT_RUNTIME_CHANGED" = "true" ] && add_entry '{"image":"agent-runtime","dockerfile":"packages/agent-runtime/Dockerfile","ecr_name":"agent-runtime","build_args":""}'
+          [ "$DOCS_CHANGED" = "true" ] && add_entry '{"image":"docs","dockerfile":"apps/docs/Dockerfile","ecr_name":"shogo-docs","build_args":""}'
+
+          if [ -z "$ENTRIES" ]; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "matrix={\"include\":[]}" >> $GITHUB_OUTPUT
+            echo "✅ No image changes detected — all builds will be skipped"
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "matrix={\"include\":[$ENTRIES]}" >> $GITHUB_OUTPUT
+          fi
+
+          echo "📊 Changes detected:"
+          echo "  mcp: $MCP_CHANGED"
+          echo "  api: $API_CHANGED"
+          echo "  web: $WEB_CHANGED"
+          echo "  project-runtime: $PROJECT_RUNTIME_CHANGED"
+          echo "  agent-runtime: $AGENT_RUNTIME_CHANGED"
+          echo "  docs: $DOCS_CHANGED"
+
+  # ===========================================================================
   # Stage 1: Build and Test
   # ===========================================================================
   test:
@@ -128,38 +263,14 @@ jobs:
   build-and-push:
     name: Build ${{ matrix.image }}
     runs-on: ubuntu-latest
-    needs: [setup]
+    needs: [setup, detect-changes]
+    if: needs.detect-changes.outputs.has_changes == 'true'
     environment: ${{ needs.setup.outputs.environment }}
     timeout-minutes: 45  # project-runtime needs time for template builds
     
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - image: mcp
-            dockerfile: packages/mcp/Dockerfile
-            ecr_name: shogo-mcp
-            build_args: ""
-          - image: api
-            dockerfile: apps/api/Dockerfile
-            ecr_name: shogo-api
-            build_args: "api"
-          - image: web
-            dockerfile: apps/web/Dockerfile
-            ecr_name: shogo-web
-            build_args: "web"
-          - image: project-runtime
-            dockerfile: packages/project-runtime/Dockerfile
-            ecr_name: project-runtime
-            build_args: ""
-          - image: agent-runtime
-            dockerfile: packages/agent-runtime/Dockerfile
-            ecr_name: agent-runtime
-            build_args: ""
-          - image: docs
-            dockerfile: apps/docs/Dockerfile
-            ecr_name: shogo-docs
-            build_args: ""
+      matrix: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
     
     permissions:
       id-token: write
@@ -222,7 +333,13 @@ jobs:
   deploy:
     name: Deploy to EKS (${{ needs.setup.outputs.environment }})
     runs-on: ubuntu-latest
-    needs: [setup, build-and-push]
+    needs: [setup, detect-changes, build-and-push]
+    # Run even when build-and-push was skipped (no changes) — secrets/manifests still need applying
+    if: |
+      always() &&
+      needs.setup.result == 'success' &&
+      needs.detect-changes.result == 'success' &&
+      (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped')
     environment: ${{ needs.setup.outputs.environment }}
     
     permissions:
@@ -331,56 +448,80 @@ jobs:
       - name: Deploy Knative services
         env:
           ECR_REGISTRY: ${{ needs.setup.outputs.ecr_registry }}
+          WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
+          API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
+          MCP_CHANGED: ${{ needs.detect-changes.outputs.mcp_changed }}
+          DOCS_CHANGED: ${{ needs.detect-changes.outputs.docs_changed }}
         run: |
-          # Update Knative services with new image tags
-          # Infrastructure is managed by Terraform, we just update the images
-          
           echo "📦 Updating images for ${{ env.ENVIRONMENT }}"
           
-          # Update Studio service
-          kubectl patch ksvc studio -n ${{ env.NS_SYSTEM }} --type='json' -p="[
-            {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${ECR_REGISTRY}/shogo/shogo-web:${{ env.IMAGE_TAG }}\"}
-          ]" || echo "Studio service not found, may need terraform apply first"
+          if [ "$WEB_CHANGED" = "true" ]; then
+            kubectl patch ksvc studio -n ${{ env.NS_SYSTEM }} --type='json' -p="[
+              {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${ECR_REGISTRY}/shogo/shogo-web:${{ env.IMAGE_TAG }}\"}
+            ]" || echo "Studio service not found, may need terraform apply first"
+          else
+            echo "⏭️ Skipping studio (no web changes)"
+          fi
           
-          # Update API service  
-          kubectl patch ksvc api -n ${{ env.NS_SYSTEM }} --type='json' -p="[
-            {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${ECR_REGISTRY}/shogo/shogo-api:${{ env.IMAGE_TAG }}\"}
-          ]" || echo "API service not found, may need terraform apply first"
+          if [ "$API_CHANGED" = "true" ]; then
+            kubectl patch ksvc api -n ${{ env.NS_SYSTEM }} --type='json' -p="[
+              {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${ECR_REGISTRY}/shogo/shogo-api:${{ env.IMAGE_TAG }}\"}
+            ]" || echo "API service not found, may need terraform apply first"
+          else
+            echo "⏭️ Skipping api (no api changes)"
+          fi
           
-          # Update MCP service
-          kubectl patch ksvc mcp-workspace -n ${{ env.NS_WORKSPACES }} --type='json' -p="[
-            {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${ECR_REGISTRY}/shogo/shogo-mcp:${{ env.IMAGE_TAG }}\"}
-          ]" || echo "MCP service not found, may need terraform apply first"
+          if [ "$MCP_CHANGED" = "true" ]; then
+            kubectl patch ksvc mcp-workspace -n ${{ env.NS_WORKSPACES }} --type='json' -p="[
+              {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${ECR_REGISTRY}/shogo/shogo-mcp:${{ env.IMAGE_TAG }}\"}
+            ]" || echo "MCP service not found, may need terraform apply first"
+          else
+            echo "⏭️ Skipping mcp (no mcp changes)"
+          fi
           
-          # Update Docs service
-          kubectl patch ksvc docs -n ${{ env.NS_SYSTEM }} --type='json' -p="[
-            {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${ECR_REGISTRY}/shogo/shogo-docs:${{ env.IMAGE_TAG }}\"}
-          ]" || echo "Docs service not found, may need terraform apply first"
+          if [ "$DOCS_CHANGED" = "true" ]; then
+            kubectl patch ksvc docs -n ${{ env.NS_SYSTEM }} --type='json' -p="[
+              {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${ECR_REGISTRY}/shogo/shogo-docs:${{ env.IMAGE_TAG }}\"}
+            ]" || echo "Docs service not found, may need terraform apply first"
+          else
+            echo "⏭️ Skipping docs (no docs changes)"
+          fi
 
       - name: Wait for rollout
+        env:
+          WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
+          API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
+          MCP_CHANGED: ${{ needs.detect-changes.outputs.mcp_changed }}
+          DOCS_CHANGED: ${{ needs.detect-changes.outputs.docs_changed }}
         run: |
           echo "⏳ Waiting for service rollouts in ${{ env.ENVIRONMENT }}..."
           
-          echo "Waiting for studio rollout..."
-          kubectl wait --for=condition=ready ksvc/studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          if [ "$WEB_CHANGED" = "true" ]; then
+            echo "Waiting for studio rollout..."
+            kubectl wait --for=condition=ready ksvc/studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          fi
           
-          echo "Waiting for api rollout..."
-          kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          if [ "$API_CHANGED" = "true" ]; then
+            echo "Waiting for api rollout..."
+            kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          fi
           
-          echo "Waiting for mcp rollout..."
-          kubectl wait --for=condition=ready ksvc/mcp-workspace -n ${{ env.NS_WORKSPACES }} --timeout=300s || true
+          if [ "$MCP_CHANGED" = "true" ]; then
+            echo "Waiting for mcp rollout..."
+            kubectl wait --for=condition=ready ksvc/mcp-workspace -n ${{ env.NS_WORKSPACES }} --timeout=300s || true
+          fi
           
-          echo "Waiting for docs rollout..."
-          kubectl wait --for=condition=ready ksvc/docs -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          if [ "$DOCS_CHANGED" = "true" ]; then
+            echo "Waiting for docs rollout..."
+            kubectl wait --for=condition=ready ksvc/docs -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          fi
 
       - name: Restart image prepuller
+        if: needs.detect-changes.outputs.project_runtime_changed == 'true' || needs.detect-changes.outputs.agent_runtime_changed == 'true'
         run: |
-          # Restart the image-prepuller DaemonSet to pull new project-runtime and agent-runtime images
-          # This ensures both images are pre-pulled on all nodes for fast cold starts
-          echo "🔄 Restarting image-prepuller to pull new project-runtime image..."
+          echo "🔄 Restarting image-prepuller to pull new runtime images..."
           kubectl rollout restart daemonset/image-prepuller -n ${{ env.NS_SYSTEM }} || echo "Image prepuller not found, skipping"
           
-          # Wait for prepuller rollout (don't fail if it times out)
           echo "⏳ Waiting for image-prepuller rollout..."
           kubectl rollout status daemonset/image-prepuller -n ${{ env.NS_SYSTEM }} --timeout=300s || echo "Prepuller rollout timeout (may still be pulling large image)"
 
@@ -433,6 +574,13 @@ jobs:
           fi
 
       - name: Summary
+        env:
+          MCP_CHANGED: ${{ needs.detect-changes.outputs.mcp_changed }}
+          API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
+          WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
+          PROJECT_RUNTIME_CHANGED: ${{ needs.detect-changes.outputs.project_runtime_changed }}
+          AGENT_RUNTIME_CHANGED: ${{ needs.detect-changes.outputs.agent_runtime_changed }}
+          DOCS_CHANGED: ${{ needs.detect-changes.outputs.docs_changed }}
         run: |
           echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -441,14 +589,15 @@ jobs:
           echo "### Database Migrations" >> $GITHUB_STEP_SUMMARY
           echo "🔄 Migrations run automatically on API container startup" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Services Deployed" >> $GITHUB_STEP_SUMMARY
-          echo "| Service | Image Tag |" >> $GITHUB_STEP_SUMMARY
-          echo "|---------|-----------|" >> $GITHUB_STEP_SUMMARY
-          echo "| MCP | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| API | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Web | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Agent Runtime | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Docs | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "### Services" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|--------|" >> $GITHUB_STEP_SUMMARY
+          [ "$MCP_CHANGED" = "true" ] && echo "| MCP | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| MCP | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
+          [ "$API_CHANGED" = "true" ] && echo "| API | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| API | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
+          [ "$WEB_CHANGED" = "true" ] && echo "| Web | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| Web | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
+          [ "$PROJECT_RUNTIME_CHANGED" = "true" ] && echo "| Project Runtime | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| Project Runtime | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
+          [ "$AGENT_RUNTIME_CHANGED" = "true" ] && echo "| Agent Runtime | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| Agent Runtime | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
+          [ "$DOCS_CHANGED" = "true" ] && echo "| Docs | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| Docs | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Endpoints" >> $GITHUB_STEP_SUMMARY
           echo "- **Studio**: https://${{ env.DOMAIN }}" >> $GITHUB_STEP_SUMMARY
