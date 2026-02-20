@@ -93,6 +93,7 @@ import { InviteMemberModal, PendingInvitationsView, MyInvitationsView } from "@/
 import { PlanSelector, PLAN_CREDITS, DAILY_CREDITS } from "@/components/app/billing/PlanSelector"
 import { useBillingData } from "@/hooks/useBillingData"
 import { useToast } from "@/hooks/use-toast"
+import { isValidDisplayName, getDisplayNameError } from "@/lib/sanitize"
 
 // =============================================================================
 // Configuration
@@ -1909,10 +1910,14 @@ function AccountTab() {
     toast({ description: "Preference saved." })
   }
 
+  // Name validation — reject HTML/script content (XSS prevention)
+  const nameError = getDisplayNameError(name)
+  const isNameValid = isValidDisplayName(name)
+
   // --- Save all profile changes ---
   const handleSave = async () => {
     if (!hasChanges || isSaving || !user?.id) return
-    if (hasNameChanges && !name.trim()) return
+    if (hasNameChanges && (!name.trim() || !isNameValid)) return
 
     setIsSaving(true)
     setSaveStatus("idle")
@@ -2025,17 +2030,21 @@ function AccountTab() {
                 setSaveStatus("idle")
               }}
               placeholder="Enter a username"
-              className="flex-1"
+              className={cn("flex-1", nameError && name.length > 0 && "border-red-500 focus-visible:ring-red-500")}
+              maxLength={100}
             />
             <Button
               variant="outline"
               size="sm"
               onClick={handleSave}
-              disabled={!hasNameChanges || !name.trim() || isSaving}
+              disabled={!hasNameChanges || !name.trim() || !isNameValid || isSaving}
             >
               {isSaving ? "Saving..." : "Update"}
             </Button>
           </div>
+          {nameError && name.length > 0 && (
+            <p className="text-xs text-red-500">{nameError}</p>
+          )}
           {saveStatus === "saved" && (
             <p className="text-xs text-green-600">Name updated successfully!</p>
           )}
