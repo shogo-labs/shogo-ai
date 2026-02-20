@@ -34,7 +34,10 @@ import * as databaseService from '../services/database.service'
 
 const NAMESPACE = process.env.PROJECT_NAMESPACE || "shogo-workspaces"
 const PROJECT_RUNTIME_IMAGE = process.env.PROJECT_RUNTIME_IMAGE || "ghcr.io/shogo-ai/project-runtime:latest"
-const AGENT_RUNTIME_IMAGE = process.env.AGENT_RUNTIME_IMAGE || "ghcr.io/shogo-ai/agent-runtime:latest"
+const AGENT_RUNTIME_IMAGE = process.env.AGENT_RUNTIME_IMAGE || (() => {
+  console.error('[KnativeProjectManager] AGENT_RUNTIME_IMAGE env var not set — falling back to ghcr.io default which will likely fail in EKS. Set AGENT_RUNTIME_IMAGE to your ECR image.')
+  return "ghcr.io/shogo-ai/agent-runtime:latest"
+})()
 const KNATIVE_GROUP = "serving.knative.dev"
 const KNATIVE_VERSION = "v1"
 
@@ -874,6 +877,18 @@ export class KnativeProjectManager {
         name: "AWS_SECRET_ACCESS_KEY",
         valueFrom: {
           secretKeyRef: { name: "s3-credentials", key: "secret-key", optional: true },
+        },
+      })
+    }
+
+    // OTEL tracing — propagate to project/agent pods so they send traces to SigNoz
+    if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+      env.push({ name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: process.env.OTEL_EXPORTER_OTLP_ENDPOINT })
+      env.push({ name: "OTEL_SERVICE_NAME", value: `shogo-${runtimeComponent}` })
+      env.push({
+        name: "SIGNOZ_INGESTION_KEY",
+        valueFrom: {
+          secretKeyRef: { name: "signoz-credentials", key: "SIGNOZ_INGESTION_KEY", optional: true },
         },
       })
     }

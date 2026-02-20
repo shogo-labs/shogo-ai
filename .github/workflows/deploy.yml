@@ -401,6 +401,37 @@ jobs:
           echo "=== Image Prepuller Status ==="
           kubectl get pods -n ${{ env.NS_SYSTEM }} -l app.kubernetes.io/name=image-prepuller -o wide
 
+      - name: Post-deploy health check
+        if: env.ENVIRONMENT == 'staging'
+        run: |
+          echo "=== Post-deploy health checks ==="
+          
+          # Wait for API to be ready
+          echo "Waiting for API health..."
+          for i in $(seq 1 30); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://api-staging.shogo.ai/api/health" || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "API healthy (attempt $i)"
+              break
+            fi
+            echo "API not ready ($STATUS), waiting... (attempt $i/30)"
+            sleep 10
+          done
+          
+          # Verify warm pool pods are running
+          echo ""
+          echo "=== Warm Pool Status ==="
+          kubectl get ksvc -n ${{ env.NS_WORKSPACES }} -l shogo.io/warm-pool=true 2>/dev/null || echo "No warm pool services found"
+          
+          # Check for broken services
+          echo ""
+          echo "=== Broken Services ==="
+          BROKEN=$(kubectl get ksvc -n ${{ env.NS_WORKSPACES }} 2>/dev/null | grep "False" | wc -l || echo "0")
+          echo "Broken Knative services: $BROKEN"
+          if [ "$BROKEN" -gt "5" ]; then
+            echo "::warning::$BROKEN Knative services are in failed state"
+          fi
+
       - name: Summary
         run: |
           echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY

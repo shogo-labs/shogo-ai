@@ -32,7 +32,10 @@ const NAMESPACE = process.env.PROJECT_NAMESPACE || 'shogo-workspaces'
 const PROJECT_RUNTIME_IMAGE =
   process.env.PROJECT_RUNTIME_IMAGE || 'ghcr.io/shogo-ai/project-runtime:latest'
 const AGENT_RUNTIME_IMAGE =
-  process.env.AGENT_RUNTIME_IMAGE || 'ghcr.io/shogo-ai/agent-runtime:latest'
+  process.env.AGENT_RUNTIME_IMAGE || (() => {
+    console.error('[WarmPool] AGENT_RUNTIME_IMAGE env var not set — falling back to ghcr.io default which will likely fail in EKS. Set AGENT_RUNTIME_IMAGE to your ECR image.')
+    return 'ghcr.io/shogo-ai/agent-runtime:latest'
+  })()
 const KNATIVE_GROUP = 'serving.knative.dev'
 const KNATIVE_VERSION = 'v1'
 
@@ -529,6 +532,20 @@ export class WarmPoolController {
       process.env.SHOGO_API_URL ||
       `http://api.${systemNamespace}.svc.cluster.local`
     env.push({ name: 'AI_PROXY_URL', value: `${apiUrl}/api/ai/v1` })
+
+    // OTEL tracing — propagate to warm pool pods so they send traces to SigNoz
+    if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+      env.push({ name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: process.env.OTEL_EXPORTER_OTLP_ENDPOINT })
+      env.push({ name: 'OTEL_SERVICE_NAME', value: `shogo-${type}-runtime` })
+      if (process.env.SIGNOZ_INGESTION_KEY) {
+        env.push({
+          name: 'SIGNOZ_INGESTION_KEY',
+          valueFrom: {
+            secretKeyRef: { name: 'signoz-credentials', key: 'SIGNOZ_INGESTION_KEY', optional: true },
+          },
+        })
+      }
+    }
 
     // S3 config for the runtime (but no project data to sync yet)
     if (process.env.S3_WORKSPACES_BUCKET) {

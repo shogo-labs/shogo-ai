@@ -67,7 +67,7 @@ signoz_ingestion_key = "lGsY7yWnJpyjvfUnWFaBCUarhjSjxSunI0Xv"
 # Namespace for SigNoz collectors
 signoz_namespace = "signoz"
 
-# Feature toggles (logs disabled by default to reduce resource usage)
-signoz_enable_logs    = false  # Set to true if you need container logs
+# Feature toggles (logs enabled for critical service debugging)
+signoz_enable_logs    = true   # Container logs for debugging runtime issues
 signoz_enable_events  = true   # K8s events (lightweight)
 signoz_enable_metrics = true   # Node/pod metrics (essential)

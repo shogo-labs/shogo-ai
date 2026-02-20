@@ -1,3 +1,8 @@
+import { initInstrumentation, createLogger } from "@shogo/shared-runtime"
+initInstrumentation({ serviceName: "shogo-mcp" })
+
+const log = createLogger("mcp")
+
 import { FastMCP } from "fastmcp"
 import { join } from "node:path"
 import { registerAllTools } from "./tools/registry"

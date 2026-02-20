@@ -11,6 +11,17 @@
  * with an Agent Gateway that makes the configured agent "alive."
  */
 
+// =============================================================================
+// OpenTelemetry - Initialize before anything else
+// =============================================================================
+import { initInstrumentation, traceOperation, createLogger } from '@shogo/shared-runtime'
+initInstrumentation({ serviceName: 'shogo-agent-runtime' })
+
+const log = createLogger('agent-runtime', {
+  projectId: process.env.PROJECT_ID,
+  poolMode: process.env.WARM_POOL_MODE === 'true' || process.env.PROJECT_ID === '__POOL__',
+})
+
 const SERVER_START_TIME = Date.now()
 const ENTRYPOINT_START_TIME = process.env.STARTUP_TIME
   ? parseInt(process.env.STARTUP_TIME, 10)

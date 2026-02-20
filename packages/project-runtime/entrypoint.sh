@@ -402,7 +402,9 @@ else
 fi
 
 # Step 4: Run Prisma db push (always needed to ensure database schema is in sync)
-if [ -f "$PROJECT_DIR/prisma/schema.prisma" ]; then
+# SKIP in pool mode: warm pool pods have no DATABASE_URL and no project database yet.
+# Prisma setup will run after /pool/assign when the real project is assigned.
+if [ -f "$PROJECT_DIR/prisma/schema.prisma" ] && [ "$PROJECT_ID" != "__POOL__" ] && [ "$WARM_POOL_MODE" != "true" ]; then
   bg_log "Step 4/4: Running prisma db push..."
   echo "prisma-setup" > "$BUILD_STATUS_FILE"
   STEP_START=$(date +%s%3N)
@@ -499,6 +501,10 @@ if [ -f "$PROJECT_DIR/prisma/schema.prisma" ]; then
   if [ "$PUSH_SUCCESS" = false ]; then
     bg_log "Prisma db push failed after ${PUSH_RETRIES} attempts (non-fatal)"
   fi
+elif [ "$PROJECT_ID" = "__POOL__" ] || [ "$WARM_POOL_MODE" = "true" ]; then
+  bg_log "Step 4/4: SKIPPED Prisma setup (pool mode — no DATABASE_URL until project assigned)"
+else
+  bg_log "Step 4/4: SKIPPED Prisma setup (no prisma/schema.prisma found)"
 fi
 
 # Step 5: Complete (no separate server needed - Hono runs standalone)

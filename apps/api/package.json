@@ -35,7 +35,8 @@
     "nanoid": "^5.0.9",
     "nodemailer": "^6.9.16",
     "pg": "^8.13.1",
-    "stripe": "^20.2.0"
+    "stripe": "^20.2.0",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/bun": "latest",

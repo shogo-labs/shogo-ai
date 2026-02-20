@@ -12,6 +12,17 @@
  */
 
 // =============================================================================
+// OpenTelemetry - Initialize before anything else
+// =============================================================================
+import { initInstrumentation, traceOperation, createLogger } from '@shogo/shared-runtime'
+initInstrumentation({ serviceName: 'shogo-project-runtime' })
+
+const log = createLogger('project-runtime', {
+  projectId: process.env.PROJECT_ID,
+  poolMode: process.env.WARM_POOL_MODE === 'true' || process.env.PROJECT_ID === '__POOL__',
+})
+
+// =============================================================================
 // Startup Timing - Track cold start performance
 // =============================================================================
 const SERVER_START_TIME = Date.now()

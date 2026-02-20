@@ -45,3 +45,16 @@ export {
   type UIMessageStreamWriter,
   type StreamSdkToUIOptions,
 } from './sdk-stream'
+
+export {
+  initInstrumentation,
+  shutdownInstrumentation,
+  traceOperation,
+  type InstrumentationConfig,
+} from './instrumentation'
+
+export {
+  createLogger,
+  type Logger,
+  type LogLevel,
+} from './logger'

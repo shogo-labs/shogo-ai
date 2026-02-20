@@ -810,6 +810,21 @@ resource "kubernetes_secret" "signoz_credentials" {
   }
 }
 
+# SigNoz credentials for project/agent pods (shogo-staging-workspaces namespace)
+resource "kubernetes_secret" "signoz_credentials_workspaces" {
+  count      = var.bootstrap_mode || var.signoz_ingestion_key == "" ? 0 : 1
+  depends_on = [kubernetes_namespace.shogo_workspaces]
+
+  metadata {
+    name      = "signoz-credentials"
+    namespace = "shogo-staging-workspaces"
+  }
+
+  data = {
+    SIGNOZ_INGESTION_KEY = var.signoz_ingestion_key
+  }
+}
+
 # Anthropic credentials for project pods (shogo-staging-workspaces namespace)
 resource "kubernetes_secret" "anthropic_credentials_workspaces" {
   count      = var.bootstrap_mode || var.anthropic_api_key == "" ? 0 : 1
@@ -1139,6 +1154,13 @@ resource "null_resource" "knative_services" {
                     value: ""
                   - name: PUBLISH_DOMAIN
                     value: "${var.publish_domain}"
+                  # Warm pool sizing (scale up for concurrent users)
+                  - name: WARM_POOL_PROJECT_SIZE
+                    value: "4"
+                  - name: WARM_POOL_AGENT_SIZE
+                    value: "4"
+                  - name: WARM_POOL_MAX_AGE_MS
+                    value: "3600000"
                   # OpenTelemetry tracing → SigNoz Cloud
                   - name: OTEL_EXPORTER_OTLP_ENDPOINT
                     value: "https://${var.signoz_endpoint}"
@@ -1204,6 +1226,17 @@ resource "null_resource" "knative_services" {
                       secretKeyRef:
                         name: postgres-credentials
                         key: DATABASE_URL
+                  # OpenTelemetry tracing → SigNoz Cloud
+                  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                    value: "https://${var.signoz_endpoint}"
+                  - name: OTEL_SERVICE_NAME
+                    value: "shogo-mcp-staging"
+                  - name: SIGNOZ_INGESTION_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: signoz-credentials
+                        key: SIGNOZ_INGESTION_KEY
+                        optional: true
                 resources:
                   requests:
                     memory: "256Mi"
