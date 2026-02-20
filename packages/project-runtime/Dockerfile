@@ -204,7 +204,7 @@ ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 # All COPYs use --chown to set ownership at copy time, avoiding the ~90s
 # recursive chown that was duplicating GBs of layer data.
 # ---------------------------------------------------------------------------
-COPY --chown=appuser:appgroup --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/node_modules ./node_modules
 COPY --chown=appuser:appgroup --from=builder /app/packages/state-api ./packages/state-api
 COPY --chown=appuser:appgroup --from=builder /app/packages/mcp ./packages/mcp
 COPY --chown=appuser:appgroup --from=builder /app/packages/shared-runtime ./packages/shared-runtime
@@ -213,14 +213,19 @@ COPY --chown=appuser:appgroup --from=builder /app/package.json ./
 COPY --chown=appuser:appgroup --from=builder /app/bun.lock ./
 COPY --chown=appuser:appgroup --from=builder /app/tsconfig.base.json ./
 
-# Re-create workspace symlinks. Docker COPY doesn't preserve symlinks that
-# point outside the copied tree, so bun's workspace:* links are lost.
-RUN mkdir -p node_modules/@shogo && \
-    ln -sf ../../../packages/shared-runtime node_modules/@shogo/shared-runtime && \
-    ln -sf ../../../packages/state-api node_modules/@shogo/state-api && \
-    ln -sf ../../../packages/mcp node_modules/@shogo/mcp && \
-    ln -sf ../../../packages/project-runtime node_modules/@shogo/project-runtime && \
-    chown -h appuser:appgroup node_modules/@shogo node_modules/@shogo/*
+# Workspace member package.jsons needed by bun install for resolution
+COPY --from=builder /app/packages/sdk/package.json ./packages/sdk/
+COPY --from=builder /app/packages/agent-runtime/package.json ./packages/agent-runtime/
+COPY --from=builder /app/apps/web/package.json ./apps/web/
+COPY --from=builder /app/apps/api/package.json ./apps/api/
+COPY --from=builder /app/apps/desktop/package.json ./apps/desktop/
+
+# Rebuild bun's module resolution links. Docker COPY from the deps stage
+# preserves the .bun/ cache (all packages) but destroys the internal symlinks
+# bun uses to resolve package names. Re-running install with existing cache
+# rebuilds those links instantly without re-downloading.
+RUN bun install --ignore-scripts && \
+    chown -R appuser:appgroup node_modules
 
 # Copy template archives
 COPY --chown=appuser:appgroup --from=template-deps /templates/archives ./packages/sdk/templates

@@ -91,18 +91,27 @@ RUN addgroup -g 1001 -S appgroup && \
     adduser -u 1001 -S appuser -G appgroup
 
 # Copy node_modules + source (no per-package node_modules bloat)
-COPY --chown=appuser:appgroup --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/node_modules ./node_modules
 COPY --chown=appuser:appgroup --from=builder /app/packages/shared-runtime ./packages/shared-runtime
 COPY --chown=appuser:appgroup --from=builder /app/packages/agent-runtime ./packages/agent-runtime
 COPY --chown=appuser:appgroup --from=builder /app/package.json ./
 COPY --chown=appuser:appgroup --from=builder /app/bun.lock ./
 COPY --chown=appuser:appgroup --from=builder /app/tsconfig.base.json ./
 
-# Re-create workspace symlinks (Docker COPY doesn't preserve cross-tree symlinks)
-RUN mkdir -p node_modules/@shogo && \
-    ln -sf ../../../packages/shared-runtime node_modules/@shogo/shared-runtime && \
-    ln -sf ../../../packages/agent-runtime node_modules/@shogo/agent-runtime && \
-    chown -h appuser:appgroup node_modules/@shogo node_modules/@shogo/*
+# Workspace member package.jsons needed by bun install for resolution
+COPY --from=builder /app/packages/state-api/package.json ./packages/state-api/
+COPY --from=builder /app/packages/mcp/package.json ./packages/mcp/
+COPY --from=builder /app/packages/project-runtime/package.json ./packages/project-runtime/
+COPY --from=builder /app/packages/sdk/package.json ./packages/sdk/
+COPY --from=builder /app/apps/web/package.json ./apps/web/
+COPY --from=builder /app/apps/api/package.json ./apps/api/
+COPY --from=builder /app/apps/desktop/package.json ./apps/desktop/
+
+# Rebuild bun's module resolution links. Docker COPY from the deps stage
+# preserves the .bun/ cache but destroys internal symlinks bun uses for
+# package resolution. Re-running install rebuilds them without re-downloading.
+RUN bun install --ignore-scripts && \
+    chown -R appuser:appgroup node_modules
 
 RUN mkdir -p /app/agent /app/.schemas /app/.claude && \
     chown appuser:appgroup /app/agent /app/.schemas /app/.claude
