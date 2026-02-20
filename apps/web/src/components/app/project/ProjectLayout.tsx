@@ -896,8 +896,8 @@ export const ProjectLayout = observer(function ProjectLayout() {
     const rollover = creditLedger.rolloverCredits ?? 0
     return { dailyCredits: daily, monthlyCredits: monthly, rolloverCredits: rollover, total: daily + monthly + rollover }
   })() : null
-  const creditsRemaining = effectiveBalance?.total ?? 5
   const maxCredits = getTotalCreditsForPlan(subscription?.planId, PLAN_CREDITS, DAILY_CREDITS)
+  const creditsRemaining = effectiveBalance?.total ?? maxCredits
 
   // Loading state
   if (isLoading || !project) {

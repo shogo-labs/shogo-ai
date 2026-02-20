@@ -62,8 +62,8 @@ export const AppBillingPage = observer(function AppBillingPage() {
   }, [isSuccess, currentWorkspace, searchParams, setSearchParams, refetchSubscription, refetchCreditLedger])
 
   // Calculate credits from actual ledger data
-  const creditsRemaining = effectiveBalance?.total ?? 5
   const creditsTotal = getTotalCreditsForPlan(subscription?.planId, PLAN_CREDITS, DAILY_CREDITS)
+  const creditsRemaining = effectiveBalance?.total ?? creditsTotal
 
   // Get plan name
   const planName = subscription

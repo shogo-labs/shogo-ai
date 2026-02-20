@@ -50,6 +50,7 @@ import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
 import { PlanSelector, PLAN_CREDITS, DAILY_CREDITS } from "../billing/PlanSelector"
+import { getTotalCreditsForPlan } from "@/lib/utils"
 
 /**
  * Workspace entity shape (from studioCore domain)
@@ -171,8 +172,8 @@ export const WorkspaceSwitcher = observer(function WorkspaceSwitcher({
 
   // TODO: Get actual member count from domain
   const memberCount = 1
-  const creditsRemaining = effectiveBalance?.total ?? 5
-  const creditsTotal = (subscription ? PLAN_CREDITS[subscription.planId as string] ?? PLAN_CREDITS.free : PLAN_CREDITS.free) + DAILY_CREDITS
+  const creditsTotal = getTotalCreditsForPlan(subscription?.planId, PLAN_CREDITS, DAILY_CREDITS)
+  const creditsRemaining = effectiveBalance?.total ?? creditsTotal
   const creditsPercent = Math.max(0, Math.min(100, ((creditsTotal - creditsRemaining) / creditsTotal) * 100))
 
   // Show skeleton during loading
