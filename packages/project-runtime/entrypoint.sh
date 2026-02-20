@@ -253,7 +253,9 @@ bg_log() {
 }
 
 echo "initializing" > "$BUILD_STATUS_FILE"
-bg_log "Background initialization started"
+bg_log "Background initialization started (PROJECT_DIR=$PROJECT_DIR, S3_WORKSPACES_BUCKET=${S3_WORKSPACES_BUCKET:-unset})"
+bg_log "Build status file: $BUILD_STATUS_FILE (contents: initializing)"
+bg_log "S3 restore marker: $S3_RESTORE_MARKER (exists: $([ -f "$S3_RESTORE_MARKER" ] && echo 'yes' || echo 'no'))"
 
 cd "$PROJECT_DIR"
 
@@ -297,16 +299,18 @@ if [ -n "$S3_WORKSPACES_BUCKET" ]; then
         bg_log "S3 sync not configured, proceeding with template"
       elif [ "$S3_RESTORE_STATUS" = "error" ]; then
         bg_log "⚠️ S3 sync initialization failed completely"
+      elif [ "$S3_RESTORE_STATUS" = "pool-mode" ]; then
+        bg_log "Pool mode: S3 sync deferred until project assignment"
       else
         bg_log "⚠️ Unknown S3 restore status: $S3_RESTORE_STATUS"
       fi
       break
     fi
     sleep 0.5
-    # Log progress every 30 seconds
-    if [ $((i % 60)) -eq 0 ]; then
+    # Log progress every 10 seconds (instead of 30) for better visibility
+    if [ $((i % 20)) -eq 0 ]; then
       ELAPSED=$(( ($(date +%s%3N) - WAIT_START) / 1000 ))
-      bg_log "Still waiting for S3 sync... (${ELAPSED}s elapsed)"
+      bg_log "Still waiting for S3 sync marker file... (${ELAPSED}s elapsed, marker=$S3_RESTORE_MARKER)"
     fi
   done
   
@@ -318,9 +322,16 @@ fi
 # =============================================================================
 # Check if this is a restored project (node_modules already present from S3)
 # =============================================================================
+bg_log "Checking project restore status (S3_RESTORE_STATUS=$S3_RESTORE_STATUS)..."
+bg_log "  node_modules/react exists: $([ -d 'node_modules/react' ] && echo 'yes' || echo 'no')"
+bg_log "  node_modules/vite exists: $([ -d 'node_modules/vite' ] && echo 'yes' || echo 'no')"
+bg_log "  dist/ exists: $([ -d 'dist' ] && echo 'yes' || echo 'no')"
+bg_log "  dist/index.html exists: $([ -f 'dist/index.html' ] && echo 'yes' || echo 'no')"
+bg_log "  bun.lock exists: $([ -f 'bun.lock' ] && echo 'yes' || echo 'no')"
+bg_log "  package.json exists: $([ -f 'package.json' ] && echo 'yes' || echo 'no')"
+
 RESTORED_FROM_S3=false
 if [ "$S3_RESTORE_STATUS" = "restored" ] || [ "$S3_RESTORE_STATUS" = "restored-retry" ]; then
-  # S3 download confirmed successful - check for actual node_modules
   if [ -d "node_modules/react" ] && [ -d "node_modules/vite" ]; then
     RESTORED_FROM_S3=true
     bg_log "⚡ Project restored from S3 archive (download succeeded + node_modules present)"
@@ -328,7 +339,6 @@ if [ "$S3_RESTORE_STATUS" = "restored" ] || [ "$S3_RESTORE_STATUS" = "restored-r
     bg_log "⚠️ S3 download succeeded but node_modules not found - will install"
   fi
 elif [ -d "node_modules/react" ] && [ -d "node_modules/vite" ] && [ "$S3_RESTORE_STATUS" = "none" ]; then
-  # No S3 configured but node_modules exist (e.g., pre-installed in image)
   RESTORED_FROM_S3=true
   bg_log "⚡ Dependencies already present (no S3 configured)"
 else
@@ -336,16 +346,17 @@ else
 fi
 
 # Step 1: Install dependencies (skip if restored from S3 or pre-installed)
-bg_log "Step 1: Checking dependencies..."
+bg_log "Step 1/4: Checking dependencies (RESTORED_FROM_S3=$RESTORED_FROM_S3)..."
+echo "installing-deps" > "$BUILD_STATUS_FILE"
 STEP_START=$(date +%s%3N)
 
 if [ "$RESTORED_FROM_S3" = true ]; then
   STEP_END=$(date +%s%3N)
   bg_log "⚡ Dependencies already present from S3 archive (skipped install)"
 elif [ -d "node_modules" ] && [ -f "bun.lock" ]; then
-  bg_log "Dependencies already installed (cached)"
+  bg_log "Dependencies already installed (cached node_modules + bun.lock found)"
 else
-  bg_log "Installing dependencies..."
+  bg_log "Installing dependencies with bun install..."
   if bun install 2>&1; then
     STEP_END=$(date +%s%3N)
     bg_log "Dependencies installed (took $((STEP_END - STEP_START))ms)"
@@ -357,17 +368,19 @@ else
 fi
 
 # Step 2: Detect project type
-bg_log "Step 2: Detecting project type..."
+bg_log "Step 2/4: Detecting project type..."
 bg_log "Vite + Hono project detected"
 
 # Step 3: Build (skip if restored from S3 with existing build)
-bg_log "Step 3: Checking build status..."
+bg_log "Step 3/4: Checking build status..."
+echo "building" > "$BUILD_STATUS_FILE"
 STEP_START=$(date +%s%3N)
 
 BUILD_EXISTS=false
 if [ -d "$PROJECT_DIR/dist" ]; then
   BUILD_EXISTS=true
 fi
+bg_log "Build artifacts check: dist/ exists=$BUILD_EXISTS, RESTORED_FROM_S3=$RESTORED_FROM_S3"
 
 if [ "$RESTORED_FROM_S3" = true ] && [ "$BUILD_EXISTS" = true ]; then
   bg_log "⚡ Build already present from S3 archive (skipped build)"
@@ -390,7 +403,8 @@ fi
 
 # Step 4: Run Prisma db push (always needed to ensure database schema is in sync)
 if [ -f "$PROJECT_DIR/prisma/schema.prisma" ]; then
-  bg_log "Step 4: Running prisma db push..."
+  bg_log "Step 4/4: Running prisma db push..."
+  echo "prisma-setup" > "$BUILD_STATUS_FILE"
   STEP_START=$(date +%s%3N)
   
   # Wait for PostgreSQL to be ready before running Prisma commands
@@ -489,10 +503,15 @@ fi
 
 # Step 5: Complete (no separate server needed - Hono runs standalone)
 
+bg_log "Writing 'ready' to build status file..."
 echo "ready" > "$BUILD_STATUS_FILE"
 TOTAL_END=$(date +%s%3N)
+TOTAL_DURATION=$((TOTAL_END - BG_START_TIME))
 bg_log "=================================================="
-bg_log "Initialization complete! Total time: $((TOTAL_END - BG_START_TIME))ms"
+bg_log "Initialization complete! Total time: ${TOTAL_DURATION}ms ($(echo "scale=1; $TOTAL_DURATION/1000" | bc)s)"
+bg_log "  S3 restore status: $S3_RESTORE_STATUS"
+bg_log "  Restored from S3: $RESTORED_FROM_S3"
+bg_log "  dist/index.html: $([ -f '$PROJECT_DIR/dist/index.html' ] && echo 'exists' || echo 'missing')"
 if [ "$RESTORED_FROM_S3" = true ]; then
   bg_log "⚡ FAST PATH: Restored from S3 archive"
 fi

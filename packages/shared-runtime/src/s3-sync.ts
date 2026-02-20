@@ -244,7 +244,10 @@ export class S3Sync {
     try {
       // Step 1: Try new layered format first
       const projectKey = this.getProjectArchiveKey()
+      console.log(`[S3Sync] [downloadAll] Checking for layered archive: s3://${this.config.bucket}/${projectKey}`)
+      const checkLayeredStart = Date.now()
       const hasLayeredArchive = await this.objectExists(projectKey)
+      console.log(`[S3Sync] [downloadAll] Layered archive check: ${hasLayeredArchive ? 'EXISTS' : 'NOT FOUND'} (${Date.now() - checkLayeredStart}ms)`)
 
       if (hasLayeredArchive) {
         return await this.downloadLayered(totalStart)
@@ -252,7 +255,10 @@ export class S3Sync {
 
       // Step 2: Fall back to legacy format
       const legacyKey = this.getLegacyArchiveKey()
+      console.log(`[S3Sync] [downloadAll] Checking for legacy archive: s3://${this.config.bucket}/${legacyKey}`)
+      const checkLegacyStart = Date.now()
       const hasLegacyArchive = await this.objectExists(legacyKey)
+      console.log(`[S3Sync] [downloadAll] Legacy archive check: ${hasLegacyArchive ? 'EXISTS' : 'NOT FOUND'} (${Date.now() - checkLegacyStart}ms)`)
 
       if (hasLegacyArchive) {
         console.log(`[S3Sync] Using legacy archive format (will migrate on next upload)`)
@@ -260,11 +266,11 @@ export class S3Sync {
       }
 
       // No archive at all — new project
-      console.log(`[S3Sync] No archive found in S3 (new project)`)
+      console.log(`[S3Sync] [downloadAll] No archive found in S3 (new project) — total check time: ${Date.now() - totalStart}ms`)
       return this.getStats()
 
     } catch (error: any) {
-      console.error(`[S3Sync] Download failed:`, error)
+      console.error(`[S3Sync] [downloadAll] Download failed after ${Date.now() - totalStart}ms:`, error)
       this.stats.errors.push(`Download failed: ${error.message}`)
       return this.getStats()
     }
@@ -276,54 +282,65 @@ export class S3Sync {
    * 2. Check deps-hash pointer → download cached deps archive if available
    */
   private async downloadLayered(totalStart: number): Promise<SyncStats> {
-    console.log(`[S3Sync] ⚡ Using layered archive format`)
+    console.log(`[S3Sync] [downloadLayered] ⚡ Using layered archive format (localDir=${this.config.localDir})`)
 
-    // Ensure local directory exists
     if (!existsSync(this.config.localDir)) {
       mkdirSync(this.config.localDir, { recursive: true })
     }
 
-    // Step 1: Download and extract project archive (source + dist)
+    // Step 1: Download project archive (source + dist)
     const projectStart = Date.now()
     const projectKey = this.getProjectArchiveKey()
-    console.log(`[S3Sync] Downloading project archive from s3://${this.config.bucket}/${projectKey}`)
+    console.log(`[S3Sync] [downloadLayered] Step 1/2: Downloading project archive from s3://${this.config.bucket}/${projectKey}`)
 
     const projectResponse = await this.client.send(new GetObjectCommand({
       Bucket: this.config.bucket,
       Key: projectKey,
     }))
+    const s3ResponseMs = Date.now() - projectStart
+    console.log(`[S3Sync] [downloadLayered] S3 GetObject response received in ${s3ResponseMs}ms (contentLength=${projectResponse.ContentLength ?? 'unknown'})`)
 
     if (!projectResponse.Body) {
-      console.log(`[S3Sync] Empty project archive response`)
+      console.log(`[S3Sync] [downloadLayered] Empty project archive response — aborting`)
       return this.getStats()
     }
 
+    const streamStart = Date.now()
     const projectData = await projectResponse.Body.transformToByteArray()
+    const streamMs = Date.now() - streamStart
     const projectDownloadMs = Date.now() - projectStart
-    console.log(`[S3Sync] Downloaded project archive in ${projectDownloadMs}ms (${this.formatBytes(projectData.length)})`)
+    console.log(`[S3Sync] [downloadLayered] Project archive downloaded: ${this.formatBytes(projectData.length)} in ${projectDownloadMs}ms (stream read: ${streamMs}ms)`)
 
     // Extract project archive
     const extractStart = Date.now()
     const tempProject = join('/tmp', `project-${this.config.prefix}-src.tar.gz`)
+    console.log(`[S3Sync] [downloadLayered] Writing temp file and extracting project archive...`)
     await writeFile(tempProject, projectData)
+    const writeMs = Date.now() - extractStart
     await tar.extract({ file: tempProject, cwd: this.config.localDir, strip: 0 })
-    await unlink(tempProject).catch(() => {})
     const projectExtractMs = Date.now() - extractStart
-    console.log(`[S3Sync] Extracted project archive in ${projectExtractMs}ms`)
+    console.log(`[S3Sync] [downloadLayered] Project archive extracted in ${projectExtractMs}ms (write: ${writeMs}ms, tar extract: ${projectExtractMs - writeMs}ms)`)
+    await unlink(tempProject).catch(() => {})
     this.stats.projectExtractMs = projectExtractMs
 
     // Step 2: Restore deps from cache
+    const depsStart = Date.now()
+    console.log(`[S3Sync] [downloadLayered] Step 2/2: Restoring deps from cache...`)
     await this.restoreDeps()
+    console.log(`[S3Sync] [downloadLayered] Deps restore completed in ${Date.now() - depsStart}ms`)
 
     const totalMs = Date.now() - totalStart
+    const countStart = Date.now()
     const projectFileCount = await this.countFilesExcluding(this.config.localDir, ['node_modules'])
     const totalFileCount = await this.countFiles(this.config.localDir)
+    const countMs = Date.now() - countStart
     
     this.stats.downloaded = totalFileCount
     this.stats.lastSync = new Date()
     this.stats.archiveSize = projectData.length
 
-    console.log(`[S3Sync] ⚡ Layered download complete in ${totalMs}ms (${projectFileCount} source files, ${totalFileCount} total)`)
+    console.log(`[S3Sync] [downloadLayered] ⚡ COMPLETE in ${totalMs}ms — ${projectFileCount} source files, ${totalFileCount} total (file count took ${countMs}ms)`)
+    console.log(`[S3Sync] [downloadLayered] Breakdown: s3Response=${s3ResponseMs}ms, streamRead=${streamMs}ms, extract=${projectExtractMs}ms, deps=${Date.now() - depsStart}ms`)
     return this.getStats()
   }
 
@@ -331,10 +348,12 @@ export class S3Sync {
    * Restore node_modules from content-addressed deps cache.
    */
   private async restoreDeps(): Promise<void> {
-    // Read the deps hash pointer for this project
+    const restoreStart = Date.now()
     const pointerKey = this.getDepsPointerKey()
     let lockfileHash: string | null = null
 
+    console.log(`[S3Sync] [restoreDeps] Reading deps pointer: s3://${this.config.bucket}/${pointerKey}`)
+    const pointerStart = Date.now()
     try {
       const pointerResponse = await this.client.send(new GetObjectCommand({
         Bucket: this.config.bucket,
@@ -343,14 +362,17 @@ export class S3Sync {
       if (pointerResponse.Body) {
         lockfileHash = (await pointerResponse.Body.transformToString()).trim()
       }
+      console.log(`[S3Sync] [restoreDeps] Deps pointer read in ${Date.now() - pointerStart}ms (hash=${lockfileHash ?? 'null'})`)
     } catch (error: any) {
       if (error.name !== 'NoSuchKey' && error.$metadata?.httpStatusCode !== 404) {
-        console.warn(`[S3Sync] Error reading deps pointer:`, error.message)
+        console.warn(`[S3Sync] [restoreDeps] Error reading deps pointer (${Date.now() - pointerStart}ms):`, error.message)
+      } else {
+        console.log(`[S3Sync] [restoreDeps] Deps pointer not found (404) in ${Date.now() - pointerStart}ms`)
       }
     }
 
     if (!lockfileHash) {
-      console.log(`[S3Sync] No deps cache pointer found — will need bun install`)
+      console.log(`[S3Sync] [restoreDeps] No deps cache pointer — will need bun install (total: ${Date.now() - restoreStart}ms)`)
       return
     }
 
@@ -358,44 +380,58 @@ export class S3Sync {
     const localHash = await this.computeLockfileHash()
     if (localHash === lockfileHash && existsSync(join(this.config.localDir, 'node_modules', '.package-lock.json')) ||
         existsSync(join(this.config.localDir, 'node_modules', '.cache'))) {
-      // node_modules already present from a previous extract — skip
+      console.log(`[S3Sync] [restoreDeps] node_modules already present from previous extract — skipping download`)
     }
 
     // Download deps archive
     const depsKey = this.getDepsArchiveKey(lockfileHash)
+    console.log(`[S3Sync] [restoreDeps] Checking deps archive existence: s3://${this.config.bucket}/${depsKey}`)
+    const existsStart = Date.now()
     const depsExists = await this.objectExists(depsKey)
+    console.log(`[S3Sync] [restoreDeps] Deps archive exists check: ${depsExists} (${Date.now() - existsStart}ms)`)
 
     if (!depsExists) {
-      console.log(`[S3Sync] Deps cache miss (hash: ${lockfileHash}) — will need bun install`)
+      console.log(`[S3Sync] [restoreDeps] Deps cache miss (hash: ${lockfileHash}) — will need bun install (total: ${Date.now() - restoreStart}ms)`)
       return
     }
 
-    console.log(`[S3Sync] ⚡ Deps cache hit (hash: ${lockfileHash})`)
+    console.log(`[S3Sync] [restoreDeps] ⚡ Deps cache hit (hash: ${lockfileHash}) — downloading...`)
     const depsStart = Date.now()
 
     const depsResponse = await this.client.send(new GetObjectCommand({
       Bucket: this.config.bucket,
       Key: depsKey,
     }))
+    const s3ResponseMs = Date.now() - depsStart
+    console.log(`[S3Sync] [restoreDeps] S3 GetObject response in ${s3ResponseMs}ms (contentLength=${depsResponse.ContentLength ?? 'unknown'})`)
 
-    if (!depsResponse.Body) return
+    if (!depsResponse.Body) {
+      console.log(`[S3Sync] [restoreDeps] Empty deps response — skipping`)
+      return
+    }
 
+    const streamStart = Date.now()
     const depsData = await depsResponse.Body.transformToByteArray()
+    const streamMs = Date.now() - streamStart
     const downloadMs = Date.now() - depsStart
-    console.log(`[S3Sync] Downloaded deps archive in ${downloadMs}ms (${this.formatBytes(depsData.length)})`)
+    console.log(`[S3Sync] [restoreDeps] Downloaded deps archive: ${this.formatBytes(depsData.length)} in ${downloadMs}ms (stream read: ${streamMs}ms)`)
 
     // Extract deps
     const extractStart = Date.now()
     const tempDeps = join('/tmp', `deps-${lockfileHash}.tar.gz`)
+    console.log(`[S3Sync] [restoreDeps] Extracting deps archive (${this.formatBytes(depsData.length)})...`)
     await writeFile(tempDeps, depsData)
+    const writeMs = Date.now() - extractStart
     await tar.extract({ file: tempDeps, cwd: this.config.localDir, strip: 0 })
-    await unlink(tempDeps).catch(() => {})
     const extractMs = Date.now() - extractStart
-    console.log(`[S3Sync] Extracted deps archive in ${extractMs}ms`)
+    console.log(`[S3Sync] [restoreDeps] Deps extracted in ${extractMs}ms (write: ${writeMs}ms, tar: ${extractMs - writeMs}ms)`)
+    await unlink(tempDeps).catch(() => {})
 
     this.stats.depsCacheHit = true
     this.stats.depsExtractMs = extractMs
     this.currentLockfileHash = lockfileHash
+
+    console.log(`[S3Sync] [restoreDeps] ⚡ COMPLETE in ${Date.now() - restoreStart}ms (download=${downloadMs}ms, extract=${extractMs}ms)`)
   }
 
   /**
@@ -403,47 +439,50 @@ export class S3Sync {
    */
   private async downloadLegacy(totalStart: number): Promise<SyncStats> {
     const archiveKey = this.getLegacyArchiveKey()
-    console.log(`[S3Sync] Downloading legacy archive from s3://${this.config.bucket}/${archiveKey}`)
+    console.log(`[S3Sync] [downloadLegacy] Downloading legacy archive from s3://${this.config.bucket}/${archiveKey}`)
 
+    const s3Start = Date.now()
     const response = await this.client.send(new GetObjectCommand({
       Bucket: this.config.bucket,
       Key: archiveKey,
     }))
+    const s3ResponseMs = Date.now() - s3Start
+    console.log(`[S3Sync] [downloadLegacy] S3 GetObject response in ${s3ResponseMs}ms (contentLength=${response.ContentLength ?? 'unknown'})`)
 
     if (!response.Body) {
-      console.log(`[S3Sync] Empty response from S3`)
+      console.log(`[S3Sync] [downloadLegacy] Empty response from S3 — aborting`)
       return this.getStats()
     }
 
-    const downloadStart = Date.now()
+    const streamStart = Date.now()
     const bodyArray = await response.Body.transformToByteArray()
-    const downloadTime = Date.now() - downloadStart
-    console.log(`[S3Sync] Downloaded archive in ${downloadTime}ms (${this.formatBytes(bodyArray.length)})`)
+    const streamMs = Date.now() - streamStart
+    const downloadTime = Date.now() - s3Start
+    console.log(`[S3Sync] [downloadLegacy] Downloaded archive: ${this.formatBytes(bodyArray.length)} in ${downloadTime}ms (stream read: ${streamMs}ms)`)
 
     if (!existsSync(this.config.localDir)) {
       mkdirSync(this.config.localDir, { recursive: true })
     }
 
-    // Extract archive
     const extractStart = Date.now()
     const tempArchive = join('/tmp', `project-${this.config.prefix}.tar.gz`)
+    console.log(`[S3Sync] [downloadLegacy] Extracting archive (${this.formatBytes(bodyArray.length)})...`)
     await writeFile(tempArchive, bodyArray)
+    const writeMs = Date.now() - extractStart
     await tar.extract({ file: tempArchive, cwd: this.config.localDir, strip: 0 })
-    await unlink(tempArchive).catch(() => {})
-
     const extractTime = Date.now() - extractStart
-    console.log(`[S3Sync] Extracted archive in ${extractTime}ms`)
+    console.log(`[S3Sync] [downloadLegacy] Extracted in ${extractTime}ms (write: ${writeMs}ms, tar: ${extractTime - writeMs}ms)`)
+    await unlink(tempArchive).catch(() => {})
 
     const fileCount = await this.countFiles(this.config.localDir)
     this.stats.downloaded = fileCount
     this.stats.lastSync = new Date()
     this.stats.archiveSize = bodyArray.length
 
-    console.log(`[S3Sync] Download complete: ${fileCount} files (${this.formatBytes(bodyArray.length)})`)
+    const totalMs = Date.now() - totalStart
+    console.log(`[S3Sync] [downloadLegacy] COMPLETE in ${totalMs}ms: ${fileCount} files (${this.formatBytes(bodyArray.length)})`)
 
-    // Flag that we should migrate to layered format on next upload
     this.depsNeedUpload = true
-
     return this.getStats()
   }
 
@@ -943,18 +982,22 @@ export function createS3SyncFromEnv(localDir: string): S3Sync | null {
   const prefix = process.env.PROJECT_ID
 
   if (!bucket || !prefix) {
-    console.log('[S3Sync] S3 sync not configured (S3_WORKSPACES_BUCKET or PROJECT_ID not set)')
+    console.log(`[S3Sync] [createFromEnv] Not configured (bucket=${bucket ?? 'unset'}, prefix=${prefix ?? 'unset'})`)
     return null
   }
 
   const watchEnabled = process.env.S3_WATCH_ENABLED !== 'false'
+  const region = process.env.S3_REGION
+  const endpoint = process.env.S3_ENDPOINT
+
+  console.log(`[S3Sync] [createFromEnv] Creating S3Sync instance (bucket=${bucket}, prefix=${prefix}, region=${region}, endpoint=${endpoint ?? 'default'}, localDir=${localDir})`)
 
   return new S3Sync({
     bucket,
     prefix,
     localDir,
-    endpoint: process.env.S3_ENDPOINT,
-    region: process.env.S3_REGION,
+    endpoint,
+    region,
     forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
     syncInterval: parseInt(process.env.S3_SYNC_INTERVAL || '30000', 10),
     watchEnabled,
@@ -970,19 +1013,25 @@ export function createS3SyncFromEnv(localDir: string): S3Sync | null {
  * files get uploaded to S3, overwriting the user's actual project data.
  */
 export async function initializeS3Sync(localDir: string): Promise<{ sync: S3Sync, downloadSucceeded: boolean } | null> {
+  const initStart = Date.now()
+  console.log(`[S3Sync] [initializeS3Sync] Starting (localDir=${localDir})`)
   const sync = createS3SyncFromEnv(localDir)
 
   if (!sync) {
+    console.log(`[S3Sync] [initializeS3Sync] No sync instance created — returning null`)
     return null
   }
 
-  // Download and extract archive from S3
+  console.log(`[S3Sync] [initializeS3Sync] Calling downloadAll()...`)
+  const downloadStart = Date.now()
   const downloadStats = await sync.downloadAll()
+  console.log(`[S3Sync] [initializeS3Sync] downloadAll() completed in ${Date.now() - downloadStart}ms (errors=${downloadStats.errors.length}, downloaded=${downloadStats.downloaded})`)
 
   // If there were ANY download errors, do NOT start uploading.
   if (downloadStats.errors.length > 0) {
-    console.warn('[S3Sync] Download had errors - starting sync in UPLOAD-ONLY-AFTER-DELAY mode')
-    console.warn('[S3Sync] Errors:', downloadStats.errors)
+    const totalMs = Date.now() - initStart
+    console.warn(`[S3Sync] [initializeS3Sync] Download had errors (total: ${totalMs}ms) — sync in UPLOAD-ONLY-AFTER-DELAY mode`)
+    console.warn('[S3Sync] [initializeS3Sync] Errors:', downloadStats.errors)
 
     const hasCriticalError = downloadStats.errors.some(err =>
       err.includes('AccessDenied') ||
@@ -992,22 +1041,25 @@ export async function initializeS3Sync(localDir: string): Promise<{ sync: S3Sync
     )
 
     if (hasCriticalError) {
-      console.warn('[S3Sync] Critical auth/config error - S3 sync completely disabled')
+      console.warn(`[S3Sync] [initializeS3Sync] Critical auth/config error — S3 sync completely disabled (total: ${totalMs}ms)`)
       return null
     }
 
-    console.warn('[S3Sync] Non-critical download error - sync instance created but NOT started')
+    console.warn(`[S3Sync] [initializeS3Sync] Non-critical download error — sync instance created but NOT started (total: ${totalMs}ms)`)
     return { sync, downloadSucceeded: false }
   }
 
   // Download succeeded — safe to start sync
   const isNewProject = downloadStats.downloaded === 0
+  const totalMs = Date.now() - initStart
 
   sync.startPeriodicSync()
   sync.startWatcher()
 
   if (isNewProject) {
-    console.log('[S3Sync] New project - watcher will capture first file writes')
+    console.log(`[S3Sync] [initializeS3Sync] New project — watcher will capture first file writes (total: ${totalMs}ms)`)
+  } else {
+    console.log(`[S3Sync] [initializeS3Sync] Existing project restored — sync started (${downloadStats.downloaded} files, total: ${totalMs}ms)`)
   }
 
   return { sync, downloadSucceeded: true }

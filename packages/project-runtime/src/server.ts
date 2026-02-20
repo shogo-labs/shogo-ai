@@ -115,54 +115,51 @@ if (IS_POOL_MODE) {
 
 ;(!IS_POOL_MODE) && (async () => {
   const s3StartTime = Date.now()
+  logTiming(`[s3-init] Starting S3 sync initialization (bucket=${process.env.S3_WORKSPACES_BUCKET}, projectDir=${PROJECT_DIR})`)
   try {
+    logTiming('[s3-init] Calling initializeS3Sync...')
     const result = await initializeS3Sync(PROJECT_DIR)
+    const s3Duration = Date.now() - s3StartTime
+    logTiming(`[s3-init] initializeS3Sync returned after ${s3Duration}ms (result=${result ? 'ok' : 'null'}, downloadSucceeded=${result?.downloadSucceeded})`)
     if (result) {
       const { sync, downloadSucceeded } = result
-      const s3Duration = Date.now() - s3StartTime
       
       if (downloadSucceeded) {
-        // Download succeeded - safe to enable sync and set the global
         s3Sync = sync
-        logTiming(`S3 sync initialized successfully (took ${s3Duration}ms)`)
-        // Write marker file to signal background init that S3 restore is complete
-        // This allows background init to skip bun install if node_modules was restored
+        logTiming(`[s3-init] S3 download succeeded in ${s3Duration}ms — writing restore marker`)
         writeFileSync(S3_RESTORE_MARKER, `restored:${Date.now()}`)
-        logTiming('S3 restore marker written')
+        logTiming('[s3-init] Restore marker written — background init can proceed')
       } else {
         // Download failed but not a critical auth error.
         // CRITICAL: Do NOT set s3Sync - this prevents ANY uploads of template files.
-        // The entrypoint template files are on disk, and uploading them would
-        // overwrite the user's actual project data in S3.
-        console.warn(`[project-runtime] S3 download failed (took ${s3Duration}ms) - sync DISABLED to protect user data`)
-        console.warn(`[project-runtime] Will retry download in 10 seconds...`)
+        console.warn(`[project-runtime] [s3-init] S3 download FAILED after ${s3Duration}ms - sync DISABLED to protect user data`)
+        console.warn(`[project-runtime] [s3-init] Will retry download in 10 seconds...`)
         writeFileSync(S3_RESTORE_MARKER, `download-failed:${Date.now()}`)
         
-        // Retry download after a delay
         const retryDownload = async (attempt: number) => {
+          const retryStart = Date.now()
           try {
-            console.log(`[project-runtime] Retrying S3 download (attempt ${attempt})...`)
+            console.log(`[project-runtime] [s3-init] Retrying S3 download (attempt ${attempt})...`)
             const retryStats = await sync.downloadAll()
+            const retryDuration = Date.now() - retryStart
             if (retryStats.errors.length === 0) {
-              console.log(`[project-runtime] S3 download retry succeeded! Enabling sync.`)
-              // Now safe to enable sync - set the global and start watcher/periodic
+              console.log(`[project-runtime] [s3-init] Retry ${attempt} succeeded in ${retryDuration}ms — enabling sync`)
               s3Sync = sync
               sync.startPeriodicSync()
               sync.startWatcher()
               writeFileSync(S3_RESTORE_MARKER, `restored-retry:${Date.now()}`)
             } else {
-              console.error(`[project-runtime] S3 download retry ${attempt} failed:`, retryStats.errors)
-              // Retry with exponential backoff up to 3 attempts
+              console.error(`[project-runtime] [s3-init] Retry ${attempt} failed after ${retryDuration}ms:`, retryStats.errors)
               if (attempt < 3) {
                 const delay = 10000 * Math.pow(2, attempt - 1) // 10s, 20s, 40s
-                console.log(`[project-runtime] Will retry again in ${delay / 1000}s...`)
+                console.log(`[project-runtime] [s3-init] Will retry again in ${delay / 1000}s...`)
                 setTimeout(() => retryDownload(attempt + 1), delay)
               } else {
-                console.error(`[project-runtime] All S3 download retries failed. Sync remains disabled.`)
+                console.error(`[project-runtime] [s3-init] All S3 download retries exhausted. Sync remains disabled.`)
               }
             }
           } catch (retryError) {
-            console.error(`[project-runtime] S3 download retry ${attempt} error:`, retryError)
+            console.error(`[project-runtime] [s3-init] Retry ${attempt} threw after ${Date.now() - retryStart}ms:`, retryError)
             if (attempt < 3) {
               const delay = 10000 * Math.pow(2, attempt - 1)
               setTimeout(() => retryDownload(attempt + 1), delay)
@@ -172,14 +169,12 @@ if (IS_POOL_MODE) {
         setTimeout(() => retryDownload(1), 10000)
       }
     } else {
-      logTiming('S3 sync not configured (S3_WORKSPACES_BUCKET not set)')
-      // Still write marker so background init doesn't wait forever
+      logTiming(`[s3-init] initializeS3Sync returned null after ${s3Duration}ms (S3_WORKSPACES_BUCKET not set or createS3SyncFromEnv failed)`)
       writeFileSync(S3_RESTORE_MARKER, `skipped:${Date.now()}`)
     }
   } catch (error) {
-    console.error(`[project-runtime] S3 sync initialization failed:`, error)
-    // Write marker even on error so background init doesn't hang
-    // But do NOT start uploading - protect user data
+    const s3Duration = Date.now() - s3StartTime
+    console.error(`[project-runtime] [s3-init] S3 sync initialization THREW after ${s3Duration}ms:`, error)
     writeFileSync(S3_RESTORE_MARKER, `error:${Date.now()}`)
   }
 })()
@@ -721,21 +716,26 @@ console.log(`[project-runtime] ✅ Forbidden command guardrail ACTIVE (${FORBIDD
 // configureAIProxy() throws when AI_PROXY_URL is set but no token is available,
 // preventing silent fallback to a raw platform ANTHROPIC_API_KEY.
 // In pool mode, the token isn't available yet — it's injected via /pool/assign.
+logTiming('Configuring AI proxy...')
 let aiProxy: ReturnType<typeof configureAIProxy>
 if (IS_POOL_MODE) {
   aiProxy = { useProxy: false, env: {} }
   logTiming('Pool mode: deferring AI proxy configuration until assignment')
 } else {
   try {
+    const aiProxyStart = Date.now()
     aiProxy = configureAIProxy({ logPrefix: 'project-runtime' })
+    logTiming(`AI proxy configured in ${Date.now() - aiProxyStart}ms (useProxy=${aiProxy.useProxy})`)
   } catch (err: any) {
     console.error(`[project-runtime] FATAL: ${err.message}`)
     process.exit(1)
   }
 }
+const claudeCodeEnvStart = Date.now()
 let claudeCodeEnv = buildClaudeCodeEnv(aiProxy, {
   RUNTIME_PORT: String(PORT),
 })
+logTiming(`Claude Code env built in ${Date.now() - claudeCodeEnvStart}ms`)
 
 // =============================================================================
 // V2 Agent SDK Session Management
@@ -793,12 +793,14 @@ function writeAgentConfigFiles(): void {
 // process.chdir() is safe here because the server uses absolute paths everywhere.
 try {
   process.chdir(PROJECT_DIR)
-  console.log(`[project-runtime] Changed cwd to ${PROJECT_DIR}`)
+  logTiming(`Changed cwd to ${PROJECT_DIR}`)
 } catch (e: any) {
   console.warn(`[project-runtime] Could not chdir to ${PROJECT_DIR}: ${e.message}`)
 }
 if (!IS_POOL_MODE) {
+  const configStart = Date.now()
   writeAgentConfigFiles()
+  logTiming(`Agent config files written in ${Date.now() - configStart}ms`)
 }
 
 function buildProjectSessionOptions(modelName: ModelTier): V2SessionOptions {
@@ -821,11 +823,14 @@ function buildProjectSessionOptions(modelName: ModelTier): V2SessionOptions {
   }
 }
 
+logTiming('Creating session manager...')
+const sessionMgrStart = Date.now()
 let sessions = createSessionManager({
   buildSessionOptions: buildProjectSessionOptions,
   defaultModel: (process.env.AGENT_MODEL || 'sonnet') as ModelTier,
   logPrefix: 'project-runtime',
 })
+logTiming(`Session manager created in ${Date.now() - sessionMgrStart}ms`)
 
 // =============================================================================
 // Stream Keep-Alive Utility
@@ -1060,24 +1065,29 @@ app.post('/pool/assign', async (c) => {
     return c.json({ error: 'projectId (string) is required' }, 400)
   }
 
-  logTiming(`Pool assignment starting for project ${projectId}`)
+  logTiming(`[pool-assign] Starting for project ${projectId} (envVars: ${envVars ? Object.keys(envVars).join(',') : 'none'})`)
 
   // 1. Update project identity
   currentProjectId = projectId
   process.env.PROJECT_ID = projectId
+  logTiming(`[pool-assign] Step 1: Project identity updated (${Date.now() - startTime}ms)`)
 
   // 2. Inject environment variables from the controller
   if (envVars && typeof envVars === 'object') {
+    const envKeys = Object.keys(envVars).filter(k => typeof (envVars as any)[k] === 'string')
     for (const [key, value] of Object.entries(envVars)) {
       if (typeof value === 'string') {
         process.env[key] = value
       }
     }
+    logTiming(`[pool-assign] Step 2: Injected ${envKeys.length} env vars (${Date.now() - startTime}ms)`)
   }
 
   // 3. Reconfigure AI proxy with new env (picks up AI_PROXY_TOKEN)
+  const proxyStart = Date.now()
   try {
     aiProxy = configureAIProxy({ logPrefix: 'project-runtime' })
+    logTiming(`[pool-assign] Step 3: AI proxy reconfigured in ${Date.now() - proxyStart}ms (useProxy=${aiProxy.useProxy})`)
   } catch (err: any) {
     console.error(`[project-runtime] FATAL during reconfigure: ${err.message}`)
     process.exit(1)
@@ -1087,36 +1097,50 @@ app.post('/pool/assign', async (c) => {
   })
 
   // 4. Recreate session manager with updated config
+  const sessionStart = Date.now()
   sessions = createSessionManager({
     buildSessionOptions: buildProjectSessionOptions,
     defaultModel: (process.env.AGENT_MODEL || 'sonnet') as ModelTier,
     logPrefix: 'project-runtime',
   })
+  logTiming(`[pool-assign] Step 4: Session manager recreated in ${Date.now() - sessionStart}ms`)
 
   // 5. Run project-specific initialization
   try {
     // Initialize S3 sync to download project data
     if (process.env.S3_WORKSPACES_BUCKET) {
+      const s3Start = Date.now()
+      logTiming(`[pool-assign] Step 5a: Starting S3 sync for ${PROJECT_DIR}...`)
       const result = await initializeS3Sync(PROJECT_DIR)
+      const s3Duration = Date.now() - s3Start
       if (result) {
         const { sync, downloadSucceeded } = result
         if (downloadSucceeded) {
           s3Sync = sync
-          logTiming('Pool assign: S3 sync initialized')
+          logTiming(`[pool-assign] Step 5a: S3 sync completed in ${s3Duration}ms (download succeeded)`)
           writeFileSync(S3_RESTORE_MARKER, `pool-assigned:${Date.now()}`)
+        } else {
+          logTiming(`[pool-assign] Step 5a: S3 sync completed in ${s3Duration}ms (download FAILED)`)
         }
+      } else {
+        logTiming(`[pool-assign] Step 5a: S3 sync returned null in ${s3Duration}ms`)
       }
+    } else {
+      logTiming(`[pool-assign] Step 5a: S3 sync skipped (no S3_WORKSPACES_BUCKET)`)
     }
 
     // Write config files now that we have a real project
+    const configStart = Date.now()
     writeAgentConfigFiles()
+    logTiming(`[pool-assign] Step 5b: Config files written in ${Date.now() - configStart}ms`)
 
     poolAssigned = true
     const duration = Date.now() - startTime
-    logTiming(`Pool assignment complete for ${projectId} (${duration}ms)`)
+    logTiming(`[pool-assign] COMPLETE for ${projectId} — total ${duration}ms`)
     return c.json({ ok: true, projectId, durationMs: duration })
   } catch (error: any) {
-    console.error(`[project-runtime] Pool assignment failed for ${projectId}:`, error.message)
+    const duration = Date.now() - startTime
+    console.error(`[project-runtime] [pool-assign] FAILED for ${projectId} after ${duration}ms:`, error.message)
     return c.json({ error: `Assignment failed: ${error.message}` }, 500)
   }
 })
@@ -1129,14 +1153,17 @@ let readyCheckCount = 0
 app.get('/ready', (c) => {
   readyCheckCount++
   const uptimeMs = Date.now() - SERVER_START_TIME
+  const podType = IS_POOL_MODE ? (poolAssigned ? 'pool-assigned' : 'pool-unassigned') : 'project'
+  const podId = currentProjectId || 'unknown'
   const projectDirExists = existsSync(PROJECT_DIR)
   
   if (!projectDirExists) {
-    console.log(`[project-runtime] [ready-check #${readyCheckCount}] [+${uptimeMs}ms] NOT READY: Project directory does not exist`)
+    console.log(`[project-runtime] [${podType}:${podId}] [ready-check #${readyCheckCount}] [+${uptimeMs}ms] NOT READY: Project directory does not exist (${PROJECT_DIR})`)
     return c.json({
       status: 'not_ready',
       reason: 'Project directory does not exist',
       projectDir: PROJECT_DIR,
+      podType,
       uptimeMs,
       checkCount: readyCheckCount,
     }, 503)
@@ -1147,12 +1174,34 @@ app.get('/ready', (c) => {
     const buildStatus = getBuildStatus()
     
     if (!buildStatus.ready) {
-      console.log(`[project-runtime] [ready-check #${readyCheckCount}] [+${uptimeMs}ms] NOT READY: ${buildStatus.status}`)
+      // Log verbose details every 10th check to avoid flooding, but always log for first 5
+      const shouldLogVerbose = readyCheckCount <= 5 || readyCheckCount % 10 === 0
+      const s3MarkerExists = existsSync(S3_RESTORE_MARKER)
+      let s3MarkerContent = ''
+      if (s3MarkerExists) {
+        try { s3MarkerContent = readFileSync(S3_RESTORE_MARKER, 'utf-8').trim() } catch {}
+      }
+      const buildFileExists = existsSync(BUILD_STATUS_FILE)
+      let buildFileContent = ''
+      if (buildFileExists) {
+        try { buildFileContent = readFileSync(BUILD_STATUS_FILE, 'utf-8').trim() } catch {}
+      }
+      
+      if (shouldLogVerbose) {
+        console.log(`[project-runtime] [${podType}:${podId}] [ready-check #${readyCheckCount}] [+${uptimeMs}ms] NOT READY: phase=${buildFileContent || buildStatus.status}${buildStatus.details ? ` (${buildStatus.details})` : ''} | s3Marker=${s3MarkerExists ? `"${s3MarkerContent}"` : 'WAITING'}`)
+      } else {
+        console.log(`[project-runtime] [${podType}:${podId}] [ready-check #${readyCheckCount}] [+${uptimeMs}ms] NOT READY: ${buildFileContent || buildStatus.status}`)
+      }
+      
       return c.json({
         status: 'initializing',
         buildStatus: buildStatus.status,
+        buildStatusDetails: buildStatus.details,
+        buildFileContent: buildFileContent || undefined,
+        s3MarkerStatus: s3MarkerContent || (s3MarkerExists ? 'empty' : 'missing'),
         reason: 'Background initialization in progress',
-        projectId: PROJECT_ID,
+        podType,
+        projectId: currentProjectId,
         uptimeMs,
         checkCount: readyCheckCount,
       }, 503)
@@ -1162,7 +1211,7 @@ app.get('/ready', (c) => {
   // Track when we first became ready
   if (!firstReadyTime) {
     firstReadyTime = uptimeMs
-    logTiming(`READY! First ready after ${firstReadyTime}ms (${readyCheckCount} checks)`)
+    logTiming(`[${podType}:${podId}] READY! First ready after ${firstReadyTime}ms (${readyCheckCount} checks)`)
     
     // Auto-start vite watch mode for automatic rebuilds (don't block response)
     // [EXPO DISABLED] Expo uses Metro bundler, so watch mode doesn't apply
