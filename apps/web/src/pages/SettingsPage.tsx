@@ -1407,8 +1407,8 @@ function BillingTab() {
     ? subscription.planId.charAt(0).toUpperCase() + subscription.planId.slice(1)
     : "Free"
 
-  const creditsRemaining = effectiveBalance?.total ?? 5
   const creditsTotal = getTotalCreditsForPlan(subscription?.planId, PLAN_CREDITS, DAILY_CREDITS)
+  const creditsRemaining = effectiveBalance?.total ?? creditsTotal
 
   return (
     <div className="space-y-6">
