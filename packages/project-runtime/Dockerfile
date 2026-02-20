@@ -80,6 +80,8 @@ RUN rm -rf packages/*/node_modules apps/*/node_modules
 # Runs IN PARALLEL with builder (BuildKit). Produces a node_modules that
 # excludes turbo (~50MB), typescript (~80MB), playwright, prisma CLI, @types/*,
 # and all other devDependencies from every workspace member.
+# NOTE: bun.lock must be copied to the final image for workspace resolution
+# of @shogo/* packages to work at runtime.
 # =============================================================================
 FROM oven/bun:1.3-alpine AS production-deps
 
@@ -204,7 +206,7 @@ ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 # from the parallel production-deps stage. Per-package node_modules were
 # cleaned in the builder so package COPYs only transfer source + dist.
 # All COPYs use --chown to set ownership at copy time, avoiding the ~90s
-# recursive chown that was duplicating GBs of layer data.
+# recursive chown. bun.lock is required for workspace package resolution.
 # ---------------------------------------------------------------------------
 COPY --chown=appuser:appgroup --from=production-deps /app/node_modules ./node_modules
 COPY --chown=appuser:appgroup --from=builder /app/packages/state-api ./packages/state-api
@@ -212,6 +214,7 @@ COPY --chown=appuser:appgroup --from=builder /app/packages/mcp ./packages/mcp
 COPY --chown=appuser:appgroup --from=builder /app/packages/shared-runtime ./packages/shared-runtime
 COPY --chown=appuser:appgroup --from=builder /app/packages/project-runtime ./packages/project-runtime
 COPY --chown=appuser:appgroup --from=builder /app/package.json ./
+COPY --chown=appuser:appgroup --from=builder /app/bun.lock ./
 COPY --chown=appuser:appgroup --from=builder /app/tsconfig.base.json ./
 
 # Copy template archives

@@ -63,6 +63,10 @@ RUN bun run build
 WORKDIR /app/packages/mcp
 RUN bun run build
 
+# Clean per-package node_modules to avoid bun symlink bloat during COPY
+WORKDIR /app
+RUN rm -rf packages/*/node_modules apps/*/node_modules
+
 # =============================================================================
 # Production image
 # =============================================================================
@@ -86,21 +90,22 @@ ENV SHELL=/bin/bash
 RUN addgroup -g 1001 -S appgroup && \
     adduser -u 1001 -S appuser -G appgroup
 
-# Copy built artifacts and node_modules
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/packages/state-api ./packages/state-api
-COPY --from=builder /app/packages/mcp ./packages/mcp
-COPY --from=builder /app/packages/project-runtime ./packages/project-runtime
-COPY --from=builder /app/packages/agent-runtime ./packages/agent-runtime
-COPY --from=builder /app/packages/shared-runtime ./packages/shared-runtime
-COPY --from=builder /app/packages/sdk ./packages/sdk
-COPY --from=builder /app/apps/api ./apps/api
-COPY --from=builder /app/package.json ./
-COPY --from=builder /app/tsconfig.base.json ./
+# Copy built artifacts with --chown (avoids expensive recursive chown layer duplication)
+COPY --chown=appuser:appgroup --from=builder /app/node_modules ./node_modules
+COPY --chown=appuser:appgroup --from=builder /app/packages/state-api ./packages/state-api
+COPY --chown=appuser:appgroup --from=builder /app/packages/mcp ./packages/mcp
+COPY --chown=appuser:appgroup --from=builder /app/packages/project-runtime ./packages/project-runtime
+COPY --chown=appuser:appgroup --from=builder /app/packages/agent-runtime ./packages/agent-runtime
+COPY --chown=appuser:appgroup --from=builder /app/packages/shared-runtime ./packages/shared-runtime
+COPY --chown=appuser:appgroup --from=builder /app/packages/sdk ./packages/sdk
+COPY --chown=appuser:appgroup --from=builder /app/apps/api ./apps/api
+COPY --chown=appuser:appgroup --from=builder /app/package.json ./
+COPY --chown=appuser:appgroup --from=builder /app/bun.lock ./
+COPY --chown=appuser:appgroup --from=builder /app/tsconfig.base.json ./
 
 # Copy prisma schema, config, and migrations for runtime migrations
-COPY --from=builder /app/prisma ./prisma
-COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
+COPY --chown=appuser:appgroup --from=builder /app/prisma ./prisma
+COPY --chown=appuser:appgroup --from=builder /app/prisma.config.ts ./prisma.config.ts
 
 # Copy SDK examples folder for templates API
 COPY packages/sdk/examples ./packages/sdk/examples
@@ -117,8 +122,8 @@ RUN mkdir -p /app/workspaces
 RUN mkdir -p /app/.claude && \
     chmod 777 /app /app/.claude
 
-# Change ownership to non-root user (but keep world-writable for host UID override)
-RUN chown -R appuser:appgroup /app
+# Set ownership on specific directories (COPY --chown handled the rest)
+RUN chown -R appuser:appgroup /app/workspaces /app/.claude
 
 # Switch to non-root user
 # Note: For development with mounted volumes, may need to run as root

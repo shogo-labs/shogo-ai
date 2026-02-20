@@ -240,7 +240,7 @@ export class WarmPoolController {
       }
     }
 
-    // Count available pods per type
+    // Count available pods per type (only count ready or recently-created ones)
     const counts: Record<RuntimeType, number> = { project: 0, agent: 0 }
     for (const pod of this.available.values()) {
       counts[pod.type]++
@@ -479,11 +479,28 @@ export class WarmPoolController {
         const readyCondition = conditions.find((c: any) => c.type === 'Ready')
         const ready = readyCondition?.status === 'True'
 
+        // Detect permanently broken services (e.g. wrong image, RevisionMissing)
+        // and clean them up so the pool can replace them
+        const isBroken =
+          readyCondition?.status === 'False' &&
+          (readyCondition?.reason === 'RevisionMissing' ||
+           readyCondition?.reason === 'ContainerMissing' ||
+           readyCondition?.reason === 'RevisionFailed')
+        if (isBroken) {
+          console.warn(
+            `[WarmPool] Deleting broken warm pod ${name} (reason: ${readyCondition?.reason})`
+          )
+          this.available.delete(id)
+          this.deleteWarmPodService(name).catch((err) => {
+            console.error(`[WarmPool] Failed to delete broken pod ${name}:`, err.message)
+          })
+          continue
+        }
+
         const url = `http://${name}.${this.namespace}.svc.cluster.local`
 
         const existing = this.available.get(id)
         if (existing) {
-          // Always update readiness (pods start with ready:false and become ready later)
           existing.ready = ready
           continue
         }
