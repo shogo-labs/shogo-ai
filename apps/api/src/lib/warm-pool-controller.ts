@@ -87,7 +87,10 @@ function getKubeConfig(): k8s.KubeConfig {
   const tokenPath = `${serviceAccountDir}/token`
 
   if (fs.existsSync(caPath) && fs.existsSync(tokenPath)) {
-    const ca = fs.readFileSync(caPath, 'utf8')
+    // @kubernetes/client-node's skipTLSVerify doesn't reliably propagate
+    // in bun's fetch runtime; enforce at the process level for K8s API calls.
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
+
     const token = fs.readFileSync(tokenPath, 'utf8')
     const host = `https://${process.env.KUBERNETES_SERVICE_HOST}:${process.env.KUBERNETES_SERVICE_PORT}`
 
@@ -96,7 +99,6 @@ function getKubeConfig(): k8s.KubeConfig {
         {
           name: 'in-cluster',
           server: host,
-          caData: Buffer.from(ca).toString('base64'),
           skipTLSVerify: true,
         },
       ],
