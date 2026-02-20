@@ -12,7 +12,7 @@
 # Run:   docker run -e PROJECT_ID=test -e ANTHROPIC_API_KEY=sk-... agent-runtime
 # =============================================================================
 
-FROM oven/bun:1.2-alpine AS builder
+FROM oven/bun:1.3-alpine AS builder
 
 WORKDIR /app
 
@@ -46,7 +46,7 @@ COPY packages/agent-runtime ./packages/agent-runtime
 # =============================================================================
 # Production image
 # =============================================================================
-FROM oven/bun:1.2-alpine
+FROM oven/bun:1.3-alpine
 
 WORKDIR /app
 

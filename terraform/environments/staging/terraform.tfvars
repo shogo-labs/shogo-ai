@@ -62,7 +62,7 @@ enable_signoz = true
 signoz_endpoint = "ingest.us.signoz.cloud:443"
 
 # SigNoz Cloud ingestion key
-signoz_ingestion_key = "xLFY6djeWtEqZt1eGrYTwKkKeR5kCua-VB1w"
+signoz_ingestion_key = "lGsY7yWnJpyjvfUnWFaBCUarhjSjxSunI0Xv"
 
 # Namespace for SigNoz collectors
 signoz_namespace = "signoz"

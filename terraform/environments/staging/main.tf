@@ -1143,7 +1143,7 @@ resource "null_resource" "knative_services" {
                   - name: OTEL_EXPORTER_OTLP_ENDPOINT
                     value: "https://${var.signoz_endpoint}"
                   - name: OTEL_SERVICE_NAME
-                    value: "shogo-api"
+                    value: "shogo-api-staging"
                   - name: SIGNOZ_INGESTION_KEY
                     valueFrom:
                       secretKeyRef:

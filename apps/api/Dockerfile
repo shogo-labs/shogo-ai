@@ -6,7 +6,7 @@
 # Includes BetterAuth for authentication
 # =============================================================================
 
-FROM oven/bun:1.2-alpine AS builder
+FROM oven/bun:1.3-alpine AS builder
 
 WORKDIR /app
 
@@ -73,8 +73,7 @@ WORKDIR /app
 
 # Install curl for healthchecks, bash for shell, and Bun
 RUN apk add --no-cache curl bash unzip && \
-    curl -fsSL https://bun.sh/install | bash && \
-    mv /root/.bun/bin/bun /usr/local/bin/ && \
+    curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v1.3.9" && \
     rm -rf /root/.bun
 
 # Install Claude Code CLI globally (required for ai-sdk-provider-claude-code)

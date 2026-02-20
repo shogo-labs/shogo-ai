@@ -19,7 +19,7 @@
 # Run:   docker run -e PROJECT_ID=test -e ANTHROPIC_API_KEY=sk-... project-runtime
 # =============================================================================
 
-FROM oven/bun:1.2-alpine AS builder
+FROM oven/bun:1.3-alpine AS builder
 
 WORKDIR /app
 
@@ -70,7 +70,7 @@ RUN bun run build
 #
 # This means: if only source code changes, dependency install is skipped entirely.
 # =============================================================================
-FROM oven/bun:1.2-alpine AS template-deps
+FROM oven/bun:1.3-alpine AS template-deps
 
 WORKDIR /templates
 
@@ -133,7 +133,7 @@ RUN mkdir -p /templates/archives && \
 # =============================================================================
 # Production image
 # =============================================================================
-FROM oven/bun:1.2-alpine
+FROM oven/bun:1.3-alpine
 
 WORKDIR /app
 
@@ -144,7 +144,7 @@ WORKDIR /app
 # - git: for project operations
 # - tar: for S3 archive sync
 # - Chromium dependencies for Playwright E2E tests
-# NOTE: oven/bun:1.2-alpine is based on Alpine 3.20 which only has Node 20.15.
+# NOTE: oven/bun:1.3-alpine is based on Alpine 3.20 which only has Node 20.15.
 # Prisma 7.x requires Node 20.19+, so we pull nodejs from Alpine 3.21 repos.
 RUN echo "https://dl-cdn.alpinelinux.org/alpine/v3.21/main" >> /etc/apk/repositories && \
     apk add --no-cache \
