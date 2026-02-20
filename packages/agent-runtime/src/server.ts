@@ -174,12 +174,18 @@ Long-lived facts and learnings are stored here.
 
 // configureAIProxy() throws when AI_PROXY_URL is set but no token is available,
 // preventing silent fallback to a raw platform ANTHROPIC_API_KEY.
+// In pool mode, the token isn't available yet — it's injected via /pool/assign.
 let aiProxy: ReturnType<typeof configureAIProxy>
-try {
-  aiProxy = configureAIProxy({ logPrefix: 'agent-runtime' })
-} catch (err: any) {
-  console.error(`[agent-runtime] FATAL: ${err.message}`)
-  process.exit(1)
+if (IS_POOL_MODE) {
+  aiProxy = { useProxy: false, env: {} }
+  logTiming('Pool mode: deferring AI proxy configuration until assignment')
+} else {
+  try {
+    aiProxy = configureAIProxy({ logPrefix: 'agent-runtime' })
+  } catch (err: any) {
+    console.error(`[agent-runtime] FATAL: ${err.message}`)
+    process.exit(1)
+  }
 }
 if (aiProxy.useProxy) {
   Object.assign(process.env, aiProxy.env)

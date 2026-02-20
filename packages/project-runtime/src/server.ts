@@ -720,12 +720,18 @@ console.log(`[project-runtime] ✅ Forbidden command guardrail ACTIVE (${FORBIDD
 // AI Proxy Configuration
 // configureAIProxy() throws when AI_PROXY_URL is set but no token is available,
 // preventing silent fallback to a raw platform ANTHROPIC_API_KEY.
+// In pool mode, the token isn't available yet — it's injected via /pool/assign.
 let aiProxy: ReturnType<typeof configureAIProxy>
-try {
-  aiProxy = configureAIProxy({ logPrefix: 'project-runtime' })
-} catch (err: any) {
-  console.error(`[project-runtime] FATAL: ${err.message}`)
-  process.exit(1)
+if (IS_POOL_MODE) {
+  aiProxy = { useProxy: false, env: {} }
+  logTiming('Pool mode: deferring AI proxy configuration until assignment')
+} else {
+  try {
+    aiProxy = configureAIProxy({ logPrefix: 'project-runtime' })
+  } catch (err: any) {
+    console.error(`[project-runtime] FATAL: ${err.message}`)
+    process.exit(1)
+  }
 }
 let claudeCodeEnv = buildClaudeCodeEnv(aiProxy, {
   RUNTIME_PORT: String(PORT),

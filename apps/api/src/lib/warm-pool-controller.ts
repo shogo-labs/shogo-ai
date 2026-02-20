@@ -466,17 +466,22 @@ export class WarmPoolController {
         if (!name || !type) continue
         discoveredIds.add(id)
 
-        // Skip if already tracked
-        if (this.available.has(id)) continue
         // Skip if assigned to a project
         if (status === 'assigned') continue
 
-        // Check readiness
+        // Check readiness from Knative service conditions
         const conditions = service.status?.conditions || []
         const readyCondition = conditions.find((c: any) => c.type === 'Ready')
         const ready = readyCondition?.status === 'True'
 
         const url = `http://${name}.${this.namespace}.svc.cluster.local`
+
+        const existing = this.available.get(id)
+        if (existing) {
+          // Always update readiness (pods start with ready:false and become ready later)
+          existing.ready = ready
+          continue
+        }
 
         this.available.set(id, {
           id,
