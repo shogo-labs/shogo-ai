@@ -5,9 +5,12 @@
 # Runs Claude Code agent + MCP + Vite in an isolated per-project pod.
 #
 # Build Optimizations (uses BuildKit):
-# - Layer caching: package.json changes → rebuild deps, source changes → deps cached
-# - BuildKit cache mounts: bun install cache persisted across builds
-# - Parallel builds: template-deps and builder stages can run in parallel
+# - 4 parallel stages: builder, production-deps, template-deps run concurrently
+# - Production-only node_modules: devDeps (turbo, typescript, playwright) excluded
+# - Per-package node_modules cleaned to avoid bun symlink resolution bloat
+# - COPY --chown eliminates expensive 90s recursive chown on GBs of data
+# - pigz for parallel gzip compression of template archives
+# - tsc skipped in Docker (not needed at runtime, bun handles TS natively)
 #
 # Runtime Optimizations:
 # - Pre-installed template dependencies (no bun install on cold start)
@@ -19,6 +22,9 @@
 # Run:   docker run -e PROJECT_ID=test -e ANTHROPIC_API_KEY=sk-... project-runtime
 # =============================================================================
 
+# =============================================================================
+# Stage 1: builder — install all deps, build packages
+# =============================================================================
 FROM oven/bun:1.3-alpine AS builder
 
 WORKDIR /app
@@ -28,7 +34,6 @@ COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
 # Copy package.json files for dependency resolution (cached layer)
-# All workspace members must be present for bun install to succeed
 COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/mcp/package.json ./packages/mcp/
 COPY packages/project-runtime/package.json ./packages/project-runtime/
@@ -52,56 +57,90 @@ COPY packages/mcp ./packages/mcp
 COPY packages/shared-runtime ./packages/shared-runtime
 COPY packages/project-runtime ./packages/project-runtime
 
-# Build packages
+# Build state-api (skip tsc --emitDeclarationOnly — .d.ts not needed at runtime)
 WORKDIR /app/packages/state-api
-RUN bun run build
+RUN bun build src/index.ts --outdir dist --target node
 
 WORKDIR /app/packages/mcp
 RUN bun run build
 
+# ---------------------------------------------------------------------------
+# Clean per-package node_modules BEFORE the production stage copies.
+# Bun workspaces create symlinked node_modules in each package that resolve
+# back to the workspace root. Docker COPY follows symlinks, so copying
+# packages/mcp/ would pull in ~571MB of duplicated deps. The workspace root
+# node_modules (copied separately) has everything bun needs at runtime.
+# ---------------------------------------------------------------------------
+WORKDIR /app
+RUN rm -rf packages/*/node_modules apps/*/node_modules
+
 # =============================================================================
-# Pre-install ALL template dependencies (dramatically speeds up template.copy)
+# Stage 2: production-deps — lean node_modules without devDependencies
 # =============================================================================
-# CACHING STRATEGY:
-# 1. Copy only package.json files first (dependency layer - cached if deps don't change)
-# 2. Install dependencies with BuildKit cache mount (reuses bun cache across builds)
-# 3. Copy source files (source layer - invalidated when code changes)
-# 4. Build templates
-#
-# This means: if only source code changes, dependency install is skipped entirely.
+# Runs IN PARALLEL with builder (BuildKit). Produces a node_modules that
+# excludes turbo (~50MB), typescript (~80MB), playwright, prisma CLI, @types/*,
+# and all other devDependencies from every workspace member.
+# =============================================================================
+FROM oven/bun:1.3-alpine AS production-deps
+
+WORKDIR /app
+
+COPY package.json bun.lock ./
+COPY tsconfig.base.json ./
+
+COPY packages/state-api/package.json ./packages/state-api/
+COPY packages/mcp/package.json ./packages/mcp/
+COPY packages/project-runtime/package.json ./packages/project-runtime/
+COPY packages/agent-runtime/package.json ./packages/agent-runtime/
+COPY packages/shared-runtime/package.json ./packages/shared-runtime/
+COPY packages/sdk/package.json ./packages/sdk/
+COPY apps/web/package.json ./apps/web/
+COPY apps/api/package.json ./apps/api/
+COPY apps/desktop/package.json ./apps/desktop/
+
+COPY scripts ./scripts
+
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install --production
+
+# =============================================================================
+# Stage 3: template-deps — pre-install and pre-build all templates
+# =============================================================================
+# Runs IN PARALLEL with builder and production-deps (BuildKit).
 # =============================================================================
 FROM oven/bun:1.3-alpine AS template-deps
 
+# pigz = parallel gzip — uses all CPU cores for compression
+RUN apk add --no-cache pigz
+
 WORKDIR /templates
 
-# ---- LAYER 1: Copy package.json files only (for dependency caching) ----
-# This layer is cached as long as package.json files don't change
-COPY packages/sdk/examples/todo-app/package.json ./examples/todo-app/
-COPY packages/sdk/examples/expense-tracker/package.json ./examples/expense-tracker/
-COPY packages/sdk/examples/crm/package.json ./examples/crm/
-COPY packages/sdk/examples/inventory/package.json ./examples/inventory/
-COPY packages/sdk/examples/kanban/package.json ./examples/kanban/
-COPY packages/sdk/examples/ai-chat/package.json ./examples/ai-chat/
-COPY packages/sdk/examples/form-builder/package.json ./examples/form-builder/
-COPY packages/sdk/examples/feedback-form/package.json ./examples/feedback-form/
-COPY packages/sdk/examples/booking-app/package.json ./examples/booking-app/
+# Copy package.json + bun.lock files (dependency caching layer).
+# Including the lockfile lets us use --frozen-lockfile which skips resolution
+# entirely and just links from cache — cuts install from ~12s to ~2s per template.
+COPY packages/sdk/examples/todo-app/package.json packages/sdk/examples/todo-app/bun.lock ./examples/todo-app/
+COPY packages/sdk/examples/expense-tracker/package.json packages/sdk/examples/expense-tracker/bun.lock ./examples/expense-tracker/
+COPY packages/sdk/examples/crm/package.json packages/sdk/examples/crm/bun.lock ./examples/crm/
+COPY packages/sdk/examples/inventory/package.json packages/sdk/examples/inventory/bun.lock ./examples/inventory/
+COPY packages/sdk/examples/kanban/package.json packages/sdk/examples/kanban/bun.lock ./examples/kanban/
+COPY packages/sdk/examples/ai-chat/package.json packages/sdk/examples/ai-chat/bun.lock ./examples/ai-chat/
+COPY packages/sdk/examples/form-builder/package.json packages/sdk/examples/form-builder/bun.lock ./examples/form-builder/
+COPY packages/sdk/examples/feedback-form/package.json packages/sdk/examples/feedback-form/bun.lock ./examples/feedback-form/
+COPY packages/sdk/examples/booking-app/package.json packages/sdk/examples/booking-app/bun.lock ./examples/booking-app/
 
-# ---- LAYER 2: Install dependencies (cached if package.json unchanged) ----
-# Using BuildKit cache mount for bun's global cache (speeds up repeated builds)
+# Install dependencies with --frozen-lockfile (skips resolution, just links from cache)
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     for template in todo-app expense-tracker crm inventory kanban ai-chat form-builder feedback-form booking-app; do \
       echo "=== Installing deps: $template ===" && \
       cd /templates/examples/$template && \
-      bun install && \
+      bun install --frozen-lockfile && \
       cd /templates; \
     done
 
-# ---- LAYER 3: Copy source files ----
-# This layer invalidates when source code changes, but deps layer stays cached
+# Copy source files
 COPY packages/sdk/examples ./examples
 
-# ---- LAYER 4: Build templates (prisma generate + vite build) ----
-# Only runs when source changes, deps are already installed
+# Build templates (prisma generate + vite build)
 RUN for template in todo-app expense-tracker crm inventory kanban ai-chat form-builder feedback-form booking-app; do \
       echo "=== Building: $template ===" && \
       cd /templates/examples/$template && \
@@ -115,42 +154,32 @@ RUN for template in todo-app expense-tracker crm inventory kanban ai-chat form-b
       cd /templates; \
     done
 
-# ---- LAYER 5: Create tar.gz archives and delete uncompressed templates ----
-# This dramatically reduces image size (compressed vs uncompressed node_modules)
-# template.copy extracts from these archives for fast cold starts
-# Note: We use rm -rf instead of rmdir because the examples/ dir may contain
-# templates not in our list (e.g., expo-app for mobile) that we don't ship
+# Create tar.gz archives in PARALLEL using pigz (parallel gzip).
+# Sequential tar -czf takes ~300s; parallel pigz cuts to ~60-90s.
 RUN mkdir -p /templates/archives && \
+    cd /templates/examples && \
     for template in todo-app expense-tracker crm inventory kanban ai-chat form-builder feedback-form booking-app; do \
-      echo "=== Archiving: $template ===" && \
-      cd /templates/examples && \
-      tar -czf /templates/archives/${template}.tar.gz $template && \
-      rm -rf /templates/examples/$template && \
-      echo "=== $template archived ($(du -h /templates/archives/${template}.tar.gz | cut -f1)) ===" ; \
+      ( \
+        tar cf - $template | pigz > /templates/archives/${template}.tar.gz && \
+        rm -rf /templates/examples/$template && \
+        echo "=== $template archived ($(du -h /templates/archives/${template}.tar.gz | cut -f1)) ===" \
+      ) & \
     done && \
+    wait && \
     rm -rf /templates/examples
 
 # =============================================================================
-# Production image
+# Stage 4: production image
 # =============================================================================
 FROM oven/bun:1.3-alpine
 
 WORKDIR /app
 
-# Install required system packages:
-# - curl: health checks
-# - nodejs + npm: Claude Code CLI (need Node 22+ for Prisma 7.x)
-# - bash: Claude Code requires SHELL=/bin/bash
-# - git: for project operations
-# - tar: for S3 archive sync
-# - Chromium dependencies for Playwright E2E tests
-# NOTE: oven/bun:1.3-alpine is based on Alpine 3.20 which only has Node 20.15.
-# Prisma 7.x requires Node 20.19+, so we pull nodejs from Alpine 3.21 repos.
+# Install required system packages
 RUN echo "https://dl-cdn.alpinelinux.org/alpine/v3.21/main" >> /etc/apk/repositories && \
     apk add --no-cache \
     curl bash git tar gzip \
     'nodejs>22' npm \
-    # Playwright/Chromium dependencies
     chromium \
     nss \
     freetype \
@@ -158,44 +187,41 @@ RUN echo "https://dl-cdn.alpinelinux.org/alpine/v3.21/main" >> /etc/apk/reposito
     ca-certificates \
     ttf-freefont
 
-# Install Claude Code CLI globally (required for ai-sdk-provider-claude-code)
+# Install Claude Code CLI globally
 RUN npm install -g @anthropic-ai/claude-code
 
-# Set SHELL environment variable (required by Claude Code CLI)
 ENV SHELL=/bin/bash
 
-# Create non-root user for security
+# Create non-root user
 RUN addgroup -g 1001 -S appgroup && \
     adduser -u 1001 -S appuser -G appgroup
 
-# Configure Playwright to use system-installed Chromium
-# Alpine uses musl-libc so we can't use Playwright's glibc-based browsers
-# The system chromium package is installed via apk above
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
-# Copy built artifacts and dependencies
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/packages/state-api ./packages/state-api
-COPY --from=builder /app/packages/mcp ./packages/mcp
-COPY --from=builder /app/packages/shared-runtime ./packages/shared-runtime
-COPY --from=builder /app/packages/project-runtime ./packages/project-runtime
-COPY --from=builder /app/package.json ./
-COPY --from=builder /app/tsconfig.base.json ./
+# ---------------------------------------------------------------------------
+# Copy production-only node_modules (no turbo, typescript, playwright, etc.)
+# from the parallel production-deps stage. Per-package node_modules were
+# cleaned in the builder so package COPYs only transfer source + dist.
+# All COPYs use --chown to set ownership at copy time, avoiding the ~90s
+# recursive chown that was duplicating GBs of layer data.
+# ---------------------------------------------------------------------------
+COPY --chown=appuser:appgroup --from=production-deps /app/node_modules ./node_modules
+COPY --chown=appuser:appgroup --from=builder /app/packages/state-api ./packages/state-api
+COPY --chown=appuser:appgroup --from=builder /app/packages/mcp ./packages/mcp
+COPY --chown=appuser:appgroup --from=builder /app/packages/shared-runtime ./packages/shared-runtime
+COPY --chown=appuser:appgroup --from=builder /app/packages/project-runtime ./packages/project-runtime
+COPY --chown=appuser:appgroup --from=builder /app/package.json ./
+COPY --chown=appuser:appgroup --from=builder /app/tsconfig.base.json ./
 
-# Copy template archives (tar.gz files with node_modules + .output pre-built)
-# template.copy extracts from these for instant cold starts with pre-installed deps
-COPY --from=template-deps /templates/archives ./packages/sdk/templates
+# Copy template archives
+COPY --chown=appuser:appgroup --from=template-deps /templates/archives ./packages/sdk/templates
 
 # Create directories for project files and schemas
-# /app/project - mounted volume or synced from S3
-# /app/.schemas - project-specific schemas
-# /app/.claude - Claude Code session data
 RUN mkdir -p /app/project /app/.schemas /app/.claude && \
-    chown -R appuser:appgroup /app
+    chown appuser:appgroup /app/project /app/.schemas /app/.claude
 
-# Copy entrypoint script
-COPY packages/project-runtime/entrypoint.sh /entrypoint.sh
+COPY --chown=appuser:appgroup packages/project-runtime/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # Environment defaults
@@ -205,27 +231,18 @@ ENV PROJECT_DIR=/app/project
 ENV SCHEMAS_PATH=/app/.schemas
 ENV MCP_SERVER_PATH=/app/packages/mcp/src/server.ts
 ENV HOME=/app
-# Enable fast start mode by default
 ENV FAST_START_MODE=true
 ENV BUILD_STATUS_FILE=/tmp/build-status
-# Playwright: use system Chromium (Alpine doesn't support Playwright's glibc binaries)
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
-# Set working directory to the project directory
-# This ensures Claude Code operates from /app/project by default
 WORKDIR /app/project
 
-# Expose ports:
-# - 8080: Agent server (chat endpoint)
-# - 5173: Vite preview server
 EXPOSE 8080 5173
 
-# Health check - faster interval for quicker cold start detection
 HEALTHCHECK --interval=3s --timeout=2s --start-period=5s --retries=10 \
   CMD curl -sf http://localhost:8080/health || exit 1
 
-# Switch to non-root user
 USER appuser
 
 ENTRYPOINT ["/entrypoint.sh"]
