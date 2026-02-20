@@ -49,7 +49,7 @@ import {
   verifyPreviewToken, type PreviewTokenPayload,
   configureAIProxy, buildClaudeCodeEnv,
   createSessionManager, type ModelTier, type V2SessionOptions,
-  extractUserText, findLastUserMessage,
+  extractUserText, extractUserContent, findLastUserMessage, safeSessionId, type ContentBlock,
   streamSdkToUI,
 } from '@shogo/shared-runtime'
 import { buildSystemPrompt } from './system-prompt'
@@ -1562,7 +1562,8 @@ app.post('/agent/chat', async (c) => {
       return c.json({ error: { code: 'no_user_message', message: 'No user message found' } }, 400)
     }
 
-    const userText = extractUserText(lastUserMessage)
+    const userContent = extractUserContent(lastUserMessage)
+    const userText = typeof userContent === 'string' ? userContent : extractUserText(lastUserMessage)
 
     // Prepend dynamic context (build status, theme) to the user message
     const buildContext = getBuildStatusContext()
@@ -1574,7 +1575,22 @@ app.post('/agent/chat', async (c) => {
 
     console.log(`[project-runtime] Processing message (${fullUserText.length} chars, context prefix: ${contextPrefix.length} chars)`)
 
-    await session.send(fullUserText)
+    if (typeof userContent !== 'string') {
+      // Images present — build multi-part content with context prefix prepended as text
+      const contentBlocks: ContentBlock[] = []
+      if (contextPrefix) {
+        contentBlocks.push({ type: 'text', text: contextPrefix })
+      }
+      contentBlocks.push(...userContent)
+      await session.send({
+        type: 'user',
+        message: { role: 'user', content: contentBlocks },
+        session_id: safeSessionId(session),
+        parent_tool_use_id: null,
+      })
+    } else {
+      await session.send(fullUserText)
+    }
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {

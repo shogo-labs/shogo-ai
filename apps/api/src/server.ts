@@ -3006,15 +3006,34 @@ app.post('/api/chat', async (c) => {
     if (!lastUserMessage) {
       return c.json({ error: { message: 'No user message found', code: 'NO_USER_MESSAGE' } }, 400)
     }
-    // Convert UIMessage parts to plain text for V2 session.send()
+    // Convert UIMessage parts to content for V2 session.send()
+    // Supports both plain text and multi-part content (text + images)
     let userText: string
+    let hasImages = false
+    type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'
+    type ContentBlock = { type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: ImageMediaType; data: string } }
+    let contentBlocks: ContentBlock[] = []
+
     if (typeof lastUserMessage.content === 'string') {
       userText = lastUserMessage.content
     } else if (Array.isArray(lastUserMessage.parts)) {
-      userText = lastUserMessage.parts
-        .filter((p: any) => p.type === 'text')
-        .map((p: any) => p.text)
-        .join('\n')
+      const textParts: string[] = []
+      for (const part of lastUserMessage.parts) {
+        if (part.type === 'text' && part.text) {
+          textParts.push(part.text)
+          contentBlocks.push({ type: 'text', text: part.text })
+        } else if (part.type === 'file' && part.mediaType?.startsWith('image/') && part.url) {
+          const parsed = parseDataUrl(part.url)
+          if (parsed) {
+            hasImages = true
+            contentBlocks.push({
+              type: 'image',
+              source: { type: 'base64', media_type: parsed.mimeType as ImageMediaType, data: parsed.base64Data },
+            })
+          }
+        }
+      }
+      userText = textParts.join('\n')
     } else {
       userText = String(lastUserMessage.content ?? '')
     }
@@ -3044,7 +3063,18 @@ app.post('/api/chat', async (c) => {
     virtualToolEvents.on('virtual-tool', onVirtualTool)
 
     // Send the user message to the persistent V2 session
-    await session.send(userText)
+    if (hasImages) {
+      let sid = ''
+      try { sid = session.sessionId } catch {}
+      await session.send({
+        type: 'user',
+        message: { role: 'user', content: contentBlocks },
+        session_id: sid,
+        parent_tool_use_id: null,
+      })
+    } else {
+      await session.send(userText)
+    }
 
     // Create UIMessageStream that converts V2 SDK messages to UIMessageChunks
     console.log(`${LOG_PREFIX} 📡 V2 session streaming for: ${scopeKey}`)

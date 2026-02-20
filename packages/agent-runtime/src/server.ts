@@ -57,10 +57,13 @@ import {
   buildClaudeCodeEnv,
   createSessionManager,
   extractUserText,
+  extractUserContent,
   findLastUserMessage,
+  safeSessionId,
   streamSdkToUI,
   type ModelTier,
   type V2SessionOptions,
+  type ContentBlock,
 } from '@shogo/shared-runtime'
 import { buildAgentSystemPrompt } from './system-prompt'
 import { AgentGateway } from './gateway'
@@ -476,7 +479,8 @@ app.post('/agent/chat', async (c) => {
     return c.json({ error: 'No user message found' }, 400)
   }
 
-  const userText = extractUserText(lastUserMessage)
+  const userContent = extractUserContent(lastUserMessage)
+  const userText = typeof userContent === 'string' ? userContent : extractUserText(lastUserMessage)
 
   const agentStatus = agentGateway?.getStatus()
   let contextPrefix = ''
@@ -491,7 +495,21 @@ app.post('/agent/chat', async (c) => {
   sessions.markActive(modelName)
 
   console.log('[agent-runtime] Sending to session:', fullUserText.slice(0, 200))
-  await session.send(fullUserText)
+  if (typeof userContent !== 'string') {
+    const contentBlocks: ContentBlock[] = []
+    if (contextPrefix) {
+      contentBlocks.push({ type: 'text', text: contextPrefix })
+    }
+    contentBlocks.push(...userContent)
+    await session.send({
+      type: 'user',
+      message: { role: 'user', content: contentBlocks },
+      session_id: safeSessionId(session),
+      parent_tool_use_id: null,
+    })
+  } else {
+    await session.send(fullUserText)
+  }
 
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {

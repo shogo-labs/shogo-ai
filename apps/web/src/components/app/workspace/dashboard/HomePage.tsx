@@ -226,7 +226,7 @@ export const HomePage = observer(function HomePage({
             mode="compact"
             featureId={null}
             phase={null}
-            onCompactSubmit={(p) => onPromptSubmit?.(p, [], currentThemeId !== 'default' ? currentThemeId : undefined, projectType)}
+            onCompactSubmit={(p, imageData) => onPromptSubmit?.(p, imageData, currentThemeId !== 'default' ? currentThemeId : undefined, projectType)}
             compactValue={prompt}
             onCompactValueChange={setPrompt}
             selectedThemeId={currentThemeId}

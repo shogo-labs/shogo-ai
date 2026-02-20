@@ -23,7 +23,10 @@ export {
 
 export {
   extractUserText,
+  extractUserContent,
   findLastUserMessage,
+  safeSessionId,
+  type ContentBlock,
 } from './chat-message'
 
 export {
