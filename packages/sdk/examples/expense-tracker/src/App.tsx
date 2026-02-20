@@ -77,21 +77,50 @@ const Dashboard = observer(function Dashboard() {
     }
   }, [auth.user?.id])
 
+  const seedDefaultCategories = useCallback(async () => {
+    const defaults = [
+      { name: 'Food & Dining', icon: '🍔', color: '#EF4444', type: 'expense' },
+      { name: 'Transportation', icon: '🚗', color: '#F59E0B', type: 'expense' },
+      { name: 'Shopping', icon: '🛍️', color: '#8B5CF6', type: 'expense' },
+      { name: 'Entertainment', icon: '🎬', color: '#EC4899', type: 'expense' },
+      { name: 'Bills & Utilities', icon: '💡', color: '#6366F1', type: 'expense' },
+      { name: 'Health', icon: '🏥', color: '#14B8A6', type: 'expense' },
+      { name: 'Housing', icon: '🏠', color: '#F97316', type: 'expense' },
+      { name: 'Other', icon: '📦', color: '#6B7280', type: 'expense' },
+      { name: 'Salary', icon: '💰', color: '#10B981', type: 'income' },
+      { name: 'Freelance', icon: '💻', color: '#3B82F6', type: 'income' },
+      { name: 'Investments', icon: '📈', color: '#22C55E', type: 'income' },
+      { name: 'Other Income', icon: '💵', color: '#06B6D4', type: 'income' },
+    ]
+    const created: CategoryType[] = []
+    for (const cat of defaults) {
+      try {
+        const res = await api.category.create(cat as any)
+        if (res.ok && res.data) created.push(res.data as any)
+      } catch { /* skip duplicates */ }
+    }
+    return created
+  }, [])
+
   const fetchData = useCallback(async () => {
     if (!auth.user) return
     try {
-      // Use API client for standard CRUD, raw fetch only for custom endpoints
       const [txRes, catRes, sumRes] = await Promise.all([
         api.transaction.list({ params: { include: 'category' } }),
         api.category.list(),
         fetch(`/api/summary?userId=${auth.user.id}`),
       ])
       if (txRes.ok) { setTransactions((txRes.items || []) as any) }
-      if (catRes.ok) { setCategories((catRes.items || []) as any) }
       if (sumRes.ok) setSummary(await sumRes.json())
+
+      let cats = (catRes.ok ? catRes.items || [] : []) as CategoryType[]
+      if (cats.length === 0) {
+        cats = await seedDefaultCategories()
+      }
+      setCategories(cats)
     } catch (err) { console.error('Failed to fetch:', err) }
     finally { setLoading(false) }
-  }, [auth.user])
+  }, [auth.user, seedDefaultCategories])
 
   useEffect(() => { fetchData() }, [fetchData])
 

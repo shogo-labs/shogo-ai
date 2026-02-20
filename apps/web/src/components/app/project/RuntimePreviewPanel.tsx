@@ -95,48 +95,7 @@ function TemplateCopyOverlay() {
   return (
     <div className="absolute inset-0 z-10 flex items-center justify-center bg-gradient-to-br from-background via-background/95 to-primary/5 backdrop-blur-sm animate-in fade-in duration-300">
       <div className="flex flex-col items-center gap-8 max-w-md text-center px-8">
-        {/* Animated logo/icon area */}
-        <div className="relative">
-          {/* Outer glow pulse */}
-          <div className="absolute -inset-6 bg-primary/10 rounded-full blur-2xl animate-pulse" />
-          
-          {/* Animated ring */}
-          <div className="relative">
-            <svg className="w-24 h-24 -rotate-90" viewBox="0 0 100 100">
-              {/* Background ring */}
-              <circle
-                cx="50"
-                cy="50"
-                r="42"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="4"
-                className="text-muted/30"
-              />
-              {/* Animated progress ring */}
-              <circle
-                cx="50"
-                cy="50"
-                r="42"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="4"
-                strokeLinecap="round"
-                strokeDasharray="264"
-                strokeDashoffset="66"
-                className="text-primary animate-spin"
-                style={{ animationDuration: '3s' }}
-              />
-            </svg>
-            
-            {/* Center icon */}
-            <div className="absolute inset-0 flex items-center justify-center">
-              <span className="text-3xl animate-bounce" style={{ animationDuration: '1s' }}>
-                {steps[currentStep].icon}
-              </span>
-            </div>
-          </div>
-        </div>
+        <Loader2 className="h-10 w-10 text-primary animate-spin" />
         
         {/* Title */}
         <div className="space-y-2">
@@ -265,6 +224,9 @@ export function RuntimePreviewPanel({
   const buildEventSourceRef = useRef<EventSource | null>(null)
   // Track build state inside SSE handler via ref (avoids stale closure issues)
   const buildStateForSSERef = useRef<BuildWatchState['state'] | null>(null)
+  // Track isTemplateCopying in a ref so SSE/polling closures can read the current value
+  const isTemplateCopyingRef = useRef(isTemplateCopying)
+  isTemplateCopyingRef.current = isTemplateCopying
   // Shared ref to track last refresh time - used by both SSE handler and forceRefresh to prevent double-refreshes
   const lastForceRefreshRef = useRef<number>(0)
   const forceRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -289,8 +251,8 @@ export function RuntimePreviewPanel({
         setBuildState(data.buildWatch.state)
         setLastBuildTime(data.buildWatch.lastBuildTime)
         
-        // Handle state changes same as SSE
-        if (data.buildWatch.state === 'building' && prevState !== 'building') {
+        // Handle state changes same as SSE (skip rebuild overlay during template copy)
+        if (data.buildWatch.state === 'building' && prevState !== 'building' && !isTemplateCopyingRef.current) {
           setIsRebuilding(true)
           setStatusMessage('Rebuilding project...')
         } else if (data.buildWatch.state === 'success' && prevState === 'building') {
@@ -510,8 +472,8 @@ export function RuntimePreviewPanel({
           setBuildState(data.state)
           setLastBuildTime(data.lastBuildTime)
           
-          // Show rebuild overlay when build starts
-          if (data.state === 'building' && prevState !== 'building') {
+          // Show rebuild overlay when build starts (skip during template copy — the overlay already provides feedback)
+          if (data.state === 'building' && prevState !== 'building' && !isTemplateCopyingRef.current) {
             console.log('[RuntimePreviewPanel] 📥 SSE_BUILD_STARTED - Vite is rebuilding')
             setIsRebuilding(true)
             setStatusMessage('Rebuilding project...')
@@ -861,9 +823,10 @@ export function RuntimePreviewPanel({
     }
   }, [forceRefresh, sandboxUrl])
 
-  // When template copy completes (isTemplateCopying transitions false → true → false),
-  // trigger an immediate iframe refresh. The template replaced all source files,
-  // so HMR won't help - we need a full reload.
+  // When template copy completes (isTemplateCopying transitions true → false),
+  // refresh the iframe. The server-side rebuild (triggered by /preview/restart)
+  // may have already completed via SSE before the tool call finishes streaming,
+  // so check SSE build state to avoid showing a redundant "Rebuilding" overlay.
   const prevIsTemplateCopyingRef = useRef(isTemplateCopying)
   useEffect(() => {
     const wasTemplateCopying = prevIsTemplateCopyingRef.current
@@ -871,25 +834,38 @@ export function RuntimePreviewPanel({
     
     // Detect transition: was copying → now done
     if (wasTemplateCopying && !isTemplateCopying && iframeRef.current && sandboxUrl) {
-      console.log('[RuntimePreviewPanel] 🎯 Template copy completed - refreshing iframe after build delay')
-      setIsRebuilding(true)
-      setStatusMessage('Building from template...')
-      
-      // Template copy triggers a full rebuild. Wait a bit for it to complete.
-      // SSE will cancel this if it fires a success event first.
       if (forceRefreshTimeoutRef.current) {
         clearTimeout(forceRefreshTimeoutRef.current)
       }
-      forceRefreshTimeoutRef.current = setTimeout(() => {
-        if (iframeRef.current && sandboxUrl) {
-          console.log('[RuntimePreviewPanel] 🔄 Template copy fallback - refreshing iframe')
-          lastForceRefreshRef.current = Date.now()
-          setIframeLoaded(false)
-          const cacheBuster = Date.now()
-          const separator = sandboxUrl.includes('?') ? '&' : '?'
-          iframeRef.current.src = `${sandboxUrl}${separator}_t=${cacheBuster}`
-        }
-      }, 3000) // 3 second delay for template builds
+
+      // Clear any stale rebuild state that SSE/polling may have set while the overlay was active
+      setIsRebuilding(false)
+
+      if (buildStateForSSERef.current === 'success') {
+        // SSE already reported a successful build while the overlay was showing.
+        // Silently refresh the iframe without showing a second loading screen.
+        console.log('[RuntimePreviewPanel] 🎯 Template copy completed - build already succeeded, silent refresh')
+        lastForceRefreshRef.current = Date.now()
+        setIframeLoaded(false)
+        const cacheBuster = Date.now()
+        const separator = sandboxUrl.includes('?') ? '&' : '?'
+        iframeRef.current.src = `${sandboxUrl}${separator}_t=${cacheBuster}`
+      } else {
+        // Build hasn't completed yet — let SSE handle the rebuild overlay naturally.
+        // Don't force isRebuilding here; SSE will set it when the build actually starts.
+        console.log('[RuntimePreviewPanel] 🎯 Template copy completed - waiting for build via SSE')
+        
+        forceRefreshTimeoutRef.current = setTimeout(() => {
+          if (iframeRef.current && sandboxUrl) {
+            console.log('[RuntimePreviewPanel] 🔄 Template copy fallback - refreshing iframe')
+            lastForceRefreshRef.current = Date.now()
+            setIframeLoaded(false)
+            const cacheBuster = Date.now()
+            const separator = sandboxUrl.includes('?') ? '&' : '?'
+            iframeRef.current.src = `${sandboxUrl}${separator}_t=${cacheBuster}`
+          }
+        }, 3000)
+      }
     }
   }, [isTemplateCopying, sandboxUrl])
 
