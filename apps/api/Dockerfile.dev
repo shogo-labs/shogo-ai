@@ -88,4 +88,4 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=5 \
 # Run API server with watch mode (overridden in docker-compose.dev.yml)
 WORKDIR /app/apps/api
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["bun", "--watch", "src/server.ts"]
+CMD ["bun", "--watch", "src/entry.ts"]
