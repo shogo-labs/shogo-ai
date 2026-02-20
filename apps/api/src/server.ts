@@ -3072,9 +3072,13 @@ app.post('/api/chat', async (c) => {
         let resultUsage: any = null
         let resultSessionId: string | undefined
 
-        // server-side-persistence: Accumulate content for DB persistence
+        // server-side-persistence: Accumulate content for DB persistence.
+        // orderedParts preserves the natural interleaving of text and tool calls
+        // so that on page refresh the parts array faithfully reproduces the original order.
         let accumulatedText = ''
         const toolCallDetails: { toolCallId: string; toolName: string; input: any }[] = []
+        const orderedParts: any[] = []
+        let currentTextPart: { type: 'text'; text: string } | null = null
         // Track whether we're receiving incremental stream_events.
         // When streaming, the 'assistant' message is redundant (it's the complete
         // version of what was already streamed incrementally).
@@ -3147,6 +3151,11 @@ app.post('/api/chat', async (c) => {
                     writer.write({ type: 'text-delta', id: currentTextId, delta: delta.text })
                     // server-side-persistence: accumulate text for DB persistence
                     accumulatedText += delta.text
+                    if (!currentTextPart) {
+                      currentTextPart = { type: 'text', text: '' }
+                      orderedParts.push(currentTextPart)
+                    }
+                    currentTextPart.text += delta.text
                   } else if (delta?.type === 'input_json_delta' && delta.partial_json) {
                     currentToolInput += delta.partial_json
                     writer.write({
@@ -3174,10 +3183,20 @@ app.post('/api/chat', async (c) => {
                       dynamic: true,
                     })
                     // server-side-persistence: capture tool call details for message parts
-                    toolCallDetails.push({
+                    const toolDetail = {
                       toolCallId: currentToolId,
                       toolName: currentToolName || 'unknown',
                       input: parsedInput,
+                    }
+                    toolCallDetails.push(toolDetail)
+                    currentTextPart = null
+                    orderedParts.push({
+                      type: 'dynamic-tool',
+                      toolCallId: toolDetail.toolCallId,
+                      toolName: toolDetail.toolName,
+                      input: toolDetail.input,
+                      output: { success: true },
+                      state: 'output-available',
                     })
                     // Track for result emission when next turn starts
                     pendingToolResults.set(currentToolId, currentToolName || 'unknown')
@@ -3254,10 +3273,20 @@ app.post('/api/chat', async (c) => {
                     dynamic: true,
                   })
                   // server-side-persistence: capture non-streamed tool calls
-                  toolCallDetails.push({
+                  const nonStreamedTool = {
                     toolCallId: block.id,
                     toolName: block.name,
                     input: block.input || {},
+                  }
+                  toolCallDetails.push(nonStreamedTool)
+                  currentTextPart = null
+                  orderedParts.push({
+                    type: 'dynamic-tool',
+                    toolCallId: nonStreamedTool.toolCallId,
+                    toolName: nonStreamedTool.toolName,
+                    input: nonStreamedTool.input,
+                    output: { success: true },
+                    state: 'output-available',
                   })
                   pendingToolResults.set(block.id, block.name)
                 }
@@ -3273,6 +3302,8 @@ app.post('/api/chat', async (c) => {
                       writer.write({ type: 'text-end', id: textId })
                       // server-side-persistence: accumulate text for non-streaming path
                       accumulatedText += block.text
+                      currentTextPart = { type: 'text', text: block.text }
+                      orderedParts.push(currentTextPart)
                     } else if (block.type === 'tool_use') {
                       writer.write({
                         type: 'tool-input-start',
@@ -3295,10 +3326,20 @@ app.post('/api/chat', async (c) => {
                         dynamic: true,
                       })
                       // server-side-persistence: capture tool call for non-streaming path
-                      toolCallDetails.push({
+                      const fallbackTool = {
                         toolCallId: block.id,
                         toolName: block.name,
                         input: block.input || {},
+                      }
+                      toolCallDetails.push(fallbackTool)
+                      currentTextPart = null
+                      orderedParts.push({
+                        type: 'dynamic-tool',
+                        toolCallId: fallbackTool.toolCallId,
+                        toolName: fallbackTool.toolName,
+                        input: fallbackTool.input,
+                        output: { success: true },
+                        state: 'output-available',
                       })
                       pendingToolResults.set(block.id, block.name)
                     }
@@ -3378,20 +3419,12 @@ app.post('/api/chat', async (c) => {
               try {
                 const session = await prisma.chatSession.findUnique({ where: { id: chatSessionId } })
                 if (session) {
-                  const parts: any[] = []
-                  if (accumulatedText) {
-                    parts.push({ type: 'text', text: accumulatedText })
-                  }
-                  for (const tc of toolCallDetails) {
-                    parts.push({
-                      type: 'dynamic-tool',
-                      toolCallId: tc.toolCallId,
-                      toolName: tc.toolName,
-                      input: tc.input,
-                      output: { success: true },
-                      state: 'output-available',
-                    })
-                  }
+                  // Use orderedParts which preserves the natural interleaving of
+                  // text and tool calls as they appeared in the stream.
+                  // Filter out empty text parts that can accumulate from keepalive pings.
+                  const parts = orderedParts.filter(
+                    (p: any) => !(p.type === 'text' && (!p.text || !p.text.trim()))
+                  )
 
                   await prisma.chatMessage.create({
                     data: {

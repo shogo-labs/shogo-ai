@@ -812,6 +812,20 @@ function buildProjectSessionOptions(modelName: ModelTier): V2SessionOptions {
     settingSources: ['project', 'local'],
     env: claudeCodeEnv,
     includePartialMessages: true,
+    mcpServers: {
+      shogo: {
+        command: 'bun',
+        args: ['run', MCP_SERVER_PATH],
+        env: {
+          SCHEMAS_PATH,
+          PROJECT_ID: currentProjectId!,
+          PROJECT_DIR,
+          RUNTIME_PORT: String(PORT),
+          NODE_ENV: process.env.NODE_ENV || 'production',
+          DATABASE_URL: process.env.DATABASE_URL || '',
+        },
+      },
+    },
     allowedTools: [
       'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
       'Bash',
@@ -1529,6 +1543,8 @@ app.post('/agent/chat', async (c) => {
 
     const session = sessions.getOrCreate(modelName)
     sessions.markActive(modelName)
+
+    await sessions.ensureMcpServers(modelName)
 
     const lastUserMessage = findLastUserMessage(messages)
     if (!lastUserMessage) {

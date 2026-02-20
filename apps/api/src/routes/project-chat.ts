@@ -60,9 +60,13 @@ async function trackUsageFromStream(
   const toolCalls: { toolName: string; args: string }[] = []
   let lastUsage: { promptTokens?: number; completionTokens?: number; totalTokens?: number } | null = null
 
-  // server-side-persistence: Accumulate assistant message content for DB persistence
+  // server-side-persistence: Accumulate ordered parts for DB persistence.
+  // We maintain the natural interleaving of text and tool calls so that
+  // on page refresh the parts array faithfully reproduces the original order.
   let accumulatedText = ''
   const toolCallDetails: { toolCallId: string; toolName: string; input: any }[] = []
+  const orderedParts: any[] = []
+  let currentTextPart: { type: 'text'; text: string } | null = null
 
   try {
     while (true) {
@@ -117,6 +121,11 @@ async function trackUsageFromStream(
         // server-side-persistence: Accumulate text content from stream
         if (type === 'text-delta' && data.delta) {
           accumulatedText += data.delta
+          if (!currentTextPart) {
+            currentTextPart = { type: 'text', text: '' }
+            orderedParts.push(currentTextPart)
+          }
+          currentTextPart.text += data.delta
         }
 
         // Track tool calls (streamSdkToUI emits tool-input-start for each tool invocation)
@@ -130,10 +139,20 @@ async function trackUsageFromStream(
 
         // server-side-persistence: Capture finalized tool call details for message parts
         if (type === 'tool-input-available') {
-          toolCallDetails.push({
+          const toolDetail = {
             toolCallId: data.toolCallId || `tool-${Date.now()}`,
             toolName: data.toolName || 'unknown',
             input: data.input || {},
+          }
+          toolCallDetails.push(toolDetail)
+          currentTextPart = null
+          orderedParts.push({
+            type: 'dynamic-tool',
+            toolCallId: toolDetail.toolCallId,
+            toolName: toolDetail.toolName,
+            input: toolDetail.input,
+            output: { success: true },
+            state: 'output-available',
           })
         }
 
@@ -227,21 +246,12 @@ async function trackUsageFromStream(
     try {
       const session = await prisma.chatSession.findUnique({ where: { id: chatSessionId } })
       if (session) {
-        // Build parts array matching the frontend's expected format
-        const parts: any[] = []
-        if (accumulatedText) {
-          parts.push({ type: 'text', text: accumulatedText })
-        }
-        for (const tc of toolCallDetails) {
-          parts.push({
-            type: 'dynamic-tool',
-            toolCallId: tc.toolCallId,
-            toolName: tc.toolName,
-            input: tc.input,
-            output: { success: true },
-            state: 'output-available',
-          })
-        }
+        // Use orderedParts which preserves the natural interleaving of
+        // text and tool calls as they appeared in the stream.
+        // Filter out empty text parts that can accumulate from keepalive pings.
+        const parts = orderedParts.filter(
+          (p) => !(p.type === 'text' && (!p.text || !p.text.trim()))
+        )
 
         await prisma.chatMessage.create({
           data: {

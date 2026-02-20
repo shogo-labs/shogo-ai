@@ -36,6 +36,8 @@ export interface SessionManagerOptions {
 
 export interface SessionManager {
   getOrCreate(model: ModelTier): SDKSession
+  /** Ensure MCP servers are configured on the session (call before first send). */
+  ensureMcpServers(model: ModelTier): Promise<void>
   interrupt(model: string): Promise<void>
   prewarm(): Promise<void>
   isActive(model: string): boolean
@@ -56,6 +58,7 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
   const activeSessions = new Set<string>()
   const activeQueries = new Map<string, AsyncGenerator<any, void>>()
   const sessionLocks = new Map<string, Promise<void>>()
+  const mcpConfigured = new Set<string>()
   let prewarmAborted = false
 
   /**
@@ -78,6 +81,7 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
       console.log(`[${logPrefix}] Session for ${modelName} was closed, creating new one`)
       sessionCache.delete(modelName)
       activeSessions.delete(modelName)
+      mcpConfigured.delete(modelName)
     }
 
     const opts = buildSessionOptions(modelName)
@@ -85,6 +89,30 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
     sessionCache.set(modelName, session)
     console.log(`[${logPrefix}] Created V2 session for model: ${modelName}`)
     return session
+  }
+
+  async function ensureMcpServers(modelName: ModelTier): Promise<void> {
+    if (mcpConfigured.has(modelName)) return
+    const opts = buildSessionOptions(modelName)
+    const mcpServers = opts.mcpServers
+    if (!mcpServers || Object.keys(mcpServers).length === 0) return
+
+    const session = getOrCreate(modelName)
+    // The V2 SDK has a bug where SDKSession doesn't expose setMcpServers,
+    // but the internal query object (W4) does. Access it directly.
+    const query = (session as any).query
+    if (!query || typeof query.setMcpServers !== 'function') {
+      console.warn(`[${logPrefix}] Cannot configure MCP servers — query.setMcpServers not available`)
+      return
+    }
+    try {
+      console.log(`[${logPrefix}] Configuring MCP servers for ${modelName}: ${Object.keys(mcpServers).join(', ')}`)
+      const result = await query.setMcpServers(mcpServers)
+      mcpConfigured.add(modelName)
+      console.log(`[${logPrefix}] MCP servers configured for ${modelName}:`, JSON.stringify(result))
+    } catch (err: any) {
+      console.error(`[${logPrefix}] Failed to configure MCP servers for ${modelName}:`, err.message)
+    }
   }
 
   /**
@@ -168,6 +196,7 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
 
   return {
     getOrCreate,
+    ensureMcpServers,
     interrupt,
     prewarm,
     isActive: (model: string) => activeSessions.has(model),
