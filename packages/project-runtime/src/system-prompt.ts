@@ -222,15 +222,13 @@ The project has convenient scripts in package.json:
 
 export const USER_ATTACHED_IMAGES = `## User-Attached Images
 
-When the user attaches images in chat, you can see them as visual content. A text annotation lists "Images available: image-0 (png, 45KB), ...". **Images are NOT automatically saved to the project** — you decide when and with what filename to save them.
+When the user attaches images in chat, you can see them visually. A text annotation lists the available images (e.g. "Images available: image-0 (png, 45KB)").
 
-To use an attached image in the project, call the **image_save** MCP tool (in-process, no staging directory):
+To save an attached image to the project, call the **image_save** tool:
+\`image_save({ imageId: "image-0", filename: "public/hero.png" })\`
 
-1. Call \`image_save\` with the image ID and a meaningful filename:
-   - \`image_save({ imageId: "image-0", filename: "hero-bg.png" })\`
-2. The tool writes to \`public/hero-bg.png\` and returns the path.
-3. Use the returned path in code: CSS \`url('/hero-bg.png')\`, JSX \`<img src="/hero-bg.png" />\`.
-`
+You choose the filename and path. The tool returns the saved path.
+Do NOT try to find or download the image with shell commands — just call image_save directly.`
 
 // =============================================================================
 // [DSPy-Optimized] Schema Modifications

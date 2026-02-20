@@ -533,10 +533,10 @@ const imageToolsServer = createSdkMcpServer({
   tools: [
     sdkTool(
       'image_save',
-      `Save a user-attached image to the project's public/ directory with a meaningful filename so it can be referenced in code (e.g. in <img src="/filename.png" /> or url('/filename.png') in CSS). Call this when the user has attached images and you want to use one in the project.`,
+      `Save a user-attached image to the project as a file. Returns the saved file path. Call this whenever the user attaches an image and you need to use it in the project.`,
       {
-        imageId: z.string().describe('The image identifier (e.g. "image-0", "image-1") from the "Images available" annotation in the user message'),
-        filename: z.string().optional().describe('Desired filename (e.g. "hero-bg.png", "logo.svg"). If omitted, defaults to imageId with original extension.'),
+        imageId: z.string().describe('The image identifier (e.g. "image-0", "image-1") from the "Images available" annotation'),
+        filename: z.string().describe('Relative path to save the image (e.g. "public/hero.png", "src/assets/logo.jpg"). Directories are created automatically.'),
       },
       async (args) => {
         const image = pendingImages.get(args.imageId)
@@ -548,20 +548,20 @@ const imageToolsServer = createSdkMcpServer({
           return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: err }) }] }
         }
         const ext = mimeToExt(image.mimeType)
-        let finalFilename = args.filename
-          ? (/\.\w+$/.test(args.filename) ? args.filename : `${args.filename}${ext}`)
-          : `${args.imageId}${ext}`
-        finalFilename = finalFilename.replace(/[^a-zA-Z0-9._-]/g, '-')
-        const publicDir = join(PROJECT_DIR, 'public')
-        if (!existsSync(publicDir)) {
-          mkdirSync(publicDir, { recursive: true })
+        let filePath = args.filename
+        if (!/\.\w+$/.test(filePath)) {
+          filePath = `${filePath}${ext}`
         }
-        const destPath = join(publicDir, finalFilename)
+        filePath = filePath.replace(/[^a-zA-Z0-9._/\\-]/g, '-')
+        const destPath = resolve(PROJECT_DIR, filePath)
+        const destDir = dirname(destPath)
         try {
+          if (!existsSync(destDir)) {
+            mkdirSync(destDir, { recursive: true })
+          }
           writeFileSync(destPath, Buffer.from(image.base64Data, 'base64'))
-          const servePath = `/${finalFilename}`
           const sizeBytes = statSync(destPath).size
-          console.log(`[project-runtime] image_save: ${args.imageId} -> public/${finalFilename} (${sizeBytes} bytes)`)
+          console.log(`[project-runtime] image_save: ${args.imageId} -> ${filePath} (${sizeBytes} bytes)`)
           if (s3Sync) {
             s3Sync.triggerSync()
           }
@@ -570,10 +570,8 @@ const imageToolsServer = createSdkMcpServer({
               type: 'text',
               text: JSON.stringify({
                 ok: true,
-                path: `public/${finalFilename}`,
-                servePath,
+                path: filePath,
                 fileSize: sizeBytes,
-                message: `Image saved to public/${finalFilename} (${sizeBytes} bytes). Use "${servePath}" in CSS (e.g. background-image: url("${servePath}")) or in <img src="${servePath}" />. Refresh the preview to see it.`,
               }),
             }]
           }
@@ -873,7 +871,6 @@ function writeAgentConfigFiles(): void {
           DATABASE_URL: process.env.DATABASE_URL || '',
         },
       },
-      'image-tools': imageToolsServer,
     },
   }
   writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2), 'utf-8')
@@ -1680,7 +1677,7 @@ app.post('/agent/chat', async (c) => {
         const sizeKB = Math.round(Buffer.byteLength(img.base64Data, 'base64') / 1024)
         return `${id} (${ext}, ${sizeKB}KB)`
       })
-      imageAnnotation = `\n\n[Images available: ${imageInfos.join(', ')}. Use the image_save tool to save to public/ with a meaningful filename.]`
+      imageAnnotation = `\n\n[Images available: ${imageInfos.join(', ')}. Call image_save to save any of these images to the project.]`
     }
 
     const fullUserText = (contextPrefix ? `${contextPrefix}${userText}` : userText) + imageAnnotation
