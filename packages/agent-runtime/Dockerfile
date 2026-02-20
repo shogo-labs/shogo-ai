@@ -98,6 +98,12 @@ COPY --chown=appuser:appgroup --from=builder /app/package.json ./
 COPY --chown=appuser:appgroup --from=builder /app/bun.lock ./
 COPY --chown=appuser:appgroup --from=builder /app/tsconfig.base.json ./
 
+# Re-create workspace symlinks (Docker COPY doesn't preserve cross-tree symlinks)
+RUN mkdir -p node_modules/@shogo && \
+    ln -sf ../../../packages/shared-runtime node_modules/@shogo/shared-runtime && \
+    ln -sf ../../../packages/agent-runtime node_modules/@shogo/agent-runtime && \
+    chown -h appuser:appgroup node_modules/@shogo node_modules/@shogo/*
+
 RUN mkdir -p /app/agent /app/.schemas /app/.claude && \
     chown appuser:appgroup /app/agent /app/.schemas /app/.claude
 

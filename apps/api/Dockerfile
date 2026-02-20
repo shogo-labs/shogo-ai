@@ -105,6 +105,16 @@ COPY --chown=appuser:appgroup --from=builder /app/package.json ./
 COPY --chown=appuser:appgroup --from=builder /app/bun.lock ./
 COPY --chown=appuser:appgroup --from=builder /app/tsconfig.base.json ./
 
+# Re-create workspace symlinks (Docker COPY doesn't preserve cross-tree symlinks)
+RUN mkdir -p node_modules/@shogo && \
+    ln -sf ../../../packages/shared-runtime node_modules/@shogo/shared-runtime && \
+    ln -sf ../../../packages/state-api node_modules/@shogo/state-api && \
+    ln -sf ../../../packages/mcp node_modules/@shogo/mcp && \
+    ln -sf ../../../packages/sdk node_modules/@shogo/sdk && \
+    ln -sf ../../../packages/project-runtime node_modules/@shogo/project-runtime && \
+    ln -sf ../../../packages/agent-runtime node_modules/@shogo/agent-runtime && \
+    chown -h appuser:appgroup node_modules/@shogo node_modules/@shogo/*
+
 # Copy prisma schema, config, and migrations for runtime migrations
 COPY --chown=appuser:appgroup --from=builder /app/prisma ./prisma
 COPY --chown=appuser:appgroup --from=builder /app/prisma.config.ts ./prisma.config.ts
