@@ -11,6 +11,7 @@
 
 import { useState, useMemo, type FormEvent } from "react"
 import { observer } from "mobx-react-lite"
+import { CheckCircle2, XCircle, AlertCircle, Eye, EyeOff } from "lucide-react"
 import { useDomains } from "@/contexts/DomainProvider"
 import { useSession } from "@/contexts/SessionProvider"
 import { clearUserLocalStorage } from "@/lib/clear-user-storage"
@@ -19,7 +20,6 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { cn } from "@/lib/utils"
-import { CheckCircle2, XCircle, AlertCircle } from "lucide-react"
 
 /**
  * Email validation with proper domain validation
@@ -130,6 +130,7 @@ export const SignUpForm = observer(function SignUpForm() {
   const [password, setPassword] = useState("")
   const [emailTouched, setEmailTouched] = useState(false)
   const [nameTouched, setNameTouched] = useState(false)
+  const [showPassword, setShowPassword] = useState(false)
 
   const isLoading = auth.authStatus === "loading"
 
@@ -236,14 +237,30 @@ export const SignUpForm = observer(function SignUpForm() {
 
       <div className="space-y-2">
         <Label htmlFor="signup-password">Password</Label>
-        <Input
-          id="signup-password"
-          type="password"
-          placeholder="Enter your password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          disabled={isLoading}
-        />
+        <div className="relative">
+          <Input
+            id="signup-password"
+            type={showPassword ? "text" : "password"}
+            placeholder="Enter your password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            disabled={isLoading}
+            className="pr-10"
+          />
+          <button
+            type="button"
+            onClick={() => setShowPassword(!showPassword)}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+            disabled={isLoading}
+            aria-label={showPassword ? "Hide password" : "Show password"}
+          >
+            {showPassword ? (
+              <EyeOff className="h-4 w-4" />
+            ) : (
+              <Eye className="h-4 w-4" />
+            )}
+          </button>
+        </div>
         {/* Password strength indicator */}
         {password.length > 0 && (
           <div className="space-y-1.5">
