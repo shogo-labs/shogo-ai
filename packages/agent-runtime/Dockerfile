@@ -44,12 +44,12 @@ COPY packages/agent-runtime ./packages/agent-runtime
 RUN rm -rf packages/*/node_modules apps/*/node_modules
 
 # =============================================================================
-# Stage 2: production-deps — lean node_modules without devDependencies
+# Stage 2: deps — full node_modules with workspace links
 # =============================================================================
-# Runs IN PARALLEL with builder. Excludes turbo, typescript, playwright,
-# prisma CLI, @types/*, and other dev-only packages.
+# Runs IN PARALLEL with builder. Full install ensures bun workspace resolution
+# works correctly for @shogo/* packages in the production image.
 # =============================================================================
-FROM oven/bun:1.3-alpine AS production-deps
+FROM oven/bun:1.3-alpine AS deps
 
 WORKDIR /app
 
@@ -69,7 +69,7 @@ COPY apps/desktop/package.json ./apps/desktop/
 COPY scripts ./scripts
 
 RUN --mount=type=cache,target=/root/.bun/install/cache \
-    bun install --production
+    bun install
 
 # =============================================================================
 # Stage 3: production image
@@ -90,8 +90,8 @@ ENV SHELL=/bin/bash
 RUN addgroup -g 1001 -S appgroup && \
     adduser -u 1001 -S appuser -G appgroup
 
-# Copy production-only node_modules + source (no per-package node_modules bloat)
-COPY --chown=appuser:appgroup --from=production-deps /app/node_modules ./node_modules
+# Copy node_modules + source (no per-package node_modules bloat)
+COPY --chown=appuser:appgroup --from=deps /app/node_modules ./node_modules
 COPY --chown=appuser:appgroup --from=builder /app/packages/shared-runtime ./packages/shared-runtime
 COPY --chown=appuser:appgroup --from=builder /app/packages/agent-runtime ./packages/agent-runtime
 COPY --chown=appuser:appgroup --from=builder /app/package.json ./
