@@ -11,12 +11,15 @@
  */
 
 import { Hono } from "hono"
+import { trace, SpanStatusCode } from "@opentelemetry/api"
 import { getProjectPodUrl } from "../lib/knative-project-manager"
 import { prisma } from "../lib/prisma"
 import type { IRuntimeManager } from "../lib/runtime"
 import * as billingService from "../services/billing.service"
 import { setProjectUser } from "../lib/project-user-context"
 import { openSession, closeSession } from "../lib/proxy-billing-session"
+
+const chatTracer = trace.getTracer("shogo-api-chat")
 
 // Environment detection
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
@@ -364,29 +367,49 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
     const projectId = c.req.param("projectId")
     console.log(`[ProjectChat] Received chat request for project: ${projectId}`)
 
+    return chatTracer.startActiveSpan("chat.proxy", {
+      attributes: { "project.id": projectId },
+    }, async (chatSpan) => {
     try {
-      // Validate project exists
       const project = await validateProject(projectId)
       if (!project) {
+        chatSpan.setStatus({ code: SpanStatusCode.ERROR, message: "project_not_found" })
+        chatSpan.end()
         return c.json(
           { error: { code: "project_not_found", message: "Project not found" } },
           404
         )
       }
 
-      // Pre-check credits before proxying to runtime
       if (!await billingService.hasCredits(project.workspaceId)) {
+        chatSpan.setAttribute("error.type", "insufficient_credits")
+        chatSpan.end()
         return c.json(
           { error: { code: "insufficient_credits", message: "You've run out of credits. Please upgrade your plan to continue." } },
           402
         )
       }
 
-      // Get project pod URL
-      // This will create the pod if needed and wait for it to be ready
       let podUrl: string
       try {
-        podUrl = await getProjectUrl(projectId)
+        const podStartTime = Date.now()
+        podUrl = await chatTracer.startActiveSpan("chat.get_pod_url", {
+          attributes: { "project.id": projectId },
+        }, async (podSpan) => {
+          try {
+            const url = await getProjectUrl(projectId)
+            podSpan.setAttribute("pod.url", url)
+            podSpan.setAttribute("pod.resolve_ms", Date.now() - podStartTime)
+            podSpan.setStatus({ code: SpanStatusCode.OK })
+            return url
+          } catch (err: any) {
+            podSpan.setStatus({ code: SpanStatusCode.ERROR, message: err.message })
+            podSpan.recordException(err)
+            throw err
+          } finally {
+            podSpan.end()
+          }
+        })
       } catch (err: any) {
         console.error(`[ProjectChat] Failed to get project URL:`, err)
         // Return a structured error that the frontend can handle gracefully
@@ -450,19 +473,22 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       const sessionHeader = c.req.header("X-Session-Id")
       if (sessionHeader) headers["X-Session-Id"] = sessionHeader
 
-      // Retry configuration for transient errors during cold starts
-      // Uses constant 500ms delay with max 50 retries (up to 25 seconds total)
-      const MAX_RETRIES = 50
-      const RETRY_DELAY_MS = 500
+      // Retry configuration for transient errors during cold starts.
+      // Uses exponential backoff: 500ms, 1s, 2s, 4s, 4s... (capped at 4s)
+      // Max 30 retries (~45 seconds total) with explicit 120s fetch timeout
+      const MAX_RETRIES = 30
+      const BASE_DELAY_MS = 500
+      const MAX_DELAY_MS = 4000
+      const FETCH_TIMEOUT_MS = 120_000
       let lastError: Error | null = null
 
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
-          // Make request to project pod
           const response = await fetch(`${podUrl}/agent/chat`, {
             method: "POST",
             headers,
             body,
+            signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
           })
 
           // Check for errors
@@ -480,8 +506,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
 
             // Retry on 5xx errors (server temporarily unavailable)
             if (attempt < MAX_RETRIES) {
-              console.log(`[ProjectChat] Retrying in ${RETRY_DELAY_MS}ms (attempt ${attempt}/${MAX_RETRIES})...`)
-              await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS))
+              const delay = Math.min(BASE_DELAY_MS * Math.pow(2, attempt - 1), MAX_DELAY_MS)
+              console.log(`[ProjectChat] Retrying in ${delay}ms (attempt ${attempt}/${MAX_RETRIES})...`)
+              await new Promise(resolve => setTimeout(resolve, delay))
               continue
             }
 
@@ -514,7 +541,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             console.error("[ProjectChat] Usage tracking error:", err)
           )
 
-          // Return the client stream
+          chatSpan.setAttribute("chat.status", response.status)
+          chatSpan.setStatus({ code: SpanStatusCode.OK })
+          chatSpan.end()
+
           return new Response(clientStream, {
             status: response.status,
             headers: responseHeaders,
@@ -533,9 +563,12 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             fetchError.message?.includes('connection refused') ||
             fetchError.message?.includes('ECONNREFUSED')
 
-          if (isTransientError && attempt < MAX_RETRIES) {
-            console.log(`[ProjectChat] Connection error, retrying in ${RETRY_DELAY_MS}ms (attempt ${attempt}/${MAX_RETRIES}):`, fetchError.message || fetchError.code)
-            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS))
+          const isAbortError = fetchError.name === 'TimeoutError' || fetchError.name === 'AbortError'
+
+          if ((isTransientError || isAbortError) && attempt < MAX_RETRIES) {
+            const delay = Math.min(BASE_DELAY_MS * Math.pow(2, attempt - 1), MAX_DELAY_MS)
+            console.log(`[ProjectChat] Connection error, retrying in ${delay}ms (attempt ${attempt}/${MAX_RETRIES}):`, fetchError.message || fetchError.code)
+            await new Promise(resolve => setTimeout(resolve, delay))
             continue
           }
 
@@ -546,17 +579,23 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
 
       // Should not reach here, but handle just in case
       console.error("[ProjectChat] Max retries exceeded:", lastError)
+      chatSpan.setStatus({ code: SpanStatusCode.ERROR, message: "max_retries_exceeded" })
+      chatSpan.end()
       return c.json(
         { error: { code: "proxy_error", message: lastError?.message || "Max retries exceeded" } },
         503
       )
     } catch (error: any) {
       console.error("[ProjectChat] Proxy error:", error)
+      chatSpan.setStatus({ code: SpanStatusCode.ERROR, message: error.message })
+      chatSpan.recordException(error)
+      chatSpan.end()
       return c.json(
         { error: { code: "proxy_error", message: error.message || "Proxy failed" } },
         500
       )
     }
+    }) // end chatTracer.startActiveSpan
   })
 
   /**

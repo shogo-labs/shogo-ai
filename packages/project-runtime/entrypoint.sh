@@ -355,6 +355,31 @@ if [ "$RESTORED_FROM_S3" = true ]; then
   bg_log "⚡ Dependencies already present from S3 archive (skipped install)"
 elif [ -d "node_modules" ] && [ -f "bun.lock" ]; then
   bg_log "Dependencies already installed (cached node_modules + bun.lock found)"
+elif [ -d "/app/packages/sdk/templates" ]; then
+  # Docker image has pre-built template archives with node_modules baked in.
+  # Extract the default template's node_modules instead of running bun install
+  # (~0.5s extract vs ~10-30s install).
+  DEFAULT_ARCHIVE="/app/packages/sdk/templates/todo-app.tar.gz"
+  if [ -f "$DEFAULT_ARCHIVE" ]; then
+    bg_log "⚡ Extracting pre-built node_modules from Docker image template archive..."
+    # Extract only node_modules and bun.lock from the archive
+    tar xzf "$DEFAULT_ARCHIVE" --strip-components=1 -C "$PROJECT_DIR" \
+      todo-app/node_modules todo-app/bun.lock 2>/dev/null || true
+    if [ -d "node_modules/react" ] && [ -d "node_modules/vite" ]; then
+      STEP_END=$(date +%s%3N)
+      bg_log "⚡ Pre-built deps extracted (took $((STEP_END - STEP_START))ms — skipped bun install)"
+    else
+      bg_log "Template extraction incomplete, falling back to bun install..."
+      bun install 2>&1 || { echo "failed:install" > "$BUILD_STATUS_FILE"; exit 1; }
+      STEP_END=$(date +%s%3N)
+      bg_log "Dependencies installed via fallback (took $((STEP_END - STEP_START))ms)"
+    fi
+  else
+    bg_log "No template archive found, running bun install..."
+    bun install 2>&1 || { echo "failed:install" > "$BUILD_STATUS_FILE"; exit 1; }
+    STEP_END=$(date +%s%3N)
+    bg_log "Dependencies installed (took $((STEP_END - STEP_START))ms)"
+  fi
 else
   bg_log "Installing dependencies with bun install..."
   if bun install 2>&1; then

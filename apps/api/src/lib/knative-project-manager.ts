@@ -25,8 +25,11 @@
 
 import * as k8s from "@kubernetes/client-node"
 import * as fs from "fs"
+import { trace, SpanStatusCode } from "@opentelemetry/api"
 import { generateProxyToken } from './ai-proxy-token'
 import * as databaseService from '../services/database.service'
+
+const knativeTracer = trace.getTracer('shogo-knative-manager')
 
 // =============================================================================
 // Configuration
@@ -914,24 +917,22 @@ export class KnativeProjectManager {
             path: "/ready",
             port: 8080,
           },
-          initialDelaySeconds: 1,
-          periodSeconds: 2,
-          timeoutSeconds: 2,
+          initialDelaySeconds: 3,
+          periodSeconds: 3,
+          timeoutSeconds: 3,
           successThreshold: 1,
-          failureThreshold: 90, // Allow up to 180s for S3 restore + build on large projects
+          failureThreshold: 60, // Allow up to 180s for S3 restore + build on large projects
         },
-        // Liveness probe - checks if the pod is still alive
-        // /health endpoint always passes quickly with fast start mode
         livenessProbe: {
           httpGet: {
             path: "/health",
             port: 8080,
           },
-          initialDelaySeconds: 5,
-          periodSeconds: 10,
+          initialDelaySeconds: 15,
+          periodSeconds: 15,
           timeoutSeconds: 5,
           successThreshold: 1,
-          failureThreshold: 3,
+          failureThreshold: 5,
         },
       },
     ]
@@ -1067,16 +1068,20 @@ export async function getProjectPodUrl(projectId: string): Promise<string> {
   const totalStartTime = Date.now()
   console.log(`[KnativeProjectManager] getProjectPodUrl started for ${projectId}`)
   
-  // Create the actual work promise
   const workPromise = (async (): Promise<string> => {
+    return knativeTracer.startActiveSpan('knative.get_pod_url', {
+      attributes: { 'project.id': projectId },
+    }, async (span) => {
     try {
       const manager = getKnativeProjectManager()
 
-      // Check if this project is already served by a warm pool pod
       const { getWarmPoolController } = await import('./warm-pool-controller')
       const warmPool = getWarmPoolController()
       const warmUrl = warmPool.getAssignedUrl(projectId)
       if (warmUrl) {
+        span.setAttribute('resolve.method', 'warm_pool_assigned')
+        span.setAttribute('resolve.duration_ms', Date.now() - totalStartTime)
+        span.setStatus({ code: SpanStatusCode.OK })
         console.log(`[KnativeProjectManager] Project ${projectId} served by warm pool (elapsed: ${Date.now() - totalStartTime}ms)`)
         return warmUrl
       }
@@ -1084,34 +1089,44 @@ export async function getProjectPodUrl(projectId: string): Promise<string> {
       const status = await manager.getStatus(projectId)
 
       if (!status.exists) {
-        // Project doesn't have a Knative Service — try warm pool first
         const warmPodUrl = await tryClaimWarmPod(projectId, manager)
         if (warmPodUrl) {
           const totalDuration = Date.now() - totalStartTime
+          span.setAttribute('resolve.method', 'warm_pool_claimed')
+          span.setAttribute('resolve.duration_ms', totalDuration)
+          span.setStatus({ code: SpanStatusCode.OK })
           console.log(`[KnativeProjectManager] getProjectPodUrl completed for ${projectId} via warm pool in ${totalDuration}ms`)
           return warmPodUrl
         }
 
-        // No warm pod available — fall back to cold start
+        span.setAttribute('resolve.method', 'cold_start')
         console.log(`[KnativeProjectManager] Project ${projectId} does not exist, creating (cold start)... (elapsed: ${Date.now() - totalStartTime}ms)`)
         await manager.createProject(projectId)
         console.log(`[KnativeProjectManager] Waiting for project ${projectId} to be ready... (elapsed: ${Date.now() - totalStartTime}ms)`)
         await manager.waitForReady(projectId, 180000)
       } else if (!status.ready) {
-        // Pod exists but isn't ready (cold start from scale-to-zero)
+        span.setAttribute('resolve.method', 'scale_from_zero')
         console.log(`[KnativeProjectManager] Project ${projectId} exists but not ready (cold start), waiting... (elapsed: ${Date.now() - totalStartTime}ms)`)
         await manager.waitForReady(projectId, 120000)
       } else {
+        span.setAttribute('resolve.method', 'already_running')
         console.log(`[KnativeProjectManager] Project ${projectId} already running (warm hit) (elapsed: ${Date.now() - totalStartTime}ms)`)
       }
 
       const totalDuration = Date.now() - totalStartTime
+      span.setAttribute('resolve.duration_ms', totalDuration)
+      span.setStatus({ code: SpanStatusCode.OK })
       console.log(`[KnativeProjectManager] getProjectPodUrl completed for ${projectId} in ${totalDuration}ms`)
       return manager.getProjectPodUrl(projectId)
+    } catch (err: any) {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: err.message })
+      span.recordException(err)
+      throw err
     } finally {
-      // Clean up the pending request when done (success or failure)
+      span.end()
       pendingPodRequests.delete(projectId)
     }
+    })
   })()
 
   // Store the pending request so other callers can join

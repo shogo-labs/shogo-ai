@@ -21,8 +21,11 @@
 
 import * as k8s from '@kubernetes/client-node'
 import * as fs from 'fs'
+import { trace, SpanStatusCode } from '@opentelemetry/api'
 import { generateProxyToken } from './ai-proxy-token'
 import * as databaseService from '../services/database.service'
+
+const poolTracer = trace.getTracer('shogo-warm-pool')
 
 // =============================================================================
 // Configuration
@@ -50,6 +53,9 @@ const WARM_POOL_MAX_AGE_MS = parseInt(
   process.env.WARM_POOL_MAX_AGE_MS || String(30 * 60 * 1000),
   10
 )
+const WARM_POOL_DYNAMIC_SIZING = process.env.WARM_POOL_DYNAMIC_SIZING !== 'false'
+const WARM_POOL_MIN_PER_TYPE = 2
+const WARM_POOL_PODS_PER_USER = 2 // 1 project + 1 agent per active user
 
 const POOL_PROJECT_ID = '__POOL__'
 const POOL_LABEL_KEY = 'shogo.io/warm-pool'
@@ -200,11 +206,54 @@ export class WarmPoolController {
   }
 
   /**
+   * Dynamically adjust pool size based on recent project creation activity.
+   * When many projects are being created (dry run), scale up the pool so
+   * new pods are ready before users need them.
+   */
+  private async adjustPoolSizeForLoad(): Promise<void> {
+    if (!WARM_POOL_DYNAMIC_SIZING) return
+
+    try {
+      const { prisma } = await import('./prisma')
+      // Count projects created in the last 15 minutes as a proxy for active users
+      const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000)
+      const recentProjects = await prisma.project.count({
+        where: { createdAt: { gte: fifteenMinAgo } },
+      })
+
+      // Each active user typically needs 1 project pod + 1 agent pod.
+      // Scale pool to cover the next wave of users.
+      const desiredPerType = Math.max(
+        WARM_POOL_MIN_PER_TYPE,
+        Math.min(recentProjects * WARM_POOL_PODS_PER_USER, WARM_POOL_PROJECT_SIZE * 2)
+      )
+
+      const prevProject = this.poolSize.project
+      const prevAgent = this.poolSize.agent
+
+      this.poolSize.project = Math.max(WARM_POOL_PROJECT_SIZE, desiredPerType)
+      this.poolSize.agent = Math.max(WARM_POOL_AGENT_SIZE, desiredPerType)
+
+      if (this.poolSize.project !== prevProject || this.poolSize.agent !== prevAgent) {
+        console.log(
+          `[WarmPool] Dynamic sizing: ${recentProjects} projects in last 15m → pool adjusted to project:${this.poolSize.project}, agent:${this.poolSize.agent}`
+        )
+      }
+    } catch (err: any) {
+      // Non-fatal — keep using current pool size
+      console.error('[WarmPool] Dynamic sizing check failed:', err.message)
+    }
+  }
+
+  /**
    * Reconcile the pool: ensure we have the target number of warm pods per type.
    * Also cleans up pods that are too old (to prevent stale pre-warmed sessions).
    */
   async reconcile(): Promise<void> {
     if (!this.started) return
+
+    // Dynamically adjust pool size based on current load
+    await this.adjustPoolSizeForLoad()
 
     // Discover existing warm pool services from Kubernetes
     await this.discoverExistingPods()
@@ -371,32 +420,46 @@ export class WarmPoolController {
     projectId: string,
     envVars: Record<string, string>
   ): Promise<void> {
-    const startTime = Date.now()
+    return poolTracer.startActiveSpan('warm_pool.assign', {
+      attributes: {
+        'project.id': projectId,
+        'pod.name': pod.serviceName,
+        'pod.type': pod.type,
+      },
+    }, async (span) => {
+      const startTime = Date.now()
+      try {
+        const response = await fetch(`${pod.url}/pool/assign`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ projectId, env: envVars }),
+          signal: AbortSignal.timeout(30000),
+        })
 
-    try {
-      const response = await fetch(`${pod.url}/pool/assign`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId, env: envVars }),
-        signal: AbortSignal.timeout(30000),
-      })
+        if (!response.ok) {
+          const body = await response.text()
+          throw new Error(`Assignment failed (${response.status}): ${body}`)
+        }
 
-      if (!response.ok) {
-        const body = await response.text()
-        throw new Error(`Assignment failed (${response.status}): ${body}`)
+        this.assigned.set(projectId, pod)
+        const duration = Date.now() - startTime
+        span.setAttribute('assign.duration_ms', duration)
+        span.setStatus({ code: SpanStatusCode.OK })
+        console.log(
+          `[WarmPool] Assigned ${pod.serviceName} to project ${projectId} in ${duration}ms`
+        )
+      } catch (err: any) {
+        span.setStatus({ code: SpanStatusCode.ERROR, message: err.message })
+        span.recordException(err)
+        console.error(
+          `[WarmPool] Failed to assign ${pod.serviceName} to ${projectId}:`,
+          err.message
+        )
+        throw err
+      } finally {
+        span.end()
       }
-
-      this.assigned.set(projectId, pod)
-      console.log(
-        `[WarmPool] Assigned ${pod.serviceName} to project ${projectId} in ${Date.now() - startTime}ms`
-      )
-    } catch (err: any) {
-      console.error(
-        `[WarmPool] Failed to assign ${pod.serviceName} to ${projectId}:`,
-        err.message
-      )
-      throw err
-    }
+    })
   }
 
   /**
@@ -684,19 +747,19 @@ export class WarmPoolController {
                 volumeMounts: [{ name: 'project-data', mountPath: workDir }],
                 readinessProbe: {
                   httpGet: { path: '/ready', port: 8080 },
-                  initialDelaySeconds: 1,
-                  periodSeconds: 2,
-                  timeoutSeconds: 2,
+                  initialDelaySeconds: 3,
+                  periodSeconds: 3,
+                  timeoutSeconds: 3,
                   successThreshold: 1,
-                  failureThreshold: 30,
+                  failureThreshold: 40,
                 },
                 livenessProbe: {
                   httpGet: { path: '/health', port: 8080 },
-                  initialDelaySeconds: 5,
-                  periodSeconds: 10,
+                  initialDelaySeconds: 10,
+                  periodSeconds: 15,
                   timeoutSeconds: 5,
                   successThreshold: 1,
-                  failureThreshold: 3,
+                  failureThreshold: 5,
                 },
               },
             ],

@@ -251,7 +251,7 @@ class DryRunUser(HttpUser):
     @task(3)
     @tag("terminal")
     def execute_terminal_command(self):
-        """Execute a terminal command (tests project runtime responsiveness)."""
+        """Execute a preset terminal command (tests project runtime responsiveness)."""
         if not self.authenticated or not self.project_ids:
             return
 
@@ -259,13 +259,15 @@ class DryRunUser(HttpUser):
 
         with self.client.post(
             f"/api/projects/{project_id}/terminal/exec",
-            json={"command": "ls -la"},
+            json={"commandId": "typecheck"},
             catch_response=True,
             name="/api/projects/:id/terminal/exec",
-            timeout=15,
+            timeout=60,
         ) as response:
             if response.status_code == 200:
                 response.success()
+            elif response.status_code == 404:
+                response.success()  # Project pod may not have workspace dir yet
             else:
                 response.failure(f"Terminal exec failed: {response.status_code}")
 

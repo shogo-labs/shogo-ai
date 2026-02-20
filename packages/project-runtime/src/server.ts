@@ -1093,6 +1093,11 @@ app.post('/pool/assign', async (c) => {
 
   logTiming(`[pool-assign] Starting for project ${projectId} (envVars: ${envVars ? Object.keys(envVars).join(',') : 'none'})`)
 
+  return traceOperation('project-runtime', 'pool.assign', {
+    'project.id': projectId,
+    'has_s3': !!process.env.S3_WORKSPACES_BUCKET,
+  }, async (assignSpan) => {
+
   // 1. Update project identity
   currentProjectId = projectId
   process.env.PROJECT_ID = projectId
@@ -1162,13 +1167,19 @@ app.post('/pool/assign', async (c) => {
 
     poolAssigned = true
     const duration = Date.now() - startTime
+    assignSpan.setAttribute('assign.duration_ms', duration)
     logTiming(`[pool-assign] COMPLETE for ${projectId} — total ${duration}ms`)
     return c.json({ ok: true, projectId, durationMs: duration })
   } catch (error: any) {
     const duration = Date.now() - startTime
+    assignSpan.setAttribute('assign.error', error.message)
     console.error(`[project-runtime] [pool-assign] FAILED for ${projectId} after ${duration}ms:`, error.message)
-    return c.json({ error: `Assignment failed: ${error.message}` }, 500)
+    throw error // let traceOperation record the error on the span
   }
+  }) // end traceOperation
+  .catch((error: any) => {
+    return c.json({ error: `Assignment failed: ${error.message}` }, 500)
+  })
 })
 
 // Readiness check - returns 503 until build completes in fast start mode
