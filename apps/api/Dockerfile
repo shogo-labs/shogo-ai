@@ -63,9 +63,11 @@ RUN bun run build
 WORKDIR /app/packages/mcp
 RUN bun run build
 
-# Clean per-package node_modules to avoid bun symlink bloat during COPY
+# Clean per-package node_modules in packages/* to avoid bun symlink bloat
+# during COPY (each symlinked node_modules adds ~500MB of duplicates).
+# Keep apps/api/node_modules — it may contain non-hoisted deps (e.g. OTEL).
 WORKDIR /app
-RUN rm -rf packages/*/node_modules apps/*/node_modules
+RUN rm -rf packages/*/node_modules
 
 # =============================================================================
 # Production image
