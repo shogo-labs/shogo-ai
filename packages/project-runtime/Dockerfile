@@ -5,8 +5,7 @@
 # Runs Claude Code agent + MCP + Vite in an isolated per-project pod.
 #
 # Build Optimizations (uses BuildKit):
-# - 4 parallel stages: builder, production-deps, template-deps run concurrently
-# - Production-only node_modules: devDeps (turbo, typescript, playwright) excluded
+# - 4 parallel stages: builder, deps, template-deps run concurrently
 # - Per-package node_modules cleaned to avoid bun symlink resolution bloat
 # - COPY --chown eliminates expensive 90s recursive chown on GBs of data
 # - pigz for parallel gzip compression of template archives
@@ -75,15 +74,13 @@ WORKDIR /app
 RUN rm -rf packages/*/node_modules apps/*/node_modules
 
 # =============================================================================
-# Stage 2: production-deps — lean node_modules without devDependencies
+# Stage 2: deps — full node_modules with all workspace member dependencies
 # =============================================================================
-# Runs IN PARALLEL with builder (BuildKit). Produces a node_modules that
-# excludes turbo (~50MB), typescript (~80MB), playwright, prisma CLI, @types/*,
-# and all other devDependencies from every workspace member.
-# NOTE: bun.lock must be copied to the final image for workspace resolution
-# of @shogo/* packages to work at runtime.
+# Runs IN PARALLEL with builder (BuildKit). Full install (not --production)
+# is required because bun install --production doesn't reliably install
+# workspace member dependencies (e.g. hono, ai, zod from project-runtime).
 # =============================================================================
-FROM oven/bun:1.3-alpine AS production-deps
+FROM oven/bun:1.3-alpine AS deps
 
 WORKDIR /app
 
@@ -103,7 +100,7 @@ COPY apps/desktop/package.json ./apps/desktop/
 COPY scripts ./scripts
 
 RUN --mount=type=cache,target=/root/.bun/install/cache \
-    bun install --production
+    bun install
 
 # =============================================================================
 # Stage 3: template-deps — pre-install and pre-build all templates
@@ -202,13 +199,12 @@ ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
 # ---------------------------------------------------------------------------
-# Copy production-only node_modules (no turbo, typescript, playwright, etc.)
-# from the parallel production-deps stage. Per-package node_modules were
-# cleaned in the builder so package COPYs only transfer source + dist.
+# Copy node_modules from the parallel deps stage. Per-package node_modules
+# were cleaned in the builder so package COPYs only transfer source + dist.
 # All COPYs use --chown to set ownership at copy time, avoiding the ~90s
-# recursive chown. bun.lock is required for workspace package resolution.
+# recursive chown that was duplicating GBs of layer data.
 # ---------------------------------------------------------------------------
-COPY --chown=appuser:appgroup --from=production-deps /app/node_modules ./node_modules
+COPY --chown=appuser:appgroup --from=deps /app/node_modules ./node_modules
 COPY --chown=appuser:appgroup --from=builder /app/packages/state-api ./packages/state-api
 COPY --chown=appuser:appgroup --from=builder /app/packages/mcp ./packages/mcp
 COPY --chown=appuser:appgroup --from=builder /app/packages/shared-runtime ./packages/shared-runtime
