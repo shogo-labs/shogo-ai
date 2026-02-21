@@ -99,6 +99,10 @@ app.config.timestamp*.js
 # Chat export logs (auto-generated agent outputs)
 shogo-chats/
 packages/mcp/src/evals/dspy/__pycache__/
+packages/agent-runtime/src/evals/dspy/__pycache__/
+packages/agent-runtime/src/evals/dspy/results/
 
 *.png
 tests/
+
+.dynamic-app-runtimes/

@@ -957,6 +957,17 @@ export class AgentGateway {
         uiTextId = null
       }
 
+      // Emit usage metrics so SSE consumers (eval runner, frontend) can track costs
+      if (uiWriter) {
+        uiWriter.write({
+          type: 'step-usage' as any,
+          inputTokens: result.inputTokens,
+          outputTokens: result.outputTokens,
+          iterations: result.iterations,
+          toolCallCount: result.toolCalls.length,
+        })
+      }
+
       if (result.loopBreak) {
         console.warn(
           `[AgentGateway] Loop detected in session ${sessionId}: ${result.loopBreak.pattern}`

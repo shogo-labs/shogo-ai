@@ -8,7 +8,13 @@
     "dev": "bun run --watch src/server.ts",
     "start": "bun run src/server.ts",
     "build": "bun build src/server.ts --outdir dist --target bun",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "evals:fixtures": "bun run src/evals/extract-fixtures.ts",
+    "evals:fixtures:check": "bun run src/evals/extract-fixtures.ts --check",
+    "evals:run": "cd src/evals/dspy && python3 optimize.py",
+    "evals:agent": "bun run src/evals/run-eval.ts",
+    "evals:agent:canvas": "bun run src/evals/run-eval.ts --track canvas",
+    "evals:agent:all": "bun run src/evals/run-eval.ts --track all"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.41",

@@ -1,0 +1,254 @@
+{
+  "_meta": {
+    "track": "canvas",
+    "generated": true,
+    "generated_at": "2026-02-21T11:48:16.679Z",
+    "description": "Canvas UI creation examples — extracted from dynamic-app-e2e.test.ts + managed-api-runtime.test.ts",
+    "sources": [
+      "packages/agent-runtime/src/__tests__/dynamic-app-e2e.test.ts",
+      "packages/agent-runtime/src/__tests__/managed-api-runtime.test.ts"
+    ]
+  },
+  "constants": {
+    "available_components": "Row, Column, Grid, Card, ScrollArea, Tabs, TabPanel, Accordion, AccordionItem, Text, Badge, Image, Icon, Separator, Progress, Skeleton, Alert, Metric, Table, Chart, DataList, Button, TextField, Select, Checkbox, ChoicePicker"
+  },
+  "examples": [
+    {
+      "id": "weather-display",
+      "source_test": "agent creates a surface, adds components, and populates data via tool calls",
+      "user_request": "Show me the current weather forecast",
+      "needs_api_schema": false,
+      "surface_id": "weather",
+      "tool_sequence": [
+        "canvas_create",
+        "canvas_update",
+        "canvas_data"
+      ],
+      "component_types": [
+        "Column",
+        "Text",
+        "Badge"
+      ],
+      "optimal_tool_calls": 3,
+      "optimal_iterations": 1,
+      "component_count": 4
+    },
+    {
+      "id": "flight-search",
+      "source_test": "agent creates a flight search UI and waits for user selection",
+      "user_request": "Find flights from SFO to JFK and let me pick one",
+      "needs_api_schema": false,
+      "surface_id": "flights",
+      "tool_sequence": [
+        "canvas_create",
+        "canvas_update",
+        "canvas_action_wait"
+      ],
+      "component_types": [
+        "Column",
+        "Text",
+        "Card",
+        "Button"
+      ],
+      "optimal_tool_calls": 3,
+      "optimal_iterations": 1,
+      "component_count": 6
+    },
+    {
+      "id": "email-dashboard",
+      "source_test": "builds a multi-section email dashboard with metrics and lists",
+      "user_request": "Build an email dashboard with metrics, tabs, and email tables",
+      "needs_api_schema": false,
+      "surface_id": "email-dashboard",
+      "tool_sequence": [
+        "canvas_create",
+        "canvas_update",
+        "canvas_data"
+      ],
+      "component_types": [
+        "Column",
+        "Grid",
+        "Metric",
+        "Separator",
+        "Tabs",
+        "Table",
+        "Alert",
+        "Text"
+      ],
+      "optimal_tool_calls": 3,
+      "optimal_iterations": 1,
+      "component_count": 14
+    },
+    {
+      "id": "analytics-dashboard",
+      "source_test": "builds a dashboard with charts, metrics, and a data table",
+      "user_request": "Create a sales analytics dashboard with revenue chart and top products",
+      "needs_api_schema": false,
+      "surface_id": "analytics",
+      "tool_sequence": [
+        "canvas_create",
+        "canvas_update",
+        "canvas_data"
+      ],
+      "component_types": [
+        "Column",
+        "Row",
+        "Text",
+        "Badge",
+        "Grid",
+        "Metric",
+        "Card",
+        "Chart",
+        "Table"
+      ],
+      "optimal_tool_calls": 3,
+      "optimal_iterations": 1,
+      "component_count": 12
+    },
+    {
+      "id": "research-report",
+      "source_test": "builds a research report with accordion sections and progress tracking",
+      "user_request": "Build a research report on the EV market with progress tracking and expandable sections",
+      "needs_api_schema": false,
+      "surface_id": "report",
+      "tool_sequence": [
+        "canvas_create",
+        "canvas_update",
+        "canvas_data"
+      ],
+      "component_types": [
+        "Column",
+        "Row",
+        "Text",
+        "Badge",
+        "Card",
+        "Chart",
+        "Accordion",
+        "AccordionItem",
+        "Grid",
+        "Metric",
+        "Table",
+        "Alert"
+      ],
+      "optimal_tool_calls": 3,
+      "optimal_iterations": 1,
+      "component_count": 17
+    },
+    {
+      "id": "counter",
+      "source_test": "agent updates data without resending layout",
+      "user_request": "Show a counter and set it to 42",
+      "needs_api_schema": false,
+      "surface_id": "counter",
+      "tool_sequence": [
+        "canvas_create",
+        "canvas_update",
+        "canvas_data",
+        "canvas_data"
+      ],
+      "component_types": [
+        "Column",
+        "Metric"
+      ],
+      "optimal_tool_calls": 4,
+      "optimal_iterations": 1,
+      "component_count": 2
+    },
+    {
+      "id": "task-tracker-crud",
+      "source_test": "full lifecycle: create surface → apply schema → seed → query",
+      "user_request": "Build a task tracker where I can add, complete, and delete tasks",
+      "needs_api_schema": true,
+      "surface_id": "todo-app",
+      "tool_sequence": [
+        "canvas_create",
+        "canvas_api_schema",
+        "canvas_api_seed",
+        "canvas_api_query",
+        "canvas_update"
+      ],
+      "component_types": [
+        "Column",
+        "Card",
+        "Table",
+        "Button",
+        "TextField"
+      ],
+      "optimal_tool_calls": 5,
+      "optimal_iterations": 1,
+      "component_count": 8
+    },
+    {
+      "id": "stock-dashboard-crud",
+      "source_test": "builds a stock portfolio dashboard with price snapshots",
+      "user_request": "Create a stock portfolio dashboard with price tracking",
+      "needs_api_schema": true,
+      "surface_id": "stock-dashboard",
+      "tool_sequence": [
+        "canvas_create",
+        "canvas_api_schema",
+        "canvas_api_seed",
+        "canvas_api_query",
+        "canvas_update"
+      ],
+      "component_types": [
+        "Column",
+        "Grid",
+        "Metric",
+        "Card",
+        "Table",
+        "Chart"
+      ],
+      "optimal_tool_calls": 5,
+      "optimal_iterations": 1,
+      "component_count": 10
+    },
+    {
+      "id": "meeting-scheduler",
+      "source_test": "builds a meeting scheduler form with user input and submit action",
+      "user_request": "Create a meeting scheduler with date/time pickers and a submit button",
+      "needs_api_schema": false,
+      "surface_id": "scheduler",
+      "tool_sequence": [
+        "canvas_create",
+        "canvas_update",
+        "canvas_data"
+      ],
+      "component_types": [
+        "Card",
+        "Column",
+        "TextField",
+        "Select",
+        "ChoicePicker",
+        "Row",
+        "Button"
+      ],
+      "optimal_tool_calls": 3,
+      "optimal_iterations": 1,
+      "component_count": 9
+    },
+    {
+      "id": "notification-feed",
+      "source_test": "builds a notification feed using DataList with template children",
+      "user_request": "Show a notification feed with PR reviews, build failures, and meeting reminders",
+      "needs_api_schema": false,
+      "surface_id": "notifications",
+      "tool_sequence": [
+        "canvas_create",
+        "canvas_update",
+        "canvas_data"
+      ],
+      "component_types": [
+        "Column",
+        "Text",
+        "DataList",
+        "Card",
+        "Row",
+        "Badge"
+      ],
+      "optimal_tool_calls": 3,
+      "optimal_iterations": 1,
+      "component_count": 7
+    }
+  ]
+}

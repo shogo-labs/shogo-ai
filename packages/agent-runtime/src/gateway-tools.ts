@@ -936,6 +936,138 @@ Then in canvas_update: { id: "table", component: "Table", rows: { path: "/todos"
 }
 
 // ---------------------------------------------------------------------------
+// Personality Self-Update Tool
+// ---------------------------------------------------------------------------
+
+const _personalitySessionCounts = new Map<string, number>()
+
+/** @internal Test-only: reset the personality update session counters */
+export function _resetPersonalitySessionCounts(): void {
+  _personalitySessionCounts.clear()
+}
+
+function createPersonalityUpdateTool(ctx: ToolContext): AgentTool {
+  const ALLOWED_FILES = ['SOUL.md', 'AGENTS.md', 'IDENTITY.md'] as const
+  const MAX_UPDATES_PER_SESSION = 1
+  const MAX_UPDATES_PER_DAY = 3
+
+  return {
+    name: 'personality_update',
+    description:
+      `Update your own personality/behavior markdown files to improve future interactions.
+Use this when the user explicitly corrects your tone, style, or boundaries, or when
+you discover a lasting preference. Do NOT use for one-off requests.
+
+Allowed files: SOUL.md (personality, tone, boundaries), AGENTS.md (high-level instructions), IDENTITY.md (name, role).
+Updates are section-level: specify the heading to update and its new content.
+Rate-limited: max ${MAX_UPDATES_PER_SESSION}/session, ${MAX_UPDATES_PER_DAY}/day.`,
+    label: 'Update Personality',
+    parameters: Type.Object({
+      file: Type.Union(ALLOWED_FILES.map(f => Type.Literal(f)), {
+        description: 'Which personality file to update',
+      }),
+      section: Type.String({ description: 'Section heading to update (e.g. "Communication Style")' }),
+      content: Type.String({ description: 'New markdown content for that section' }),
+      reasoning: Type.String({ description: 'Why this update improves your behavior' }),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { file, section, content, reasoning } = params as {
+        file: string
+        section: string
+        content: string
+        reasoning: string
+      }
+
+      if (!ALLOWED_FILES.includes(file as typeof ALLOWED_FILES[number])) {
+        return textResult({ ok: false, error: `File must be one of: ${ALLOWED_FILES.join(', ')}` })
+      }
+
+      if (!section || !content || !content.trim()) {
+        return textResult({ ok: false, error: 'Both section and content are required' })
+      }
+
+      // Rate limiting
+      const sessionKey = ctx.sessionId || 'default'
+      const sessionCount = _personalitySessionCounts.get(sessionKey) || 0
+      if (sessionCount >= MAX_UPDATES_PER_SESSION) {
+        return textResult({
+          ok: false,
+          error: `Rate limit: max ${MAX_UPDATES_PER_SESSION} personality update(s) per session`,
+        })
+      }
+
+      // Daily rate limit via changelog
+      const today = new Date().toISOString().slice(0, 10)
+      const memoryDir = join(ctx.workspaceDir, 'memory')
+      const dailyLogPath = join(memoryDir, `${today}.md`)
+      let dailyCount = 0
+      if (existsSync(dailyLogPath)) {
+        const dailyContent = readFileSync(dailyLogPath, 'utf-8')
+        dailyCount = (dailyContent.match(/\[personality-update\]/g) || []).length
+      }
+      if (dailyCount >= MAX_UPDATES_PER_DAY) {
+        return textResult({
+          ok: false,
+          error: `Rate limit: max ${MAX_UPDATES_PER_DAY} personality updates per day`,
+        })
+      }
+
+      const filePath = join(ctx.workspaceDir, file)
+      if (!existsSync(filePath)) {
+        return textResult({ ok: false, error: `File not found: ${file}` })
+      }
+
+      const currentContent = readFileSync(filePath, 'utf-8')
+
+      // Preserve Boundaries section — never allow removal
+      if (file === 'SOUL.md') {
+        const hasBoundaries = currentContent.toLowerCase().includes('## boundaries')
+        const newHasBoundaries = content.toLowerCase().includes('boundaries') || section.toLowerCase() !== 'boundaries'
+        if (hasBoundaries && section.toLowerCase() === 'boundaries' && !content.trim()) {
+          return textResult({ ok: false, error: 'Cannot remove the Boundaries section from SOUL.md' })
+        }
+      }
+
+      // Apply section-level update
+      const sectionPattern = new RegExp(
+        `(## ${section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\n[\\s\\S]*?(?=\\n## |$)`,
+        'i'
+      )
+      let updatedContent: string
+      if (sectionPattern.test(currentContent)) {
+        updatedContent = currentContent.replace(sectionPattern, `## ${section}\n${content}\n`)
+      } else {
+        updatedContent = currentContent.trimEnd() + `\n\n## ${section}\n${content}\n`
+      }
+
+      writeFileSync(filePath, updatedContent, 'utf-8')
+
+      // Log to changelog in daily memory
+      if (!existsSync(memoryDir)) mkdirSync(memoryDir, { recursive: true })
+      const timestamp = new Date().toISOString()
+      const logEntry = `\n[personality-update] ${timestamp} | ${file} > ${section} | ${reasoning}\n`
+      if (existsSync(dailyLogPath)) {
+        const existing = readFileSync(dailyLogPath, 'utf-8')
+        writeFileSync(dailyLogPath, existing + logEntry, 'utf-8')
+      } else {
+        writeFileSync(dailyLogPath, `# ${today}\n${logEntry}`, 'utf-8')
+      }
+
+      // Increment session counter
+      _personalitySessionCounts.set(sessionKey, sessionCount + 1)
+
+      return textResult({
+        ok: true,
+        file,
+        section,
+        reasoning,
+        message: `Updated ${file} section "${section}". Logged to daily memory.`,
+      })
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Tool Group Mapping
 // ---------------------------------------------------------------------------
 
@@ -959,6 +1091,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   cron: ['cron'],
   canvas: ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_delete', 'canvas_action_wait', 'canvas_components'],
   api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query'],
+  personality: ['personality_update'],
 }
 
 export const ALL_TOOL_NAMES = [
@@ -966,6 +1099,7 @@ export const ALL_TOOL_NAMES = [
   'memory_read', 'memory_write', 'memory_search', 'send_message', 'cron',
   'canvas_create', 'canvas_update', 'canvas_data', 'canvas_delete', 'canvas_action_wait', 'canvas_components',
   'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query',
+  'personality_update',
 ] as const
 
 /**
@@ -1013,6 +1147,7 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createCanvasApiSchemaTool(),
     createCanvasApiSeedTool(),
     createCanvasApiQueryTool(),
+    createPersonalityUpdateTool(ctx),
   ]
 }
 
