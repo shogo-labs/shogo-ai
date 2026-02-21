@@ -47,6 +47,7 @@ import {
   readFileSync,
   writeFileSync,
   mkdirSync,
+  unlinkSync,
 } from 'fs'
 import {
   initializeS3Sync,
@@ -617,6 +618,21 @@ app.post('/agent/bundled-skills/install', async (c) => {
   writeFileSync(destPath, content, 'utf-8')
 
   return c.json({ ok: true, installed: name })
+})
+
+app.delete('/agent/skills/:name', (c) => {
+  const name = c.req.param('name')
+  if (!name || name.includes('/') || name.includes('..')) {
+    return c.json({ error: 'Invalid skill name' }, 400)
+  }
+
+  const filePath = join(AGENT_DIR, 'skills', `${name}.md`)
+  if (!existsSync(filePath)) {
+    return c.json({ error: `Skill "${name}" not found` }, 404)
+  }
+
+  unlinkSync(filePath)
+  return c.json({ ok: true, removed: name })
 })
 
 app.get('/agent/templates', (c) => {

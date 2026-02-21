@@ -21,7 +21,7 @@ import { join } from 'path'
 import type { Message, UserMessage } from '@mariozechner/pi-ai'
 import type { StreamFn } from '@mariozechner/pi-agent-core'
 import type { ChannelAdapter, IncomingMessage, AgentStatus, ChannelStatus, StreamChunkConfig, SandboxConfig } from './types'
-import { loadSkills, loadBundledSkills, matchSkill, type Skill } from './skills'
+import { loadSkills, matchSkill, type Skill } from './skills'
 import { runAgentLoop, type LoopDetectorConfig, type ToolContext } from './agent-loop'
 import { createAllTools, createHeartbeatTools } from './gateway-tools'
 import { HookEmitter, loadAllHooks } from './hooks'
@@ -285,13 +285,10 @@ export class AgentGateway {
     console.log('[AgentGateway] Starting...')
     this.running = true
 
-    // Load skills from filesystem, bundled, and config.json
+    // Load skills from workspace skills/ directory only (bundled skills must be explicitly installed)
     this.skills = loadSkills(join(this.workspaceDir, 'skills'))
-    const workspaceSkillNames = new Set(this.skills.map((s) => s.name))
-    const bundled = loadBundledSkills(workspaceSkillNames)
-    this.skills = [...this.skills, ...bundled]
     this.configSkills = this.loadConfigSkills()
-    console.log(`[AgentGateway] Loaded ${this.skills.length} skills (${workspaceSkillNames.size} workspace + ${bundled.length} bundled), ${this.configSkills.length} config skills`)
+    console.log(`[AgentGateway] Loaded ${this.skills.length} skills, ${this.configSkills.length} config skills`)
 
     // Load hooks
     try {
@@ -1199,9 +1196,7 @@ export class AgentGateway {
   reloadConfig(): void {
     const prevEnabled = this.config.heartbeatEnabled
     this.config = this.loadConfig()
-    const wsSkills = loadSkills(join(this.workspaceDir, 'skills'))
-    const wsNames = new Set(wsSkills.map((s) => s.name))
-    this.skills = [...wsSkills, ...loadBundledSkills(wsNames)]
+    this.skills = loadSkills(join(this.workspaceDir, 'skills'))
     this.configSkills = this.loadConfigSkills()
 
     // Auto-start heartbeat if it was just enabled via config change

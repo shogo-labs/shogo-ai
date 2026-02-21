@@ -7,7 +7,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react'
-import { Zap, Plus, RefreshCw, BookOpen, Download, Check } from 'lucide-react'
+import { Zap, Plus, RefreshCw, BookOpen, Download, Check, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAgentUrl } from '@/hooks/useAgentUrl'
 
@@ -38,6 +38,7 @@ export function AgentSkillsPanel({ projectId, visible, localAgentUrl }: AgentSki
   const [error, setError] = useState<string | null>(null)
   const [showLibrary, setShowLibrary] = useState(false)
   const [installing, setInstalling] = useState<string | null>(null)
+  const [removing, setRemoving] = useState<string | null>(null)
   const { refetch: getAgentUrl } = useAgentUrl(projectId, localAgentUrl)
 
   const loadSkills = useCallback(async () => {
@@ -98,6 +99,27 @@ export function AgentSkillsPanel({ projectId, visible, localAgentUrl }: AgentSki
       setError(err.message)
     } finally {
       setInstalling(null)
+    }
+  }, [getAgentUrl, loadSkills])
+
+  const handleRemove = useCallback(async (skillName: string) => {
+    setRemoving(skillName)
+    try {
+      const baseUrl = await getAgentUrl()
+      const res = await fetch(`${baseUrl}/agent/skills/${encodeURIComponent(skillName)}`, {
+        method: 'DELETE',
+      })
+
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || 'Failed to remove skill')
+      }
+
+      await loadSkills()
+    } catch (err: any) {
+      setError(err.message)
+    } finally {
+      setRemoving(null)
     }
   }, [getAgentUrl, loadSkills])
 
@@ -267,8 +289,8 @@ export function AgentSkillsPanel({ projectId, visible, localAgentUrl }: AgentSki
                 key={skill.file}
                 className="border rounded-lg p-3 hover:bg-muted/30 transition-colors"
               >
-                <div className="flex items-start justify-between">
-                  <div>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium">{skill.name}</div>
                     {skill.description && (
                       <div className="text-xs text-muted-foreground mt-0.5">
@@ -276,6 +298,19 @@ export function AgentSkillsPanel({ projectId, visible, localAgentUrl }: AgentSki
                       </div>
                     )}
                   </div>
+                  <button
+                    onClick={() => handleRemove(skill.name)}
+                    disabled={removing === skill.name}
+                    className={cn(
+                      'shrink-0 p-1 rounded transition-colors',
+                      removing === skill.name
+                        ? 'text-muted-foreground'
+                        : 'text-muted-foreground/50 hover:text-destructive hover:bg-destructive/10'
+                    )}
+                    title="Remove skill"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
                 </div>
                 {skill.trigger && (
                   <div className="mt-2 flex flex-wrap gap-1">
