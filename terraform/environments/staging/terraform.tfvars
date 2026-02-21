@@ -15,7 +15,7 @@ eks_cluster_version         = "1.33"
 node_instance_types         = ["t3.xlarge"]  # 58 pod limit per node, 16GB RAM
 node_desired_size           = 2              # Need 2 nodes for system + app pods
 node_min_size               = 2              # Keep 2 minimum to avoid scheduling issues
-node_max_size               = 6
+node_max_size               = 15
 enable_secondary_node_group = false          # Disabled - was duplicate of main nodegroup, wasting vCPU quota
 
 # CloudNativePG Configuration
