@@ -981,7 +981,7 @@ export class AgentGateway {
       // Emit usage metrics so SSE consumers (eval runner, frontend) can track costs
       if (uiWriter) {
         uiWriter.write({
-          type: 'step-usage' as any,
+          type: 'data-step-usage' as any,
           inputTokens: result.inputTokens,
           outputTokens: result.outputTokens,
           cacheReadTokens: result.cacheReadTokens,

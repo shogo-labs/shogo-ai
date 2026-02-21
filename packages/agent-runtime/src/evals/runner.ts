@@ -154,7 +154,7 @@ async function parseSSEStream(
                 outputTokens += data.usage.completionTokens || data.usage.outputTokens || 0
               }
               break
-            case 'step-usage':
+            case 'data-step-usage':
               inputTokens += data.inputTokens || 0
               outputTokens += data.outputTokens || 0
               cacheReadTokens += data.cacheReadTokens || 0
