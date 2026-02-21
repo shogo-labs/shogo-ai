@@ -269,7 +269,7 @@ resource "helm_release" "karpenter" {
   name             = "karpenter"
   repository       = "oci://public.ecr.aws/karpenter"
   chart            = "karpenter"
-  version          = "1.1.1"
+  version          = "1.9.0"
   wait             = true
   create_namespace = false
 
@@ -343,8 +343,7 @@ resource "null_resource" "karpenter_node_pool" {
         role: ${module.eks.node_role_name}
         subnetSelectorTerms:
           - tags:
-              kubernetes.io/cluster/${module.eks.cluster_name}: shared
-              kubernetes.io/role/internal-elb: "1"
+              karpenter.sh/discovery: ${module.eks.cluster_name}
         securityGroupSelectorTerms:
           - id: ${module.eks.node_security_group_id}
           - id: ${module.eks.eks_managed_security_group_id}

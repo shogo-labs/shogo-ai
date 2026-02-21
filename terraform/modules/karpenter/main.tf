@@ -146,6 +146,7 @@ resource "aws_iam_policy" "karpenter_controller" {
         Effect = "Allow"
         Action = [
           "iam:GetInstanceProfile",
+          "iam:ListInstanceProfiles",
           "iam:CreateInstanceProfile",
           "iam:TagInstanceProfile",
           "iam:AddRoleToInstanceProfile",
