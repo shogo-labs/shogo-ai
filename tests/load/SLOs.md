@@ -54,6 +54,14 @@ Service Level Objectives for the Shogo AI platform, informed by the
 - Cold start timeouts: 0
 - P95 response time: < 3s (excluding cold starts)
 
+### Agent Runtime Load (5–20 concurrent users)
+- Agent cold start (warm pool): < 15s p95
+- Health/status endpoints: < 2s p99
+- File read/write: < 5s p95
+- Dynamic app state: < 5s p95
+- Chat (LLM round-trip): < 30s p95
+- Error rate: < 5%
+
 ## Alerting Rules (SigNoz)
 
 1. **Cold start > 120s** — Critical: Project pod failed to start

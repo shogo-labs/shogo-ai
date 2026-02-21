@@ -3878,6 +3878,8 @@ if (PREWARM_ENABLED) {
 
 // Start warm pool controller (Kubernetes only).
 // Maintains pre-warmed pods to eliminate cold start latency for users.
+// Delay reduced from 5s to 2s to ensure warm pool is available sooner
+// after API pod scale-up events (avoids cold starts during burst traffic).
 if (isKubernetes()) {
   setTimeout(async () => {
     try {
@@ -3887,6 +3889,6 @@ if (isKubernetes()) {
     } catch (err: any) {
       console.error('[WarmPool] Failed to start warm pool controller (non-fatal):', err.message)
     }
-  }, 5000)
+  }, 2000)
 }
 

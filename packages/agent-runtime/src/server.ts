@@ -319,12 +319,20 @@ app.post('/pool/assign', async (c) => {
     Object.assign(process.env, aiProxy.env)
   }
 
-  // 4. Run project-specific initialization
+  // 4. Run essential initialization (workspace files, S3 sync, config)
   try {
-    await initialize()
+    await initializeEssentials()
     poolAssigned = true
     const duration = Date.now() - startTime
-    logTiming(`Pool assignment complete for ${projectId} (${duration}ms)`)
+    logTiming(`Pool assignment essentials complete for ${projectId} (${duration}ms)`)
+
+    // 5. Start gateway in background — don't block the assign response.
+    // The pod can serve health, file, and catalog endpoints immediately.
+    // Chat/heartbeat endpoints return 503 until gateway is ready.
+    startGateway().catch((error) => {
+      console.error(`[agent-runtime] Background gateway start failed for ${projectId}:`, error.message)
+    })
+
     return c.json({ ok: true, projectId, durationMs: duration })
   } catch (error: any) {
     console.error(`[agent-runtime] Pool assignment failed for ${projectId}:`, error.message)
@@ -870,8 +878,12 @@ app.get('/console-log', (c) => {
 // Initialization
 // =============================================================================
 
-async function initialize(): Promise<void> {
-  logTiming('Initializing...')
+/**
+ * Essential initialization: workspace files, S3 sync, config.
+ * Returns quickly so /pool/assign can respond fast.
+ */
+async function initializeEssentials(): Promise<void> {
+  logTiming('Initializing essentials...')
 
   // Bootstrap workspace files
   ensureWorkspaceFiles()
@@ -898,23 +910,16 @@ async function initialize(): Promise<void> {
 
   // Write CLAUDE.md and .mcp.json
   writeAgentConfigFiles()
+  logTiming('Essentials complete')
+}
 
-  // Initialize Postgres backup if configured
-  if (process.env.DATABASE_URL && (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET)) {
-    try {
-      const pgBackup = await initializePostgresBackup()
-      if (pgBackup) {
-        logTiming('Postgres backup initialized')
-      }
-    } catch (error: any) {
-      console.error(
-        '[agent-runtime] Postgres backup init failed:',
-        error.message
-      )
-    }
-  }
+/**
+ * Start the agent gateway (heavy: loads skills, MCP servers, sessions, BOOT.md).
+ * Called after essentials are done — can run in background for warm pool assigns.
+ */
+async function startGateway(): Promise<void> {
+  logTiming('Starting agent gateway...')
 
-  // Start agent gateway
   agentGateway = new AgentGateway(AGENT_DIR, currentProjectId!)
   agentGateway.setLogCallback((line) => {
     consoleLogs.push(line)
@@ -922,6 +927,15 @@ async function initialize(): Promise<void> {
   })
   await agentGateway.start()
   logTiming('Agent gateway started')
+}
+
+/**
+ * Full initialization: essentials + gateway.
+ * Used for non-pool-mode startup (cold start path).
+ */
+async function initialize(): Promise<void> {
+  await initializeEssentials()
+  await startGateway()
 }
 
 // =============================================================================

@@ -36,6 +36,7 @@ open reports/auth_test_report.html
 - **cold_start_test.py** - Knative cold start stress (100 users, 15 min)
 - **chat_heavy_test.py** - Chat-heavy workload (100 users, 20 min)
 - **data_intensive_test.py** - Data operations (50 users, 20 min)
+- **agent_runtime_test.py** - Agent runtime endpoints (5-20 users, 5-30 min)
 
 ## Directory Structure
 
@@ -58,9 +59,32 @@ tests/load/
 - `scripts/setup_test_data.py` - Pre-populate test data
 - `scripts/run_simple.sh` - Run simple test suite
 - `scripts/run_complex.sh` - Run complex test suite
+- `scripts/run_agent_runtime.sh` - Run agent runtime load test
 - `scripts/run_all.sh` - Run full test suite
 - `scripts/analyze_results.py` - Analyze results
 - `scripts/cleanup.py` - Clean up test data
+
+### Agent Runtime Quick Start
+
+```bash
+# Default (5 users, 5 min) — includes chat/LLM calls
+bash scripts/run_agent_runtime.sh
+
+# No LLM calls — only exercises non-AI endpoints (free)
+bash scripts/run_agent_runtime.sh --no-chat
+
+# Stress test (20 users, 10 min)
+bash scripts/run_agent_runtime.sh --stress
+
+# Soak test (3 users, 30 min)
+bash scripts/run_agent_runtime.sh --soak
+
+# Only specific endpoint groups
+bash scripts/run_agent_runtime.sh --tags health,files,dynamic-app
+
+# Custom
+bash scripts/run_agent_runtime.sh --users 10 --time 15m --host https://studio-staging.shogo.ai
+```
 
 ## Monitoring
 

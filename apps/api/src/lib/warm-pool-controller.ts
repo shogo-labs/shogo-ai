@@ -484,7 +484,7 @@ export class WarmPoolController {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ projectId, env: envVars }),
-          signal: AbortSignal.timeout(30000),
+          signal: AbortSignal.timeout(60000),
         })
 
         if (!response.ok) {
@@ -580,18 +580,22 @@ export class WarmPoolController {
    * This gathers everything a project pod needs: DATABASE_URL, AI_PROXY_TOKEN, S3 config, etc.
    */
   async buildProjectEnv(projectId: string): Promise<Record<string, string>> {
+    const startTime = Date.now()
     const env: Record<string, string> = {
       PROJECT_ID: projectId,
     }
 
     // AI Proxy token
+    const tokenStart = Date.now()
+    let projectType: string | null = null
     try {
       const { prisma } = await import('./prisma')
       const project = await prisma.project.findUnique({
         where: { id: projectId },
-        select: { workspaceId: true },
+        select: { workspaceId: true, type: true },
       })
       if (project) {
+        projectType = project.type
         env.AI_PROXY_TOKEN = await generateProxyToken(
           projectId,
           project.workspaceId,
@@ -602,15 +606,22 @@ export class WarmPoolController {
     } catch (err: any) {
       console.error(`[WarmPool] Failed to generate proxy token for ${projectId}:`, err.message)
     }
+    console.log(`[WarmPool] buildProjectEnv: proxy token took ${Date.now() - tokenStart}ms (type=${projectType})`)
 
-    // Database URL
-    try {
-      const dbInfo = await databaseService.provisionDatabase(projectId)
-      if (dbInfo) {
-        env.DATABASE_URL = dbInfo.connectionUrl
+    // Database URL — skip for AGENT projects (they use filesystem/S3, not a project database)
+    if (projectType !== 'AGENT') {
+      const dbStart = Date.now()
+      try {
+        const dbInfo = await databaseService.provisionDatabase(projectId)
+        if (dbInfo) {
+          env.DATABASE_URL = dbInfo.connectionUrl
+        }
+      } catch (err: any) {
+        console.error(`[WarmPool] Failed to provision database for ${projectId}:`, err.message)
       }
-    } catch (err: any) {
-      console.error(`[WarmPool] Failed to provision database for ${projectId}:`, err.message)
+      console.log(`[WarmPool] buildProjectEnv: DB provisioning took ${Date.now() - dbStart}ms`)
+    } else {
+      console.log(`[WarmPool] buildProjectEnv: skipping DB provisioning for AGENT project`)
     }
 
     // S3 config
@@ -623,6 +634,7 @@ export class WarmPoolController {
       if (process.env.S3_FORCE_PATH_STYLE === 'true') env.S3_FORCE_PATH_STYLE = 'true'
     }
 
+    console.log(`[WarmPool] buildProjectEnv: total ${Date.now() - startTime}ms for ${projectId}`)
     return env
   }
 

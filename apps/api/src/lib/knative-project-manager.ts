@@ -804,7 +804,8 @@ export class KnativeProjectManager {
     // Database is provisioned per-project on the shared projects-pg cluster
     // Credentials are stored in a K8s Secret and referenced via secretKeyRef
     // so that password rotation doesn't require pod recreation
-    if (this.postgresEnabled) {
+    // Agent projects use filesystem/S3 storage, not a project database — skip provisioning
+    if (this.postgresEnabled && !isAgentProject) {
       // Retry database provisioning up to 3 times (CNPG cluster may be briefly unavailable)
       let dbInfo: Awaited<ReturnType<typeof databaseService.provisionDatabase>> | null = null
       for (let attempt = 1; attempt <= 3; attempt++) {
@@ -821,9 +822,6 @@ export class KnativeProjectManager {
 
       if (dbInfo) {
         const credSecretName = databaseService.dbSecretName(projectId)
-        // If the Secret was created (password is non-empty), reference it via secretKeyRef.
-        // This is the preferred path: password lives only in the Secret, not in the ksvc spec.
-        // If the Secret wasn't created (legacy project, empty password), fall back to inline value.
         if (dbInfo.password) {
           env.push({
             name: "DATABASE_URL",
@@ -836,8 +834,6 @@ export class KnativeProjectManager {
           })
           console.log(`[KnativeProjectManager] Provisioned database "${dbInfo.databaseName}" for project ${projectId} (credentials in Secret "${credSecretName}")`)
         } else {
-          // Legacy fallback: K8s Secret doesn't exist yet. Use inline value.
-          // This path is temporary — the migration script will create the missing Secrets.
           env.push({
             name: "DATABASE_URL",
             value: dbInfo.connectionUrl,
@@ -845,11 +841,12 @@ export class KnativeProjectManager {
           console.log(`[KnativeProjectManager] Provisioned database "${dbInfo.databaseName}" for project ${projectId} (legacy: inline credentials)`)
         }
       } else {
-        // DATABASE_URL is required for all templates — fail the project creation
         throw new Error(`Failed to provision database for project ${projectId} after 3 attempts. Check CloudNativePG cluster health.`)
       }
       // Disable postgres S3 backup (CloudNativePG handles backups via Barman)
       env.push({ name: "POSTGRES_S3_BACKUP_ENABLED", value: "false" })
+    } else if (isAgentProject) {
+      console.log(`[KnativeProjectManager] Skipping database provisioning for agent project ${projectId}`)
     }
 
     // Add S3 configuration if bucket is specified
@@ -1157,11 +1154,15 @@ async function tryClaimWarmPod(
   projectId: string,
   manager: KnativeProjectManager
 ): Promise<string | null> {
+  const t0 = Date.now()
   try {
     const { getWarmPoolController } = await import('./warm-pool-controller')
     const warmPool = getWarmPoolController()
     const poolStatus = warmPool.getStatus()
-    if (!poolStatus.enabled) return null
+    if (!poolStatus.enabled) {
+      console.log(`[KnativeProjectManager] Warm pool not enabled for ${projectId} (started=${poolStatus.enabled})`)
+      return null
+    }
 
     // Determine runtime type
     const { prisma } = await import('./prisma')
@@ -1170,21 +1171,27 @@ async function tryClaimWarmPod(
       select: { type: true },
     })
     const runtimeType = projectRecord?.type === 'AGENT' ? 'agent' as const : 'project' as const
+    const t1 = Date.now()
 
     // Try to claim a warm pod
     const pod = warmPool.claim(runtimeType)
     if (!pod) {
-      console.log(`[KnativeProjectManager] No warm ${runtimeType} pod available for ${projectId}`)
+      console.log(`[KnativeProjectManager] No warm ${runtimeType} pod available for ${projectId} (available: agent=${poolStatus.available.agent}, project=${poolStatus.available.project})`)
       return null
     }
+    const t2 = Date.now()
 
-    console.log(`[KnativeProjectManager] Claimed warm pod ${pod.serviceName} for ${projectId}`)
+    console.log(`[KnativeProjectManager] Claimed warm pod ${pod.serviceName} for ${projectId} (lookup=${t1 - t0}ms, claim=${t2 - t1}ms)`)
 
     // Build project-specific env vars
     const envVars = await warmPool.buildProjectEnv(projectId)
+    const t3 = Date.now()
+    console.log(`[KnativeProjectManager] buildProjectEnv for ${projectId}: ${t3 - t2}ms`)
 
     // Assign the project to the warm pod (sends /pool/assign)
     await warmPool.assign(pod, projectId, envVars)
+    const t4 = Date.now()
+    console.log(`[KnativeProjectManager] assign for ${projectId}: ${t4 - t3}ms (total warm pipeline: ${t4 - t0}ms)`)
 
     // Create the real Knative Service in the background so future
     // cold starts (after the warm pod scales to zero) work correctly.
@@ -1198,7 +1205,8 @@ async function tryClaimWarmPod(
 
     return pod.url
   } catch (err: any) {
-    console.error(`[KnativeProjectManager] Warm pool claim failed for ${projectId}:`, err.message)
+    const elapsed = Date.now() - t0
+    console.error(`[KnativeProjectManager] Warm pool claim failed for ${projectId} after ${elapsed}ms:`, err.message)
     return null
   }
 }
