@@ -32,6 +32,14 @@ import { CronManager, type CronJob } from './cron-manager'
 import { userMessage } from './pi-adapter'
 import { BlockChunker } from './block-chunker'
 import { MCPClientManager, type MCPServerConfig } from './mcp-client'
+import {
+  OPTIMIZED_CANVAS_EXAMPLES,
+  OPTIMIZED_MEMORY_GUIDE,
+  OPTIMIZED_PERSONALITY_GUIDE,
+  OPTIMIZED_TOOL_PLANNING_GUIDE,
+  OPTIMIZED_SESSION_SUMMARY_GUIDE,
+  OPTIMIZED_SKILL_MATCHING_GUIDE,
+} from './optimized-prompts'
 
 export interface GatewayConfig {
   heartbeatInterval: number
@@ -155,7 +163,9 @@ Use \`canvas_components({ action: "detail", type: "Card" })\` to look up props f
 ### IMPORTANT
 - When canvas tools return status: "rendered" or "data_updated", the UI is already live.
 - Do NOT rebuild surfaces that are working — use canvas_update to modify specific components.
-- Table is read-only. For lists needing edit/delete buttons, always use DataList.`
+- Table is read-only. For lists needing edit/delete buttons, always use DataList.
+
+${OPTIMIZED_CANVAS_EXAMPLES}`
 
 const PERSONALITY_EVOLUTION_GUIDE = `## Personality Self-Update
 
@@ -176,7 +186,9 @@ You have a \`personality_update\` tool that lets you improve your own behavior f
 - Include a reasoning field explaining why the update improves your behavior
 - Max 1 update per session, 3 per day — be selective
 - The Boundaries section in SOUL.md can never be removed, only appended to
-- All updates are logged to daily memory with [personality-update] tag`
+- All updates are logged to daily memory with [personality-update] tag
+
+${OPTIMIZED_PERSONALITY_GUIDE}`
 
 export class AgentGateway {
   private workspaceDir: string
@@ -1016,6 +1028,9 @@ export class AgentGateway {
 
     parts.push(CANVAS_TOOLS_GUIDE)
     parts.push(PERSONALITY_EVOLUTION_GUIDE)
+    parts.push(OPTIMIZED_TOOL_PLANNING_GUIDE)
+    parts.push(OPTIMIZED_MEMORY_GUIDE)
+    parts.push(OPTIMIZED_SKILL_MATCHING_GUIDE)
 
     return parts.join('\n\n---\n\n')
   }
