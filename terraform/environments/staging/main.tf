@@ -1182,11 +1182,12 @@ resource "null_resource" "knative_services" {
                     value: ""
                   - name: PUBLISH_DOMAIN
                     value: "${var.publish_domain}"
-                  # Warm pool sizing (agent only, project runtime not warm-pooled)
-                  - name: WARM_POOL_PROJECT_SIZE
-                    value: "0"
-                  - name: WARM_POOL_AGENT_SIZE
-                    value: "30"
+                  # Warm pool sizing — scales with cluster node count
+                  # 2 nodes idle → 4 warm agents. Pre-scale to 5 nodes → 10 agents.
+                  - name: WARM_POOL_AGENTS_PER_NODE
+                    value: "2"
+                  - name: WARM_POOL_MIN_AGENTS
+                    value: "2"
                   # Proactive node scaling — scale ASG before pods go Pending
                   - name: EKS_ASG_NAME
                     value: "${module.eks.cluster_name}-main"

@@ -61,8 +61,6 @@ const KNATIVE_GROUP = 'serving.knative.dev'
 const KNATIVE_VERSION = 'v1'
 
 const WARM_POOL_ENABLED = process.env.WARM_POOL_ENABLED !== 'false'
-const WARM_POOL_PROJECT_SIZE = parseInt(process.env.WARM_POOL_PROJECT_SIZE || '2', 10)
-const WARM_POOL_AGENT_SIZE = parseInt(process.env.WARM_POOL_AGENT_SIZE || '2', 10)
 const WARM_POOL_RECONCILE_INTERVAL = parseInt(
   process.env.WARM_POOL_RECONCILE_INTERVAL || '30000',
   10
@@ -71,9 +69,14 @@ const WARM_POOL_MAX_AGE_MS = parseInt(
   process.env.WARM_POOL_MAX_AGE_MS || String(30 * 60 * 1000),
   10
 )
-const WARM_POOL_DYNAMIC_SIZING = process.env.WARM_POOL_DYNAMIC_SIZING !== 'false'
-const WARM_POOL_MIN_PER_TYPE = 2
-const WARM_POOL_PODS_PER_USER = 2 // 1 project + 1 agent per active user
+
+// Per-node pool sizing: pool scales with cluster capacity.
+// 2 nodes idle → small pool. Pre-scale to 5 nodes → bigger pool.
+const WARM_POOL_AGENTS_PER_NODE = parseInt(process.env.WARM_POOL_AGENTS_PER_NODE || '2', 10)
+const WARM_POOL_PROJECTS_PER_NODE = parseInt(process.env.WARM_POOL_PROJECTS_PER_NODE || '0', 10)
+// Absolute minimum warm pods regardless of node count
+const WARM_POOL_MIN_AGENTS = parseInt(process.env.WARM_POOL_MIN_AGENTS || '2', 10)
+const WARM_POOL_MIN_PROJECTS = parseInt(process.env.WARM_POOL_MIN_PROJECTS || '0', 10)
 
 const POOL_PROJECT_ID = '__POOL__'
 const POOL_LABEL_KEY = 'shogo.io/warm-pool'
@@ -148,6 +151,14 @@ function getCustomApi(): k8s.CustomObjectsApi {
   return k8sCustomApi
 }
 
+function getCoreApi(): k8s.CoreV1Api {
+  if (!k8sCoreApi) {
+    const kc = getKubeConfig()
+    k8sCoreApi = kc.makeApiClient(k8s.CoreV1Api)
+  }
+  return k8sCoreApi
+}
+
 // =============================================================================
 // WarmPoolController
 // =============================================================================
@@ -179,8 +190,8 @@ export class WarmPoolController {
   constructor(config: WarmPoolConfig = {}) {
     this.namespace = config.namespace || NAMESPACE
     this.poolSize = {
-      project: config.projectPoolSize ?? WARM_POOL_PROJECT_SIZE,
-      agent: config.agentPoolSize ?? WARM_POOL_AGENT_SIZE,
+      project: config.projectPoolSize ?? WARM_POOL_MIN_PROJECTS,
+      agent: config.agentPoolSize ?? WARM_POOL_MIN_AGENTS,
     }
     this.reconcileIntervalMs = config.reconcileIntervalMs ?? WARM_POOL_RECONCILE_INTERVAL
     this.maxPodAgeMs = config.maxPodAgeMs ?? WARM_POOL_MAX_AGE_MS
@@ -235,43 +246,51 @@ export class WarmPoolController {
   }
 
   /**
-   * Dynamically adjust pool size based on recent project creation activity.
-   * When many projects are being created (dry run), scale up the pool so
-   * new pods are ready before users need them.
+   * Adjust pool size based on the number of ready nodes in the cluster.
+   * Pool scales proportionally with cluster capacity:
+   *   2 nodes (idle)  → 4 agent pods
+   *   5 nodes (load)  → 10 agent pods
+   * When nodes scale back down, excess warm pods are recycled naturally
+   * (stale pod cleanup removes the oldest ones each reconcile cycle).
    */
-  private async adjustPoolSizeForLoad(): Promise<void> {
-    if (!WARM_POOL_DYNAMIC_SIZING) return
-
+  private async adjustPoolSizeForNodes(): Promise<void> {
     try {
-      const { prisma } = await import('./prisma')
-      // Count projects created in the last 15 minutes as a proxy for active users
-      const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000)
-      const recentProjects = await prisma.project.count({
-        where: { createdAt: { gte: fifteenMinAgo } },
-      })
-
-      // Each active user typically needs 1 project pod + 1 agent pod.
-      // Scale pool to cover the next wave of users.
-      const desiredPerType = Math.max(
-        WARM_POOL_MIN_PER_TYPE,
-        Math.min(recentProjects * WARM_POOL_PODS_PER_USER, WARM_POOL_PROJECT_SIZE * 2)
-      )
+      const nodeCount = await this.countReadyNodes()
+      if (nodeCount <= 0) return
 
       const prevProject = this.poolSize.project
       const prevAgent = this.poolSize.agent
 
-      this.poolSize.project = Math.max(WARM_POOL_PROJECT_SIZE, desiredPerType)
-      this.poolSize.agent = Math.max(WARM_POOL_AGENT_SIZE, desiredPerType)
+      this.poolSize.project = Math.max(WARM_POOL_MIN_PROJECTS, nodeCount * WARM_POOL_PROJECTS_PER_NODE)
+      this.poolSize.agent = Math.max(WARM_POOL_MIN_AGENTS, nodeCount * WARM_POOL_AGENTS_PER_NODE)
 
       if (this.poolSize.project !== prevProject || this.poolSize.agent !== prevAgent) {
         console.log(
-          `[WarmPool] Dynamic sizing: ${recentProjects} projects in last 15m → pool adjusted to project:${this.poolSize.project}, agent:${this.poolSize.agent}`
+          `[WarmPool] Node-based sizing: ${nodeCount} nodes → project:${this.poolSize.project} (${WARM_POOL_PROJECTS_PER_NODE}/node), agent:${this.poolSize.agent} (${WARM_POOL_AGENTS_PER_NODE}/node)`
         )
       }
     } catch (err: any) {
-      // Non-fatal — keep using current pool size
-      console.error('[WarmPool] Dynamic sizing check failed:', err.message)
+      console.error('[WarmPool] Node count check failed (non-fatal):', err.message)
     }
+  }
+
+  /**
+   * Count ready nodes in the cluster (excludes NotReady, cordoned nodes).
+   */
+  private async countReadyNodes(): Promise<number> {
+    const coreApi = getCoreApi()
+    const response = await coreApi.listNode()
+    const nodes = response.items || []
+    let ready = 0
+    for (const node of nodes) {
+      const conditions = node.status?.conditions || []
+      const readyCondition = conditions.find((c) => c.type === 'Ready')
+      const unschedulable = node.spec?.unschedulable
+      if (readyCondition?.status === 'True' && !unschedulable) {
+        ready++
+      }
+    }
+    return ready
   }
 
   /**
@@ -281,8 +300,8 @@ export class WarmPoolController {
   async reconcile(): Promise<void> {
     if (!this.started) return
 
-    // Dynamically adjust pool size based on current load
-    await this.adjustPoolSizeForLoad()
+    // Adjust pool size based on cluster node count
+    await this.adjustPoolSizeForNodes()
 
     // Discover existing warm pool services from Kubernetes
     await this.discoverExistingPods()
@@ -322,6 +341,25 @@ export class WarmPoolController {
             err.message
           )
         })
+      }
+    }
+
+    // Trim excess pods when pool shrinks (e.g., nodes scaled down).
+    // Delete oldest excess pods, 2 per type per cycle, to converge to target.
+    for (const type of ['project', 'agent'] as const) {
+      const available = [...this.available.values()].filter((p) => p.type === type)
+      const excess = available.length - this.poolSize[type]
+      if (excess > 0) {
+        const toRemove = available
+          .sort((a, b) => a.createdAt - b.createdAt)
+          .slice(0, Math.min(excess, 2))
+        for (const pod of toRemove) {
+          console.log(`[WarmPool] Trimming excess ${type} pod ${pod.serviceName} (${available.length} available, target ${this.poolSize[type]})`)
+          this.available.delete(pod.id)
+          this.deleteWarmPodService(pod.serviceName).catch((err) => {
+            console.error(`[WarmPool] Failed to trim pod ${pod.serviceName}:`, err.message)
+          })
+        }
       }
     }
 
