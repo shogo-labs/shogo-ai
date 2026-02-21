@@ -1183,9 +1183,9 @@ resource "null_resource" "knative_services" {
                   - name: PUBLISH_DOMAIN
                     value: "${var.publish_domain}"
                   # Warm pool sizing — scales with cluster node count
-                  # 2 nodes idle → 4 warm agents. Pre-scale to 5 nodes → 10 agents.
+                  # 2 nodes idle → 20 warm agents. Pre-scale to 5 nodes → 50 agents.
                   - name: WARM_POOL_AGENTS_PER_NODE
-                    value: "2"
+                    value: "10"
                   - name: WARM_POOL_MIN_AGENTS
                     value: "2"
                   # Proactive node scaling — scale ASG before pods go Pending
