@@ -2889,7 +2889,7 @@ function fallbackGenerateProjectName(prompt: string): string {
 
 app.post('/api/generate-project-name', async (c) => {
   try {
-    const { prompt, workspaceId, userId } = await c.req.json()
+    const { prompt, workspaceId, userId, projectId } = await c.req.json()
 
     if (!prompt || typeof prompt !== 'string') {
       return c.json({ error: 'Prompt is required' }, 400)
@@ -2898,35 +2898,50 @@ app.post('/api/generate-project-name', async (c) => {
     // Check if ANTHROPIC_API_KEY is available
     if (!process.env.ANTHROPIC_API_KEY) {
       console.log('[/api/generate-project-name] ANTHROPIC_API_KEY not set, using fallback')
-      return c.json({ name: fallbackGenerateProjectName(prompt) })
+      const name = fallbackGenerateProjectName(prompt)
+      return c.json({ name, description: '' })
     }
 
-    // Use Claude Haiku - fastest and most cost-effective model for simple tasks
     const anthropic = createAnthropic()
 
     const result = await generateText({
-      model: anthropic('claude-3-5-haiku-latest'),
-      system: `You are a project naming assistant. Given a user's description of what they want to build, generate a short, memorable project name.
+      model: anthropic('claude-haiku-4-5-20251001'),
+      system: `You are a project naming assistant. Given a user's description of what they want to build, generate a short project name and a one-sentence description.
 
-Rules:
-- Return ONLY the project name, nothing else
+You MUST respond with valid JSON only, no other text. Use this exact format:
+{"title": "Project Name", "description": "A one-sentence description of the project."}
+
+Rules for the title:
 - Use 2-4 words maximum
 - Make it descriptive but concise
 - Use Title Case (capitalize each word)
 - Do NOT include words like "App", "Application", "Project", "System" unless essential
 - Focus on the core functionality or domain
 
+Rules for the description:
+- One sentence, under 100 characters
+- Describe what the project does, not how
+
 Examples:
-- "create a todo app" → "Task Tracker"
-- "build a recipe manager" → "Recipe Book"
-- "make a chat application with video calls" → "Video Chat"
-- "create an e-commerce site for selling plants" → "Plant Shop"
-- "build a dashboard for monitoring servers" → "Server Monitor"`,
+- "create a todo app" → {"title": "Task Tracker", "description": "Organize and track daily tasks and to-dos."}
+- "build a recipe manager" → {"title": "Recipe Book", "description": "Store and browse your favorite recipes."}
+- "make a chat application with video calls" → {"title": "Video Chat", "description": "Real-time messaging with video call support."}
+- "build a dashboard for monitoring servers" → {"title": "Server Monitor", "description": "Monitor server health and performance metrics."}`,
       prompt: prompt.trim(),
     })
 
-    // Extract and clean the name
-    const name = result.text.trim().replace(/['"]/g, '') || 'New Project'
+    let name = 'New Project'
+    let description = ''
+    try {
+      // Strip markdown code fences if present (e.g. ```json ... ```)
+      let jsonText = result.text.trim()
+      jsonText = jsonText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
+      const parsed = JSON.parse(jsonText)
+      name = (parsed.title || '').replace(/['"]/g, '').trim() || 'New Project'
+      description = (parsed.description || '').trim()
+    } catch {
+      name = result.text.trim().replace(/['"]/g, '').replace(/```(?:json)?/gi, '').trim() || 'New Project'
+    }
 
     // Track credit usage (fire-and-forget, small cost for Haiku)
     if (workspaceId) {
@@ -2938,12 +2953,25 @@ Examples:
       }
     }
 
-    return c.json({ name })
+    // When projectId is provided, persist the generated name and description
+    if (projectId) {
+      try {
+        await prisma.project.update({
+          where: { id: projectId },
+          data: { name, description },
+        })
+        console.log(`[/api/generate-project-name] Updated project ${projectId}: "${name}"`)
+      } catch (dbErr) {
+        console.error('[/api/generate-project-name] Failed to update project:', dbErr)
+      }
+    }
+
+    return c.json({ name, description })
   } catch (error: any) {
     console.error('[/api/generate-project-name] Error:', error)
-    // Fall back to simple extraction on any error - return 200 with fallback name
-    const { prompt } = await c.req.json().catch(() => ({ prompt: '' }))
-    return c.json({ name: fallbackGenerateProjectName(prompt || '') })
+    const body = await c.req.json().catch(() => ({ prompt: '' }))
+    const name = fallbackGenerateProjectName(body.prompt || '')
+    return c.json({ name, description: '' })
   }
 })
 

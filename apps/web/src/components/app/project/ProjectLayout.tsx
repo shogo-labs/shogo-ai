@@ -68,6 +68,7 @@ interface TransitionLocationState {
   chatSessionId?: string
   initialMessage?: string
   initialImageData?: string[]
+  fromTemplate?: string
   // Transition animation data
   transitionStartRect?: SerializedRect
   transitionPromptText?: string
@@ -449,6 +450,46 @@ export const ProjectLayout = observer(function ProjectLayout() {
       cancelled = true
     }
   }, [projectId, domainsReady, store, session?.user?.id, project?.id])
+
+  // Background AI project name generation — runs once after project created from a prompt.
+  // Calls Claude Haiku to generate a better name + description, then updates the project.
+  // Skipped for template-based projects (they already have good names).
+  const hasGeneratedNameRef = useRef(false)
+  useEffect(() => {
+    const prompt = transitionState?.initialMessage
+    if (
+      !prompt ||
+      !projectId ||
+      transitionState?.fromTemplate ||
+      hasGeneratedNameRef.current
+    ) return
+
+    hasGeneratedNameRef.current = true
+
+    const workspaceId = store?.projectCollection?.all?.find((p: any) => p.id === projectId)?.workspaceId
+      ?? (project as any)?.workspaceId
+    const userId = session?.user?.id
+
+    fetch('/api/generate-project-name', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, projectId, workspaceId, userId }),
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.name) {
+          setProject((prev: any) => prev ? { ...prev, name: data.name, description: data.description || prev.description } : prev)
+          actions.updateProject(projectId, {
+            name: data.name,
+            ...(data.description ? { description: data.description } : {}),
+          }).catch(() => {})
+        }
+      })
+      .catch((err) => {
+        console.warn('[ProjectLayout] Background project name generation failed:', err)
+      })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, transitionState])
 
   // Get chat sessions for this project (synchronous - uses in-memory data from SDK store)
   const projectChatSessions: ChatSessionItem[] = projectId
