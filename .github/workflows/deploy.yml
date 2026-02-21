@@ -428,15 +428,21 @@ jobs:
           
           echo "✅ Anthropic credentials created/updated in ${{ env.NS_WORKSPACES }} namespace"
 
+      - name: Save current Knative service images
+        id: save-images
+        run: |
+          get_image() {
+            kubectl get ksvc "$1" -n "$2" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo ""
+          }
+          echo "web_image=$(get_image studio ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
+          echo "api_image=$(get_image api ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
+          echo "mcp_image=$(get_image mcp-workspace ${{ env.NS_WORKSPACES }})" >> $GITHUB_OUTPUT
+          echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
+
       - name: Apply Kubernetes manifests
         run: |
-          # Apply RBAC and other configurations from kustomize overlay
-          # This ensures ServiceAccounts, ClusterRoles, and ClusterRoleBindings are created
           echo "📦 Applying Kubernetes manifests for ${{ env.ENVIRONMENT }}"
-          
-          # Apply the staging overlay which includes RBAC for publish feature
           kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/ || true
-          
           echo "✅ Kubernetes manifests applied"
 
       - name: Deploy Knative services
@@ -446,69 +452,43 @@ jobs:
           API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
           MCP_CHANGED: ${{ needs.detect-changes.outputs.mcp_changed }}
           DOCS_CHANGED: ${{ needs.detect-changes.outputs.docs_changed }}
+          PREV_WEB_IMAGE: ${{ steps.save-images.outputs.web_image }}
+          PREV_API_IMAGE: ${{ steps.save-images.outputs.api_image }}
+          PREV_MCP_IMAGE: ${{ steps.save-images.outputs.mcp_image }}
+          PREV_DOCS_IMAGE: ${{ steps.save-images.outputs.docs_image }}
         run: |
+          # Patch a ksvc: use new SHA tag if changed, otherwise restore the
+          # pre-kustomize image so the apply doesn't silently downgrade it.
+          patch_ksvc() {
+            local name=$1 ns=$2 ecr_name=$3 changed=$4 prev=$5
+            if [ "$changed" = "true" ]; then
+              echo "🔄 Deploying $name → ${{ env.IMAGE_TAG }}"
+              kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
+                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${ECR_REGISTRY}/shogo/${ecr_name}:${{ env.IMAGE_TAG }}\"}
+              ]" || echo "$name service not found, may need terraform apply first"
+            elif [ -n "$prev" ]; then
+              echo "📌 Restoring $name → $prev (no changes, undoing kustomize reset)"
+              kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
+                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${prev}\"}
+              ]" || true
+            else
+              echo "⏭️ Skipping $name (not found)"
+            fi
+          }
+
           echo "📦 Updating images for ${{ env.ENVIRONMENT }}"
-          
-          if [ "$WEB_CHANGED" = "true" ]; then
-            kubectl patch ksvc studio -n ${{ env.NS_SYSTEM }} --type='json' -p="[
-              {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${ECR_REGISTRY}/shogo/shogo-web:${{ env.IMAGE_TAG }}\"}
-            ]" || echo "Studio service not found, may need terraform apply first"
-          else
-            echo "⏭️ Skipping studio (no web changes)"
-          fi
-          
-          if [ "$API_CHANGED" = "true" ]; then
-            kubectl patch ksvc api -n ${{ env.NS_SYSTEM }} --type='json' -p="[
-              {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${ECR_REGISTRY}/shogo/shogo-api:${{ env.IMAGE_TAG }}\"}
-            ]" || echo "API service not found, may need terraform apply first"
-          else
-            echo "⏭️ Skipping api (no api changes)"
-          fi
-          
-          if [ "$MCP_CHANGED" = "true" ]; then
-            kubectl patch ksvc mcp-workspace -n ${{ env.NS_WORKSPACES }} --type='json' -p="[
-              {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${ECR_REGISTRY}/shogo/shogo-mcp:${{ env.IMAGE_TAG }}\"}
-            ]" || echo "MCP service not found, may need terraform apply first"
-          else
-            echo "⏭️ Skipping mcp (no mcp changes)"
-          fi
-          
-          if [ "$DOCS_CHANGED" = "true" ]; then
-            kubectl patch ksvc docs -n ${{ env.NS_SYSTEM }} --type='json' -p="[
-              {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${ECR_REGISTRY}/shogo/shogo-docs:${{ env.IMAGE_TAG }}\"}
-            ]" || echo "Docs service not found, may need terraform apply first"
-          else
-            echo "⏭️ Skipping docs (no docs changes)"
-          fi
+          patch_ksvc studio       "${{ env.NS_SYSTEM }}"     shogo-web  "$WEB_CHANGED"  "$PREV_WEB_IMAGE"
+          patch_ksvc api          "${{ env.NS_SYSTEM }}"     shogo-api  "$API_CHANGED"  "$PREV_API_IMAGE"
+          patch_ksvc mcp-workspace "${{ env.NS_WORKSPACES }}" shogo-mcp  "$MCP_CHANGED"  "$PREV_MCP_IMAGE"
+          patch_ksvc docs         "${{ env.NS_SYSTEM }}"     shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
 
       - name: Wait for rollout
-        env:
-          WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
-          API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
-          MCP_CHANGED: ${{ needs.detect-changes.outputs.mcp_changed }}
-          DOCS_CHANGED: ${{ needs.detect-changes.outputs.docs_changed }}
         run: |
           echo "⏳ Waiting for service rollouts in ${{ env.ENVIRONMENT }}..."
-          
-          if [ "$WEB_CHANGED" = "true" ]; then
-            echo "Waiting for studio rollout..."
-            kubectl wait --for=condition=ready ksvc/studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
-          fi
-          
-          if [ "$API_CHANGED" = "true" ]; then
-            echo "Waiting for api rollout..."
-            kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
-          fi
-          
-          if [ "$MCP_CHANGED" = "true" ]; then
-            echo "Waiting for mcp rollout..."
-            kubectl wait --for=condition=ready ksvc/mcp-workspace -n ${{ env.NS_WORKSPACES }} --timeout=300s || true
-          fi
-          
-          if [ "$DOCS_CHANGED" = "true" ]; then
-            echo "Waiting for docs rollout..."
-            kubectl wait --for=condition=ready ksvc/docs -n ${{ env.NS_SYSTEM }} --timeout=300s || true
-          fi
+          kubectl wait --for=condition=ready ksvc/studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          kubectl wait --for=condition=ready ksvc/mcp-workspace -n ${{ env.NS_WORKSPACES }} --timeout=300s || true
+          kubectl wait --for=condition=ready ksvc/docs -n ${{ env.NS_SYSTEM }} --timeout=300s || true
 
       - name: Restart image prepuller
         if: needs.detect-changes.outputs.project_runtime_changed == 'true' || needs.detect-changes.outputs.agent_runtime_changed == 'true'
@@ -521,20 +501,17 @@ jobs:
 
       - name: Verify deployment
         run: |
-          echo "=== Knative Services Status (${{ env.NS_SYSTEM }}) ==="
+          echo "=== Knative Services (${{ env.NS_SYSTEM }}) ==="
           kubectl get ksvc -n ${{ env.NS_SYSTEM }}
           echo ""
-          echo "=== Knative Services Status (${{ env.NS_WORKSPACES }}) ==="
-          kubectl get ksvc -n ${{ env.NS_WORKSPACES }}
+          echo "=== Workspace Services (count) ==="
+          TOTAL=$(kubectl get ksvc -n ${{ env.NS_WORKSPACES }} --no-headers 2>/dev/null | wc -l)
+          READY=$(kubectl get ksvc -n ${{ env.NS_WORKSPACES }} --no-headers 2>/dev/null | awk '$3=="True"' | wc -l)
+          FAILED=$(kubectl get ksvc -n ${{ env.NS_WORKSPACES }} --no-headers 2>/dev/null | awk '$3=="False"' | wc -l)
+          echo "Total: $TOTAL | Ready: $READY | Failed: $FAILED"
           echo ""
-          echo "=== Domain Mappings ==="
-          kubectl get domainmapping -n ${{ env.NS_SYSTEM }}
-          echo ""
-          echo "=== Pods Status (${{ env.NS_SYSTEM }}) ==="
+          echo "=== Pods (${{ env.NS_SYSTEM }}) ==="
           kubectl get pods -n ${{ env.NS_SYSTEM }}
-          echo ""
-          echo "=== Image Prepuller Status ==="
-          kubectl get pods -n ${{ env.NS_SYSTEM }} -l app.kubernetes.io/name=image-prepuller -o wide
 
       - name: Post-deploy health check
         if: env.ENVIRONMENT == 'staging'

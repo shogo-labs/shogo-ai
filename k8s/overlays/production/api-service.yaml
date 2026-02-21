@@ -20,6 +20,7 @@ spec:
       containers:
         - name: api
           image: shogo-api  # Replaced by kustomize
+          imagePullPolicy: Always
           ports:
             - containerPort: 8002
           env:

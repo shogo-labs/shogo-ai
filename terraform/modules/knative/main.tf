@@ -166,7 +166,7 @@ resource "null_resource" "kourier_alb" {
 # Configure Knative via kubectl (ConfigMaps)
 # -----------------------------------------------------------------------------
 variable "ecr_registry" {
-  description = "ECR registry URL to skip tag resolution for (e.g., 123456789.dkr.ecr.us-east-1.amazonaws.com)"
+  description = "ECR registry URL to skip tag resolution for. Required because the Knative controller lacks ECR auth to resolve tags to digests. The deploy workflow compensates by always using immutable SHA-based image tags."
   type        = string
   default     = ""
 }
@@ -203,8 +203,10 @@ resource "null_resource" "knative_config" {
         --type merge \
         --patch '{"data":{"enable-scale-to-zero":"true","scale-to-zero-grace-period":"${var.scale_to_zero_grace_period}","scale-to-zero-pod-retention-period":"0s"}}'
       
-      # Configure ECR registry to skip tag resolution (avoids controller needing ECR auth)
-      # This allows Knative to use image tags directly without resolving to digests
+      # Skip tag-to-digest resolution for ECR (controller lacks ECR auth).
+      # IMPORTANT: Because of this, mutable tags like "staging-latest" will use
+      # the node's cached image (imagePullPolicy: IfNotPresent). The deploy
+      # workflow must always set SHA-specific immutable tags via kubectl patch.
       %{if var.ecr_registry != ""}
       kubectl patch configmap/config-deployment \
         --namespace knative-serving \

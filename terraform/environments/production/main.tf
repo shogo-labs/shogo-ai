@@ -661,7 +661,8 @@ resource "kubernetes_storage_class" "ebs_sc" {
 
 locals {
   ecr_registry = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"
-  image_tag    = "${var.environment}-latest"
+  # Fallback tag for initial Terraform deploys; CI/CD overrides with SHA-specific tags.
+  image_tag = "${var.environment}-latest"
 }
 
 # Deploy all Knative services and domain mappings
@@ -709,6 +710,7 @@ resource "null_resource" "knative_services" {
             containers:
               - name: web
                 image: ${local.ecr_registry}/shogo/shogo-web:${local.image_tag}
+                imagePullPolicy: Always
                 ports:
                   - containerPort: 80
                 env:
@@ -751,6 +753,7 @@ resource "null_resource" "knative_services" {
             containers:
               - name: api
                 image: ${local.ecr_registry}/shogo/shogo-api:${local.image_tag}
+                imagePullPolicy: Always
                 ports:
                   - containerPort: 8002
                 env:
@@ -842,6 +845,7 @@ resource "null_resource" "knative_services" {
             containers:
               - name: mcp
                 image: ${local.ecr_registry}/shogo/shogo-mcp:${local.image_tag}
+                imagePullPolicy: Always
                 ports:
                   - containerPort: 8080
                 env:

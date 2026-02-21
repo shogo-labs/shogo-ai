@@ -21,6 +21,7 @@ spec:
       containers:
         - name: docs
           image: shogo-docs  # Replaced by kustomize
+          imagePullPolicy: Always
           ports:
             - containerPort: 80
           resources:

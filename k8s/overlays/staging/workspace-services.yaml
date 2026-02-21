@@ -28,6 +28,7 @@ spec:
       containers:
         - name: mcp
           image: shogo-mcp  # Replaced by kustomize
+          imagePullPolicy: Always
           ports:
             - containerPort: 8080
               protocol: TCP
