@@ -950,6 +950,8 @@ export const ProjectLayout = observer(function ProjectLayout() {
           onOpenCode={() => setPreviewMode('code')}
           isOpeningExternal={isOpeningExternal}
           isAgentProject={isAgentProject}
+          previewMode={previewMode}
+          onPreviewModeChange={setPreviewMode}
           projectSubtitle={isAgentProject ? "Agent project" : undefined}
           syncProjectId={isDesktop() && isAgentProject ? projectId : undefined}
           // Publish callbacks
@@ -1041,47 +1043,39 @@ export const ProjectLayout = observer(function ProjectLayout() {
 
           {/* Preview/Workspace Container - with border styling */}
           <div className="flex-1 min-w-0 overflow-hidden p-3 bg-muted/30">
-            {/* Preview Mode Toggle (subtle tabs) - different for App vs Agent */}
-            <div className="flex items-center gap-1 mb-2">
-              {(isAgentProject
-                ? [
-                    { id: 'dynamic-app', label: 'Canvas' },
-                    { id: 'setup', label: 'Setup Wizard' },
-                    { id: 'workspace', label: 'Workspace' },
-                    { id: 'skills', label: 'Skills' },
-                    { id: 'mcp-servers', label: 'MCP Servers' },
-                    { id: 'heartbeat', label: 'Heartbeat' },
-                    { id: 'channels', label: 'Channels' },
-                    { id: 'analytics', label: 'Analytics' },
-                    { id: 'logs', label: 'Logs' },
-                  ]
-                : [
-                    { id: 'runtime', label: 'Preview' },
-                    { id: 'code', label: 'Code' },
-                    { id: 'terminal', label: 'Terminal' },
-                    { id: 'database', label: 'Database' },
-                    { id: 'tests', label: 'Tests' },
-                    { id: 'security', label: 'Security' },
-                    { id: 'history', label: 'History' },
-                  ]
-              ).map((tab) => (
-                <button
-                  key={tab.id}
-                  onClick={() => setPreviewMode(tab.id)}
-                  className={cn(
-                    "px-3 py-1 text-xs font-medium rounded-md transition-colors",
-                    previewMode === tab.id
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                  )}
-                >
-                  {tab.label}
-                </button>
-              ))}
-            </div>
+            {/* Preview Mode Toggle (subtle tabs) - only for App projects; Agent tabs are in ProjectTopBar */}
+            {!isAgentProject && (
+              <div className="flex items-center gap-1 mb-2">
+                {[
+                  { id: 'runtime', label: 'Preview' },
+                  { id: 'code', label: 'Code' },
+                  { id: 'terminal', label: 'Terminal' },
+                  { id: 'database', label: 'Database' },
+                  { id: 'tests', label: 'Tests' },
+                  { id: 'security', label: 'Security' },
+                  { id: 'history', label: 'History' },
+                ].map((tab) => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setPreviewMode(tab.id)}
+                    className={cn(
+                      "px-3 py-1 text-xs font-medium rounded-md transition-colors",
+                      previewMode === tab.id
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                    )}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            )}
 
             {/* Preview Frame with border - all panels stay mounted for state persistence */}
-            <div className="h-[calc(100%-32px)] w-full rounded-lg border border-border/40 bg-background shadow-sm overflow-hidden relative">
+            <div className={cn(
+              "w-full rounded-lg border border-border/40 bg-background shadow-sm overflow-hidden relative",
+              isAgentProject ? "h-full" : "h-[calc(100%-32px)]"
+            )}>
               {/* Runtime Preview - stays mounted to preserve iframe state */}
               <div className={cn(
                 "absolute inset-0",

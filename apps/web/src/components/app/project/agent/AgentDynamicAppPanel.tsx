@@ -2,15 +2,69 @@
  * AgentDynamicAppPanel
  *
  * Panel wrapper that connects to the agent runtime's SSE stream and renders
- * all active surfaces.
+ * all active surfaces. Supports per-project theme switching for the canvas.
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, type CSSProperties } from 'react'
 import { cn } from '@/lib/utils'
 import { LayoutDashboard, Wifi, WifiOff, RefreshCw } from 'lucide-react'
 import { useDynamicAppStream } from './dynamic-app/use-dynamic-app-stream'
 import { MultiSurfaceRenderer } from './dynamic-app/DynamicAppRenderer'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { ThemeSelector } from '@/components/app/shared/ThemeSelector'
+import { getThemeById, getDefaultTheme } from '@/lib/themes/presets'
+import type { ThemeColors } from '@/lib/themes/types'
+
+function getCanvasThemeStorageKey(projectId: string) {
+  return `shogo-canvas-theme-${projectId}`
+}
+
+function hsl(v: string) { return `hsl(${v})` }
+
+function themeColorsToStyleVars(colors: ThemeColors): CSSProperties {
+  // Must set both --<name> (raw CSS vars) AND --color-<name> (Tailwind v4 @theme vars)
+  // because Tailwind v4 @theme registered properties resolve at :root, not at the element
+  return {
+    '--background': hsl(colors.background),
+    '--foreground': hsl(colors.foreground),
+    '--card': hsl(colors.card.DEFAULT),
+    '--card-foreground': hsl(colors.card.foreground),
+    '--popover': hsl(colors.popover.DEFAULT),
+    '--popover-foreground': hsl(colors.popover.foreground),
+    '--primary': hsl(colors.primary.DEFAULT),
+    '--primary-foreground': hsl(colors.primary.foreground),
+    '--secondary': hsl(colors.secondary.DEFAULT),
+    '--secondary-foreground': hsl(colors.secondary.foreground),
+    '--muted': hsl(colors.muted.DEFAULT),
+    '--muted-foreground': hsl(colors.muted.foreground),
+    '--accent': hsl(colors.accent.DEFAULT),
+    '--accent-foreground': hsl(colors.accent.foreground),
+    '--destructive': hsl(colors.destructive.DEFAULT),
+    '--destructive-foreground': hsl(colors.destructive.foreground),
+    '--border': hsl(colors.border),
+    '--input': hsl(colors.input),
+    '--ring': hsl(colors.ring),
+    '--color-background': hsl(colors.background),
+    '--color-foreground': hsl(colors.foreground),
+    '--color-card': hsl(colors.card.DEFAULT),
+    '--color-card-foreground': hsl(colors.card.foreground),
+    '--color-popover': hsl(colors.popover.DEFAULT),
+    '--color-popover-foreground': hsl(colors.popover.foreground),
+    '--color-primary': hsl(colors.primary.DEFAULT),
+    '--color-primary-foreground': hsl(colors.primary.foreground),
+    '--color-secondary': hsl(colors.secondary.DEFAULT),
+    '--color-secondary-foreground': hsl(colors.secondary.foreground),
+    '--color-muted': hsl(colors.muted.DEFAULT),
+    '--color-muted-foreground': hsl(colors.muted.foreground),
+    '--color-accent': hsl(colors.accent.DEFAULT),
+    '--color-accent-foreground': hsl(colors.accent.foreground),
+    '--color-destructive': hsl(colors.destructive.DEFAULT),
+    '--color-destructive-foreground': hsl(colors.destructive.foreground),
+    '--color-border': hsl(colors.border),
+    '--color-input': hsl(colors.input),
+    '--color-ring': hsl(colors.ring),
+  } as CSSProperties
+}
 
 interface AgentDynamicAppPanelProps {
   projectId: string
@@ -20,6 +74,47 @@ interface AgentDynamicAppPanelProps {
 
 export function AgentDynamicAppPanel({ projectId, visible, localAgentUrl }: AgentDynamicAppPanelProps) {
   const [agentUrl, setAgentUrl] = useState<string | null>(null)
+
+  // Canvas theme state, persisted per project
+  const [canvasThemeId, setCanvasThemeId] = useState<string>(() => {
+    if (!projectId) return 'default'
+    try {
+      return localStorage.getItem(getCanvasThemeStorageKey(projectId)) || 'default'
+    } catch {
+      return 'default'
+    }
+  })
+
+  const handleSelectTheme = (themeId: string) => {
+    setCanvasThemeId(themeId)
+    try {
+      localStorage.setItem(getCanvasThemeStorageKey(projectId), themeId)
+    } catch {}
+  }
+
+  // Detect dark mode
+  const [isDark, setIsDark] = useState(() =>
+    document.documentElement.classList.contains('dark')
+  )
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      setIsDark(document.documentElement.classList.contains('dark'))
+    })
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+    return () => observer.disconnect()
+  }, [])
+
+  // Build scoped CSS variables for the canvas content
+  const canvasThemeStyle = useMemo(() => {
+    const theme = getThemeById(canvasThemeId) ?? getDefaultTheme()
+    const colors = isDark ? theme.dark : theme.light
+    return {
+      ...themeColorsToStyleVars(colors),
+      '--radius': `${theme.effects?.radius ?? '0.5'}rem`,
+      backgroundColor: hsl(colors.background),
+      color: hsl(colors.foreground),
+    } as CSSProperties
+  }, [canvasThemeId, isDark])
 
   useEffect(() => {
     if (localAgentUrl) {
@@ -64,6 +159,11 @@ export function AgentDynamicAppPanel({ projectId, visible, localAgentUrl }: Agen
           )}
         </div>
         <div className="flex items-center gap-2">
+          <ThemeSelector
+            selectedThemeId={canvasThemeId}
+            onSelectTheme={handleSelectTheme}
+            variant="compact"
+          />
           {error && (
             <span className="text-xs text-amber-500">{error}</span>
           )}
@@ -86,8 +186,8 @@ export function AgentDynamicAppPanel({ projectId, visible, localAgentUrl }: Agen
         </div>
       </div>
 
-      {/* Content Area */}
-      <div className="flex-1 overflow-hidden">
+      {/* Content Area — scoped theme via CSS variables */}
+      <div className="flex-1 overflow-hidden rounded-b-lg" style={canvasThemeStyle}>
         {hasSurfaces ? (
           <ScrollArea className="h-full">
             <MultiSurfaceRenderer

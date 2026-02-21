@@ -69,6 +69,8 @@ export interface ProjectTopBarProps {
   onOpenCode?: () => void
   isOpeningExternal?: boolean
   isAgentProject?: boolean
+  previewMode?: string
+  onPreviewModeChange?: (mode: string) => void
   /** Project ID for sync — only used in desktop mode */
   syncProjectId?: string
   className?: string
@@ -113,6 +115,8 @@ export function ProjectTopBar({
   onOpenCode,
   isOpeningExternal = false,
   isAgentProject = false,
+  previewMode,
+  onPreviewModeChange,
   syncProjectId,
   className,
 }: ProjectTopBarProps) {
@@ -225,20 +229,48 @@ export function ProjectTopBar({
         </Button>
       </div>
 
-      {/* Center Section: Preview controls (hidden for agent projects) */}
-      {!isAgentProject && <div className="hidden md:flex items-center">
-        <PreviewControls
-          currentViewport={currentViewport}
-          onViewportChange={onViewportChange}
-          currentRoute={currentRoute}
-          onRouteChange={onRouteChange}
-          onRefresh={onRefresh}
-          onOpenPreview={onOpenPreview}
-          onOpenExternal={onOpenExternal}
-          onOpenCode={onOpenCode}
-          isOpeningExternal={isOpeningExternal}
-        />
-      </div>}
+      {/* Center Section: Agent tabs or Preview controls */}
+      {isAgentProject ? (
+        <div className="hidden md:flex items-center gap-0.5">
+          {[
+            { id: 'dynamic-app', label: 'Canvas' },
+            { id: 'workspace', label: 'Workspace' },
+            { id: 'skills', label: 'Skills' },
+            { id: 'mcp-servers', label: 'MCP Servers' },
+            { id: 'heartbeat', label: 'Heartbeat' },
+            { id: 'channels', label: 'Channels' },
+            { id: 'analytics', label: 'Analytics' },
+            { id: 'logs', label: 'Logs' },
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => onPreviewModeChange?.(tab.id)}
+              className={cn(
+                "px-2.5 py-1 text-xs font-medium rounded-md transition-colors",
+                previewMode === tab.id
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted"
+              )}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div className="hidden md:flex items-center">
+          <PreviewControls
+            currentViewport={currentViewport}
+            onViewportChange={onViewportChange}
+            currentRoute={currentRoute}
+            onRouteChange={onRouteChange}
+            onRefresh={onRefresh}
+            onOpenPreview={onOpenPreview}
+            onOpenExternal={onOpenExternal}
+            onOpenCode={onOpenCode}
+            isOpeningExternal={isOpeningExternal}
+          />
+        </div>
+      )}
 
       {/* Right Section: Sync, Share, GitHub, Upgrade, Publish */}
       <div className="flex items-center gap-1.5">
