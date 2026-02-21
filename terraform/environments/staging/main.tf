@@ -38,10 +38,10 @@ terraform {
 
   # Remote state backend (recommended)
   backend "s3" {
-    bucket         = "shogo-terraform-state"
-    key            = "staging/terraform.tfstate"
-    region         = "us-east-1"
-    encrypt        = true
+    bucket  = "shogo-terraform-state"
+    key     = "staging/terraform.tfstate"
+    region  = "us-east-1"
+    encrypt = true
     # dynamodb_table = "shogo-terraform-locks"  # Optional: enables state locking
   }
 }
@@ -207,7 +207,7 @@ module "eks" {
   node_desired_size   = var.node_desired_size
   node_min_size       = var.node_min_size
   node_max_size       = var.node_max_size
-  node_disk_size      = 50  # GB - increased from 20GB default to handle large container images
+  node_disk_size      = 50 # GB - increased from 20GB default to handle large container images
 
   # Enable secondary node group for additional capacity (matching deployed config)
   enable_secondary_node_group = var.enable_secondary_node_group
@@ -223,6 +223,186 @@ module "eks" {
   tags = {
     Environment = var.environment
   }
+}
+
+# -----------------------------------------------------------------------------
+# Karpenter (intelligent node provisioning)
+# -----------------------------------------------------------------------------
+# Karpenter replaces cluster-autoscaler with faster scheduling decisions (~15s).
+# Managed node group handles system workloads; Karpenter handles workspace pods.
+# -----------------------------------------------------------------------------
+module "karpenter" {
+  count  = var.bootstrap_mode ? 0 : 1
+  source = "../../modules/karpenter"
+
+  depends_on = [module.eks]
+
+  cluster_name      = module.eks.cluster_name
+  cluster_arn       = module.eks.cluster_arn
+  cluster_endpoint  = module.eks.cluster_endpoint
+  oidc_provider_arn = module.eks.oidc_provider_arn
+  oidc_provider_url = module.eks.oidc_provider_url
+  node_role_arn     = module.eks.node_role_arn
+  node_role_name    = module.eks.node_role_name
+
+  tags = {
+    Environment = var.environment
+  }
+}
+
+# EKS access entry for Karpenter-launched nodes (allows them to join the cluster)
+resource "aws_eks_access_entry" "karpenter_nodes" {
+  count = var.bootstrap_mode ? 0 : 1
+
+  cluster_name  = module.eks.cluster_name
+  principal_arn = module.eks.node_role_arn
+  type          = "EC2_LINUX"
+
+  depends_on = [module.eks]
+}
+
+# Karpenter Helm release
+resource "helm_release" "karpenter" {
+  count = var.bootstrap_mode ? 0 : 1
+
+  namespace        = "kube-system"
+  name             = "karpenter"
+  repository       = "oci://public.ecr.aws/karpenter"
+  chart            = "karpenter"
+  version          = "1.1.1"
+  wait             = true
+  create_namespace = false
+
+  values = [yamlencode({
+    settings = {
+      clusterName       = module.eks.cluster_name
+      clusterEndpoint   = module.eks.cluster_endpoint
+      interruptionQueue = module.karpenter[0].queue_name
+    }
+    serviceAccount = {
+      annotations = {
+        "eks.amazonaws.com/role-arn" = module.karpenter[0].controller_role_arn
+      }
+    }
+    controller = {
+      resources = {
+        requests = {
+          cpu    = "100m"
+          memory = "256Mi"
+        }
+        limits = {
+          cpu    = "500m"
+          memory = "512Mi"
+        }
+      }
+    }
+    replicas = 1
+  })]
+
+  depends_on = [
+    module.eks,
+    module.karpenter[0],
+  ]
+}
+
+# Karpenter NodePool + EC2NodeClass — deployed via kubectl after Helm installs CRDs
+resource "null_resource" "karpenter_node_pool" {
+  count = var.bootstrap_mode ? 0 : 1
+
+  triggers = {
+    node_pool_hash = sha256(jsonencode({
+      instance_types = ["t3.xlarge", "t3.2xlarge", "m5.xlarge", "m5.2xlarge"]
+      cluster_name   = module.eks.cluster_name
+      node_role_name = module.eks.node_role_name
+      node_sg        = module.eks.node_security_group_id
+      eks_sg         = module.eks.eks_managed_security_group_id
+    }))
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      echo "Waiting for Karpenter CRDs..."
+      for i in $(seq 1 30); do
+        if kubectl get crd nodepools.karpenter.sh > /dev/null 2>&1; then
+          echo "Karpenter CRDs ready"
+          break
+        fi
+        echo "Waiting for CRDs... (attempt $i)"
+        sleep 5
+      done
+
+      echo "Deploying Karpenter NodePool and EC2NodeClass..."
+      cat <<EOF | kubectl apply -f -
+      apiVersion: karpenter.k8s.aws/v1
+      kind: EC2NodeClass
+      metadata:
+        name: workload
+      spec:
+        amiSelectorTerms:
+          - alias: bottlerocket@latest
+        role: ${module.eks.node_role_name}
+        subnetSelectorTerms:
+          - tags:
+              kubernetes.io/cluster/${module.eks.cluster_name}: shared
+              kubernetes.io/role/internal-elb: "1"
+        securityGroupSelectorTerms:
+          - id: ${module.eks.node_security_group_id}
+          - id: ${module.eks.eks_managed_security_group_id}
+        blockDeviceMappings:
+          - deviceName: /dev/xvdb
+            ebs:
+              volumeSize: 50Gi
+              volumeType: gp3
+              encrypted: true
+              deleteOnTermination: true
+        metadataOptions:
+          httpEndpoint: enabled
+          httpProtocolIPv6: disabled
+          httpPutResponseHopLimit: 2
+          httpTokens: required
+        tags:
+          karpenter.sh/discovery: ${module.eks.cluster_name}
+          Environment: ${var.environment}
+          ManagedBy: karpenter
+      ---
+      apiVersion: karpenter.sh/v1
+      kind: NodePool
+      metadata:
+        name: workload
+      spec:
+        template:
+          metadata:
+            labels:
+              node.kubernetes.io/purpose: workload
+          spec:
+            nodeClassRef:
+              group: karpenter.k8s.aws
+              kind: EC2NodeClass
+              name: workload
+            requirements:
+              - key: kubernetes.io/arch
+                operator: In
+                values: ["amd64"]
+              - key: karpenter.sh/capacity-type
+                operator: In
+                values: ["on-demand"]
+              - key: node.kubernetes.io/instance-type
+                operator: In
+                values: ["t3.xlarge", "t3.2xlarge", "m5.xlarge", "m5.2xlarge"]
+            expireAfter: 720h
+        disruption:
+          consolidationPolicy: WhenEmpty
+          consolidateAfter: 30s
+        limits:
+          cpu: "64"
+          memory: 256Gi
+      EOF
+
+      echo "Karpenter NodePool and EC2NodeClass deployed"
+    EOT
+  }
+
+  depends_on = [helm_release.karpenter[0]]
 }
 
 # -----------------------------------------------------------------------------
@@ -1037,7 +1217,7 @@ resource "null_resource" "knative_services" {
     image_tag    = local.image_tag
     ecr_registry = local.ecr_registry
     # Force redeploy: bumped API memory from 512Mi to 2Gi
-    api_memory   = "2Gi"
+    api_memory = "2Gi"
     # Add timestamp trigger for manual refresh (uncomment to force redeploy)
     # timestamp = timestamp()
   }
@@ -1188,6 +1368,9 @@ resource "null_resource" "knative_services" {
                     value: "10"
                   - name: WARM_POOL_MIN_AGENTS
                     value: "2"
+                  # Karpenter handles workspace node provisioning — proactive scaler defers to it
+                  - name: KARPENTER_ENABLED
+                    value: "true"
                   # Proactive node scaling — scale ASG before pods go Pending
                   - name: EKS_ASG_NAME
                     value: "${module.eks.cluster_name}-main"
@@ -1414,10 +1597,10 @@ resource "kubernetes_secret" "publish_config" {
   }
 
   data = {
-    "bucket-name"      = module.publish_hosting[0].bucket_name
-    "cloudfront-id"    = module.publish_hosting[0].cloudfront_distribution_id
-    "publish-domain"   = var.publish_domain
-    "region"           = var.aws_region
+    "bucket-name"    = module.publish_hosting[0].bucket_name
+    "cloudfront-id"  = module.publish_hosting[0].cloudfront_distribution_id
+    "publish-domain" = var.publish_domain
+    "region"         = var.aws_region
   }
 }
 

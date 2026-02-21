@@ -110,9 +110,9 @@ resource "null_resource" "kourier" {
 locals {
   # Combine certificate ARNs if provided (comma-separated for ALB SNI)
   # Supports: primary (*.shogo.ai), publish (*.shogo.one), preview (*.staging.shogo.ai)
-  ssl_certs = compact([var.ssl_certificate_arn, var.ssl_certificate_arn_publish, var.ssl_certificate_arn_preview])
+  ssl_certs           = compact([var.ssl_certificate_arn, var.ssl_certificate_arn_publish, var.ssl_certificate_arn_preview])
   ssl_cert_annotation = join(",", local.ssl_certs)
-  has_ssl = length(local.ssl_certs) > 0
+  has_ssl             = length(local.ssl_certs) > 0
 }
 
 # Configure Kourier to use AWS Load Balancer Controller with ALB

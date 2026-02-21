@@ -58,7 +58,7 @@ resource "helm_release" "cnpg" {
   }
 
   # Wait for CRDs to be established before marking as complete
-  wait = true
+  wait    = true
   timeout = 300
 }
 

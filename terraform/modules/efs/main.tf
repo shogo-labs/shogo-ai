@@ -37,7 +37,7 @@ variable "performance_mode" {
 variable "throughput_mode" {
   description = "EFS throughput mode: bursting, provisioned, or elastic"
   type        = string
-  default     = "elastic"  # Best for variable workloads like project DBs
+  default     = "elastic" # Best for variable workloads like project DBs
 }
 
 variable "encrypted" {

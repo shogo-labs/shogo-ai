@@ -12,11 +12,11 @@ vpc_cidr = "10.1.0.0/16"
 
 # EKS Configuration (smaller than production)
 eks_cluster_version         = "1.33"
-node_instance_types         = ["t3.xlarge"]  # 58 pod limit per node, 16GB RAM
-node_desired_size           = 2              # Need 2 nodes for system + app pods
-node_min_size               = 2              # Keep 2 minimum to avoid scheduling issues
+node_instance_types         = ["t3.xlarge"] # 58 pod limit per node, 16GB RAM
+node_desired_size           = 2             # Need 2 nodes for system + app pods
+node_min_size               = 2             # Keep 2 minimum to avoid scheduling issues
 node_max_size               = 15
-enable_secondary_node_group = false          # Disabled - was duplicate of main nodegroup, wasting vCPU quota
+enable_secondary_node_group = false # Disabled - was duplicate of main nodegroup, wasting vCPU quota
 
 # CloudNativePG Configuration
 # S3 credentials for backups (leave empty to use EKS node IAM role)
@@ -30,16 +30,16 @@ redis_node_type = "cache.t3.micro"
 # Knative Configuration
 knative_version        = "1.20.0"
 domain                 = "shogo.ai"
-ssl_certificate_domain = "*.shogo.ai"  # ACM certificate for platform (Amazon-issued)
+ssl_certificate_domain = "*.shogo.ai" # ACM certificate for platform (Amazon-issued)
 
 # Published Apps Domain (shogo.one)
 # User-published apps are served at *.shogo.one
 publish_domain                 = "shogo.one"
-ssl_certificate_domain_publish = "*.shogo.one"  # ACM certificate for published apps
+ssl_certificate_domain_publish = "*.shogo.one" # ACM certificate for published apps
 
 # Preview Subdomains (*.staging.shogo.ai)
 # Project preview iframes served at preview--{id}.staging.shogo.ai
-ssl_certificate_domain_preview = "*.staging.shogo.ai"  # ACM certificate for preview subdomains
+ssl_certificate_domain_preview = "*.staging.shogo.ai" # ACM certificate for preview subdomains
 
 # Application Secrets
 better_auth_secret = "shogo-staging-secret-key-must-be-at-least-32-characters-long"
@@ -68,6 +68,6 @@ signoz_ingestion_key = "lGsY7yWnJpyjvfUnWFaBCUarhjSjxSunI0Xv"
 signoz_namespace = "signoz"
 
 # Feature toggles (logs enabled for critical service debugging)
-signoz_enable_logs    = true   # Container logs for debugging runtime issues
-signoz_enable_events  = true   # K8s events (lightweight)
-signoz_enable_metrics = true   # Node/pod metrics (essential)
+signoz_enable_logs    = true # Container logs for debugging runtime issues
+signoz_enable_events  = true # K8s events (lightweight)
+signoz_enable_metrics = true # Node/pod metrics (essential)

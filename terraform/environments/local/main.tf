@@ -182,10 +182,10 @@ resource "kubernetes_config_map" "shogo_config" {
   }
 
   data = {
-    "s3-endpoint"          = "http://minio.shogo-system.svc.cluster.local:9000"
-    "s3-bucket"            = "shogo-schemas"
-    "s3-workspace-bucket"  = "shogo-workspaces"
-    "s3-force-path-style"  = "true"
+    "s3-endpoint"         = "http://minio.shogo-system.svc.cluster.local:9000"
+    "s3-bucket"           = "shogo-schemas"
+    "s3-workspace-bucket" = "shogo-workspaces"
+    "s3-force-path-style" = "true"
   }
 }
 
@@ -205,9 +205,9 @@ resource "kubernetes_secret" "shogo_secrets" {
 
   # Use stringData instead of data to avoid double-encoding
   data = {
-    "database-url"   = "postgres://shogo:shogo_k8s_dev@postgres.shogo-system.svc.cluster.local:5432/shogo"
-    "s3-access-key"  = "minioadmin"
-    "s3-secret-key"  = "minioadmin"
+    "database-url"  = "postgres://shogo:shogo_k8s_dev@postgres.shogo-system.svc.cluster.local:5432/shogo"
+    "s3-access-key" = "minioadmin"
+    "s3-secret-key" = "minioadmin"
   }
 }
 

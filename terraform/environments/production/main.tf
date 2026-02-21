@@ -172,7 +172,7 @@ module "eks" {
   node_desired_size   = var.node_desired_size
   node_min_size       = var.node_min_size
   node_max_size       = var.node_max_size
-  node_disk_size      = 50  # GB - increased from 20GB default to handle large container images
+  node_disk_size      = 50 # GB - increased from 20GB default to handle large container images
 
   # Enable Karpenter for workspace autoscaling
   enable_karpenter = true
@@ -530,7 +530,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "pg_backups" {
 }
 
 resource "aws_s3_bucket_public_access_block" "pg_backups" {
-  bucket = aws_s3_bucket.pg_backups.id
+  bucket                  = aws_s3_bucket.pg_backups.id
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true

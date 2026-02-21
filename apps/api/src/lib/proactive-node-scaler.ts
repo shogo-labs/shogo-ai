@@ -27,6 +27,7 @@ const scalerTracer = trace.getTracer('shogo-node-scaler')
 const AWS_REGION = process.env.AWS_REGION || process.env.S3_REGION || 'us-east-1'
 const EKS_ASG_NAME = process.env.EKS_ASG_NAME || ''
 const PROACTIVE_SCALING_ENABLED = process.env.PROACTIVE_SCALING_ENABLED !== 'false'
+const KARPENTER_ENABLED = process.env.KARPENTER_ENABLED === 'true'
 
 const NODE_HEADROOM_PODS = parseInt(process.env.NODE_HEADROOM_PODS || '10', 10)
 const NODE_MAX_SIZE = parseInt(process.env.NODE_MAX_SIZE || '15', 10)
@@ -201,6 +202,16 @@ export async function getCapacitySummary(): Promise<CapacitySummary> {
  */
 export async function ensureCapacityForPods(requiredPods: number): Promise<number> {
   if (!PROACTIVE_SCALING_ENABLED || !EKS_ASG_NAME) return 0
+
+  // When Karpenter is active, it handles node provisioning natively (~15s decisions).
+  // Skip ASG manipulation to avoid conflicting with Karpenter's scheduling.
+  // Capacity monitoring via getCapacitySummary() still works for observability.
+  if (KARPENTER_ENABLED) {
+    console.log(
+      `[NodeScaler] Karpenter enabled — skipping ASG scaling for ${requiredPods} pods (Karpenter handles provisioning)`
+    )
+    return 0
+  }
 
   return scalerTracer.startActiveSpan('node_scaler.ensure_capacity', async (span: Span) => {
     span.setAttribute('required_pods', requiredPods)

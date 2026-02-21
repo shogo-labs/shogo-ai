@@ -91,6 +91,24 @@ variable "secondary_node_max_size" {
   default     = null
 }
 
+variable "ami_type" {
+  description = "AMI type for node group (AL2_x86_64, BOTTLEROCKET_x86_64, etc.)"
+  type        = string
+  default     = "BOTTLEROCKET_x86_64"
+}
+
+variable "enable_asg_warm_pool" {
+  description = "Enable ASG warm pool for faster node scaling (keeps stopped instances ready to resume)"
+  type        = bool
+  default     = true
+}
+
+variable "asg_warm_pool_size" {
+  description = "Number of pre-initialized stopped instances in the ASG warm pool"
+  type        = number
+  default     = 2
+}
+
 variable "tags" {
   description = "Tags to apply to resources"
   type        = map(string)
@@ -263,9 +281,11 @@ resource "aws_launch_template" "node_group" {
     aws_eks_cluster.main.vpc_config[0].cluster_security_group_id
   ]
 
-  # Root volume configuration
+  # Data volume configuration
+  # Bottlerocket uses /dev/xvdb for the data partition (xvda is the immutable OS volume managed by EKS).
+  # AL2 uses /dev/xvda as the root volume.
   block_device_mappings {
-    device_name = "/dev/xvda"
+    device_name = var.ami_type == "BOTTLEROCKET_x86_64" ? "/dev/xvdb" : "/dev/xvda"
 
     ebs {
       volume_size           = var.node_disk_size
@@ -302,6 +322,7 @@ resource "aws_eks_node_group" "main" {
   subnet_ids      = var.private_subnets
 
   instance_types = var.node_instance_types
+  ami_type       = var.ami_type
   capacity_type  = "ON_DEMAND"
 
   # Use launch template to attach our security group and configure disk size
@@ -339,6 +360,43 @@ resource "aws_eks_node_group" "main" {
 }
 
 # -----------------------------------------------------------------------------
+# ASG Warm Pool (keeps stopped instances ready for fast resume)
+# EKS managed node groups don't expose a warm_pool block, so we configure
+# it via AWS CLI after the node group and its underlying ASG are created.
+# -----------------------------------------------------------------------------
+resource "null_resource" "asg_warm_pool" {
+  count = var.enable_asg_warm_pool ? 1 : 0
+
+  triggers = {
+    asg_name          = aws_eks_node_group.main.resources[0].autoscaling_groups[0].name
+    warm_pool_size    = var.asg_warm_pool_size
+    node_desired_size = var.node_desired_size
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      aws autoscaling put-warm-pool \
+        --auto-scaling-group-name "${aws_eks_node_group.main.resources[0].autoscaling_groups[0].name}" \
+        --pool-state Stopped \
+        --min-size 1 \
+        --max-group-prepared-capacity ${var.node_desired_size + var.asg_warm_pool_size} \
+        --instance-reuse-policy '{"ReuseOnScaleIn": true}'
+    EOT
+  }
+
+  provisioner "local-exec" {
+    when    = destroy
+    command = <<-EOT
+      aws autoscaling delete-warm-pool \
+        --auto-scaling-group-name "${self.triggers.asg_name}" \
+        --force-delete || true
+    EOT
+  }
+
+  depends_on = [aws_eks_node_group.main]
+}
+
+# -----------------------------------------------------------------------------
 # Secondary EKS Managed Node Group (optional, for additional capacity)
 # -----------------------------------------------------------------------------
 resource "aws_eks_node_group" "medium" {
@@ -350,6 +408,7 @@ resource "aws_eks_node_group" "medium" {
   subnet_ids      = var.private_subnets
 
   instance_types = coalesce(var.secondary_node_instance_types, var.node_instance_types)
+  ami_type       = var.ami_type
   capacity_type  = "ON_DEMAND"
 
   # Use same launch template as primary node group (includes 50GB disk)
@@ -621,4 +680,14 @@ output "node_role_name" {
 output "node_role_arn" {
   description = "IAM role ARN for EKS node group"
   value       = aws_iam_role.node_group.arn
+}
+
+output "node_group_asg_name" {
+  description = "Name of the Auto Scaling Group backing the main node group"
+  value       = aws_eks_node_group.main.resources[0].autoscaling_groups[0].name
+}
+
+output "node_instance_profile_name" {
+  description = "Instance profile name for EKS node group (used by Karpenter)"
+  value       = "${var.cluster_name}-node-group-role"
 }

@@ -141,8 +141,8 @@ resource "helm_release" "signoz_k8s_infra" {
   repository = "https://charts.signoz.io"
   chart      = "k8s-infra"
   # Omit version to use latest available, or specify a version
-  version    = var.chart_version
-  namespace  = var.namespace
+  version   = var.chart_version
+  namespace = var.namespace
 
   # Wait for namespace to be created (Terraform handles this gracefully even if count=0)
   depends_on = [kubernetes_namespace.signoz]

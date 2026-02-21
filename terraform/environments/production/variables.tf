@@ -135,7 +135,7 @@ variable "anthropic_api_key" {
   description = "Anthropic API key for Claude Code integration"
   type        = string
   sensitive   = true
-  default     = ""  # Optional - can be managed by GitHub Actions instead
+  default     = "" # Optional - can be managed by GitHub Actions instead
 }
 
 # -----------------------------------------------------------------------------

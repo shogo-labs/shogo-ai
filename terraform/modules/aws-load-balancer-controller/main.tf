@@ -51,7 +51,7 @@ variable "region" {
 variable "controller_version" {
   description = "AWS Load Balancer Controller Helm chart version"
   type        = string
-  default     = "1.7.1"  # Latest as of Jan 2026
+  default     = "1.7.1" # Latest as of Jan 2026
 }
 
 variable "tags" {
