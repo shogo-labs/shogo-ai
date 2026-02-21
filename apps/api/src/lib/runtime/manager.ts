@@ -674,6 +674,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 
         agentProc.on('exit', (code, signal) => {
           console.log(`[RuntimeManager] Agent process exited for ${projectId}: code=${code}, signal=${signal}`)
+          if (runtime.status !== 'stopping' && runtime.status !== 'stopped') {
+            runtime.status = 'stopped'
+          }
         })
 
         agentProc.stdout?.on('data', (data) => {

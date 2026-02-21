@@ -15,6 +15,15 @@ import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec } from './sandbox-exec'
 import { MemorySearchEngine } from './memory-search'
+import { getDynamicAppManager } from './dynamic-app-manager'
+import {
+  CANVAS_COMPONENT_SCHEMA,
+  VALID_COMPONENT_TYPES,
+  getComponentSchema,
+  lintComponents,
+  type ComponentSchema,
+  type LintMessage,
+} from './canvas-component-schema'
 
 export interface ToolContext {
   workspaceDir: string
@@ -512,6 +521,246 @@ function createCronTool(ctx: ToolContext): AgentTool {
 }
 
 // ---------------------------------------------------------------------------
+// Canvas Tools (Dynamic App)
+// ---------------------------------------------------------------------------
+
+function createCanvasCreateTool(): AgentTool {
+  return {
+    name: 'canvas_create',
+    description:
+      'Create a new UI surface on the dynamic app canvas. A surface is a container for interactive UI components visible to the user. You must create a surface before adding components to it.',
+    label: 'Create Canvas Surface',
+    parameters: Type.Object({
+      surfaceId: Type.String({ description: 'Unique ID for the surface (e.g. "flight_results", "email_dashboard")' }),
+      title: Type.Optional(Type.String({ description: 'Display title for the surface' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { surfaceId, title } = params as { surfaceId: string; title?: string }
+      const manager = getDynamicAppManager()
+      return textResult(manager.createSurface(surfaceId, title))
+    },
+  }
+}
+
+function createCanvasUpdateTool(): AgentTool {
+  return {
+    name: 'canvas_update',
+    description: `Add or update UI components on a surface. Components form a tree via ID references.
+One component must have id "root" as the tree root. Available component types:
+
+Layout: Row, Column, Grid, Card, ScrollArea, Tabs, TabPanel, Accordion, AccordionItem
+Display: Text, Badge, Image, Icon, Separator, Progress, Skeleton, Alert
+Data: Table, Metric, Chart, DataList
+Interactive: Button, TextField, Select, Checkbox, ChoicePicker
+
+Each component has: id, component (type), and type-specific props.
+Use "children" (array of IDs) or "child" (single ID) for nesting.
+Use { "path": "/some/pointer" } for dynamic data binding to the surface data model.
+
+Example components:
+- { "id": "root", "component": "Column", "children": ["header", "content"], "gap": "md" }
+- { "id": "header", "component": "Text", "text": "Flight Results", "variant": "h2" }
+- { "id": "content", "component": "Card", "child": "card_body", "title": "Option 1" }
+- { "id": "price", "component": "Text", "text": { "path": "/flights/0/price" } }
+- { "id": "book_btn", "component": "Button", "label": "Book Now", "action": { "name": "book", "context": { "flightId": "FL123" } } }`,
+    label: 'Update Canvas Components',
+    parameters: Type.Object({
+      surfaceId: Type.String({ description: 'Surface ID to update' }),
+      components: Type.Array(
+        Type.Object({
+          id: Type.String(),
+          component: Type.String(),
+        }, { additionalProperties: true }),
+        { description: 'Array of component definitions' },
+      ),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { surfaceId, components } = params as { surfaceId: string; components: any[] }
+
+      const lint = lintComponents(components)
+      const errors = lint.filter((m) => m.severity === 'error')
+      const warnings = lint.filter((m) => m.severity === 'warning')
+
+      if (errors.length > 0) {
+        return textResult({
+          ok: false,
+          error: 'Component validation failed. Fix the errors below and retry.',
+          errors: errors.map((e) => `[${e.componentId}] ${e.message}`),
+          warnings: warnings.map((w) => `[${w.componentId}] ${w.message}`),
+          hint: 'Use canvas_components with action "detail" to look up valid props for any component type.',
+        })
+      }
+
+      const manager = getDynamicAppManager()
+      const result = manager.updateComponents(surfaceId, components)
+
+      if (warnings.length > 0) {
+        return textResult({
+          ...result,
+          warnings: warnings.map((w) => `[${w.componentId}] ${w.message}`),
+        })
+      }
+      return textResult(result)
+    },
+  }
+}
+
+function createCanvasDataTool(): AgentTool {
+  return {
+    name: 'canvas_data',
+    description:
+      'Update the data model of a surface without resending the component layout. Components with data bindings (e.g. { "path": "/users/0/name" }) will automatically reflect the new data. Use JSON Pointer paths (RFC 6901) to target specific locations in the data model.',
+    label: 'Update Canvas Data',
+    parameters: Type.Object({
+      surfaceId: Type.String({ description: 'Surface ID to update' }),
+      path: Type.Optional(Type.String({ description: 'JSON Pointer path (e.g. "/flights/0/price"). Defaults to "/" which replaces the entire data model.' })),
+      value: Type.Unknown({ description: 'New value to set at the given path' }),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { surfaceId, path, value } = params as { surfaceId: string; path?: string; value: unknown }
+      const manager = getDynamicAppManager()
+      return textResult(manager.updateData(surfaceId, path, value))
+    },
+  }
+}
+
+function createCanvasDeleteTool(): AgentTool {
+  return {
+    name: 'canvas_delete',
+    description: 'Remove a surface and all its components from the canvas.',
+    label: 'Delete Canvas Surface',
+    parameters: Type.Object({
+      surfaceId: Type.String({ description: 'Surface ID to delete' }),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { surfaceId } = params as { surfaceId: string }
+      const manager = getDynamicAppManager()
+      return textResult(manager.deleteSurface(surfaceId))
+    },
+  }
+}
+
+function createCanvasActionWaitTool(): AgentTool {
+  return {
+    name: 'canvas_action_wait',
+    description:
+      'Wait for the user to interact with a canvas component (e.g. clicking a Button). Returns the action event including any context data. Times out after 2 minutes if no action occurs.',
+    label: 'Wait for Canvas Action',
+    parameters: Type.Object({
+      surfaceId: Type.Optional(Type.String({ description: 'Only wait for actions from this surface (optional)' })),
+      actionName: Type.Optional(Type.String({ description: 'Only wait for this specific action name (optional)' })),
+      timeoutSeconds: Type.Optional(Type.Number({ description: 'Timeout in seconds (default: 120)' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { surfaceId, actionName, timeoutSeconds = 120 } = params as {
+        surfaceId?: string
+        actionName?: string
+        timeoutSeconds?: number
+      }
+      const manager = getDynamicAppManager()
+      const event = await manager.waitForAction(surfaceId, actionName, timeoutSeconds * 1000)
+      if (!event) {
+        return textResult({ timeout: true, message: 'No user action received within the timeout period' })
+      }
+      return textResult({ action: event })
+    },
+  }
+}
+
+function createCanvasComponentsTool(): AgentTool {
+  return {
+    name: 'canvas_components',
+    description:
+      'Discover available canvas component types, their props, and valid values. Use "list" to see all components grouped by category, "detail" to get full prop info for a specific component type, or "search" to find components by keyword.',
+    label: 'Canvas Component Catalog',
+    parameters: Type.Object({
+      action: Type.Union([
+        Type.Literal('list'),
+        Type.Literal('detail'),
+        Type.Literal('search'),
+      ], { description: 'list = overview of all components, detail = props for one type, search = find by keyword' }),
+      type: Type.Optional(Type.String({ description: 'Component type name (for "detail" action, e.g. "Card", "Table")' })),
+      query: Type.Optional(Type.String({ description: 'Search keyword (for "search" action, e.g. "chart", "input", "layout")' })),
+      category: Type.Optional(Type.String({ description: 'Filter by category (layout, display, data, interactive, extended)' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { action, type, query, category } = params as {
+        action: string
+        type?: string
+        query?: string
+        category?: string
+      }
+
+      if (action === 'detail') {
+        if (!type) {
+          return textResult({ error: 'The "type" parameter is required for the "detail" action. Example: { action: "detail", type: "Card" }' })
+        }
+        const schema = getComponentSchema(type)
+        if (!schema) {
+          const validTypes = [...VALID_COMPONENT_TYPES].join(', ')
+          return textResult({ error: `Unknown component type "${type}". Valid types: ${validTypes}` })
+        }
+        return textResult({
+          component: schema.type,
+          category: schema.category,
+          description: schema.description,
+          hasChildren: schema.hasChildren,
+          props: schema.props,
+        })
+      }
+
+      if (action === 'search') {
+        const q = (query || '').toLowerCase()
+        if (!q) {
+          return textResult({ error: 'The "query" parameter is required for the "search" action. Example: { action: "search", query: "table" }' })
+        }
+        const matches = CANVAS_COMPONENT_SCHEMA.filter((s) =>
+          s.type.toLowerCase().includes(q) ||
+          s.description.toLowerCase().includes(q) ||
+          s.category.toLowerCase().includes(q) ||
+          Object.keys(s.props).some((p) => p.toLowerCase().includes(q))
+        )
+        if (matches.length === 0) {
+          return textResult({ results: [], hint: `No components matched "${query}". Try broader terms or use action "list" to see everything.` })
+        }
+        return textResult({
+          results: matches.map((s) => ({
+            type: s.type,
+            category: s.category,
+            description: s.description,
+            hasChildren: s.hasChildren,
+            props: Object.keys(s.props),
+          })),
+        })
+      }
+
+      // Default: list
+      let schemas = CANVAS_COMPONENT_SCHEMA
+      if (category) {
+        schemas = schemas.filter((s) => s.category === category)
+      }
+
+      const grouped: Record<string, Array<{ type: string; description: string; hasChildren: boolean; props: string[] }>> = {}
+      for (const s of schemas) {
+        if (!grouped[s.category]) grouped[s.category] = []
+        grouped[s.category].push({
+          type: s.type,
+          description: s.description,
+          hasChildren: s.hasChildren,
+          props: Object.keys(s.props),
+        })
+      }
+
+      return textResult({
+        categories: grouped,
+        totalComponents: schemas.length,
+        hint: 'Use { action: "detail", type: "ComponentName" } to see full prop definitions for any component.',
+      })
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Tool Group Mapping
 // ---------------------------------------------------------------------------
 
@@ -533,11 +782,13 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   memory: ['memory_read', 'memory_write', 'memory_search'],
   messaging: ['send_message'],
   cron: ['cron'],
+  canvas: ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_delete', 'canvas_action_wait', 'canvas_components'],
 }
 
 export const ALL_TOOL_NAMES = [
   'exec', 'read_file', 'write_file', 'web_fetch', 'browser',
   'memory_read', 'memory_write', 'memory_search', 'send_message', 'cron',
+  'canvas_create', 'canvas_update', 'canvas_data', 'canvas_delete', 'canvas_action_wait', 'canvas_components',
 ] as const
 
 /**
@@ -576,6 +827,12 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createMemorySearchTool(ctx),
     createSendMessageTool(ctx),
     createCronTool(ctx),
+    createCanvasCreateTool(),
+    createCanvasUpdateTool(),
+    createCanvasDataTool(),
+    createCanvasDeleteTool(),
+    createCanvasActionWaitTool(),
+    createCanvasComponentsTool(),
   ]
 }
 

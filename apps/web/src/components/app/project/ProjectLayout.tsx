@@ -32,7 +32,6 @@ import { TestPanel } from "./TestPanel"
 import { SecurityPanel } from "./SecurityPanel"
 import { HistoryPanel } from "./HistoryPanel"
 import {
-  AgentTestChatPanel,
   AgentWorkspacePanel,
   AgentSkillsPanel,
   AgentHeartbeatPanel,
@@ -41,6 +40,7 @@ import {
   AgentMCPCatalogPanel,
   AgentSetupWizard,
   AgentAnalyticsPanel,
+  AgentDynamicAppPanel,
 } from "./agent"
 import { cn, getTotalCreditsForPlan } from "@/lib/utils"
 import { isDesktop, getDesktopAPI } from "@/lib/desktop"
@@ -120,7 +120,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
 
   // Preview mode state — initialise from transition state if available to avoid layout flash
   const initialType = transitionState?.project?.type || 'APP'
-  const [previewMode, setPreviewMode] = useState<string>(initialType === 'AGENT' ? 'test-chat' : 'runtime')
+  const [previewMode, setPreviewMode] = useState<string>(initialType === 'AGENT' ? 'dynamic-app' : 'runtime')
   const prevProjectTypeRef = useRef<string | null>(initialType)
 
   // Code editor refresh trigger - incremented when agent modifies files
@@ -189,7 +189,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
     const currentType = project?.type || 'APP'
     if (prevProjectTypeRef.current !== currentType) {
       prevProjectTypeRef.current = currentType
-      setPreviewMode(currentType === 'AGENT' ? 'test-chat' : 'runtime')
+      setPreviewMode(currentType === 'AGENT' ? 'dynamic-app' : 'runtime')
     }
   }, [project?.type])
 
@@ -1009,6 +1009,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
                 userId={session?.user?.id}
                 projectId={projectId}
                 localAgentUrl={localAgentUrl}
+                projectType={isAgentProject ? 'AGENT' : 'APP'}
                 className="flex-1 min-h-0"
                 initialMessage={transitionState?.initialMessage}
                 initialImageData={transitionState?.initialImageData}
@@ -1044,7 +1045,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
             <div className="flex items-center gap-1 mb-2">
               {(isAgentProject
                 ? [
-                    { id: 'test-chat', label: 'Test Chat' },
+                    { id: 'dynamic-app', label: 'Canvas' },
                     { id: 'setup', label: 'Setup Wizard' },
                     { id: 'workspace', label: 'Workspace' },
                     { id: 'skills', label: 'Skills' },
@@ -1154,18 +1155,20 @@ export const ProjectLayout = observer(function ProjectLayout() {
                   }}
                 />
               </div>
-              {/* Database Panel - Prisma Studio iframe */}
-              <div className={cn(
-                "absolute inset-0",
-                previewMode !== 'database' && "invisible pointer-events-none"
-              )}>
-                <DatabasePanel
-                  projectId={projectId || ''}
-                  className="h-full"
-                  onError={handleDatabaseError}
-                  onLoad={handleDatabaseLoad}
-                />
-              </div>
+              {/* Database Panel - Prisma Studio iframe (App projects only) */}
+              {!isAgentProject && (
+                <div className={cn(
+                  "absolute inset-0",
+                  previewMode !== 'database' && "invisible pointer-events-none"
+                )}>
+                  <DatabasePanel
+                    projectId={projectId || ''}
+                    className="h-full"
+                    onError={handleDatabaseError}
+                    onLoad={handleDatabaseLoad}
+                  />
+                </div>
+              )}
               {/* Test Panel - Playwright E2E test runner */}
               <div className={cn(
                 "absolute inset-0",
@@ -1219,16 +1222,11 @@ export const ProjectLayout = observer(function ProjectLayout() {
               {/* Agent Builder Panels */}
               {isAgentProject && (
                 <>
-                  <AgentTestChatPanel
-                    projectId={projectId || ''}
-                    visible={previewMode === 'test-chat'}
-                    localAgentUrl={localAgentUrl}
-                  />
                   <AgentSetupWizard
                     projectId={projectId || ''}
                     visible={previewMode === 'setup'}
                     localAgentUrl={localAgentUrl}
-                    onComplete={() => setPreviewMode('test-chat')}
+                    onComplete={() => setPreviewMode('dynamic-app')}
                   />
                   <AgentWorkspacePanel
                     projectId={projectId || ''}
@@ -1262,6 +1260,11 @@ export const ProjectLayout = observer(function ProjectLayout() {
                   <AgentLogsPanel
                     projectId={projectId || ''}
                     visible={previewMode === 'logs'}
+                    localAgentUrl={localAgentUrl}
+                  />
+                  <AgentDynamicAppPanel
+                    projectId={projectId || ''}
+                    visible={previewMode === 'dynamic-app'}
                     localAgentUrl={localAgentUrl}
                   />
                 </>

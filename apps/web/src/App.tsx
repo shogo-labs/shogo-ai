@@ -17,6 +17,7 @@ import { AuthProvider } from './contexts/AuthContext'
 // Admin portal
 import { AdminGuard } from './components/admin/AdminGuard'
 import { AdminShell } from './components/admin/AdminShell'
+import { DynamicAppDevPreview } from './components/app/project/agent/dynamic-app/DynamicAppDevPreview'
 import { AdminDashboard } from './components/admin/pages/AdminDashboard'
 import { AdminUsers } from './components/admin/pages/AdminUsers'
 import { AdminUserDetail } from './components/admin/pages/AdminUserDetail'
@@ -145,6 +146,9 @@ function AppWithSession() {
             <ShogoMetaStoreProvider>
               <AuthProvider authService={betterAuthService}>
                 <Routes>
+                  {/* Dev preview for Dynamic App canvas (no auth required) */}
+                  <Route path="/dev/dynamic-app" element={<DynamicAppDevPreview />} />
+
                   {/* Super Admin Portal - separate layout */}
                   <Route path="/admin" element={
                     <AdminGuard>

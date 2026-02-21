@@ -242,12 +242,20 @@ export const HomePage = observer(function HomePage({
           className="home-suggestions mt-6 flex flex-wrap justify-center gap-2"
           data-home-element="suggestions"
         >
-          {[
-            "Build a landing page",
-            "Create a dashboard",
-            "Design a form",
-            "Make an API integration",
-          ].map((suggestion) => (
+          {(projectType === "AGENT"
+            ? [
+                "Build a customer support agent",
+                "Create a research assistant",
+                "Make a scheduling agent",
+                "Design a data analysis agent",
+              ]
+            : [
+                "Build a landing page",
+                "Create a dashboard",
+                "Design a form",
+                "Make an API integration",
+              ]
+          ).map((suggestion) => (
             <Button
               key={suggestion}
               variant="outline"

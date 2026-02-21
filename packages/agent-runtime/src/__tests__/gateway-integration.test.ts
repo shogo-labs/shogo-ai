@@ -53,11 +53,11 @@ describe('AgentGateway integration', () => {
     return gateway
   }
 
-  test('processTestMessage sends to agent loop and returns text', async () => {
+  test('processChatMessage sends to agent loop and returns text', async () => {
     gateway = createGateway([buildTextResponse('Test response from agent.')])
     await gateway.start()
 
-    const response = await gateway.processTestMessage('Hello agent')
+    const response = await gateway.processChatMessage('Hello agent')
 
     expect(response).toBe('Test response from agent.')
     expect(capturedMessages).toHaveLength(1)
@@ -72,7 +72,7 @@ describe('AgentGateway integration', () => {
     ])
     await gateway.start()
 
-    const response = await gateway.processTestMessage('Read data.txt')
+    const response = await gateway.processChatMessage('Read data.txt')
 
     expect(response).toBe('The file contains: important data')
     expect(capturedMessages.length).toBeGreaterThanOrEqual(1)
@@ -181,8 +181,8 @@ describe('AgentGateway integration', () => {
     ])
     await gateway.start()
 
-    await gateway.processTestMessage('My name is Alice')
-    await gateway.processTestMessage('What is my name?')
+    await gateway.processChatMessage('My name is Alice')
+    await gateway.processChatMessage('What is my name?')
 
     // Second call should have more messages (history from first call)
     expect(capturedMessages).toHaveLength(2)
@@ -193,7 +193,7 @@ describe('AgentGateway integration', () => {
     gateway = createGateway([buildTextResponse('Response here.')])
     await gateway.start()
 
-    await gateway.processTestMessage('Test message')
+    await gateway.processChatMessage('Test message')
 
     const date = new Date().toISOString().split('T')[0]
     const memoryFile = join(TEST_DIR, 'memory', `${date}.md`)

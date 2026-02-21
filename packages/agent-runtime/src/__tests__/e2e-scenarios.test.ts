@@ -78,7 +78,7 @@ describe('E2E: Multi-tool agent workflows', () => {
     gateway.setStreamFn(mockStream)
     await gateway.start()
 
-    const response = await gateway.processTestMessage('Check the deploy log and write a summary report')
+    const response = await gateway.processChatMessage('Check the deploy log and write a summary report')
 
     expect(response).toContain('v2.3.3')
     expect(response).toContain('failure')
@@ -112,7 +112,7 @@ describe('E2E: Multi-tool agent workflows', () => {
     gateway.setStreamFn(mockStream)
     await gateway.start()
 
-    const response = await gateway.processTestMessage('Convert data/users.csv to JSON format')
+    const response = await gateway.processChatMessage('Convert data/users.csv to JSON format')
 
     expect(response).toContain('3 records')
 
@@ -296,13 +296,13 @@ describe('E2E: Multi-turn conversation with tool context', () => {
     gateway.setStreamFn(mockStream)
     await gateway.start()
 
-    const r1 = await gateway.processTestMessage('My name is Alice')
+    const r1 = await gateway.processChatMessage('My name is Alice')
     expect(r1).toBe('Hello Alice!')
 
-    const r2 = await gateway.processTestMessage('What is my name?')
+    const r2 = await gateway.processChatMessage('What is my name?')
     expect(r2).toBe('Your name is Alice.')
 
-    const r3 = await gateway.processTestMessage('Tell me again?')
+    const r3 = await gateway.processChatMessage('Tell me again?')
     expect(r3).toBe('Still Alice!')
   })
 

@@ -41,7 +41,6 @@ logTiming('Server module loading...')
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { createUIMessageStream, createUIMessageStreamResponse } from 'ai'
-import { z } from 'zod'
 import { resolve, dirname, join } from 'path'
 import {
   existsSync,
@@ -52,18 +51,12 @@ import {
 import {
   initializeS3Sync,
   initializePostgresBackup,
-  verifyPreviewToken,
   configureAIProxy,
-  buildClaudeCodeEnv,
-  createSessionManager,
-  extractUserText,
-  findLastUserMessage,
-  streamSdkToUI,
-  type ModelTier,
-  type V2SessionOptions,
 } from '@shogo/shared-runtime'
 import { buildAgentSystemPrompt } from './system-prompt'
 import { AgentGateway } from './gateway'
+import { getDynamicAppManager, initDynamicAppManager } from './dynamic-app-manager'
+import type { ActionEvent } from './dynamic-app-types'
 import { fileURLToPath } from 'url'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -201,74 +194,6 @@ if (IS_POOL_MODE) {
 if (aiProxy.useProxy) {
   Object.assign(process.env, aiProxy.env)
 }
-let claudeCodeEnv = buildClaudeCodeEnv(aiProxy, {
-  PROJECT_ID: currentProjectId!,
-  AGENT_DIR,
-  RUNTIME_PORT: String(PORT),
-})
-
-// =============================================================================
-// Claude Code Session Management
-// =============================================================================
-
-function getModelFromAgentMode(agentMode?: string): ModelTier {
-  if (agentMode === 'basic' || agentMode === 'haiku' || agentMode === 'fast') return 'haiku'
-  if (agentMode === 'opus' || agentMode === 'deep') return 'opus'
-  return 'sonnet'
-}
-
-function buildAgentSessionOptions(modelName: ModelTier): V2SessionOptions {
-  const model =
-    modelName === 'haiku'
-      ? 'claude-haiku-4-5-20251001'
-      : modelName === 'opus'
-        ? 'claude-opus-4-6'
-        : 'claude-sonnet-4-5-20250929'
-
-  return {
-    model,
-    cwd: AGENT_DIR,
-    allowedTools: [
-      'Read', 'Write', 'Edit', 'MultiEdit', 'Bash',
-      'TodoWrite', 'Glob', 'Grep', 'mcp__shogo__*',
-    ],
-    disallowedTools: ['EnterPlanMode', 'ExitPlanMode', 'SendMessage', 'TeamCreate', 'TeamDelete'],
-    permissionMode: 'bypassPermissions' as const,
-    allowDangerouslySkipPermissions: true,
-    settingSources: ['project' as const, 'local' as const],
-    includePartialMessages: true,
-    mcpServers: {
-      shogo: {
-        command: 'bun',
-        args: ['run', MCP_SERVER_PATH],
-        env: {
-          PROJECT_ID: currentProjectId!,
-          AGENT_DIR,
-          MCP_CONTEXT: 'agent',
-        },
-      },
-    },
-    canUseTool: async (toolName: string, input: Record<string, unknown>) => {
-      if (toolName === 'Write' || toolName === 'Edit' || toolName === 'Read') {
-        const path = input?.file_path as string
-        if (path) {
-          const resolved = resolve(AGENT_DIR, path)
-          if (!resolved.startsWith(AGENT_DIR) && !resolved.startsWith('/tmp')) {
-            return { behavior: 'deny' as const, message: 'Path outside allowed directories' }
-          }
-        }
-      }
-      return { behavior: 'allow' as const }
-    },
-    env: claudeCodeEnv,
-  }
-}
-
-let sessions = createSessionManager({
-  buildSessionOptions: buildAgentSessionOptions,
-  defaultModel: (process.env.AGENT_MODEL || 'sonnet') as ModelTier,
-  logPrefix: 'agent-runtime',
-})
 
 // =============================================================================
 // Write CLAUDE.md for Claude Code to load
@@ -392,20 +317,8 @@ app.post('/pool/assign', async (c) => {
   if (aiProxy.useProxy) {
     Object.assign(process.env, aiProxy.env)
   }
-  claudeCodeEnv = buildClaudeCodeEnv(aiProxy, {
-    PROJECT_ID: currentProjectId,
-    AGENT_DIR,
-    RUNTIME_PORT: String(PORT),
-  })
 
-  // 4. Recreate session manager with updated config
-  sessions = createSessionManager({
-    buildSessionOptions: buildAgentSessionOptions,
-    defaultModel: (process.env.AGENT_MODEL || 'sonnet') as ModelTier,
-    logPrefix: 'agent-runtime',
-  })
-
-  // 5. Run project-specific initialization
+  // 4. Run project-specific initialization
   try {
     await initialize()
     poolAssigned = true
@@ -429,132 +342,40 @@ app.get('/agent/status', (c) => {
   return c.json(status)
 })
 
-// Builder chat endpoint — same pattern as project-runtime
-const chatSchema = z.object({
-  messages: z.array(z.any()),
-  system: z.string().optional(),
-  agentMode: z.string().optional(),
-  themeContext: z.string().optional(),
-})
-
-const activeChatRequests = new Map<string, { startedAt: number; abortController: AbortController }>()
-
-app.post('/agent/chat', async (c) => {
-  const body = await c.req.json()
-  console.log('[agent-runtime] /agent/chat received body keys:', Object.keys(body))
-  console.log('[agent-runtime] messages count:', body.messages?.length, 'first msg role:', body.messages?.[0]?.role)
-  const lastMsg = body.messages?.slice(-1)?.[0]
-  console.log('[agent-runtime] last msg:', JSON.stringify(lastMsg).slice(0, 500))
-  const parsed = chatSchema.safeParse(body)
-  if (!parsed.success) {
-    console.log('[agent-runtime] Parse failed:', JSON.stringify(parsed.error.issues.map(i => i.message)))
-    return c.json({ error: 'Invalid request', details: parsed.error }, 400)
-  }
-
-  const { messages, system, agentMode } = parsed.data
-  const modelName = getModelFromAgentMode(agentMode)
-
-  const existingRequest = activeChatRequests.get(modelName)
-  if (existingRequest) {
-    const elapsed = Date.now() - existingRequest.startedAt
-    console.log(`[agent-runtime] Cancelling previous ${modelName} chat request (running for ${elapsed}ms)`)
-    existingRequest.abortController.abort()
-    activeChatRequests.delete(modelName)
-  }
-
-  const abortController = new AbortController()
-  activeChatRequests.set(modelName, { startedAt: Date.now(), abortController })
-
-  if (sessions.isActive(modelName)) {
-    await sessions.interrupt(modelName)
-  }
-
-  const session = sessions.getOrCreate(modelName)
-
-  const lastUserMessage = findLastUserMessage(messages)
-  if (!lastUserMessage) {
-    return c.json({ error: 'No user message found' }, 400)
-  }
-
-  const userText = extractUserText(lastUserMessage)
-
-  const agentStatus = agentGateway?.getStatus()
-  let contextPrefix = ''
-  if (agentStatus) {
-    contextPrefix += `[Agent Status]\nRunning: ${agentStatus.running}\nChannels: ${agentStatus.channels.length} connected\nHeartbeat: ${agentStatus.heartbeat.enabled ? `every ${agentStatus.heartbeat.intervalSeconds}s` : 'disabled'}\n\n`
-  }
-  if (system) {
-    contextPrefix += `[Additional Instructions]\n${system}\n\n`
-  }
-  const fullUserText = contextPrefix ? `${contextPrefix}${userText}` : userText
-
-  sessions.markActive(modelName)
-
-  console.log('[agent-runtime] Sending to session:', fullUserText.slice(0, 200))
-  await session.send(fullUserText)
-
-  const stream = createUIMessageStream({
-    execute: async ({ writer }) => {
-      try {
-        await streamSdkToUI(session, writer, {
-          logPrefix: 'agent-runtime',
-          onQueryCreated: (query) => sessions.setActiveQuery(modelName, query),
-        })
-      } catch (error: any) {
-        if (abortController.signal.aborted) {
-          console.log(`[agent-runtime] Chat for ${modelName} was superseded by a new request`)
-        } else {
-          console.error('[agent-runtime] Chat error:', error.message)
-        }
-        writer.write({
-          type: 'error',
-          errorText: abortController.signal.aborted
-            ? 'Request superseded by a new message'
-            : (error.message || 'Agent chat error'),
-        } as any)
-      } finally {
-        activeChatRequests.delete(modelName)
-        sessions.markInactive(modelName)
-        sessions.deleteActiveQuery(modelName)
-      }
-    },
-  })
-
-  return createUIMessageStreamResponse({ stream })
-})
-
-// Test chat endpoint — send a message to the running agent (not the builder)
-// Supports both legacy { message } and AI SDK { messages } formats.
+// Agent chat endpoint — send a message to the running agent.
+// Accepts AI SDK v3 format: { messages: [{ role, parts: [{ type: 'text', text }] }] }
 // Returns an AI SDK UI message stream so the frontend can use useChat().
-app.post('/agent/test', async (c) => {
+app.post('/agent/chat', async (c) => {
   if (!agentGateway) {
     return c.json({ error: 'Agent gateway not running' }, 503)
   }
 
   const body = await c.req.json()
 
-  // Accept AI SDK format ({ messages: [...] }) or legacy format ({ message: string })
   let userText: string | undefined
   if (body.messages && Array.isArray(body.messages)) {
     const last = [...body.messages].reverse().find((m: any) => m.role === 'user')
-    userText = typeof last?.content === 'string' ? last.content : undefined
-  } else {
-    userText = typeof body.message === 'string' ? body.message : undefined
+    if (last?.parts && Array.isArray(last.parts)) {
+      userText = last.parts
+        .filter((p: any) => p.type === 'text')
+        .map((p: any) => p.text)
+        .join('\n')
+    }
   }
 
   if (!userText) {
-    return c.json({ error: 'message (string) is required' }, 400)
+    return c.json({ error: 'message is required — send { messages: [{ role: "user", parts: [{ type: "text", text: "..." }] }] }' }, 400)
   }
 
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
       try {
         writer.write({ type: 'start-step' })
-        await agentGateway!.processTestMessageStream(userText!, writer)
+        await agentGateway!.processChatMessageStream(userText!, writer)
         writer.write({ type: 'finish-step' })
         writer.write({ type: 'finish', finishReason: 'stop' })
       } catch (error: any) {
-        writer.write({ type: 'error', errorText: error.message || 'Agent test error' } as any)
+        writer.write({ type: 'error', errorText: error.message || 'Agent chat error' } as any)
       }
     },
   })
@@ -562,13 +383,13 @@ app.post('/agent/test', async (c) => {
   return createUIMessageStreamResponse({ stream })
 })
 
-// Retrieve test chat history so the UI can restore past messages
-app.get('/agent/test/history', async (c) => {
+// Retrieve chat history so the UI can restore past messages on reconnect
+app.get('/agent/chat/history', async (c) => {
   if (!agentGateway) {
     return c.json({ messages: [] })
   }
 
-  const session = await agentGateway.getSessionManager().getOrCreateAsync('test')
+  const session = await agentGateway.getSessionManager().getOrCreateAsync('chat')
   if (session.messages.length === 0) {
     return c.json({ messages: [] })
   }
@@ -576,11 +397,10 @@ app.get('/agent/test/history', async (c) => {
   const simplified: Array<{ id: string; role: string; content: string }> = []
   for (const msg of session.messages) {
     if (msg.role === 'user') {
-      // Strip internal prompt wrappers to show the original user text
       const raw = typeof msg.content === 'string' ? msg.content : ''
       const userMatch = raw.match(/\[User Message\]\n([\s\S]+)$/)
-      const testMatch = raw.match(/\[Test Chat — User Message\]\n[\s\S]*?\n\n([\s\S]+)$/)
-      const displayText = userMatch?.[1]?.trim() || testMatch?.[1]?.trim() || raw
+      const chatMatch = raw.match(/\[Chat — User Message\]\n[\s\S]*?\n\n([\s\S]+)$/)
+      const displayText = userMatch?.[1]?.trim() || chatMatch?.[1]?.trim() || raw
       simplified.push({ id: `h-${simplified.length}`, role: 'user', content: displayText })
     } else if (msg.role === 'assistant') {
       const parts = (msg as any).content as any[] | undefined
@@ -879,6 +699,94 @@ app.post('/agent/import', async (c) => {
   return c.json({ ok: true, imported: written.length, files: written })
 })
 
+// =============================================================================
+// Dynamic App Endpoints
+// =============================================================================
+
+app.get('/agent/dynamic-app/stream', (c) => {
+  const manager = getDynamicAppManager()
+
+  const stream = new ReadableStream({
+    start(controller) {
+      const encoder = new TextEncoder()
+      const send = (data: string) => {
+        try {
+          controller.enqueue(encoder.encode(`data: ${data}\n\n`))
+        } catch {
+          // Client disconnected
+        }
+      }
+
+      // Send current state as initial replay
+      const state = manager.getState()
+      for (const surface of Object.values(state.surfaces) as any[]) {
+        send(JSON.stringify({ type: 'createSurface', surfaceId: surface.surfaceId, title: surface.title, theme: surface.theme }))
+        const components = Object.values(surface.components)
+        if (components.length > 0) {
+          send(JSON.stringify({ type: 'updateComponents', surfaceId: surface.surfaceId, components }))
+        }
+        if (Object.keys(surface.dataModel).length > 0) {
+          send(JSON.stringify({ type: 'updateData', surfaceId: surface.surfaceId, path: '/', value: surface.dataModel }))
+        }
+      }
+
+      // Subscribe to live updates
+      const unsubscribe = manager.addClient((message) => {
+        send(JSON.stringify(message))
+      })
+
+      // Heartbeat to keep connection alive
+      const heartbeat = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(': heartbeat\n\n'))
+        } catch {
+          clearInterval(heartbeat)
+          unsubscribe()
+        }
+      }, 15_000)
+
+      // Cleanup on abort
+      c.req.raw.signal.addEventListener('abort', () => {
+        clearInterval(heartbeat)
+        unsubscribe()
+        try { controller.close() } catch {}
+      })
+    },
+  })
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+    },
+  })
+})
+
+app.get('/agent/dynamic-app/state', (c) => {
+  const manager = getDynamicAppManager()
+  return c.json(manager.getState())
+})
+
+app.post('/agent/dynamic-app/action', async (c) => {
+  const body = await c.req.json() as ActionEvent
+  if (!body.surfaceId || !body.name) {
+    return c.json({ error: 'Missing surfaceId or action name' }, 400)
+  }
+
+  const manager = getDynamicAppManager()
+  const event: ActionEvent = {
+    surfaceId: body.surfaceId,
+    name: body.name,
+    context: body.context || {},
+    timestamp: new Date().toISOString(),
+  }
+
+  manager.deliverAction(event)
+  return c.json({ ok: true, event })
+})
+
 // Console log for forwarding (matches project-runtime pattern)
 const consoleLogs: string[] = []
 app.post('/console-log/append', async (c) => {
@@ -904,6 +812,11 @@ async function initialize(): Promise<void> {
   // Bootstrap workspace files
   ensureWorkspaceFiles()
   logTiming('Workspace files ready')
+
+  // Initialize canvas state manager with disk persistence
+  const canvasStatePath = join(AGENT_DIR, '.canvas-state.json')
+  initDynamicAppManager(canvasStatePath)
+  logTiming('Canvas state manager initialized')
 
   // Write CLAUDE.md and .mcp.json
   writeAgentConfigFiles()
@@ -950,16 +863,8 @@ async function initialize(): Promise<void> {
 // =============================================================================
 
 if (IS_POOL_MODE) {
-  // Pool mode: skip project-specific initialization, just start the server.
-  // Pre-warm Claude Code session eagerly so it's hot when a project is assigned.
   logTiming('Pool mode: skipping project init, server ready for assignment')
-  setTimeout(() => {
-    sessions.prewarm().catch((err) => {
-      console.error('[agent-runtime] Pool pre-warm error:', err.message)
-    })
-  }, 1000)
 } else {
-  // Normal mode: run full project-specific initialization
   initialize()
     .then(() => {
       logTiming(`Starting server on port ${PORT}`)
@@ -967,15 +872,10 @@ if (IS_POOL_MODE) {
     .catch((error) => {
       console.error('[agent-runtime] Initialization failed:', error)
     })
-
-  setTimeout(() => {
-    sessions.prewarm().catch((err) => {
-      console.error('[agent-runtime] Pre-warm error:', err.message)
-    })
-  }, 2000)
 }
 
 export default {
   port: PORT,
   fetch: app.fetch,
+  idleTimeout: 120,
 }

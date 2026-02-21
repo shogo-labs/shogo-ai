@@ -69,7 +69,7 @@ describe('Tier 3: Loop detection in agent turns', () => {
     gateway.setStreamFn(mockStream)
     await gateway.start()
 
-    const response = await gateway.processTestMessage('Check the status repeatedly')
+    const response = await gateway.processChatMessage('Check the status repeatedly')
 
     expect(response).toContain('LOOP DETECTED')
   })
@@ -91,7 +91,7 @@ describe('Tier 3: Loop detection in agent turns', () => {
     gateway.setStreamFn(mockStream)
     await gateway.start()
 
-    const response = await gateway.processTestMessage('Merge files a and b into c')
+    const response = await gateway.processChatMessage('Merge files a and b into c')
 
     expect(response).not.toContain('LOOP DETECTED')
     expect(response).toContain('successfully')
@@ -123,7 +123,7 @@ describe('Tier 3: Loop detection in agent turns', () => {
     gateway.setStreamFn(mockStream)
     await gateway.start()
 
-    const response = await gateway.processTestMessage('Read x three times')
+    const response = await gateway.processChatMessage('Read x three times')
 
     expect(response).not.toContain('LOOP DETECTED')
     expect(response).toContain('Done reading')
@@ -212,7 +212,7 @@ describe('Tier 3: Session TTL expiry', () => {
     gateway.setStreamFn(mockStream)
     await gateway.start()
 
-    await gateway.processTestMessage('Hi')
+    await gateway.processChatMessage('Hi')
 
     const sm = gateway.getSessionManager()
     expect(sm.sessionCount).toBeGreaterThanOrEqual(1)
@@ -250,7 +250,7 @@ describe('Tier 3: Cron manager integration', () => {
     gateway.setStreamFn(mockStream)
     await gateway.start()
 
-    const response = await gateway.processTestMessage('Set up a daily report cron job')
+    const response = await gateway.processChatMessage('Set up a daily report cron job')
     expect(response).toContain('daily-report')
 
     const cm = gateway.getCronManager()
@@ -306,7 +306,7 @@ describe('Tier 3: Status includes Tier 3 info', () => {
     gateway.setStreamFn(mockStream)
     await gateway.start()
 
-    await gateway.processTestMessage('Hi')
+    await gateway.processChatMessage('Hi')
     gateway.getCronManager().addJob({
       name: 'status-test',
       intervalSeconds: 300,

@@ -70,7 +70,7 @@ export function AgentTestChatPanel({ projectId, visible, localAgentUrl }: AgentT
 
   const transport = useMemo(() => {
     if (!agentUrl) return null
-    return new DefaultChatTransport({ api: `${agentUrl}/agent/test` })
+    return new DefaultChatTransport({ api: `${agentUrl}/agent/chat` })
   }, [agentUrl])
 
   const {
@@ -92,7 +92,7 @@ export function AgentTestChatPanel({ projectId, visible, localAgentUrl }: AgentT
 
     ;(async () => {
       try {
-        const res = await fetch(`${agentUrl}/agent/test/history`)
+        const res = await fetch(`${agentUrl}/agent/chat/history`)
         if (!res.ok) return
         const data = await res.json()
         if (cancelled || !data.messages?.length) return

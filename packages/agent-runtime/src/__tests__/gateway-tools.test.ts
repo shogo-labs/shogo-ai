@@ -180,11 +180,16 @@ describe('gateway-tools', () => {
   })
 
   describe('tool sets', () => {
-    test('createAllTools returns 10 tools', () => {
-      expect(createAllTools(createCtx())).toHaveLength(10)
+    test('createAllTools returns 15 tools', () => {
+      expect(createAllTools(createCtx())).toHaveLength(15)
       expect(createAllTools(createCtx()).find((t) => t.name === 'cron')).toBeDefined()
       expect(createAllTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()
       expect(createAllTools(createCtx()).find((t) => t.name === 'browser')).toBeDefined()
+      expect(createAllTools(createCtx()).find((t) => t.name === 'canvas_create')).toBeDefined()
+      expect(createAllTools(createCtx()).find((t) => t.name === 'canvas_update')).toBeDefined()
+      expect(createAllTools(createCtx()).find((t) => t.name === 'canvas_data')).toBeDefined()
+      expect(createAllTools(createCtx()).find((t) => t.name === 'canvas_delete')).toBeDefined()
+      expect(createAllTools(createCtx()).find((t) => t.name === 'canvas_action_wait')).toBeDefined()
     })
 
     test('createHeartbeatTools excludes exec and send_message', () => {

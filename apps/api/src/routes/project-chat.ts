@@ -70,6 +70,7 @@ async function trackUsageFromStream(
   const toolCallDetails: { toolCallId: string; toolName: string; input: any }[] = []
   const orderedParts: any[] = []
   let currentTextPart: { type: 'text'; text: string } | null = null
+  let streamInterrupted = false
 
   try {
     while (true) {
@@ -195,6 +196,9 @@ async function trackUsageFromStream(
         }
       }
     }
+  } catch (streamErr: any) {
+    streamInterrupted = true
+    console.warn(`[ProjectChat] Stream interrupted (${streamErr.code || streamErr.message}), persisting ${accumulatedText.length} chars accumulated so far`)
   } finally {
     reader.releaseLock()
   }
@@ -208,7 +212,7 @@ async function trackUsageFromStream(
   const totalTokens = lastUsage?.totalTokens || (inputTokens + outputTokens)
 
   console.log(
-    `[ProjectChat] 📊 Stream complete — tokens: ${totalTokens} (in: ${inputTokens}, out: ${outputTokens}), tool calls: ${toolCallCount}, agent mode: ${agentMode}`
+    `[ProjectChat] 📊 Stream ${streamInterrupted ? 'interrupted' : 'complete'} — tokens: ${totalTokens} (in: ${inputTokens}, out: ${outputTokens}), tool calls: ${toolCallCount}, agent mode: ${agentMode}`
   )
 
   // Credit billing is handled by the AI proxy billing session (opened before
@@ -264,7 +268,7 @@ async function trackUsageFromStream(
             parts: parts.length > 0 ? JSON.stringify(parts) : undefined,
           },
         })
-        console.log(`[ProjectChat] 💾 Persisted assistant message (${accumulatedText.length} chars, ${toolCallDetails.length} tool calls) for session ${chatSessionId}`)
+        console.log(`[ProjectChat] 💾 Persisted assistant message (${accumulatedText.length} chars, ${toolCallDetails.length} tool calls${streamInterrupted ? ', partial' : ''}) for session ${chatSessionId}`)
       }
     } catch (err) {
       console.error("[ProjectChat] Failed to persist assistant message:", err)
@@ -433,7 +437,8 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         )
       }
 
-      console.log(`[ProjectChat] Proxying to: ${podUrl}/agent/chat`)
+      const chatEndpoint = '/agent/chat'
+      console.log(`[ProjectChat] Proxying to: ${podUrl}${chatEndpoint}`)
 
       // Get the request body and parse for billing context
       let body = await c.req.text()
@@ -484,7 +489,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
 
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
-          const response = await fetch(`${podUrl}/agent/chat`, {
+          const response = await fetch(`${podUrl}${chatEndpoint}`, {
             method: "POST",
             headers,
             body,

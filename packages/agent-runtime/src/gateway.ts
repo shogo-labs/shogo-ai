@@ -55,6 +55,85 @@ export interface GatewayConfig {
   mcpServers?: Record<string, MCPServerConfig>
 }
 
+const CANVAS_TOOLS_GUIDE = `## Canvas (Dynamic UI)
+
+You have canvas tools that let you build interactive UIs the user can see in real time.
+Use them whenever a visual display would be more helpful than plain text (search results,
+dashboards, forms, confirmations, reports, comparisons, etc.).
+
+### Workflow
+
+1. **canvas_create** — Create a named surface (container). Call once per distinct view.
+   \`canvas_create({ surfaceId: "results", title: "Search Results" })\`
+
+2. **canvas_update** — Define the component tree for a surface. One component must have \`id: "root"\`.
+   Components reference children by ID. Available types:
+
+   **Layout:** Column, Row, Grid, Card, ScrollArea, Tabs, TabPanel, Accordion, AccordionItem
+   **Display:** Text, Badge, Image, Icon, Separator, Progress, Skeleton, Alert
+   **Data:** Table, Metric, Chart, DataList
+   **Interactive:** Button, TextField, Select, Checkbox, ChoicePicker
+
+   Example:
+   \`\`\`json
+   canvas_update({
+     surfaceId: "results",
+     components: [
+       { "id": "root", "component": "Column", "children": ["title", "cards"], "gap": "md" },
+       { "id": "title", "component": "Text", "text": "Flights to Bali", "variant": "h2" },
+       { "id": "cards", "component": "Column", "children": ["card1"], "gap": "sm" },
+       { "id": "card1", "component": "Card", "child": "card1_body", "title": { "path": "/flights/0/airline" } },
+       { "id": "card1_body", "component": "Column", "children": ["card1_price", "card1_btn"], "gap": "sm" },
+       { "id": "card1_price", "component": "Metric", "label": "Price", "value": { "path": "/flights/0/price" } },
+       { "id": "card1_btn", "component": "Button", "label": "Select", "action": { "name": "select", "context": { "index": 0 } } }
+     ]
+   })
+   \`\`\`
+
+3. **canvas_data** — Push data into the surface's data model. Components with \`{ "path": "/..." }\` bindings update automatically.
+   \`canvas_data({ surfaceId: "results", path: "/", value: { flights: [...] } })\`
+
+4. **canvas_action_wait** — Block until the user clicks a Button or interacts with a component.
+   \`canvas_action_wait({ surfaceId: "results", actionName: "select" })\`
+   Returns the action event with any context the button passed.
+
+5. **canvas_delete** — Remove a surface when done.
+
+### Data Binding
+
+Use \`{ "path": "/json/pointer" }\` (RFC 6901) in any prop to bind it to the surface data model.
+Update data via canvas_data without resending the layout.
+
+6. **canvas_components** — Discover available components, their props, and valid values.
+   - \`canvas_components({ action: "list" })\` — overview of all components by category
+   - \`canvas_components({ action: "detail", type: "Card" })\` — full prop definitions for one type
+   - \`canvas_components({ action: "search", query: "chart" })\` — find components by keyword
+
+### Validation & Error Handling
+
+canvas_update validates your components before rendering and returns helpful feedback:
+- **Errors** (blocks rendering): missing \`id\`, missing \`component\`, unknown component type (with "did you mean?" suggestions)
+- **Warnings** (renders but flags issues): missing recommended props, invalid enum values, unknown prop names, missing root component
+
+If you get validation errors, read the messages carefully — they tell you exactly what to fix.
+When unsure about a component's props, use \`canvas_components({ action: "detail", type: "TypeName" })\` to look them up.
+
+### Tips
+- Create the surface and layout first, then push data — this lets the UI skeleton appear instantly.
+- Prefer data bindings over hardcoded values so you can refresh data without rebuilding components.
+- Use Card components to group related information with a title.
+- Use Metric for key statistics (label + value pairs).
+- Use Table for structured data with columns (\`columns\` prop: array of \`{ key, label }\`, \`rows\` prop or data-bound).
+- Buttons with \`action\` fire events you can catch with canvas_action_wait.
+- You can update components incrementally — only send the components that changed.
+- If you forget available components or their props, use canvas_components to discover them.
+
+### IMPORTANT: Do Not Rebuild
+When canvas tools return \`status: "rendered"\` or \`status: "data_updated"\`, the UI is live and the user can already see it.
+**Do NOT delete and recreate a surface that is already working.** The tool responses include a component tree summary and confirmation
+that the user can see the result. If you need to make changes, use canvas_update to modify specific components or canvas_data to update
+the data model — do not start over from scratch. Only use canvas_delete if the user explicitly asks to remove a surface.`
+
 export class AgentGateway {
   private workspaceDir: string
   private projectId: string
@@ -573,12 +652,12 @@ export class AgentGateway {
     return content.includes('Respond concisely and helpfully') && content.includes('# Agent Instructions')
   }
 
-  async processTestMessage(text: string): Promise<string> {
-    this.emitLog(`Test message received: "${text.substring(0, 100)}"`)
+  async processChatMessage(text: string): Promise<string> {
+    this.emitLog(`Chat message received: "${text.substring(0, 100)}"`)
 
     if (this.isUnconfigured()) {
       this.emitLog('Agent is not configured — returning setup guidance')
-      return 'This agent has not been configured yet. Use the builder chat (left panel) to describe what you want your agent to do — it will set up the identity, skills, and heartbeat for you.'
+      return 'This agent has not been configured yet. Describe what you want your agent to do and it will set up the identity, skills, and heartbeat for you.'
     }
 
     const matchedSkill = matchSkill(this.skills, text)
@@ -588,15 +667,14 @@ export class AgentGateway {
       this.emitLog(`Matched skill: ${matchedSkill.name}`)
       prompt = `[Skill: ${matchedSkill.name}]\n${matchedSkill.content}\n\n[User Message]\n${text}`
     } else {
-      prompt = `[Test Chat — User Message]\nThis is a direct message from a user testing the agent, NOT a heartbeat trigger. Respond conversationally and helpfully. Do NOT respond with HEARTBEAT_OK.\n\n${text}`
+      prompt = `[Chat — User Message]\nThis is a direct message from a user, NOT a heartbeat trigger. Respond conversationally and helpfully. Do NOT respond with HEARTBEAT_OK.\n\n${text}`
     }
 
-    const response = await this.agentTurn(prompt, 'test')
-    this.emitLog(`Test response: "${response.substring(0, 100)}"`)
-
+    const response = await this.agentTurn(prompt, 'chat')
+    this.emitLog(`Chat response: "${response.substring(0, 100)}"`)
 
     this.sessionManager.addMessages(
-      'test',
+      'chat',
       userMessage(prompt),
       {
         role: 'assistant',
@@ -610,24 +688,24 @@ export class AgentGateway {
       } as any
     )
 
-    this.appendDailyMemory(`test: "${text.substring(0, 100)}" -> "${response.substring(0, 100)}"`)
+    this.appendDailyMemory(`chat: "${text.substring(0, 100)}" -> "${response.substring(0, 100)}"`)
 
     return response
   }
 
   /**
-   * Streaming variant of processTestMessage that pipes text deltas and
+   * Streaming variant of processChatMessage that pipes text deltas and
    * tool call events to a UI message stream writer (AI SDK protocol).
    */
-  async processTestMessageStream(
+  async processChatMessageStream(
     text: string,
     writer: { write(chunk: Record<string, any>): void },
   ): Promise<void> {
-    this.emitLog(`Test message received (stream): "${text.substring(0, 100)}"`)
+    this.emitLog(`Chat message received (stream): "${text.substring(0, 100)}"`)
 
     if (this.isUnconfigured()) {
       this.emitLog('Agent is not configured — returning setup guidance')
-      const msg = 'This agent has not been configured yet. Use the builder chat (left panel) to describe what you want your agent to do — it will set up the identity, skills, and heartbeat for you.'
+      const msg = 'This agent has not been configured yet. Describe what you want your agent to do and it will set up the identity, skills, and heartbeat for you.'
       const tid = `text-${Date.now()}`
       writer.write({ type: 'text-start', id: tid })
       writer.write({ type: 'text-delta', id: tid, delta: msg })
@@ -642,14 +720,14 @@ export class AgentGateway {
       this.emitLog(`Matched skill: ${matchedSkill.name}`)
       prompt = `[Skill: ${matchedSkill.name}]\n${matchedSkill.content}\n\n[User Message]\n${text}`
     } else {
-      prompt = `[Test Chat — User Message]\nThis is a direct message from a user testing the agent, NOT a heartbeat trigger. Respond conversationally and helpfully. Do NOT respond with HEARTBEAT_OK.\n\n${text}`
+      prompt = `[Chat — User Message]\nThis is a direct message from a user, NOT a heartbeat trigger. Respond conversationally and helpfully. Do NOT respond with HEARTBEAT_OK.\n\n${text}`
     }
 
-    const response = await this.agentTurn(prompt, 'test', false, undefined, writer)
-    this.emitLog(`Test response (stream): "${response.substring(0, 100)}"`)
+    const response = await this.agentTurn(prompt, 'chat', false, undefined, writer)
+    this.emitLog(`Chat response (stream): "${response.substring(0, 100)}"`)
 
     this.sessionManager.addMessages(
-      'test',
+      'chat',
       userMessage(prompt),
       {
         role: 'assistant',
@@ -663,7 +741,7 @@ export class AgentGateway {
       } as any
     )
 
-    this.appendDailyMemory(`test: "${text.substring(0, 100)}" -> "${response.substring(0, 100)}"`)
+    this.appendDailyMemory(`chat: "${text.substring(0, 100)}" -> "${response.substring(0, 100)}"`)
   }
 
   async processWebhookMessage(text: string): Promise<string> {
@@ -759,7 +837,7 @@ export class AgentGateway {
         history,
         prompt,
         tools,
-        maxIterations: isHeartbeat ? 5 : 10,
+        maxIterations: isHeartbeat ? 5 : 6,
         loopDetection: this.config.loopDetection,
         streamFn: this._streamFn,
         onToolCall: (name, input) => {
@@ -875,6 +953,8 @@ export class AgentGateway {
         parts.push(`## Memory\n${memory}`)
       }
     }
+
+    parts.push(CANVAS_TOOLS_GUIDE)
 
     return parts.join('\n\n---\n\n')
   }

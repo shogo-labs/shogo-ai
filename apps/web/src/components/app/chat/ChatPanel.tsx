@@ -214,7 +214,7 @@ export interface ChatPanelProps {
   onSelectTheme?: (themeId: string) => void
   /** Callback when "Create new theme" is clicked (for compact mode) */
   onCreateTheme?: () => void
-  /** Currently selected project type (for compact mode) */
+  /** Currently selected project type (for compact mode, and to route agent chat) */
   projectType?: "APP" | "AGENT"
   /** Callback when project type changes (for compact mode) */
   onProjectTypeChange?: (type: "APP" | "AGENT") => void
@@ -870,12 +870,14 @@ export const ChatPanel = observer(function ChatPanel({
   // This ref ensures each event is only handled once, preventing infinite loops
   const processedProgressEventsRef = useRef<Set<string>>(new Set())
 
+  const isAgent = projectType === 'AGENT'
+
   // chat-session-sync-fix: v3 API requires DefaultChatTransport for proper metadata handling
-  // The transport must be memoized to prevent re-creation on every render
-  // pod-per-project: Use project-specific endpoint when projectId is available
-  // Desktop mode: route to local agent-runtime when localAgentUrl is provided
+  // All projects (APP and AGENT) route through /api/projects/:id/chat.
+  // The API server proxies to /agent/chat on the runtime and
+  // handles cold starts, retries, and billing automatically.
   const chatTransport = useMemo(
-    () => new DefaultChatTransport({ 
+    () => new DefaultChatTransport({
       api: localAgentUrl
         ? `${localAgentUrl}/agent/chat`
         : projectId
@@ -1448,11 +1450,14 @@ export const ChatPanel = observer(function ChatPanel({
     stop()
 
     // 2. Fire-and-forget: tell the backend to interrupt the active SDK session
-    const stopUrl = localAgentUrl
-      ? `${localAgentUrl}/agent/chat/stop`
-      : projectId
-        ? `/api/projects/${projectId}/chat/stop`
-        : null
+    // Agent projects don't have a stop endpoint — just abort client-side
+    const stopUrl = isAgent
+      ? null
+      : localAgentUrl
+        ? `${localAgentUrl}/agent/chat/stop`
+        : projectId
+          ? `/api/projects/${projectId}/chat/stop`
+          : null
     if (stopUrl) {
       fetch(stopUrl, {
         method: 'POST',
@@ -1462,7 +1467,7 @@ export const ChatPanel = observer(function ChatPanel({
         console.warn('[ChatPanel] Failed to send stop signal to backend:', err)
       })
     }
-  }, [stop, projectId])
+  }, [stop, projectId, isAgent])
 
   // Idle timeout to force-complete hung streams
   // When Claude Code invokes skills/tools, the stream can hang indefinitely
