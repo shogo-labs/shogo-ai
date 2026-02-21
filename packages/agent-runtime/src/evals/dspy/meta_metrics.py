@@ -47,6 +47,14 @@ def _extract_planned_tool_count(prediction):
     if tools:
         return len(tools)
 
+    # CanvasE2E: produced executable artifacts → implies canvas tool calls
+    component_tree = getattr(prediction, "component_tree_json", None)
+    if component_tree and str(component_tree).strip() not in ("", "[]"):
+        needs_api = getattr(prediction, "needs_api_schema", False)
+        if isinstance(needs_api, str):
+            needs_api = needs_api.lower() in ("true", "yes", "1")
+        return 5 if needs_api else 3  # create+update+data (+api_schema+api_seed)
+
     for field in ("should_write", "should_update"):
         val = getattr(prediction, field, None)
         if val is not None:
@@ -64,6 +72,11 @@ def _extract_planned_tool_count(prediction):
 
     matched_skill = getattr(prediction, "matched_skill", None)
     if matched_skill is not None:
+        return 0
+
+    # Session summarizer: produces a summary → no tool calls expected
+    summary = getattr(prediction, "summary", None)
+    if summary and str(summary).strip():
         return 0
 
     return 0

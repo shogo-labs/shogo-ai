@@ -179,6 +179,7 @@ def make_combined_metric(track_quality_fn):
 def run_mipro(program, trainset, metric, num_trials=25):
     optimizer = dspy.MIPROv2(
         metric=metric,
+        auto=None,
         num_candidates=num_trials,
         init_temperature=1.0,
     )
@@ -502,7 +503,7 @@ def _run_e2e_optimization(
         program = dspy.ChainOfThought(st.signature_cls)
         program_ref[0] = program
 
-        e2e_metric = make_full_e2e_metric(track_name, program_ref=program_ref, timeout=e2e_timeout)
+        e2e_metric = make_full_e2e_metric(track_name, program_ref=program_ref, timeout=e2e_timeout, subtrack=st.label)
         metric = make_combined_metric(e2e_metric)
 
         strategy_fn = STRATEGIES[strategy]
@@ -551,7 +552,7 @@ def _run_tiered_optimization(
 
         optimized = structural_programs[st.label]
         program_ref = [optimized]
-        e2e_metric = make_full_e2e_metric(track_name, program_ref=program_ref, timeout=e2e_timeout)
+        e2e_metric = make_full_e2e_metric(track_name, program_ref=program_ref, timeout=e2e_timeout, subtrack=st.label)
 
         costs.start_phase(f"{track_name}/tiered_e2e_validate/{st.label}")
         print(f"\n  E2E validating [{st.label}] with {len(st.test)} test examples...")

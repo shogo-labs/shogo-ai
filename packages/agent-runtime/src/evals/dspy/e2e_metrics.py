@@ -307,7 +307,78 @@ def _score_agent_result(result: dict, example: dspy.Example) -> float:
     )
 
 
-def make_full_e2e_metric(track: str, program_ref: list = None, timeout: int = 120):
+# Maps each subtrack to its primary input field name on the dspy.Example.
+SUBTRACK_INPUT_FIELDS = {
+    "planning": "user_request",
+    "e2e": "user_request",
+    "retrieval": "user_message",
+    "write": "conversation_summary",
+    "write_e2e": "conversation_summary",
+    "match": "user_message",
+    "create": "user_description",
+    "create_e2e": "user_description",
+    "selection": "user_description",
+    "self_update": "conversation_summary",
+    "self_update_e2e": "conversation_summary",
+    "plan": "user_message",
+    "plan_e2e": "user_message",
+    "summarize": "messages_text",
+}
+
+# Fields whose content is internal context (not a direct user request) need
+# wrapping in an actionable prompt before being sent to /agent/chat.
+CONTEXT_WRAPPERS = {
+    "conversation_summary": (
+        "The following is a summary of a recent conversation I had with a user. "
+        "Based on what happened, please take any appropriate follow-up actions "
+        "(e.g. saving important facts to memory, updating personality, etc.):\n\n{value}"
+    ),
+    "messages_text": (
+        "Here is the full conversation so far. Please summarize the key points, "
+        "facts, and user preferences:\n\n{value}"
+    ),
+}
+
+# Fallback field priority when subtrack is unknown.
+_FALLBACK_FIELDS = [
+    "user_request", "user_message", "user_description",
+    "conversation_summary", "messages_text",
+]
+
+
+def _extract_user_message(example: dspy.Example, subtrack: str | None) -> str:
+    """Extract the appropriate user-facing message from a dspy.Example.
+
+    Uses the subtrack-specific field map when available, falling back to a
+    priority chain. Wraps internal-context fields in an actionable prompt.
+    """
+    field = SUBTRACK_INPUT_FIELDS.get(subtrack) if subtrack else None
+
+    if field:
+        raw = getattr(example, field, "") or ""
+    else:
+        raw = ""
+        for f in _FALLBACK_FIELDS:
+            raw = getattr(example, f, "") or ""
+            if raw:
+                field = f
+                break
+
+    if not raw:
+        return ""
+
+    wrapper = CONTEXT_WRAPPERS.get(field)
+    if wrapper:
+        return wrapper.format(value=raw)
+    return raw
+
+
+def make_full_e2e_metric(
+    track: str,
+    program_ref: list = None,
+    timeout: int = 120,
+    subtrack: str | None = None,
+):
     """Create a DSPy metric function that runs the full agent loop.
 
     Args:
@@ -316,6 +387,8 @@ def make_full_e2e_metric(track: str, program_ref: list = None, timeout: int = 12
                      before each optimization pass so the metric can extract
                      the current trial's instructions.
         timeout: Per-eval timeout in seconds
+        subtrack: Subtrack label (e.g. "planning", "write", "selection") used
+                  to select the correct input field from the dspy.Example.
 
     Returns:
         A metric function compatible with DSPy optimizers.
@@ -349,7 +422,10 @@ def make_full_e2e_metric(track: str, program_ref: list = None, timeout: int = 12
             _pool.inject_prompt(worker_id, overrides)
 
         # Run the real eval
-        user_message = getattr(example, "user_request", "") or getattr(example, "user_message", "")
+        user_message = _extract_user_message(example, subtrack)
+        if not user_message:
+            print(f"    [WARN] Empty user message for subtrack={subtrack}, skipping E2E eval")
+            return 0.0
         result = _pool.run_eval(worker_id, user_message, timeout=timeout)
 
         # Report agent-runtime tokens to the cost tracker
@@ -363,5 +439,5 @@ def make_full_e2e_metric(track: str, program_ref: list = None, timeout: int = 12
 
         return _score_agent_result(result, example)
 
-    full_e2e_metric.__name__ = f"full_e2e_{track}"
+    full_e2e_metric.__name__ = f"full_e2e_{track}_{subtrack or 'generic'}"
     return full_e2e_metric
