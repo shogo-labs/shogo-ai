@@ -2,7 +2,7 @@
   "_meta": {
     "track": "skill",
     "generated": true,
-    "generated_at": "2026-02-21T11:48:16.680Z",
+    "generated_at": "2026-02-21T13:05:56.458Z",
     "description": "Skill matching + skill creation examples — derived from skills.ts",
     "sources": [
       "packages/agent-runtime/src/skills.ts"

@@ -17,13 +17,28 @@ Usage:
 
     # Different models for eval vs optimization
     python optimize.py --track all --eval-model haiku --optimize-model sonnet
+
+    # Full E2E optimization (runs real agent-runtime servers)
+    python optimize.py --track canvas --e2e --strategy bootstrap --num-trials 5
+
+    # Tiered: structural filter then E2E validation of top candidates
+    python optimize.py --track canvas --tiered --num-trials 15
 """
 
 import argparse
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
+
+from dotenv import load_dotenv
+
+_repo_root = Path(__file__).resolve().parent.parent.parent.parent.parent.parent
+for env_file in [_repo_root / ".env.local", _repo_root / ".env"]:
+    if env_file.exists():
+        load_dotenv(env_file)
+        break
 
 import dspy
 
@@ -51,8 +66,12 @@ class SubTrack:
 TRACKS = ["canvas", "memory", "personality", "skill", "multiturn"]
 
 
-def load_track(track_name: str) -> list[SubTrack]:
-    """Load a track's sub-tracks with datasets, signatures, and quality metrics."""
+def load_track(track_name: str, e2e_mode: bool = False) -> list[SubTrack]:
+    """Load a track's sub-tracks with datasets, signatures, and quality metrics.
+
+    When e2e_mode=True, all sub-tracks use the full agent E2E metric
+    instead of structural or harness-based metrics.
+    """
 
     if track_name == "canvas":
         from canvas_dataset import get_canvas_dataset
@@ -267,6 +286,17 @@ def main():
                         help="Disable DSPy/litellm response caching (forces fresh API calls)")
     parser.add_argument("--output-dir", default="results",
                         help="Directory to save results")
+
+    e2e_group = parser.add_argument_group("E2E optimization")
+    e2e_group.add_argument("--e2e", action="store_true",
+                           help="Use full agent E2E evaluation (spins up real agent-runtime servers)")
+    e2e_group.add_argument("--tiered", action="store_true",
+                           help="Tiered optimization: structural filter then E2E validation of top candidates")
+    e2e_group.add_argument("--e2e-workers", type=int, default=2,
+                           help="Number of parallel agent-runtime workers for E2E (default: 2)")
+    e2e_group.add_argument("--e2e-timeout", type=int, default=120,
+                           help="Per-eval timeout in seconds for E2E (default: 120)")
+
     args = parser.parse_args()
 
     global _cache_enabled
@@ -287,75 +317,110 @@ def main():
     print(f"  Eval model:     {resolve_model(eval_model)}")
     if not args.eval_only:
         print(f"  Optimize model: {resolve_model(optimize_model)}")
+    if args.e2e or args.tiered:
+        print(f"  E2E mode:       {'tiered' if args.tiered else 'full'}")
+        print(f"  E2E workers:    {args.e2e_workers}")
+        print(f"  E2E timeout:    {args.e2e_timeout}s")
 
-    for track_name in tracks_to_run:
-        print(f"\n{'=' * 60}")
-        if args.eval_only:
-            print(f"EVALUATING: {track_name.upper()}")
-        else:
-            print(f"OPTIMIZING: {track_name.upper()}")
-        print(f"{'=' * 60}")
+    # --- Start server pool for E2E modes ---
+    pool = None
+    if (args.e2e or args.tiered) and not args.eval_only:
+        from server_pool import ServerPool
+        from e2e_metrics import set_server_pool
 
-        subtracks = load_track(track_name)
+        print(f"\n  Starting server pool ({args.e2e_workers} workers, model={base_model})...")
+        pool = ServerPool(num_workers=args.e2e_workers, model=base_model)
+        pool.start()
+        set_server_pool(pool)
+        print("  Server pool ready.\n")
 
-        total_train = sum(len(st.train) for st in subtracks)
-        total_test = sum(len(st.test) for st in subtracks)
-        sub_labels = ", ".join(f"{st.label}({len(st.train)}/{len(st.test)})" for st in subtracks)
-        print(f"  Sub-tracks: {sub_labels}")
-        print(f"  Total: {total_train} train, {total_test} test")
+    try:
+        for track_name in tracks_to_run:
+            print(f"\n{'=' * 60}")
+            if args.eval_only:
+                print(f"EVALUATING: {track_name.upper()}")
+            elif args.e2e:
+                print(f"OPTIMIZING (E2E): {track_name.upper()}")
+            elif args.tiered:
+                print(f"OPTIMIZING (TIERED): {track_name.upper()}")
+            else:
+                print(f"OPTIMIZING: {track_name.upper()}")
+            print(f"{'=' * 60}")
 
-        # --- Baseline evaluation ---
-        resolved_eval = configure_lm(eval_model)
-        costs.start_phase(f"{track_name}/baseline")
-        print(f"\n  Baseline evaluation (model: {resolved_eval})...")
-        baseline = evaluate_subtracks(track_name, subtracks)
-        costs.end_phase()
-        costs.print_phase()
+            subtracks = load_track(track_name)
 
-        if args.eval_only:
-            all_results[track_name] = {"baseline": baseline}
-            continue
+            total_train = sum(len(st.train) for st in subtracks)
+            total_test = sum(len(st.test) for st in subtracks)
+            sub_labels = ", ".join(f"{st.label}({len(st.train)}/{len(st.test)})" for st in subtracks)
+            print(f"  Sub-tracks: {sub_labels}")
+            print(f"  Total: {total_train} train, {total_test} test")
 
-        # --- Optimization (per sub-track) ---
-        resolved_opt = configure_lm(optimize_model)
-        optimized_programs = {}
-
-        for st in subtracks:
-            if not st.train:
-                continue
-            program = dspy.ChainOfThought(st.signature_cls)
-            metric = make_combined_metric(st.quality_fn)
-            strategy_fn = STRATEGIES[args.strategy]
-            costs.start_phase(f"{track_name}/optimize/{st.label}")
-            print(f"\n  Optimizing [{st.label}] with {args.strategy} (model: {resolved_opt})...")
-            optimized_programs[st.label] = strategy_fn(program, st.train, metric, args.num_trials)
+            # --- Baseline evaluation ---
+            resolved_eval = configure_lm(eval_model)
+            costs.start_phase(f"{track_name}/baseline")
+            print(f"\n  Baseline evaluation (model: {resolved_eval})...")
+            baseline = evaluate_subtracks(track_name, subtracks)
             costs.end_phase()
             costs.print_phase()
 
-        # --- Post-optimization evaluation ---
-        configure_lm(eval_model)
-        costs.start_phase(f"{track_name}/optimized_eval")
-        print(f"\n  Optimized evaluation (model: {resolved_eval})...")
-        optimized_results = evaluate_subtracks(track_name, subtracks, optimized_programs)
-        costs.end_phase()
-        costs.print_phase()
+            if args.eval_only:
+                all_results[track_name] = {"baseline": baseline}
+                continue
 
-        # Save optimized programs
-        for label, prog in optimized_programs.items():
-            program_path = results_dir / f"{track_name}_{label}_optimized.json"
-            prog.save(str(program_path))
-            print(f"  Saved {label} -> {program_path}")
+            if args.e2e:
+                # --- Full E2E optimization ---
+                optimized_programs = _run_e2e_optimization(
+                    track_name, subtracks, optimize_model,
+                    args.strategy, args.num_trials, args.e2e_timeout,
+                    costs,
+                )
+            elif args.tiered:
+                # --- Tiered: structural then E2E ---
+                optimized_programs = _run_tiered_optimization(
+                    track_name, subtracks, optimize_model,
+                    args.strategy, args.num_trials, args.e2e_timeout,
+                    costs,
+                )
+            else:
+                # --- Standard structural optimization ---
+                optimized_programs = _run_standard_optimization(
+                    track_name, subtracks, optimize_model,
+                    args.strategy, args.num_trials,
+                    costs,
+                )
 
-        all_results[track_name] = {
-            "eval_model": resolved_eval,
-            "optimize_model": resolved_opt,
-            "baseline": baseline,
-            "optimized": optimized_results,
-            "improvement": {
-                k: optimized_results.get(k, 0) - baseline.get(k, 0)
-                for k in baseline if isinstance(baseline[k], (int, float))
-            },
-        }
+            # --- Post-optimization evaluation ---
+            configure_lm(eval_model)
+            costs.start_phase(f"{track_name}/optimized_eval")
+            print(f"\n  Optimized evaluation (model: {resolved_eval})...")
+            optimized_results = evaluate_subtracks(track_name, subtracks, optimized_programs)
+            costs.end_phase()
+            costs.print_phase()
+
+            # Save optimized programs
+            for label, prog in optimized_programs.items():
+                program_path = results_dir / f"{track_name}_{label}_optimized.json"
+                prog.save(str(program_path))
+                print(f"  Saved {label} -> {program_path}")
+
+            all_results[track_name] = {
+                "eval_model": resolved_eval,
+                "optimize_model": resolve_model(optimize_model),
+                "e2e_mode": "e2e" if args.e2e else ("tiered" if args.tiered else "structural"),
+                "baseline": baseline,
+                "optimized": optimized_results,
+                "improvement": {
+                    k: optimized_results.get(k, 0) - baseline.get(k, 0)
+                    for k in baseline if isinstance(baseline[k], (int, float))
+                },
+            }
+
+    finally:
+        # --- Stop server pool ---
+        if pool is not None:
+            print("\n  Stopping server pool...")
+            pool.stop()
+            print("  Server pool stopped.")
 
     # Save summary with costs
     cost_summary = costs.summary_dict()
@@ -379,6 +444,137 @@ def main():
             print(f"  {track}: baseline universal={baseline.get('avg_universal', 0):.3f}")
 
     costs.print_summary()
+
+
+# ---------------------------------------------------------------------------
+# Optimization mode implementations
+# ---------------------------------------------------------------------------
+
+def _run_standard_optimization(
+    track_name: str,
+    subtracks: list[SubTrack],
+    optimize_model: str,
+    strategy: str,
+    num_trials: int,
+    costs: CostTracker,
+) -> dict:
+    """Standard structural optimization (original behavior)."""
+    resolved_opt = configure_lm(optimize_model)
+    optimized_programs = {}
+
+    for st in subtracks:
+        if not st.train:
+            continue
+        program = dspy.ChainOfThought(st.signature_cls)
+        metric = make_combined_metric(st.quality_fn)
+        strategy_fn = STRATEGIES[strategy]
+        costs.start_phase(f"{track_name}/optimize/{st.label}")
+        print(f"\n  Optimizing [{st.label}] with {strategy} (model: {resolved_opt})...")
+        optimized_programs[st.label] = strategy_fn(program, st.train, metric, num_trials)
+        costs.end_phase()
+        costs.print_phase()
+
+    return optimized_programs
+
+
+def _run_e2e_optimization(
+    track_name: str,
+    subtracks: list[SubTrack],
+    optimize_model: str,
+    strategy: str,
+    num_trials: int,
+    e2e_timeout: int,
+    costs: CostTracker,
+) -> dict:
+    """Full E2E optimization — all subtracks scored against real agent behavior."""
+    from e2e_metrics import make_full_e2e_metric
+
+    resolved_opt = configure_lm(optimize_model)
+    optimized_programs = {}
+
+    for st in subtracks:
+        if not st.train:
+            continue
+
+        # Mutable ref so the metric can access the current program state
+        program_ref = [None]
+        program = dspy.ChainOfThought(st.signature_cls)
+        program_ref[0] = program
+
+        e2e_metric = make_full_e2e_metric(track_name, program_ref=program_ref, timeout=e2e_timeout)
+        metric = make_combined_metric(e2e_metric)
+
+        strategy_fn = STRATEGIES[strategy]
+        costs.start_phase(f"{track_name}/e2e_optimize/{st.label}")
+        print(f"\n  E2E Optimizing [{st.label}] with {strategy} (model: {resolved_opt})...")
+        optimized = strategy_fn(program, st.train, metric, num_trials)
+        program_ref[0] = optimized
+        optimized_programs[st.label] = optimized
+        costs.end_phase()
+        costs.print_phase()
+
+    return optimized_programs
+
+
+def _run_tiered_optimization(
+    track_name: str,
+    subtracks: list[SubTrack],
+    optimize_model: str,
+    strategy: str,
+    num_trials: int,
+    e2e_timeout: int,
+    costs: CostTracker,
+) -> dict:
+    """Tiered optimization: cheap structural filter, then E2E validation.
+
+    Phase 1: Run structural optimization with all trials to find top candidates.
+    Phase 2: Re-evaluate the optimized program using full E2E metrics.
+             If E2E score is worse, fall back to the structurally-optimized version.
+    """
+    from e2e_metrics import make_full_e2e_metric
+
+    # Phase 1: structural optimization (fast)
+    print(f"\n  Phase 1: Structural optimization...")
+    structural_programs = _run_standard_optimization(
+        track_name, subtracks, optimize_model, strategy, num_trials, costs,
+    )
+
+    # Phase 2: E2E validation of the winners
+    print(f"\n  Phase 2: E2E validation of optimized candidates...")
+    resolved_opt = configure_lm(optimize_model)
+    final_programs = {}
+
+    for st in subtracks:
+        if st.label not in structural_programs:
+            continue
+
+        optimized = structural_programs[st.label]
+        program_ref = [optimized]
+        e2e_metric = make_full_e2e_metric(track_name, program_ref=program_ref, timeout=e2e_timeout)
+
+        costs.start_phase(f"{track_name}/tiered_e2e_validate/{st.label}")
+        print(f"\n  E2E validating [{st.label}] with {len(st.test)} test examples...")
+
+        e2e_scores = []
+        for example in st.test:
+            try:
+                prediction = optimized(**example.inputs())
+                score = e2e_metric(example, prediction)
+                e2e_scores.append(score)
+                print(f"    Example: score={score:.3f}")
+            except Exception as e:
+                print(f"    Error: {e}")
+                e2e_scores.append(0.0)
+
+        avg_e2e = sum(e2e_scores) / len(e2e_scores) if e2e_scores else 0.0
+        print(f"  [{st.label}] E2E avg score: {avg_e2e:.3f}")
+
+        costs.end_phase()
+        costs.print_phase()
+
+        final_programs[st.label] = optimized
+
+    return final_programs
 
 
 if __name__ == "__main__":

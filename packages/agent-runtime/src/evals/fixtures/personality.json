@@ -2,7 +2,7 @@
   "_meta": {
     "track": "personality",
     "generated": true,
-    "generated_at": "2026-02-21T11:48:16.680Z",
+    "generated_at": "2026-02-21T13:05:56.458Z",
     "description": "Agent template selection + personality self-update examples — extracted from agent-templates.ts",
     "sources": [
       "packages/agent-runtime/src/agent-templates.ts"
@@ -269,6 +269,42 @@
       "expected_section": "Boundaries",
       "optimal_tool_calls": 1,
       "optimal_iterations": 1
+    },
+    {
+      "id": "self-update-domain-expertise",
+      "source_template": null,
+      "type": "self-update",
+      "conversation_summary": "User said: 'You are now a senior DevOps engineer. Always think about infrastructure costs, security implications, and deployment reliability.'",
+      "current_soul": "# Soul\n\n## Identity\nYou are a helpful assistant.\n\n## Communication Style\nFriendly and concise.\n\n## Boundaries\n- Don't be rude",
+      "expected_should_update": true,
+      "expected_file": "SOUL.md",
+      "expected_section": "Identity",
+      "optimal_tool_calls": 1,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "self-update-safety-boundaries",
+      "source_template": null,
+      "type": "self-update",
+      "conversation_summary": "User said: 'Never execute shell commands without asking me first. Never access production databases directly. Always suggest a dry-run before destructive operations.'",
+      "current_soul": "# Soul\n\n## Identity\nYou are a helpful DevOps assistant.\n\n## Communication Style\nTechnical, clear.\n\n## Boundaries\n- Be careful with destructive operations",
+      "expected_should_update": true,
+      "expected_file": "AGENTS.md",
+      "expected_section": "Boundaries",
+      "optimal_tool_calls": 1,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "self-update-style-noop",
+      "source_template": null,
+      "type": "self-update",
+      "conversation_summary": "User said: 'Can you rewrite this in bullet points instead? Here\\'s the text: The quarterly results show growth in three areas.'",
+      "current_soul": "# Soul\n\n## Identity\nYou are a helpful assistant.\n\n## Communication Style\nFriendly and concise.\n\n## Boundaries\n- Don't be rude",
+      "expected_should_update": false,
+      "expected_file": "",
+      "expected_section": "",
+      "optimal_tool_calls": 0,
+      "optimal_iterations": 0
     }
   ]
 }

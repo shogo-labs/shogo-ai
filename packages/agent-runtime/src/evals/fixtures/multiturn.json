@@ -2,7 +2,7 @@
   "_meta": {
     "track": "multiturn",
     "generated": true,
-    "generated_at": "2026-02-21T11:48:16.680Z",
+    "generated_at": "2026-02-21T13:05:56.458Z",
     "description": "Multi-turn conversation planning + session summarization — extracted from e2e-scenarios.test.ts",
     "sources": [
       "packages/agent-runtime/src/__tests__/e2e-scenarios.test.ts",
@@ -190,6 +190,82 @@
         "Slack #releases"
       ],
       "expected_user_preferences": [],
+      "optimal_tool_calls": 0,
+      "optimal_iterations": 0
+    },
+    {
+      "id": "upgrade-display-to-crud",
+      "type": "plan",
+      "source_test": null,
+      "user_message": "Now make my contact list a full CRUD app — add an API backend and seed with 3 contacts",
+      "conversation_history_summary": "User previously built a simple contact list canvas with name, email, phone",
+      "expected_tool_sequence": [
+        "canvas_api_schema",
+        "canvas_api_seed",
+        "canvas_api_query",
+        "canvas_update"
+      ],
+      "expected_iterations": 1,
+      "expected_can_batch": false,
+      "optimal_tool_calls": 4,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "memory-to-canvas-kpi",
+      "type": "plan",
+      "source_test": null,
+      "user_message": "Build me a KPI dashboard canvas using the metrics I told you about",
+      "conversation_history_summary": "User previously said: 'Remember our team tracks these KPIs: MRR, churn rate, NPS score, and active users.'",
+      "expected_tool_sequence": [
+        "canvas_create",
+        "canvas_update",
+        "canvas_data"
+      ],
+      "expected_iterations": 1,
+      "expected_can_batch": false,
+      "optimal_tool_calls": 3,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "incident-escalation",
+      "type": "plan",
+      "source_test": null,
+      "user_message": "Log this in memory as an active incident, then show me an incident status canvas with severity badge",
+      "conversation_history_summary": "User reported: 'Critical ticket — Production database is down, from customer Acme Corp'",
+      "expected_tool_sequence": [
+        "memory_write",
+        "canvas_create",
+        "canvas_update",
+        "canvas_data"
+      ],
+      "expected_iterations": 1,
+      "expected_can_batch": false,
+      "optimal_tool_calls": 4,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "iterative-expense-alert",
+      "type": "plan",
+      "source_test": null,
+      "user_message": "Add an Alert component at the top warning that we're at 85% of budget, yellow/warning severity",
+      "conversation_history_summary": "User previously built an expense dashboard with metrics and a category Chart",
+      "expected_tool_sequence": [
+        "canvas_update"
+      ],
+      "expected_iterations": 1,
+      "expected_can_batch": true,
+      "optimal_tool_calls": 1,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "personality-then-verify",
+      "type": "plan",
+      "source_test": null,
+      "user_message": "What are the benefits of using TypeScript?",
+      "conversation_history_summary": "User previously asked agent to update personality to always respond in exactly 3 bullet points",
+      "expected_tool_sequence": [],
+      "expected_iterations": 0,
+      "expected_can_batch": true,
       "optimal_tool_calls": 0,
       "optimal_iterations": 0
     }

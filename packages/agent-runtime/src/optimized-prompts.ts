@@ -4,7 +4,7 @@
  * These prompt sections were generated from DSPy-optimized few-shot demos.
  * DO NOT EDIT MANUALLY — re-run the optimization pipeline and apply script instead.
  *
- * Generated: 2026-02-21T12:52:38.754Z
+ * Generated: 2026-02-21T13:58:46.181Z
  * Source: 14 optimized programs from DSPy bootstrap optimization
  */
 
@@ -16,43 +16,41 @@ These examples show the optimal tool sequence for common canvas requests:
 - Surface: \`weather-forecast\`
 - Needs API: No (display only)
 - Tools: canvas_create, canvas_update, canvas_data
-- Components: Column, Row, Card, Text, Badge, Metric, Grid, Chart, Separator, Alert
+- Components: Column, Grid, Card, Metric, Text, Icon, Badge, Row
 
 **Example 2:** "Find flights from SFO to JFK and let me pick one"
-- Surface: \`flight-search\`
-- Needs API: No (display only)
-- Tools: canvas_create, canvas_update, canvas_data
-- Components: Column, Row, Card, Text, Badge, Metric, Separator, ChoicePicker, Button, Alert
+- Surface: \`flight-finder\`
+- Needs API: Yes (CRUD app)
+- Tools: canvas_create, canvas_api_schema, canvas_api_seed, canvas_api_query, canvas_update
+- Components: Column, Card, TextField, Button, Table, Text, Badge, Select
 
 **Example 3:** "Build an email dashboard with metrics, tabs, and email tables"
 - Surface: \`email-dashboard\`
 - Needs API: No (display only)
 - Tools: canvas_create, canvas_update, canvas_data
-- Components: Column, Row, Grid, Card, Metric, Tabs, TabPanel, Table, Text, Badge, Separator
+- Components: Column, Row, Grid, Metric, Card, Tabs, TabPanel, Table, Badge, Text
 
 **Example 4:** "Create a sales analytics dashboard with revenue chart and top products"
 - Surface: \`sales-analytics\`
 - Needs API: No (display only)
 - Tools: canvas_create, canvas_update, canvas_data
-- Components: Column, Grid, Metric, Separator, Chart, Card, Table, Text, Badge`
+- Components: Column, Grid, Metric, Chart, Table, Card, Text, Badge`
 
 export const OPTIMIZED_MEMORY_GUIDE = `### Memory Decision Examples
 
-**Write memory when:**
-- "Agent executed BOOT.md: wrote status file, recorded startup to memory" → Write to MEMORY.md: "## Boot Event
-Agent executed BOOT.md startup sequence: wrote status file and rec..."
 
 **Skip memory write when:**
-- "Agent read deploy.log, wrote summary to deploy-report.md" → Skip (This is a mechanical file processing task - reading a log file and writing a summary report)
-- "Agent read data.csv, converted to JSON, wrote data.json" → Skip (This is a mechanical file conversion task (CSV to JSON))`
+- "Agent executed BOOT.md: wrote status file, recorded startup to memory" → Skip (The agent executed BOOT)
+- "Agent read deploy.log, wrote summary to deploy-report.md" → Skip (This is a mechanical task: reading a log file and writing a summary report)`
 
 export const OPTIMIZED_PERSONALITY_GUIDE = `### Self-Update Decision Examples
 
 **Update personality when:**
 - "User said: 'You're being too casual. Please be more formal and professional.'" → Update SOUL.md section "Communication Style"
+- "User said: 'Never suggest changes to my database schema. Just analyze it.'" → Update SOUL.md section "Boundaries"
 
 **Don't update when:**
-- "User said: 'What's the weather like?' Agent responded with weather info." → No update (This was a simple, trivial one-off question about the weather)`
+- "User said: 'What's the weather like?' Agent responded with weather info." → No update (This is a trivial, one-off conversation about weather)`
 
 export const OPTIMIZED_TOOL_PLANNING_GUIDE = `## Tool Planning
 
@@ -61,10 +59,10 @@ in fewer LLM iterations by batching independent tool calls.
 
 ### Examples
 
-- "Check the deploy log and write a summary report" → \`read_file, write_file\` (~2 iterations)
-- "Convert data.csv to JSON format and save it" → \`read_file, exec, write_file\` (~3 iterations)
-- "Notify the Discord channel that v2.4.0 has been deployed" → \`send_message\` (~1 iteration)
-- "Build me a task tracker where I can add, complete, and delete tasks" → \`canvas_components, canvas_create, canvas_action_wait\` (~3 iterations)`
+- "Check the deploy log and write a summary report" → \`read_file, write_file\` (~1 iteration)
+- "Convert data.csv to JSON format and save it" → \`read_file, exec, write_file\` (~1 iteration)
+- "Notify the Discord channel that v2.4.0 has been deployed" → \`send_message\` (~1 iteration) (batchable)
+- "Build me a task tracker where I can add, complete, and delete tasks" → \`canvas_create, canvas_api_schema, canvas_api_seed, canvas_update, canvas_components\` (~2 iterations)`
 
 export const OPTIMIZED_SESSION_SUMMARY_GUIDE = `### Session Summarization Guide
 
@@ -81,22 +79,22 @@ Discard:
 **Input:** user: My name is Alice, I'm in PST timezone.
 assistant: Nice to meet you, Alice! I'll keep your timezone in mind.
 user: ...
-**Summary:** User Alice (PST timezone) asked for a GitHub PR check. Three open PRs were found: #142 (Fix auth bug, 2 approvals), #143 (Add dark mode, needs review), #144 (Refactor DB, 1 comment).
-**Key facts:** - User name: Alice
+**Summary:** Alice (PST timezone) asked for a GitHub PR review. Assistant found 3 open PRs: Fix auth bug (#142) with 2 approvals, Add dark mode (#143) needing review, and Refactor DB (#144) with 1 comment. All PRs were summarized for the user.
+**Key facts:** - User: Alice
 - Timezone: PST
-- 3 open GitHub PRs found:
-  - #142: Fix auth bug — 2 approvals, likely ready to merge
-  - #143: Add dark mode — needs review
-  - #144: Refactor DB — 1 comment, may need attention
-**Preferences:** - Prefers concise, numbered summaries for PR lists
+- 3 open GitHub PRs requiring attention:
+  - #142 Fix auth bug (2 approvals, ready to merge)
+  - #143 Add dark mode (needs review)
+  - #144 Refactor DB (1 comment)
+**Preferences:** - Prefers GitHub PR status updates
+- Active developer monitoring pull requests
 
 **Input:** system: Heartbeat check.
 assistant: [tool: exec] All systems nominal. CPU: 23%, Memory: 4.2GB/16GB.
 system: Heartbeat ch...
-**Summary:** Three heartbeat checks were performed, all returning nominal system status with CPU usage between 21-25% and memory around 4.1-4.3GB/16GB. User asked if there were any issues; assistant confirmed no issues and that all heartbeat checks passed normally.
-**Key facts:** - 3 heartbeat checks completed, all nominal
-- No issues detected in current session
-- CPU usage: ~21-25%, Memory: ~4.1-4.3GB/16GB
+**Summary:** User inquired about system status. System performed 3 routine heartbeat checks, all returning nominal metrics (CPU 21-25%, Memory 4.1-4.3GB/16GB). No issues detected.
+**Key facts:** - All system health checks passed
+- System operating normally with stable resource utilization
 **Preferences:** None identified in this conversation.`
 
 export const OPTIMIZED_SKILL_MATCHING_GUIDE = `### Skill Matching
@@ -105,9 +103,9 @@ Match user messages to skills semantically, not just by exact keyword.
 Consider the skill's description and purpose, not only trigger phrases.
 
 **Match examples:**
-- "git summary" → skill: \`git-summary\` (confidence: 1)
+- "git summary" → skill: \`git-summary\` (confidence: 0.95)
 - "what changed in the repo this week" → skill: \`git-summary\` (confidence: 0.85)
-- "are there any new pull requests I should look at" → skill: \`check-github\` (confidence: 0.92)
+- "are there any new pull requests I should look at" → skill: \`check-github\` (confidence: 0.95)
 
 **No match:**
 - "what's the weather like today" → no skill matches (confidence: 0.15)`

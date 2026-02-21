@@ -23,6 +23,7 @@ export interface EvalRunnerConfig {
   timeoutMs: number
   verbose: boolean
   workspaceDir: string
+  agentMode?: 'basic' | 'advanced'
 }
 
 const DEFAULT_CONFIG: EvalRunnerConfig = {
@@ -36,7 +37,7 @@ const DEFAULT_CONFIG: EvalRunnerConfig = {
 // HTTP ↔ Agent
 // ---------------------------------------------------------------------------
 
-interface ParsedAgentResponse {
+export interface ParsedAgentResponse {
   text: string
   toolCalls: ToolCallRecord[]
   stepCount: number
@@ -48,7 +49,7 @@ interface ParsedAgentResponse {
  * Send a single turn to the agent via POST /agent/chat and parse the SSE
  * stream response (AI SDK UI Message Stream format).
  */
-async function sendTurn(
+export async function sendTurn(
   messages: Array<{ role: string; parts: Array<{ type: string; text: string }> }>,
   config: EvalRunnerConfig,
 ): Promise<ParsedAgentResponse> {
@@ -60,10 +61,13 @@ async function sendTurn(
     const timeout = setTimeout(() => controller.abort(), config.timeoutMs)
 
     try {
+      const body: Record<string, unknown> = { messages }
+      if (config.agentMode) body.agentMode = config.agentMode
+
       const res = await fetch(config.agentEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages }),
+        body: JSON.stringify(body),
         signal: controller.signal,
       })
 

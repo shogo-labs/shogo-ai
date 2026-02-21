@@ -146,4 +146,300 @@ export const MULTITURN_EVALS: AgentEval[] = [
       },
     ],
   },
+
+  // ---- Build Then Add CRUD (n8n progressive workflow building) ----
+  {
+    id: 'multiturn-upgrade-to-crud',
+    name: 'Multi-turn: Upgrade display canvas to CRUD app',
+    category: 'multiturn',
+    level: 3,
+    conversationHistory: [
+      {
+        role: 'user',
+        content: 'Create a simple contact list canvas showing name, email, and phone number. Use fake data for 3 contacts.',
+      },
+    ],
+    input: 'Now make it a full CRUD app — add an API backend so I can add and delete contacts. Seed with 3 contacts.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-api-schema',
+        description: 'Used canvas_api_schema to add CRUD backend',
+        points: 30,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_api_schema'),
+      },
+      {
+        id: 'used-api-seed',
+        description: 'Used canvas_api_seed to populate contacts',
+        points: 20,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_api_seed'),
+      },
+      {
+        id: 'did-not-recreate-surface',
+        description: 'Did NOT recreate the surface from scratch',
+        points: 25,
+        phase: 'execution',
+        validate: (r) => !usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'has-contact-model',
+        description: 'API schema defines a Contact model',
+        points: 25,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          return json.includes('contact') && (json.includes('email') || json.includes('phone'))
+        },
+      },
+    ],
+  },
+
+  // ---- Memory Then Canvas Using Context (OpenClaw + Odin AI) ----
+  {
+    id: 'multiturn-memory-then-canvas',
+    name: 'Multi-turn: Use memorized KPIs to build dashboard',
+    category: 'multiturn',
+    level: 3,
+    conversationHistory: [
+      {
+        role: 'user',
+        content: 'Remember that our team tracks these KPIs: MRR, churn rate, NPS score, and active users.',
+      },
+    ],
+    input: 'Build me a KPI dashboard canvas using the metrics I told you about. Use sample data.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 20,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Added components to the canvas',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'has-mrr',
+        description: 'Dashboard includes MRR metric',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => JSON.stringify(r.toolCalls).toLowerCase().includes('mrr'),
+      },
+      {
+        id: 'has-churn',
+        description: 'Dashboard includes churn rate metric',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => JSON.stringify(r.toolCalls).toLowerCase().includes('churn'),
+      },
+      {
+        id: 'has-nps',
+        description: 'Dashboard includes NPS score metric',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => JSON.stringify(r.toolCalls).toLowerCase().includes('nps'),
+      },
+      {
+        id: 'has-active-users',
+        description: 'Dashboard includes active users metric',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          return json.includes('active') && json.includes('user')
+        },
+      },
+    ],
+  },
+
+  // ---- Support Ticket Escalation Flow (n8n + Odin AI) ----
+  {
+    id: 'multiturn-incident-escalation',
+    name: 'Multi-turn: Log incident and show status canvas',
+    category: 'multiturn',
+    level: 3,
+    conversationHistory: [
+      {
+        role: 'user',
+        content: 'I built a support ticket app. A new critical ticket just came in: "Production database is down" from customer Acme Corp.',
+      },
+    ],
+    input: 'Log this in memory as an active incident, then show me an incident status canvas with the details and a severity badge.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-memory-write',
+        description: 'Used memory_write to log the incident',
+        points: 25,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'memory_write'),
+      },
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas for incident status',
+        points: 20,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'memory-has-incident',
+        description: 'Memory content references the database incident',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          return json.includes('database') && json.includes('down')
+        },
+      },
+      {
+        id: 'canvas-has-badge',
+        description: 'Canvas includes a Badge for severity',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => JSON.stringify(r.toolCalls).includes('"Badge"'),
+      },
+      {
+        id: 'canvas-has-customer',
+        description: 'Canvas references customer Acme Corp',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          return json.includes('acme')
+        },
+      },
+      {
+        id: 'reasonable-tools',
+        description: 'Completed in <= 10 tool calls',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 10,
+      },
+    ],
+  },
+
+  // ---- Iterative Dashboard Refinement (Odin AI task automator) ----
+  {
+    id: 'multiturn-iterative-refinement',
+    name: 'Multi-turn: Iteratively refine expense dashboard',
+    category: 'multiturn',
+    level: 4,
+    conversationHistory: [
+      {
+        role: 'user',
+        content: 'Build an expense dashboard with metrics for total ($8,500) and count (34).',
+      },
+      {
+        role: 'user',
+        content: 'Add a breakdown by category as a Chart — categories are Travel, Software, Hardware, Food.',
+      },
+    ],
+    input: 'Now add an Alert component at the top warning that we\'re at 85% of budget. Make it yellow/warning severity.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-update',
+        description: 'Used canvas_update to add the alert',
+        points: 30,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'has-alert',
+        description: 'Added an Alert component',
+        points: 25,
+        phase: 'execution',
+        validate: (r) => JSON.stringify(r.toolCalls).includes('"Alert"'),
+      },
+      {
+        id: 'has-warning-severity',
+        description: 'Alert has warning severity or yellow color',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          return json.includes('warning') || json.includes('yellow')
+        },
+      },
+      {
+        id: 'did-not-recreate',
+        description: 'Did not rebuild the dashboard from scratch',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => !usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'reasonable-tools',
+        description: 'Used <= 6 tool calls for this incremental update',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 6,
+      },
+    ],
+  },
+
+  // ---- Personality Then Behavioral Verification (OpenClaw + Odin AI) ----
+  {
+    id: 'multiturn-personality-verify',
+    name: 'Multi-turn: Verify behavior after personality update',
+    category: 'multiturn',
+    level: 3,
+    conversationHistory: [
+      {
+        role: 'user',
+        content: 'Update your personality to always respond in exactly 3 bullet points, no more, no less.',
+      },
+    ],
+    input: 'What are the benefits of using TypeScript?',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'no-unnecessary-tools',
+        description: 'Did not use unnecessary tools for a simple question',
+        points: 30,
+        phase: 'intention',
+        validate: (r) => {
+          const toolCount = r.toolCalls.filter(t =>
+            t.name !== 'memory_read' && t.name !== 'memory_search'
+          ).length
+          return toolCount <= 1
+        },
+      },
+      {
+        id: 'has-bullet-format',
+        description: 'Response uses bullet point format',
+        points: 30,
+        phase: 'execution',
+        validate: (r) => {
+          const text = r.responseText
+          const bullets = (text.match(/^[\s]*[-•*]\s/gm) || []).length
+          return bullets >= 2
+        },
+      },
+      {
+        id: 'answered-typescript',
+        description: 'Response actually discusses TypeScript benefits',
+        points: 25,
+        phase: 'execution',
+        validate: (r) => {
+          const text = r.responseText.toLowerCase()
+          return text.includes('type') || text.includes('typescript') || text.includes('safety')
+        },
+      },
+      {
+        id: 'response-concise',
+        description: 'Response is concise (follows bullet point constraint)',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => r.responseText.length > 30 && r.responseText.length < 1500,
+      },
+    ],
+  },
 ]

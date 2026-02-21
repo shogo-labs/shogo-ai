@@ -132,4 +132,159 @@ export const PERSONALITY_EVALS: AgentEval[] = [
       },
     ],
   },
+
+  // ---- Set Domain Expertise (Odin AI agent templates) ----
+  {
+    id: 'personality-domain-expertise',
+    name: 'Personality: Set domain expertise',
+    category: 'personality',
+    level: 2,
+    input: 'You are now a senior DevOps engineer. You should always think about infrastructure costs, security implications, and deployment reliability. Update your personality.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-personality-update',
+        description: 'Used personality_update to set domain expertise',
+        points: 35,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'personality_update'),
+      },
+      {
+        id: 'targeted-soul-or-agents',
+        description: 'Updated SOUL.md or AGENTS.md',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => {
+          const call = r.toolCalls.find(t => t.name === 'personality_update')
+          const file = (call?.input?.file as string) || ''
+          return file === 'SOUL.md' || file === 'AGENTS.md'
+        },
+      },
+      {
+        id: 'has-devops-role',
+        description: 'Content references DevOps or infrastructure',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          return json.includes('devops') || json.includes('infrastructure')
+        },
+      },
+      {
+        id: 'has-security-concern',
+        description: 'Content references security implications',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => JSON.stringify(r.toolCalls).toLowerCase().includes('security'),
+      },
+      {
+        id: 'confirms-update',
+        description: 'Agent confirms the personality was updated',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => {
+          const text = r.responseText.toLowerCase()
+          return text.includes('update') || text.includes('devops') || text.includes('change')
+        },
+      },
+    ],
+  },
+
+  // ---- Set Communication Boundaries (OpenClaw safety defaults) ----
+  {
+    id: 'personality-set-boundaries',
+    name: 'Personality: Set safety boundaries',
+    category: 'personality',
+    level: 2,
+    input: 'Never execute shell commands without asking me first. Never access production databases directly. Always suggest a dry-run before destructive operations. Update your guidelines.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-personality-update',
+        description: 'Used personality_update to set boundaries',
+        points: 30,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'personality_update'),
+      },
+      {
+        id: 'targeted-agents-md',
+        description: 'Updated AGENTS.md (guidelines/rules file)',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => {
+          const call = r.toolCalls.find(t => t.name === 'personality_update')
+          return (call?.input?.file as string) === 'AGENTS.md'
+        },
+      },
+      {
+        id: 'has-shell-boundary',
+        description: 'Content mentions shell command restriction',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          return json.includes('shell') || json.includes('command')
+        },
+      },
+      {
+        id: 'has-production-boundary',
+        description: 'Content mentions production database restriction',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          return json.includes('production') && json.includes('database')
+        },
+      },
+      {
+        id: 'has-dryrun-boundary',
+        description: 'Content mentions dry-run before destructive ops',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          return json.includes('dry-run') || json.includes('dry run') || json.includes('destructive')
+        },
+      },
+    ],
+  },
+
+  // ---- Don't Update for Style Request (negative case) ----
+  {
+    id: 'personality-no-update-style',
+    name: 'Personality: Don\'t update for one-off style request',
+    category: 'personality',
+    level: 2,
+    input: 'Can you rewrite this in bullet points instead? Here\'s the text: The quarterly results show growth in three areas: revenue increased 15%, customer base grew by 8,000 users, and average deal size rose to $2,400.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'no-personality-update',
+        description: 'Did NOT use personality_update for a one-off formatting request',
+        points: 55,
+        phase: 'intention',
+        validate: (r) => !usedTool(r, 'personality_update'),
+      },
+      {
+        id: 'reformatted-text',
+        description: 'Response contains reformatted bullet points',
+        points: 25,
+        phase: 'execution',
+        validate: (r) => {
+          const text = r.responseText
+          return text.includes('•') || text.includes('-') || text.includes('*') || text.includes('revenue')
+        },
+      },
+      {
+        id: 'preserved-data',
+        description: 'Response preserves the key data points',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => {
+          const text = r.responseText.toLowerCase()
+          return text.includes('15%') && (text.includes('8,000') || text.includes('8000'))
+        },
+      },
+    ],
+  },
 ]

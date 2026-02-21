@@ -504,6 +504,24 @@ app.post('/agent/hooks/agent', async (c) => {
   return c.json({ status: 'accepted' }, 202)
 })
 
+// Prompt override — used by DSPy optimization to inject candidate prompts at runtime
+app.post('/agent/prompt-override', async (c) => {
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+  const overrides = await c.req.json() as Record<string, string>
+  agentGateway.setPromptOverrides(overrides)
+  return c.json({ ok: true, keys: Object.keys(overrides) })
+})
+
+app.delete('/agent/prompt-override', (c) => {
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+  agentGateway.setPromptOverrides({})
+  return c.json({ ok: true, cleared: true })
+})
+
 // Heartbeat manual trigger
 app.post('/agent/heartbeat/trigger', async (c) => {
   if (!agentGateway) {

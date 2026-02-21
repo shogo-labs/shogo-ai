@@ -63,7 +63,7 @@ export interface GatewayConfig {
   mcpServers?: Record<string, MCPServerConfig>
 }
 
-const CANVAS_TOOLS_GUIDE = `## Canvas (Dynamic UI)
+const CANVAS_TOOLS_GUIDE_PREFIX = `## Canvas (Dynamic UI)
 
 You have canvas tools that let you build interactive UIs the user can see in real time.
 Use them whenever a visual display would be more helpful than plain text.
@@ -165,9 +165,9 @@ Use \`canvas_components({ action: "detail", type: "Card" })\` to look up props f
 - Do NOT rebuild surfaces that are working — use canvas_update to modify specific components.
 - Table is read-only. For lists needing edit/delete buttons, always use DataList.
 
-${OPTIMIZED_CANVAS_EXAMPLES}`
+`
 
-const PERSONALITY_EVOLUTION_GUIDE = `## Personality Self-Update
+const PERSONALITY_EVOLUTION_GUIDE_PREFIX = `## Personality Self-Update
 
 You have a \`personality_update\` tool that lets you improve your own behavior files.
 
@@ -188,7 +188,7 @@ You have a \`personality_update\` tool that lets you improve your own behavior f
 - The Boundaries section in SOUL.md can never be removed, only appended to
 - All updates are logged to daily memory with [personality-update] tag
 
-${OPTIMIZED_PERSONALITY_GUIDE}`
+`
 
 export class AgentGateway {
   private workspaceDir: string
@@ -211,6 +211,8 @@ export class AgentGateway {
   private _streamFn?: StreamFn
   /** Optional log callback for forwarding gateway events to the UI Logs tab */
   private _onLog?: (line: string) => void
+  /** Per-section prompt overrides set by DSPy optimization via POST /agent/prompt-override */
+  private promptOverrides = new Map<string, string>()
 
   constructor(workspaceDir: string, projectId: string) {
     this.workspaceDir = workspaceDir
@@ -236,6 +238,13 @@ export class AgentGateway {
     this._onLog = fn
   }
 
+  /** Replace prompt sections at runtime (used by DSPy optimization pipeline) */
+  setPromptOverrides(overrides: Record<string, string>): void {
+    this.promptOverrides.clear()
+    for (const [key, value] of Object.entries(overrides)) {
+      this.promptOverrides.set(key, value)
+    }
+  }
 
   private emitLog(line: string): void {
     const ts = new Date().toISOString()
@@ -1026,11 +1035,17 @@ export class AgentGateway {
       }
     }
 
-    parts.push(CANVAS_TOOLS_GUIDE)
-    parts.push(PERSONALITY_EVOLUTION_GUIDE)
-    parts.push(OPTIMIZED_TOOL_PLANNING_GUIDE)
-    parts.push(OPTIMIZED_MEMORY_GUIDE)
-    parts.push(OPTIMIZED_SKILL_MATCHING_GUIDE)
+    const canvasExamples = this.promptOverrides.get('canvas_examples') ?? OPTIMIZED_CANVAS_EXAMPLES
+    const personalityGuide = this.promptOverrides.get('personality_guide') ?? OPTIMIZED_PERSONALITY_GUIDE
+    const toolPlanningGuide = this.promptOverrides.get('tool_planning_guide') ?? OPTIMIZED_TOOL_PLANNING_GUIDE
+    const memoryGuide = this.promptOverrides.get('memory_guide') ?? OPTIMIZED_MEMORY_GUIDE
+    const skillMatchingGuide = this.promptOverrides.get('skill_matching_guide') ?? OPTIMIZED_SKILL_MATCHING_GUIDE
+
+    parts.push(CANVAS_TOOLS_GUIDE_PREFIX + canvasExamples)
+    parts.push(PERSONALITY_EVOLUTION_GUIDE_PREFIX + personalityGuide)
+    parts.push(toolPlanningGuide)
+    parts.push(memoryGuide)
+    parts.push(skillMatchingGuide)
 
     return parts.join('\n\n---\n\n')
   }
