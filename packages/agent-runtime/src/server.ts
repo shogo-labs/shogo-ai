@@ -367,11 +367,16 @@ app.post('/agent/chat', async (c) => {
     return c.json({ error: 'message is required — send { messages: [{ role: "user", parts: [{ type: "text", text: "..." }] }] }' }, 400)
   }
 
+  const agentMode = body.agentMode as 'basic' | 'advanced' | undefined
+  const modelOverride = agentMode === 'basic' ? 'claude-haiku-4-5'
+    : agentMode === 'advanced' ? 'claude-sonnet-4-5'
+    : undefined
+
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
       try {
         writer.write({ type: 'start-step' })
-        await agentGateway!.processChatMessageStream(userText!, writer)
+        await agentGateway!.processChatMessageStream(userText!, writer, { modelOverride })
         writer.write({ type: 'finish-step' })
         writer.write({ type: 'finish', finishReason: 'stop' })
       } catch (error: any) {

@@ -157,6 +157,27 @@ Use \`canvas_components({ action: "detail", type: "Card" })\` to look up props f
 - Do NOT rebuild surfaces that are working — use canvas_update to modify specific components.
 - Table is read-only. For lists needing edit/delete buttons, always use DataList.`
 
+const PERSONALITY_EVOLUTION_GUIDE = `## Personality Self-Update
+
+You have a \`personality_update\` tool that lets you improve your own behavior files.
+
+### When to Use
+- User explicitly corrects your tone, style, or boundaries (e.g. "be more formal")
+- User establishes a new, lasting boundary (e.g. "don't suggest code changes")
+- You discover a persistent user preference that should shape future interactions
+
+### When NOT to Use
+- One-off requests or trivial conversation
+- Information already present in your SOUL.md
+- Temporary context that doesn't reflect a lasting change
+
+### How It Works
+- Specify the file (SOUL.md, AGENTS.md, or IDENTITY.md), the section heading, and the new content
+- Include a reasoning field explaining why the update improves your behavior
+- Max 1 update per session, 3 per day — be selective
+- The Boundaries section in SOUL.md can never be removed, only appended to
+- All updates are logged to daily memory with [personality-update] tag`
+
 export class AgentGateway {
   private workspaceDir: string
   private projectId: string
@@ -723,7 +744,12 @@ export class AgentGateway {
   async processChatMessageStream(
     text: string,
     writer: { write(chunk: Record<string, any>): void },
+    options?: { modelOverride?: string },
   ): Promise<void> {
+    if (options?.modelOverride) {
+      const session = this.sessionManager.getOrCreate('chat')
+      session.modelOverride = options.modelOverride
+    }
     this.emitLog(`Chat message received (stream): "${text.substring(0, 100)}"`)
 
     if (this.isUnconfigured()) {
@@ -978,6 +1004,7 @@ export class AgentGateway {
     }
 
     parts.push(CANVAS_TOOLS_GUIDE)
+    parts.push(PERSONALITY_EVOLUTION_GUIDE)
 
     return parts.join('\n\n---\n\n')
   }
