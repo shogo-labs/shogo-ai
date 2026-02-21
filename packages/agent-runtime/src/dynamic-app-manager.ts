@@ -12,13 +12,14 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
-import { dirname } from 'path'
+import { dirname, join } from 'path'
 import type {
   DynamicAppMessage,
   SurfaceState,
   ComponentDefinition,
   ActionEvent,
 } from './dynamic-app-types'
+import { ManagedApiRuntime, type ModelDefinition } from './managed-api-runtime'
 
 type SSEWriter = (message: DynamicAppMessage) => void
 
@@ -34,6 +35,7 @@ export class DynamicAppManager {
   }> = []
   private persistPath: string | null = null
   private saveTimer: ReturnType<typeof setTimeout> | null = null
+  private runtimes = new Map<string, ManagedApiRuntime>()
 
   constructor(persistPath?: string) {
     if (persistPath) {
@@ -155,6 +157,11 @@ export class DynamicAppManager {
     }
 
     this.surfaces.delete(surfaceId)
+    const runtime = this.runtimes.get(surfaceId)
+    if (runtime) {
+      runtime.destroy()
+      this.runtimes.delete(surfaceId)
+    }
     this.broadcast({ type: 'deleteSurface', surfaceId })
     this.scheduleSave()
     return {
@@ -195,6 +202,20 @@ export class DynamicAppManager {
   // ---------------------------------------------------------------------------
 
   deliverAction(event: ActionEvent): void {
+    // Intercept mutation actions: execute against the runtime directly, then broadcast a refresh
+    const mutation = event.context?._mutation as
+      | { endpoint: string; method: string; body?: unknown }
+      | undefined
+    if (mutation) {
+      const runtime = this.runtimes.get(event.surfaceId)
+      if (runtime && runtime.isReady()) {
+        this.executeMutation(event.surfaceId, runtime, mutation).catch((err) => {
+          console.error('[DynamicAppManager] Mutation execution failed:', err)
+        })
+        return
+      }
+    }
+
     const idx = this.actionWaiters.findIndex((w) => {
       if (w.surfaceId && w.surfaceId !== event.surfaceId) return false
       if (w.actionName && w.actionName !== event.name) return false
@@ -208,6 +229,40 @@ export class DynamicAppManager {
     } else {
       this.actionQueue.push(event)
       if (this.actionQueue.length > 100) this.actionQueue.shift()
+    }
+  }
+
+  private async executeMutation(
+    surfaceId: string,
+    runtime: ManagedApiRuntime,
+    mutation: { endpoint: string; method: string; body?: unknown },
+  ): Promise<void> {
+    const { endpoint, method, body } = mutation
+    const url = `http://localhost${endpoint}`
+    const req = new Request(url, {
+      method: method.toUpperCase(),
+      headers: { 'Content-Type': 'application/json' },
+      body: body !== undefined && body !== null ? JSON.stringify(body) : undefined,
+    })
+
+    const res = await runtime.getApp().fetch(req)
+    const json = await res.json() as Record<string, unknown>
+
+    if (json.ok !== false) {
+      // For item-level operations (PATCH /api/todos/:id, DELETE /api/todos/:id),
+      // derive the collection endpoint by stripping the last segment.
+      // For collection-level operations (POST /api/todos), use endpoint as-is.
+      const upperMethod = method.toUpperCase()
+      const collectionEndpoint =
+        upperMethod === 'POST' ? endpoint : endpoint.replace(/\/[^/]+$/, '') || endpoint
+      const listReq = new Request(`http://localhost${collectionEndpoint}`, { method: 'GET' })
+      const listRes = await runtime.getApp().fetch(listReq)
+      const listJson = await listRes.json() as Record<string, unknown>
+
+      if (Array.isArray(listJson.items)) {
+        const dataPath = collectionEndpoint.replace(/^\/api/, '')
+        this.updateData(surfaceId, dataPath, listJson.items)
+      }
     }
   }
 
@@ -246,6 +301,7 @@ export class DynamicAppManager {
         theme: surface.theme,
         components: Object.fromEntries(surface.components),
         dataModel: surface.dataModel,
+        apiModels: surface.apiModels,
         createdAt: surface.createdAt,
         updatedAt: surface.updatedAt,
       }
@@ -261,6 +317,84 @@ export class DynamicAppManager {
     return [...this.surfaces.keys()]
   }
 
+  // ---------------------------------------------------------------------------
+  // Managed API Runtime (per-surface data layer)
+  // ---------------------------------------------------------------------------
+
+  getOrCreateRuntime(surfaceId: string): ManagedApiRuntime {
+    let runtime = this.runtimes.get(surfaceId)
+    if (!runtime) {
+      const workDir = this.persistPath
+        ? join(dirname(this.persistPath), 'api-runtimes')
+        : join(process.cwd(), '.dynamic-app-runtimes')
+      runtime = new ManagedApiRuntime({ surfaceId, workDir })
+      this.runtimes.set(surfaceId, runtime)
+    }
+    return runtime
+  }
+
+  getRuntime(surfaceId: string): ManagedApiRuntime | undefined {
+    return this.runtimes.get(surfaceId)
+  }
+
+  applyApiSchema(surfaceId: string, models: ModelDefinition[], reset = false): Record<string, unknown> {
+    const surface = this.surfaces.get(surfaceId)
+    if (!surface) {
+      return { ok: false, error: `Surface "${surfaceId}" does not exist. Create it with canvas_create first.` }
+    }
+
+    const runtime = this.getOrCreateRuntime(surfaceId)
+    const result = runtime.applySchema(models, reset)
+
+    if (result.ok) {
+      surface.apiModels = models as SurfaceState['apiModels']
+      this.scheduleSave()
+
+      const modelInfo = runtime.getModelEndpointInfo()
+      this.broadcast({
+        type: 'configureApi',
+        surfaceId,
+        models: modelInfo,
+      })
+    }
+
+    return result
+  }
+
+  seedApiData(surfaceId: string, model: string, records: Record<string, unknown>[], upsert = false): Record<string, unknown> {
+    const runtime = this.runtimes.get(surfaceId)
+    if (!runtime || !runtime.isReady()) {
+      return { ok: false, error: `No API runtime for surface "${surfaceId}". Call canvas_api_schema first.` }
+    }
+    return runtime.seed(model, records, upsert)
+  }
+
+  queryApiData(
+    surfaceId: string,
+    model: string,
+    params?: { where?: Record<string, unknown>; orderBy?: string; limit?: number },
+    dataPath?: string,
+  ): Record<string, unknown> {
+    const runtime = this.runtimes.get(surfaceId)
+    if (!runtime || !runtime.isReady()) {
+      return { ok: false, error: `No API runtime for surface "${surfaceId}". Call canvas_api_schema first.` }
+    }
+
+    const result = runtime.query(model, params)
+
+    if (result.ok) {
+      // Re-broadcast configureApi so late-connecting SSE clients learn about the API
+      const modelInfo = runtime.getModelEndpointInfo()
+      this.broadcast({ type: 'configureApi', surfaceId, models: modelInfo })
+
+      if (dataPath) {
+        this.updateData(surfaceId, dataPath, result.items)
+      }
+    }
+
+    return result
+  }
+
   clear(): void {
     this.surfaces.clear()
     this.actionQueue.length = 0
@@ -269,6 +403,10 @@ export class DynamicAppManager {
       w.resolve(null as any)
     }
     this.actionWaiters.length = 0
+    for (const runtime of this.runtimes.values()) {
+      runtime.destroy()
+    }
+    this.runtimes.clear()
     this.scheduleSave()
   }
 
@@ -301,6 +439,7 @@ export class DynamicAppManager {
       if (!surfacesObj || typeof surfacesObj !== 'object') return
 
       let restored = 0
+      let runtimesRestored = 0
       for (const [id, s] of Object.entries(surfacesObj) as [string, any][]) {
         const components = new Map<string, ComponentDefinition>()
         if (s.components && typeof s.components === 'object') {
@@ -314,6 +453,7 @@ export class DynamicAppManager {
           theme: s.theme,
           components,
           dataModel: s.dataModel || {},
+          apiModels: s.apiModels,
           createdAt: s.createdAt || new Date().toISOString(),
           updatedAt: s.updatedAt || new Date().toISOString(),
         })
@@ -323,9 +463,43 @@ export class DynamicAppManager {
       if (restored > 0) {
         console.log(`[DynamicAppManager] Restored ${restored} surface(s) from disk`)
       }
+
+      // Restore API runtimes for surfaces that had active schemas
+      for (const [id, surface] of this.surfaces) {
+        if (surface.apiModels && surface.apiModels.length > 0) {
+          try {
+            const runtime = this.getOrCreateRuntime(id)
+            const result = runtime.applySchema(surface.apiModels as ModelDefinition[], false)
+            if (result.ok) {
+              runtimesRestored++
+            } else {
+              console.error(`[DynamicAppManager] Failed to restore runtime for "${id}":`, result.error)
+            }
+          } catch (err) {
+            console.error(`[DynamicAppManager] Error restoring runtime for "${id}":`, err)
+          }
+        }
+      }
+
+      if (runtimesRestored > 0) {
+        console.log(`[DynamicAppManager] Restored ${runtimesRestored} API runtime(s) from disk`)
+      }
     } catch (err) {
       console.error('[DynamicAppManager] Failed to load canvas state:', err)
     }
+  }
+
+  /**
+   * Reload state from disk. Used after S3 sync downloads updated files.
+   * Clears existing state and re-loads everything.
+   */
+  reloadFromDisk(): void {
+    for (const runtime of this.runtimes.values()) {
+      runtime.destroy()
+    }
+    this.runtimes.clear()
+    this.surfaces.clear()
+    this.loadFromDisk()
   }
 }
 

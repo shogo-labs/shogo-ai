@@ -58,81 +58,104 @@ export interface GatewayConfig {
 const CANVAS_TOOLS_GUIDE = `## Canvas (Dynamic UI)
 
 You have canvas tools that let you build interactive UIs the user can see in real time.
-Use them whenever a visual display would be more helpful than plain text (search results,
-dashboards, forms, confirmations, reports, comparisons, etc.).
+Use them whenever a visual display would be more helpful than plain text.
 
-### Workflow
+### Quick Reference — Building a CRUD App (recommended approach)
 
-1. **canvas_create** — Create a named surface (container). Call once per distinct view.
-   \`canvas_create({ surfaceId: "results", title: "Search Results" })\`
+When the user asks for any kind of data app (task tracker, todo list, inventory, CRM, etc.), follow these 4 steps:
 
-2. **canvas_update** — Define the component tree for a surface. One component must have \`id: "root"\`.
-   Components reference children by ID. Available types:
+**Step 1: canvas_create** — Create a surface
+  canvas_create({ surfaceId: "my_app", title: "My App" })
 
-   **Layout:** Column, Row, Grid, Card, ScrollArea, Tabs, TabPanel, Accordion, AccordionItem
-   **Display:** Text, Badge, Image, Icon, Separator, Progress, Skeleton, Alert
-   **Data:** Table, Metric, Chart, DataList
-   **Interactive:** Button, TextField, Select, Checkbox, ChoicePicker
+**Step 2: canvas_api_schema** — Define data model + auto-generate CRUD API
+  canvas_api_schema({ surfaceId: "my_app", models: [{
+    name: "Task", fields: [
+      { name: "title", type: "String" },
+      { name: "status", type: "String", default: "todo" },
+      { name: "priority", type: "String", default: "medium" }
+    ]
+  }]})
+  → Creates REST endpoints: GET/POST /api/tasks, GET/PATCH/DELETE /api/tasks/:id
 
-   Example:
-   \`\`\`json
-   canvas_update({
-     surfaceId: "results",
-     components: [
-       { "id": "root", "component": "Column", "children": ["title", "cards"], "gap": "md" },
-       { "id": "title", "component": "Text", "text": "Flights to Bali", "variant": "h2" },
-       { "id": "cards", "component": "Column", "children": ["card1"], "gap": "sm" },
-       { "id": "card1", "component": "Card", "child": "card1_body", "title": { "path": "/flights/0/airline" } },
-       { "id": "card1_body", "component": "Column", "children": ["card1_price", "card1_btn"], "gap": "sm" },
-       { "id": "card1_price", "component": "Metric", "label": "Price", "value": { "path": "/flights/0/price" } },
-       { "id": "card1_btn", "component": "Button", "label": "Select", "action": { "name": "select", "context": { "index": 0 } } }
-     ]
-   })
-   \`\`\`
+**Step 3: canvas_api_seed** — Populate sample data
+  canvas_api_seed({ surfaceId: "my_app", model: "Task", records: [
+    { title: "First task", priority: "high" },
+    { title: "Second task", status: "done" }
+  ]})
 
-3. **canvas_data** — Push data into the surface's data model. Components with \`{ "path": "/..." }\` bindings update automatically.
-   \`canvas_data({ surfaceId: "results", path: "/", value: { flights: [...] } })\`
+**Step 3b: canvas_api_query** — Push data into the data model for binding
+  canvas_api_query({ surfaceId: "my_app", model: "Task", dataPath: "/tasks" })
+  → Now { path: "/tasks" } is available for component data binding
 
-4. **canvas_action_wait** — Block until the user clicks a Button or interacts with a component.
-   \`canvas_action_wait({ surfaceId: "results", actionName: "select" })\`
-   Returns the action event with any context the button passed.
+**Step 4: canvas_update** — Build the UI with DataList + form + mutation buttons
+  canvas_update({ surfaceId: "my_app", components: [
+    { id: "root", component: "Column", children: ["header", "add_section", "task_list"], gap: "md", padding: "4" },
+    { id: "header", component: "Text", text: "My Tasks", variant: "h3" },
 
-5. **canvas_delete** — Remove a surface when done.
+    // --- Add form: TextField writes to data model, Button reads from it ---
+    { id: "add_section", component: "Card", child: "add_form", title: "Add Task" },
+    { id: "add_form", component: "Row", children: ["add_input", "add_btn"], gap: "sm", align: "end" },
+    { id: "add_input", component: "TextField", placeholder: "Task title...", dataPath: "/newTaskTitle" },
+    { id: "add_btn", component: "Button", label: "Add Task",
+      action: { name: "add", mutation: { endpoint: "/api/tasks", method: "POST",
+        body: { title: { path: "/newTaskTitle" } } } } },
 
-### Data Binding
+    // --- DataList: renders template for each item, with per-row actions ---
+    { id: "task_list", component: "DataList",
+      children: { path: "/tasks", templateId: "task_card" }, emptyText: "No tasks yet" },
+    { id: "task_card", component: "Card", child: "task_row" },
+    { id: "task_row", component: "Row", children: ["task_info", "task_actions"], align: "center", justify: "between" },
+    { id: "task_info", component: "Column", children: ["task_title", "task_status"], gap: "xs" },
+    { id: "task_title", component: "Text", text: { path: "title" }, weight: "medium" },
+    { id: "task_status", component: "Badge", text: { path: "status" } },
+    { id: "task_actions", component: "Row", children: ["done_btn", "del_btn"], gap: "sm" },
+    { id: "done_btn", component: "Button", label: "Done", variant: "outline", size: "sm",
+      action: { name: "done", mutation: { endpoint: "/api/tasks/:id", method: "PATCH",
+        params: { id: { path: "id" } }, body: { status: "done" } } } },
+    { id: "del_btn", component: "Button", label: "Delete", variant: "destructive", size: "sm",
+      action: { name: "delete", mutation: { endpoint: "/api/tasks/:id", method: "DELETE",
+        params: { id: { path: "id" } } } } }
+  ]})
 
-Use \`{ "path": "/json/pointer" }\` (RFC 6901) in any prop to bind it to the surface data model.
-Update data via canvas_data without resending the layout.
+### Key Patterns
 
-6. **canvas_components** — Discover available components, their props, and valid values.
-   - \`canvas_components({ action: "list" })\` — overview of all components by category
-   - \`canvas_components({ action: "detail", type: "Card" })\` — full prop definitions for one type
-   - \`canvas_components({ action: "search", query: "chart" })\` — find components by keyword
+**Data Binding:**
+- \`{ path: "/field" }\` (with leading /) reads from the ROOT data model
+- \`{ path: "field" }\` (NO leading /) reads from the CURRENT ITEM inside a DataList template
 
-### Validation & Error Handling
+**DataList (repeating template):**
+- Set children to: \`{ path: "/items", templateId: "template_id" }\`
+- The template component + its descendants render once per item
+- Use for any list with per-item buttons (Table cannot have buttons in rows)
 
-canvas_update validates your components before rendering and returns helpful feedback:
-- **Errors** (blocks rendering): missing \`id\`, missing \`component\`, unknown component type (with "did you mean?" suggestions)
-- **Warnings** (renders but flags issues): missing recommended props, invalid enum values, unknown prop names, missing root component
+**Mutations (frontend-handled CRUD, no agent round-trip):**
+- POST: \`{ mutation: { endpoint: "/api/tasks", method: "POST", body: { title: "..." } } }\`
+- PATCH: \`{ mutation: { endpoint: "/api/tasks/:id", method: "PATCH", params: { id: { path: "id" } }, body: { status: "done" } } }\`
+- DELETE: \`{ mutation: { endpoint: "/api/tasks/:id", method: "DELETE", params: { id: { path: "id" } } } }\`
 
-If you get validation errors, read the messages carefully — they tell you exactly what to fix.
-When unsure about a component's props, use \`canvas_components({ action: "detail", type: "TypeName" })\` to look them up.
+**Form inputs → Mutation body:**
+- Set \`dataPath: "/newTitle"\` on TextField to write user input to the data model
+- Reference it in mutation body: \`{ title: { path: "/newTitle" } }\`
 
-### Tips
-- Create the surface and layout first, then push data — this lets the UI skeleton appear instantly.
-- Prefer data bindings over hardcoded values so you can refresh data without rebuilding components.
-- Use Card components to group related information with a title.
-- Use Metric for key statistics (label + value pairs).
-- Use Table for structured data with columns (\`columns\` prop: array of \`{ key, label }\`, \`rows\` prop or data-bound).
-- Buttons with \`action\` fire events you can catch with canvas_action_wait.
-- You can update components incrementally — only send the components that changed.
-- If you forget available components or their props, use canvas_components to discover them.
+### Component Types
 
-### IMPORTANT: Do Not Rebuild
-When canvas tools return \`status: "rendered"\` or \`status: "data_updated"\`, the UI is live and the user can already see it.
-**Do NOT delete and recreate a surface that is already working.** The tool responses include a component tree summary and confirmation
-that the user can see the result. If you need to make changes, use canvas_update to modify specific components or canvas_data to update
-the data model — do not start over from scratch. Only use canvas_delete if the user explicitly asks to remove a surface.`
+**Layout:** Column, Row, Grid, Card, ScrollArea, Tabs, TabPanel, Accordion, AccordionItem
+**Display:** Text, Badge, Image, Icon, Separator, Progress, Skeleton, Alert
+**Data:** Table (read-only), Metric, Chart, DataList (repeating with actions)
+**Interactive:** Button, TextField, Select, Checkbox, ChoicePicker
+
+Use \`canvas_components({ action: "detail", type: "Card" })\` to look up props for any component.
+
+### Other Tools
+- **canvas_data** — Manually push data: \`canvas_data({ surfaceId: "app", path: "/key", value: data })\`
+- **canvas_action_wait** — Wait for user button clicks (for non-mutation actions)
+- **canvas_delete** — Remove a surface
+- **canvas_components** — Discover components and their props
+
+### IMPORTANT
+- When canvas tools return status: "rendered" or "data_updated", the UI is already live.
+- Do NOT rebuild surfaces that are working — use canvas_update to modify specific components.
+- Table is read-only. For lists needing edit/delete buttons, always use DataList.`
 
 export class AgentGateway {
   private workspaceDir: string

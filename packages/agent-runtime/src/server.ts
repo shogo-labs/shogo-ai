@@ -787,6 +787,31 @@ app.post('/agent/dynamic-app/action', async (c) => {
   return c.json({ ok: true, event })
 })
 
+// Proxy requests to managed API runtimes (per-surface data layer)
+app.all('/agent/dynamic-app/api/:surfaceId/*', async (c) => {
+  const surfaceId = c.req.param('surfaceId')
+  const manager = getDynamicAppManager()
+  const runtime = manager.getRuntime(surfaceId)
+
+  if (!runtime || !runtime.isReady()) {
+    return c.json({ error: `No API runtime for surface "${surfaceId}"` }, 404)
+  }
+
+  const prefix = `/agent/dynamic-app/api/${surfaceId}`
+  const subPath = c.req.path.replace(prefix, '') || '/'
+  const originalUrl = new URL(c.req.url)
+  const subUrl = new URL(subPath, 'http://localhost')
+  subUrl.search = originalUrl.search
+
+  const subRequest = new Request(subUrl.toString(), {
+    method: c.req.method,
+    headers: c.req.raw.headers,
+    body: c.req.method !== 'GET' && c.req.method !== 'HEAD' ? c.req.raw.body : undefined,
+  })
+
+  return runtime.getApp().fetch(subRequest)
+})
+
 // Console log for forwarding (matches project-runtime pattern)
 const consoleLogs: string[] = []
 app.post('/console-log/append', async (c) => {
@@ -813,15 +838,8 @@ async function initialize(): Promise<void> {
   ensureWorkspaceFiles()
   logTiming('Workspace files ready')
 
-  // Initialize canvas state manager with disk persistence
-  const canvasStatePath = join(AGENT_DIR, '.canvas-state.json')
-  initDynamicAppManager(canvasStatePath)
-  logTiming('Canvas state manager initialized')
-
-  // Write CLAUDE.md and .mcp.json
-  writeAgentConfigFiles()
-
-  // Initialize S3 sync if configured
+  // Initialize S3 sync BEFORE loading canvas state so that downloaded files
+  // (including .canvas-state.json and api-runtimes/*.db) are available on disk.
   if (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET) {
     try {
       const result = await initializeS3Sync(AGENT_DIR)
@@ -832,6 +850,15 @@ async function initialize(): Promise<void> {
       console.error('[agent-runtime] S3 sync init failed:', error.message)
     }
   }
+
+  // Initialize canvas state manager with disk persistence.
+  // Loads surfaces + restores API runtimes from persisted model definitions.
+  const canvasStatePath = join(AGENT_DIR, '.canvas-state.json')
+  initDynamicAppManager(canvasStatePath)
+  logTiming('Canvas state manager initialized')
+
+  // Write CLAUDE.md and .mcp.json
+  writeAgentConfigFiles()
 
   // Initialize Postgres backup if configured
   if (process.env.DATABASE_URL && (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET)) {

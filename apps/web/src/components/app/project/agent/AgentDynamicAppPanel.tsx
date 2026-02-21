@@ -44,7 +44,7 @@ export function AgentDynamicAppPanel({ projectId, visible, localAgentUrl }: Agen
     return () => { cancelled = true }
   }, [projectId, localAgentUrl])
 
-  const { surfaces, connected, error, dispatchAction } = useDynamicAppStream(
+  const { surfaces, connected, error, dispatchAction, updateLocalData } = useDynamicAppStream(
     visible ? agentUrl : null
   )
 
@@ -92,7 +92,9 @@ export function AgentDynamicAppPanel({ projectId, visible, localAgentUrl }: Agen
           <ScrollArea className="h-full">
             <MultiSurfaceRenderer
               surfaces={surfaces}
+              agentUrl={agentUrl}
               onAction={dispatchAction}
+              onDataChange={updateLocalData}
             />
           </ScrollArea>
         ) : (

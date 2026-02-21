@@ -550,19 +550,20 @@ One component must have id "root" as the tree root. Available component types:
 
 Layout: Row, Column, Grid, Card, ScrollArea, Tabs, TabPanel, Accordion, AccordionItem
 Display: Text, Badge, Image, Icon, Separator, Progress, Skeleton, Alert
-Data: Table, Metric, Chart, DataList
+Data: Table (read-only display), Metric, Chart, DataList (repeating template with actions)
 Interactive: Button, TextField, Select, Checkbox, ChoicePicker
 
 Each component has: id, component (type), and type-specific props.
 Use "children" (array of IDs) or "child" (single ID) for nesting.
-Use { "path": "/some/pointer" } for dynamic data binding to the surface data model.
+Use { "path": "/some/pointer" } (with leading /) for data binding to the root data model.
 
-Example components:
-- { "id": "root", "component": "Column", "children": ["header", "content"], "gap": "md" }
-- { "id": "header", "component": "Text", "text": "Flight Results", "variant": "h2" }
-- { "id": "content", "component": "Card", "child": "card_body", "title": "Option 1" }
-- { "id": "price", "component": "Text", "text": { "path": "/flights/0/price" } }
-- { "id": "book_btn", "component": "Button", "label": "Book Now", "action": { "name": "book", "context": { "flightId": "FL123" } } }`,
+IMPORTANT — For lists with per-row buttons (edit/delete), use DataList NOT Table:
+- Table is for read-only data display only (no buttons in rows).
+- DataList renders a template for each item and supports per-item mutation buttons.
+- Set DataList children to: { "path": "/items", "templateId": "item_template" }
+- Inside the template, { "path": "fieldName" } (NO leading /) binds to the current item.
+
+See canvas_api_schema tool description for a complete working DataList + mutation example.`,
     label: 'Update Canvas Components',
     parameters: Type.Object({
       surfaceId: Type.String({ description: 'Surface ID to update' }),
@@ -761,6 +762,180 @@ function createCanvasComponentsTool(): AgentTool {
 }
 
 // ---------------------------------------------------------------------------
+// Canvas API Tools (Managed Data Layer)
+// ---------------------------------------------------------------------------
+
+function createCanvasApiSchemaTool(): AgentTool {
+  return {
+    name: 'canvas_api_schema',
+    description: `Define data models for a surface and auto-generate a CRUD API backed by SQLite.
+Each model automatically gets id, createdAt, updatedAt fields. After calling this tool,
+the surface will have REST endpoints available for each model (e.g. GET/POST /api/todos).
+
+Field types: String, Int, Float, Boolean, DateTime, Json
+
+COMPLETE WORKFLOW — follow these 4 steps to build a working CRUD UI:
+
+STEP 1: canvas_api_schema — define your model
+  canvas_api_schema({ surfaceId: "my_app", models: [{
+    name: "Task", fields: [
+      { name: "title", type: "String" },
+      { name: "status", type: "String", default: "todo" }
+    ]
+  }]})
+  → Creates endpoints: GET/POST /api/tasks, GET/PATCH/DELETE /api/tasks/:id
+
+STEP 2: canvas_api_seed — add sample data
+  canvas_api_seed({ surfaceId: "my_app", model: "Task", records: [
+    { title: "Buy groceries" }, { title: "Walk the dog", status: "done" }
+  ]})
+
+STEP 3: canvas_api_query — load data into the data model
+  canvas_api_query({ surfaceId: "my_app", model: "Task", dataPath: "/tasks" })
+  → Now { path: "/tasks" } is available for data binding in components
+
+STEP 4: canvas_update — build the UI with DataList for per-item actions
+  Use a DataList with template children for per-row buttons (add, edit, delete).
+  Inside a DataList template, { path: "fieldName" } (NO leading slash) binds to the current item.
+
+  FULL COMPONENT EXAMPLE (copy and adapt):
+  [
+    { id: "root", component: "Column", children: ["header", "add_form", "task_list"], gap: "md", padding: "md" },
+    { id: "header", component: "Text", text: "My Tasks", variant: "h3" },
+    { id: "add_form", component: "Row", children: ["add_input", "add_btn"], gap: "sm", align: "end" },
+    { id: "add_input", component: "TextField", placeholder: "Task title...", dataPath: "/newTaskTitle" },
+    { id: "add_btn", component: "Button", label: "Add Task",
+      action: { name: "add", mutation: { endpoint: "/api/tasks", method: "POST",
+        body: { title: { path: "/newTaskTitle" } } } } },
+    { id: "task_list", component: "DataList",
+      children: { path: "/tasks", templateId: "task_card" }, emptyText: "No tasks yet" },
+    { id: "task_card", component: "Card", child: "task_row" },
+    { id: "task_row", component: "Row", children: ["task_info", "task_actions"], align: "center", justify: "between" },
+    { id: "task_info", component: "Column", children: ["task_title", "task_status"], gap: "xs" },
+    { id: "task_title", component: "Text", text: { path: "title" }, weight: "medium" },
+    { id: "task_status", component: "Badge", text: { path: "status" } },
+    { id: "task_actions", component: "Row", children: ["done_btn", "del_btn"], gap: "sm" },
+    { id: "done_btn", component: "Button", label: "Done", variant: "outline", size: "sm",
+      action: { name: "done", mutation: { endpoint: "/api/tasks/:id", method: "PATCH",
+        params: { id: { path: "id" } }, body: { status: "done" } } } },
+    { id: "del_btn", component: "Button", label: "Delete", variant: "destructive", size: "sm",
+      action: { name: "delete", mutation: { endpoint: "/api/tasks/:id", method: "DELETE",
+        params: { id: { path: "id" } } } } }
+  ]
+
+KEY RULES:
+- DataList children: { path: "/items", templateId: "template_component_id" }
+- Inside templates: { path: "field" } (no leading /) binds to the CURRENT ITEM
+- Outside templates: { path: "/field" } (with leading /) binds to the ROOT data model
+- Mutation params: { id: { path: "id" } } resolves the current item's id for :id in the endpoint
+- POST mutations use the collection endpoint (/api/tasks)
+- PATCH/DELETE mutations use the item endpoint (/api/tasks/:id)
+- FORM INPUTS: Set dataPath on TextField/Select to write user input to the data model.
+  Then use { path: "/dataPath" } in the mutation body to read those values.
+  Example: TextField has dataPath="/newTitle", Button mutation body has { title: { path: "/newTitle" } }`,
+    label: 'Define API Schema',
+    parameters: Type.Object({
+      surfaceId: Type.String({ description: 'Surface ID (must exist via canvas_create)' }),
+      models: Type.Array(
+        Type.Object({
+          name: Type.String({ description: 'Model name in PascalCase (e.g. "Todo", "Stock")' }),
+          fields: Type.Array(
+            Type.Object({
+              name: Type.String({ description: 'Field name in camelCase' }),
+              type: Type.Union([
+                Type.Literal('String'),
+                Type.Literal('Int'),
+                Type.Literal('Float'),
+                Type.Literal('Boolean'),
+                Type.Literal('DateTime'),
+                Type.Literal('Json'),
+              ], { description: 'Field data type' }),
+              optional: Type.Optional(Type.Boolean({ description: 'Allow null values (default: false)' })),
+              default: Type.Optional(Type.Unknown({ description: 'Default value for new records' })),
+              unique: Type.Optional(Type.Boolean({ description: 'Enforce uniqueness' })),
+            }),
+            { description: 'Field definitions' },
+          ),
+        }),
+        { description: 'Model definitions' },
+      ),
+      reset: Type.Optional(Type.Boolean({ description: 'Drop and recreate all tables (default: false)' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { surfaceId, models, reset = false } = params as {
+        surfaceId: string
+        models: Array<{ name: string; fields: Array<{ name: string; type: string; optional?: boolean; default?: unknown; unique?: boolean }> }>
+        reset?: boolean
+      }
+      const manager = getDynamicAppManager()
+      return textResult(manager.applyApiSchema(surfaceId, models as any, reset))
+    },
+  }
+}
+
+function createCanvasApiSeedTool(): AgentTool {
+  return {
+    name: 'canvas_api_seed',
+    description:
+      'Bulk insert records into a model\'s table. Use after canvas_api_schema to populate initial data. Records can omit the id field (auto-generated). Use upsert=true to update existing records by id.',
+    label: 'Seed API Data',
+    parameters: Type.Object({
+      surfaceId: Type.String({ description: 'Surface ID' }),
+      model: Type.String({ description: 'Model name (e.g. "Todo", "Stock")' }),
+      records: Type.Array(Type.Object({}, { additionalProperties: true }), {
+        description: 'Array of record objects to insert',
+      }),
+      upsert: Type.Optional(Type.Boolean({ description: 'Update existing records by id (default: false)' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { surfaceId, model, records, upsert = false } = params as {
+        surfaceId: string
+        model: string
+        records: Record<string, unknown>[]
+        upsert?: boolean
+      }
+      const manager = getDynamicAppManager()
+      return textResult(manager.seedApiData(surfaceId, model, records, upsert))
+    },
+  }
+}
+
+function createCanvasApiQueryTool(): AgentTool {
+  return {
+    name: 'canvas_api_query',
+    description:
+      `Query a model and push results into the surface data model at a given path.
+This is the recommended way to pipe API data into components:
+1. Call canvas_api_query with dataPath (e.g. "/todos") to push query results into the surface data model.
+2. Bind component props to the data via { path: "/todos" } in canvas_update.
+
+Example: canvas_api_query({ surfaceId: "app", model: "Todo", dataPath: "/todos" })
+Then in canvas_update: { id: "table", component: "Table", rows: { path: "/todos" } }`,
+    label: 'Query API Data',
+    parameters: Type.Object({
+      surfaceId: Type.String({ description: 'Surface ID' }),
+      model: Type.String({ description: 'Model name (e.g. "Todo")' }),
+      where: Type.Optional(Type.Object({}, { additionalProperties: true, description: 'Filter conditions (field: value)' })),
+      orderBy: Type.Optional(Type.String({ description: 'Field to sort by. Prefix with - for descending (e.g. "-createdAt")' })),
+      limit: Type.Optional(Type.Number({ description: 'Maximum number of results' })),
+      dataPath: Type.Optional(Type.String({ description: 'JSON Pointer path to write results into the surface data model (e.g. "/todos")' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { surfaceId, model, where, orderBy, limit, dataPath } = params as {
+        surfaceId: string
+        model: string
+        where?: Record<string, unknown>
+        orderBy?: string
+        limit?: number
+        dataPath?: string
+      }
+      const manager = getDynamicAppManager()
+      return textResult(manager.queryApiData(surfaceId, model, { where, orderBy, limit }, dataPath))
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Tool Group Mapping
 // ---------------------------------------------------------------------------
 
@@ -783,12 +958,14 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   messaging: ['send_message'],
   cron: ['cron'],
   canvas: ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_delete', 'canvas_action_wait', 'canvas_components'],
+  api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query'],
 }
 
 export const ALL_TOOL_NAMES = [
   'exec', 'read_file', 'write_file', 'web_fetch', 'browser',
   'memory_read', 'memory_write', 'memory_search', 'send_message', 'cron',
   'canvas_create', 'canvas_update', 'canvas_data', 'canvas_delete', 'canvas_action_wait', 'canvas_components',
+  'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query',
 ] as const
 
 /**
@@ -833,6 +1010,9 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createCanvasDeleteTool(),
     createCanvasActionWaitTool(),
     createCanvasComponentsTool(),
+    createCanvasApiSchemaTool(),
+    createCanvasApiSeedTool(),
+    createCanvasApiQueryTool(),
   ]
 }
 

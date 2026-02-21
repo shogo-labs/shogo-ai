@@ -232,11 +232,11 @@ export const CANVAS_COMPONENT_SCHEMA: ComponentSchema[] = [
   {
     type: 'Metric',
     category: 'data',
-    description: 'Key-value statistic card with optional trend indicator.',
+    description: 'Key-value statistic card with optional trend indicator. Values can use { path: "/..." } bindings populated via canvas_api_query.',
     hasChildren: false,
     props: {
       label: str('Metric label', { required: true }),
-      value: str('Metric value (string or number)'),
+      value: str('Metric value (string or number), or use { path: "/revenue" } to bind to data model populated via canvas_api_query with dataPath'),
       unit: str('Unit suffix (e.g. "USD", "%")'),
       trend: str('Trend direction', { enum: ['up', 'down', 'neutral'] }),
       trendValue: str('Trend amount (e.g. "+12%")'),
@@ -256,7 +256,7 @@ export const CANVAS_COMPONENT_SCHEMA: ComponentSchema[] = [
         align: str('Cell alignment', { enum: ['left', 'center', 'right'] }),
         width: str('Column width CSS'),
       }),
-      rows: arr('Row data: [{ [key]: value, ... }]'),
+      rows: arr('Row data array, or use { path: "/tasks" } to bind to data model. Populate via canvas_api_query with dataPath.'),
       striped: bool('Alternating row backgrounds'),
       compact: bool('Smaller padding'),
       className: CLASS_PROP,
@@ -269,7 +269,7 @@ export const CANVAS_COMPONENT_SCHEMA: ComponentSchema[] = [
     hasChildren: false,
     props: {
       type: str('Chart type', { enum: ['bar', 'horizontalBar', 'progress'], default: 'bar' }),
-      data: arr('Data points: [{ label, value, color? }]', {
+      data: arr('Data points array, or use { path: "/metrics" } to bind to data model. Populate via canvas_api_query with dataPath.', {
         label: str('Point label', { required: true }),
         value: num('Point value', { required: true }),
         color: str('CSS color override'),
@@ -282,7 +282,22 @@ export const CANVAS_COMPONENT_SCHEMA: ComponentSchema[] = [
   {
     type: 'DataList',
     category: 'data',
-    description: 'Container that renders children for each item. Shows "No items" when empty.',
+    description: `Repeating container that renders a template component once for each item in a data array.
+
+To use DataList with data binding, set "children" to an object with "path" and "templateId":
+  { "children": { "path": "/tasks", "templateId": "task_item" } }
+
+The template component and all its descendants are rendered once per item. Inside the template,
+use { "path": "fieldName" } (NO leading slash) to bind to the current item's fields:
+  { "id": "task_item", "component": "Text", "text": { "path": "title" } }
+This resolves "title" from each item, NOT from the root data model.
+
+Full example:
+  { "id": "list", "component": "DataList", "children": { "path": "/tasks", "templateId": "task_row" } }
+  { "id": "task_row", "component": "Row", "children": ["task_title", "delete_btn"], "align": "center" }
+  { "id": "task_title", "component": "Text", "text": { "path": "title" } }
+  { "id": "delete_btn", "component": "Button", "label": "Delete", "variant": "destructive", "size": "sm",
+    "action": { "name": "delete", "mutation": { "endpoint": "/api/tasks/:id", "method": "DELETE", "params": { "id": { "path": "id" } } } } }`,
     hasChildren: true,
     props: { emptyText: str('Text to show when empty'), className: CLASS_PROP },
   },
@@ -306,7 +321,10 @@ export const CANVAS_COMPONENT_SCHEMA: ComponentSchema[] = [
   {
     type: 'TextField',
     category: 'interactive',
-    description: 'Text input with optional label. Dispatches action on Enter.',
+    description: `Text input with optional label. Dispatches action on Enter.
+Set "dataPath" to write user input to the data model as they type. Then reference
+that path in a Button mutation body: { title: { path: "/newTitle" } }.
+Example: { id: "input", component: "TextField", placeholder: "Title...", dataPath: "/newTitle" }`,
     hasChildren: false,
     props: {
       label: str('Field label'),
@@ -315,14 +333,16 @@ export const CANVAS_COMPONENT_SCHEMA: ComponentSchema[] = [
       type: str('Input type', { enum: ['text', 'email', 'password', 'number', 'url', 'tel'], default: 'text' }),
       disabled: bool('Disable the field'),
       action: ACTION_PROP,
-      dataPath: str('JSON Pointer for two-way data binding'),
+      dataPath: str('JSON Pointer path — writes user input to the data model in real-time (e.g. "/newTitle")'),
       className: CLASS_PROP,
     },
   },
   {
     type: 'Select',
     category: 'interactive',
-    description: 'Dropdown select. Dispatches action on change.',
+    description: `Dropdown select. Dispatches action on change.
+Set "dataPath" to write the selected value to the data model. Then reference
+that path in a Button mutation body: { priority: { path: "/newPriority" } }.`,
     hasChildren: false,
     props: {
       label: str('Field label'),
@@ -334,7 +354,7 @@ export const CANVAS_COMPONENT_SCHEMA: ComponentSchema[] = [
       placeholder: str('Placeholder option text'),
       disabled: bool('Disable the select'),
       action: ACTION_PROP,
-      dataPath: str('JSON Pointer for two-way data binding'),
+      dataPath: str('JSON Pointer path — writes selected value to the data model (e.g. "/newPriority")'),
       className: CLASS_PROP,
     },
   },

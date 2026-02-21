@@ -103,7 +103,7 @@ export function DynamicAppDevPreview() {
 
       {/* Main Content */}
       <div className="flex-1 overflow-auto">
-        <MultiSurfaceRenderer surfaces={activeSurface} onAction={handleAction} />
+        <MultiSurfaceRenderer surfaces={activeSurface} agentUrl={null} onAction={handleAction} />
       </div>
     </div>
   )

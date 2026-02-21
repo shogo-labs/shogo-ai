@@ -12,6 +12,7 @@ import type {
   DynamicAppMessage,
   ComponentDefinition,
   ActionEvent,
+  ApiModelInfo,
 } from './types'
 
 export interface DynamicAppStreamState {
@@ -85,6 +86,17 @@ export function useDynamicAppStream(agentUrl: string | null) {
         }
         case 'deleteSurface': {
           next.delete(msg.surfaceId)
+          break
+        }
+        case 'configureApi': {
+          const surface = next.get(msg.surfaceId)
+          if (surface) {
+            next.set(msg.surfaceId, {
+              ...surface,
+              apiModels: msg.models as ApiModelInfo[],
+              updatedAt: now,
+            })
+          }
           break
         }
       }
@@ -169,7 +181,22 @@ export function useDynamicAppStream(agentUrl: string | null) {
     [agentUrl],
   )
 
-  return { surfaces, connected, error, dispatchAction }
+  const updateLocalData = useCallback(
+    (surfaceId: string, path: string, value: unknown) => {
+      setSurfaces((prev) => {
+        const surface = prev.get(surfaceId)
+        if (!surface) return prev
+        const next = new Map(prev)
+        const newDataModel = { ...surface.dataModel }
+        setByPointer(newDataModel, path, value)
+        next.set(surfaceId, { ...surface, dataModel: newDataModel, updatedAt: new Date().toISOString() })
+        return next
+      })
+    },
+    [],
+  )
+
+  return { surfaces, connected, error, dispatchAction, updateLocalData }
 }
 
 // ---------------------------------------------------------------------------

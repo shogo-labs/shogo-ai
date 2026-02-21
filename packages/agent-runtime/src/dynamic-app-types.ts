@@ -12,8 +12,11 @@
 // Data Binding
 // ---------------------------------------------------------------------------
 
-/** A value that can be either a literal or a JSON Pointer path into the data model */
-export type DynamicValue<T = string> = T | { path: string }
+/** A value that can be a literal, a JSON Pointer path, or an API endpoint binding */
+export type DynamicValue<T = string> =
+  | T
+  | { path: string }
+  | { api: string; params?: Record<string, unknown>; refreshInterval?: number }
 
 // ---------------------------------------------------------------------------
 // Component Definitions
@@ -103,11 +106,22 @@ export interface DeleteSurfaceMessage {
   surfaceId: string
 }
 
+export interface ConfigureApiMessage {
+  type: 'configureApi'
+  surfaceId: string
+  models: Array<{
+    name: string
+    endpoint: string
+    fields: string[]
+  }>
+}
+
 export type DynamicAppMessage =
   | CreateSurfaceMessage
   | UpdateComponentsMessage
   | UpdateDataMessage
   | DeleteSurfaceMessage
+  | ConfigureApiMessage
 
 // ---------------------------------------------------------------------------
 // Surface State (maintained by the state manager)
@@ -119,6 +133,8 @@ export interface SurfaceState {
   theme?: Record<string, string>
   components: Map<string, ComponentDefinition>
   dataModel: Record<string, unknown>
+  /** Persisted API model definitions so runtimes can be restored after restart */
+  apiModels?: Array<{ name: string; fields: Array<{ name: string; type: string; optional?: boolean; default?: unknown; unique?: boolean }> }>
   createdAt: string
   updatedAt: string
 }
