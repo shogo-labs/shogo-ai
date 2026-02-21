@@ -128,6 +128,9 @@ module "vpc" {
   cidr               = var.vpc_cidr
   availability_zones = slice(data.aws_availability_zones.available.names, 0, 3)
 
+  # Single NAT gateway saves ~$64/mo vs one-per-AZ (acceptable at current scale)
+  single_nat_gateway = true
+
   tags = {
     "kubernetes.io/cluster/${var.project_name}-${var.environment}" = "shared"
   }

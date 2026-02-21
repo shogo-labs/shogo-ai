@@ -1,6 +1,8 @@
 import { diag, DiagConsoleLogger, DiagLogLevel, trace, SpanStatusCode } from '@opentelemetry/api'
 import { NodeSDK } from '@opentelemetry/sdk-node'
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
+import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http'
+import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics'
 import { BatchSpanProcessor, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base'
 import { resourceFromAttributes } from '@opentelemetry/resources'
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions'
@@ -53,6 +55,21 @@ if (isEnabled) {
     console.warn(`[OTEL] Continuing without Prisma auto-instrumentation — manual spans still work`)
   }
 
+  let metricReader: PeriodicExportingMetricReader | undefined
+  try {
+    const metricExporter = new OTLPMetricExporter({
+      url: `${endpoint}/v1/metrics`,
+      headers,
+    })
+    metricReader = new PeriodicExportingMetricReader({
+      exporter: metricExporter,
+      exportIntervalMillis: 15_000,
+    })
+    console.log(`[OTEL] Metrics exporter configured → ${endpoint}/v1/metrics (15s interval)`)
+  } catch (err: any) {
+    console.warn(`[OTEL] Failed to create metric exporter: ${err.message}`)
+  }
+
   sdk = new NodeSDK({
     resource: resourceFromAttributes({
       [ATTR_SERVICE_NAME]: process.env.OTEL_SERVICE_NAME || 'shogo-api',
@@ -60,6 +77,7 @@ if (isEnabled) {
       'deployment.environment.name': process.env.NODE_ENV || 'development',
     }),
     spanProcessors: [spanProcessor],
+    metricReader,
     instrumentations,
   })
 

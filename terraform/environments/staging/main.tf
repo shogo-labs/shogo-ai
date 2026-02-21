@@ -624,6 +624,31 @@ resource "aws_iam_role_policy_attachment" "node_cnpg_s3_access" {
   role       = module.eks.node_role_name
 }
 
+# IAM Policy for proactive node scaling (API pod scales ASG before pods go Pending)
+resource "aws_iam_policy" "api_autoscaling" {
+  name        = "shogo-api-autoscaling-${var.environment}"
+  description = "Allow API pods to proactively scale EKS node group ASG"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "autoscaling:DescribeAutoScalingGroups",
+          "autoscaling:SetDesiredCapacity",
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "node_autoscaling" {
+  policy_arn = aws_iam_policy.api_autoscaling.arn
+  role       = module.eks.node_role_name
+}
+
 # -----------------------------------------------------------------------------
 # Kubernetes Resources (Namespaces, Secrets, etc.)
 # Note: Staging uses different namespace names
@@ -1154,11 +1179,20 @@ resource "null_resource" "knative_services" {
                     value: ""
                   - name: PUBLISH_DOMAIN
                     value: "${var.publish_domain}"
-                  # Warm pool sizing (8+8 to handle 15+ concurrent users during dry runs)
+                  # Warm pool sizing (15+15 to handle 30+ concurrent users)
                   - name: WARM_POOL_PROJECT_SIZE
-                    value: "8"
+                    value: "15"
                   - name: WARM_POOL_AGENT_SIZE
-                    value: "8"
+                    value: "15"
+                  # Proactive node scaling — scale ASG before pods go Pending
+                  - name: EKS_ASG_NAME
+                    value: "${module.eks.cluster_name}-main"
+                  - name: PROACTIVE_SCALING_ENABLED
+                    value: "true"
+                  - name: NODE_HEADROOM_PODS
+                    value: "10"
+                  - name: NODE_MAX_SIZE
+                    value: "15"
                   - name: WARM_POOL_MAX_AGE_MS
                     value: "3600000"
                   # OpenTelemetry tracing → SigNoz Cloud

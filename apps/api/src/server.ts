@@ -792,6 +792,18 @@ app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
 // Health check
 app.get('/api/health', (c) => c.json({ ok: true }))
 
+// Warm pool + cluster capacity status (for operational dashboards and load testing)
+app.get('/api/warm-pool/status', async (c) => {
+  try {
+    const { getWarmPoolController } = await import('./lib/warm-pool-controller')
+    const controller = getWarmPoolController()
+    const status = await controller.getExtendedStatus()
+    return c.json(status)
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
 // =============================================================================
 // Templates API - Serve SDK example templates
 // =============================================================================

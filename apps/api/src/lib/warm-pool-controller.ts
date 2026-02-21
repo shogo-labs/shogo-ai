@@ -21,11 +21,29 @@
 
 import * as k8s from '@kubernetes/client-node'
 import * as fs from 'fs'
-import { trace, SpanStatusCode } from '@opentelemetry/api'
+import { trace, SpanStatusCode, metrics } from '@opentelemetry/api'
 import { generateProxyToken } from './ai-proxy-token'
 import * as databaseService from '../services/database.service'
+import { ensureCapacityForPods, getCapacitySummary } from './proactive-node-scaler'
 
 const poolTracer = trace.getTracer('shogo-warm-pool')
+const meter = metrics.getMeter('shogo-warm-pool')
+
+const poolAvailableGauge = meter.createObservableGauge('warm_pool.available', {
+  description: 'Number of available warm pool pods by type',
+})
+const poolTargetGauge = meter.createObservableGauge('warm_pool.target', {
+  description: 'Target warm pool size by type',
+})
+const poolAssignedCounter = meter.createCounter('warm_pool.assignments', {
+  description: 'Total warm pool pod assignments',
+})
+const poolColdStartCounter = meter.createCounter('warm_pool.cold_starts', {
+  description: 'Times a pod was requested but no warm pod was available',
+})
+const nodeScaleUpCounter = meter.createCounter('warm_pool.node_scale_ups', {
+  description: 'Proactive node scale-up events triggered by warm pool',
+})
 
 // =============================================================================
 // Configuration
@@ -179,6 +197,17 @@ export class WarmPoolController {
     )
     this.started = true
 
+    // Register OTEL observable gauges for real-time pool visibility in SigNoz
+    const self = this
+    poolAvailableGauge.addCallback((result) => {
+      result.observe(self.countAvailable('project'), { type: 'project' })
+      result.observe(self.countAvailable('agent'), { type: 'agent' })
+    })
+    poolTargetGauge.addCallback((result) => {
+      result.observe(self.poolSize.project, { type: 'project' })
+      result.observe(self.poolSize.agent, { type: 'agent' })
+    })
+
     // Initial reconciliation
     await this.reconcile().catch((err) => {
       console.error('[WarmPool] Initial reconciliation failed:', err.message)
@@ -310,6 +339,25 @@ export class WarmPoolController {
     }
 
     // Create missing warm pods (deficit = target - available - pending)
+    const totalDeficit =
+      Math.max(0, this.poolSize.project - counts.project - pending.project) +
+      Math.max(0, this.poolSize.agent - counts.agent - pending.agent)
+
+    // Proactive node scaling: ensure cluster has capacity BEFORE creating pods
+    if (totalDeficit > 0) {
+      try {
+        const nodesAdded = await ensureCapacityForPods(totalDeficit)
+        if (nodesAdded > 0) {
+          nodeScaleUpCounter.add(1, { nodes_added: nodesAdded, trigger: 'reconcile' })
+          console.log(
+            `[WarmPool] Proactive scale-up: requested ${nodesAdded} additional nodes for ${totalDeficit} pods`
+          )
+        }
+      } catch (err: any) {
+        console.error('[WarmPool] Proactive scaling check failed (non-fatal):', err.message)
+      }
+    }
+
     for (const type of ['project', 'agent'] as const) {
       const deficit = this.poolSize[type] - counts[type] - pending[type]
       if (deficit > 0) {
@@ -371,6 +419,7 @@ export class WarmPoolController {
       const target = this.poolSize[type]
       const utilization = 1 - remaining / target
 
+      poolAssignedCounter.add(1, { type })
       console.log(
         `[WarmPool] Claimed warm pod ${oldest.serviceName} for ${type} (remaining: ${remaining}/${target}, utilization: ${Math.round(utilization * 100)}%)`
       )
@@ -393,6 +442,8 @@ export class WarmPoolController {
       return oldest
     }
 
+    poolColdStartCounter.add(1, { type })
+    console.warn(`[WarmPool] COLD START: no warm ${type} pod available — user will experience delay`)
     return null
   }
 
@@ -495,6 +546,20 @@ export class WarmPoolController {
       },
       assigned: this.assigned.size,
       targetSize: this.poolSize,
+    }
+  }
+
+  /**
+   * Get extended status including cluster capacity (async).
+   * Used by health/status endpoints for operational visibility.
+   */
+  async getExtendedStatus() {
+    const base = this.getStatus()
+    try {
+      const capacity = await getCapacitySummary()
+      return { ...base, cluster: capacity }
+    } catch {
+      return { ...base, cluster: null }
     }
   }
 

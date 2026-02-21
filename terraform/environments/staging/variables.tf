@@ -48,7 +48,7 @@ variable "eks_cluster_version" {
 variable "node_instance_types" {
   description = "Instance types for EKS node group"
   type        = list(string)
-  default     = ["t3.medium"] # Smaller than production
+  default     = ["t3.xlarge"]
 }
 
 variable "node_desired_size" {
@@ -66,7 +66,7 @@ variable "node_min_size" {
 variable "node_max_size" {
   description = "Maximum number of nodes in the node group"
   type        = number
-  default     = 5 # Smaller than production
+  default     = 15
 }
 
 variable "enable_secondary_node_group" {

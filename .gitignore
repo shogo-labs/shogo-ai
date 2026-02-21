@@ -101,3 +101,4 @@ shogo-chats/
 packages/mcp/src/evals/dspy/__pycache__/
 
 *.png
+tests/
