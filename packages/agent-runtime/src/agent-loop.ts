@@ -82,6 +82,8 @@ export interface AgentLoopResult {
   iterations: number
   inputTokens: number
   outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
   /** All new messages produced during this loop (user prompt + assistant + tool results) */
   newMessages: Message[]
   /** Set if the loop was terminated by the circuit breaker */
@@ -207,6 +209,8 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     iterations,
     inputTokens: usage.input,
     outputTokens: usage.output,
+    cacheReadTokens: usage.cacheRead,
+    cacheWriteTokens: usage.cacheWrite,
     newMessages,
     loopBreak,
   }

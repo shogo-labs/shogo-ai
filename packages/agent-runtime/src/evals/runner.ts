@@ -43,6 +43,8 @@ export interface ParsedAgentResponse {
   stepCount: number
   inputTokens: number
   outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
 }
 
 /**
@@ -117,6 +119,8 @@ async function parseSSEStream(
   let stepCount = 0
   let inputTokens = 0
   let outputTokens = 0
+  let cacheReadTokens = 0
+  let cacheWriteTokens = 0
 
   const reader = response.body?.getReader()
   if (!reader) throw new Error('No response body')
@@ -153,8 +157,11 @@ async function parseSSEStream(
             case 'step-usage':
               inputTokens += data.inputTokens || 0
               outputTokens += data.outputTokens || 0
+              cacheReadTokens += data.cacheReadTokens || 0
+              cacheWriteTokens += data.cacheWriteTokens || 0
               if (verbose) {
-                console.log(`      Usage: ${data.inputTokens}+${data.outputTokens} tokens, ${data.iterations} iterations, ${data.toolCallCount} tools`)
+                const total = (data.inputTokens || 0) + (data.cacheReadTokens || 0) + (data.cacheWriteTokens || 0)
+                console.log(`      Usage: ${total}+${data.outputTokens} tokens (${data.cacheReadTokens || 0} cached), ${data.iterations} iterations, ${data.toolCallCount} tools`)
               }
               break
             case 'text-delta':
@@ -203,7 +210,7 @@ async function parseSSEStream(
     reader.releaseLock()
   }
 
-  return { text, toolCalls, stepCount, inputTokens, outputTokens }
+  return { text, toolCalls, stepCount, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens }
 }
 
 // ---------------------------------------------------------------------------
@@ -253,6 +260,8 @@ export async function runEval(
   let stepCount = 0
   let inputTokens = 0
   let outputTokens = 0
+  let cacheReadTokens = 0
+  let cacheWriteTokens = 0
 
   try {
     const messages: Array<{ role: string; parts: Array<{ type: string; text: string }> }> = []
@@ -270,6 +279,8 @@ export async function runEval(
             messages.push({ role: 'assistant', parts: [{ type: 'text', text: resp.text }] })
             inputTokens += resp.inputTokens
             outputTokens += resp.outputTokens
+            cacheReadTokens += resp.cacheReadTokens
+            cacheWriteTokens += resp.cacheWriteTokens
           } catch (e: any) {
             errors.push(`History turn error: ${e.message}`)
           }
@@ -285,6 +296,8 @@ export async function runEval(
     stepCount = response.stepCount
     inputTokens += response.inputTokens
     outputTokens += response.outputTokens
+    cacheReadTokens += response.cacheReadTokens
+    cacheWriteTokens += response.cacheWriteTokens
   } catch (err: any) {
     errors.push(err.message)
   }
@@ -295,12 +308,13 @@ export async function runEval(
   const successfulTools = toolCalls.filter(t => !t.error).length
   const failedTools = toolCalls.filter(t => t.error).length
 
+  const totalInput = inputTokens + cacheReadTokens + cacheWriteTokens
   const metrics: EvalMetrics = {
     toolCallCount: toolCalls.length,
     successfulToolCalls: successfulTools,
     failedToolCalls: failedTools,
     iterations: stepCount,
-    tokens: { input: inputTokens, output: outputTokens, total: inputTokens + outputTokens },
+    tokens: { input: totalInput, output: outputTokens, total: totalInput + outputTokens },
     timing: { totalMs: durationMs },
   }
 

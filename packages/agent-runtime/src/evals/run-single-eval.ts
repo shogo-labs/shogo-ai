@@ -68,6 +68,8 @@ async function main() {
       stepCount: result.stepCount,
       inputTokens: result.inputTokens,
       outputTokens: result.outputTokens,
+      cacheReadTokens: result.cacheReadTokens,
+      cacheWriteTokens: result.cacheWriteTokens,
       durationMs,
     }
 

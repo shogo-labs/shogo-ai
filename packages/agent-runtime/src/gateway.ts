@@ -984,6 +984,8 @@ export class AgentGateway {
           type: 'step-usage' as any,
           inputTokens: result.inputTokens,
           outputTokens: result.outputTokens,
+          cacheReadTokens: result.cacheReadTokens,
+          cacheWriteTokens: result.cacheWriteTokens,
           iterations: result.iterations,
           toolCallCount: result.toolCalls.length,
         })
@@ -995,9 +997,10 @@ export class AgentGateway {
         )
       }
 
+      const totalInput = result.inputTokens + result.cacheReadTokens + result.cacheWriteTokens
       if (result.toolCalls.length > 0) {
         console.log(
-          `[AgentGateway] Agent turn: ${result.iterations} iterations, ${result.toolCalls.length} tool calls, ${result.inputTokens}+${result.outputTokens} tokens`
+          `[AgentGateway] Agent turn: ${result.iterations} iterations, ${result.toolCalls.length} tool calls, ${totalInput}+${result.outputTokens} tokens (${result.cacheReadTokens} cached)`
         )
       }
 

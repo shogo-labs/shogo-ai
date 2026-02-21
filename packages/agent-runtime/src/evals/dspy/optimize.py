@@ -326,12 +326,13 @@ def main():
     pool = None
     if (args.e2e or args.tiered) and not args.eval_only:
         from server_pool import ServerPool
-        from e2e_metrics import set_server_pool
+        from e2e_metrics import set_server_pool, set_cost_tracker
 
         print(f"\n  Starting server pool ({args.e2e_workers} workers, model={base_model})...")
         pool = ServerPool(num_workers=args.e2e_workers, model=base_model)
         pool.start()
         set_server_pool(pool)
+        set_cost_tracker(costs)
         print("  Server pool ready.\n")
 
     try:

@@ -1179,11 +1179,11 @@ resource "null_resource" "knative_services" {
                     value: ""
                   - name: PUBLISH_DOMAIN
                     value: "${var.publish_domain}"
-                  # Warm pool sizing (15+15 to handle 30+ concurrent users)
+                  # Warm pool sizing (agent only, project runtime not warm-pooled)
                   - name: WARM_POOL_PROJECT_SIZE
-                    value: "15"
+                    value: "0"
                   - name: WARM_POOL_AGENT_SIZE
-                    value: "15"
+                    value: "30"
                   # Proactive node scaling — scale ASG before pods go Pending
                   - name: EKS_ASG_NAME
                     value: "${module.eks.cluster_name}-main"

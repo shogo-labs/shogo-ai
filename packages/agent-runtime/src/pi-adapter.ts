@@ -191,16 +191,25 @@ export function countToolCalls(messages: Message[]): number {
 /**
  * Sum token usage across a sequence of messages.
  */
-export function sumUsage(messages: Message[]): { input: number; output: number } {
+export function sumUsage(messages: Message[]): {
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+} {
   let input = 0
   let output = 0
+  let cacheRead = 0
+  let cacheWrite = 0
   for (const msg of messages) {
     if (msg.role === 'assistant') {
       input += msg.usage.input
       output += msg.usage.output
+      cacheRead += msg.usage.cacheRead ?? 0
+      cacheWrite += msg.usage.cacheWrite ?? 0
     }
   }
-  return { input, output }
+  return { input, output, cacheRead, cacheWrite }
 }
 
 // ---------------------------------------------------------------------------

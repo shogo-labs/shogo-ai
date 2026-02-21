@@ -96,14 +96,21 @@ def personality_update_e2e_quality(example: dspy.Example, prediction: dspy.Predi
 # Full Agent E2E Metrics (new) — run the real agent loop
 # ===========================================================================
 
-# Global pool reference, set by optimize.py before E2E optimization begins
+# Global pool and cost tracker references, set by optimize.py
 _pool = None
+_cost_tracker = None
 
 
 def set_server_pool(pool):
     """Set the global ServerPool instance used by full E2E metrics."""
     global _pool
     _pool = pool
+
+
+def set_cost_tracker(tracker):
+    """Set the global CostTracker so E2E metrics can report agent-runtime token usage."""
+    global _cost_tracker
+    _cost_tracker = tracker
 
 
 def _format_override_from_prediction(prediction, track: str) -> dict:
@@ -344,6 +351,15 @@ def make_full_e2e_metric(track: str, program_ref: list = None, timeout: int = 12
         # Run the real eval
         user_message = getattr(example, "user_request", "") or getattr(example, "user_message", "")
         result = _pool.run_eval(worker_id, user_message, timeout=timeout)
+
+        # Report agent-runtime tokens to the cost tracker
+        if _cost_tracker is not None:
+            _cost_tracker.add_agent_tokens(
+                result.get("inputTokens", 0),
+                result.get("outputTokens", 0),
+                result.get("cacheReadTokens", 0),
+                result.get("cacheWriteTokens", 0),
+            )
 
         return _score_agent_result(result, example)
 
