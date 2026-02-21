@@ -18,7 +18,6 @@ import { useState, useRef, type RefObject } from "react"
 import { observer } from "mobx-react-lite"
 import { useNavigate } from "react-router-dom"
 import { Sparkles, ChevronRight, Loader2 } from "lucide-react"
-import type { ProjectType } from "@/components/app/chat/CompactChatInput"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { ChatPanel } from "@/components/app/chat/ChatPanel"
@@ -34,8 +33,8 @@ export type TransitionPhase = 'idle' | 'commit' | 'dissolve' | 'transform' | 'em
 interface HomePageProps {
   /** User's display name for personalized greeting */
   userName?: string
-  /** Callback when a new prompt is submitted (includes selected themeId and project type) */
-  onPromptSubmit?: (prompt: string, imageData?: string[], themeId?: string, projectType?: ProjectType) => void
+  /** Callback when a new prompt is submitted (includes selected themeId) */
+  onPromptSubmit?: (prompt: string, imageData?: string[], themeId?: string, projectType?: "APP" | "AGENT") => void
   /** Callback when a template is selected - receives template name, display name, and themeId */
   onTemplateSelect?: (templateName: string, displayName: string, themeId?: string) => void
   /** Loading state - true when creating project/feature from prompt */
@@ -69,8 +68,6 @@ export const HomePage = observer(function HomePage({
   const navigate = useNavigate()
   // Prompt state managed here so suggestions can pre-fill
   const [prompt, setPrompt] = useState("")
-  // Project type toggle: App or Agent
-  const [projectType, setProjectType] = useState<ProjectType>("APP")
   // Internal ref for ChatPanel if external ref not provided
   const internalInputRef = useRef<HTMLDivElement>(null)
   const chatPanelRef = inputRef ?? internalInputRef
@@ -226,14 +223,12 @@ export const HomePage = observer(function HomePage({
             mode="compact"
             featureId={null}
             phase={null}
-            onCompactSubmit={(p) => onPromptSubmit?.(p, [], currentThemeId !== 'default' ? currentThemeId : undefined, projectType)}
+            onCompactSubmit={(p) => onPromptSubmit?.(p, [], currentThemeId !== 'default' ? currentThemeId : undefined, "AGENT")}
             compactValue={prompt}
             onCompactValueChange={setPrompt}
             selectedThemeId={currentThemeId}
             onSelectTheme={selectTheme}
             onCreateTheme={() => setIsThemeEditorOpen(true)}
-            projectType={projectType}
-            onProjectTypeChange={setProjectType}
           />
         </div>
 
@@ -242,20 +237,12 @@ export const HomePage = observer(function HomePage({
           className="home-suggestions mt-6 flex flex-wrap justify-center gap-2"
           data-home-element="suggestions"
         >
-          {(projectType === "AGENT"
-            ? [
-                "Build a customer support agent",
-                "Create a research assistant",
-                "Make a scheduling agent",
-                "Design a data analysis agent",
-              ]
-            : [
-                "Build a landing page",
-                "Create a dashboard",
-                "Design a form",
-                "Make an API integration",
-              ]
-          ).map((suggestion) => (
+          {[
+            "Build a customer support agent",
+            "Create a research assistant",
+            "Make a scheduling agent",
+            "Design a data analysis agent",
+          ].map((suggestion) => (
             <Button
               key={suggestion}
               variant="outline"
@@ -276,7 +263,7 @@ export const HomePage = observer(function HomePage({
         data-home-element="templates"
       >
         <div className="flex items-center justify-between mb-4 px-6">
-          <h2 className="text-sm font-medium">Templates</h2>
+          <h2 className="text-sm font-medium">Agent Templates</h2>
           <Button
             variant="ghost"
             size="sm"

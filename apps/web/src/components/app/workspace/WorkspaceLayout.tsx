@@ -61,7 +61,7 @@ function createProjectViaApi(data: {
     status: "draft",
     accessLevel: "anyone",
     schemas: [],
-    type: data.type || "APP",
+    type: data.type || "AGENT",
   })
 }
 
@@ -128,7 +128,7 @@ export function WorkspaceLayout() {
     const workspaceId = currentWorkspace?.id
     if (!userId || !workspaceId) return
 
-    const type = projectType || "APP"
+    const type: "APP" | "AGENT" = "AGENT"
     setIsCreatingFromPrompt(true)
     try {
       const projectName = generateProjectNameFromPrompt(prompt)
@@ -183,6 +183,7 @@ export function WorkspaceLayout() {
         workspaceId,
         description: `Created from ${displayName} template`,
         createdBy: userId,
+        type: "AGENT",
       })
 
       const chatSession = await createChatSessionViaApi({
@@ -199,7 +200,7 @@ export function WorkspaceLayout() {
 
       navigate(`/projects/${newProject.id}?chatSessionId=${chatSession.id}`, {
         state: {
-          project: { id: newProject.id, name: newProject.name },
+          project: { id: newProject.id, name: newProject.name, type: "AGENT" },
           chatSessionId: chatSession.id,
           initialMessage,
           fromTemplate: templateName,

@@ -49,7 +49,7 @@ export const TemplatesPage = observer(function TemplatesPage() {
     try {
       // Create project with template name
       const displayName = formatTemplateName(template.name)
-      const project = await actions.createProject(displayName, currentWorkspace.id, undefined, userId)
+      const project = await actions.createProject(displayName, currentWorkspace.id, undefined, userId, "AGENT")
       
       if (project?.id) {
         refetchProjects()
@@ -68,9 +68,9 @@ export const TemplatesPage = observer(function TemplatesPage() {
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="px-6 pt-6 pb-4">
-        <h1 className="text-2xl font-semibold">Templates</h1>
+        <h1 className="text-2xl font-semibold">Agent Templates</h1>
         <p className="text-muted-foreground mt-1">
-          Start from a template to build your next project
+          Start from a template to build your next agent
         </p>
       </div>
 
