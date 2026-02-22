@@ -645,7 +645,7 @@ function createCanvasActionWaitTool(): AgentTool {
   return {
     name: 'canvas_action_wait',
     description:
-      'Wait for the user to interact with a canvas component (e.g. clicking a Button). Returns the action event including any context data. Times out after 2 minutes if no action occurs.',
+      'Pause and wait for a REAL USER to click a button or interact with a canvas component. Returns the action event when the user acts, or times out after 2 minutes. DO NOT use this when self-testing your canvas — use canvas_trigger_action + canvas_inspect instead. Only use canvas_action_wait when you need to hand control to the human and wait for their input.',
     label: 'Wait for Canvas Action',
     parameters: Type.Object({
       surfaceId: Type.Optional(Type.String({ description: 'Only wait for actions from this surface (optional)' })),
@@ -943,24 +943,17 @@ function createCanvasTriggerActionTool(): AgentTool {
   return {
     name: 'canvas_trigger_action',
     description:
-      `Programmatically trigger an action on a canvas surface, simulating a user click or interaction.
-Use this to self-test your canvas UIs after building them. For mutation actions (CRUD operations),
-include a _mutation object in the context with endpoint, method, and optional body.
+      `Programmatically simulate a user click on a canvas button or component. Use this to test and verify your canvas UIs work correctly — do NOT use canvas_action_wait for self-testing.
 
-Example — trigger a non-mutation action:
+For mutation actions (CRUD), include _mutation in the context:
+  canvas_trigger_action({ surfaceId: "app", actionName: "add_todo", context: {
+    _mutation: { endpoint: "/api/todos", method: "POST", body: { title: "Test" } }
+  }})
+
+For non-mutation actions:
   canvas_trigger_action({ surfaceId: "app", actionName: "select_item", context: { itemId: "123" } })
 
-Example — trigger a mutation (add a record):
-  canvas_trigger_action({ surfaceId: "app", actionName: "add_todo", context: {
-    _mutation: { endpoint: "/api/todos", method: "POST", body: { title: "Test todo" } }
-  }})
-
-Example — trigger a mutation (delete a record):
-  canvas_trigger_action({ surfaceId: "app", actionName: "delete_todo", context: {
-    _mutation: { endpoint: "/api/todos/abc123", method: "DELETE" }
-  }})
-
-After triggering, use canvas_inspect to verify the data model updated correctly.`,
+IMPORTANT: Always follow up with canvas_inspect to verify the action succeeded. The correct pattern is: trigger → inspect → report. Never use canvas_action_wait after canvas_trigger_action.`,
     label: 'Trigger Canvas Action',
     parameters: Type.Object({
       surfaceId: Type.String({ description: 'Surface ID to trigger the action on' }),
@@ -1003,8 +996,8 @@ After triggering, use canvas_inspect to verify the data model updated correctly.
         wasMutation: hasMutation,
         dataKeys,
         message: hasMutation
-          ? `Mutation action "${actionName}" executed on "${surfaceId}". Use canvas_inspect to verify the data model changed.`
-          : `Action "${actionName}" delivered to "${surfaceId}". If an agent turn is waiting via canvas_action_wait, it will receive this event.`,
+          ? `Mutation "${actionName}" executed on "${surfaceId}". Now use canvas_inspect to verify the data changed.`
+          : `Action "${actionName}" delivered to "${surfaceId}". Use canvas_inspect to verify the surface state.`,
       })
     },
   }
@@ -1014,14 +1007,15 @@ function createCanvasInspectTool(): AgentTool {
   return {
     name: 'canvas_inspect',
     description:
-      `Inspect the current state of a canvas surface. Returns component tree, data model, and API info.
-Use this after canvas_trigger_action to verify interactions worked correctly.
+      `Read the current state of a canvas surface. Use this after canvas_trigger_action to verify that actions and mutations worked correctly. This is the verification step in the trigger → inspect → report pattern.
 
 Modes:
 - "summary" (default): Component count, data keys, API models — quick health check
-- "data": Full data model or a specific path within it — verify data values
+- "data": Full data model or a specific path — use to verify a mutation changed the data
 - "components": Full component tree — verify UI structure
-- "full": Everything — components, data, and API info`,
+- "full": Everything — components, data, and API info
+
+Tip: After a trigger_action mutation, use mode "data" with a dataPath to check the specific collection that should have changed.`,
     label: 'Inspect Canvas Surface',
     parameters: Type.Object({
       surfaceId: Type.String({ description: 'Surface ID to inspect' }),

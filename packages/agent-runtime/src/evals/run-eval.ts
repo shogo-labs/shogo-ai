@@ -162,6 +162,11 @@ async function runEvalOnWorker(
   try { execSync(`rm -rf ${worker.dir}/* 2>/dev/null || true`, { stdio: 'pipe' }) } catch {}
   resetWorkspaceDefaults(worker.dir)
 
+  // Reset the gateway's conversation session so previous evals don't pollute context
+  try {
+    await fetch(`http://localhost:${worker.port}/agent/session/reset`, { method: 'POST' })
+  } catch {}
+
   const startTime = Date.now()
   console.log(`[${index + 1}/${total}] Worker ${worker.id}: ${ev.name}`)
 

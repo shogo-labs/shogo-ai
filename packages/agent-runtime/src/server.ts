@@ -473,6 +473,16 @@ app.delete('/agent/prompt-override', (c) => {
   return c.json({ ok: true, cleared: true })
 })
 
+// Session reset — used by eval runner to clear conversation history between tests
+app.post('/agent/session/reset', (c) => {
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+  const sm = agentGateway.getSessionManager()
+  sm.clearHistory('chat')
+  return c.json({ ok: true })
+})
+
 // Heartbeat manual trigger
 app.post('/agent/heartbeat/trigger', async (c) => {
   if (!agentGateway) {

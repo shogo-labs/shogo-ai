@@ -89,10 +89,10 @@ export const CANVAS_EVALS: AgentEval[] = [
       },
       {
         id: 'no-excessive-tools',
-        description: 'Used a reasonable number of tool calls (<= 8)',
+        description: 'Used a reasonable number of tool calls (<= 10)',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 8,
+        validate: (r) => r.toolCalls.length <= 10,
       },
     ],
     antiPatterns: ['Repeated identical tool calls (loop)'],
@@ -776,13 +776,16 @@ export const CANVAS_EVALS: AgentEval[] = [
     antiPatterns: ['Did not verify interactions work'],
   },
 
-  // ---- Level 4: Social Media Command Center (OpenClaw + n8n) ----
+  // ---- Level 4: Social Media Command Center (multi-turn) ----
   {
     id: 'canvas-social-media',
-    name: 'Canvas: Social media analytics dashboard',
+    name: 'Canvas: Social media analytics dashboard (multi-turn)',
     category: 'canvas',
     level: 4,
-    input: 'Show me how our social media is doing — follower count, engagement rate, and what\'s scheduled to post next. Use sample data.',
+    conversationHistory: [
+      { role: 'user', content: 'Show me how our social media is doing — follower count, engagement rate, and what\'s scheduled to post next.' },
+    ],
+    input: 'We\'re @shogo_ai on Twitter/X with 12.4K followers and 4.2% engagement, @shogoai on Instagram with 8.1K followers and 6.1% engagement, and our LinkedIn company page has 3.2K followers at 2.8% engagement. We have 5 posts scheduled for next week across all three platforms. Build me a canvas dashboard showing metrics per platform, an engagement trend chart, and a table of the upcoming scheduled posts. Use those numbers as sample data.',
     maxScore: 100,
     validationCriteria: [
       {
@@ -835,7 +838,7 @@ export const CANVAS_EVALS: AgentEval[] = [
       },
       {
         id: 'has-platform-data',
-        description: 'Scheduled posts include platform column',
+        description: 'Includes platform-specific data (Twitter, Instagram, LinkedIn)',
         points: 10,
         phase: 'execution',
         validate: (r) => {
@@ -853,13 +856,16 @@ export const CANVAS_EVALS: AgentEval[] = [
     ],
   },
 
-  // ---- Level 4: E-Commerce Order Tracker (OpenClaw Shopify + Odin AI) ----
+  // ---- Level 4: E-Commerce Order Tracker (multi-turn) ----
   {
     id: 'canvas-ecommerce-orders',
-    name: 'Canvas: E-commerce order management with CRUD',
+    name: 'Canvas: E-commerce order management with CRUD (multi-turn)',
     category: 'canvas',
     level: 4,
-    input: 'I need to manage incoming orders — show me today\'s revenue, pending shipments, and the full order list. I want to be able to add new orders too. Throw in some sample data.',
+    conversationHistory: [
+      { role: 'user', content: 'I need to manage my incoming orders — can you help me track revenue, shipments, and the order list?' },
+    ],
+    input: 'We\'re on Shopify. Today we had 23 orders totaling $3,450 with 8 pending shipments. Each order has an order number, customer name, items, total amount, and status (Pending/Shipped/Delivered). Build me a canvas dashboard with revenue and shipment metrics at the top and the full order list below as a table. Set up a CRUD API so I can add new orders, and seed it with 5 sample orders based on those numbers. After building it, add a test order for customer "Eval Shopper" with total $42 using canvas_trigger_action, then canvas_inspect to verify it was created.',
     maxScore: 100,
     validationCriteria: [
       {
@@ -1023,54 +1029,43 @@ export const CANVAS_EVALS: AgentEval[] = [
     antiPatterns: ['Did not use canvas_trigger_action', 'Did not use canvas_inspect'],
   },
 
-  // ---- Level 4: Counter app with self-testing loop ----
+  // ---- Level 4: Counter app with self-testing loop (multi-turn) ----
   {
     id: 'canvas-counter-self-test',
-    name: 'Canvas: Counter with trigger/inspect verification loop',
+    name: 'Canvas: Counter with trigger/inspect verification loop (multi-turn)',
     category: 'canvas',
     level: 4,
-    input: 'Make me a simple counter I can click to increment. Test that it works a few times and tell me the final value.',
+    conversationHistory: [
+      { role: 'user', content: 'Make me a simple counter on the canvas — just a number display and a button I can click to increment it. Start the count at 0.' },
+    ],
+    input: 'Looks good! Now test that the increment actually works — use canvas_trigger_action to click the increment button 3 times, then use canvas_inspect to check the counter state and tell me the final value.',
     maxScore: 100,
     validationCriteria: [
       {
-        id: 'used-canvas-create',
-        description: 'Created a canvas surface',
-        points: 5,
-        phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_create'),
-      },
-      {
-        id: 'used-canvas-update',
-        description: 'Added counter UI components',
+        id: 'triggered-at-least-once',
+        description: 'Used canvas_trigger_action at least once',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_update'),
+        validate: (r) => usedTool(r, 'canvas_trigger_action'),
       },
       {
-        id: 'has-metric-component',
-        description: 'Used a Metric component for the counter display',
+        id: 'used-inspect',
+        description: 'Used canvas_inspect to check the result',
         points: 10,
-        phase: 'execution',
-        validate: (r) => JSON.stringify(r.toolCalls).includes('"Metric"'),
-      },
-      {
-        id: 'has-button-component',
-        description: 'Included an Increment button',
-        points: 10,
-        phase: 'execution',
-        validate: (r) => JSON.stringify(r.toolCalls).includes('"Button"'),
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_inspect'),
       },
       {
         id: 'triggered-3-times',
         description: 'Used canvas_trigger_action at least 3 times',
-        points: 25,
+        points: 30,
         phase: 'execution',
         validate: (r) => toolCallCount(r, 'canvas_trigger_action') >= 3,
       },
       {
-        id: 'used-inspect-after',
-        description: 'Used canvas_inspect after triggering',
-        points: 15,
+        id: 'inspect-after-triggers',
+        description: 'Used canvas_inspect after the last trigger',
+        points: 20,
         phase: 'execution',
         validate: (r) => {
           const lastTrigger = r.toolCalls.map((t, i) => ({ ...t, idx: i }))
@@ -1082,18 +1077,21 @@ export const CANVAS_EVALS: AgentEval[] = [
         },
       },
       {
-        id: 'response-has-value',
-        description: 'Response mentions the final counter value',
-        points: 10,
+        id: 'response-reports-value',
+        description: 'Response mentions the final counter value (3 or higher)',
+        points: 15,
         phase: 'execution',
-        validate: (r) => r.responseText.length > 10,
+        validate: (r) => {
+          const text = r.responseText
+          return /\b[3-9]\b/.test(text) || text.includes('three')
+        },
       },
       {
         id: 'reasonable-tool-count',
-        description: 'Completed in <= 16 tool calls',
+        description: 'Completed in <= 10 tool calls',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 16,
+        validate: (r) => r.toolCalls.length <= 10,
       },
     ],
     antiPatterns: ['Did not trigger any actions', 'Did not inspect the result'],

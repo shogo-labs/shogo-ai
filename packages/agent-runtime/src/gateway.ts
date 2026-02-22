@@ -68,9 +68,12 @@ const CANVAS_TOOLS_GUIDE_PREFIX = `## Canvas (Dynamic UI)
 You have canvas tools that let you build interactive UIs the user can see in real time.
 Use them whenever a visual display would be more helpful than plain text.
 
-### Quick Reference — Building a CRUD App (recommended approach)
+**CRITICAL: Every canvas you build with interactive elements MUST be tested before you're done.**
+Never deliver an untested canvas. Build it, test it, confirm it works, then report to the user.
 
-When the user asks for any kind of data app (task tracker, todo list, inventory, CRM, etc.), follow these 4 steps:
+### Building a CRUD App — 5 Steps (Build + Test)
+
+When the user asks for any data app (tracker, dashboard, CRM, etc.), follow ALL 5 steps:
 
 **Step 1: canvas_create** — Create a surface
   canvas_create({ surfaceId: "my_app", title: "My App" })
@@ -85,13 +88,11 @@ When the user asks for any kind of data app (task tracker, todo list, inventory,
   }]})
   → Creates REST endpoints: GET/POST /api/tasks, GET/PATCH/DELETE /api/tasks/:id
 
-**Step 3: canvas_api_seed** — Populate sample data
+**Step 3: canvas_api_seed + canvas_api_query** — Populate and load data
   canvas_api_seed({ surfaceId: "my_app", model: "Task", records: [
     { title: "First task", priority: "high" },
     { title: "Second task", status: "done" }
   ]})
-
-**Step 3b: canvas_api_query** — Push data into the data model for binding
   canvas_api_query({ surfaceId: "my_app", model: "Task", dataPath: "/tasks" })
   → Now { path: "/tasks" } is available for component data binding
 
@@ -99,16 +100,12 @@ When the user asks for any kind of data app (task tracker, todo list, inventory,
   canvas_update({ surfaceId: "my_app", components: [
     { id: "root", component: "Column", children: ["header", "add_section", "task_list"], gap: "md", padding: "4" },
     { id: "header", component: "Text", text: "My Tasks", variant: "h3" },
-
-    // --- Add form: TextField writes to data model, Button reads from it ---
     { id: "add_section", component: "Card", child: "add_form", title: "Add Task" },
     { id: "add_form", component: "Row", children: ["add_input", "add_btn"], gap: "sm", align: "end" },
     { id: "add_input", component: "TextField", placeholder: "Task title...", dataPath: "/newTaskTitle" },
     { id: "add_btn", component: "Button", label: "Add Task",
       action: { name: "add", mutation: { endpoint: "/api/tasks", method: "POST",
         body: { title: { path: "/newTaskTitle" } } } } },
-
-    // --- DataList: renders template for each item, with per-row actions ---
     { id: "task_list", component: "DataList",
       children: { path: "/tasks", templateId: "task_card" }, emptyText: "No tasks yet" },
     { id: "task_card", component: "Card", child: "task_row" },
@@ -124,6 +121,16 @@ When the user asks for any kind of data app (task tracker, todo list, inventory,
       action: { name: "delete", mutation: { endpoint: "/api/tasks/:id", method: "DELETE",
         params: { id: { path: "id" } } } } }
   ]})
+
+**Step 5: TEST — Verify interactions actually work (REQUIRED)**
+  canvas_trigger_action({ surfaceId: "my_app", actionName: "add", context: {
+    _mutation: { endpoint: "/api/tasks", method: "POST", body: { title: "Test task" } }
+  }})
+  canvas_inspect({ surfaceId: "my_app", mode: "data", dataPath: "/tasks" })
+  → Confirm the new record appears. If it does, tell the user "Tested — add works ✓"
+  → If it doesn't, debug and fix before reporting.
+
+**You are not done until Step 5 passes.** A canvas that hasn't been tested is a canvas that might be broken.
 
 ### Key Patterns
 
@@ -154,13 +161,22 @@ When the user asks for any kind of data app (task tracker, todo list, inventory,
 
 Use \`canvas_components({ action: "detail", type: "Card" })\` to look up props for any component.
 
+### Testing Tools
+
+- **canvas_trigger_action** — YOU simulate a button click. Use to test your canvas after building it. Include \`_mutation\` context for CRUD actions.
+- **canvas_inspect** — Read the current surface state. ALWAYS call this after canvas_trigger_action to verify the result.
+- The pattern is always: **trigger → inspect → report**. No exceptions.
+
 ### Other Tools
 - **canvas_data** — Manually push data: \`canvas_data({ surfaceId: "app", path: "/key", value: data })\`
-- **canvas_action_wait** — Wait for user button clicks (for non-mutation actions)
+- **canvas_action_wait** — Pause and wait for a REAL USER to click. Only use when you need the human to interact — never for self-testing.
 - **canvas_delete** — Remove a surface
 - **canvas_components** — Discover components and their props
 
-### IMPORTANT
+### Rules
+- After building any canvas with buttons or CRUD, ALWAYS run Step 5 (trigger + inspect) to verify.
+- After canvas_trigger_action, ALWAYS follow up with canvas_inspect — never canvas_action_wait.
+- canvas_action_wait is ONLY for waiting on real human interaction, NOT for testing.
 - When canvas tools return status: "rendered" or "data_updated", the UI is already live.
 - Do NOT rebuild surfaces that are working — use canvas_update to modify specific components.
 - Table is read-only. For lists needing edit/delete buttons, always use DataList.
