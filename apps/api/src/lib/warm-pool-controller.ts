@@ -275,20 +275,31 @@ export class WarmPoolController {
   }
 
   /**
-   * Count ready nodes in the cluster (excludes NotReady, cordoned nodes).
+   * Count ready managed node group nodes (excludes Karpenter nodes, NotReady, cordoned).
+   * Karpenter nodes are ephemeral scale-out capacity and must NOT inflate the warm
+   * pool target — otherwise warm pods fill Karpenter nodes and prevent scale-down.
    */
   private async countReadyNodes(): Promise<number> {
     const coreApi = getCoreApi()
     const response = await coreApi.listNode()
     const nodes = response.items || []
     let ready = 0
+    let karpenterNodes = 0
     for (const node of nodes) {
+      const labels = node.metadata?.labels || {}
+      if (labels['karpenter.sh/nodepool']) {
+        karpenterNodes++
+        continue
+      }
       const conditions = node.status?.conditions || []
       const readyCondition = conditions.find((c) => c.type === 'Ready')
       const unschedulable = node.spec?.unschedulable
       if (readyCondition?.status === 'True' && !unschedulable) {
         ready++
       }
+    }
+    if (karpenterNodes > 0) {
+      console.log(`[WarmPool] Node count: ${ready} managed (ready) + ${karpenterNodes} Karpenter (excluded from sizing)`)
     }
     return ready
   }
@@ -848,6 +859,23 @@ export class WarmPoolController {
           spec: {
             timeoutSeconds: 600,
             securityContext: { fsGroup: 999 },
+            affinity: {
+              nodeAffinity: {
+                preferredDuringSchedulingIgnoredDuringExecution: [
+                  {
+                    weight: 100,
+                    preference: {
+                      matchExpressions: [
+                        {
+                          key: 'karpenter.sh/nodepool',
+                          operator: 'DoesNotExist',
+                        },
+                      ],
+                    },
+                  },
+                ],
+              },
+            },
             containers: [
               {
                 name: type === 'agent' ? 'agent-runtime' : 'project-runtime',
