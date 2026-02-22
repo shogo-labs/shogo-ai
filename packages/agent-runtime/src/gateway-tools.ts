@@ -936,6 +936,180 @@ Then in canvas_update: { id: "table", component: "Table", rows: { path: "/todos"
 }
 
 // ---------------------------------------------------------------------------
+// Canvas Self-Testing Tools
+// ---------------------------------------------------------------------------
+
+function createCanvasTriggerActionTool(): AgentTool {
+  return {
+    name: 'canvas_trigger_action',
+    description:
+      `Programmatically trigger an action on a canvas surface, simulating a user click or interaction.
+Use this to self-test your canvas UIs after building them. For mutation actions (CRUD operations),
+include a _mutation object in the context with endpoint, method, and optional body.
+
+Example — trigger a non-mutation action:
+  canvas_trigger_action({ surfaceId: "app", actionName: "select_item", context: { itemId: "123" } })
+
+Example — trigger a mutation (add a record):
+  canvas_trigger_action({ surfaceId: "app", actionName: "add_todo", context: {
+    _mutation: { endpoint: "/api/todos", method: "POST", body: { title: "Test todo" } }
+  }})
+
+Example — trigger a mutation (delete a record):
+  canvas_trigger_action({ surfaceId: "app", actionName: "delete_todo", context: {
+    _mutation: { endpoint: "/api/todos/abc123", method: "DELETE" }
+  }})
+
+After triggering, use canvas_inspect to verify the data model updated correctly.`,
+    label: 'Trigger Canvas Action',
+    parameters: Type.Object({
+      surfaceId: Type.String({ description: 'Surface ID to trigger the action on' }),
+      actionName: Type.String({ description: 'Name of the action to trigger (matches the action.name on a Button or other interactive component)' }),
+      context: Type.Optional(Type.Object({}, { additionalProperties: true, description: 'Action context data. For mutations, include _mutation: { endpoint, method, body? }' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { surfaceId, actionName, context } = params as {
+        surfaceId: string
+        actionName: string
+        context?: Record<string, unknown>
+      }
+      const manager = getDynamicAppManager()
+
+      const surface = manager.getSurface(surfaceId)
+      if (!surface) {
+        return textResult({ ok: false, error: `Surface "${surfaceId}" does not exist.` })
+      }
+
+      manager.deliverAction({
+        surfaceId,
+        name: actionName,
+        context: context || {},
+        timestamp: new Date().toISOString(),
+      })
+
+      // Allow async mutation execution to complete
+      const hasMutation = !!(context as any)?._mutation
+      if (hasMutation) {
+        await new Promise((r) => setTimeout(r, 150))
+      }
+
+      const updatedSurface = manager.getSurface(surfaceId)
+      const dataKeys = updatedSurface ? Object.keys(updatedSurface.dataModel) : []
+
+      return textResult({
+        ok: true,
+        surfaceId,
+        actionName,
+        wasMutation: hasMutation,
+        dataKeys,
+        message: hasMutation
+          ? `Mutation action "${actionName}" executed on "${surfaceId}". Use canvas_inspect to verify the data model changed.`
+          : `Action "${actionName}" delivered to "${surfaceId}". If an agent turn is waiting via canvas_action_wait, it will receive this event.`,
+      })
+    },
+  }
+}
+
+function createCanvasInspectTool(): AgentTool {
+  return {
+    name: 'canvas_inspect',
+    description:
+      `Inspect the current state of a canvas surface. Returns component tree, data model, and API info.
+Use this after canvas_trigger_action to verify interactions worked correctly.
+
+Modes:
+- "summary" (default): Component count, data keys, API models — quick health check
+- "data": Full data model or a specific path within it — verify data values
+- "components": Full component tree — verify UI structure
+- "full": Everything — components, data, and API info`,
+    label: 'Inspect Canvas Surface',
+    parameters: Type.Object({
+      surfaceId: Type.String({ description: 'Surface ID to inspect' }),
+      mode: Type.Optional(Type.Union([
+        Type.Literal('summary'),
+        Type.Literal('data'),
+        Type.Literal('components'),
+        Type.Literal('full'),
+      ], { description: 'What to return (default: summary)' })),
+      dataPath: Type.Optional(Type.String({ description: 'JSON Pointer path to query specific data (for "data" mode). E.g. "/todos" to inspect just the todos array.' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { surfaceId, mode = 'summary', dataPath } = params as {
+        surfaceId: string
+        mode?: 'summary' | 'data' | 'components' | 'full'
+        dataPath?: string
+      }
+      const manager = getDynamicAppManager()
+      const surface = manager.getSurface(surfaceId)
+
+      if (!surface) {
+        return textResult({ ok: false, error: `Surface "${surfaceId}" does not exist.` })
+      }
+
+      const componentList = [...surface.components.values()].map((c) => ({
+        id: c.id,
+        component: c.component,
+        hasChildren: !!(c.children || c.child),
+      }))
+
+      if (mode === 'summary') {
+        return textResult({
+          ok: true,
+          surfaceId,
+          title: surface.title,
+          componentCount: surface.components.size,
+          hasRoot: surface.components.has('root'),
+          dataKeys: Object.keys(surface.dataModel),
+          apiModels: surface.apiModels?.map((m: any) => m.name) || [],
+          updatedAt: surface.updatedAt,
+        })
+      }
+
+      if (mode === 'data') {
+        if (dataPath) {
+          const { getByPointer } = await import('./dynamic-app-manager')
+          const value = getByPointer(surface.dataModel, dataPath)
+          return textResult({
+            ok: true,
+            surfaceId,
+            path: dataPath,
+            value,
+            type: Array.isArray(value) ? `array(${value.length})` : typeof value,
+          })
+        }
+        return textResult({
+          ok: true,
+          surfaceId,
+          dataModel: surface.dataModel,
+        })
+      }
+
+      if (mode === 'components') {
+        return textResult({
+          ok: true,
+          surfaceId,
+          componentCount: surface.components.size,
+          components: componentList,
+        })
+      }
+
+      // mode === 'full'
+      return textResult({
+        ok: true,
+        surfaceId,
+        title: surface.title,
+        componentCount: surface.components.size,
+        components: componentList,
+        dataModel: surface.dataModel,
+        apiModels: surface.apiModels || [],
+        createdAt: surface.createdAt,
+        updatedAt: surface.updatedAt,
+      })
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Personality Self-Update Tool
 // ---------------------------------------------------------------------------
 
@@ -1089,7 +1263,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   memory: ['memory_read', 'memory_write', 'memory_search'],
   messaging: ['send_message'],
   cron: ['cron'],
-  canvas: ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_delete', 'canvas_action_wait', 'canvas_components'],
+  canvas: ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_delete', 'canvas_action_wait', 'canvas_components', 'canvas_trigger_action', 'canvas_inspect'],
   api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query'],
   personality: ['personality_update'],
 }
@@ -1098,6 +1272,7 @@ export const ALL_TOOL_NAMES = [
   'exec', 'read_file', 'write_file', 'web_fetch', 'browser',
   'memory_read', 'memory_write', 'memory_search', 'send_message', 'cron',
   'canvas_create', 'canvas_update', 'canvas_data', 'canvas_delete', 'canvas_action_wait', 'canvas_components',
+  'canvas_trigger_action', 'canvas_inspect',
   'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query',
   'personality_update',
 ] as const
@@ -1147,6 +1322,8 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createCanvasApiSchemaTool(),
     createCanvasApiSeedTool(),
     createCanvasApiQueryTool(),
+    createCanvasTriggerActionTool(),
+    createCanvasInspectTool(),
     createPersonalityUpdateTool(ctx),
   ]
 }

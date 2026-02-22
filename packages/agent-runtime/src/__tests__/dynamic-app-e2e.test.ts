@@ -1279,3 +1279,613 @@ describe('Dynamic App E2E: Edge Cases', () => {
     expect(event).toBeNull()
   })
 })
+
+// ============================================================================
+// 11. Full CRUD Mutation Interaction Cycle
+// ============================================================================
+
+describe('Dynamic App E2E: CRUD Mutation Interaction Cycle', () => {
+  let manager: DynamicAppManager
+  const CRUD_DIR = '/tmp/test-crud-mutation-e2e'
+
+  beforeEach(() => {
+    rmSync(CRUD_DIR, { recursive: true, force: true })
+    mkdirSync(CRUD_DIR, { recursive: true })
+    manager = new DynamicAppManager(join(CRUD_DIR, 'canvas.json'))
+  })
+
+  afterEach(() => {
+    manager.clear()
+    rmSync(CRUD_DIR, { recursive: true, force: true })
+  })
+
+  test('POST mutation creates record, updates data model, and broadcasts SSE', async () => {
+    const sse = collectSSE(manager)
+
+    manager.createSurface('crud_app', 'CRUD Test')
+    manager.applyApiSchema('crud_app', [{
+      name: 'Task',
+      fields: [
+        { name: 'title', type: 'String' },
+        { name: 'done', type: 'Boolean' },
+      ],
+    }])
+    manager.seedApiData('crud_app', 'Task', [
+      { title: 'Seed task', done: false },
+    ])
+    manager.queryApiData('crud_app', 'Task', undefined, '/tasks')
+
+    const surface = manager.getSurface('crud_app')!
+    expect((surface.dataModel.tasks as any[]).length).toBe(1)
+
+    // POST mutation: add a task
+    manager.deliverAction({
+      surfaceId: 'crud_app',
+      name: 'add_task',
+      context: {
+        _mutation: {
+          endpoint: '/api/tasks',
+          method: 'POST',
+          body: { title: 'Added via interaction', done: false },
+        },
+      },
+      timestamp: new Date().toISOString(),
+    })
+    await new Promise((r) => setTimeout(r, 150))
+
+    const tasksAfterAdd = surface.dataModel.tasks as any[]
+    expect(tasksAfterAdd.length).toBe(2)
+    expect(tasksAfterAdd.map((t: any) => t.title)).toContain('Added via interaction')
+
+    // PATCH mutation: mark the new task as done
+    const newTaskId = tasksAfterAdd.find((t: any) => t.title === 'Added via interaction')?.id
+    expect(newTaskId).toBeDefined()
+
+    manager.deliverAction({
+      surfaceId: 'crud_app',
+      name: 'complete_task',
+      context: {
+        _mutation: {
+          endpoint: `/api/tasks/${newTaskId}`,
+          method: 'PATCH',
+          body: { done: true },
+        },
+      },
+      timestamp: new Date().toISOString(),
+    })
+    await new Promise((r) => setTimeout(r, 150))
+
+    const tasksAfterPatch = surface.dataModel.tasks as any[]
+    const patchedTask = tasksAfterPatch.find((t: any) => t.id === newTaskId)
+    expect(patchedTask.done).toBe(true)
+
+    // DELETE mutation: remove the seed task
+    const seedTaskId = tasksAfterPatch.find((t: any) => t.title === 'Seed task')?.id
+    manager.deliverAction({
+      surfaceId: 'crud_app',
+      name: 'delete_task',
+      context: {
+        _mutation: {
+          endpoint: `/api/tasks/${seedTaskId}`,
+          method: 'DELETE',
+        },
+      },
+      timestamp: new Date().toISOString(),
+    })
+    await new Promise((r) => setTimeout(r, 150))
+
+    const tasksAfterDelete = surface.dataModel.tasks as any[]
+    expect(tasksAfterDelete.length).toBe(1)
+    expect(tasksAfterDelete[0].title).toBe('Added via interaction')
+
+    // Verify SSE updateData messages were broadcast for each mutation
+    const updateDataMsgs = sse.filter((m) => m.type === 'updateData')
+    expect(updateDataMsgs.length).toBeGreaterThanOrEqual(4) // initial query + 3 mutations
+  })
+
+  test('multiple rapid mutations are processed in order', async () => {
+    manager.createSurface('rapid_app')
+    manager.applyApiSchema('rapid_app', [{
+      name: 'Item',
+      fields: [{ name: 'name', type: 'String' }],
+    }])
+
+    // Fire 5 POST mutations rapidly
+    for (let i = 0; i < 5; i++) {
+      manager.deliverAction({
+        surfaceId: 'rapid_app',
+        name: 'add_item',
+        context: {
+          _mutation: {
+            endpoint: '/api/items',
+            method: 'POST',
+            body: { name: `Item ${i}` },
+          },
+        },
+        timestamp: new Date().toISOString(),
+      })
+    }
+    await new Promise((r) => setTimeout(r, 500))
+
+    const query = manager.queryApiData('rapid_app', 'Item')
+    expect(query.ok).toBe(true)
+    expect((query as any).count).toBe(5)
+  })
+})
+
+// ============================================================================
+// 12. Agent Action-Wait + Multi-Step Interaction Loop
+// ============================================================================
+
+describe('Dynamic App E2E: Multi-Step Action Wait Loop', () => {
+  let gateway: AgentGateway
+
+  beforeEach(() => {
+    setupWorkspace()
+    resetDynamicAppManager()
+  })
+
+  afterEach(async () => {
+    if (gateway) await gateway.stop()
+    rmSync(TEST_DIR, { recursive: true, force: true })
+    resetDynamicAppManager()
+  })
+
+  test('agent builds UI, waits for action, processes it, then waits again', async () => {
+    const mockStream = createMockStreamFn([
+      // Step 1: Create surface
+      buildToolUseResponse([{
+        name: 'canvas_create',
+        arguments: { surfaceId: 'quiz', title: 'Quiz App' },
+        id: 'toolu_1',
+      }]),
+      // Step 2: Add question with answer buttons
+      buildToolUseResponse([{
+        name: 'canvas_update',
+        arguments: {
+          surfaceId: 'quiz',
+          components: [
+            { id: 'root', component: 'Column', children: ['question', 'answer_a', 'answer_b'], gap: 'md' },
+            { id: 'question', component: 'Text', text: { path: '/question' }, variant: 'h3' },
+            { id: 'answer_a', component: 'Button', label: 'Option A', action: { name: 'answer', context: { choice: 'A' } } },
+            { id: 'answer_b', component: 'Button', label: 'Option B', action: { name: 'answer', context: { choice: 'B' } } },
+          ],
+        },
+        id: 'toolu_2',
+      }]),
+      // Step 3: Set question data
+      buildToolUseResponse([{
+        name: 'canvas_data',
+        arguments: { surfaceId: 'quiz', path: '/question', value: 'What is 2+2?' },
+        id: 'toolu_3',
+      }]),
+      // Step 4: Wait for user answer
+      buildToolUseResponse([{
+        name: 'canvas_action_wait',
+        arguments: { surfaceId: 'quiz', actionName: 'answer', timeoutSeconds: 5 },
+        id: 'toolu_4',
+      }]),
+      // Step 5: After answer, update to next question
+      buildToolUseResponse([{
+        name: 'canvas_data',
+        arguments: { surfaceId: 'quiz', path: '/question', value: 'What is 3+3?' },
+        id: 'toolu_5',
+      }]),
+      // Step 6: Wait for second answer
+      buildToolUseResponse([{
+        name: 'canvas_action_wait',
+        arguments: { surfaceId: 'quiz', actionName: 'answer', timeoutSeconds: 5 },
+        id: 'toolu_6',
+      }]),
+      // Step 7: Final response
+      buildTextResponse('Quiz complete! You answered A then B. Score: 1/2.'),
+    ])
+
+    gateway = new AgentGateway(TEST_DIR, 'test-project')
+    gateway.setStreamFn(mockStream)
+    await gateway.start()
+
+    // Deliver first answer after a short delay
+    setTimeout(() => {
+      getDynamicAppManager().deliverAction({
+        surfaceId: 'quiz',
+        name: 'answer',
+        context: { choice: 'A' },
+        timestamp: new Date().toISOString(),
+      })
+    }, 200)
+
+    // Deliver second answer after a longer delay
+    setTimeout(() => {
+      getDynamicAppManager().deliverAction({
+        surfaceId: 'quiz',
+        name: 'answer',
+        context: { choice: 'B' },
+        timestamp: new Date().toISOString(),
+      })
+    }, 600)
+
+    const response = await gateway.processChatMessage('Start a quiz')
+
+    expect(response).toContain('Quiz complete')
+    expect(response).toContain('A')
+    expect(response).toContain('B')
+
+    // Verify the data model was updated through both questions
+    const mgr = getDynamicAppManager()
+    const surface = mgr.getSurface('quiz')!
+    expect(getByPointer(surface.dataModel, '/question')).toBe('What is 3+3?')
+  })
+})
+
+// ============================================================================
+// 13. Agent Self-Testing via canvas_trigger_action + canvas_inspect
+// ============================================================================
+
+describe('Dynamic App E2E: Agent Self-Testing Tools', () => {
+  let gateway: AgentGateway
+
+  beforeEach(() => {
+    setupWorkspace()
+    resetDynamicAppManager()
+    // Clean runtime DBs to avoid stale data from previous runs
+    rmSync(join(process.cwd(), '.dynamic-app-runtimes'), { recursive: true, force: true })
+  })
+
+  afterEach(async () => {
+    if (gateway) await gateway.stop()
+    rmSync(TEST_DIR, { recursive: true, force: true })
+    resetDynamicAppManager()
+  })
+
+  test('agent builds CRUD app, triggers mutation, then inspects result', async () => {
+    const mockStream = createMockStreamFn([
+      // Step 1: Create surface + define API schema (batched)
+      buildToolUseResponse([
+        {
+          name: 'canvas_create',
+          arguments: { surfaceId: 'todo_test', title: 'Todo Test' },
+          id: 'toolu_1',
+        },
+        {
+          name: 'canvas_api_schema',
+          arguments: {
+            surfaceId: 'todo_test',
+            models: [{
+              name: 'Todo',
+              fields: [
+                { name: 'title', type: 'String' },
+                { name: 'done', type: 'Boolean' },
+              ],
+            }],
+            reset: true,
+          },
+          id: 'toolu_2',
+        },
+      ]),
+      // Step 2: Seed + query + build UI (batched)
+      buildToolUseResponse([
+        {
+          name: 'canvas_api_seed',
+          arguments: {
+            surfaceId: 'todo_test',
+            model: 'Todo',
+            records: [{ title: 'Buy milk', done: false }],
+          },
+          id: 'toolu_3',
+        },
+        {
+          name: 'canvas_api_query',
+          arguments: { surfaceId: 'todo_test', model: 'Todo', dataPath: '/todos' },
+          id: 'toolu_4',
+        },
+        {
+          name: 'canvas_update',
+          arguments: {
+            surfaceId: 'todo_test',
+            components: [
+              { id: 'root', component: 'Column', children: ['list'], gap: 'md' },
+              { id: 'list', component: 'DataList', children: { path: '/todos', templateId: 'todo_item' }, emptyText: 'No todos' },
+              { id: 'todo_item', component: 'Card', child: 'todo_row' },
+              { id: 'todo_row', component: 'Row', children: ['todo_title', 'delete_btn'], align: 'center', justify: 'between' },
+              { id: 'todo_title', component: 'Text', text: { path: 'title' } },
+              { id: 'delete_btn', component: 'Button', label: 'Delete', variant: 'destructive', action: { name: 'delete_todo' } },
+            ],
+          },
+          id: 'toolu_5',
+        },
+      ]),
+      // Step 3: Self-test — trigger add mutation
+      buildToolUseResponse([{
+        name: 'canvas_trigger_action',
+        arguments: {
+          surfaceId: 'todo_test',
+          actionName: 'add_todo',
+          context: {
+            _mutation: {
+              endpoint: '/api/todos',
+              method: 'POST',
+              body: { title: 'Self-test todo', done: false },
+            },
+          },
+        },
+        id: 'toolu_6',
+      }]),
+      // Step 4: Inspect to verify
+      buildToolUseResponse([{
+        name: 'canvas_inspect',
+        arguments: { surfaceId: 'todo_test', mode: 'data', dataPath: '/todos' },
+        id: 'toolu_7',
+      }]),
+      // Step 5: Report results
+      buildTextResponse('Built and tested the todo app. After triggering an add action, I verified 2 todos exist in the data model. The CRUD interactions are working correctly.'),
+    ])
+
+    gateway = new AgentGateway(TEST_DIR, 'test-project')
+    gateway.setStreamFn(mockStream)
+    await gateway.start()
+
+    const response = await gateway.processChatMessage('Build a todo app and test it')
+
+    expect(response).toContain('todo')
+    expect(response).toContain('working')
+
+    // Verify the state
+    const mgr = getDynamicAppManager()
+    const surface = mgr.getSurface('todo_test')!
+    expect(surface.components.size).toBe(6)
+
+    const todos = surface.dataModel.todos as any[]
+    expect(todos.length).toBe(2)
+    expect(todos.map((t: any) => t.title)).toContain('Self-test todo')
+    expect(todos.map((t: any) => t.title)).toContain('Buy milk')
+  })
+
+  test('canvas_inspect returns correct data for all modes', async () => {
+    const mockStream = createMockStreamFn([
+      buildToolUseResponse([{
+        name: 'canvas_create',
+        arguments: { surfaceId: 'inspect_test', title: 'Inspect Test' },
+        id: 'toolu_1',
+      }]),
+      buildToolUseResponse([{
+        name: 'canvas_update',
+        arguments: {
+          surfaceId: 'inspect_test',
+          components: [
+            { id: 'root', component: 'Column', children: ['metric'] },
+            { id: 'metric', component: 'Metric', label: 'Users', value: { path: '/users' } },
+          ],
+        },
+        id: 'toolu_2',
+      }]),
+      buildToolUseResponse([{
+        name: 'canvas_data',
+        arguments: { surfaceId: 'inspect_test', path: '/', value: { users: 42, items: [1, 2, 3] } },
+        id: 'toolu_3',
+      }]),
+      // Inspect summary
+      buildToolUseResponse([{
+        name: 'canvas_inspect',
+        arguments: { surfaceId: 'inspect_test', mode: 'summary' },
+        id: 'toolu_4',
+      }]),
+      // Inspect data at specific path
+      buildToolUseResponse([{
+        name: 'canvas_inspect',
+        arguments: { surfaceId: 'inspect_test', mode: 'data', dataPath: '/users' },
+        id: 'toolu_5',
+      }]),
+      // Inspect components
+      buildToolUseResponse([{
+        name: 'canvas_inspect',
+        arguments: { surfaceId: 'inspect_test', mode: 'components' },
+        id: 'toolu_6',
+      }]),
+      buildTextResponse('Inspection complete: 2 components, users=42, items=[1,2,3].'),
+    ])
+
+    gateway = new AgentGateway(TEST_DIR, 'test-project')
+    gateway.setStreamFn(mockStream)
+    await gateway.start()
+
+    const response = await gateway.processChatMessage('Create a surface and inspect it')
+
+    expect(response).toContain('Inspection complete')
+
+    const mgr = getDynamicAppManager()
+    const surface = mgr.getSurface('inspect_test')!
+    expect(surface.components.size).toBe(2)
+    expect(getByPointer(surface.dataModel, '/users')).toBe(42)
+  })
+
+  test('canvas_trigger_action on non-existent surface returns error', async () => {
+    const mockStream = createMockStreamFn([
+      buildToolUseResponse([{
+        name: 'canvas_trigger_action',
+        arguments: { surfaceId: 'ghost', actionName: 'click' },
+        id: 'toolu_1',
+      }]),
+      buildTextResponse('The surface does not exist.'),
+    ])
+
+    gateway = new AgentGateway(TEST_DIR, 'test-project')
+    gateway.setStreamFn(mockStream)
+    await gateway.start()
+
+    const response = await gateway.processChatMessage('Trigger an action on a non-existent surface')
+    expect(response).toContain('does not exist')
+  })
+
+  test('canvas_inspect on non-existent surface returns error', async () => {
+    const mockStream = createMockStreamFn([
+      buildToolUseResponse([{
+        name: 'canvas_inspect',
+        arguments: { surfaceId: 'ghost', mode: 'summary' },
+        id: 'toolu_1',
+      }]),
+      buildTextResponse('Surface not found.'),
+    ])
+
+    gateway = new AgentGateway(TEST_DIR, 'test-project')
+    gateway.setStreamFn(mockStream)
+    await gateway.start()
+
+    const response = await gateway.processChatMessage('Inspect a non-existent surface')
+    expect(response).toContain('not found')
+  })
+})
+
+// ============================================================================
+// 14. DataList Mutation Parameter Resolution
+// ============================================================================
+
+describe('Dynamic App E2E: DataList Mutation Parameter Resolution', () => {
+  let manager: DynamicAppManager
+  const DL_DIR = '/tmp/test-datalist-mutation-e2e'
+
+  beforeEach(() => {
+    rmSync(DL_DIR, { recursive: true, force: true })
+    mkdirSync(DL_DIR, { recursive: true })
+    manager = new DynamicAppManager(join(DL_DIR, 'canvas.json'))
+  })
+
+  afterEach(() => {
+    manager.clear()
+    rmSync(DL_DIR, { recursive: true, force: true })
+  })
+
+  test('mutation with resolved :id param correctly targets individual record', async () => {
+    manager.createSurface('dl_app', 'DataList CRUD')
+    manager.applyApiSchema('dl_app', [{
+      name: 'Contact',
+      fields: [
+        { name: 'name', type: 'String' },
+        { name: 'email', type: 'String' },
+      ],
+    }])
+    manager.seedApiData('dl_app', 'Contact', [
+      { name: 'Alice', email: 'alice@test.com' },
+      { name: 'Bob', email: 'bob@test.com' },
+      { name: 'Charlie', email: 'charlie@test.com' },
+    ])
+    manager.queryApiData('dl_app', 'Contact', undefined, '/contacts')
+
+    const surface = manager.getSurface('dl_app')!
+    const contacts = surface.dataModel.contacts as any[]
+    expect(contacts.length).toBe(3)
+
+    // Simulate the resolved action the frontend would produce:
+    // The frontend resolves { path: "id" } in the DataList template scope
+    // to the actual item's id, then builds the final _mutation context.
+    const bobId = contacts.find((c: any) => c.name === 'Bob')!.id
+
+    // DELETE Bob via resolved mutation (as the frontend would send)
+    manager.deliverAction({
+      surfaceId: 'dl_app',
+      name: 'delete_contact',
+      context: {
+        _mutation: {
+          endpoint: `/api/contacts/${bobId}`,
+          method: 'DELETE',
+        },
+      },
+      timestamp: new Date().toISOString(),
+    })
+    await new Promise((r) => setTimeout(r, 150))
+
+    const contactsAfterDelete = surface.dataModel.contacts as any[]
+    expect(contactsAfterDelete.length).toBe(2)
+    expect(contactsAfterDelete.map((c: any) => c.name)).toEqual(['Alice', 'Charlie'])
+
+    // PATCH Alice via resolved mutation
+    const aliceId = contactsAfterDelete.find((c: any) => c.name === 'Alice')!.id
+    manager.deliverAction({
+      surfaceId: 'dl_app',
+      name: 'update_contact',
+      context: {
+        _mutation: {
+          endpoint: `/api/contacts/${aliceId}`,
+          method: 'PATCH',
+          body: { email: 'alice@updated.com' },
+        },
+      },
+      timestamp: new Date().toISOString(),
+    })
+    await new Promise((r) => setTimeout(r, 150))
+
+    const contactsAfterPatch = surface.dataModel.contacts as any[]
+    const updatedAlice = contactsAfterPatch.find((c: any) => c.name === 'Alice')
+    expect(updatedAlice.email).toBe('alice@updated.com')
+  })
+
+  test('POST mutation with body referencing data model values', async () => {
+    manager.createSurface('form_app', 'Form App')
+    manager.applyApiSchema('form_app', [{
+      name: 'Note',
+      fields: [{ name: 'content', type: 'String' }],
+    }])
+
+    // Set form input value in data model (simulates TextField with dataPath)
+    manager.updateData('form_app', '/newNote', 'Hello from form!')
+
+    const surface = manager.getSurface('form_app')!
+    expect(getByPointer(surface.dataModel, '/newNote')).toBe('Hello from form!')
+
+    // POST mutation with body resolved from data model (frontend resolves { path: "/newNote" })
+    manager.deliverAction({
+      surfaceId: 'form_app',
+      name: 'add_note',
+      context: {
+        _mutation: {
+          endpoint: '/api/notes',
+          method: 'POST',
+          body: { content: 'Hello from form!' },
+        },
+      },
+      timestamp: new Date().toISOString(),
+    })
+    await new Promise((r) => setTimeout(r, 150))
+
+    const query = manager.queryApiData('form_app', 'Note')
+    expect(query.ok).toBe(true)
+    expect((query as any).items[0].content).toBe('Hello from form!')
+  })
+
+  test('collection endpoint derivation for PATCH and DELETE', async () => {
+    manager.createSurface('derive_app')
+    manager.applyApiSchema('derive_app', [{
+      name: 'Task',
+      fields: [{ name: 'title', type: 'String' }],
+    }])
+    manager.seedApiData('derive_app', 'Task', [
+      { title: 'Task A' },
+      { title: 'Task B' },
+    ])
+    manager.queryApiData('derive_app', 'Task', undefined, '/tasks')
+
+    const surface = manager.getSurface('derive_app')!
+    const tasks = surface.dataModel.tasks as any[]
+    const taskAId = tasks.find((t: any) => t.title === 'Task A')!.id
+
+    // PATCH uses /api/tasks/:id → collection endpoint should be /api/tasks
+    manager.deliverAction({
+      surfaceId: 'derive_app',
+      name: 'update',
+      context: {
+        _mutation: {
+          endpoint: `/api/tasks/${taskAId}`,
+          method: 'PATCH',
+          body: { title: 'Task A Updated' },
+        },
+      },
+      timestamp: new Date().toISOString(),
+    })
+    await new Promise((r) => setTimeout(r, 150))
+
+    // Verify data model at /tasks was refreshed with the collection data
+    const tasksAfterPatch = surface.dataModel.tasks as any[]
+    expect(tasksAfterPatch.length).toBe(2)
+    expect(tasksAfterPatch.find((t: any) => t.id === taskAId)?.title).toBe('Task A Updated')
+  })
+})

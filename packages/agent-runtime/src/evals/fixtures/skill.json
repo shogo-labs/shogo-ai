@@ -2,7 +2,7 @@
   "_meta": {
     "track": "skill",
     "generated": true,
-    "generated_at": "2026-02-21T13:05:56.458Z",
+    "generated_at": "2026-02-22T03:21:56.376Z",
     "description": "Skill matching + skill creation examples — derived from skills.ts",
     "sources": [
       "packages/agent-runtime/src/skills.ts"
@@ -24,6 +24,8 @@
       "canvas_delete",
       "canvas_action_wait",
       "canvas_components",
+      "canvas_trigger_action",
+      "canvas_inspect",
       "canvas_api_schema",
       "canvas_api_seed",
       "canvas_api_query",

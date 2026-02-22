@@ -17,7 +17,7 @@ export const PERSONALITY_EVALS: AgentEval[] = [
     name: 'Personality: Adjust tone when corrected',
     category: 'personality',
     level: 2,
-    input: 'From now on, always be more formal and professional in your responses. No casual language. Update your personality to reflect this.',
+    input: 'From now on, I need you to be more formal and professional. No casual language — this is for a client-facing project.',
     maxScore: 100,
     validationCriteria: [
       {
@@ -93,7 +93,7 @@ export const PERSONALITY_EVALS: AgentEval[] = [
     name: 'Personality: Set agent name and role',
     category: 'personality',
     level: 2,
-    input: 'Your name should be "Atlas" and your role is a research assistant specializing in climate science. Update your identity.',
+    input: 'I\'d like you to go by "Atlas" and focus on climate science research going forward.',
     maxScore: 100,
     validationCriteria: [
       {
@@ -139,7 +139,7 @@ export const PERSONALITY_EVALS: AgentEval[] = [
     name: 'Personality: Set domain expertise',
     category: 'personality',
     level: 2,
-    input: 'You are now a senior DevOps engineer. You should always think about infrastructure costs, security implications, and deployment reliability. Update your personality.',
+    input: 'You\'re my DevOps guy now. I need you thinking about infra costs, security, and deployment reliability in everything we do.',
     maxScore: 100,
     validationCriteria: [
       {
@@ -196,7 +196,7 @@ export const PERSONALITY_EVALS: AgentEval[] = [
     name: 'Personality: Set safety boundaries',
     category: 'personality',
     level: 2,
-    input: 'Never execute shell commands without asking me first. Never access production databases directly. Always suggest a dry-run before destructive operations. Update your guidelines.',
+    input: 'Hey, new rules: never run shell commands without asking me, stay away from production databases, and always suggest a dry-run before anything destructive.',
     maxScore: 100,
     validationCriteria: [
       {

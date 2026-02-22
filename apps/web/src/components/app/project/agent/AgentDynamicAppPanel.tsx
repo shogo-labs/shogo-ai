@@ -5,12 +5,19 @@
  * all active surfaces. Supports per-project theme switching for the canvas.
  */
 
-import { useState, useEffect, useMemo, type CSSProperties } from 'react'
+import { useState, useEffect, useMemo, useRef, type CSSProperties } from 'react'
 import { cn } from '@/lib/utils'
 import { LayoutDashboard, Wifi, WifiOff, RefreshCw } from 'lucide-react'
 import { useDynamicAppStream } from './dynamic-app/use-dynamic-app-stream'
-import { MultiSurfaceRenderer } from './dynamic-app/DynamicAppRenderer'
+import { DynamicAppRenderer } from './dynamic-app/DynamicAppRenderer'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { ThemeSelector } from '@/components/app/shared/ThemeSelector'
 import { getThemeById, getDefaultTheme } from '@/lib/themes/presets'
 import type { ThemeColors } from '@/lib/themes/types'
@@ -143,6 +150,38 @@ export function AgentDynamicAppPanel({ projectId, visible, localAgentUrl }: Agen
     visible ? agentUrl : null
   )
 
+  const [selectedSurfaceId, setSelectedSurfaceId] = useState<string | null>(null)
+  const prevSurfaceIdsRef = useRef<Set<string>>(new Set())
+
+  const surfaceList = useMemo(() => [...surfaces.values()], [surfaces])
+
+  // Auto-select the most recently added surface
+  useEffect(() => {
+    const currentIds = new Set(surfaces.keys())
+
+    // Find newly added surfaces
+    for (const id of currentIds) {
+      if (!prevSurfaceIdsRef.current.has(id)) {
+        setSelectedSurfaceId(id)
+        break
+      }
+    }
+
+    // If selected surface was deleted, fall back to the last surface
+    if (selectedSurfaceId && !currentIds.has(selectedSurfaceId)) {
+      const ids = [...currentIds]
+      setSelectedSurfaceId(ids.length > 0 ? ids[ids.length - 1] : null)
+    }
+
+    // If nothing selected yet but surfaces exist, select the first
+    if (!selectedSurfaceId && currentIds.size > 0) {
+      setSelectedSurfaceId([...currentIds][0])
+    }
+
+    prevSurfaceIdsRef.current = currentIds
+  }, [surfaces, selectedSurfaceId])
+
+  const activeSurface = selectedSurfaceId ? surfaces.get(selectedSurfaceId) : null
   const hasSurfaces = surfaces.size > 0
 
   return (
@@ -151,11 +190,21 @@ export function AgentDynamicAppPanel({ projectId, visible, localAgentUrl }: Agen
       <div className="flex items-center justify-between px-3 py-1.5 border-b bg-muted/30 shrink-0">
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <LayoutDashboard className="size-3.5" />
-          <span>Canvas</span>
-          {surfaces.size > 0 && (
-            <span className="text-muted-foreground/60">
-              ({surfaces.size} surface{surfaces.size !== 1 ? 's' : ''})
-            </span>
+          {surfaceList.length > 1 && selectedSurfaceId ? (
+            <Select value={selectedSurfaceId} onValueChange={setSelectedSurfaceId}>
+              <SelectTrigger className="h-6 text-xs gap-1 border-none bg-transparent shadow-none px-1 py-0 min-w-0 w-auto">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {surfaceList.map((s) => (
+                  <SelectItem key={s.surfaceId} value={s.surfaceId} className="text-xs">
+                    {s.title || s.surfaceId}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <span>{activeSurface?.title || 'Canvas'}</span>
           )}
         </div>
         <div className="flex items-center gap-2">
@@ -188,10 +237,10 @@ export function AgentDynamicAppPanel({ projectId, visible, localAgentUrl }: Agen
 
       {/* Content Area — scoped theme via CSS variables */}
       <div className="flex-1 overflow-hidden rounded-b-lg" style={canvasThemeStyle}>
-        {hasSurfaces ? (
+        {hasSurfaces && activeSurface ? (
           <ScrollArea className="h-full">
-            <MultiSurfaceRenderer
-              surfaces={surfaces}
+            <DynamicAppRenderer
+              surface={activeSurface}
               agentUrl={agentUrl}
               onAction={dispatchAction}
               onDataChange={updateLocalData}

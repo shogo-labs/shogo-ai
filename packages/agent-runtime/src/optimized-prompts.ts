@@ -4,7 +4,7 @@
  * These prompt sections were generated from DSPy-optimized few-shot demos.
  * DO NOT EDIT MANUALLY — re-run the optimization pipeline and apply script instead.
  *
- * Generated: 2026-02-21T18:19:15.928Z
+ * Generated: 2026-02-22T03:34:21.720Z
  * Source: 14 optimized programs from DSPy bootstrap optimization
  */
 
@@ -62,7 +62,7 @@ in fewer LLM iterations by batching independent tool calls.
 - "Check the deploy log and write a summary report" → \`read_file, write_file\` (~1 iteration)
 - "Convert data.csv to JSON format and save it" → \`read_file, exec, write_file\` (~1 iteration)
 - "Notify the Discord channel that v2.4.0 has been deployed" → \`send_message\` (~1 iteration) (batchable)
-- "Build me a task tracker where I can add, complete, and delete tasks" → \`canvas_api_schema, canvas_create, canvas_components, canvas_update\` (~1 iteration) (batchable)`
+- "Build me a task tracker where I can add, complete, and delete tasks" → \`canvas_create, canvas_data, canvas_components, canvas_trigger_action\` (~1 iteration)`
 
 export const OPTIMIZED_SESSION_SUMMARY_GUIDE = `### Session Summarization Guide
 

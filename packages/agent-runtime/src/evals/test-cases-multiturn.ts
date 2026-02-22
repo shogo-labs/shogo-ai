@@ -20,7 +20,7 @@ export const MULTITURN_EVALS: AgentEval[] = [
     conversationHistory: [
       {
         role: 'user',
-        content: 'Create a simple counter canvas that shows a count starting at 0.',
+        content: 'Show me a counter starting at 0.',
       },
     ],
     input: 'Now update the counter to show 42 instead of 0.',
@@ -62,7 +62,7 @@ export const MULTITURN_EVALS: AgentEval[] = [
         content: 'Remember that I always want weather in Celsius, not Fahrenheit.',
       },
     ],
-    input: 'What\'s a nice way to display the current temperature of 25°C on a canvas?',
+    input: 'Show me the current temperature — it\'s 25°C outside. Make it look nice.',
     maxScore: 100,
     validationCriteria: [
       {
@@ -103,14 +103,14 @@ export const MULTITURN_EVALS: AgentEval[] = [
     conversationHistory: [
       {
         role: 'user',
-        content: 'Start building me a sales dashboard canvas. Begin with just a title "Q4 Sales Dashboard".',
+        content: 'Start building me a sales dashboard. Just a title for now — "Q4 Sales Dashboard".',
       },
       {
         role: 'user',
-        content: 'Now add three Metric components: Revenue ($125K), Orders (847), Avg Order ($148).',
+        content: 'Now add our key numbers: Revenue ($125K), Orders (847), Avg Order ($148).',
       },
     ],
-    input: 'Finally, add a Chart component showing monthly trends below the metrics.',
+    input: 'Finally, add a chart showing the monthly trends below those numbers.',
     maxScore: 100,
     validationCriteria: [
       {
@@ -156,10 +156,10 @@ export const MULTITURN_EVALS: AgentEval[] = [
     conversationHistory: [
       {
         role: 'user',
-        content: 'Create a simple contact list canvas showing name, email, and phone number. Use fake data for 3 contacts.',
+        content: 'Show me a contact list with name, email, and phone — use some fake data.',
       },
     ],
-    input: 'Now make it a full CRUD app — add an API backend so I can add and delete contacts. Seed with 3 contacts.',
+    input: 'Now make it so I can actually add and delete contacts too. Keep the sample data.',
     maxScore: 100,
     validationCriteria: [
       {
@@ -208,7 +208,7 @@ export const MULTITURN_EVALS: AgentEval[] = [
         content: 'Remember that our team tracks these KPIs: MRR, churn rate, NPS score, and active users.',
       },
     ],
-    input: 'Build me a KPI dashboard canvas using the metrics I told you about. Use sample data.',
+    input: 'Now show me those KPIs in a nice visual layout with some sample numbers.',
     maxScore: 100,
     validationCriteria: [
       {
@@ -271,7 +271,7 @@ export const MULTITURN_EVALS: AgentEval[] = [
         content: 'I built a support ticket app. A new critical ticket just came in: "Production database is down" from customer Acme Corp.',
       },
     ],
-    input: 'Log this in memory as an active incident, then show me an incident status canvas with the details and a severity badge.',
+    input: 'Log this as an active incident and show me a status page with the details.',
     maxScore: 100,
     validationCriteria: [
       {
@@ -334,14 +334,14 @@ export const MULTITURN_EVALS: AgentEval[] = [
     conversationHistory: [
       {
         role: 'user',
-        content: 'Build an expense dashboard with metrics for total ($8,500) and count (34).',
+        content: 'Build an expense dashboard showing total spend ($8,500) and number of expenses (34).',
       },
       {
         role: 'user',
-        content: 'Add a breakdown by category as a Chart — categories are Travel, Software, Hardware, Food.',
+        content: 'Add a breakdown by category — Travel, Software, Hardware, and Food.',
       },
     ],
-    input: 'Now add an Alert component at the top warning that we\'re at 85% of budget. Make it yellow/warning severity.',
+    input: 'Now add a warning at the top that we\'re at 85% of budget. Make it stand out — yellow or something.',
     maxScore: 100,
     validationCriteria: [
       {
@@ -394,7 +394,7 @@ export const MULTITURN_EVALS: AgentEval[] = [
     conversationHistory: [
       {
         role: 'user',
-        content: 'Update your personality to always respond in exactly 3 bullet points, no more, no less.',
+        content: 'From now on, always respond in exactly 3 bullet points, no more, no less.',
       },
     ],
     input: 'What are the benefits of using TypeScript?',

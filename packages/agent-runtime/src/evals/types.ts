@@ -19,7 +19,7 @@ export type EvalCategory =
   | 'tool-usage'
   | 'edge-cases'
 
-export type ValidationPhase = 'intention' | 'execution'
+export type ValidationPhase = 'intention' | 'execution' | 'interaction'
 
 export interface AgentEval {
   id: string

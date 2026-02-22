@@ -55,6 +55,7 @@ import {
   configureAIProxy,
 } from '@shogo/shared-runtime'
 import { buildAgentSystemPrompt } from './system-prompt'
+import { seedWorkspaceDefaults } from './workspace-defaults'
 import { AgentGateway } from './gateway'
 import { getDynamicAppManager, initDynamicAppManager } from './dynamic-app-manager'
 import type { ActionEvent } from './dynamic-app-types'
@@ -101,76 +102,8 @@ console.log(`[agent-runtime] Agent directory: ${AGENT_DIR}`)
 // =============================================================================
 
 function ensureWorkspaceFiles(): void {
-  mkdirSync(AGENT_DIR, { recursive: true })
-  mkdirSync(join(AGENT_DIR, 'memory'), { recursive: true })
-  mkdirSync(join(AGENT_DIR, 'skills'), { recursive: true })
-
-  const defaults: Record<string, string> = {
-    'AGENTS.md': `# Agent Instructions
-
-## Core Behavior
-- Respond concisely and helpfully
-- When monitoring detects issues, alert immediately
-- Batch non-urgent updates
-
-## Priorities
-1. Urgent alerts — respond immediately
-2. Scheduled checks — run on heartbeat
-3. User messages — respond promptly
-`,
-    'SOUL.md': `# Soul
-
-You are a helpful, reliable AI agent. You communicate clearly and concisely.
-You always explain what you're about to do before taking action.
-
-## Boundaries
-- Never execute destructive commands without explicit confirmation
-- Never share credentials in channel messages
-- Respect quiet hours for non-urgent notifications
-`,
-    'IDENTITY.md': `# Identity
-
-- **Name:** Agent
-- **Emoji:** 🤖
-- **Tagline:** Your personal AI assistant
-`,
-    'USER.md': `# User
-
-- **Name:** (not set)
-- **Timezone:** UTC
-`,
-    'HEARTBEAT.md': '',
-    'TOOLS.md': `# Tools
-
-Notes about available tools and conventions for this agent.
-`,
-    'MEMORY.md': `# Memory
-
-Long-lived facts and learnings are stored here.
-`,
-    'config.json': JSON.stringify(
-      {
-        heartbeatInterval: 1800,
-        heartbeatEnabled: false,
-        quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
-        channels: [],
-        model: {
-          provider: 'anthropic',
-          name: 'claude-sonnet-4-5',
-        },
-      },
-      null,
-      2
-    ),
-  }
-
-  for (const [filename, content] of Object.entries(defaults)) {
-    const filepath = join(AGENT_DIR, filename)
-    if (!existsSync(filepath)) {
-      writeFileSync(filepath, content, 'utf-8')
-      logTiming(`Created default ${filename}`)
-    }
-  }
+  seedWorkspaceDefaults(AGENT_DIR)
+  logTiming('Workspace defaults seeded')
 }
 
 // =============================================================================

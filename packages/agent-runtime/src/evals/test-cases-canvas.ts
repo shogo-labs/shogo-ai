@@ -46,7 +46,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Build weather display',
     category: 'canvas',
     level: 1,
-    input: 'Show me the current weather for San Francisco on a canvas. Use fake data — 72°F and sunny.',
+    input: 'What\'s the weather like in San Francisco? Show me something nice — it\'s 72°F and sunny out.',
     maxScore: 100,
     validationCriteria: [
       {
@@ -104,7 +104,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Build metrics dashboard',
     category: 'canvas',
     level: 2,
-    input: 'Create a dashboard canvas showing these metrics: Total Users: 1,500, Revenue: $45,000, Active Sessions: 342. Use Metric components for each.',
+    input: 'I need to see our key business numbers at a glance — we have 1,500 users, $45,000 in revenue, and 342 active sessions.',
     maxScore: 100,
     validationCriteria: [
       {
@@ -164,48 +164,48 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Build todo app with CRUD API',
     category: 'canvas',
     level: 3,
-    input: 'Build me a todo list app on the canvas with a Table showing todos. I need to be able to add, complete, and delete todos. Set up a backend API with canvas_api_schema and seed it with 3 sample todos.',
+    input: 'I want to track my todos — adding, completing, and deleting them. Set me up with a few sample ones to start.',
     maxScore: 100,
     validationCriteria: [
       {
         id: 'used-canvas-create',
         description: 'Created a canvas surface',
-        points: 10,
+        points: 5,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_create'),
       },
       {
         id: 'used-canvas-update',
         description: 'Added UI components',
-        points: 10,
+        points: 5,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_update'),
       },
       {
         id: 'used-api-schema',
         description: 'Used canvas_api_schema to define the backend',
-        points: 20,
+        points: 15,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_api_schema'),
       },
       {
         id: 'used-api-seed',
         description: 'Used canvas_api_seed to populate initial data',
-        points: 15,
+        points: 10,
         phase: 'execution',
         validate: (r) => usedTool(r, 'canvas_api_seed'),
       },
       {
         id: 'has-table-component',
         description: 'Included a Table component for displaying todos',
-        points: 15,
+        points: 10,
         phase: 'execution',
         validate: (r) => JSON.stringify(r.toolCalls).includes('"Table"'),
       },
       {
         id: 'has-todo-model',
         description: 'API schema defines a Todo model',
-        points: 15,
+        points: 10,
         phase: 'execution',
         validate: (r) => {
           const json = JSON.stringify(r.toolCalls).toLowerCase()
@@ -213,14 +213,32 @@ export const CANVAS_EVALS: AgentEval[] = [
         },
       },
       {
-        id: 'reasonable-tool-count',
-        description: 'Completed in <= 12 tool calls',
+        id: 'used-trigger-action',
+        description: 'Used canvas_trigger_action to add a todo',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_trigger_action'),
+      },
+      {
+        id: 'used-inspect',
+        description: 'Used canvas_inspect to verify the interaction result',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 12,
+        validate: (r) => {
+          const triggerIdx = r.toolCalls.findIndex(t => t.name === 'canvas_trigger_action')
+          const inspectIdx = r.toolCalls.findIndex(t => t.name === 'canvas_inspect')
+          return triggerIdx >= 0 && inspectIdx > triggerIdx
+        },
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 18 tool calls',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 18,
       },
     ],
-    antiPatterns: ['No tool calls at all'],
+    antiPatterns: ['No tool calls at all', 'Did not verify interactions work'],
   },
 
   // ---- Level 3: Interactive canvas with action wait ----
@@ -229,27 +247,27 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Interactive button actions',
     category: 'canvas',
     level: 3,
-    input: 'Create a canvas with two buttons: "Option A" and "Option B". Each should trigger a different action when clicked. Explain what you built.',
+    input: 'I need a quick poll — give people two options, A and B, and let them pick one.',
     maxScore: 100,
     validationCriteria: [
       {
         id: 'used-canvas-create',
         description: 'Created a canvas surface',
-        points: 15,
+        points: 10,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_create'),
       },
       {
         id: 'used-canvas-update',
         description: 'Added button components',
-        points: 15,
+        points: 10,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_update'),
       },
       {
         id: 'has-button-components',
         description: 'Included Button components',
-        points: 20,
+        points: 10,
         phase: 'execution',
         validate: (r) => {
           const json = JSON.stringify(r.toolCalls)
@@ -259,7 +277,7 @@ export const CANVAS_EVALS: AgentEval[] = [
       {
         id: 'has-actions',
         description: 'Buttons have action handlers defined',
-        points: 20,
+        points: 10,
         phase: 'execution',
         validate: (r) => {
           const json = JSON.stringify(r.toolCalls)
@@ -269,7 +287,7 @@ export const CANVAS_EVALS: AgentEval[] = [
       {
         id: 'has-two-buttons',
         description: 'Created at least two buttons',
-        points: 15,
+        points: 10,
         phase: 'execution',
         validate: (r) => {
           const matches = JSON.stringify(r.toolCalls).match(/"Button"/g)
@@ -277,13 +295,32 @@ export const CANVAS_EVALS: AgentEval[] = [
         },
       },
       {
+        id: 'used-trigger-action',
+        description: 'Used canvas_trigger_action to test a button click',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_trigger_action'),
+      },
+      {
+        id: 'used-inspect',
+        description: 'Used canvas_inspect to verify the button interaction',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => {
+          const triggerIdx = r.toolCalls.findIndex(t => t.name === 'canvas_trigger_action')
+          const inspectIdx = r.toolCalls.findIndex(t => t.name === 'canvas_inspect')
+          return triggerIdx >= 0 && inspectIdx > triggerIdx
+        },
+      },
+      {
         id: 'response-explains',
-        description: 'Response explains the canvas',
+        description: 'Response explains the canvas and verification result',
         points: 15,
         phase: 'execution',
         validate: (r) => r.responseText.length > 30,
       },
     ],
+    antiPatterns: ['Did not verify button interactions work'],
   },
 
   // ---- Level 2: CRM Lead Pipeline Board (n8n lead scoring + Odin CRM) ----
@@ -292,7 +329,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: CRM lead pipeline board',
     category: 'canvas',
     level: 2,
-    input: 'Build a CRM pipeline canvas showing leads in 3 stages: New (5 leads), Qualified (3), Closed (2). Show lead name, company, and score. Use fake data.',
+    input: 'I want to see my sales pipeline. I\'ve got leads in New, Qualified, and Closed stages — show me who\'s where with their company and score.',
     maxScore: 100,
     validationCriteria: [
       {
@@ -352,7 +389,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Expense tracker dashboard',
     category: 'canvas',
     level: 2,
-    input: 'Create an expense tracker dashboard showing: total spend this month ($4,230), budget remaining ($1,770), and a Table of recent expenses with date, description, category, and amount. Use fake data.',
+    input: 'Help me see where my team\'s money is going this month. We\'ve spent $4,230 of our $6,000 budget so far. Show me the breakdown of recent expenses.',
     maxScore: 100,
     validationCriteria: [
       {
@@ -395,12 +432,12 @@ export const CANVAS_EVALS: AgentEval[] = [
       },
       {
         id: 'has-budget-data',
-        description: 'Data includes budget remaining',
+        description: 'Data includes budget info',
         points: 10,
         phase: 'execution',
         validate: (r) => {
           const json = JSON.stringify(r.toolCalls)
-          return json.includes('1770') || json.includes('1,770') || json.includes('budget')
+          return json.includes('6000') || json.includes('6,000') || json.includes('1770') || json.includes('1,770') || json.includes('budget')
         },
       },
       {
@@ -419,7 +456,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: CI/CD pipeline monitor',
     category: 'canvas',
     level: 2,
-    input: 'Build a CI/CD pipeline monitor canvas showing 4 recent deploys with status (success/failed/running), branch name, commit message, and duration. Include a Chart showing deploy frequency over the last 7 days. Use fake data.',
+    input: 'Show me our recent deployments — I want to see which ones passed and which failed, plus the trend over the last week.',
     maxScore: 100,
     validationCriteria: [
       {
@@ -489,48 +526,48 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Support ticket system with CRUD',
     category: 'canvas',
     level: 3,
-    input: 'Build a support ticket management app. I need a Table of tickets with title, priority (Low/Medium/High/Critical), status (Open/In Progress/Resolved), assignee, and created date. Set up a CRUD API and seed with 5 sample tickets.',
+    input: 'I need a way to manage support tickets. Should have priority levels and status tracking. Throw in some example tickets to start.',
     maxScore: 100,
     validationCriteria: [
       {
         id: 'used-canvas-create',
         description: 'Created a canvas surface',
-        points: 10,
+        points: 5,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_create'),
       },
       {
         id: 'used-canvas-update',
         description: 'Added UI components',
-        points: 10,
+        points: 5,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_update'),
       },
       {
         id: 'used-api-schema',
         description: 'Used canvas_api_schema to define the Ticket model',
-        points: 20,
+        points: 15,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_api_schema'),
       },
       {
         id: 'used-api-seed',
         description: 'Used canvas_api_seed to populate sample tickets',
-        points: 15,
+        points: 10,
         phase: 'execution',
         validate: (r) => usedTool(r, 'canvas_api_seed'),
       },
       {
         id: 'has-table-component',
         description: 'Included a Table for displaying tickets',
-        points: 15,
+        points: 10,
         phase: 'execution',
         validate: (r) => JSON.stringify(r.toolCalls).includes('"Table"'),
       },
       {
         id: 'has-ticket-model',
         description: 'API schema defines a Ticket model with priority and status',
-        points: 15,
+        points: 10,
         phase: 'execution',
         validate: (r) => {
           const json = JSON.stringify(r.toolCalls).toLowerCase()
@@ -538,13 +575,32 @@ export const CANVAS_EVALS: AgentEval[] = [
         },
       },
       {
-        id: 'reasonable-tool-count',
-        description: 'Completed in <= 12 tool calls',
+        id: 'used-trigger-action',
+        description: 'Used canvas_trigger_action to add a test ticket',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_trigger_action'),
+      },
+      {
+        id: 'used-inspect',
+        description: 'Used canvas_inspect to verify the ticket was created',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 12,
+        validate: (r) => {
+          const triggerIdx = r.toolCalls.findIndex(t => t.name === 'canvas_trigger_action')
+          const inspectIdx = r.toolCalls.findIndex(t => t.name === 'canvas_inspect')
+          return triggerIdx >= 0 && inspectIdx > triggerIdx
+        },
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 18 tool calls',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 18,
       },
     ],
+    antiPatterns: ['Did not verify interactions work'],
   },
 
   // ---- Level 3: Invoice Management System (n8n AI invoice agent) ----
@@ -553,48 +609,48 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Invoice management with CRUD',
     category: 'canvas',
     level: 3,
-    input: 'Build an invoice tracker app on canvas. Each invoice has a client name, amount, due date, and status (Draft/Sent/Paid/Overdue). Set up the API schema with seed data for 4 invoices and display them in a Table with a total amount Metric at the top.',
+    input: 'Help me track my invoices — client, amount, due date, and whether they\'re paid. Add a few sample invoices to start.',
     maxScore: 100,
     validationCriteria: [
       {
         id: 'used-canvas-create',
         description: 'Created a canvas surface',
-        points: 10,
+        points: 5,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_create'),
       },
       {
         id: 'used-canvas-update',
         description: 'Added UI components',
-        points: 10,
+        points: 5,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_update'),
       },
       {
         id: 'used-api-schema',
         description: 'Used canvas_api_schema to define the Invoice model',
-        points: 20,
+        points: 15,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_api_schema'),
       },
       {
         id: 'used-api-seed',
         description: 'Used canvas_api_seed to populate sample invoices',
-        points: 10,
+        points: 5,
         phase: 'execution',
         validate: (r) => usedTool(r, 'canvas_api_seed'),
       },
       {
         id: 'has-table-component',
         description: 'Included a Table for displaying invoices',
-        points: 15,
+        points: 10,
         phase: 'execution',
         validate: (r) => JSON.stringify(r.toolCalls).includes('"Table"'),
       },
       {
         id: 'has-metric-component',
         description: 'Included a Metric for the total amount',
-        points: 10,
+        points: 5,
         phase: 'execution',
         validate: (r) => JSON.stringify(r.toolCalls).includes('"Metric"'),
       },
@@ -609,13 +665,32 @@ export const CANVAS_EVALS: AgentEval[] = [
         },
       },
       {
-        id: 'reasonable-tool-count',
-        description: 'Completed in <= 12 tool calls',
+        id: 'used-trigger-action',
+        description: 'Used canvas_trigger_action to add a test invoice',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_trigger_action'),
+      },
+      {
+        id: 'used-inspect',
+        description: 'Used canvas_inspect to verify the invoice was created',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 12,
+        validate: (r) => {
+          const triggerIdx = r.toolCalls.findIndex(t => t.name === 'canvas_trigger_action')
+          const inspectIdx = r.toolCalls.findIndex(t => t.name === 'canvas_inspect')
+          return triggerIdx >= 0 && inspectIdx > triggerIdx
+        },
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 18 tool calls',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 18,
       },
     ],
+    antiPatterns: ['Did not verify interactions work'],
   },
 
   // ---- Level 3: HR Applicant Pipeline (Odin AI recruiting + n8n HR) ----
@@ -624,48 +699,48 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Recruiting pipeline with CRUD',
     category: 'canvas',
     level: 3,
-    input: 'Create a recruiting pipeline app for tracking job applicants. Each applicant has a name, position applied for, stage (Applied/Phone Screen/Interview/Offer/Hired), rating (1-5), and notes. Create the API with 4 seed applicants across different stages.',
+    input: 'I need to track job applicants through our hiring process — who applied, what role, what stage they\'re at, and how they rate. Seed it with a few sample candidates.',
     maxScore: 100,
     validationCriteria: [
       {
         id: 'used-canvas-create',
         description: 'Created a canvas surface',
-        points: 10,
+        points: 5,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_create'),
       },
       {
         id: 'used-canvas-update',
         description: 'Added UI components',
-        points: 10,
+        points: 5,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_update'),
       },
       {
         id: 'used-api-schema',
         description: 'Used canvas_api_schema to define the Applicant model',
-        points: 20,
+        points: 15,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_api_schema'),
       },
       {
         id: 'used-api-seed',
         description: 'Used canvas_api_seed to populate sample applicants',
-        points: 10,
+        points: 5,
         phase: 'execution',
         validate: (r) => usedTool(r, 'canvas_api_seed'),
       },
       {
         id: 'has-table-component',
         description: 'Included a Table for displaying applicants',
-        points: 15,
+        points: 10,
         phase: 'execution',
         validate: (r) => JSON.stringify(r.toolCalls).includes('"Table"'),
       },
       {
         id: 'has-applicant-model',
         description: 'API schema defines an Applicant model with stage and rating',
-        points: 20,
+        points: 10,
         phase: 'execution',
         validate: (r) => {
           const json = JSON.stringify(r.toolCalls).toLowerCase()
@@ -673,13 +748,32 @@ export const CANVAS_EVALS: AgentEval[] = [
         },
       },
       {
-        id: 'reasonable-tool-count',
-        description: 'Completed in <= 12 tool calls',
-        points: 15,
+        id: 'used-trigger-action',
+        description: 'Used canvas_trigger_action to add a test applicant',
+        points: 20,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 12,
+        validate: (r) => usedTool(r, 'canvas_trigger_action'),
+      },
+      {
+        id: 'used-inspect',
+        description: 'Used canvas_inspect to verify the applicant was added',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => {
+          const triggerIdx = r.toolCalls.findIndex(t => t.name === 'canvas_trigger_action')
+          const inspectIdx = r.toolCalls.findIndex(t => t.name === 'canvas_inspect')
+          return triggerIdx >= 0 && inspectIdx > triggerIdx
+        },
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 18 tool calls',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 18,
       },
     ],
+    antiPatterns: ['Did not verify interactions work'],
   },
 
   // ---- Level 4: Social Media Command Center (OpenClaw + n8n) ----
@@ -688,7 +782,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Social media analytics dashboard',
     category: 'canvas',
     level: 4,
-    input: 'Build a social media analytics dashboard. Show metrics for followers (12.5K), engagement rate (4.2%), posts this week (7). Below that, show a Chart of engagement over the last 30 days and a Table of scheduled posts with platform, content preview, scheduled time, and status. Use fake data.',
+    input: 'Show me how our social media is doing — follower count, engagement rate, and what\'s scheduled to post next. Use sample data.',
     maxScore: 100,
     validationCriteria: [
       {
@@ -765,55 +859,55 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: E-commerce order management with CRUD',
     category: 'canvas',
     level: 4,
-    input: 'Build an order management dashboard with CRUD. Show today\'s orders (23), revenue ($3,450), and pending shipments (8) as metrics. Below, a Table of orders with order number, customer, items, total, and status (Pending/Shipped/Delivered). Set up the API and seed 5 orders.',
+    input: 'I need to manage incoming orders — show me today\'s revenue, pending shipments, and the full order list. I want to be able to add new orders too. Throw in some sample data.',
     maxScore: 100,
     validationCriteria: [
       {
         id: 'used-canvas-create',
         description: 'Created a canvas surface',
-        points: 10,
+        points: 5,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_create'),
       },
       {
         id: 'used-canvas-update',
         description: 'Added UI components',
-        points: 10,
+        points: 5,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_update'),
       },
       {
         id: 'used-api-schema',
         description: 'Used canvas_api_schema to define the Order model',
-        points: 15,
+        points: 10,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_api_schema'),
       },
       {
         id: 'used-api-seed',
         description: 'Used canvas_api_seed to populate sample orders',
-        points: 10,
+        points: 5,
         phase: 'execution',
         validate: (r) => usedTool(r, 'canvas_api_seed'),
       },
       {
         id: 'has-metric-components',
         description: 'Used Metric components for KPIs',
-        points: 15,
+        points: 10,
         phase: 'execution',
         validate: (r) => JSON.stringify(r.toolCalls).includes('"Metric"'),
       },
       {
         id: 'has-table-component',
         description: 'Included a Table for displaying orders',
-        points: 10,
+        points: 5,
         phase: 'execution',
         validate: (r) => JSON.stringify(r.toolCalls).includes('"Table"'),
       },
       {
         id: 'has-order-model',
         description: 'API schema defines an Order model with status and total',
-        points: 15,
+        points: 10,
         phase: 'execution',
         validate: (r) => {
           const json = JSON.stringify(r.toolCalls).toLowerCase()
@@ -821,12 +915,290 @@ export const CANVAS_EVALS: AgentEval[] = [
         },
       },
       {
+        id: 'used-trigger-action',
+        description: 'Used canvas_trigger_action to add a test order',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_trigger_action'),
+      },
+      {
+        id: 'used-inspect',
+        description: 'Used canvas_inspect to verify the order was created',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => {
+          const triggerIdx = r.toolCalls.findIndex(t => t.name === 'canvas_trigger_action')
+          const inspectIdx = r.toolCalls.findIndex(t => t.name === 'canvas_inspect')
+          return triggerIdx >= 0 && inspectIdx > triggerIdx
+        },
+      },
+      {
         id: 'reasonable-tool-count',
-        description: 'Completed in <= 14 tool calls',
+        description: 'Completed in <= 20 tool calls',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 20,
+      },
+    ],
+    antiPatterns: ['Did not verify interactions work'],
+  },
+
+  // ====================================================================
+  // Interaction Evals — verify the agent self-tests its canvas UIs
+  // ====================================================================
+
+  // ---- Level 4: Build CRUD app + trigger action + inspect result ----
+  {
+    id: 'canvas-crud-self-test',
+    name: 'Canvas: CRUD app with self-testing via trigger+inspect',
+    category: 'canvas',
+    level: 4,
+    input: 'Build me a quick todo tracker with a couple sample items. Make sure it actually works.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-api-schema',
+        description: 'Defined API schema for todos',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_api_schema'),
+      },
+      {
+        id: 'used-api-seed',
+        description: 'Seeded sample data',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_api_seed'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Built UI components',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'used-trigger-action',
+        description: 'Used canvas_trigger_action to simulate adding a todo',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_trigger_action'),
+      },
+      {
+        id: 'used-inspect',
+        description: 'Used canvas_inspect to verify the result',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_inspect'),
+      },
+      {
+        id: 'inspect-after-trigger',
+        description: 'canvas_inspect was called after canvas_trigger_action',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const triggerIdx = r.toolCalls.findIndex(t => t.name === 'canvas_trigger_action')
+          const inspectIdx = r.toolCalls.findIndex(t => t.name === 'canvas_inspect')
+          return triggerIdx >= 0 && inspectIdx > triggerIdx
+        },
+      },
+      {
+        id: 'response-confirms-count',
+        description: 'Response mentions the total count (3 todos)',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 14,
+        validate: (r) => {
+          const text = r.responseText.toLowerCase()
+          return text.includes('3') || text.includes('three')
+        },
       },
+    ],
+    antiPatterns: ['Did not use canvas_trigger_action', 'Did not use canvas_inspect'],
+  },
+
+  // ---- Level 4: Counter app with self-testing loop ----
+  {
+    id: 'canvas-counter-self-test',
+    name: 'Canvas: Counter with trigger/inspect verification loop',
+    category: 'canvas',
+    level: 4,
+    input: 'Make me a simple counter I can click to increment. Test that it works a few times and tell me the final value.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Added counter UI components',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'has-metric-component',
+        description: 'Used a Metric component for the counter display',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => JSON.stringify(r.toolCalls).includes('"Metric"'),
+      },
+      {
+        id: 'has-button-component',
+        description: 'Included an Increment button',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => JSON.stringify(r.toolCalls).includes('"Button"'),
+      },
+      {
+        id: 'triggered-3-times',
+        description: 'Used canvas_trigger_action at least 3 times',
+        points: 25,
+        phase: 'execution',
+        validate: (r) => toolCallCount(r, 'canvas_trigger_action') >= 3,
+      },
+      {
+        id: 'used-inspect-after',
+        description: 'Used canvas_inspect after triggering',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => {
+          const lastTrigger = r.toolCalls.map((t, i) => ({ ...t, idx: i }))
+            .filter(t => t.name === 'canvas_trigger_action').pop()
+          const inspectAfter = r.toolCalls.findIndex(
+            (t, i) => t.name === 'canvas_inspect' && lastTrigger && i > lastTrigger.idx
+          )
+          return inspectAfter >= 0
+        },
+      },
+      {
+        id: 'response-has-value',
+        description: 'Response mentions the final counter value',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.responseText.length > 10,
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 16 tool calls',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 16,
+      },
+    ],
+    antiPatterns: ['Did not trigger any actions', 'Did not inspect the result'],
+  },
+
+  // ---- Level 5: Full CRUD roundtrip verification ----
+  {
+    id: 'canvas-crud-roundtrip',
+    name: 'Canvas: Full CRUD roundtrip with verification',
+    category: 'canvas',
+    level: 5,
+    input: 'Build me a contacts list where I can add, edit, and delete people — name, email, phone. Seed a couple entries, then run through each operation to make sure it all works and tell me the results.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-api-schema',
+        description: 'Defined Contact model via API schema',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_api_schema'),
+      },
+      {
+        id: 'used-api-seed',
+        description: 'Seeded 2 initial contacts',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_api_seed'),
+      },
+      {
+        id: 'trigger-create',
+        description: 'Used canvas_trigger_action with POST mutation to add a contact',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => {
+          return r.toolCalls.some(t => {
+            if (t.name !== 'canvas_trigger_action') return false
+            const json = JSON.stringify(t.input).toLowerCase()
+            return json.includes('post')
+          })
+        },
+      },
+      {
+        id: 'trigger-update',
+        description: 'Used canvas_trigger_action with PATCH/PUT mutation to update a contact',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => {
+          return r.toolCalls.some(t => {
+            if (t.name !== 'canvas_trigger_action') return false
+            const json = JSON.stringify(t.input).toLowerCase()
+            return json.includes('patch') || json.includes('put')
+          })
+        },
+      },
+      {
+        id: 'trigger-delete',
+        description: 'Used canvas_trigger_action with DELETE mutation to remove a contact',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => {
+          return r.toolCalls.some(t => {
+            if (t.name !== 'canvas_trigger_action') return false
+            const json = JSON.stringify(t.input).toLowerCase()
+            return json.includes('delete')
+          })
+        },
+      },
+      {
+        id: 'inspect-after-each',
+        description: 'Used canvas_inspect at least 3 times (after create, update, delete)',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => toolCallCount(r, 'canvas_inspect') >= 3,
+      },
+      {
+        id: 'response-reports-steps',
+        description: 'Response describes results of each CRUD step',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const text = r.responseText.toLowerCase()
+          return (text.includes('add') || text.includes('creat')) &&
+                 (text.includes('update') || text.includes('patch')) &&
+                 (text.includes('delete') || text.includes('remov'))
+        },
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 20 tool calls',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 20,
+      },
+    ],
+    antiPatterns: [
+      'Skipped verification steps',
+      'Did not use canvas_trigger_action for CRUD',
+      'Did not use canvas_inspect to verify',
     ],
   },
 ]

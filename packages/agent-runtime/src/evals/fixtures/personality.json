@@ -2,7 +2,7 @@
   "_meta": {
     "track": "personality",
     "generated": true,
-    "generated_at": "2026-02-21T13:05:56.458Z",
+    "generated_at": "2026-02-22T03:21:56.375Z",
     "description": "Agent template selection + personality self-update examples — extracted from agent-templates.ts",
     "sources": [
       "packages/agent-runtime/src/agent-templates.ts"

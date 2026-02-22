@@ -215,6 +215,170 @@ function validateCanvas(input: Record<string, unknown>): ValidationResult {
 }
 
 // ---------------------------------------------------------------------------
+// Canvas Interaction Validation
+// ---------------------------------------------------------------------------
+
+interface InteractionStep {
+  action: 'trigger' | 'inspect'
+  actionName?: string
+  mutation?: { endpoint: string; method: string; body?: unknown }
+  inspectPath?: string
+  expectCount?: number
+  expectContains?: string
+}
+
+async function validateCanvasInteraction(input: Record<string, unknown>): Promise<ValidationResult> {
+  const checks: Check[] = []
+  const errors: string[] = []
+
+  const surfaceId = String(input.surface_id || 'test-surface')
+  const componentsJson = String(input.component_tree_json || '[]')
+  const apiModelsJson = String(input.api_models_json || '[]')
+  const apiSeedJson = String(input.api_seed_json || '{}')
+  const stepsJson = String(input.interaction_steps_json || '[]')
+
+  let components: ComponentDefinition[]
+  let apiModels: ModelDefinition[] = []
+  let apiSeed: Record<string, unknown[]> = {}
+  let steps: InteractionStep[] = []
+
+  // Parse inputs
+  try {
+    components = JSON.parse(componentsJson)
+    checks.push({ name: 'components_parseable', pass: true })
+  } catch (e) {
+    errors.push(`Components JSON parse failed: ${e}`)
+    checks.push({ name: 'components_parseable', pass: false, detail: String(e) })
+    return { valid: false, score: 0, checks, errors }
+  }
+
+  try {
+    apiModels = JSON.parse(apiModelsJson)
+    checks.push({ name: 'api_models_parseable', pass: true })
+  } catch (e) {
+    checks.push({ name: 'api_models_parseable', pass: false, detail: String(e) })
+  }
+
+  try {
+    apiSeed = JSON.parse(apiSeedJson)
+    checks.push({ name: 'api_seed_parseable', pass: true })
+  } catch (e) {
+    checks.push({ name: 'api_seed_parseable', pass: false, detail: String(e) })
+  }
+
+  try {
+    steps = JSON.parse(stepsJson)
+    checks.push({ name: 'interaction_steps_parseable', pass: true })
+  } catch (e) {
+    errors.push(`Interaction steps JSON parse failed: ${e}`)
+    checks.push({ name: 'interaction_steps_parseable', pass: false, detail: String(e) })
+    return { valid: false, score: scoreChecks(checks), checks, errors }
+  }
+
+  // Build the surface
+  const manager = new DynamicAppManager()
+
+  const createResult = manager.createSurface(surfaceId, surfaceId) as Record<string, unknown>
+  checks.push({ name: 'surface_created', pass: createResult.ok === true })
+  if (!createResult.ok) {
+    errors.push(`canvas_create failed: ${createResult.error}`)
+    return { valid: false, score: scoreChecks(checks), checks, errors }
+  }
+
+  // Apply API schema and seed
+  if (apiModels.length > 0) {
+    const schemaResult = manager.applyApiSchema(surfaceId, apiModels) as Record<string, unknown>
+    checks.push({ name: 'api_schema_applied', pass: schemaResult.ok === true })
+    if (schemaResult.ok) {
+      for (const [modelName, records] of Object.entries(apiSeed)) {
+        if (Array.isArray(records) && records.length > 0) {
+          const seedResult = manager.seedApiData(surfaceId, modelName, records) as Record<string, unknown>
+          checks.push({ name: `seed_${modelName}`, pass: seedResult.ok === true })
+        }
+      }
+      // Load initial data into data model for each model
+      for (const model of apiModels) {
+        const dataPath = `/${model.name.toLowerCase()}s`
+        manager.queryApiData(surfaceId, model.name, undefined, dataPath)
+      }
+    }
+  }
+
+  // Add components
+  if (components.length > 0) {
+    const updateResult = manager.updateComponents(surfaceId, components) as Record<string, unknown>
+    checks.push({ name: 'components_added', pass: updateResult.ok === true })
+  }
+
+  // Execute interaction steps
+  let stepIdx = 0
+  for (const step of steps) {
+    stepIdx++
+    const stepLabel = `step_${stepIdx}_${step.action}`
+
+    if (step.action === 'trigger') {
+      const context: Record<string, unknown> = {}
+      if (step.mutation) {
+        context._mutation = step.mutation
+      }
+
+      manager.deliverAction({
+        surfaceId,
+        name: step.actionName || 'test_action',
+        context,
+        timestamp: new Date().toISOString(),
+      })
+
+      // Allow async mutation to complete
+      if (step.mutation) {
+        await new Promise((r) => setTimeout(r, 200))
+      }
+
+      checks.push({ name: stepLabel, pass: true, detail: `triggered ${step.actionName || 'test_action'}` })
+
+    } else if (step.action === 'inspect') {
+      const surface = manager.getSurface(surfaceId)
+      if (!surface) {
+        checks.push({ name: stepLabel, pass: false, detail: 'surface not found' })
+        errors.push(`Step ${stepIdx}: surface not found during inspection`)
+        continue
+      }
+
+      if (step.inspectPath) {
+        const value = getByPointer(surface.dataModel, step.inspectPath)
+
+        if (step.expectCount !== undefined) {
+          const isArray = Array.isArray(value)
+          const countMatch = isArray && value.length === step.expectCount
+          checks.push({
+            name: stepLabel,
+            pass: countMatch,
+            detail: isArray ? `count=${value.length}, expected=${step.expectCount}` : 'not an array',
+          })
+          if (!countMatch) {
+            errors.push(`Step ${stepIdx}: expected ${step.expectCount} items at ${step.inspectPath}, got ${isArray ? value.length : 'non-array'}`)
+          }
+        } else if (step.expectContains) {
+          const json = JSON.stringify(value).toLowerCase()
+          const found = json.includes(step.expectContains.toLowerCase())
+          checks.push({ name: stepLabel, pass: found, detail: found ? 'found' : `"${step.expectContains}" not in data` })
+          if (!found) {
+            errors.push(`Step ${stepIdx}: "${step.expectContains}" not found at ${step.inspectPath}`)
+          }
+        } else {
+          checks.push({ name: stepLabel, pass: value !== undefined, detail: value !== undefined ? 'data present' : 'undefined' })
+        }
+      } else {
+        checks.push({ name: stepLabel, pass: true, detail: `${surface.components.size} components` })
+      }
+    }
+  }
+
+  const score = scoreChecks(checks)
+  return { valid: errors.length === 0, score, checks, errors }
+}
+
+// ---------------------------------------------------------------------------
 // Skill Validation
 // ---------------------------------------------------------------------------
 
@@ -284,6 +448,7 @@ function validateMultiturnPlan(input: Record<string, unknown>): ValidationResult
     'browser', 'send_message', 'cron',
     'canvas_create', 'canvas_update', 'canvas_data',
     'canvas_delete', 'canvas_action_wait', 'canvas_components',
+    'canvas_trigger_action', 'canvas_inspect',
     'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query',
     'personality_update',
   ])
@@ -436,6 +601,9 @@ async function main() {
   switch (track) {
     case 'canvas':
       result = validateCanvas(input)
+      break
+    case 'canvas_interaction':
+      result = await validateCanvasInteraction(input)
       break
     case 'skill_create':
       result = validateSkill(input)

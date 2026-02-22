@@ -2,7 +2,7 @@
   "_meta": {
     "track": "canvas",
     "generated": true,
-    "generated_at": "2026-02-21T13:05:56.457Z",
+    "generated_at": "2026-02-22T03:21:56.375Z",
     "description": "Canvas UI creation examples — extracted from dynamic-app-e2e.test.ts + managed-api-runtime.test.ts",
     "sources": [
       "packages/agent-runtime/src/__tests__/dynamic-app-e2e.test.ts",

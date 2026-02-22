@@ -17,6 +17,7 @@ import { execSync } from 'child_process'
 import { mkdirSync, rmSync, existsSync, writeFileSync } from 'fs'
 import { resolve } from 'path'
 import { runEval } from './runner'
+import { resetWorkspaceDefaults } from '../workspace-defaults'
 import { CANVAS_EVALS } from './test-cases-canvas'
 import { MEMORY_EVALS } from './test-cases-memory'
 import { PERSONALITY_EVALS } from './test-cases-personality'
@@ -88,9 +89,7 @@ async function startWorker(id: number): Promise<Worker> {
   const dir = `/tmp/agent-eval-worker-${id}`
 
   if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
-  mkdirSync(dir, { recursive: true })
-  mkdirSync(`${dir}/memory`, { recursive: true })
-  mkdirSync(`${dir}/skills`, { recursive: true })
+  resetWorkspaceDefaults(dir)
 
   console.log(`  Starting worker ${id} on port ${port}...`)
 
@@ -159,11 +158,9 @@ async function runEvalOnWorker(
   index: number,
   total: number,
 ): Promise<EvalResult> {
-  // Clean workspace between evals
+  // Clean workspace between evals and re-seed base personality
   try { execSync(`rm -rf ${worker.dir}/* 2>/dev/null || true`, { stdio: 'pipe' }) } catch {}
-  mkdirSync(worker.dir, { recursive: true })
-  mkdirSync(`${worker.dir}/memory`, { recursive: true })
-  mkdirSync(`${worker.dir}/skills`, { recursive: true })
+  resetWorkspaceDefaults(worker.dir)
 
   const startTime = Date.now()
   console.log(`[${index + 1}/${total}] Worker ${worker.id}: ${ev.name}`)

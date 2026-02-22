@@ -68,7 +68,7 @@ export const MEMORY_EVALS: AgentEval[] = [
     conversationHistory: [
       { role: 'user', content: 'Please remember that my dog\'s name is Milo and he\'s a golden retriever.' },
     ],
-    input: 'What\'s my dog\'s name? Check your memory if you don\'t remember.',
+    input: 'What\'s my dog\'s name again?',
     maxScore: 100,
     validationCriteria: [
       {
@@ -273,7 +273,7 @@ export const MEMORY_EVALS: AgentEval[] = [
     conversationHistory: [
       { role: 'user', content: 'We agreed on this deployment process: 1) Create a PR to staging, 2) Run the e2e suite, 3) Get sign-off from the on-call engineer, 4) Merge to main which auto-deploys to production.' },
     ],
-    input: 'What deployment process did we agree on last time? Check your memory.',
+    input: 'What deployment process did we agree on last time?',
     maxScore: 100,
     validationCriteria: [
       {

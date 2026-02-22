@@ -2,7 +2,7 @@
   "_meta": {
     "track": "multiturn",
     "generated": true,
-    "generated_at": "2026-02-21T13:05:56.458Z",
+    "generated_at": "2026-02-22T03:21:56.376Z",
     "description": "Multi-turn conversation planning + session summarization — extracted from e2e-scenarios.test.ts",
     "sources": [
       "packages/agent-runtime/src/__tests__/e2e-scenarios.test.ts",
@@ -10,7 +10,7 @@
     ]
   },
   "constants": {
-    "available_tools": "exec, read_file, write_file, web_fetch, browser, memory_read, memory_write, memory_search, send_message, cron, canvas_create, canvas_update, canvas_data, canvas_delete, canvas_action_wait, canvas_components, canvas_api_schema, canvas_api_seed, canvas_api_query, personality_update"
+    "available_tools": "exec, read_file, write_file, web_fetch, browser, memory_read, memory_write, memory_search, send_message, cron, canvas_create, canvas_update, canvas_data, canvas_delete, canvas_action_wait, canvas_components, canvas_trigger_action, canvas_inspect, canvas_api_schema, canvas_api_seed, canvas_api_query, personality_update"
   },
   "examples": [
     {
