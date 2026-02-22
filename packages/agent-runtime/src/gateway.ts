@@ -213,6 +213,15 @@ export class AgentGateway {
   private _onLog?: (line: string) => void
   /** Per-section prompt overrides set by DSPy optimization via POST /agent/prompt-override */
   private promptOverrides = new Map<string, string>()
+  /** Usage from the most recent agentTurn (consumed by server.ts for the finish event) */
+  private _lastTurnUsage: {
+    inputTokens: number
+    outputTokens: number
+    cacheReadTokens: number
+    cacheWriteTokens: number
+    iterations: number
+    toolCallCount: number
+  } | null = null
 
   constructor(workspaceDir: string, projectId: string) {
     this.workspaceDir = workspaceDir
@@ -236,6 +245,13 @@ export class AgentGateway {
   /** Set a log callback for forwarding gateway events to the UI Logs tab */
   setLogCallback(fn: (line: string) => void): void {
     this._onLog = fn
+  }
+
+  /** Consume usage data from the most recent agent turn (returns null if none available) */
+  consumeLastTurnUsage() {
+    const usage = this._lastTurnUsage
+    this._lastTurnUsage = null
+    return usage
   }
 
   /** Replace prompt sections at runtime (used by DSPy optimization pipeline) */
@@ -714,22 +730,28 @@ export class AgentGateway {
     return content.includes('Respond concisely and helpfully') && content.includes('# Agent Instructions')
   }
 
+  private buildSetupPrompt(userText: string): string {
+    return `[Agent Setup — First Message]\nThis is a brand new agent that has not been configured yet. The user's message below describes what they want the agent to do. Use your tools to set up the agent:\n\n1. Write IDENTITY.md with a fitting name, emoji, and tagline\n2. Write SOUL.md with personality, tone, and boundaries appropriate for this use case\n3. Write AGENTS.md with specific operating instructions and priorities (IMPORTANT: replace the default content)\n4. Write HEARTBEAT.md with a relevant checklist if the agent should run autonomously\n5. Create any relevant skills in the skills/ directory\n6. Update config.json if heartbeat should be enabled\n\nAfter setting up, give the user a brief summary of what you configured.\n\n[User Message]\n${userText}`
+  }
+
+  private buildChatPrompt(text: string): string {
+    const matchedSkill = matchSkill(this.skills, text)
+    if (matchedSkill) {
+      this.emitLog(`Matched skill: ${matchedSkill.name}`)
+      return `[Skill: ${matchedSkill.name}]\n${matchedSkill.content}\n\n[User Message]\n${text}`
+    }
+    return `[Chat — User Message]\nThis is a direct message from a user, NOT a heartbeat trigger. Respond conversationally and helpfully. Do NOT respond with HEARTBEAT_OK.\n\n${text}`
+  }
+
   async processChatMessage(text: string): Promise<string> {
     this.emitLog(`Chat message received: "${text.substring(0, 100)}"`)
 
+    const prompt = this.isUnconfigured()
+      ? this.buildSetupPrompt(text)
+      : this.buildChatPrompt(text)
+
     if (this.isUnconfigured()) {
-      this.emitLog('Agent is not configured — returning setup guidance')
-      return 'This agent has not been configured yet. Describe what you want your agent to do and it will set up the identity, skills, and heartbeat for you.'
-    }
-
-    const matchedSkill = matchSkill(this.skills, text)
-    let prompt: string
-
-    if (matchedSkill) {
-      this.emitLog(`Matched skill: ${matchedSkill.name}`)
-      prompt = `[Skill: ${matchedSkill.name}]\n${matchedSkill.content}\n\n[User Message]\n${text}`
-    } else {
-      prompt = `[Chat — User Message]\nThis is a direct message from a user, NOT a heartbeat trigger. Respond conversationally and helpfully. Do NOT respond with HEARTBEAT_OK.\n\n${text}`
+      this.emitLog('Agent is not configured — running setup from user message')
     }
 
     const response = await this.agentTurn(prompt, 'chat')
@@ -770,24 +792,12 @@ export class AgentGateway {
     }
     this.emitLog(`Chat message received (stream): "${text.substring(0, 100)}"`)
 
+    const prompt = this.isUnconfigured()
+      ? this.buildSetupPrompt(text)
+      : this.buildChatPrompt(text)
+
     if (this.isUnconfigured()) {
-      this.emitLog('Agent is not configured — returning setup guidance')
-      const msg = 'This agent has not been configured yet. Describe what you want your agent to do and it will set up the identity, skills, and heartbeat for you.'
-      const tid = `text-${Date.now()}`
-      writer.write({ type: 'text-start', id: tid })
-      writer.write({ type: 'text-delta', id: tid, delta: msg })
-      writer.write({ type: 'text-end', id: tid })
-      return
-    }
-
-    const matchedSkill = matchSkill(this.skills, text)
-    let prompt: string
-
-    if (matchedSkill) {
-      this.emitLog(`Matched skill: ${matchedSkill.name}`)
-      prompt = `[Skill: ${matchedSkill.name}]\n${matchedSkill.content}\n\n[User Message]\n${text}`
-    } else {
-      prompt = `[Chat — User Message]\nThis is a direct message from a user, NOT a heartbeat trigger. Respond conversationally and helpfully. Do NOT respond with HEARTBEAT_OK.\n\n${text}`
+      this.emitLog('Agent is not configured — running setup from user message')
     }
 
     const response = await this.agentTurn(prompt, 'chat', false, undefined, writer)
@@ -975,17 +985,14 @@ export class AgentGateway {
         uiTextId = null
       }
 
-      // Emit usage metrics so SSE consumers (eval runner, frontend) can track costs
-      if (uiWriter) {
-        uiWriter.write({
-          type: 'data-step-usage' as any,
-          inputTokens: result.inputTokens,
-          outputTokens: result.outputTokens,
-          cacheReadTokens: result.cacheReadTokens,
-          cacheWriteTokens: result.cacheWriteTokens,
-          iterations: result.iterations,
-          toolCallCount: result.toolCalls.length,
-        })
+      // Store usage for callers (server.ts includes it in the `finish` event)
+      this._lastTurnUsage = {
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+        cacheReadTokens: result.cacheReadTokens,
+        cacheWriteTokens: result.cacheWriteTokens,
+        iterations: result.iterations,
+        toolCallCount: result.toolCalls.length,
       }
 
       if (result.loopBreak) {

@@ -386,6 +386,15 @@ app.post('/agent/chat', async (c) => {
       try {
         writer.write({ type: 'start-step' })
         await agentGateway!.processChatMessageStream(userText!, writer, { modelOverride })
+
+        const usage = agentGateway!.consumeLastTurnUsage()
+        if (usage) {
+          writer.write({
+            type: 'data-usage',
+            data: usage,
+          } as any)
+        }
+
         writer.write({ type: 'finish-step' })
         writer.write({ type: 'finish', finishReason: 'stop' })
       } catch (error: any) {

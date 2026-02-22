@@ -154,16 +154,18 @@ async function parseSSEStream(
                 outputTokens += data.usage.completionTokens || data.usage.outputTokens || 0
               }
               break
-            case 'data-step-usage':
-              inputTokens += data.inputTokens || 0
-              outputTokens += data.outputTokens || 0
-              cacheReadTokens += data.cacheReadTokens || 0
-              cacheWriteTokens += data.cacheWriteTokens || 0
+            case 'data-usage': {
+              const u = data.data || data
+              inputTokens += u.inputTokens || 0
+              outputTokens += u.outputTokens || 0
+              cacheReadTokens += u.cacheReadTokens || 0
+              cacheWriteTokens += u.cacheWriteTokens || 0
               if (verbose) {
-                const total = (data.inputTokens || 0) + (data.cacheReadTokens || 0) + (data.cacheWriteTokens || 0)
-                console.log(`      Usage: ${total}+${data.outputTokens} tokens (${data.cacheReadTokens || 0} cached), ${data.iterations} iterations, ${data.toolCallCount} tools`)
+                const total = (u.inputTokens || 0) + (u.cacheReadTokens || 0) + (u.cacheWriteTokens || 0)
+                console.log(`      Usage: ${total}+${u.outputTokens} tokens (${u.cacheReadTokens || 0} cached), ${u.iterations} iterations, ${u.toolCallCount} tools`)
               }
               break
+            }
             case 'text-delta':
               text += data.delta || ''
               break
