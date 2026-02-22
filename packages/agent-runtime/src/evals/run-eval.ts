@@ -14,14 +14,34 @@
 
 import { spawn, type Subprocess } from 'bun'
 import { execSync } from 'child_process'
-import { mkdirSync, rmSync, existsSync, writeFileSync } from 'fs'
+import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from 'fs'
 import { resolve } from 'path'
+
+// Load .env.local from repo root so workers inherit API keys
+const REPO_ROOT_EARLY = resolve(import.meta.dir, '../../../..')
+for (const envFile of ['.env.local', '.env']) {
+  const envPath = resolve(REPO_ROOT_EARLY, envFile)
+  if (existsSync(envPath)) {
+    for (const line of readFileSync(envPath, 'utf-8').split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed || trimmed.startsWith('#')) continue
+      const eqIdx = trimmed.indexOf('=')
+      if (eqIdx < 0) continue
+      const key = trimmed.slice(0, eqIdx)
+      const val = trimmed.slice(eqIdx + 1)
+      if (!process.env[key]) process.env[key] = val
+    }
+    break
+  }
+}
 import { runEval } from './runner'
 import { resetWorkspaceDefaults } from '../workspace-defaults'
 import { CANVAS_EVALS } from './test-cases-canvas'
+import { COMPLEX_EVALS } from './test-cases-complex'
 import { MEMORY_EVALS } from './test-cases-memory'
 import { PERSONALITY_EVALS } from './test-cases-personality'
 import { MULTITURN_EVALS } from './test-cases-multiturn'
+import { buildMockPayload } from './tool-mocks'
 import type { AgentEval, EvalResult, EvalSuiteResult, CategorySummary } from './types'
 
 // ---------------------------------------------------------------------------
@@ -62,12 +82,13 @@ const PRICING: Record<string, { input: number; output: number }> = {
 function getEvals(track: string): AgentEval[] {
   switch (track) {
     case 'canvas': return CANVAS_EVALS
+    case 'complex': return COMPLEX_EVALS
     case 'memory': return MEMORY_EVALS
     case 'personality': return PERSONALITY_EVALS
     case 'multiturn': return MULTITURN_EVALS
-    case 'all': return [...CANVAS_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS]
+    case 'all': return [...CANVAS_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS]
     default:
-      console.error(`Unknown track: ${track}. Valid: canvas, memory, personality, multiturn, all`)
+      console.error(`Unknown track: ${track}. Valid: canvas, complex, memory, personality, multiturn, all`)
       process.exit(1)
   }
 }
@@ -165,6 +186,16 @@ async function runEvalOnWorker(
   // Reset the gateway's conversation session so previous evals don't pollute context
   try {
     await fetch(`http://localhost:${worker.port}/agent/session/reset`, { method: 'POST' })
+  } catch {}
+
+  // Install tool mocks for deterministic, fast tool execution
+  try {
+    const mockPayload = buildMockPayload(ev.toolMocks)
+    await fetch(`http://localhost:${worker.port}/agent/tool-mocks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mocks: mockPayload }),
+    })
   } catch {}
 
   const startTime = Date.now()

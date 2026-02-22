@@ -12,6 +12,7 @@
 
 export type EvalCategory =
   | 'canvas'
+  | 'complex'
   | 'memory'
   | 'personality'
   | 'skill'
@@ -37,6 +38,8 @@ export interface AgentEval {
   antiPatterns?: string[]
   /** Maximum score */
   maxScore: number
+  /** Per-eval tool mock overrides (merged with defaults by buildMockPayload) */
+  toolMocks?: import('./tool-mocks').ToolMockMap
 }
 
 export interface ConversationTurn {

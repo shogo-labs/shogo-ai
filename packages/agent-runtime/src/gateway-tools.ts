@@ -69,7 +69,7 @@ function assertWithinWorkspace(workspaceDir: string, filePath: string): string {
   return resolved
 }
 
-function textResult(data: any): AgentToolResult<any> {
+export function textResult(data: any): AgentToolResult<any> {
   return {
     content: [{ type: 'text', text: typeof data === 'string' ? data : JSON.stringify(data) }],
     details: data,

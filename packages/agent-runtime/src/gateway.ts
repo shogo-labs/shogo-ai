@@ -19,11 +19,12 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import type { Message, UserMessage } from '@mariozechner/pi-ai'
-import type { StreamFn } from '@mariozechner/pi-agent-core'
+import type { StreamFn, AgentTool } from '@mariozechner/pi-agent-core'
+import { Type } from '@sinclair/typebox'
 import type { ChannelAdapter, IncomingMessage, AgentStatus, ChannelStatus, StreamChunkConfig, SandboxConfig } from './types'
 import { loadSkills, matchSkill, type Skill } from './skills'
 import { runAgentLoop, type LoopDetectorConfig, type ToolContext } from './agent-loop'
-import { createAllTools, createHeartbeatTools } from './gateway-tools'
+import { createAllTools, createHeartbeatTools, textResult } from './gateway-tools'
 import { HookEmitter, loadAllHooks } from './hooks'
 import { parseSlashCommand, type SlashCommandContext } from './slash-commands'
 import { SessionManager, type SessionManagerConfig } from './session-manager'
@@ -229,6 +230,10 @@ export class AgentGateway {
   private _onLog?: (line: string) => void
   /** Per-section prompt overrides set by DSPy optimization via POST /agent/prompt-override */
   private promptOverrides = new Map<string, string>()
+  /** Tool execute overrides for eval mocking (tool name -> mock fn) */
+  private toolMocks = new Map<string, (params: Record<string, any>) => any>()
+  /** Synthetic tool definitions for mocked MCP tools that don't exist in the base tool set */
+  private syntheticTools = new Map<string, { description: string; paramKeys: string[] }>()
   /** Usage from the most recent agentTurn (consumed by server.ts for the finish event) */
   private _lastTurnUsage: {
     inputTokens: number
@@ -261,6 +266,28 @@ export class AgentGateway {
   /** Set a log callback for forwarding gateway events to the UI Logs tab */
   setLogCallback(fn: (line: string) => void): void {
     this._onLog = fn
+  }
+
+  /** Install tool-level execute overrides (for eval mocking). Preserves tool schema. */
+  setToolMocks(
+    mocks: Record<string, (params: Record<string, any>) => any>,
+    syntheticDefs?: Record<string, { description: string; paramKeys: string[] }>,
+  ): void {
+    this.toolMocks.clear()
+    this.syntheticTools.clear()
+    for (const [name, fn] of Object.entries(mocks)) {
+      this.toolMocks.set(name, fn)
+    }
+    if (syntheticDefs) {
+      for (const [name, def] of Object.entries(syntheticDefs)) {
+        this.syntheticTools.set(name, def)
+      }
+    }
+  }
+
+  clearToolMocks(): void {
+    this.toolMocks.clear()
+    this.syntheticTools.clear()
   }
 
   /** Consume usage data from the most recent agent turn (returns null if none available) */
@@ -890,7 +917,49 @@ export class AgentGateway {
       : createAllTools(toolContext)
 
     const mcpTools = this.mcpClientManager.getTools()
-    const tools = mcpTools.length > 0 ? [...baseTools, ...mcpTools] : baseTools
+    const assembledTools = mcpTools.length > 0 ? [...baseTools, ...mcpTools] : baseTools
+
+    let tools = assembledTools
+    if (this.toolMocks.size > 0) {
+      const existingNames = new Set(assembledTools.map(t => t.name))
+
+      // Wrap existing tools with mock interceptors
+      tools = assembledTools.map(tool => {
+        const mockFn = this.toolMocks.get(tool.name)
+        if (!mockFn) return tool
+        return {
+          ...tool,
+          execute: async (_id: string, params: any) => {
+            const result = mockFn(params)
+            return textResult(result)
+          },
+        }
+      })
+
+      // Inject synthetic tool definitions for mocked tools not in the base set
+      for (const [name, mockFn] of this.toolMocks) {
+        if (existingNames.has(name)) continue
+        const synDef = this.syntheticTools.get(name)
+        const paramProps: Record<string, any> = {}
+        if (synDef?.paramKeys) {
+          for (const key of synDef.paramKeys) {
+            paramProps[key] = Type.Optional(Type.String({ description: key }))
+          }
+        }
+        paramProps['input'] = Type.Optional(Type.String({ description: 'Input data or query' }))
+        const syntheticTool: AgentTool = {
+          name,
+          description: synDef?.description || `External integration tool: ${name}`,
+          label: name.replace(/__/g, ' > ').replace(/_/g, ' '),
+          parameters: Type.Object(paramProps),
+          execute: async (_id: string, params: any) => {
+            const result = mockFn(params)
+            return textResult(result)
+          },
+        }
+        tools.push(syntheticTool)
+      }
+    }
 
     const history = this.sessionManager.buildHistory(sessionId)
 
@@ -930,7 +999,7 @@ export class AgentGateway {
         history,
         prompt,
         tools,
-        maxIterations: isHeartbeat ? 5 : 6,
+        maxIterations: 50,
         loopDetection: this.config.loopDetection,
         streamFn: this._streamFn,
         onToolCall: (name, input) => {
