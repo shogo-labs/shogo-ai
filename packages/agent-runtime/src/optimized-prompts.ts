@@ -4,7 +4,7 @@
  * These prompt sections were generated from DSPy-optimized few-shot demos.
  * DO NOT EDIT MANUALLY — re-run the optimization pipeline and apply script instead.
  *
- * Generated: 2026-02-22T03:34:21.720Z
+ * Generated: 2026-02-22T03:37:21.957Z
  * Source: 14 optimized programs from DSPy bootstrap optimization
  */
 
