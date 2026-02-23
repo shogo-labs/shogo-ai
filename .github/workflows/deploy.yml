@@ -494,6 +494,16 @@ jobs:
         if: needs.detect-changes.outputs.project_runtime_changed == 'true' || needs.detect-changes.outputs.agent_runtime_changed == 'true'
         run: |
           echo "🔄 Restarting image-prepuller to pull new runtime images..."
+          
+          # Force-delete any pods stuck in Terminating (e.g., on NotReady nodes)
+          # These block DaemonSet rollouts with maxUnavailable: 1
+          STUCK=$(kubectl get pods -n ${{ env.NS_SYSTEM }} -l app.kubernetes.io/name=image-prepuller --field-selector=status.phase!=Running -o name 2>/dev/null || true)
+          if [ -n "$STUCK" ]; then
+            echo "🧹 Cleaning up stuck prepuller pods: $STUCK"
+            echo "$STUCK" | xargs -r kubectl delete -n ${{ env.NS_SYSTEM }} --force --grace-period=0 2>/dev/null || true
+            sleep 5
+          fi
+          
           kubectl rollout restart daemonset/image-prepuller -n ${{ env.NS_SYSTEM }} || echo "Image prepuller not found, skipping"
           
           echo "⏳ Waiting for image-prepuller rollout..."
@@ -518,10 +528,10 @@ jobs:
         run: |
           echo "=== Post-deploy health checks ==="
           
-          # Wait for API to be ready
+          # Wait for API to be ready (API is proxied through studio, not exposed directly)
           echo "Waiting for API health..."
           for i in $(seq 1 30); do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://api-staging.shogo.ai/api/health" || echo "000")
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://${{ env.DOMAIN }}/api/health" || echo "000")
             if [ "$STATUS" = "200" ]; then
               echo "API healthy (attempt $i)"
               break
