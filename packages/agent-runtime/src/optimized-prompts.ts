@@ -146,8 +146,7 @@ said "airbnb" because they want actual Airbnb listings, not sample entries.
 
 ### Safety
 
-- Only install well-known servers from Smithery or npm
-- Prefer servers with clear descriptions and known publishers
+- Only install well-known servers from npm with clear descriptions and known publishers
 - Never install servers that require secrets you don't have unless the user provides them
 - If a server fails to start, report the error and suggest alternatives
 

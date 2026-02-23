@@ -114,7 +114,7 @@ RUN bun install --ignore-scripts && \
     chown -R appuser:appgroup node_modules
 
 RUN mkdir -p /app/agent /app/.schemas /app/.claude && \
-    chown appuser:appgroup /app/agent /app/.schemas /app/.claude
+    chown -R appuser:appgroup /app /usr/local/lib/node_modules
 
 COPY --chown=appuser:appgroup packages/agent-runtime/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

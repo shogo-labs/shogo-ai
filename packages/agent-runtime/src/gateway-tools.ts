@@ -1293,7 +1293,7 @@ function isMcpCommandBlocked(command: string, args: string[]): boolean {
 function createMcpSearchTool(): AgentTool {
   return {
     name: 'mcp_search',
-    description: 'Search for MCP servers by capability or keyword. Queries the Smithery registry and npm to find servers you can install to gain new tools (e.g. database access, browser automation, API integrations).',
+    description: 'Search for MCP servers by capability or keyword. Searches the built-in catalog and npm registry to find servers you can install to gain new tools (e.g. database access, browser automation, API integrations).',
     label: 'MCP: Search Registry',
     parameters: Type.Object({
       query: Type.String({ description: 'Search query describing the capability you need (e.g. "postgres database", "browser automation", "slack messaging")' }),
@@ -1331,46 +1331,27 @@ function createMcpSearchTool(): AgentTool {
         })
       }
 
+      const npmSlots = Math.max(limit - results.length, 2)
       try {
-        const smitheryRes = await fetch(
-          `https://registry.smithery.ai/servers?q=${encodeURIComponent(query)}&pageSize=${limit}`,
-          { headers: { 'Accept': 'application/json' }, signal: AbortSignal.timeout(10_000) },
+        const npmRes = await fetch(
+          `https://registry.npmjs.org/-/v1/search?text=mcp-server+${encodeURIComponent(query)}&size=${npmSlots}`,
+          { signal: AbortSignal.timeout(10_000) },
         )
-        if (smitheryRes.ok) {
-          const data = await smitheryRes.json() as any
-          const servers = data.servers || data.results || data.data || []
-          for (const s of servers.slice(0, limit)) {
+        if (npmRes.ok) {
+          const data = await npmRes.json() as any
+          const catalogNames = new Set(results.map(r => r.qualifiedName))
+          for (const obj of (data.objects || []).slice(0, npmSlots)) {
+            const pkg = obj.package
+            if (catalogNames.has(pkg.name)) continue
             results.push({
-              name: s.displayName || s.name || s.qualifiedName || 'unknown',
-              qualifiedName: s.qualifiedName,
-              description: s.description || '',
-              installCommand: `npx -y @smithery/cli@latest run ${s.qualifiedName || s.name}`,
-              source: 'smithery',
+              name: pkg.name,
+              description: pkg.description || '',
+              installCommand: `npx -y ${pkg.name}@latest`,
+              source: 'npm',
             })
           }
         }
-      } catch { /* smithery unavailable, fall through to npm */ }
-
-      if (results.length < limit) {
-        try {
-          const npmRes = await fetch(
-            `https://registry.npmjs.org/-/v1/search?text=mcp-server+${encodeURIComponent(query)}&size=${limit - results.length}`,
-            { signal: AbortSignal.timeout(10_000) },
-          )
-          if (npmRes.ok) {
-            const data = await npmRes.json() as any
-            for (const obj of (data.objects || []).slice(0, limit - results.length)) {
-              const pkg = obj.package
-              results.push({
-                name: pkg.name,
-                description: pkg.description || '',
-                installCommand: `npx -y ${pkg.name}@latest`,
-                source: 'npm',
-              })
-            }
-          }
-        } catch { /* npm unavailable */ }
-      }
+      } catch { /* npm unavailable */ }
 
       if (results.length === 0) {
         return textResult({ query, results: [], message: 'No MCP servers found. Try a different search term.' })

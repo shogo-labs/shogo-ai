@@ -515,8 +515,8 @@ export const MCP_SEARCH_BASIC_MOCKS: ToolMockMap = {
         response: {
           query: 'postgres',
           results: [
-            { name: 'Postgres MCP Server', qualifiedName: '@modelcontextprotocol/server-postgres', description: 'Query PostgreSQL databases with read-only access. Supports schema inspection and parameterized queries.', installCommand: 'npx -y @modelcontextprotocol/server-postgres', source: 'smithery' },
-            { name: 'Neon Postgres', qualifiedName: '@neondatabase/mcp-server-neon', description: 'Manage Neon serverless Postgres — create databases, run SQL, manage branches.', installCommand: 'npx -y @neondatabase/mcp-server-neon', source: 'smithery' },
+            { name: 'Postgres MCP Server', qualifiedName: '@modelcontextprotocol/server-postgres', description: 'Query PostgreSQL databases with read-only access. Supports schema inspection and parameterized queries.', installCommand: 'npx -y @modelcontextprotocol/server-postgres', source: 'catalog' },
+            { name: 'Neon Postgres', qualifiedName: '@neondatabase/mcp-server-neon', description: 'Manage Neon serverless Postgres — create databases, run SQL, manage branches.', installCommand: 'npx -y @neondatabase/mcp-server-neon', source: 'catalog' },
           ],
           message: 'Found 2 MCP server(s). Use mcp_install to add one.',
         },
@@ -544,7 +544,7 @@ export const MCP_INSTALL_AND_USE_MOCKS: ToolMockMap = {
     response: {
       query: 'filesystem',
       results: [
-        { name: 'Filesystem MCP Server', qualifiedName: '@modelcontextprotocol/server-filesystem', description: 'Secure file operations with configurable access controls.', installCommand: 'npx -y @modelcontextprotocol/server-filesystem /tmp', source: 'smithery' },
+        { name: 'Filesystem MCP Server', qualifiedName: '@modelcontextprotocol/server-filesystem', description: 'Secure file operations with configurable access controls.', installCommand: 'npx -y @modelcontextprotocol/server-filesystem /tmp', source: 'catalog' },
       ],
       message: 'Found 1 MCP server(s). Use mcp_install to add one.',
     },
@@ -620,8 +620,8 @@ export const MCP_SELF_EXTEND_FIGMA_MOCKS: ToolMockMap = {
     response: {
       query: 'figma design',
       results: [
-        { name: 'Figma MCP Server', qualifiedName: '@anthropic/mcp-server-figma', description: 'Access Figma files, components, and design tokens. List files, export assets, inspect design properties.', installCommand: 'npx -y @anthropic/mcp-server-figma', source: 'smithery' },
-        { name: 'Figma Dev Mode', qualifiedName: '@figma/mcp-devmode', description: 'Read-only access to Figma dev mode — inspect components, spacing, and CSS.', installCommand: 'npx -y @figma/mcp-devmode', source: 'smithery' },
+        { name: 'Figma MCP Server', qualifiedName: '@anthropic/mcp-server-figma', description: 'Access Figma files, components, and design tokens. List files, export assets, inspect design properties.', installCommand: 'npx -y @anthropic/mcp-server-figma', source: 'catalog' },
+        { name: 'Figma Dev Mode', qualifiedName: '@figma/mcp-devmode', description: 'Read-only access to Figma dev mode — inspect components, spacing, and CSS.', installCommand: 'npx -y @figma/mcp-devmode', source: 'catalog' },
       ],
       message: 'Found 2 MCP server(s). Use mcp_install to add one.',
     },
@@ -665,7 +665,7 @@ export const MCP_SELF_EXTEND_DATABASE_MOCKS: ToolMockMap = {
     response: {
       query: 'postgres database',
       results: [
-        { name: 'Postgres MCP Server', qualifiedName: '@modelcontextprotocol/server-postgres', description: 'Query PostgreSQL databases with read-only access. Supports schema inspection and parameterized queries.', installCommand: 'npx -y @modelcontextprotocol/server-postgres', source: 'smithery' },
+        { name: 'Postgres MCP Server', qualifiedName: '@modelcontextprotocol/server-postgres', description: 'Query PostgreSQL databases with read-only access. Supports schema inspection and parameterized queries.', installCommand: 'npx -y @modelcontextprotocol/server-postgres', source: 'catalog' },
       ],
       message: 'Found 1 MCP server(s). Use mcp_install to add one.',
     },
@@ -709,7 +709,7 @@ export const MCP_MULTI_SERVER_MOCKS: ToolMockMap = {
         response: {
           query: 'github',
           results: [
-            { name: 'GitHub MCP Server', qualifiedName: '@modelcontextprotocol/server-github', description: 'Access GitHub repos, issues, PRs, and actions.', installCommand: 'npx -y @modelcontextprotocol/server-github', source: 'smithery' },
+            { name: 'GitHub MCP Server', qualifiedName: '@modelcontextprotocol/server-github', description: 'Access GitHub repos, issues, PRs, and actions.', installCommand: 'npx -y @modelcontextprotocol/server-github', source: 'catalog' },
           ],
           message: 'Found 1 MCP server(s). Use mcp_install to add one.',
         },
@@ -719,7 +719,7 @@ export const MCP_MULTI_SERVER_MOCKS: ToolMockMap = {
         response: {
           query: 'slack',
           results: [
-            { name: 'Slack MCP Server', qualifiedName: '@anthropic/mcp-server-slack', description: 'Send messages, read channels, manage Slack workspace.', installCommand: 'npx -y @anthropic/mcp-server-slack', source: 'smithery' },
+            { name: 'Slack MCP Server', qualifiedName: '@anthropic/mcp-server-slack', description: 'Send messages, read channels, manage Slack workspace.', installCommand: 'npx -y @anthropic/mcp-server-slack', source: 'catalog' },
           ],
           message: 'Found 1 MCP server(s). Use mcp_install to add one.',
         },
@@ -794,7 +794,7 @@ export const MCP_DISCOVERY_PERSONALITY_MOCKS: ToolMockMap = {
     response: {
       query: 'linear project management',
       results: [
-        { name: 'Linear MCP Server', qualifiedName: '@linear/mcp-server', description: 'Manage Linear issues, projects, and cycles. Create, update, and search issues.', installCommand: 'npx -y @linear/mcp-server', source: 'smithery' },
+        { name: 'Linear MCP Server', qualifiedName: '@linear/mcp-server', description: 'Manage Linear issues, projects, and cycles. Create, update, and search issues.', installCommand: 'npx -y @linear/mcp-server', source: 'catalog' },
       ],
       message: 'Found 1 MCP server(s). Use mcp_install to add one.',
     },
