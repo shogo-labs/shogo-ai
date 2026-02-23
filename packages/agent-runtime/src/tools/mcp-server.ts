@@ -156,7 +156,7 @@ const TOOL_GROUP_TO_NAMES: Record<string, string[]> = {
   filesystem: ['read_file', 'write_file'],
   web_fetch: ['web_fetch'],
   web_search: ['web_fetch'],
-  browser: ['web_fetch'],
+  browser: ['browser', 'web_fetch'],
   memory: ['memory_read', 'memory_write'],
   messaging: ['send_message'],
   cron: ['cron'],

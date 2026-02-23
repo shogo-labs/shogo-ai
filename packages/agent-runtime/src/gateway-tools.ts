@@ -312,7 +312,10 @@ function createBrowserTool(ctx: ToolContext): AgentTool {
     if (browser && page) return page
     try {
       const pw = await import('playwright-core')
-      browser = await pw.chromium.launch({ headless: true })
+      browser = await pw.chromium.launch({
+        headless: true,
+        executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
+      })
       page = await browser.newPage()
       return page
     } catch {
@@ -330,21 +333,25 @@ function createBrowserTool(ctx: ToolContext): AgentTool {
   return {
     name: 'browser',
     description:
-      'Control a headless browser. Actions: navigate (go to URL), click (CSS selector), fill (type into input), text (extract page text), screenshot (capture page), evaluate (run JS), close.',
+      'Control a headless browser. Actions: navigate (go to URL), click (CSS selector), fill (type into input), extract (get elements by selector), text (full page text), screenshot (capture page), evaluate (run JS), select (dropdown option), scroll (scroll page), wait_for (wait for element), close.',
     label: 'Browser',
     parameters: Type.Object({
       action: Type.Union([
         Type.Literal('navigate'),
         Type.Literal('click'),
         Type.Literal('fill'),
+        Type.Literal('extract'),
         Type.Literal('text'),
         Type.Literal('screenshot'),
         Type.Literal('evaluate'),
+        Type.Literal('select'),
+        Type.Literal('scroll'),
+        Type.Literal('wait_for'),
         Type.Literal('close'),
       ], { description: 'Browser action to perform' }),
       url: Type.Optional(Type.String({ description: 'URL to navigate to (for navigate action)' })),
-      selector: Type.Optional(Type.String({ description: 'CSS selector (for click/fill actions)' })),
-      value: Type.Optional(Type.String({ description: 'Text to type (for fill action) or JS to evaluate' })),
+      selector: Type.Optional(Type.String({ description: 'CSS selector (for click/fill/extract/select/scroll/wait_for actions)' })),
+      value: Type.Optional(Type.String({ description: 'Text to type (fill), JS to run (evaluate), option value (select), or scroll distance in px (scroll)' })),
       waitMs: Type.Optional(Type.Number({ description: 'Wait time in ms after action (default: 1000)' })),
     }),
     execute: async (_toolCallId, params) => {
@@ -384,6 +391,13 @@ function createBrowserTool(ctx: ToolContext): AgentTool {
             await p.fill(selector, value, { timeout: 5000 })
             return textResult({ ok: true, action: 'fill', selector })
           }
+          case 'extract': {
+            if (!selector) return textResult({ error: 'selector is required for extract' })
+            const elements = await p.$$eval(selector, (els: Element[]) =>
+              els.map(el => ({ text: el.textContent?.trim(), html: el.outerHTML.substring(0, 500) }))
+            )
+            return textResult({ elements: elements.slice(0, 50), count: elements.length, url: p.url() })
+          }
           case 'text': {
             const text = await p.evaluate(() => document.body.innerText)
             const truncated = typeof text === 'string' && text.length > 50000
@@ -400,6 +414,25 @@ function createBrowserTool(ctx: ToolContext): AgentTool {
             if (!value) return textResult({ error: 'value (JS code) is required for evaluate' })
             const result = await p.evaluate(value)
             return textResult({ result, url: p.url() })
+          }
+          case 'select': {
+            if (!selector || value === undefined) return textResult({ error: 'selector and value required for select' })
+            await p.selectOption(selector, value, { timeout: 5000 })
+            return textResult({ ok: true, action: 'select', selector, value })
+          }
+          case 'scroll': {
+            if (selector) {
+              await p.locator(selector).scrollIntoViewIfNeeded({ timeout: 5000 })
+            } else {
+              const distance = parseInt(value || '500', 10)
+              await p.evaluate((d: number) => window.scrollBy(0, d), distance)
+            }
+            return textResult({ ok: true, action: 'scroll' })
+          }
+          case 'wait_for': {
+            if (!selector) return textResult({ error: 'selector is required for wait_for' })
+            await p.waitForSelector(selector, { timeout: waitMs || 10000 })
+            return textResult({ ok: true, action: 'wait_for', selector })
           }
           default:
             return textResult({ error: `Unknown browser action: ${action}` })
