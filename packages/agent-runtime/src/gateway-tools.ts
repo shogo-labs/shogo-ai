@@ -1513,7 +1513,8 @@ function createMcpSearchTool(): AgentTool {
           name: entry.name,
           qualifiedName: entry.package.replace(/@latest$/, ''),
           description: entry.description,
-          installCommand: `npx -y ${entry.package}`,
+          installCommand: `npx -y ${entry.package}${entry.defaultArgs.length ? ' ' + entry.defaultArgs.join(' ') : ''}`,
+          defaultArgs: entry.defaultArgs.length > 0 ? entry.defaultArgs : undefined,
           source: 'catalog',
         })
       }

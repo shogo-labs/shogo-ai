@@ -24,6 +24,7 @@ export const StudioChatDomain = scope({
     "contextId?": "string", // Reference to FeatureSession or Project (cross-schema)
     "phase?": "string", // Optional phase association
     "claudeCodeSessionId?": "string", // Optional Claude Code session ID for continuity
+    "cachedMessageCount?": "number", // Persisted message count (avoids needing to load all messages)
     createdAt: "number",
     lastActiveAt: "number",
   },
@@ -116,13 +117,18 @@ export const studioChatDomain = domain({
         },
 
         /**
-         * Count of messages in this session
+         * Count of user-sent messages in this session.
+         * Prefers the persisted cachedMessageCount (available without loading
+         * all messages into memory) and falls back to querying the local
+         * chatMessage collection.
          */
         get messageCount(): number {
           const root = getRoot(self) as any
-          return root.chatMessageCollection
+          const liveCount = root.chatMessageCollection
             .all()
-            .filter((m: any) => m.session?.id === self.id).length
+            .filter((m: any) => m.session?.id === self.id && m.role === 'user').length
+          if (liveCount > 0) return liveCount
+          return self.cachedMessageCount ?? 0
         },
 
         /**
@@ -297,10 +303,12 @@ export const studioChatDomain = domain({
 
           const now = Date.now()
 
-          // Update session's lastActiveAt in local MST (via MemoryBackend)
-          await self.chatSessionCollection.updateOne(data.sessionId, {
-            lastActiveAt: now,
-          })
+          // Update session's lastActiveAt (and cached message count for user messages)
+          const updates: Record<string, any> = { lastActiveAt: now }
+          if (data.role === 'user') {
+            updates.cachedMessageCount = (session.cachedMessageCount ?? 0) + 1
+          }
+          await self.chatSessionCollection.updateOne(data.sessionId, updates)
           // Persist session update to API
           await self.chatSessionCollection.saveOne(data.sessionId)
 

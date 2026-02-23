@@ -506,16 +506,17 @@ enum CreditSource {
 // =============================================================================
 
 model ChatSession {
-  id                  String      @id @default(uuid())
-  name                String?
-  inferredName        String
-  contextType         ContextType
-  contextId           String?
-  phase               String?
-  claudeCodeSessionId String?
-  createdAt           DateTime    @default(now())
-  updatedAt           DateTime    @default(now()) @updatedAt
-  lastActiveAt        DateTime    @default(now())
+  id                   String      @id @default(uuid())
+  name                 String?
+  inferredName         String
+  contextType          ContextType
+  contextId            String?
+  phase                String?
+  claudeCodeSessionId  String?
+  cachedMessageCount   Int         @default(0)
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @default(now()) @updatedAt
+  lastActiveAt         DateTime    @default(now())
 
   // Relations - contextId can reference FeatureSession or Project
   project         Project?       @relation(fields: [contextId], references: [id], onDelete: Cascade)

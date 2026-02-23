@@ -20,8 +20,18 @@ export type ChatSessionModel = runtime.Types.Result.DefaultSelection<Prisma.$Cha
 
 export type AggregateChatSession = {
   _count: ChatSessionCountAggregateOutputType | null
+  _avg: ChatSessionAvgAggregateOutputType | null
+  _sum: ChatSessionSumAggregateOutputType | null
   _min: ChatSessionMinAggregateOutputType | null
   _max: ChatSessionMaxAggregateOutputType | null
+}
+
+export type ChatSessionAvgAggregateOutputType = {
+  cachedMessageCount: number | null
+}
+
+export type ChatSessionSumAggregateOutputType = {
+  cachedMessageCount: number | null
 }
 
 export type ChatSessionMinAggregateOutputType = {
@@ -32,6 +42,7 @@ export type ChatSessionMinAggregateOutputType = {
   contextId: string | null
   phase: string | null
   claudeCodeSessionId: string | null
+  cachedMessageCount: number | null
   createdAt: Date | null
   updatedAt: Date | null
   lastActiveAt: Date | null
@@ -45,6 +56,7 @@ export type ChatSessionMaxAggregateOutputType = {
   contextId: string | null
   phase: string | null
   claudeCodeSessionId: string | null
+  cachedMessageCount: number | null
   createdAt: Date | null
   updatedAt: Date | null
   lastActiveAt: Date | null
@@ -58,12 +70,21 @@ export type ChatSessionCountAggregateOutputType = {
   contextId: number
   phase: number
   claudeCodeSessionId: number
+  cachedMessageCount: number
   createdAt: number
   updatedAt: number
   lastActiveAt: number
   _all: number
 }
 
+
+export type ChatSessionAvgAggregateInputType = {
+  cachedMessageCount?: true
+}
+
+export type ChatSessionSumAggregateInputType = {
+  cachedMessageCount?: true
+}
 
 export type ChatSessionMinAggregateInputType = {
   id?: true
@@ -73,6 +94,7 @@ export type ChatSessionMinAggregateInputType = {
   contextId?: true
   phase?: true
   claudeCodeSessionId?: true
+  cachedMessageCount?: true
   createdAt?: true
   updatedAt?: true
   lastActiveAt?: true
@@ -86,6 +108,7 @@ export type ChatSessionMaxAggregateInputType = {
   contextId?: true
   phase?: true
   claudeCodeSessionId?: true
+  cachedMessageCount?: true
   createdAt?: true
   updatedAt?: true
   lastActiveAt?: true
@@ -99,6 +122,7 @@ export type ChatSessionCountAggregateInputType = {
   contextId?: true
   phase?: true
   claudeCodeSessionId?: true
+  cachedMessageCount?: true
   createdAt?: true
   updatedAt?: true
   lastActiveAt?: true
@@ -143,6 +167,18 @@ export type ChatSessionAggregateArgs<ExtArgs extends runtime.Types.Extensions.In
   /**
    * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
    * 
+   * Select which fields to average
+  **/
+  _avg?: ChatSessionAvgAggregateInputType
+  /**
+   * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
+   * 
+   * Select which fields to sum
+  **/
+  _sum?: ChatSessionSumAggregateInputType
+  /**
+   * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
+   * 
    * Select which fields to find the minimum value
   **/
   _min?: ChatSessionMinAggregateInputType
@@ -173,6 +209,8 @@ export type ChatSessionGroupByArgs<ExtArgs extends runtime.Types.Extensions.Inte
   take?: number
   skip?: number
   _count?: ChatSessionCountAggregateInputType | true
+  _avg?: ChatSessionAvgAggregateInputType
+  _sum?: ChatSessionSumAggregateInputType
   _min?: ChatSessionMinAggregateInputType
   _max?: ChatSessionMaxAggregateInputType
 }
@@ -185,10 +223,13 @@ export type ChatSessionGroupByOutputType = {
   contextId: string | null
   phase: string | null
   claudeCodeSessionId: string | null
+  cachedMessageCount: number
   createdAt: Date
   updatedAt: Date
   lastActiveAt: Date
   _count: ChatSessionCountAggregateOutputType | null
+  _avg: ChatSessionAvgAggregateOutputType | null
+  _sum: ChatSessionSumAggregateOutputType | null
   _min: ChatSessionMinAggregateOutputType | null
   _max: ChatSessionMaxAggregateOutputType | null
 }
@@ -219,6 +260,7 @@ export type ChatSessionWhereInput = {
   contextId?: Prisma.StringNullableFilter<"ChatSession"> | string | null
   phase?: Prisma.StringNullableFilter<"ChatSession"> | string | null
   claudeCodeSessionId?: Prisma.StringNullableFilter<"ChatSession"> | string | null
+  cachedMessageCount?: Prisma.IntFilter<"ChatSession"> | number
   createdAt?: Prisma.DateTimeFilter<"ChatSession"> | Date | string
   updatedAt?: Prisma.DateTimeFilter<"ChatSession"> | Date | string
   lastActiveAt?: Prisma.DateTimeFilter<"ChatSession"> | Date | string
@@ -235,6 +277,7 @@ export type ChatSessionOrderByWithRelationInput = {
   contextId?: Prisma.SortOrderInput | Prisma.SortOrder
   phase?: Prisma.SortOrderInput | Prisma.SortOrder
   claudeCodeSessionId?: Prisma.SortOrderInput | Prisma.SortOrder
+  cachedMessageCount?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
   lastActiveAt?: Prisma.SortOrder
@@ -254,6 +297,7 @@ export type ChatSessionWhereUniqueInput = Prisma.AtLeast<{
   contextId?: Prisma.StringNullableFilter<"ChatSession"> | string | null
   phase?: Prisma.StringNullableFilter<"ChatSession"> | string | null
   claudeCodeSessionId?: Prisma.StringNullableFilter<"ChatSession"> | string | null
+  cachedMessageCount?: Prisma.IntFilter<"ChatSession"> | number
   createdAt?: Prisma.DateTimeFilter<"ChatSession"> | Date | string
   updatedAt?: Prisma.DateTimeFilter<"ChatSession"> | Date | string
   lastActiveAt?: Prisma.DateTimeFilter<"ChatSession"> | Date | string
@@ -270,12 +314,15 @@ export type ChatSessionOrderByWithAggregationInput = {
   contextId?: Prisma.SortOrderInput | Prisma.SortOrder
   phase?: Prisma.SortOrderInput | Prisma.SortOrder
   claudeCodeSessionId?: Prisma.SortOrderInput | Prisma.SortOrder
+  cachedMessageCount?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
   lastActiveAt?: Prisma.SortOrder
   _count?: Prisma.ChatSessionCountOrderByAggregateInput
+  _avg?: Prisma.ChatSessionAvgOrderByAggregateInput
   _max?: Prisma.ChatSessionMaxOrderByAggregateInput
   _min?: Prisma.ChatSessionMinOrderByAggregateInput
+  _sum?: Prisma.ChatSessionSumOrderByAggregateInput
 }
 
 export type ChatSessionScalarWhereWithAggregatesInput = {
@@ -289,6 +336,7 @@ export type ChatSessionScalarWhereWithAggregatesInput = {
   contextId?: Prisma.StringNullableWithAggregatesFilter<"ChatSession"> | string | null
   phase?: Prisma.StringNullableWithAggregatesFilter<"ChatSession"> | string | null
   claudeCodeSessionId?: Prisma.StringNullableWithAggregatesFilter<"ChatSession"> | string | null
+  cachedMessageCount?: Prisma.IntWithAggregatesFilter<"ChatSession"> | number
   createdAt?: Prisma.DateTimeWithAggregatesFilter<"ChatSession"> | Date | string
   updatedAt?: Prisma.DateTimeWithAggregatesFilter<"ChatSession"> | Date | string
   lastActiveAt?: Prisma.DateTimeWithAggregatesFilter<"ChatSession"> | Date | string
@@ -301,6 +349,7 @@ export type ChatSessionCreateInput = {
   contextType: $Enums.ContextType
   phase?: string | null
   claudeCodeSessionId?: string | null
+  cachedMessageCount?: number
   createdAt?: Date | string
   updatedAt?: Date | string
   lastActiveAt?: Date | string
@@ -317,6 +366,7 @@ export type ChatSessionUncheckedCreateInput = {
   contextId?: string | null
   phase?: string | null
   claudeCodeSessionId?: string | null
+  cachedMessageCount?: number
   createdAt?: Date | string
   updatedAt?: Date | string
   lastActiveAt?: Date | string
@@ -331,6 +381,7 @@ export type ChatSessionUpdateInput = {
   contextType?: Prisma.EnumContextTypeFieldUpdateOperationsInput | $Enums.ContextType
   phase?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   claudeCodeSessionId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cachedMessageCount?: Prisma.IntFieldUpdateOperationsInput | number
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   lastActiveAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -347,6 +398,7 @@ export type ChatSessionUncheckedUpdateInput = {
   contextId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   phase?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   claudeCodeSessionId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cachedMessageCount?: Prisma.IntFieldUpdateOperationsInput | number
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   lastActiveAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -362,6 +414,7 @@ export type ChatSessionCreateManyInput = {
   contextId?: string | null
   phase?: string | null
   claudeCodeSessionId?: string | null
+  cachedMessageCount?: number
   createdAt?: Date | string
   updatedAt?: Date | string
   lastActiveAt?: Date | string
@@ -374,6 +427,7 @@ export type ChatSessionUpdateManyMutationInput = {
   contextType?: Prisma.EnumContextTypeFieldUpdateOperationsInput | $Enums.ContextType
   phase?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   claudeCodeSessionId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cachedMessageCount?: Prisma.IntFieldUpdateOperationsInput | number
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   lastActiveAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -387,6 +441,7 @@ export type ChatSessionUncheckedUpdateManyInput = {
   contextId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   phase?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   claudeCodeSessionId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cachedMessageCount?: Prisma.IntFieldUpdateOperationsInput | number
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   lastActiveAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -410,9 +465,14 @@ export type ChatSessionCountOrderByAggregateInput = {
   contextId?: Prisma.SortOrder
   phase?: Prisma.SortOrder
   claudeCodeSessionId?: Prisma.SortOrder
+  cachedMessageCount?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
   lastActiveAt?: Prisma.SortOrder
+}
+
+export type ChatSessionAvgOrderByAggregateInput = {
+  cachedMessageCount?: Prisma.SortOrder
 }
 
 export type ChatSessionMaxOrderByAggregateInput = {
@@ -423,6 +483,7 @@ export type ChatSessionMaxOrderByAggregateInput = {
   contextId?: Prisma.SortOrder
   phase?: Prisma.SortOrder
   claudeCodeSessionId?: Prisma.SortOrder
+  cachedMessageCount?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
   lastActiveAt?: Prisma.SortOrder
@@ -436,9 +497,14 @@ export type ChatSessionMinOrderByAggregateInput = {
   contextId?: Prisma.SortOrder
   phase?: Prisma.SortOrder
   claudeCodeSessionId?: Prisma.SortOrder
+  cachedMessageCount?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
   lastActiveAt?: Prisma.SortOrder
+}
+
+export type ChatSessionSumOrderByAggregateInput = {
+  cachedMessageCount?: Prisma.SortOrder
 }
 
 export type ChatSessionScalarRelationFilter = {
@@ -527,6 +593,7 @@ export type ChatSessionCreateWithoutProjectInput = {
   contextType: $Enums.ContextType
   phase?: string | null
   claudeCodeSessionId?: string | null
+  cachedMessageCount?: number
   createdAt?: Date | string
   updatedAt?: Date | string
   lastActiveAt?: Date | string
@@ -541,6 +608,7 @@ export type ChatSessionUncheckedCreateWithoutProjectInput = {
   contextType: $Enums.ContextType
   phase?: string | null
   claudeCodeSessionId?: string | null
+  cachedMessageCount?: number
   createdAt?: Date | string
   updatedAt?: Date | string
   lastActiveAt?: Date | string
@@ -585,6 +653,7 @@ export type ChatSessionScalarWhereInput = {
   contextId?: Prisma.StringNullableFilter<"ChatSession"> | string | null
   phase?: Prisma.StringNullableFilter<"ChatSession"> | string | null
   claudeCodeSessionId?: Prisma.StringNullableFilter<"ChatSession"> | string | null
+  cachedMessageCount?: Prisma.IntFilter<"ChatSession"> | number
   createdAt?: Prisma.DateTimeFilter<"ChatSession"> | Date | string
   updatedAt?: Prisma.DateTimeFilter<"ChatSession"> | Date | string
   lastActiveAt?: Prisma.DateTimeFilter<"ChatSession"> | Date | string
@@ -597,6 +666,7 @@ export type ChatSessionCreateWithoutMessagesInput = {
   contextType: $Enums.ContextType
   phase?: string | null
   claudeCodeSessionId?: string | null
+  cachedMessageCount?: number
   createdAt?: Date | string
   updatedAt?: Date | string
   lastActiveAt?: Date | string
@@ -612,6 +682,7 @@ export type ChatSessionUncheckedCreateWithoutMessagesInput = {
   contextId?: string | null
   phase?: string | null
   claudeCodeSessionId?: string | null
+  cachedMessageCount?: number
   createdAt?: Date | string
   updatedAt?: Date | string
   lastActiveAt?: Date | string
@@ -641,6 +712,7 @@ export type ChatSessionUpdateWithoutMessagesInput = {
   contextType?: Prisma.EnumContextTypeFieldUpdateOperationsInput | $Enums.ContextType
   phase?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   claudeCodeSessionId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cachedMessageCount?: Prisma.IntFieldUpdateOperationsInput | number
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   lastActiveAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -656,6 +728,7 @@ export type ChatSessionUncheckedUpdateWithoutMessagesInput = {
   contextId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   phase?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   claudeCodeSessionId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cachedMessageCount?: Prisma.IntFieldUpdateOperationsInput | number
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   lastActiveAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -669,6 +742,7 @@ export type ChatSessionCreateWithoutToolCallLogsInput = {
   contextType: $Enums.ContextType
   phase?: string | null
   claudeCodeSessionId?: string | null
+  cachedMessageCount?: number
   createdAt?: Date | string
   updatedAt?: Date | string
   lastActiveAt?: Date | string
@@ -684,6 +758,7 @@ export type ChatSessionUncheckedCreateWithoutToolCallLogsInput = {
   contextId?: string | null
   phase?: string | null
   claudeCodeSessionId?: string | null
+  cachedMessageCount?: number
   createdAt?: Date | string
   updatedAt?: Date | string
   lastActiveAt?: Date | string
@@ -713,6 +788,7 @@ export type ChatSessionUpdateWithoutToolCallLogsInput = {
   contextType?: Prisma.EnumContextTypeFieldUpdateOperationsInput | $Enums.ContextType
   phase?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   claudeCodeSessionId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cachedMessageCount?: Prisma.IntFieldUpdateOperationsInput | number
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   lastActiveAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -728,6 +804,7 @@ export type ChatSessionUncheckedUpdateWithoutToolCallLogsInput = {
   contextId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   phase?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   claudeCodeSessionId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cachedMessageCount?: Prisma.IntFieldUpdateOperationsInput | number
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   lastActiveAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -741,6 +818,7 @@ export type ChatSessionCreateManyProjectInput = {
   contextType: $Enums.ContextType
   phase?: string | null
   claudeCodeSessionId?: string | null
+  cachedMessageCount?: number
   createdAt?: Date | string
   updatedAt?: Date | string
   lastActiveAt?: Date | string
@@ -753,6 +831,7 @@ export type ChatSessionUpdateWithoutProjectInput = {
   contextType?: Prisma.EnumContextTypeFieldUpdateOperationsInput | $Enums.ContextType
   phase?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   claudeCodeSessionId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cachedMessageCount?: Prisma.IntFieldUpdateOperationsInput | number
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   lastActiveAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -767,6 +846,7 @@ export type ChatSessionUncheckedUpdateWithoutProjectInput = {
   contextType?: Prisma.EnumContextTypeFieldUpdateOperationsInput | $Enums.ContextType
   phase?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   claudeCodeSessionId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cachedMessageCount?: Prisma.IntFieldUpdateOperationsInput | number
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   lastActiveAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -781,6 +861,7 @@ export type ChatSessionUncheckedUpdateManyWithoutProjectInput = {
   contextType?: Prisma.EnumContextTypeFieldUpdateOperationsInput | $Enums.ContextType
   phase?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   claudeCodeSessionId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cachedMessageCount?: Prisma.IntFieldUpdateOperationsInput | number
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   lastActiveAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -834,6 +915,7 @@ export type ChatSessionSelect<ExtArgs extends runtime.Types.Extensions.InternalA
   contextId?: boolean
   phase?: boolean
   claudeCodeSessionId?: boolean
+  cachedMessageCount?: boolean
   createdAt?: boolean
   updatedAt?: boolean
   lastActiveAt?: boolean
@@ -851,6 +933,7 @@ export type ChatSessionSelectCreateManyAndReturn<ExtArgs extends runtime.Types.E
   contextId?: boolean
   phase?: boolean
   claudeCodeSessionId?: boolean
+  cachedMessageCount?: boolean
   createdAt?: boolean
   updatedAt?: boolean
   lastActiveAt?: boolean
@@ -865,6 +948,7 @@ export type ChatSessionSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.E
   contextId?: boolean
   phase?: boolean
   claudeCodeSessionId?: boolean
+  cachedMessageCount?: boolean
   createdAt?: boolean
   updatedAt?: boolean
   lastActiveAt?: boolean
@@ -879,12 +963,13 @@ export type ChatSessionSelectScalar = {
   contextId?: boolean
   phase?: boolean
   claudeCodeSessionId?: boolean
+  cachedMessageCount?: boolean
   createdAt?: boolean
   updatedAt?: boolean
   lastActiveAt?: boolean
 }
 
-export type ChatSessionOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "name" | "inferredName" | "contextType" | "contextId" | "phase" | "claudeCodeSessionId" | "createdAt" | "updatedAt" | "lastActiveAt", ExtArgs["result"]["chatSession"]>
+export type ChatSessionOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "name" | "inferredName" | "contextType" | "contextId" | "phase" | "claudeCodeSessionId" | "cachedMessageCount" | "createdAt" | "updatedAt" | "lastActiveAt", ExtArgs["result"]["chatSession"]>
 export type ChatSessionInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   project?: boolean | Prisma.ChatSession$projectArgs<ExtArgs>
   messages?: boolean | Prisma.ChatSession$messagesArgs<ExtArgs>
@@ -913,6 +998,7 @@ export type $ChatSessionPayload<ExtArgs extends runtime.Types.Extensions.Interna
     contextId: string | null
     phase: string | null
     claudeCodeSessionId: string | null
+    cachedMessageCount: number
     createdAt: Date
     updatedAt: Date
     lastActiveAt: Date
@@ -1349,6 +1435,7 @@ export interface ChatSessionFieldRefs {
   readonly contextId: Prisma.FieldRef<"ChatSession", 'String'>
   readonly phase: Prisma.FieldRef<"ChatSession", 'String'>
   readonly claudeCodeSessionId: Prisma.FieldRef<"ChatSession", 'String'>
+  readonly cachedMessageCount: Prisma.FieldRef<"ChatSession", 'Int'>
   readonly createdAt: Prisma.FieldRef<"ChatSession", 'DateTime'>
   readonly updatedAt: Prisma.FieldRef<"ChatSession", 'DateTime'>
   readonly lastActiveAt: Prisma.FieldRef<"ChatSession", 'DateTime'>

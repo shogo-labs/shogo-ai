@@ -800,6 +800,31 @@ export class KnativeProjectManager {
       console.warn(`[KnativeProjectManager] AI proxy token not generated for ${projectId} — AI features will be unavailable in this pod`)
     }
 
+    // Inject web search API keys for agent runtime tools (web_search, MCP servers).
+    // Keys are stored in the "agent-tool-secrets" K8s Secret in the system namespace.
+    if (isAgentProject) {
+      env.push(
+        {
+          name: "SERPER_API_KEY",
+          valueFrom: {
+            secretKeyRef: { name: "agent-tool-secrets", key: "SERPER_API_KEY", optional: true },
+          },
+        },
+        {
+          name: "EXA_API_KEY",
+          valueFrom: {
+            secretKeyRef: { name: "agent-tool-secrets", key: "EXA_API_KEY", optional: true },
+          },
+        },
+        {
+          name: "BRAVE_API_KEY",
+          valueFrom: {
+            secretKeyRef: { name: "agent-tool-secrets", key: "BRAVE_API_KEY", optional: true },
+          },
+        },
+      )
+    }
+
     // Add PostgreSQL DATABASE_URL for shared CloudNativePG cluster
     // Database is provisioned per-project on the shared projects-pg cluster
     // Credentials are stored in a K8s Secret and referenced via secretKeyRef

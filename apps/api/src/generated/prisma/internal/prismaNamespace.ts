@@ -3663,6 +3663,7 @@ export const ChatSessionScalarFieldEnum = {
   contextId: 'contextId',
   phase: 'phase',
   claudeCodeSessionId: 'claudeCodeSessionId',
+  cachedMessageCount: 'cachedMessageCount',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt',
   lastActiveAt: 'lastActiveAt'

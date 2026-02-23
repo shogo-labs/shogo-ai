@@ -291,7 +291,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     description: 'Search Airbnb listings by location, dates, guests, and price range. Get detailed property info including amenities, photos, and policies.',
     category: 'travel',
     package: '@openbnb/mcp-server-airbnb@latest',
-    defaultArgs: [],
+    defaultArgs: ['--ignore-robots-txt'],
     requiredEnv: {},
     providedTools: ['airbnb_search', 'airbnb_listing_details'],
     icon: '🏠',
