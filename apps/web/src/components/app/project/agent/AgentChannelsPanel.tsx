@@ -44,6 +44,11 @@ const CHANNEL_INFO: Record<string, { name: string; icon: string; setupUrl: strin
     icon: '💬',
     setupUrl: 'https://developers.facebook.com/docs/whatsapp/cloud-api/get-started',
   },
+  slack: {
+    name: 'Slack',
+    icon: '💼',
+    setupUrl: 'https://api.slack.com/apps',
+  },
 }
 
 export function AgentChannelsPanel({ projectId, visible, localAgentUrl }: AgentChannelsPanelProps) {
@@ -158,7 +163,7 @@ export function AgentChannelsPanel({ projectId, visible, localAgentUrl }: AgentC
             </div>
 
             <div className="text-xs text-muted-foreground mt-4">
-              Use the builder AI chat to connect channels. For example: "Connect my Telegram bot", "Set up Discord integration", or "Connect WhatsApp".
+              Use the builder AI chat to connect channels. For example: "Connect my Telegram bot", "Set up Discord", "Connect WhatsApp", or "Add Slack".
             </div>
           </div>
         )}

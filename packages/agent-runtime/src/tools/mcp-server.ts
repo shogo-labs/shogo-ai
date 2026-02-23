@@ -361,14 +361,14 @@ defineTool({
 
 defineTool({
   name: 'channel_connect',
-  description: 'Connect a messaging channel (telegram, discord, email, or whatsapp)',
+  description: 'Connect a messaging channel (telegram, discord, email, whatsapp, or slack)',
   inputSchema: {
     type: 'object',
     properties: {
-      type: { type: 'string', enum: ['telegram', 'discord', 'email', 'whatsapp'], description: 'Channel type' },
+      type: { type: 'string', enum: ['telegram', 'discord', 'email', 'whatsapp', 'slack'], description: 'Channel type' },
       config: {
         type: 'object',
-        description: 'Channel configuration. Telegram: { botToken }. Discord: { botToken, guildId? }. Email: { imapHost, smtpHost, username, password }. WhatsApp: { accessToken, phoneNumberId, verifyToken? }',
+        description: 'Channel configuration. Telegram: { botToken }. Discord: { botToken, guildId? }. Email: { imapHost, smtpHost, username, password }. WhatsApp: { accessToken, phoneNumberId, verifyToken? }. Slack: { botToken, appToken }',
       },
     },
     required: ['type', 'config'],
