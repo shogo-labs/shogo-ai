@@ -285,6 +285,89 @@ app.get('/agent/status', (c) => {
   return c.json(status)
 })
 
+// Channel connect — persist to config.json and hot-connect via the gateway
+app.post('/agent/channels/connect', async (c) => {
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+
+  const { type, config: channelConfig } = await c.req.json() as {
+    type: string
+    config: Record<string, string>
+  }
+
+  if (!type || !channelConfig) {
+    return c.json({ error: 'type and config are required' }, 400)
+  }
+
+  const validTypes = ['telegram', 'discord', 'slack', 'whatsapp', 'email']
+  if (!validTypes.includes(type)) {
+    return c.json({ error: `Invalid channel type: ${type}. Must be one of: ${validTypes.join(', ')}` }, 400)
+  }
+
+  try {
+    const configPath = join(AGENT_DIR, 'config.json')
+    let fileConfig: Record<string, any> = {}
+    if (existsSync(configPath)) {
+      try {
+        fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'))
+      } catch {
+        // config.json is corrupted — start fresh but preserve the file
+        console.error('[agent-runtime] config.json is invalid JSON, starting with empty config')
+        fileConfig = {}
+      }
+    }
+
+    fileConfig.channels = fileConfig.channels || []
+    const existing = fileConfig.channels.findIndex((ch: any) => ch.type === type)
+    if (existing >= 0) {
+      fileConfig.channels[existing] = { type, config: channelConfig }
+    } else {
+      fileConfig.channels.push({ type, config: channelConfig })
+    }
+
+    await agentGateway.connectChannel(type, channelConfig)
+
+    writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8')
+
+    return c.json({ ok: true, type, message: `${type} channel connected` })
+  } catch (error: any) {
+    return c.json({ error: error.message || `Failed to connect ${type}` }, 500)
+  }
+})
+
+// Channel disconnect — remove from config.json and disconnect live adapter
+app.post('/agent/channels/disconnect', async (c) => {
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+
+  const { type } = await c.req.json() as { type: string }
+
+  if (!type) {
+    return c.json({ error: 'type is required' }, 400)
+  }
+
+  try {
+    await agentGateway.disconnectChannel(type)
+
+    const configPath = join(AGENT_DIR, 'config.json')
+    if (existsSync(configPath)) {
+      try {
+        const fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'))
+        fileConfig.channels = (fileConfig.channels || []).filter((ch: any) => ch.type !== type)
+        writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8')
+      } catch {
+        console.error('[agent-runtime] config.json is invalid JSON, skipping config update')
+      }
+    }
+
+    return c.json({ ok: true, type, message: `${type} channel disconnected` })
+  } catch (error: any) {
+    return c.json({ error: error.message || `Failed to disconnect ${type}` }, 500)
+  }
+})
+
 // Agent chat endpoint — send a message to the running agent.
 // Accepts AI SDK v3 format: { messages: [{ role, parts: [{ type: 'text', text }] }] }
 // Returns an AI SDK UI message stream so the frontend can use useChat().
