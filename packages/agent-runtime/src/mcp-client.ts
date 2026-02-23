@@ -17,7 +17,7 @@ import { Type } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 
 const MAX_MCP_SERVERS = 10
-const MCP_CONNECT_TIMEOUT_MS = 30_000
+const MCP_CONNECT_TIMEOUT_MS = 90_000
 const MCP_TOOL_LIST_TIMEOUT_MS = 15_000
 
 /**
