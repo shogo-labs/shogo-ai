@@ -196,7 +196,24 @@ export function useDynamicAppStream(agentUrl: string | null) {
     [],
   )
 
-  return { surfaces, connected, error, dispatchAction, updateLocalData }
+  const reconnect = useCallback(() => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close()
+      eventSourceRef.current = null
+    }
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current)
+      reconnectTimeoutRef.current = null
+    }
+    reconnectAttemptRef.current = 0
+    setConnected(false)
+    setError(null)
+    setSurfaces(new Map())
+    // Small delay so the UI can show the "reconnecting" state before connecting
+    setTimeout(connect, 150)
+  }, [connect])
+
+  return { surfaces, connected, error, dispatchAction, updateLocalData, reconnect }
 }
 
 // ---------------------------------------------------------------------------
