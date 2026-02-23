@@ -98,6 +98,36 @@ describe('DynamicAppManager', () => {
       const surface = manager.getSurface('s1')!
       expect((surface.dataModel as any).a.b.c).toBe('deep')
     })
+
+    test('auto-parses JSON string values into arrays', () => {
+      manager.createSurface('s1')
+      manager.updateData('s1', '/items', '[{"id":1,"name":"Alice"},{"id":2,"name":"Bob"}]')
+
+      const surface = manager.getSurface('s1')!
+      const items = (surface.dataModel as any).items
+      expect(Array.isArray(items)).toBe(true)
+      expect(items).toHaveLength(2)
+      expect(items[0].name).toBe('Alice')
+    })
+
+    test('auto-parses JSON string values into objects', () => {
+      manager.createSurface('s1')
+      manager.updateData('s1', '/config', '{"theme":"dark","count":42}')
+
+      const surface = manager.getSurface('s1')!
+      const config = (surface.dataModel as any).config
+      expect(typeof config).toBe('object')
+      expect(config.theme).toBe('dark')
+      expect(config.count).toBe(42)
+    })
+
+    test('leaves non-JSON strings as strings', () => {
+      manager.createSurface('s1')
+      manager.updateData('s1', '/label', 'Hello World')
+
+      const surface = manager.getSurface('s1')!
+      expect((surface.dataModel as any).label).toBe('Hello World')
+    })
   })
 
   describe('deleteSurface', () => {

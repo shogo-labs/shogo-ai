@@ -180,8 +180,8 @@ describe('gateway-tools', () => {
   })
 
   describe('tool sets', () => {
-    test('createAllTools returns 22 tools', () => {
-      expect(createAllTools(createCtx())).toHaveLength(22)
+    test('createAllTools returns expected tools', () => {
+      expect(createAllTools(createCtx())).toHaveLength(26)
       expect(createAllTools(createCtx()).find((t) => t.name === 'cron')).toBeDefined()
       expect(createAllTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()
       expect(createAllTools(createCtx()).find((t) => t.name === 'browser')).toBeDefined()

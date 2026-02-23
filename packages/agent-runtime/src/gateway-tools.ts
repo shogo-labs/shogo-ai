@@ -659,9 +659,28 @@ function createCanvasDataTool(): AgentTool {
     execute: async (_toolCallId, params) => {
       const { surfaceId, path, value } = params as { surfaceId: string; path?: string; value: unknown }
       const manager = getDynamicAppManager()
-      return textResult(manager.updateData(surfaceId, path, value))
+      const resolved = autoParseJsonString(value)
+      return textResult(manager.updateData(surfaceId, path, resolved))
     },
   }
+}
+
+/**
+ * LLMs frequently send JSON values as stringified JSON (e.g. `"[{\"id\":1}]"`)
+ * instead of native JSON arrays/objects. Auto-parse when the string looks like
+ * a JSON array or object so data bindings work correctly.
+ */
+function autoParseJsonString(value: unknown): unknown {
+  if (typeof value !== 'string') return value
+  const trimmed = value.trim()
+  if ((trimmed.startsWith('[') && trimmed.endsWith(']')) || (trimmed.startsWith('{') && trimmed.endsWith('}'))) {
+    try {
+      return JSON.parse(trimmed)
+    } catch {
+      return value
+    }
+  }
+  return value
 }
 
 function createCanvasDeleteTool(): AgentTool {

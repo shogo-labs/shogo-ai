@@ -128,14 +128,17 @@ export class DynamicAppManager {
       return { ok: false, error: `Surface "${surfaceId}" does not exist. Create it with canvas_create first.` }
     }
 
+    // Auto-parse JSON strings — LLMs frequently send stringified JSON instead of native objects/arrays
+    const resolved = autoParseJsonString(value)
+
     if (!path || path === '/') {
-      if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-        surface.dataModel = value as Record<string, unknown>
+      if (typeof resolved === 'object' && resolved !== null && !Array.isArray(resolved)) {
+        surface.dataModel = resolved as Record<string, unknown>
       } else {
         return { ok: false, error: 'Root data model must be an object' }
       }
     } else {
-      setByPointer(surface.dataModel, path, value)
+      setByPointer(surface.dataModel, path, resolved)
     }
 
     surface.updatedAt = new Date().toISOString()
@@ -221,6 +224,22 @@ export class DynamicAppManager {
       }
     }
 
+    // Fallback: try to infer a mutation from the action name + context when a runtime exists.
+    // This handles the common case where the agent creates buttons without explicit mutation
+    // definitions — the user click would otherwise silently fail.
+    if (!mutation) {
+      const runtime = this.runtimes.get(event.surfaceId)
+      if (runtime && runtime.isReady()) {
+        const inferred = this.inferMutation(runtime, event)
+        if (inferred) {
+          this.executeMutation(event.surfaceId, runtime, inferred).catch((err) => {
+            console.error('[DynamicAppManager] Inferred mutation execution failed:', err)
+          })
+          return
+        }
+      }
+    }
+
     const idx = this.actionWaiters.findIndex((w) => {
       if (w.surfaceId && w.surfaceId !== event.surfaceId) return false
       if (w.actionName && w.actionName !== event.name) return false
@@ -234,6 +253,78 @@ export class DynamicAppManager {
     } else {
       this.actionQueue.push(event)
       if (this.actionQueue.length > 100) this.actionQueue.shift()
+    }
+  }
+
+  /**
+   * Attempt to derive a CRUD mutation from the action name and context.
+   * Handles patterns like "save_hotel", "add_activity", "delete_todo",
+   * "reserve_restaurant" by matching the noun to an API model endpoint.
+   */
+  private inferMutation(
+    runtime: ManagedApiRuntime,
+    event: ActionEvent,
+  ): { endpoint: string; method: string; body?: unknown } | null {
+    const name = event.name?.toLowerCase() ?? ''
+    const ctx = event.context ?? {}
+
+    const endpoints = runtime.getEndpoints()
+    if (endpoints.length === 0) return null
+
+    // Extract verb and noun from action name (e.g. "save_hotel" → verb="save", noun="hotel")
+    const parts = name.split('_')
+    if (parts.length < 2) return null
+
+    const verb = parts[0]
+    const noun = parts.slice(1).join('_')
+
+    // Match noun to an endpoint (fuzzy: "hotel" matches "/api/hotels")
+    const matchedEndpoint = endpoints.find((ep) => {
+      const epNoun = ep.path.replace('/api/', '').toLowerCase()
+      return epNoun.startsWith(noun) || noun.startsWith(epNoun.replace(/s$|es$|ies$/, ''))
+    })
+    if (!matchedEndpoint) return null
+
+    const id = ctx.id ?? ctx.itemId ?? ctx[`${noun}Id`] ?? ctx[`${noun}_id`]
+
+    switch (verb) {
+      case 'save':
+      case 'add':
+      case 'create':
+      case 'reserve':
+      case 'book': {
+        const body = { ...ctx }
+        delete body.id
+        delete body.itemId
+        delete body._mutation
+        if (id) {
+          return { endpoint: `${matchedEndpoint.path}/${id}`, method: 'PATCH', body }
+        }
+        return { endpoint: matchedEndpoint.path, method: 'POST', body }
+      }
+      case 'delete':
+      case 'remove':
+      case 'cancel': {
+        if (id) {
+          return { endpoint: `${matchedEndpoint.path}/${id}`, method: 'DELETE' }
+        }
+        return null
+      }
+      case 'update':
+      case 'edit':
+      case 'toggle':
+      case 'mark': {
+        if (id) {
+          const body = { ...ctx }
+          delete body.id
+          delete body.itemId
+          delete body._mutation
+          return { endpoint: `${matchedEndpoint.path}/${id}`, method: 'PATCH', body }
+        }
+        return null
+      }
+      default:
+        return null
     }
   }
 
@@ -565,6 +656,24 @@ export function getByPointer(obj: Record<string, unknown>, pointer: string): unk
 
 function isArrayIndex(key: string): boolean {
   return /^\d+$/.test(key)
+}
+
+/**
+ * LLMs frequently send JSON values as stringified JSON (e.g. `"[{\"id\":1}]"`)
+ * instead of native JSON arrays/objects. Auto-parse when the string looks like
+ * a JSON array or object so data bindings work correctly.
+ */
+function autoParseJsonString(value: unknown): unknown {
+  if (typeof value !== 'string') return value
+  const trimmed = value.trim()
+  if ((trimmed.startsWith('[') && trimmed.endsWith(']')) || (trimmed.startsWith('{') && trimmed.endsWith('}'))) {
+    try {
+      return JSON.parse(trimmed)
+    } catch {
+      return value
+    }
+  }
+  return value
 }
 
 // Singleton instance
