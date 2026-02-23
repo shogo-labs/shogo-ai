@@ -23,7 +23,7 @@ interface AgentChannelsPanelProps {
   localAgentUrl?: string | null
 }
 
-const CHANNEL_INFO: Record<string, { name: string; icon: string; setupUrl: string }> = {
+const CHANNEL_INFO: Record<string, { name: string; icon: string; setupUrl: string; description?: string }> = {
   telegram: {
     name: 'Telegram',
     icon: '📱',
@@ -48,6 +48,12 @@ const CHANNEL_INFO: Record<string, { name: string; icon: string; setupUrl: strin
     name: 'Slack',
     icon: '💼',
     setupUrl: 'https://api.slack.com/apps',
+  },
+  webhook: {
+    name: 'Webhook / HTTP',
+    icon: '🔗',
+    setupUrl: '',
+    description: 'Connect any app via Zapier, Make, n8n, or direct HTTP',
   },
 }
 
@@ -145,9 +151,10 @@ export function AgentChannelsPanel({ projectId, visible, localAgentUrl }: AgentC
                     <div className="flex-1">
                       <div className="text-sm font-medium text-muted-foreground">{info.name}</div>
                       <div className="text-xs text-muted-foreground/70">
-                        Not connected — ask the builder AI to set up
+                        {info.description || 'Not connected — ask the builder AI to set up'}
                       </div>
                     </div>
+                    {info.setupUrl && (
                     <a
                       href={info.setupUrl}
                       target="_blank"
@@ -157,6 +164,7 @@ export function AgentChannelsPanel({ projectId, visible, localAgentUrl }: AgentC
                     >
                       <ExternalLink className="h-3.5 w-3.5" />
                     </a>
+                    )}
                   </div>
                 )
               })}

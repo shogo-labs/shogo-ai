@@ -1911,6 +1911,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   ],
   memory: ['memory_read', 'memory_write', 'memory_search'],
   messaging: ['send_message'],
+  webhook: ['send_message'],
   cron: ['cron'],
   canvas: ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_action_wait', 'canvas_components', 'canvas_trigger_action', 'canvas_inspect'],
   api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query'],

@@ -231,6 +231,14 @@ import('./channels/whatsapp').then(({ WhatsAppAdapter }) => {
   WhatsAppAdapter.registerWebhookRoutes(app)
 }).catch(() => { /* WhatsApp adapter not available */ })
 
+// Register generic Webhook channel routes
+import { WebhookAdapter } from './channels/webhook'
+WebhookAdapter.registerRoutes(app, () => {
+  if (!agentGateway) return null
+  const adapter = agentGateway.getChannel('webhook') as WebhookAdapter | undefined
+  return adapter && adapter.getStatus().connected ? adapter : null
+})
+
 // Health check
 app.get('/health', (c) =>
   c.json({

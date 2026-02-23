@@ -1274,6 +1274,11 @@ export class AgentGateway {
         adapter = new WhatsAppAdapter(config)
         break
       }
+      case 'webhook': {
+        const { WebhookAdapter } = await import('./channels/webhook')
+        adapter = new WebhookAdapter()
+        break
+      }
       default:
         throw new Error(`Unknown channel type: ${type}`)
     }
@@ -1418,5 +1423,10 @@ export class AgentGateway {
 
   getMCPClientManager(): MCPClientManager {
     return this.mcpClientManager
+  }
+
+  /** Get a connected channel adapter by type */
+  getChannel(type: string): ChannelAdapter | undefined {
+    return this.channels.get(type)
   }
 }
