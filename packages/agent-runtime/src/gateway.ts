@@ -1121,6 +1121,16 @@ export class AgentGateway {
       }
     }
 
+    const now = new Date()
+    parts.push([
+      '## Current Context',
+      `- Today: ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
+      `- Year: ${now.getFullYear()}`,
+      `- Timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}`,
+      '',
+      'When users mention dates without a year, default to the current or next occurrence (never a past date).',
+    ].join('\n'))
+
     const canvasExamples = this.promptOverrides.get('canvas_examples') ?? OPTIMIZED_CANVAS_EXAMPLES
     const personalityGuide = this.promptOverrides.get('personality_guide') ?? OPTIMIZED_PERSONALITY_GUIDE
     const toolPlanningGuide = this.promptOverrides.get('tool_planning_guide') ?? OPTIMIZED_TOOL_PLANNING_GUIDE

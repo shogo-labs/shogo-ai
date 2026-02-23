@@ -81,8 +81,13 @@ export const TemplatesPage = observer(function TemplatesPage() {
             <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
           </div>
         ) : templates.length === 0 ? (
-          <div className="text-center py-20 text-muted-foreground">
-            No templates available
+          <div className="flex flex-col items-center gap-3 py-20 text-center">
+            <p className="text-muted-foreground">
+              No templates available yet
+            </p>
+            <p className="text-sm text-muted-foreground max-w-md">
+              Templates will appear here as they become available. In the meantime, start a new project and describe what you want to build.
+            </p>
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-4 gap-6">

@@ -94,18 +94,13 @@ export const UserMenu = observer(function UserMenu() {
   }, [])
 
   const handleSignOut = async () => {
+    try { sessionStorage.setItem('shogo:just-signed-out', '1') } catch {}
     try {
       await auth.signOut()
     } catch (error) {
       console.error("Sign out failed:", error)
     } finally {
-      // Clear user-specific localStorage data before reload
-      // This prevents the next user from seeing stale workspace/chat data
       clearUserLocalStorage()
-      
-      // Force full page reload to clear all MST stores and contexts
-      // This ensures no stale data from previous user remains
-      // Use finally to ensure reload happens even if signOut fails
       window.location.reload()
     }
   }

@@ -204,6 +204,174 @@ function createWebFetchTool(): AgentTool {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Serper.dev Web Search
+// ---------------------------------------------------------------------------
+
+const SERPER_ENDPOINTS: Record<string, string> = {
+  search: 'https://google.serper.dev/search',
+  news: 'https://google.serper.dev/news',
+  images: 'https://google.serper.dev/images',
+  places: 'https://google.serper.dev/places',
+  shopping: 'https://google.serper.dev/shopping',
+}
+
+interface SerperOrganicResult {
+  title?: string
+  link?: string
+  snippet?: string
+  position?: number
+  date?: string
+  sitelinks?: Array<{ title: string; link: string }>
+}
+
+interface SerperResponse {
+  searchParameters?: Record<string, unknown>
+  knowledgeGraph?: { title?: string; description?: string; type?: string; website?: string; attributes?: Record<string, string> }
+  answerBox?: { answer?: string; snippet?: string; snippetHighlighted?: string[] }
+  organic?: SerperOrganicResult[]
+  peopleAlsoAsk?: Array<{ question: string; snippet?: string; link?: string }>
+  relatedSearches?: Array<{ query: string }>
+  news?: Array<{ title?: string; link?: string; snippet?: string; date?: string; source?: string }>
+  places?: Array<{ title?: string; address?: string; rating?: number; ratingCount?: number }>
+  images?: Array<{ title?: string; imageUrl?: string; link?: string }>
+  shopping?: Array<{ title?: string; price?: string; link?: string; source?: string }>
+  credits?: number
+}
+
+function formatSerperResults(raw: SerperResponse, searchType: string): string {
+  const parts: string[] = []
+
+  if (raw.answerBox) {
+    const ab = raw.answerBox
+    const answer = [ab.answer, ab.snippet].filter(Boolean).join(' — ')
+    if (answer) parts.push(`**Answer:** ${answer}`)
+  }
+
+  if (raw.knowledgeGraph) {
+    const kg = raw.knowledgeGraph
+    const kgParts = [`**${kg.title || 'Knowledge Graph'}**`]
+    if (kg.type) kgParts.push(`Type: ${kg.type}`)
+    if (kg.description) kgParts.push(kg.description)
+    if (kg.website) kgParts.push(`Website: ${kg.website}`)
+    if (kg.attributes) {
+      for (const [k, v] of Object.entries(kg.attributes)) {
+        kgParts.push(`${k}: ${v}`)
+      }
+    }
+    parts.push(kgParts.join('\n'))
+  }
+
+  if (searchType === 'search' && raw.organic?.length) {
+    parts.push('**Search Results:**')
+    for (const r of raw.organic.slice(0, 10)) {
+      const entry = [`${r.position ?? ''}. **${r.title}**`, r.link, r.snippet].filter(Boolean).join('\n   ')
+      parts.push(entry)
+    }
+  }
+
+  if (searchType === 'news' && raw.news?.length) {
+    parts.push('**News Results:**')
+    for (const n of raw.news.slice(0, 10)) {
+      parts.push([`- **${n.title}**`, n.source ? `(${n.source})` : '', n.date || '', n.link, n.snippet].filter(Boolean).join(' '))
+    }
+  }
+
+  if (searchType === 'places' && raw.places?.length) {
+    parts.push('**Places:**')
+    for (const p of raw.places.slice(0, 10)) {
+      parts.push(`- **${p.title}** — ${p.address || 'N/A'} (${p.rating ?? '?'}/5, ${p.ratingCount ?? 0} reviews)`)
+    }
+  }
+
+  if (searchType === 'shopping' && raw.shopping?.length) {
+    parts.push('**Shopping Results:**')
+    for (const s of raw.shopping.slice(0, 10)) {
+      parts.push(`- **${s.title}** — ${s.price || 'N/A'} (${s.source || ''}) ${s.link || ''}`)
+    }
+  }
+
+  if (raw.peopleAlsoAsk?.length) {
+    parts.push('**People Also Ask:**')
+    for (const q of raw.peopleAlsoAsk.slice(0, 5)) {
+      parts.push(`- ${q.question}${q.snippet ? ` — ${q.snippet}` : ''}`)
+    }
+  }
+
+  if (raw.relatedSearches?.length) {
+    parts.push('**Related Searches:** ' + raw.relatedSearches.map(r => r.query).join(', '))
+  }
+
+  return parts.join('\n\n') || 'No results found.'
+}
+
+function createWebSearchTool(): AgentTool {
+  return {
+    name: 'web_search',
+    description:
+      'Search the web using Google via Serper API. Returns structured search results with titles, links, snippets, and rich data (knowledge graph, answer boxes). ' +
+      'Supports search types: "search" (default), "news", "images", "places", "shopping". ' +
+      'For flights, search normally with a query like "flights from LAX to DPS April 20 2026".',
+    label: 'Web Search',
+    parameters: Type.Object({
+      query: Type.String({ description: 'Search query (e.g., "best restaurants in Bali", "flights from LAX to DPS April 2026")' }),
+      searchType: Type.Optional(Type.String({ description: 'Type of search: "search" (default), "news", "images", "places", "shopping"' })),
+      num: Type.Optional(Type.Number({ description: 'Number of results (default: 10, max: 100)' })),
+      gl: Type.Optional(Type.String({ description: 'Country code for localized results (e.g., "us", "uk", "id")' })),
+      hl: Type.Optional(Type.String({ description: 'Language code (e.g., "en", "id", "fr")' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const {
+        query,
+        searchType = 'search',
+        num = 10,
+        gl = 'us',
+        hl = 'en',
+      } = params as { query: string; searchType?: string; num?: number; gl?: string; hl?: string }
+
+      const apiKey = process.env.SERPER_API_KEY
+      if (!apiKey) {
+        return textResult({
+          error: 'SERPER_API_KEY not configured. Web search is unavailable.',
+          suggestion: 'Set the SERPER_API_KEY environment variable to enable Google search.',
+        })
+      }
+
+      const endpoint = SERPER_ENDPOINTS[searchType] || SERPER_ENDPOINTS.search
+
+      try {
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'X-API-KEY': apiKey,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ q: query, num, gl, hl }),
+          signal: AbortSignal.timeout(15000),
+        })
+
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => '')
+          return textResult({ error: `Serper API error: HTTP ${response.status}`, details: errorText, query })
+        }
+
+        const data = (await response.json()) as SerperResponse
+        const formatted = formatSerperResults(data, searchType)
+
+        return textResult({
+          results: formatted,
+          raw: data,
+          query,
+          searchType,
+          creditsUsed: data.credits,
+        })
+      } catch (err: any) {
+        return textResult({ error: `Web search failed: ${err.message}`, query })
+      }
+    },
+  }
+}
+
 function createMemoryReadTool(ctx: ToolContext): AgentTool {
   return {
     name: 'memory_read',
@@ -1490,7 +1658,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   shell: ['exec'],
   filesystem: ['read_file', 'write_file'],
   web_fetch: ['web_fetch'],
-  web_search: ['web_fetch'],
+  web_search: ['web_search', 'web_fetch'],
   browser: [
     'browser',
     'mcp_playwright_browser_navigate', 'mcp_playwright_browser_snapshot',
@@ -1507,7 +1675,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
 }
 
 export const ALL_TOOL_NAMES = [
-  'exec', 'read_file', 'write_file', 'web_fetch', 'browser',
+  'exec', 'read_file', 'write_file', 'web_fetch', 'web_search', 'browser',
   'memory_read', 'memory_write', 'memory_search', 'send_message', 'cron',
   'canvas_create', 'canvas_update', 'canvas_data', 'canvas_delete', 'canvas_action_wait', 'canvas_components',
   'canvas_trigger_action', 'canvas_inspect',
@@ -1546,6 +1714,7 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createReadFileTool(ctx),
     createWriteFileTool(ctx),
     createWebFetchTool(),
+    createWebSearchTool(),
     createBrowserTool(ctx),
     createMemoryReadTool(ctx),
     createMemoryWriteTool(ctx),
@@ -1577,6 +1746,7 @@ export function createHeartbeatTools(ctx: ToolContext): AgentTool[] {
     createReadFileTool(ctx),
     createWriteFileTool(ctx),
     createWebFetchTool(),
+    createWebSearchTool(),
     createBrowserTool(ctx),
     createMemoryReadTool(ctx),
     createMemoryWriteTool(ctx),
