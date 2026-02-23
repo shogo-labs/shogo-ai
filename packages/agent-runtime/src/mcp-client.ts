@@ -6,12 +6,17 @@
  * so the gateway can use any MCP server as additional agent tools.
  *
  * Lifecycle: startAll() on gateway start, stopAll() on gateway stop.
+ * Hot-add/remove: hotAddServer()/hotRemoveServer() for live session changes.
  */
 
+import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { join } from 'path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { Type } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
+
+const MAX_MCP_SERVERS = 10
 
 export interface MCPServerConfig {
   command: string
@@ -71,8 +76,20 @@ function textResult(data: any): AgentToolResult<any> {
   }
 }
 
+export interface MCPServerInfo {
+  name: string
+  toolCount: number
+  toolNames: string[]
+  config: MCPServerConfig
+}
+
 export class MCPClientManager {
   private servers: Map<string, ManagedServer> = new Map()
+  private workspaceDir: string | null = null
+
+  setWorkspaceDir(dir: string): void {
+    this.workspaceDir = dir
+  }
 
   async startServer(name: string, config: MCPServerConfig): Promise<AgentTool[]> {
     if (this.servers.has(name)) {
@@ -219,5 +236,57 @@ export class MCPClientManager {
 
   isRunning(name: string): boolean {
     return this.servers.has(name)
+  }
+
+  getServerInfo(): MCPServerInfo[] {
+    const info: MCPServerInfo[] = []
+    for (const server of this.servers.values()) {
+      info.push({
+        name: server.name,
+        toolCount: server.tools.length,
+        toolNames: server.tools.map(t => t.name),
+        config: server.config,
+      })
+    }
+    return info
+  }
+
+  async hotAddServer(name: string, config: MCPServerConfig): Promise<AgentTool[]> {
+    if (this.servers.size >= MAX_MCP_SERVERS) {
+      throw new Error(`Cannot add server "${name}": maximum of ${MAX_MCP_SERVERS} MCP servers reached`)
+    }
+    const tools = await this.startServer(name, config)
+    this.persistConfig(name, config)
+    return tools
+  }
+
+  async hotRemoveServer(name: string): Promise<void> {
+    await this.stopServer(name)
+    this.unpersistConfig(name)
+  }
+
+  private persistConfig(name: string, config: MCPServerConfig): void {
+    if (!this.workspaceDir) return
+    const configPath = join(this.workspaceDir, 'config.json')
+    let existing: Record<string, any> = {}
+    if (existsSync(configPath)) {
+      try { existing = JSON.parse(readFileSync(configPath, 'utf-8')) } catch { /* fresh config */ }
+    }
+    existing.mcpServers = existing.mcpServers || {}
+    existing.mcpServers[name] = { command: config.command, ...(config.args ? { args: config.args } : {}), ...(config.env ? { env: config.env } : {}), ...(config.cwd ? { cwd: config.cwd } : {}) }
+    writeFileSync(configPath, JSON.stringify(existing, null, 2), 'utf-8')
+  }
+
+  private unpersistConfig(name: string): void {
+    if (!this.workspaceDir) return
+    const configPath = join(this.workspaceDir, 'config.json')
+    if (!existsSync(configPath)) return
+    try {
+      const existing = JSON.parse(readFileSync(configPath, 'utf-8'))
+      if (existing.mcpServers?.[name]) {
+        delete existing.mcpServers[name]
+        writeFileSync(configPath, JSON.stringify(existing, null, 2), 'utf-8')
+      }
+    } catch { /* ignore parse errors */ }
   }
 }

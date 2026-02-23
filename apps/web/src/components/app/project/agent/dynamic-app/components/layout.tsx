@@ -132,9 +132,12 @@ interface ScrollAreaProps {
   className?: string
 }
 
-export function DynScrollArea({ children, height = '400px', className }: ScrollAreaProps) {
+export function DynScrollArea({ children, height, className }: ScrollAreaProps) {
+  const h = height != null
+    ? (typeof height === 'number' ? `${height}px` : height)
+    : undefined
   return (
-    <ScrollArea className={cn(className)} style={{ height: typeof height === 'number' ? `${height}px` : height }}>
+    <ScrollArea className={cn(h ? undefined : 'h-full', className)} style={h ? { height: h } : undefined}>
       {children}
     </ScrollArea>
   )

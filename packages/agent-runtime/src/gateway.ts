@@ -40,6 +40,7 @@ import {
   OPTIMIZED_TOOL_PLANNING_GUIDE,
   OPTIMIZED_SESSION_SUMMARY_GUIDE,
   OPTIMIZED_SKILL_MATCHING_GUIDE,
+  OPTIMIZED_MCP_DISCOVERY_GUIDE,
 } from './optimized-prompts'
 
 export interface GatewayConfig {
@@ -256,6 +257,7 @@ export class AgentGateway {
         `cron:${job.name}`
       ),
     })
+    this.mcpClientManager.setWorkspaceDir(workspaceDir)
   }
 
   /** Inject a custom streamFn (used in tests to mock the LLM) */
@@ -910,6 +912,7 @@ export class AgentGateway {
       sessionId,
       sandbox: this.config.sandbox,
       mainSessionIds: this.config.mainSessionIds,
+      mcpClientManager: this.mcpClientManager,
     }
 
     const baseTools = isHeartbeat
@@ -919,12 +922,12 @@ export class AgentGateway {
     const mcpTools = this.mcpClientManager.getTools()
     const assembledTools = mcpTools.length > 0 ? [...baseTools, ...mcpTools] : baseTools
 
-    let tools = assembledTools
+    let staticTools = assembledTools
     if (this.toolMocks.size > 0) {
       const existingNames = new Set(assembledTools.map(t => t.name))
 
       // Wrap existing tools with mock interceptors
-      tools = assembledTools.map(tool => {
+      staticTools = assembledTools.map(tool => {
         const mockFn = this.toolMocks.get(tool.name)
         if (!mockFn) return tool
         return {
@@ -957,9 +960,30 @@ export class AgentGateway {
             return textResult(result)
           },
         }
-        tools.push(syntheticTool)
+        staticTools.push(syntheticTool)
       }
     }
+
+    // Dynamic tools proxy: pi-agent-core uses tools.find() and iterates tools.
+    // When mcp_install hot-adds servers mid-turn, their tools must be visible
+    // immediately. This proxy merges staticTools with live MCP tools on access.
+    const mcpMgr = this.mcpClientManager
+    const staticNames = new Set(staticTools.map(t => t.name))
+    const tools = new Proxy(staticTools, {
+      get(target, prop, receiver) {
+        if (prop === 'find' || prop === 'filter' || prop === 'map' ||
+            prop === 'forEach' || prop === 'some' || prop === 'every' ||
+            prop === Symbol.iterator || prop === 'length' ||
+            prop === 'slice' || prop === 'concat' || prop === 'includes') {
+          const liveMcpTools = mcpMgr.getTools().filter(t => !staticNames.has(t.name))
+          const merged = liveMcpTools.length > 0 ? [...target, ...liveMcpTools] : target
+          if (prop === 'length') return merged.length
+          if (prop === Symbol.iterator) return merged[Symbol.iterator].bind(merged)
+          return (merged as any)[prop].bind(merged)
+        }
+        return Reflect.get(target, prop, receiver)
+      },
+    }) as AgentTool[]
 
     const history = this.sessionManager.buildHistory(sessionId)
 
@@ -1138,6 +1162,7 @@ export class AgentGateway {
     parts.push(toolPlanningGuide)
     parts.push(memoryGuide)
     parts.push(skillMatchingGuide)
+    parts.push(this.promptOverrides.get('mcp_discovery_guide') ?? OPTIMIZED_MCP_DISCOVERY_GUIDE)
 
     return parts.join('\n\n---\n\n')
   }

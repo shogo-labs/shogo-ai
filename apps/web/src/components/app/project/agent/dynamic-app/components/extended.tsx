@@ -51,6 +51,7 @@ export function DynTabs({ tabs = [], defaultTab, children, className }: DynTabsP
 }
 
 interface DynTabPanelProps {
+  title?: string
   children?: ReactNode
   className?: string
 }

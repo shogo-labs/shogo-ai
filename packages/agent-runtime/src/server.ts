@@ -57,6 +57,7 @@ import {
 import { buildAgentSystemPrompt } from './system-prompt'
 import { seedWorkspaceDefaults } from './workspace-defaults'
 import { AgentGateway } from './gateway'
+import { userMessage } from './pi-adapter'
 import { getDynamicAppManager, initDynamicAppManager } from './dynamic-app-manager'
 import type { ActionEvent } from './dynamic-app-types'
 import { fileURLToPath } from 'url'
@@ -294,9 +295,11 @@ app.post('/agent/chat', async (c) => {
 
   const body = await c.req.json()
 
+  const allMessages = (body.messages || []) as Array<{ role: string; parts: Array<{ type: string; text: string }> }>
+
   let userText: string | undefined
-  if (body.messages && Array.isArray(body.messages)) {
-    const last = [...body.messages].reverse().find((m: any) => m.role === 'user')
+  if (allMessages.length > 0) {
+    const last = [...allMessages].reverse().find((m: any) => m.role === 'user')
     if (last?.parts && Array.isArray(last.parts)) {
       userText = last.parts
         .filter((p: any) => p.type === 'text')
@@ -307,6 +310,40 @@ app.post('/agent/chat', async (c) => {
 
   if (!userText) {
     return c.json({ error: 'message is required — send { messages: [{ role: "user", parts: [{ type: "text", text: "..." }] }] }' }, 400)
+  }
+
+  // Seed the chat session with prior conversation history from the request.
+  // AI SDK clients and eval runners send the full message array each turn;
+  // the session is the authoritative store so we only seed when it's empty
+  // to avoid duplicating messages on subsequent turns.
+  if (allMessages.length > 1) {
+    const sessionMgr = agentGateway!.getSessionManager()
+    const session = sessionMgr.getOrCreate('chat')
+    if (session.messages.length === 0) {
+      const priorMessages = allMessages.slice(0, -1)
+      for (const msg of priorMessages) {
+        const text = (msg.parts || [])
+          .filter((p: any) => p.type === 'text')
+          .map((p: any) => p.text)
+          .join('\n')
+        if (!text) continue
+
+        if (msg.role === 'user') {
+          sessionMgr.addMessages('chat', userMessage(text))
+        } else if (msg.role === 'assistant') {
+          sessionMgr.addMessages('chat', {
+            role: 'assistant',
+            content: [{ type: 'text', text }],
+            api: 'anthropic-messages',
+            provider: 'anthropic',
+            model: 'history',
+            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+            stopReason: 'stop',
+            timestamp: Date.now(),
+          } as any)
+        }
+      }
+    }
   }
 
   const agentMode = body.agentMode as 'basic' | 'advanced' | undefined

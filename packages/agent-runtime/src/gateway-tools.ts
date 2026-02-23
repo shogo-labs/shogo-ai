@@ -15,6 +15,7 @@ import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec } from './sandbox-exec'
 import { MemorySearchEngine } from './memory-search'
+import { MCP_CATALOG } from './mcp-catalog'
 import { getDynamicAppManager } from './dynamic-app-manager'
 import {
   CANVAS_COMPONENT_SCHEMA,
@@ -34,6 +35,7 @@ export interface ToolContext {
   sessionId?: string
   sandbox?: Partial<import('./types').SandboxConfig>
   mainSessionIds?: string[]
+  mcpClientManager?: import('./mcp-client').MCPClientManager
 }
 
 const BLOCKED_COMMANDS = [
@@ -557,6 +559,18 @@ Each component has: id, component (type), and type-specific props.
 Use "children" (array of IDs) or "child" (single ID) for nesting.
 Use { "path": "/some/pointer" } (with leading /) for data binding to the root data model.
 
+BUTTON — All button behavior uses the "action" prop with a mutation:
+  External link (opens in new tab):
+    { id: "link", component: "Button", label: "View on Airbnb", variant: "outline",
+      action: { name: "open_listing", mutation: { endpoint: "https://airbnb.com/rooms/123", method: "OPEN" } } }
+  DataList template with per-item URL (data-bound):
+    { id: "link", component: "Button", label: "View Listing", variant: "outline",
+      action: { name: "open_listing", mutation: { endpoint: { path: "url" }, method: "OPEN" } } }
+  CRUD mutation:
+    { id: "add", component: "Button", label: "Add",
+      action: { name: "add_item", mutation: { endpoint: "/api/items", method: "POST", body: { title: "New" } } } }
+  Supported methods: POST, PATCH, DELETE (CRUD), OPEN (external URL in new tab).
+
 IMPORTANT — For lists with per-row buttons (edit/delete), use DataList NOT Table:
 - Table is for read-only data display only (no buttons in rows).
 - DataList renders a template for each item and supports per-item mutation buttons.
@@ -582,7 +596,14 @@ See canvas_api_schema tool description for a complete working DataList + mutatio
       const errors = lint.filter((m) => m.severity === 'error')
       const warnings = lint.filter((m) => m.severity === 'warning')
 
-      if (errors.length > 0) {
+      // Fatal structural errors (missing id, unknown component type) — don't render at all
+      const fatalErrors = errors.filter((e) =>
+        e.message.includes('missing required "id"') ||
+        e.message.includes('missing required "component"') ||
+        e.message.includes('Unknown component type')
+      )
+
+      if (fatalErrors.length > 0) {
         return textResult({
           ok: false,
           error: 'Component validation failed. Fix the errors below and retry.',
@@ -592,8 +613,20 @@ See canvas_api_schema tool description for a complete working DataList + mutatio
         })
       }
 
+      // Non-fatal errors (invalid prop values, unknown props) — render best-effort but report failure
       const manager = getDynamicAppManager()
       const result = manager.updateComponents(surfaceId, components)
+
+      if (errors.length > 0) {
+        return textResult({
+          ...result,
+          ok: false,
+          error: `Components rendered with ${errors.length} error(s) that MUST be fixed. The UI is broken or incomplete until these are resolved. Call canvas_update again with corrected components.`,
+          errors: errors.map((e) => `[${e.componentId}] ${e.message}`),
+          warnings: warnings.length > 0 ? warnings.map((w) => `[${w.componentId}] ${w.message}`) : undefined,
+          hint: 'Use canvas_components with action "detail" to look up valid props and enum values for any component type.',
+        })
+      }
 
       if (warnings.length > 0) {
         return textResult({
@@ -1236,6 +1269,210 @@ Rate-limited: max ${MAX_UPDATES_PER_SESSION}/session, ${MAX_UPDATES_PER_DAY}/day
 }
 
 // ---------------------------------------------------------------------------
+// MCP Discovery Tools
+// ---------------------------------------------------------------------------
+
+const BLOCKED_MCP_PATTERNS = ['rm ', 'curl.*|.*bash', 'wget.*|.*bash', 'shutdown', 'reboot', 'mkfs', 'dd if=']
+
+function isMcpCommandBlocked(command: string, args: string[]): boolean {
+  const full = `${command} ${args.join(' ')}`.toLowerCase()
+  return BLOCKED_MCP_PATTERNS.some(p => {
+    if (p.includes('.*')) {
+      try { return new RegExp(p, 'i').test(full) } catch { return false }
+    }
+    return full.includes(p)
+  })
+}
+
+function createMcpSearchTool(): AgentTool {
+  return {
+    name: 'mcp_search',
+    description: 'Search for MCP servers by capability or keyword. Queries the Smithery registry and npm to find servers you can install to gain new tools (e.g. database access, browser automation, API integrations).',
+    label: 'MCP: Search Registry',
+    parameters: Type.Object({
+      query: Type.String({ description: 'Search query describing the capability you need (e.g. "postgres database", "browser automation", "slack messaging")' }),
+      limit: Type.Optional(Type.Number({ description: 'Max results to return (default: 5)' })),
+    }),
+    execute: async (_id: string, params: any) => {
+      const query = params.query as string
+      const limit = Math.min(params.limit || 5, 10)
+
+      const results: Array<{ name: string; description: string; installCommand: string; source: string; qualifiedName?: string }> = []
+
+      const queryLower = query.toLowerCase()
+      const queryWords = queryLower.split(/\s+/).filter(w => w.length > 2)
+      const scored: Array<{ entry: typeof MCP_CATALOG[0]; score: number }> = []
+      for (const entry of MCP_CATALOG) {
+        const haystack = `${entry.id} ${entry.name} ${entry.description} ${entry.category} ${entry.providedTools.join(' ')}`.toLowerCase()
+        const idName = `${entry.id} ${entry.name}`.toLowerCase()
+        let score = 0
+        if (haystack.includes(queryLower)) score += 10
+        if (idName.includes(queryLower)) score += 20
+        for (const w of queryWords) {
+          if (idName.includes(w)) score += 5
+          else if (haystack.includes(w)) score += 1
+        }
+        if (score > 0) scored.push({ entry, score })
+      }
+      scored.sort((a, b) => b.score - a.score)
+      for (const { entry } of scored.slice(0, limit)) {
+        results.push({
+          name: entry.name,
+          qualifiedName: entry.package.replace(/@latest$/, ''),
+          description: entry.description,
+          installCommand: `npx -y ${entry.package}`,
+          source: 'catalog',
+        })
+      }
+
+      try {
+        const smitheryRes = await fetch(
+          `https://registry.smithery.ai/servers?q=${encodeURIComponent(query)}&pageSize=${limit}`,
+          { headers: { 'Accept': 'application/json' }, signal: AbortSignal.timeout(10_000) },
+        )
+        if (smitheryRes.ok) {
+          const data = await smitheryRes.json() as any
+          const servers = data.servers || data.results || data.data || []
+          for (const s of servers.slice(0, limit)) {
+            results.push({
+              name: s.displayName || s.name || s.qualifiedName || 'unknown',
+              qualifiedName: s.qualifiedName,
+              description: s.description || '',
+              installCommand: `npx -y @smithery/cli@latest run ${s.qualifiedName || s.name}`,
+              source: 'smithery',
+            })
+          }
+        }
+      } catch { /* smithery unavailable, fall through to npm */ }
+
+      if (results.length < limit) {
+        try {
+          const npmRes = await fetch(
+            `https://registry.npmjs.org/-/v1/search?text=mcp-server+${encodeURIComponent(query)}&size=${limit - results.length}`,
+            { signal: AbortSignal.timeout(10_000) },
+          )
+          if (npmRes.ok) {
+            const data = await npmRes.json() as any
+            for (const obj of (data.objects || []).slice(0, limit - results.length)) {
+              const pkg = obj.package
+              results.push({
+                name: pkg.name,
+                description: pkg.description || '',
+                installCommand: `npx -y ${pkg.name}@latest`,
+                source: 'npm',
+              })
+            }
+          }
+        } catch { /* npm unavailable */ }
+      }
+
+      if (results.length === 0) {
+        return textResult({ query, results: [], message: 'No MCP servers found. Try a different search term.' })
+      }
+
+      return textResult({ query, results, message: `Found ${results.length} MCP server(s). Use mcp_install to add one.` })
+    },
+  }
+}
+
+function createMcpInstallTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'mcp_install',
+    description: 'Install and start an MCP server, making its tools available immediately in this session. The server is also persisted to config so it survives restarts.',
+    label: 'MCP: Install Server',
+    parameters: Type.Object({
+      name: Type.String({ description: 'A short identifier for this server (e.g. "postgres", "playwright", "slack")' }),
+      command: Type.String({ description: 'Command to run the server (e.g. "npx")' }),
+      args: Type.Optional(Type.Array(Type.String(), { description: 'Command arguments (e.g. ["-y", "@modelcontextprotocol/server-postgres"])' })),
+      env: Type.Optional(Type.Any({ description: 'Environment variables for the server process' })),
+    }),
+    execute: async (_id: string, params: any) => {
+      const { name, command, args, env } = params as { name: string; command: string; args?: string[]; env?: Record<string, string> }
+
+      if (!ctx.mcpClientManager) {
+        return textResult({ error: 'MCP client manager not available' })
+      }
+
+      if (ctx.mcpClientManager.isRunning(name)) {
+        const info = ctx.mcpClientManager.getServerInfo().find(s => s.name === name)
+        return textResult({ error: `Server "${name}" is already running with ${info?.toolCount || 0} tools`, tools: info?.toolNames })
+      }
+
+      if (isMcpCommandBlocked(command, args || [])) {
+        return textResult({ error: 'Command blocked for safety reasons' })
+      }
+
+      try {
+        const tools = await ctx.mcpClientManager.hotAddServer(name, { command, args, env })
+        return textResult({
+          ok: true,
+          server: name,
+          toolCount: tools.length,
+          tools: tools.map(t => ({ name: t.name, description: t.description })),
+          message: `Installed "${name}" with ${tools.length} tool(s). They are now available for use.`,
+        })
+      } catch (err: any) {
+        return textResult({ error: `Failed to install "${name}": ${err.message}` })
+      }
+    },
+  }
+}
+
+function createMcpUninstallTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'mcp_uninstall',
+    description: 'Stop and remove an installed MCP server. Its tools will no longer be available.',
+    label: 'MCP: Uninstall Server',
+    parameters: Type.Object({
+      name: Type.String({ description: 'Server name to remove (use mcp_list_installed to see names)' }),
+    }),
+    execute: async (_id: string, params: any) => {
+      const name = params.name as string
+
+      if (!ctx.mcpClientManager) {
+        return textResult({ error: 'MCP client manager not available' })
+      }
+
+      if (!ctx.mcpClientManager.isRunning(name)) {
+        return textResult({ error: `Server "${name}" is not running`, installed: ctx.mcpClientManager.getServerNames() })
+      }
+
+      try {
+        await ctx.mcpClientManager.hotRemoveServer(name)
+        return textResult({ ok: true, removed: name, message: `Removed "${name}" and all its tools.` })
+      } catch (err: any) {
+        return textResult({ error: `Failed to remove "${name}": ${err.message}` })
+      }
+    },
+  }
+}
+
+function createMcpListInstalledTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'mcp_list_installed',
+    description: 'List all currently installed MCP servers and their available tools.',
+    label: 'MCP: List Installed',
+    parameters: Type.Object({}),
+    execute: async () => {
+      if (!ctx.mcpClientManager) {
+        return textResult({ error: 'MCP client manager not available' })
+      }
+
+      const servers = ctx.mcpClientManager.getServerInfo()
+      if (servers.length === 0) {
+        return textResult({ servers: [], message: 'No MCP servers installed. Use mcp_search to find servers to install.' })
+      }
+
+      return textResult({
+        servers: servers.map(s => ({ name: s.name, toolCount: s.toolCount, tools: s.toolNames })),
+        totalServers: servers.length,
+        totalTools: servers.reduce((sum, s) => sum + s.toolCount, 0),
+      })
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Tool Group Mapping
 // ---------------------------------------------------------------------------
 
@@ -1260,6 +1497,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   canvas: ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_delete', 'canvas_action_wait', 'canvas_components', 'canvas_trigger_action', 'canvas_inspect'],
   api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query'],
   personality: ['personality_update'],
+  mcp_discovery: ['mcp_search', 'mcp_install', 'mcp_uninstall', 'mcp_list_installed'],
 }
 
 export const ALL_TOOL_NAMES = [
@@ -1269,6 +1507,7 @@ export const ALL_TOOL_NAMES = [
   'canvas_trigger_action', 'canvas_inspect',
   'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query',
   'personality_update',
+  'mcp_search', 'mcp_install', 'mcp_uninstall', 'mcp_list_installed',
 ] as const
 
 /**
@@ -1319,6 +1558,10 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createCanvasTriggerActionTool(),
     createCanvasInspectTool(),
     createPersonalityUpdateTool(ctx),
+    createMcpSearchTool(),
+    createMcpInstallTool(ctx),
+    createMcpUninstallTool(ctx),
+    createMcpListInstalledTool(ctx),
   ]
 }
 

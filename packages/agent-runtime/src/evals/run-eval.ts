@@ -41,6 +41,9 @@ import { COMPLEX_EVALS } from './test-cases-complex'
 import { MEMORY_EVALS } from './test-cases-memory'
 import { PERSONALITY_EVALS } from './test-cases-personality'
 import { MULTITURN_EVALS } from './test-cases-multiturn'
+import { MCP_DISCOVERY_EVALS } from './test-cases-mcp-discovery'
+import { MCP_ORCHESTRATION_EVALS } from './test-cases-mcp-orchestration'
+import { MCP_VACATION_PLANNER_EVALS } from './test-cases-mcp-vacation-planner'
 import { buildMockPayload } from './tool-mocks'
 import type { AgentEval, EvalResult, EvalSuiteResult, CategorySummary } from './types'
 
@@ -86,9 +89,12 @@ function getEvals(track: string): AgentEval[] {
     case 'memory': return MEMORY_EVALS
     case 'personality': return PERSONALITY_EVALS
     case 'multiturn': return MULTITURN_EVALS
-    case 'all': return [...CANVAS_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS]
+    case 'mcp-discovery': return MCP_DISCOVERY_EVALS
+    case 'mcp-orchestration': return MCP_ORCHESTRATION_EVALS
+    case 'vacation-planner': return MCP_VACATION_PLANNER_EVALS
+    case 'all': return [...CANVAS_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS]
     default:
-      console.error(`Unknown track: ${track}. Valid: canvas, complex, memory, personality, multiturn, all`)
+      console.error(`Unknown track: ${track}. Valid: canvas, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, all`)
       process.exit(1)
   }
 }

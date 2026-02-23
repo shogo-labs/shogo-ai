@@ -207,6 +207,8 @@ export class DynamicAppManager {
       | { endpoint: string; method: string; body?: unknown }
       | undefined
     if (mutation) {
+      // OPEN mutations are handled client-side (window.open) — skip server-side execution
+      if (mutation.method?.toUpperCase() === 'OPEN') return
       const runtime = this.runtimes.get(event.surfaceId)
       if (runtime && runtime.isReady()) {
         this.executeMutation(event.surfaceId, runtime, mutation).catch((err) => {

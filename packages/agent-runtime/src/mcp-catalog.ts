@@ -38,6 +38,7 @@ export type MCPCategory =
   | 'search'
   | 'monitoring'
   | 'files'
+  | 'travel'
 
 export const MCP_CATEGORIES: Record<MCPCategory, { label: string; icon: string }> = {
   browse: { label: 'Browse & Scrape', icon: '🌐' },
@@ -49,6 +50,7 @@ export const MCP_CATEGORIES: Record<MCPCategory, { label: string; icon: string }
   search: { label: 'AI & Search', icon: '🔍' },
   monitoring: { label: 'Monitoring', icon: '📊' },
   files: { label: 'Files & Storage', icon: '📁' },
+  travel: { label: 'Travel & Booking', icon: '✈️' },
 }
 
 export const MCP_CATALOG: MCPCatalogEntry[] = [
@@ -273,6 +275,18 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     },
     providedTools: ['sentry_list_issues', 'sentry_get_issue', 'sentry_list_projects', 'sentry_search_events'],
     icon: '🔴',
+    cloudCompatible: true,
+  },
+  {
+    id: 'airbnb',
+    name: 'Airbnb',
+    description: 'Search Airbnb listings by location, dates, guests, and price range. Get detailed property info including amenities, photos, and policies.',
+    category: 'travel',
+    package: '@openbnb/mcp-server-airbnb@latest',
+    defaultArgs: [],
+    requiredEnv: {},
+    providedTools: ['airbnb_search', 'airbnb_listing_details'],
+    icon: '🏠',
     cloudCompatible: true,
   },
   {

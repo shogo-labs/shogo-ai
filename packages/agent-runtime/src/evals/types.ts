@@ -19,6 +19,8 @@ export type EvalCategory =
   | 'multiturn'
   | 'tool-usage'
   | 'edge-cases'
+  | 'mcp-discovery'
+  | 'mcp-orchestration'
 
 export type ValidationPhase = 'intention' | 'execution' | 'interaction'
 

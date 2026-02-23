@@ -48,7 +48,11 @@ const JUSTIFY_PROP = str('Main-axis justification', { enum: ['start', 'center', 
 const CLASS_PROP = str('Additional Tailwind class names')
 const ACTION_PROP: PropDef = {
   type: 'object',
-  description: 'Action dispatched on interaction: { name: string, context?: object }. Use with canvas_action_wait to receive the event.',
+  description: `Action dispatched on interaction: { name: string, context?: object }.
+For CRUD mutations: { name: "add", mutation: { endpoint: "/api/items", method: "POST", body: { ... } } }
+For opening external URLs: { name: "open_link", mutation: { endpoint: "https://example.com" OR { path: "url" }, method: "OPEN" } }
+  method "OPEN" opens the resolved endpoint in a new browser tab. Use this when you have per-item URLs in a DataList (e.g. Airbnb listing URLs).
+Use with canvas_action_wait to receive the event for non-mutation actions.`,
 }
 
 // ---------------------------------------------------------------------------
@@ -90,17 +94,17 @@ export const CANVAS_COMPONENT_SCHEMA: ComponentSchema[] = [
     category: 'layout',
     description: 'Scrollable container with a fixed height.',
     hasChildren: true,
-    props: { height: str('Container height, e.g. "400px" or 300 (number = px)', { default: '400px' }), className: CLASS_PROP },
+    props: { height: str('Container height, e.g. "400px" or 300 (number = px). Omit to fill available space.'), className: CLASS_PROP },
   },
 
   // ---- Extended layout ----
   {
     type: 'Tabs',
     category: 'extended',
-    description: 'Tabbed container. Define tabs with the "tabs" prop and put one child per tab.',
+    description: 'Tabbed container. Put one TabPanel child per tab with a "title" prop for the tab label. Optionally override with explicit "tabs" prop.',
     hasChildren: true,
     props: {
-      tabs: arr('Array of { id, label } defining each tab', { id: str('Tab ID', { required: true }), label: str('Tab display label', { required: true }) }),
+      tabs: arr('Optional explicit tab definitions: [{ id, label }]. If omitted, tabs are auto-derived from TabPanel children\'s "title" props.', { id: str('Tab ID', { required: true }), label: str('Tab display label', { required: true }) }),
       defaultTab: str('ID of the initially selected tab'),
       className: CLASS_PROP,
     },
@@ -108,9 +112,9 @@ export const CANVAS_COMPONENT_SCHEMA: ComponentSchema[] = [
   {
     type: 'TabPanel',
     category: 'extended',
-    description: 'Content wrapper for one tab inside a Tabs component.',
+    description: 'Content wrapper for one tab inside a Tabs component. Set "title" as the tab label shown in the tab strip.',
     hasChildren: true,
-    props: { className: CLASS_PROP },
+    props: { title: str('Tab label displayed in the tab strip', { required: true }), className: CLASS_PROP },
   },
   {
     type: 'Accordion',
@@ -306,7 +310,11 @@ Full example:
   {
     type: 'Button',
     category: 'interactive',
-    description: 'Clickable button that dispatches an action event to the agent.',
+    description: `Clickable button. All behavior is driven through the "action" prop with a mutation:
+  - CRUD: { name: "add", mutation: { endpoint: "/api/items", method: "POST", body: { ... } } }
+  - Open external URL: { name: "view", mutation: { endpoint: "https://example.com", method: "OPEN" } }
+    In a DataList template, bind the URL: mutation: { endpoint: { path: "url" }, method: "OPEN" }
+    method "OPEN" opens the URL in a new browser tab — use it for Airbnb links, Google Maps, etc.`,
     hasChildren: false,
     props: {
       label: str('Button text', { required: true }),
@@ -470,28 +478,28 @@ export function lintComponents(components: Array<{ id?: string; component?: stri
       }
     }
 
-    // Enum validation
+    // Enum validation — error: the value won't be applied, component will use default or break
     for (const [propName, propDef] of Object.entries(schema.props)) {
       const val = comp[propName]
       if (val !== undefined && propDef.enum && typeof val === 'string') {
         if (!propDef.enum.includes(val)) {
           messages.push({
-            severity: 'warning',
+            severity: 'error',
             componentId: cid,
-            message: `"${schema.type}.${propName}" has value "${val}" which is not one of: ${propDef.enum.join(', ')}.`,
+            message: `"${schema.type}.${propName}" has value "${val}" which is not one of: ${propDef.enum.join(', ')}. The component will ignore this value. Fix by using a valid option.`,
           })
         }
       }
     }
 
-    // Unknown props (informational — not errors since components use [key: string]: unknown)
+    // Unknown props — error: the prop is silently ignored, so the intended behavior won't work
     const knownKeys = new Set(['id', 'component', 'children', 'child', ...Object.keys(schema.props)])
     for (const key of Object.keys(comp)) {
       if (!knownKeys.has(key)) {
         messages.push({
-          severity: 'warning',
+          severity: 'error',
           componentId: cid,
-          message: `"${schema.type}" received unknown prop "${key}". Known props: ${[...knownKeys].join(', ')}.`,
+          message: `"${schema.type}" received unknown prop "${key}". This prop will be ignored. Known props: ${[...knownKeys].join(', ')}. Use canvas_components to look up valid props.`,
         })
       }
     }

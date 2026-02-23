@@ -269,22 +269,36 @@ export async function runEval(
     const messages: Array<{ role: string; parts: Array<{ type: string; text: string }> }> = []
 
     // Execute conversation history turns first (for multi-turn evals)
+    // If a user message is followed by an assistant message in the history,
+    // use the assistant message directly (scripted response) instead of
+    // generating one via the LLM. This allows evals to control exactly what
+    // the agent "said" in prior turns so the final turn tests the right thing.
     if (eval_.conversationHistory?.length) {
+      const history = eval_.conversationHistory
       if (cfg.verbose) {
-        console.log(`    [Multi-turn] Executing ${eval_.conversationHistory.length} history turns...`)
+        console.log(`    [Multi-turn] Executing ${history.length} history turns...`)
       }
-      for (const turn of eval_.conversationHistory) {
+      for (let i = 0; i < history.length; i++) {
+        const turn = history[i]
         if (turn.role === 'user') {
           messages.push({ role: 'user', parts: [{ type: 'text', text: turn.content }] })
-          try {
-            const resp = await sendTurn(messages, cfg)
-            messages.push({ role: 'assistant', parts: [{ type: 'text', text: resp.text }] })
-            inputTokens += resp.inputTokens
-            outputTokens += resp.outputTokens
-            cacheReadTokens += resp.cacheReadTokens
-            cacheWriteTokens += resp.cacheWriteTokens
-          } catch (e: any) {
-            errors.push(`History turn error: ${e.message}`)
+          const nextTurn = history[i + 1]
+          if (nextTurn?.role === 'assistant') {
+            // Use the scripted assistant response directly
+            messages.push({ role: 'assistant', parts: [{ type: 'text', text: nextTurn.content }] })
+            i++ // skip the assistant turn in the loop
+          } else {
+            // No scripted response — generate one via the LLM
+            try {
+              const resp = await sendTurn(messages, cfg)
+              messages.push({ role: 'assistant', parts: [{ type: 'text', text: resp.text }] })
+              inputTokens += resp.inputTokens
+              outputTokens += resp.outputTokens
+              cacheReadTokens += resp.cacheReadTokens
+              cacheWriteTokens += resp.cacheWriteTokens
+            } catch (e: any) {
+              errors.push(`History turn error: ${e.message}`)
+            }
           }
         }
       }

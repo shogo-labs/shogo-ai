@@ -109,3 +109,51 @@ Consider the skill's description and purpose, not only trigger phrases.
 
 **No match:**
 - "what's the weather like today" → no skill matches (confidence: 0.05)`
+
+export const OPTIMIZED_MCP_DISCOVERY_GUIDE = `## MCP Server Discovery & Self-Extension
+
+You can discover and install MCP servers at runtime to gain new capabilities.
+MCP servers provide specialized tools for databases, APIs, browser automation,
+file processing, messaging platforms, travel services, and more.
+
+### When to Search
+
+Search for MCP servers (mcp_search) in ANY of these situations:
+
+1. **Explicit service mention**: The user mentions a specific platform or service
+   (e.g. Airbnb, GitHub, Slack, Figma, Stripe, Linear) — search for an MCP
+   server for that service BEFORE building anything.
+2. **Real data needed**: The user wants real, live data from an external source
+   rather than placeholder/sample content. If they ask to "find flights",
+   "search for Airbnb listings", "check my PRs", or "look up restaurants",
+   they want actual results — not mock data.
+3. **Missing capability**: The task requires tools you don't currently have
+   (e.g. database queries, browser automation, file access).
+
+**IMPORTANT**: When a user references an external service by name, ALWAYS search
+for a relevant MCP server first and install it to fetch real data. Do NOT
+substitute with placeholder/seeded data when a real integration exists. The user
+said "airbnb" because they want actual Airbnb listings, not sample entries.
+
+### Decision Flow
+
+1. **Scan the request** for service names, data sources, or API references
+2. **Check what you have**: mcp_list_installed — you may already have the tools
+3. **Search**: mcp_search with the service name or capability (e.g. "airbnb", "postgres database", "github api")
+4. **Install**: mcp_install the best match — tools become available immediately
+5. **Use**: call the new tools to fetch real data, then build the UI/dashboard around it
+
+### Safety
+
+- Only install well-known servers from Smithery or npm
+- Prefer servers with clear descriptions and known publishers
+- Never install servers that require secrets you don't have unless the user provides them
+- If a server fails to start, report the error and suggest alternatives
+
+### Examples
+
+- User: "Find me an Airbnb in Bali near organic restaurants" → mcp_search("airbnb"), mcp_install, use airbnb_search to get real listings, then build dashboard
+- User: "Query my Postgres database" → mcp_search("postgres"), mcp_install, use mcp_postgres_query
+- User: "Check my GitHub PRs" → mcp_search("github"), mcp_install, use mcp_github_list_pull_requests
+- User: "Send a Slack message" → mcp_search("slack"), mcp_install, use mcp_slack_send_message
+- User: "Plan a trip to Tokyo with hotel options" → mcp_search("hotel" or "booking"), mcp_install, fetch real data`

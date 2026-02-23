@@ -22,17 +22,28 @@ interface DynButtonProps {
   variant?: 'default' | 'secondary' | 'destructive' | 'outline' | 'ghost' | 'link'
   size?: 'default' | 'sm' | 'lg' | 'icon'
   disabled?: boolean
+  href?: string
   action?: ActionDef
   onAction?: (name: string, context?: Record<string, unknown>) => void
   className?: string
 }
 
-export function DynButton({ label, text, variant = 'default', size = 'default', disabled, action, onAction, className }: DynButtonProps) {
+export function DynButton({ label, text, variant = 'default', size = 'default', disabled, href, action, onAction, className }: DynButtonProps) {
   const handleClick = useCallback(() => {
+    if (href) {
+      window.open(href, '_blank', 'noopener,noreferrer')
+      return
+    }
+    // mutation method "OPEN" opens an external URL in a new tab
+    const mutation = action?.context?._mutation as { endpoint?: string; method?: string } | undefined
+    if (mutation?.method?.toUpperCase() === 'OPEN' && mutation.endpoint) {
+      window.open(mutation.endpoint, '_blank', 'noopener,noreferrer')
+      return
+    }
     if (action && onAction) {
       onAction(action.name, action.context)
     }
-  }, [action, onAction])
+  }, [href, action, onAction])
 
   return (
     <Button variant={variant} size={size} disabled={disabled} onClick={handleClick} className={className}>

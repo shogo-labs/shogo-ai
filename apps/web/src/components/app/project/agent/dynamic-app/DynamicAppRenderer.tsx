@@ -110,7 +110,21 @@ function ComponentNode({ definition, components, dataModel, onAction, onDataChan
     )
   }
 
-  const resolvedProps = useResolvedProps(definition, dataModel, apiDataSource, scopeData, scopePath)
+  let resolvedProps = useResolvedProps(definition, dataModel, apiDataSource, scopeData, scopePath)
+
+  // Auto-derive tabs from TabPanel children when `tabs` prop is missing
+  if (definition.component === 'Tabs' && !resolvedProps.tabs && Array.isArray(definition.children)) {
+    const childIds = definition.children as string[]
+    const autoTabs = childIds.map((childId) => {
+      const childDef = components.get(childId)
+      const label = childDef?.title ?? childDef?.label
+      return label ? { id: childId, label: String(label) } : null
+    }).filter((t): t is { id: string; label: string } => t !== null)
+    if (autoTabs.length > 0) {
+      resolvedProps = { ...resolvedProps, tabs: autoTabs }
+    }
+  }
+
   const children = useRenderedChildren(definition, components, dataModel, onAction, onDataChange, apiDataSource, scopeData, scopePath)
 
   const Component = catalogEntry.component
@@ -241,7 +255,11 @@ function resolveValue(
         const resolvedMutBody = mut.body && typeof mut.body === 'object'
           ? resolveValue(mut.body, dataModel, apiDataSource, scopeData, scopePath)
           : mut.body
-        let resolvedEndpoint = mut.endpoint as string
+        // Resolve endpoint — supports data binding { path: "url" } as well as string literals
+        const rawEndpoint = isDynamicPath(mut.endpoint)
+          ? resolveValue(mut.endpoint, dataModel, apiDataSource, scopeData, scopePath)
+          : mut.endpoint
+        let resolvedEndpoint = typeof rawEndpoint === 'string' ? rawEndpoint : ''
         // Resolve :param placeholders in endpoint from context or data model
         if (resolvedEndpoint && resolvedEndpoint.includes(':')) {
           const params = (mut.params || {}) as Record<string, unknown>
