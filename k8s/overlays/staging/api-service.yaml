@@ -226,8 +226,8 @@ spec:
               value: "097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/agent-runtime:staging-latest"
             - name: WARM_POOL_PROJECT_SIZE
               value: "0"
-            - name: WARM_POOL_AGENT_SIZE
-              value: "30"
+            - name: WARM_POOL_AGENTS_PER_NODE
+              value: "10"
             - name: WARM_POOL_MAX_AGE_MS
               value: "3600000"
           resources:

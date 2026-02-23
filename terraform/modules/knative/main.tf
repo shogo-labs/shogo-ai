@@ -214,13 +214,13 @@ resource "null_resource" "knative_config" {
         --patch '{"data":{"registries-skipping-tag-resolving":"kind.local,ko.local,dev.local,${var.ecr_registry}"}}'
       %{endif}
 
-      # Enable PVC support feature flags (for workspace code persistence)
+      # Enable PVC support and scheduling feature flags
       # See: https://knative.dev/docs/serving/configuration/feature-flags/
       %{if var.enable_pvc_support}
       kubectl patch configmap/config-features \
         --namespace knative-serving \
         --type merge \
-        --patch '{"data":{"kubernetes.podspec-persistent-volume-claim":"enabled","kubernetes.podspec-persistent-volume-write":"enabled","kubernetes.podspec-securitycontext":"enabled"}}'
+        --patch '{"data":{"kubernetes.podspec-persistent-volume-claim":"enabled","kubernetes.podspec-persistent-volume-write":"enabled","kubernetes.podspec-securitycontext":"enabled","kubernetes.podspec-affinity":"enabled"}}'
       %{endif}
     EOT
   }
