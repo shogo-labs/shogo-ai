@@ -17,6 +17,8 @@ import { Type } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 
 const MAX_MCP_SERVERS = 10
+const MCP_CONNECT_TIMEOUT_MS = 30_000
+const MCP_TOOL_LIST_TIMEOUT_MS = 15_000
 
 export interface MCPServerConfig {
   command: string
@@ -97,16 +99,33 @@ export class MCPClientManager {
       return this.servers.get(name)!.tools
     }
 
-    console.log(`[MCPClient] Starting MCP server "${name}": ${config.command} ${(config.args || []).join(' ')}`)
+    const fullCommand = `${config.command} ${(config.args || []).join(' ')}`
+    console.log(`[MCPClient] Starting MCP server "${name}": ${fullCommand}`)
 
     const writableHome = this.workspaceDir || '/tmp'
-    const transport = new StdioClientTransport({
-      command: config.command,
-      args: config.args,
-      env: { ...process.env, HOME: writableHome, npm_config_cache: join(writableHome, '.npm'), ...config.env } as Record<string, string>,
-      cwd: config.cwd || writableHome,
-      stderr: 'pipe',
-    })
+
+    let transport: StdioClientTransport
+    try {
+      transport = new StdioClientTransport({
+        command: config.command,
+        args: config.args,
+        env: { ...process.env, HOME: writableHome, npm_config_cache: join(writableHome, '.npm'), ...config.env } as Record<string, string>,
+        cwd: config.cwd || writableHome,
+        stderr: 'pipe',
+      })
+    } catch (err: any) {
+      console.error(`[MCPClient] Failed to create transport for "${name}": ${err.message}`)
+      throw new Error(`Transport creation failed for "${name}": ${err.message}`)
+    }
+
+    // Log stderr early so we capture npx download output and errors
+    const stderr = transport.stderr
+    if (stderr && 'on' in stderr) {
+      (stderr as any).on('data', (chunk: Buffer) => {
+        const text = chunk.toString().trim()
+        if (text) console.error(`[MCPClient:${name}:stderr] ${text}`)
+      })
+    }
 
     const client = new Client(
       { name: `shogo-agent-${name}`, version: '1.0.0' },
@@ -114,29 +133,29 @@ export class MCPClientManager {
     )
 
     try {
-      await client.connect(transport)
+      await withTimeout(
+        client.connect(transport),
+        MCP_CONNECT_TIMEOUT_MS,
+        `MCP server "${name}" connection timed out after ${MCP_CONNECT_TIMEOUT_MS / 1000}s. The server process may still be installing dependencies. Command: ${fullCommand}`,
+      )
       console.log(`[MCPClient] Connected to "${name}"`)
     } catch (err: any) {
-      console.error(`[MCPClient] Failed to connect to "${name}":`, err.message)
+      console.error(`[MCPClient] Failed to connect to "${name}": ${err.message}`)
+      try { await transport.close() } catch { /* best effort cleanup */ }
       throw err
-    }
-
-    // Log stderr from the server
-    const stderr = transport.stderr
-    if (stderr && 'on' in stderr) {
-      (stderr as any).on('data', (chunk: Buffer) => {
-        const text = chunk.toString().trim()
-        if (text) console.error(`[MCPClient:${name}] ${text}`)
-      })
     }
 
     let mcpTools: any[] = []
     try {
-      const result = await client.listTools()
+      const result = await withTimeout(
+        client.listTools(),
+        MCP_TOOL_LIST_TIMEOUT_MS,
+        `MCP server "${name}" tool listing timed out after ${MCP_TOOL_LIST_TIMEOUT_MS / 1000}s`,
+      )
       mcpTools = result.tools || []
       console.log(`[MCPClient] "${name}" provides ${mcpTools.length} tools: ${mcpTools.map((t: any) => t.name).join(', ')}`)
     } catch (err: any) {
-      console.error(`[MCPClient] Failed to list tools from "${name}":`, err.message)
+      console.error(`[MCPClient] Failed to list tools from "${name}": ${err.message}`)
       mcpTools = []
     }
 
@@ -290,4 +309,13 @@ export class MCPClientManager {
       }
     } catch { /* ignore parse errors */ }
   }
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(message)), ms),
+    ),
+  ])
 }

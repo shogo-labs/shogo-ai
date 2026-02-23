@@ -40,15 +40,38 @@ describe('LoopDetector', () => {
     expect(r3.loopDetected).toBe(false)
   })
 
-  test('detects identical outputs repeated', () => {
+  test('detects identical input+output repeated (caught by identical_calls first)', () => {
     const detector = new LoopDetector({ maxIdenticalOutputs: 3 })
 
     detector.recordAndCheck('exec', { command: 'curl api' }, { error: 'timeout' })
-    detector.recordAndCheck('exec', { command: 'curl api --retry' }, { error: 'timeout' })
-    const r3 = detector.recordAndCheck('web_fetch', { url: 'http://api' }, { error: 'timeout' })
+    detector.recordAndCheck('exec', { command: 'curl api' }, { error: 'timeout' })
+    const r3 = detector.recordAndCheck('exec', { command: 'curl api' }, { error: 'timeout' })
+
+    expect(r3.loopDetected).toBe(true)
+    // identical_calls fires first since tool name + input are also identical
+    expect(r3.reason).toBe('identical_calls')
+  })
+
+  test('detects identical_outputs when tool names differ but input+output match', () => {
+    // Disable identical_calls by using a high threshold, test identical_outputs alone
+    const detector = new LoopDetector({ maxIdenticalCalls: 999, maxIdenticalOutputs: 3 })
+
+    detector.recordAndCheck('tool_a', { key: 'same' }, { error: 'timeout' })
+    detector.recordAndCheck('tool_b', { key: 'same' }, { error: 'timeout' })
+    const r3 = detector.recordAndCheck('tool_c', { key: 'same' }, { error: 'timeout' })
 
     expect(r3.loopDetected).toBe(true)
     expect(r3.reason).toBe('identical_outputs')
+  })
+
+  test('different inputs with same outputs do NOT trigger identical_outputs', () => {
+    const detector = new LoopDetector({ maxIdenticalOutputs: 3 })
+
+    detector.recordAndCheck('canvas_api_seed', { model: 'Restaurant', records: [{ name: 'A' }] }, { ok: true, inserted: 5 })
+    detector.recordAndCheck('canvas_api_seed', { model: 'Hotel', records: [{ name: 'B' }] }, { ok: true, inserted: 5 })
+    const r3 = detector.recordAndCheck('canvas_api_seed', { model: 'Activity', records: [{ name: 'C' }] }, { ok: true, inserted: 5 })
+
+    expect(r3.loopDetected).toBe(false)
   })
 
   test('detects A→B→A→B cycle', () => {

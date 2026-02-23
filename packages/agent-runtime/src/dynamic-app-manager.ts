@@ -36,6 +36,8 @@ export class DynamicAppManager {
   private persistPath: string | null = null
   private saveTimer: ReturnType<typeof setTimeout> | null = null
   private runtimes = new Map<string, ManagedApiRuntime>()
+  /** Tracks model → dataPath bindings per surface so seedApiData can auto-refresh */
+  private queryBindings = new Map<string, Map<string, { dataPath: string; params?: { where?: Record<string, unknown>; orderBy?: string; limit?: number } }>>()
 
   constructor(persistPath?: string) {
     if (persistPath) {
@@ -157,6 +159,7 @@ export class DynamicAppManager {
     }
 
     this.surfaces.delete(surfaceId)
+    this.queryBindings.delete(surfaceId)
     const runtime = this.runtimes.get(surfaceId)
     if (runtime) {
       runtime.destroy()
@@ -368,7 +371,20 @@ export class DynamicAppManager {
     if (!runtime || !runtime.isReady()) {
       return { ok: false, error: `No API runtime for surface "${surfaceId}". Call canvas_api_schema first.` }
     }
-    return runtime.seed(model, records, upsert)
+    const result = runtime.seed(model, records, upsert)
+
+    if ((result as any).ok) {
+      const surfaceBindings = this.queryBindings.get(surfaceId)
+      const binding = surfaceBindings?.get(model)
+      if (binding) {
+        const queryResult = runtime.query(model, binding.params) as any
+        if (queryResult.ok && binding.dataPath) {
+          this.updateData(surfaceId, binding.dataPath, queryResult.items)
+        }
+      }
+    }
+
+    return result
   }
 
   queryApiData(
@@ -391,6 +407,12 @@ export class DynamicAppManager {
 
       if (dataPath) {
         this.updateData(surfaceId, dataPath, result.items)
+
+        // Register binding so seedApiData can auto-refresh this data path
+        if (!this.queryBindings.has(surfaceId)) {
+          this.queryBindings.set(surfaceId, new Map())
+        }
+        this.queryBindings.get(surfaceId)!.set(model, { dataPath, params })
       }
     }
 
@@ -399,6 +421,7 @@ export class DynamicAppManager {
 
   clear(): void {
     this.surfaces.clear()
+    this.queryBindings.clear()
     this.actionQueue.length = 0
     for (const w of this.actionWaiters) {
       clearTimeout(w.timeout)

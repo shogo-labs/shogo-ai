@@ -118,6 +118,9 @@ export class LoopDetector {
 
   /**
    * Check if consecutive tool calls produce identical outputs.
+   * Only triggers when both the inputs AND outputs are identical — different
+   * inputs producing similar success responses (e.g. seeding different data
+   * models) is normal progress, not a loop.
    */
   private checkIdenticalOutputs(): LoopDetectorResult {
     const { maxIdenticalOutputs } = this.config
@@ -127,13 +130,15 @@ export class LoopDetector {
 
     const tail = this.history.slice(-maxIdenticalOutputs)
     const first = tail[0]
-    const allSameOutput = tail.every((e) => e.outputHash === first.outputHash)
+    const allSame = tail.every(
+      (e) => e.inputHash === first.inputHash && e.outputHash === first.outputHash
+    )
 
-    if (allSameOutput) {
+    if (allSame) {
       return {
         loopDetected: true,
         reason: 'identical_outputs',
-        pattern: `Last ${maxIdenticalOutputs} tool calls produced identical output`,
+        pattern: `Last ${maxIdenticalOutputs} tool calls produced identical input+output`,
       }
     }
 
