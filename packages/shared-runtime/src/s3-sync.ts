@@ -878,6 +878,38 @@ export class S3Sync {
     }
   }
 
+  /**
+   * Flush any pending changes to S3, then shutdown.
+   * Use this on SIGTERM to avoid losing recently-written files
+   * (e.g., MCP server config) that are still in the debounce window.
+   */
+  async flushAndShutdown(timeoutMs: number = 10_000): Promise<void> {
+    this.stopPeriodicSync()
+    this.stopWatcher()
+
+    if (this.uploadDebounceTimer) {
+      clearTimeout(this.uploadDebounceTimer)
+      this.uploadDebounceTimer = null
+    }
+
+    if (!this.hasPendingChanges() && this.pendingUploads.size === 0) {
+      console.log(`[S3Sync] flushAndShutdown: no pending changes`)
+      return
+    }
+
+    console.log(`[S3Sync] flushAndShutdown: flushing pending changes to S3 (timeout ${timeoutMs}ms)...`)
+    try {
+      const uploadPromise = this.uploadAll(false)
+      const timeoutPromise = new Promise<void>((_, reject) =>
+        setTimeout(() => reject(new Error('flush timeout')), timeoutMs)
+      )
+      await Promise.race([uploadPromise, timeoutPromise])
+      console.log(`[S3Sync] flushAndShutdown: flush complete`)
+    } catch (err: any) {
+      console.error(`[S3Sync] flushAndShutdown: ${err.message}`)
+    }
+  }
+
   // ===========================================================================
   // Private Helpers
   // ===========================================================================

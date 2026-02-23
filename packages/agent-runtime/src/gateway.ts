@@ -40,6 +40,7 @@ import {
   OPTIMIZED_SESSION_SUMMARY_GUIDE,
   OPTIMIZED_SKILL_MATCHING_GUIDE,
   OPTIMIZED_MCP_DISCOVERY_GUIDE,
+  OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE,
 } from './optimized-prompts'
 
 export interface GatewayConfig {
@@ -1152,6 +1153,7 @@ export class AgentGateway {
     parts.push(CANVAS_TOOLS_GUIDE_PREFIX + canvasExamples)
     parts.push(PERSONALITY_EVOLUTION_GUIDE_PREFIX + personalityGuide)
     parts.push(toolPlanningGuide)
+    parts.push(this.promptOverrides.get('constraint_awareness_guide') ?? OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE)
     parts.push(memoryGuide)
     parts.push(skillMatchingGuide)
     parts.push(this.promptOverrides.get('mcp_discovery_guide') ?? OPTIMIZED_MCP_DISCOVERY_GUIDE)

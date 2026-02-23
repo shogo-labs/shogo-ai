@@ -22,6 +22,7 @@ import {
   VALID_COMPONENT_TYPES,
   getComponentSchema,
   lintComponents,
+  normalizeComponents,
   type ComponentSchema,
   type LintMessage,
 } from './canvas-component-schema'
@@ -169,10 +170,36 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
   }
 }
 
+const BROWSER_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+const WEB_FETCH_TIMEOUT_MS = 30_000
+
+function stripHtmlToText(html: string): string {
+  let text = html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<nav[\s\S]*?<\/nav>/gi, '')
+    .replace(/<footer[\s\S]*?<\/footer>/gi, '')
+    .replace(/<header[\s\S]*?<\/header>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/?(p|div|h[1-6]|li|tr|blockquote)[^>]*>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  return text
+}
+
 function createWebFetchTool(): AgentTool {
   return {
     name: 'web_fetch',
-    description: 'Fetch content from a URL and return it as text. Useful for checking APIs, web pages, or downloading data.',
+    description: 'Fetch content from a URL and return it as text. Useful for checking APIs, web pages, or downloading data. Automatically extracts readable text from HTML pages.',
     label: 'Web Fetch',
     parameters: Type.Object({
       url: Type.String({ description: 'URL to fetch' }),
@@ -181,25 +208,60 @@ function createWebFetchTool(): AgentTool {
     execute: async (_toolCallId, params) => {
       const { url, maxChars = 50000 } = params as { url: string; maxChars?: number }
 
-      try {
-        const response = await fetch(url, {
-          headers: { 'User-Agent': 'Shogo-Agent/1.0' },
-          signal: AbortSignal.timeout(15000),
-        })
-
-        if (!response.ok) {
-          return textResult({ error: `HTTP ${response.status}: ${response.statusText}`, url })
-        }
-
-        let text = await response.text()
-        if (text.length > maxChars) {
-          text = text.substring(0, maxChars) + `\n\n[Truncated at ${maxChars} chars]`
-        }
-
-        return textResult({ content: text, status: response.status, bytes: text.length, url })
-      } catch (err: any) {
-        return textResult({ error: err.message, url })
+      const headers: Record<string, string> = {
+        'User-Agent': BROWSER_USER_AGENT,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,application/json,text/plain;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
       }
+
+      const MAX_ATTEMPTS = 2
+
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        try {
+          const response = await fetch(url, {
+            headers,
+            signal: AbortSignal.timeout(WEB_FETCH_TIMEOUT_MS),
+            redirect: 'follow',
+          })
+
+          if (response.status === 403 || response.status === 429) {
+            if (attempt < MAX_ATTEMPTS) {
+              await new Promise(r => setTimeout(r, 1000))
+              continue
+            }
+            return textResult({
+              error: `HTTP ${response.status}: Access denied or rate limited. The site may block automated requests.`,
+              url,
+              suggestion: 'Try web_search instead to find the information, or try a different source.',
+            })
+          }
+
+          if (!response.ok) {
+            return textResult({ error: `HTTP ${response.status}: ${response.statusText}`, url })
+          }
+
+          const contentType = response.headers.get('content-type') || ''
+          let text = await response.text()
+
+          if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
+            text = stripHtmlToText(text)
+          }
+
+          if (text.length > maxChars) {
+            text = text.substring(0, maxChars) + `\n\n[Truncated at ${maxChars} chars]`
+          }
+
+          return textResult({ content: text, status: response.status, bytes: text.length, url })
+        } catch (err: any) {
+          if (attempt < MAX_ATTEMPTS && (err.name === 'TimeoutError' || err.code === 'ECONNRESET')) {
+            await new Promise(r => setTimeout(r, 500))
+            continue
+          }
+          return textResult({ error: err.message, url })
+        }
+      }
+
+      return textResult({ error: 'All fetch attempts failed', url })
     },
   }
 }
@@ -764,7 +826,11 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop â€
       ),
     }),
     execute: async (_toolCallId, params) => {
-      const { surfaceId, components } = params as { surfaceId: string; components: any[] }
+      const { surfaceId, components: rawComponents } = params as { surfaceId: string; components: any[] }
+
+      // Auto-correct known variant/enum mismatches before validation
+      const { components: normalizedComponents, corrections } = normalizeComponents(rawComponents)
+      const components = normalizedComponents as typeof rawComponents
 
       const lint = lintComponents(components)
       const errors = lint.filter((m) => m.severity === 'error')
@@ -787,10 +853,11 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop â€
         })
       }
 
-      // Non-fatal errors (invalid prop values, unknown props) â€” render best-effort but report failure
+      // Render with auto-corrected components
       const manager = getDynamicAppManager()
       const result = manager.updateComponents(surfaceId, components)
 
+      // Non-fatal errors still present after auto-correction
       if (errors.length > 0) {
         return textResult({
           ...result,
@@ -798,14 +865,17 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop â€
           error: `Components rendered with ${errors.length} error(s) that MUST be fixed. The UI is broken or incomplete until these are resolved. Call canvas_update again with corrected components.`,
           errors: errors.map((e) => `[${e.componentId}] ${e.message}`),
           warnings: warnings.length > 0 ? warnings.map((w) => `[${w.componentId}] ${w.message}`) : undefined,
+          corrections: corrections.length > 0 ? corrections : undefined,
           hint: 'Use canvas_components with action "detail" to look up valid props and enum values for any component type.',
         })
       }
 
-      if (warnings.length > 0) {
+      if (warnings.length > 0 || corrections.length > 0) {
         return textResult({
           ...result,
-          warnings: warnings.map((w) => `[${w.componentId}] ${w.message}`),
+          warnings: warnings.length > 0 ? warnings.map((w) => `[${w.componentId}] ${w.message}`) : undefined,
+          corrections: corrections.length > 0 ? corrections : undefined,
+          note: corrections.length > 0 ? 'Some prop values were auto-corrected. Use these corrected values in future updates.' : undefined,
         })
       }
       return textResult(result)

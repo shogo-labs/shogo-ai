@@ -281,12 +281,12 @@ export const HomePage = observer(function HomePage({
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
           </div>
         ) : templates.length === 0 ? (
-          <div className="flex flex-col items-center gap-2 py-8 px-6 text-center">
+          <div className="flex flex-col items-center gap-3 py-8 px-6 text-center">
             <p className="text-sm text-muted-foreground">
-              Templates are loading or not yet available.
+              No templates available right now.
             </p>
             <p className="text-xs text-muted-foreground">
-              Start a conversation above to create your first agent, or check back soon for templates.
+              Start a conversation above to create your agent from scratch — just describe what you want to build.
             </p>
           </div>
         ) : (

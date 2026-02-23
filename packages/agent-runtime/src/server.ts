@@ -176,6 +176,47 @@ function writeAgentConfigFiles(): void {
 // =============================================================================
 
 let agentGateway: AgentGateway | null = null
+let s3SyncInstance: import('@shogo/shared-runtime').S3Sync | null = null
+
+// =============================================================================
+// Stream Keep-Alive Utility
+// =============================================================================
+
+function wrapStreamWithKeepalive(
+  stream: ReadableStream<Uint8Array>,
+  intervalMs: number = 15_000
+): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder()
+  const keepAliveMsg = encoder.encode(': keep-alive\n\n')
+  let timer: ReturnType<typeof setInterval> | null = null
+  let ctrl: ReadableStreamDefaultController<Uint8Array> | null = null
+  let closed = false
+  const reader = stream.getReader()
+
+  function cleanup() {
+    if (timer) { clearInterval(timer); timer = null }
+  }
+
+  return new ReadableStream({
+    start(c) {
+      ctrl = c
+      timer = setInterval(() => {
+        if (closed || !ctrl) { cleanup(); return }
+        try { ctrl.enqueue(keepAliveMsg) } catch { closed = true; cleanup() }
+      }, intervalMs)
+    },
+    async pull(c) {
+      try {
+        const { done, value } = await reader.read()
+        if (done) { closed = true; cleanup(); c.close(); return }
+        c.enqueue(value)
+      } catch (err) {
+        closed = true; cleanup(); c.error(err)
+      }
+    },
+    cancel() { closed = true; cleanup(); reader.cancel() },
+  })
+}
 
 // =============================================================================
 // Hono Server
@@ -373,7 +414,15 @@ app.post('/agent/chat', async (c) => {
     },
   })
 
-  return createUIMessageStreamResponse({ stream })
+  const response = createUIMessageStreamResponse({ stream })
+  if (response.body) {
+    const wrappedStream = wrapStreamWithKeepalive(response.body, 15_000)
+    return new Response(wrappedStream, {
+      status: response.status,
+      headers: response.headers,
+    })
+  }
+  return response
 })
 
 // Retrieve chat history so the UI can restore past messages on reconnect
@@ -945,6 +994,7 @@ async function initializeEssentials(): Promise<void> {
     try {
       const result = await initializeS3Sync(AGENT_DIR)
       if (result) {
+        s3SyncInstance = result.sync
         logTiming('S3 sync initialized')
       }
     } catch (error: any) {
@@ -975,6 +1025,13 @@ async function startGateway(): Promise<void> {
     consoleLogs.push(line)
     if (consoleLogs.length > 1000) consoleLogs.splice(0, 500)
   })
+
+  if (s3SyncInstance) {
+    agentGateway.getMCPClientManager().setOnConfigPersisted(() => {
+      s3SyncInstance?.triggerSync(true)
+    })
+  }
+
   await agentGateway.start()
   logTiming('Agent gateway started')
 }
@@ -987,6 +1044,40 @@ async function initialize(): Promise<void> {
   await initializeEssentials()
   await startGateway()
 }
+
+// =============================================================================
+// Graceful Shutdown
+// =============================================================================
+
+let isShuttingDown = false
+
+async function gracefulShutdown(signal: string): Promise<void> {
+  if (isShuttingDown) return
+  isShuttingDown = true
+  console.log(`[agent-runtime] ${signal} received — starting graceful shutdown`)
+
+  try {
+    if (s3SyncInstance) {
+      await s3SyncInstance.flushAndShutdown(10_000)
+    }
+  } catch (err: any) {
+    console.error(`[agent-runtime] S3 flush error during shutdown:`, err.message)
+  }
+
+  try {
+    if (agentGateway) {
+      await agentGateway.stop()
+    }
+  } catch (err: any) {
+    console.error(`[agent-runtime] Gateway stop error during shutdown:`, err.message)
+  }
+
+  console.log(`[agent-runtime] Graceful shutdown complete`)
+  process.exit(0)
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
+process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 
 // =============================================================================
 // Start Server

@@ -830,6 +830,63 @@ interface TemplateMetadata {
 }
 
 /**
+ * Hardcoded fallback templates for environments where the SDK examples
+ * directory is not available (e.g., Kubernetes deployments).
+ */
+const FALLBACK_TEMPLATES: TemplateMetadata[] = [
+  {
+    name: 'todo-app',
+    description: 'Simple task management app with user authentication',
+    complexity: 'beginner',
+    features: ['prisma', 'user-auth', 'crud', 'one-to-many'],
+    models: ['User', 'Todo'],
+    tags: ['tasks', 'todo', 'checklist', 'productivity', 'simple', 'agent'],
+    useCases: ['task list', 'todo app', 'checklist', 'simple crud app', 'getting started'],
+    techStack: { database: 'postgresql', orm: 'prisma', frontend: 'react', router: 'hono', backend: 'hono', sdk: '@shogo-ai/sdk' },
+  },
+  {
+    name: 'crm',
+    description: 'Customer relationship management with contacts, companies, deals, tags, and activity notes',
+    complexity: 'advanced',
+    features: ['prisma', 'user-auth', 'crud', 'one-to-many', 'many-to-many', 'pipeline-stages'],
+    models: ['User', 'Contact', 'Company', 'Tag', 'ContactTag', 'Note', 'Deal'],
+    tags: ['crm', 'sales', 'contacts', 'customers', 'leads', 'deals', 'pipeline', 'agent'],
+    useCases: ['crm', 'customer management', 'sales pipeline', 'contact management', 'lead tracking'],
+    techStack: { database: 'postgresql', orm: 'prisma', frontend: 'react', router: 'hono', backend: 'hono', sdk: '@shogo-ai/sdk' },
+  },
+  {
+    name: 'kanban',
+    description: 'Kanban board with drag-and-drop task management',
+    complexity: 'intermediate',
+    features: ['prisma', 'user-auth', 'crud', 'one-to-many'],
+    models: ['User', 'Board', 'Column', 'Card'],
+    tags: ['kanban', 'project-management', 'board', 'tasks', 'agile', 'agent'],
+    useCases: ['kanban board', 'project management', 'task board', 'agile board'],
+    techStack: { database: 'postgresql', orm: 'prisma', frontend: 'react', router: 'hono', backend: 'hono', sdk: '@shogo-ai/sdk' },
+  },
+  {
+    name: 'expense-tracker',
+    description: 'Personal expense tracker with categories and budgets',
+    complexity: 'intermediate',
+    features: ['prisma', 'user-auth', 'crud', 'one-to-many', 'aggregations'],
+    models: ['User', 'Category', 'Expense', 'Budget'],
+    tags: ['finance', 'expenses', 'budget', 'money', 'tracker', 'agent'],
+    useCases: ['expense tracking', 'budget management', 'personal finance', 'money tracker'],
+    techStack: { database: 'postgresql', orm: 'prisma', frontend: 'react', router: 'hono', backend: 'hono', sdk: '@shogo-ai/sdk' },
+  },
+  {
+    name: 'booking-app',
+    description: 'Booking and reservation system with time slots and availability',
+    complexity: 'intermediate',
+    features: ['prisma', 'user-auth', 'crud', 'one-to-many'],
+    models: ['User', 'Service', 'TimeSlot', 'Booking'],
+    tags: ['booking', 'reservation', 'scheduling', 'appointments', 'agent'],
+    useCases: ['booking system', 'reservation app', 'appointment scheduler', 'scheduling tool'],
+    techStack: { database: 'postgresql', orm: 'prisma', frontend: 'react', router: 'hono', backend: 'hono', sdk: '@shogo-ai/sdk' },
+  },
+]
+
+/**
  * Load all available templates from SDK examples directory
  */
 async function loadTemplates(): Promise<TemplateMetadata[]> {
@@ -852,7 +909,12 @@ async function loadTemplates(): Promise<TemplateMetadata[]> {
       }
     }
   } catch (err) {
-    console.error('[Templates] Failed to load templates:', err)
+    console.warn('[Templates] Could not read templates directory:', (err as Error).message)
+  }
+
+  if (templates.length === 0) {
+    console.warn(`[Templates] No templates found at ${templatesDir}, using fallback list (${FALLBACK_TEMPLATES.length} templates)`)
+    return FALLBACK_TEMPLATES
   }
 
   return templates

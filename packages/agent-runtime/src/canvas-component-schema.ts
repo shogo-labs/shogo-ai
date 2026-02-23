@@ -557,6 +557,103 @@ export function lintComponents(components: Array<{ id?: string; component?: stri
 }
 
 // ---------------------------------------------------------------------------
+// Auto-correction: normalize known variant/enum mismatches
+// ---------------------------------------------------------------------------
+
+const ENUM_ALIASES: Record<string, Record<string, Record<string, string>>> = {
+  Text: {
+    variant: {
+      xs: 'small',
+      sm: 'small',
+      md: 'body',
+      lg: 'large',
+      xl: 'h4',
+      '2xl': 'h3',
+      '3xl': 'h2',
+      '4xl': 'h1',
+      p: 'body',
+      paragraph: 'body',
+      title: 'h2',
+      subtitle: 'h4',
+      heading: 'h2',
+      subheading: 'h4',
+    },
+  },
+  Badge: {
+    variant: {
+      primary: 'default',
+      info: 'secondary',
+      error: 'destructive',
+      danger: 'destructive',
+      warning: 'outline',
+      success: 'default',
+    },
+  },
+  Button: {
+    variant: {
+      primary: 'default',
+      danger: 'destructive',
+      text: 'link',
+      flat: 'ghost',
+    },
+    size: {
+      xs: 'sm',
+      xl: 'lg',
+    },
+  },
+}
+
+export interface NormalizationResult {
+  components: Array<{ [k: string]: unknown }>
+  corrections: string[]
+}
+
+/**
+ * Auto-correct known invalid enum values in component props.
+ * Returns the corrected components array and a list of human-readable corrections.
+ */
+export function normalizeComponents(
+  components: Array<{ id?: string; component?: string;[k: string]: unknown }>
+): NormalizationResult {
+  const corrections: string[] = []
+
+  const normalized = components.map((comp) => {
+    const schema = comp.component ? getComponentSchema(comp.component) : null
+    if (!schema) return comp
+
+    const aliases = ENUM_ALIASES[schema.type]
+    if (!aliases) return comp
+
+    const patched = { ...comp }
+    for (const [propName, aliasMap] of Object.entries(aliases)) {
+      const val = patched[propName]
+      if (typeof val === 'string' && aliasMap[val]) {
+        const corrected = aliasMap[val]
+        corrections.push(`${comp.id}: ${schema.type}.${propName} "${val}" → "${corrected}"`)
+        patched[propName] = corrected
+      }
+    }
+
+    // General fallback: for any enum prop with an invalid value, try closest match
+    for (const [propName, propDef] of Object.entries(schema.props)) {
+      const val = patched[propName]
+      if (val !== undefined && propDef.enum && typeof val === 'string' && !propDef.enum.includes(val)) {
+        const lower = val.toLowerCase()
+        const match = propDef.enum.find((e: string) => e.toLowerCase() === lower)
+        if (match) {
+          corrections.push(`${comp.id}: ${schema.type}.${propName} "${val}" → "${match}" (case fix)`)
+          patched[propName] = match
+        }
+      }
+    }
+
+    return patched
+  })
+
+  return { components: normalized, corrections }
+}
+
+// ---------------------------------------------------------------------------
 // Fuzzy match helper (Levenshtein distance)
 // ---------------------------------------------------------------------------
 

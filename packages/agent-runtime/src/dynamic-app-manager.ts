@@ -555,7 +555,6 @@ export class DynamicAppManager {
       if (!surfacesObj || typeof surfacesObj !== 'object') return
 
       let restored = 0
-      let runtimesRestored = 0
       for (const [id, s] of Object.entries(surfacesObj) as [string, any][]) {
         const components = new Map<string, ComponentDefinition>()
         if (s.components && typeof s.components === 'object') {
@@ -581,6 +580,7 @@ export class DynamicAppManager {
       }
 
       // Restore API runtimes for surfaces that had active schemas
+      let runtimesRestored = 0
       for (const [id, surface] of this.surfaces) {
         if (surface.apiModels && surface.apiModels.length > 0) {
           try {

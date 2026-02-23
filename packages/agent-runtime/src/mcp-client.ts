@@ -95,9 +95,14 @@ export interface MCPServerInfo {
 export class MCPClientManager {
   private servers: Map<string, ManagedServer> = new Map()
   private workspaceDir: string | null = null
+  private onConfigPersisted: (() => void) | null = null
 
   setWorkspaceDir(dir: string): void {
     this.workspaceDir = dir
+  }
+
+  setOnConfigPersisted(callback: () => void): void {
+    this.onConfigPersisted = callback
   }
 
   /**
@@ -343,6 +348,7 @@ export class MCPClientManager {
     existing.mcpServers = existing.mcpServers || {}
     existing.mcpServers[name] = { command: config.command, ...(config.args ? { args: config.args } : {}), ...(config.env ? { env: config.env } : {}), ...(config.cwd ? { cwd: config.cwd } : {}) }
     writeFileSync(configPath, JSON.stringify(existing, null, 2), 'utf-8')
+    this.onConfigPersisted?.()
   }
 
   private unpersistConfig(name: string): void {
