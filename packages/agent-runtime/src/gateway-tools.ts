@@ -577,7 +577,13 @@ IMPORTANT — For lists with per-row buttons (edit/delete), use DataList NOT Tab
 - Set DataList children to: { "path": "/items", "templateId": "item_template" }
 - Inside the template, { "path": "fieldName" } (NO leading /) binds to the current item.
 
-See canvas_api_schema tool description for a complete working DataList + mutation example.`,
+See canvas_api_schema tool description for a complete working DataList + mutation example.
+
+TABS — Use TabPanel children with a "title" prop (tab labels auto-derive from title):
+  { id: "tabs", component: "Tabs", children: ["tab1", "tab2"] }
+  { id: "tab1", component: "TabPanel", title: "First Tab", children: ["content1"] }
+  { id: "tab2", component: "TabPanel", title: "Second Tab", children: ["content2"] }
+NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop — tabs will render empty.`,
     label: 'Update Canvas Components',
     parameters: Type.Object({
       surfaceId: Type.String({ description: 'Surface ID to update' }),

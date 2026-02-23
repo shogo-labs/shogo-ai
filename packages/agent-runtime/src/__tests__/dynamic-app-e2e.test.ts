@@ -1522,6 +1522,335 @@ describe('Dynamic App E2E: Multi-Step Action Wait Loop', () => {
 // 13. Agent Self-Testing via canvas_trigger_action + canvas_inspect
 // ============================================================================
 
+// ============================================================================
+// 14b. Tab Rendering Patterns — Reproduce "empty tab panels on first build"
+// ============================================================================
+
+describe('Dynamic App E2E: Tab Rendering Patterns', () => {
+  let manager: DynamicAppManager
+
+  beforeEach(() => {
+    manager = new DynamicAppManager()
+  })
+
+  test('PATTERN 1 — explicit tabs prop with any children: renders correctly', () => {
+    manager.createSurface('tabs_p1', 'Pattern 1')
+    manager.updateComponents('tabs_p1', [
+      { id: 'root', component: 'Column', children: ['my_tabs'] },
+      {
+        id: 'my_tabs',
+        component: 'Tabs',
+        tabs: [
+          { id: 'hotels', label: 'Hotels' },
+          { id: 'restaurants', label: 'Restaurants' },
+        ],
+        children: ['hotels_section', 'restaurants_section'],
+      },
+      { id: 'hotels_section', component: 'Column', children: ['hotels_text'] },
+      { id: 'hotels_text', component: 'Text', text: 'Hotel listings here' },
+      { id: 'restaurants_section', component: 'Column', children: ['rest_text'] },
+      { id: 'rest_text', component: 'Text', text: 'Restaurant listings here' },
+    ])
+
+    const surface = manager.getSurface('tabs_p1')!
+    expect(surface.components.size).toBe(6)
+    const tabsDef = surface.components.get('my_tabs')!
+    expect(tabsDef.tabs).toHaveLength(2)
+    expect(tabsDef.children).toEqual(['hotels_section', 'restaurants_section'])
+  })
+
+  test('PATTERN 2 — TabPanel children with title prop: auto-derive works', () => {
+    manager.createSurface('tabs_p2', 'Pattern 2')
+    manager.updateComponents('tabs_p2', [
+      { id: 'root', component: 'Column', children: ['my_tabs'] },
+      {
+        id: 'my_tabs',
+        component: 'Tabs',
+        children: ['hotels_panel', 'restaurants_panel'],
+      },
+      {
+        id: 'hotels_panel',
+        component: 'TabPanel',
+        title: 'Hotels',
+        children: ['hotels_text'],
+      },
+      { id: 'hotels_text', component: 'Text', text: 'Hotel listings' },
+      {
+        id: 'restaurants_panel',
+        component: 'TabPanel',
+        title: 'Restaurants',
+        children: ['rest_text'],
+      },
+      { id: 'rest_text', component: 'Text', text: 'Restaurant listings' },
+    ])
+
+    const surface = manager.getSurface('tabs_p2')!
+    expect(surface.components.size).toBe(6)
+    const tabsDef = surface.components.get('my_tabs')!
+    // Auto-derive should pick up titles from TabPanel children at render time
+    // (auto-derive happens in the React renderer, not in the manager)
+    expect(tabsDef.children).toEqual(['hotels_panel', 'restaurants_panel'])
+    // TabPanel children MUST have title for auto-derive to work
+    expect(surface.components.get('hotels_panel')!.title).toBe('Hotels')
+    expect(surface.components.get('restaurants_panel')!.title).toBe('Restaurants')
+  })
+
+  test('BROKEN PATTERN — TabPanel without title: tabs render empty', () => {
+    manager.createSurface('tabs_broken1', 'Broken 1')
+    manager.updateComponents('tabs_broken1', [
+      { id: 'root', component: 'Column', children: ['my_tabs'] },
+      {
+        id: 'my_tabs',
+        component: 'Tabs',
+        children: ['hotels_panel', 'restaurants_panel'],
+      },
+      {
+        id: 'hotels_panel',
+        component: 'TabPanel',
+        // NO title prop! Auto-derive will fail.
+        children: ['hotels_text'],
+      },
+      { id: 'hotels_text', component: 'Text', text: 'Hotel listings' },
+      {
+        id: 'restaurants_panel',
+        component: 'TabPanel',
+        // NO title prop!
+        children: ['rest_text'],
+      },
+      { id: 'rest_text', component: 'Text', text: 'Restaurant listings' },
+    ])
+
+    const surface = manager.getSurface('tabs_broken1')!
+    // Components are stored but auto-derive will produce empty tabs at render time
+    expect(surface.components.get('hotels_panel')!.title).toBeUndefined()
+    expect(surface.components.get('restaurants_panel')!.title).toBeUndefined()
+  })
+
+  test('BROKEN PATTERN — non-TabPanel children without explicit tabs: renders empty', () => {
+    manager.createSurface('tabs_broken2', 'Broken 2')
+    manager.updateComponents('tabs_broken2', [
+      { id: 'root', component: 'Column', children: ['my_tabs'] },
+      {
+        id: 'my_tabs',
+        component: 'Tabs',
+        // No explicit tabs prop, and children are Column (no title/label)
+        children: ['hotels_section', 'restaurants_section'],
+      },
+      { id: 'hotels_section', component: 'Column', children: ['hotels_text'] },
+      { id: 'hotels_text', component: 'Text', text: 'Hotel listings' },
+      { id: 'restaurants_section', component: 'Column', children: ['rest_text'] },
+      { id: 'rest_text', component: 'Text', text: 'Restaurant listings' },
+    ])
+
+    const surface = manager.getSurface('tabs_broken2')!
+    const tabsDef = surface.components.get('my_tabs')!
+    // No explicit tabs prop → auto-derive will fail (Column has no title/label)
+    expect(tabsDef.tabs).toBeUndefined()
+  })
+
+  test('linter catches TabPanel without title and suggests fix', () => {
+    const { lintComponents } = require('../canvas-component-schema')
+    const components = [
+      { id: 'root', component: 'Column', children: ['my_tabs'] },
+      {
+        id: 'my_tabs',
+        component: 'Tabs',
+        children: ['hotels_panel', 'restaurants_panel'],
+      },
+      {
+        id: 'hotels_panel',
+        component: 'TabPanel',
+        children: ['hotels_text'],
+        // Missing title!
+      },
+      { id: 'hotels_text', component: 'Text', text: 'Hotel listings' },
+      {
+        id: 'restaurants_panel',
+        component: 'TabPanel',
+        children: ['rest_text'],
+        // Missing title!
+      },
+      { id: 'rest_text', component: 'Text', text: 'Restaurant listings' },
+    ]
+
+    const messages = lintComponents(components)
+    const tabPanelWarnings = messages.filter(
+      (m: any) => m.message.includes('title') && m.componentId.includes('panel')
+    )
+    expect(tabPanelWarnings.length).toBeGreaterThanOrEqual(2)
+  })
+
+  test('linter catches Tabs without tabs prop and non-TabPanel children', () => {
+    const { lintComponents } = require('../canvas-component-schema')
+    const components = [
+      { id: 'root', component: 'Column', children: ['my_tabs'] },
+      {
+        id: 'my_tabs',
+        component: 'Tabs',
+        children: ['hotels_section', 'restaurants_section'],
+      },
+      { id: 'hotels_section', component: 'Column', children: ['hotels_text'] },
+      { id: 'hotels_text', component: 'Text', text: 'Hotel listings' },
+      { id: 'restaurants_section', component: 'Column', children: ['rest_text'] },
+      { id: 'rest_text', component: 'Text', text: 'Restaurant listings' },
+    ]
+
+    const messages = lintComponents(components)
+    const tabsWarnings = messages.filter(
+      (m: any) => m.componentId === 'my_tabs' && m.message.includes('tab')
+    )
+    // Should warn that Tabs has no explicit tabs prop and children aren't TabPanel
+    expect(tabsWarnings.length).toBeGreaterThanOrEqual(1)
+  })
+})
+
+// ============================================================================
+// 14c. Tab Rendering — Agent Gateway Integration (Bali Trip Planner scenario)
+// ============================================================================
+
+describe('Dynamic App E2E: Agent Tab Building via Gateway', () => {
+  let gateway: AgentGateway
+
+  beforeEach(() => {
+    setupWorkspace()
+    resetDynamicAppManager()
+  })
+
+  afterEach(async () => {
+    if (gateway) await gateway.stop()
+    rmSync(TEST_DIR, { recursive: true, force: true })
+    resetDynamicAppManager()
+  })
+
+  test('agent builds tabbed trip planner with TabPanel + title (correct pattern)', async () => {
+    const mockStream = createMockStreamFn([
+      buildToolUseResponse([{
+        name: 'canvas_create',
+        arguments: { surfaceId: 'trip_planner', title: 'Bali Trip Planner' },
+        id: 'toolu_1',
+      }]),
+      buildToolUseResponse([{
+        name: 'canvas_update',
+        arguments: {
+          surfaceId: 'trip_planner',
+          components: [
+            {
+              id: 'root',
+              component: 'Column',
+              children: ['header', 'budget_row', 'content_tabs'],
+              gap: 'lg',
+              padding: '4',
+            },
+            { id: 'header', component: 'Text', text: 'Bali Luxury Trip Planner', variant: 'h2' },
+            {
+              id: 'budget_row',
+              component: 'Grid',
+              columns: 3,
+              children: ['budget_total', 'budget_spent', 'budget_remaining'],
+            },
+            { id: 'budget_total', component: 'Metric', label: 'Total Budget', value: { path: '/budget/total' }, unit: 'USD' },
+            { id: 'budget_spent', component: 'Metric', label: 'Spent', value: { path: '/budget/spent' }, trend: 'up' },
+            { id: 'budget_remaining', component: 'Metric', label: 'Remaining', value: { path: '/budget/remaining' }, trend: 'down' },
+            {
+              id: 'content_tabs',
+              component: 'Tabs',
+              children: ['hotels_panel', 'restaurants_panel', 'itinerary_panel'],
+            },
+            {
+              id: 'hotels_panel',
+              component: 'TabPanel',
+              title: 'Hotels',
+              children: ['hotels_table'],
+            },
+            {
+              id: 'hotels_table',
+              component: 'Table',
+              columns: [
+                { key: 'name', label: 'Hotel' },
+                { key: 'price', label: 'Price/Night' },
+                { key: 'rating', label: 'Rating' },
+              ],
+              rows: { path: '/hotels' },
+            },
+            {
+              id: 'restaurants_panel',
+              component: 'TabPanel',
+              title: 'Restaurants',
+              children: ['restaurants_table'],
+            },
+            {
+              id: 'restaurants_table',
+              component: 'Table',
+              columns: [
+                { key: 'name', label: 'Restaurant' },
+                { key: 'cuisine', label: 'Cuisine' },
+                { key: 'price', label: 'Avg Price' },
+              ],
+              rows: { path: '/restaurants' },
+            },
+            {
+              id: 'itinerary_panel',
+              component: 'TabPanel',
+              title: 'Itinerary',
+              children: ['itinerary_text'],
+            },
+            { id: 'itinerary_text', component: 'Text', text: 'Your 5-day itinerary will appear here', variant: 'muted' },
+          ],
+        },
+        id: 'toolu_2',
+      }]),
+      buildToolUseResponse([{
+        name: 'canvas_data',
+        arguments: {
+          surfaceId: 'trip_planner',
+          path: '/',
+          value: {
+            budget: { total: '$5,000', spent: '$1,950', remaining: '$3,050' },
+            hotels: [
+              { name: 'Four Seasons Bali', price: '$450', rating: '⭐⭐⭐⭐⭐' },
+              { name: 'Mandapa Reserve', price: '$380', rating: '⭐⭐⭐⭐⭐' },
+            ],
+            restaurants: [
+              { name: 'Locavore', cuisine: 'Indonesian Fusion', price: '$85' },
+              { name: 'Mozaic', cuisine: 'French-Indonesian', price: '$120' },
+            ],
+          },
+        },
+        id: 'toolu_3',
+      }]),
+      buildTextResponse('I\'ve built your Bali luxury trip planner with Hotels, Restaurants, and Itinerary tabs!'),
+    ])
+
+    gateway = new AgentGateway(TEST_DIR, 'test-project')
+    gateway.setStreamFn(mockStream)
+    await gateway.start()
+
+    const response = await gateway.processChatMessage('Plan a luxury trip to Bali with a $5000 budget')
+
+    expect(response).toContain('Bali')
+
+    const mgr = getDynamicAppManager()
+    const surface = mgr.getSurface('trip_planner')!
+
+    // Verify structure (13 components: root, header, budget_row, 3 metrics, tabs, 3 panels, 2 tables, 1 text)
+    expect(surface.components.size).toBe(13)
+    expect(surface.components.get('content_tabs')!.component).toBe('Tabs')
+    expect(surface.components.get('content_tabs')!.children).toEqual([
+      'hotels_panel', 'restaurants_panel', 'itinerary_panel',
+    ])
+
+    // Verify TabPanel children have title (critical for auto-derive)
+    expect(surface.components.get('hotels_panel')!.title).toBe('Hotels')
+    expect(surface.components.get('restaurants_panel')!.title).toBe('Restaurants')
+    expect(surface.components.get('itinerary_panel')!.title).toBe('Itinerary')
+
+    // Verify data
+    expect(getByPointer(surface.dataModel, '/budget/total')).toBe('$5,000')
+    expect((surface.dataModel as any).hotels).toHaveLength(2)
+    expect((surface.dataModel as any).restaurants).toHaveLength(2)
+  })
+})
+
 describe('Dynamic App E2E: Agent Self-Testing Tools', () => {
   let gateway: AgentGateway
 

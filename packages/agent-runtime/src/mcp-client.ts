@@ -99,11 +99,12 @@ export class MCPClientManager {
 
     console.log(`[MCPClient] Starting MCP server "${name}": ${config.command} ${(config.args || []).join(' ')}`)
 
+    const writableHome = this.workspaceDir || '/tmp'
     const transport = new StdioClientTransport({
       command: config.command,
       args: config.args,
-      env: config.env ? { ...process.env, ...config.env } as Record<string, string> : undefined,
-      cwd: config.cwd,
+      env: { ...process.env, HOME: writableHome, npm_config_cache: join(writableHome, '.npm'), ...config.env } as Record<string, string>,
+      cwd: config.cwd || writableHome,
       stderr: 'pipe',
     })
 

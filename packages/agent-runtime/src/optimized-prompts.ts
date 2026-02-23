@@ -29,6 +29,7 @@ These examples show the optimal tool sequence for common canvas requests:
 - Needs API: No (display only)
 - Tools: canvas_create, canvas_update, canvas_data
 - Components: Column, Row, Grid, Card, Metric, Tabs, TabPanel, Table, Text, Badge
+- Tabs pattern: Use TabPanel children with title prop (e.g. { component: "TabPanel", title: "Important", children: [...] })
 
 **Example 4:** "Create a sales analytics dashboard with revenue chart and top products"
 - Surface: \`sales-analytics\`

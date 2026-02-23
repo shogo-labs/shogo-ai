@@ -71,7 +71,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     name: 'Web Fetch',
     description: 'Clean web page fetching with automatic readability extraction. Returns markdown content from any URL.',
     category: 'browse',
-    package: '@anthropic/mcp-fetch@latest',
+    package: 'mcp-fetch-node@latest',
     defaultArgs: [],
     requiredEnv: {},
     providedTools: ['fetch'],
@@ -83,7 +83,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     name: 'GitHub',
     description: 'Full GitHub integration — manage issues, pull requests, repositories, code search, and actions.',
     category: 'code',
-    package: '@anthropic/mcp-github@latest',
+    package: '@modelcontextprotocol/server-github@latest',
     defaultArgs: [],
     requiredEnv: {
       GITHUB_TOKEN: 'GitHub personal access token (Settings > Developer settings > Personal access tokens)',
@@ -97,7 +97,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     name: 'GitLab',
     description: 'GitLab project management — issues, merge requests, pipelines, and repository operations.',
     category: 'code',
-    package: '@anthropic/mcp-gitlab@latest',
+    package: '@modelcontextprotocol/server-gitlab@latest',
     defaultArgs: [],
     requiredEnv: {
       GITLAB_TOKEN: 'GitLab personal access token',
@@ -112,7 +112,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     name: 'Linear',
     description: 'Linear issue tracking — create and manage issues, projects, and cycles.',
     category: 'code',
-    package: '@anthropic/mcp-linear@latest',
+    package: 'mcp-server-linear@latest',
     defaultArgs: [],
     requiredEnv: {
       LINEAR_API_KEY: 'Linear API key (Settings > API > Personal API keys)',
@@ -126,7 +126,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     name: 'PostgreSQL',
     description: 'Query PostgreSQL databases — run SQL queries, list tables, describe schemas.',
     category: 'data',
-    package: '@anthropic/mcp-postgres@latest',
+    package: '@modelcontextprotocol/server-postgres@latest',
     defaultArgs: [],
     requiredEnv: {
       POSTGRES_CONNECTION_STRING: 'PostgreSQL connection string (e.g. postgresql://user:pass@host:5432/db)',
@@ -140,7 +140,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     name: 'SQLite',
     description: 'Local SQLite database operations — create databases, run queries, manage schemas.',
     category: 'data',
-    package: '@anthropic/mcp-sqlite@latest',
+    package: 'mcp-server-sqlite@latest',
     defaultArgs: [],
     requiredEnv: {},
     optionalEnv: {
@@ -155,7 +155,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     name: 'Slack',
     description: 'Read and send Slack messages, manage channels, search conversation history.',
     category: 'communication',
-    package: '@anthropic/mcp-slack@latest',
+    package: '@modelcontextprotocol/server-slack@latest',
     defaultArgs: [],
     requiredEnv: {
       SLACK_BOT_TOKEN: 'Slack Bot User OAuth Token (xoxb-...)',
@@ -169,7 +169,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     name: 'Gmail',
     description: 'Read, send, and search emails via Gmail API. Manage labels and drafts.',
     category: 'communication',
-    package: '@anthropic/mcp-gmail@latest',
+    package: 'gmail-mcp@latest',
     defaultArgs: [],
     requiredEnv: {
       GMAIL_CREDENTIALS: 'Gmail OAuth credentials JSON',
@@ -183,7 +183,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     name: 'Google Drive',
     description: 'Browse, read, and search Google Drive files. Access documents, spreadsheets, and presentations.',
     category: 'productivity',
-    package: '@anthropic/mcp-google-drive@latest',
+    package: 'google-drive-mcp@latest',
     defaultArgs: [],
     requiredEnv: {
       GOOGLE_DRIVE_CREDENTIALS: 'Google OAuth credentials JSON',
@@ -197,7 +197,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     name: 'Google Calendar',
     description: 'Manage calendar events — create, update, list, and search events across calendars.',
     category: 'productivity',
-    package: '@anthropic/mcp-google-calendar@latest',
+    package: 'google-calendar-mcp@latest',
     defaultArgs: [],
     requiredEnv: {
       GOOGLE_CALENDAR_CREDENTIALS: 'Google OAuth credentials JSON',
@@ -211,7 +211,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     name: 'Notion',
     description: 'Access Notion workspace — read and create pages, query databases, search content.',
     category: 'productivity',
-    package: '@anthropic/mcp-notion@latest',
+    package: '@notionhq/notion-mcp-server@latest',
     defaultArgs: [],
     requiredEnv: {
       NOTION_API_KEY: 'Notion integration token (Settings > Integrations)',
@@ -225,7 +225,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     name: 'Stripe',
     description: 'Manage Stripe payments — customers, invoices, subscriptions, and payment intents.',
     category: 'finance',
-    package: '@anthropic/mcp-stripe@latest',
+    package: 'mcp-server-stripe@latest',
     defaultArgs: [],
     requiredEnv: {
       STRIPE_SECRET_KEY: 'Stripe secret API key (sk_...)',
@@ -239,7 +239,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     name: 'Brave Search',
     description: 'Web search via Brave Search API — fast, private search results with snippets.',
     category: 'search',
-    package: '@anthropic/mcp-brave-search@latest',
+    package: '@modelcontextprotocol/server-brave-search@latest',
     defaultArgs: [],
     requiredEnv: {
       BRAVE_API_KEY: 'Brave Search API key (brave.com/search/api)',
@@ -267,7 +267,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     name: 'Sentry',
     description: 'Monitor application errors — list issues, get event details, manage alerts.',
     category: 'monitoring',
-    package: '@anthropic/mcp-sentry@latest',
+    package: '@sentry/mcp-server@latest',
     defaultArgs: [],
     requiredEnv: {
       SENTRY_AUTH_TOKEN: 'Sentry authentication token',
@@ -294,7 +294,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     name: 'Filesystem',
     description: 'Read and write files on the host system. Useful for agents that manage local documents or configs.',
     category: 'files',
-    package: '@anthropic/mcp-filesystem@latest',
+    package: '@modelcontextprotocol/server-filesystem@latest',
     defaultArgs: [],
     requiredEnv: {},
     optionalEnv: {

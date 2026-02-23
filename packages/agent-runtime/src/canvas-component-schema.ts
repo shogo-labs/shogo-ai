@@ -514,6 +514,45 @@ export function lintComponents(components: Array<{ id?: string; component?: stri
     })
   }
 
+  // Cross-component: Tabs ↔ children validation
+  const compById = new Map(components.filter((c) => c.id).map((c) => [c.id, c]))
+  for (const comp of components) {
+    if (comp.component !== 'Tabs' || !Array.isArray(comp.children)) continue
+    const cid = String(comp.id)
+    const childIds = comp.children as string[]
+    const hasExplicitTabs = Array.isArray(comp.tabs) && (comp.tabs as unknown[]).length > 0
+
+    if (!hasExplicitTabs) {
+      const nonTabPanelChildren = childIds.filter((id) => {
+        const child = compById.get(id)
+        return child && child.component !== 'TabPanel'
+      })
+      if (nonTabPanelChildren.length > 0) {
+        messages.push({
+          severity: 'error',
+          componentId: cid,
+          message: `Tabs has no "tabs" prop and children [${nonTabPanelChildren.join(', ')}] are not TabPanel components. ` +
+            `The tabs will render EMPTY. Fix: either (a) add an explicit "tabs" prop: ` +
+            `tabs: [{ id: "tab1", label: "Label" }, ...], or (b) change children to TabPanel components with a "title" prop.`,
+        })
+      }
+
+      const tabPanelsWithoutTitle = childIds.filter((id) => {
+        const child = compById.get(id)
+        return child && child.component === 'TabPanel' && !child.title
+      })
+      if (tabPanelsWithoutTitle.length > 0) {
+        messages.push({
+          severity: 'error',
+          componentId: cid,
+          message: `Tabs children [${tabPanelsWithoutTitle.join(', ')}] are TabPanel components missing the "title" prop. ` +
+            `Without "title", tabs cannot auto-derive labels and will render EMPTY. ` +
+            `Fix: add title="Label" to each TabPanel.`,
+        })
+      }
+    }
+  }
+
   return messages
 }
 

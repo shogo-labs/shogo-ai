@@ -19,6 +19,19 @@ export type MessagePart =
   | { type: "image"; url: string; mediaType: string; id: string }
 
 /**
+ * A message part after consecutive-tool grouping.
+ * Consecutive tool calls with the same name are collapsed into a "tool-group".
+ */
+export type GroupedMessagePart =
+  | MessagePart
+  | {
+      type: "tool-group"
+      toolName: string
+      tools: Array<{ tool: ToolCallData; id: string }>
+      id: string
+    }
+
+/**
  * A conversation turn groups a user message with its subsequent
  * assistant response and any tool calls in between.
  */

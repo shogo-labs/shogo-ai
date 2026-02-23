@@ -13,7 +13,8 @@ import { Streamdown } from "streamdown"
 import { InlineToolWidget } from "./InlineToolWidget"
 import { AskUserQuestionWidget } from "./AskUserQuestionWidget"
 import { TodoWidget } from "./TodoWidget"
-import type { MessagePart } from "./types"
+import { ToolCallGroup } from "./ToolCallGroup"
+import type { MessagePart, GroupedMessagePart } from "./types"
 import { type ToolCallData, getToolCategory } from "../tools/types"
 import { useChatContextSafe } from "../ChatContext"
 
@@ -142,6 +143,65 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
   return result
 }
 
+/** Tools that have custom rendering and should never be collapsed into a group */
+const UNGROUPABLE_TOOLS = new Set(["AskUserQuestion", "TodoWrite"])
+
+/** Minimum consecutive same-name tools required to form a group */
+const MIN_GROUP_SIZE = 2
+
+/**
+ * Group consecutive tool parts that share the same tool name.
+ * Text, image, and special tool parts act as group boundaries.
+ */
+function groupConsecutiveParts(parts: MessagePart[]): GroupedMessagePart[] {
+  const result: GroupedMessagePart[] = []
+  let i = 0
+
+  while (i < parts.length) {
+    const part = parts[i]
+
+    if (
+      part.type !== "tool" ||
+      UNGROUPABLE_TOOLS.has(part.tool.toolName)
+    ) {
+      result.push(part)
+      i++
+      continue
+    }
+
+    const toolName = part.tool.toolName
+    let j = i + 1
+    while (
+      j < parts.length &&
+      parts[j].type === "tool" &&
+      !UNGROUPABLE_TOOLS.has((parts[j] as { type: "tool"; tool: ToolCallData }).tool.toolName) &&
+      (parts[j] as { type: "tool"; tool: ToolCallData }).tool.toolName === toolName
+    ) {
+      j++
+    }
+
+    const runLength = j - i
+    if (runLength >= MIN_GROUP_SIZE) {
+      const groupTools = parts.slice(i, j).map((p) => ({
+        tool: (p as { type: "tool"; tool: ToolCallData; id: string }).tool,
+        id: p.id,
+      }))
+      result.push({
+        type: "tool-group",
+        toolName,
+        tools: groupTools,
+        id: `group-${parts[i].id}`,
+      })
+    } else {
+      result.push(part)
+    }
+
+    i = j
+  }
+
+  return result
+}
+
 /**
  * Image thumbnail component with click-to-expand
  */
@@ -204,7 +264,7 @@ export function AssistantContent({
   // Get sendMessage from context for AskUserQuestion responses
   const chatContext = useChatContextSafe()
 
-  // Track which tools are expanded
+  // Track which tools/groups are expanded
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
 
   const toggleTool = useCallback((toolId: string) => {
@@ -219,19 +279,19 @@ export function AssistantContent({
     })
   }, [])
 
-  // Extract ordered parts from message
-  const parts = useMemo(() => extractOrderedParts(message), [message])
+  // Extract ordered parts, then group consecutive same-name tools
+  const groupedParts = useMemo(() => {
+    const parts = extractOrderedParts(message)
+    return groupConsecutiveParts(parts)
+  }, [message])
 
-  // If no parts, show nothing
-  if (parts.length === 0) {
+  if (groupedParts.length === 0) {
     return null
   }
 
   return (
     <div className={cn("space-y-1.5", className)}>
-      {parts.map((part, index) => {
-        const isLastPart = index === parts.length - 1
-
+      {groupedParts.map((part, index) => {
         if (part.type === "text") {
           return (
             <div
@@ -243,10 +303,20 @@ export function AssistantContent({
           )
         }
 
+        if (part.type === "tool-group") {
+          return (
+            <ToolCallGroup
+              key={part.id}
+              toolName={part.toolName}
+              tools={part.tools}
+              isExpanded={expandedTools.has(part.id)}
+              onToggle={() => toggleTool(part.id)}
+            />
+          )
+        }
+
         if (part.type === "tool") {
-          // Special handling for AskUserQuestion - render interactive widget
           if (part.tool.toolName === "AskUserQuestion") {
-            // Auto-expand when pending (no result yet)
             const isPending = part.tool.result === undefined
             const isExpanded = isPending || expandedTools.has(part.id)
 
@@ -265,10 +335,8 @@ export function AssistantContent({
             )
           }
 
-          // Special handling for TodoWrite - render task list widget
           if (part.tool.toolName === "TodoWrite") {
-            // Default to expanded for todos
-            const isExpanded = !expandedTools.has(part.id) // Inverted - collapsed when in set
+            const isExpanded = !expandedTools.has(part.id)
             
             return (
               <TodoWidget
@@ -280,7 +348,6 @@ export function AssistantContent({
             )
           }
 
-          // Default tool widget for everything else
           return (
             <InlineToolWidget
               key={part.id}

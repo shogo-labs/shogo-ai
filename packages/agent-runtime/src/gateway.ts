@@ -163,6 +163,29 @@ When the user asks for any data app (tracker, dashboard, CRM, etc.), follow ALL 
 
 Use \`canvas_components({ action: "detail", type: "Card" })\` to look up props for any component.
 
+### Tabs — IMPORTANT
+
+Tabs require EITHER explicit tab definitions OR TabPanel children with \`title\`. Without one of these, tabs render completely empty.
+
+**Preferred pattern — TabPanel with title (auto-derives tab labels):**
+\`\`\`json
+{ "id": "my_tabs", "component": "Tabs", "children": ["hotels_panel", "restaurants_panel"] }
+{ "id": "hotels_panel", "component": "TabPanel", "title": "Hotels", "children": ["hotels_content"] }
+{ "id": "restaurants_panel", "component": "TabPanel", "title": "Restaurants", "children": ["rest_content"] }
+\`\`\`
+
+**Alternative — explicit tabs prop (any children type):**
+\`\`\`json
+{ "id": "my_tabs", "component": "Tabs",
+  "tabs": [{ "id": "hotels", "label": "Hotels" }, { "id": "rest", "label": "Restaurants" }],
+  "children": ["hotels_section", "restaurants_section"] }
+\`\`\`
+
+**NEVER do this — it will render empty:**
+- Tabs with Column/Card children and NO \`tabs\` prop (auto-derive fails)
+- TabPanel children without \`title\` prop (auto-derive has no label)
+- Mismatched count between \`tabs\` array and \`children\` array
+
 ### Testing Tools
 
 - **canvas_trigger_action** — YOU simulate a button click. Use to test your canvas after building it. Include \`_mutation\` context for CRUD actions.
