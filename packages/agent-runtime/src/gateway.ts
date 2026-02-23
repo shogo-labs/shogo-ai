@@ -18,7 +18,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
-import type { Message, UserMessage } from '@mariozechner/pi-ai'
+import type { Message } from '@mariozechner/pi-ai'
 import type { StreamFn, AgentTool } from '@mariozechner/pi-agent-core'
 import { Type } from '@sinclair/typebox'
 import type { ChannelAdapter, IncomingMessage, AgentStatus, ChannelStatus, StreamChunkConfig, SandboxConfig } from './types'
@@ -30,7 +30,6 @@ import { parseSlashCommand, type SlashCommandContext } from './slash-commands'
 import { SessionManager, type SessionManagerConfig } from './session-manager'
 import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { CronManager, type CronJob } from './cron-manager'
-import { userMessage } from './pi-adapter'
 import { BlockChunker } from './block-chunker'
 import { MCPClientManager, type MCPServerConfig } from './mcp-client'
 import {
@@ -149,6 +148,10 @@ When the user asks for any data app (tracker, dashboard, CRM, etc.), follow ALL 
 - POST: \`{ mutation: { endpoint: "/api/tasks", method: "POST", body: { title: "..." } } }\`
 - PATCH: \`{ mutation: { endpoint: "/api/tasks/:id", method: "PATCH", params: { id: { path: "id" } }, body: { status: "done" } } }\`
 - DELETE: \`{ mutation: { endpoint: "/api/tasks/:id", method: "DELETE", params: { id: { path: "id" } } } }\`
+- OPEN (external link): \`{ mutation: { endpoint: "https://example.com", method: "OPEN" } }\`
+
+⚠️ **CRITICAL: Every Button that modifies data MUST have a \`mutation\` in its action definition.**
+Without \`mutation\`, the button click does nothing visible to the user. The \`mutation\` is what makes the button actually work — it tells the frontend how to execute the action without an agent round-trip. Buttons without \`mutation\` are effectively broken.
 
 **Form inputs → Mutation body:**
 - Set \`dataPath: "/newTitle"\` on TextField to write user input to the data model
@@ -727,45 +730,6 @@ export class AgentGateway {
 
         const response = await this.agentTurn(prompt, sessionId, false, streamTarget)
 
-        // Store user + assistant messages in session
-        this.sessionManager.addMessages(
-          sessionId,
-          userMessage(prompt),
-          {
-            role: 'assistant',
-            content: [{ type: 'text', text: response }],
-            api: 'anthropic-messages',
-            provider: this.config.model.provider,
-            model: this.config.model.name,
-            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-            stopReason: 'stop',
-            timestamp: Date.now(),
-          } as any
-        )
-
-        if (this.sessionManager.needsCompaction(session)) {
-          await this.hookEmitter.emit(
-            HookEmitter.createEvent('compaction', 'before', sessionId, {
-              messageCount: session.messages.length,
-              workspaceDir: this.workspaceDir,
-            })
-          )
-          const compactResult = await this.sessionManager.compact(sessionId)
-          if (compactResult) {
-            console.log(
-              `[AgentGateway] Session ${sessionId} compacted: ${compactResult.messagesBefore} -> ${compactResult.messagesAfter} messages`
-            )
-            await this.hookEmitter.emit(
-              HookEmitter.createEvent('compaction', 'after', sessionId, {
-                messagesBefore: compactResult.messagesBefore,
-                messagesAfter: compactResult.messagesAfter,
-                summary: compactResult.summary.substring(0, 200),
-                workspaceDir: this.workspaceDir,
-              })
-            )
-          }
-        }
-
         if (adapter && message.channelId && !streamTarget) {
           await adapter.sendMessage(message.channelId, response)
         }
@@ -825,21 +789,6 @@ export class AgentGateway {
     const response = await this.agentTurn(prompt, 'chat')
     this.emitLog(`Chat response: "${response.substring(0, 100)}"`)
 
-    this.sessionManager.addMessages(
-      'chat',
-      userMessage(prompt),
-      {
-        role: 'assistant',
-        content: [{ type: 'text', text: response }],
-        api: 'anthropic-messages',
-        provider: this.config.model.provider,
-        model: this.config.model.name,
-        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-        stopReason: 'stop',
-        timestamp: Date.now(),
-      } as any
-    )
-
     this.appendDailyMemory(`chat: "${text.substring(0, 100)}" -> "${response.substring(0, 100)}"`)
 
     return response
@@ -870,21 +819,6 @@ export class AgentGateway {
 
     const response = await this.agentTurn(prompt, 'chat', false, undefined, writer)
     this.emitLog(`Chat response (stream): "${response.substring(0, 100)}"`)
-
-    this.sessionManager.addMessages(
-      'chat',
-      userMessage(prompt),
-      {
-        role: 'assistant',
-        content: [{ type: 'text', text: response }],
-        api: 'anthropic-messages',
-        provider: this.config.model.provider,
-        model: this.config.model.name,
-        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-        stopReason: 'stop',
-        timestamp: Date.now(),
-      } as any
-    )
 
     this.appendDailyMemory(`chat: "${text.substring(0, 100)}" -> "${response.substring(0, 100)}"`)
   }
@@ -1138,6 +1072,19 @@ export class AgentGateway {
         console.log(
           `[AgentGateway] Agent turn: ${result.iterations} iterations, ${result.toolCalls.length} tool calls, ${totalInput}+${result.outputTokens} tokens (${result.cacheReadTokens} cached)`
         )
+      }
+
+      // Store full messages (including tool calls and tool results) in the
+      // session so subsequent turns have complete context about prior actions.
+      this.sessionManager.addMessages(sessionId, ...result.newMessages)
+
+      if (this.sessionManager.needsCompaction(session)) {
+        const compactResult = await this.sessionManager.compact(sessionId)
+        if (compactResult) {
+          console.log(
+            `[AgentGateway] Session ${sessionId} compacted: ${compactResult.messagesBefore} -> ${compactResult.messagesAfter} messages`
+          )
+        }
       }
 
       this.sessionManager.touch(sessionId)

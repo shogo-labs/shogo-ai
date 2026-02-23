@@ -232,6 +232,7 @@ async function runEvalOnWorker(
       percentage: 0,
       responseText: '',
       toolCalls: [],
+      finalTurnToolCalls: [],
       criteriaResults: [],
       triggeredAntiPatterns: [],
       timing: { startTime, endTime: Date.now(), durationMs: Date.now() - startTime },

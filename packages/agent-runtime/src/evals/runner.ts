@@ -259,6 +259,7 @@ export async function runEval(
 
   let responseText = ''
   let toolCalls: ToolCallRecord[] = []
+  let finalTurnToolCalls: ToolCallRecord[] = []
   let stepCount = 0
   let inputTokens = 0
   let outputTokens = 0
@@ -292,6 +293,10 @@ export async function runEval(
             try {
               const resp = await sendTurn(messages, cfg)
               messages.push({ role: 'assistant', parts: [{ type: 'text', text: resp.text }] })
+              // Accumulate history turn tool calls so scoring considers the
+              // full conversation, not just the final turn (Issue 4 fix)
+              toolCalls.push(...resp.toolCalls)
+              stepCount += resp.stepCount
               inputTokens += resp.inputTokens
               outputTokens += resp.outputTokens
               cacheReadTokens += resp.cacheReadTokens
@@ -308,8 +313,9 @@ export async function runEval(
     messages.push({ role: 'user', parts: [{ type: 'text', text: eval_.input }] })
     const response = await sendTurn(messages, cfg)
     responseText = response.text
-    toolCalls = response.toolCalls
-    stepCount = response.stepCount
+    finalTurnToolCalls = response.toolCalls
+    toolCalls.push(...response.toolCalls)
+    stepCount += response.stepCount
     inputTokens += response.inputTokens
     outputTokens += response.outputTokens
     cacheReadTokens += response.cacheReadTokens
@@ -343,6 +349,7 @@ export async function runEval(
     percentage: 0,
     responseText,
     toolCalls,
+    finalTurnToolCalls,
     criteriaResults: [],
     triggeredAntiPatterns: [],
     timing: { startTime, endTime, durationMs },

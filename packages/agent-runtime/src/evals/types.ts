@@ -76,7 +76,10 @@ export interface EvalResult {
   maxScore: number
   percentage: number
   responseText: string
+  /** All tool calls across every turn (history + final). Use for intention checks. */
   toolCalls: ToolCallRecord[]
+  /** Tool calls from only the final evaluated turn. Use for negative execution checks. */
+  finalTurnToolCalls: ToolCallRecord[]
   criteriaResults: CriterionResult[]
   triggeredAntiPatterns: string[]
   timing: {

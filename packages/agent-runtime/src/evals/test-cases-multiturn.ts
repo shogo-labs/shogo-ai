@@ -11,6 +11,10 @@ function usedTool(result: EvalResult, name: string): boolean {
   return result.toolCalls.some(t => t.name === name)
 }
 
+function usedToolInFinalTurn(result: EvalResult, name: string): boolean {
+  return result.finalTurnToolCalls.some(t => t.name === name)
+}
+
 export const MULTITURN_EVALS: AgentEval[] = [
   {
     id: 'multiturn-canvas-then-modify',
@@ -45,7 +49,7 @@ export const MULTITURN_EVALS: AgentEval[] = [
         description: 'Did NOT recreate the surface from scratch (efficient)',
         points: 30,
         phase: 'execution',
-        validate: (r) => !usedTool(r, 'canvas_create'),
+        validate: (r) => !usedToolInFinalTurn(r, 'canvas_create'),
       },
     ],
     antiPatterns: ['Recreated surface unnecessarily'],
@@ -133,7 +137,7 @@ export const MULTITURN_EVALS: AgentEval[] = [
         points: 20,
         phase: 'execution',
         validate: (r) => {
-          const createCalls = r.toolCalls.filter(t => t.name === 'canvas_create')
+          const createCalls = r.finalTurnToolCalls.filter(t => t.name === 'canvas_create')
           return createCalls.length === 0
         },
       },
@@ -142,7 +146,7 @@ export const MULTITURN_EVALS: AgentEval[] = [
         description: 'Used <= 6 tool calls for this incremental update',
         points: 20,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 6,
+        validate: (r) => r.finalTurnToolCalls.length <= 6,
       },
     ],
   },
@@ -181,7 +185,7 @@ export const MULTITURN_EVALS: AgentEval[] = [
         description: 'Did NOT recreate the surface from scratch',
         points: 25,
         phase: 'execution',
-        validate: (r) => !usedTool(r, 'canvas_create'),
+        validate: (r) => !usedToolInFinalTurn(r, 'canvas_create'),
       },
       {
         id: 'has-contact-model',
@@ -320,7 +324,7 @@ export const MULTITURN_EVALS: AgentEval[] = [
         description: 'Completed in <= 10 tool calls',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 10,
+        validate: (r) => r.finalTurnToolCalls.length <= 10,
       },
     ],
   },
@@ -373,14 +377,14 @@ export const MULTITURN_EVALS: AgentEval[] = [
         description: 'Did not rebuild the dashboard from scratch',
         points: 15,
         phase: 'execution',
-        validate: (r) => !usedTool(r, 'canvas_create'),
+        validate: (r) => !usedToolInFinalTurn(r, 'canvas_create'),
       },
       {
         id: 'reasonable-tools',
         description: 'Used <= 6 tool calls for this incremental update',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 6,
+        validate: (r) => r.finalTurnToolCalls.length <= 6,
       },
     ],
   },

@@ -41,6 +41,10 @@ function usedTool(result: EvalResult, toolName: string): boolean {
   return result.toolCalls.some(t => t.name === toolName)
 }
 
+function usedToolInFinalTurn(result: EvalResult, toolName: string): boolean {
+  return result.finalTurnToolCalls.some(t => t.name === toolName)
+}
+
 function toolCallCount(result: EvalResult, toolName: string): number {
   return result.toolCalls.filter(t => t.name === toolName).length
 }
@@ -102,7 +106,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
         description: 'Completed in <= 5 tool calls',
         points: 10,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 5,
+        validate: (r) => r.finalTurnToolCalls.length <= 5,
       },
     ],
     antiPatterns: ['No tool calls at all'],
@@ -147,7 +151,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
         description: 'Did NOT install (user said just show options)',
         points: 20,
         phase: 'execution',
-        validate: (r) => !usedTool(r, 'mcp_install'),
+        validate: (r) => !usedToolInFinalTurn(r, 'mcp_install'),
       },
       {
         id: 'response-lists-options',
@@ -161,7 +165,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
         description: 'Completed in <= 5 tool calls',
         points: 10,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 5,
+        validate: (r) => r.finalTurnToolCalls.length <= 5,
       },
     ],
     antiPatterns: ['No tool calls at all'],
@@ -225,7 +229,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
         description: 'Completed in <= 8 tool calls',
         points: 10,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 8,
+        validate: (r) => r.finalTurnToolCalls.length <= 8,
       },
     ],
     antiPatterns: ['No tool calls at all'],
@@ -283,7 +287,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
         description: 'Completed in <= 5 tool calls',
         points: 10,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 5,
+        validate: (r) => r.finalTurnToolCalls.length <= 5,
       },
     ],
     antiPatterns: ['No tool calls at all'],
@@ -345,7 +349,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
         description: 'Completed in <= 8 tool calls',
         points: 20,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 8,
+        validate: (r) => r.finalTurnToolCalls.length <= 8,
       },
     ],
     antiPatterns: ['No tool calls at all'],
@@ -409,7 +413,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
         description: 'Completed in <= 8 tool calls',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 8,
+        validate: (r) => r.finalTurnToolCalls.length <= 8,
       },
     ],
     antiPatterns: ['No tool calls at all'],
@@ -487,7 +491,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
         description: 'Completed in <= 15 tool calls',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 15,
+        validate: (r) => r.finalTurnToolCalls.length <= 15,
       },
     ],
     antiPatterns: ['No tool calls at all'],
@@ -561,7 +565,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
         description: 'Completed in <= 12 tool calls',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 12,
+        validate: (r) => r.finalTurnToolCalls.length <= 12,
       },
     ],
     antiPatterns: ['No tool calls at all'],
