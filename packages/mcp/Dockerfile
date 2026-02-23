@@ -33,6 +33,7 @@ RUN bun install
 
 # Copy source code
 COPY packages/state-api ./packages/state-api
+COPY packages/shared-runtime ./packages/shared-runtime
 COPY packages/mcp ./packages/mcp
 
 # Copy domain schemas (studio-core, platform-features, etc.)
@@ -60,6 +61,7 @@ RUN apk add --no-cache curl
 # Copy built artifacts and node_modules
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages/state-api ./packages/state-api
+COPY --from=builder /app/packages/shared-runtime ./packages/shared-runtime
 COPY --from=builder /app/packages/mcp ./packages/mcp
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/tsconfig.base.json ./

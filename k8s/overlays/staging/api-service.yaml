@@ -21,6 +21,9 @@ rules:
   - apiGroups: ["serving.knative.dev"]
     resources: ["services"]
     verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list"]
 ---
 # Bind the ClusterRole to the API service account
 apiVersion: rbac.authorization.k8s.io/v1
@@ -205,6 +208,28 @@ spec:
                   name: api-secrets
                   key: GH_APP_SLUG
                   optional: true
+            # Observability
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "https://ingest.us.signoz.cloud:443"
+            - name: OTEL_SERVICE_NAME
+              value: "shogo-api-staging"
+            - name: OTEL_LOG_LEVEL
+              value: "info"
+            - name: SIGNOZ_INGESTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: signoz-credentials
+                  key: SIGNOZ_INGESTION_KEY
+                  optional: true
+            # Agent runtime for warm pool
+            - name: AGENT_RUNTIME_IMAGE
+              value: "097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/agent-runtime:staging-latest"
+            - name: WARM_POOL_PROJECT_SIZE
+              value: "0"
+            - name: WARM_POOL_AGENT_SIZE
+              value: "30"
+            - name: WARM_POOL_MAX_AGE_MS
+              value: "3600000"
           resources:
             requests:
               memory: "256Mi"

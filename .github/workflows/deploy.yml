@@ -436,7 +436,7 @@ jobs:
           }
           echo "web_image=$(get_image studio ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
           echo "api_image=$(get_image api ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
-          echo "mcp_image=$(get_image mcp-workspace ${{ env.NS_WORKSPACES }})" >> $GITHUB_OUTPUT
+          echo "mcp_image=$(get_image mcp-workspace-1 ${{ env.NS_WORKSPACES }})" >> $GITHUB_OUTPUT
           echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
 
       - name: Apply Kubernetes manifests
@@ -479,7 +479,7 @@ jobs:
           echo "📦 Updating images for ${{ env.ENVIRONMENT }}"
           patch_ksvc studio       "${{ env.NS_SYSTEM }}"     shogo-web  "$WEB_CHANGED"  "$PREV_WEB_IMAGE"
           patch_ksvc api          "${{ env.NS_SYSTEM }}"     shogo-api  "$API_CHANGED"  "$PREV_API_IMAGE"
-          patch_ksvc mcp-workspace "${{ env.NS_WORKSPACES }}" shogo-mcp  "$MCP_CHANGED"  "$PREV_MCP_IMAGE"
+          patch_ksvc mcp-workspace-1 "${{ env.NS_WORKSPACES }}" shogo-mcp  "$MCP_CHANGED"  "$PREV_MCP_IMAGE"
           patch_ksvc docs         "${{ env.NS_SYSTEM }}"     shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
 
       - name: Wait for rollout
@@ -487,7 +487,7 @@ jobs:
           echo "⏳ Waiting for service rollouts in ${{ env.ENVIRONMENT }}..."
           kubectl wait --for=condition=ready ksvc/studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
           kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
-          kubectl wait --for=condition=ready ksvc/mcp-workspace -n ${{ env.NS_WORKSPACES }} --timeout=300s || true
+          kubectl wait --for=condition=ready ksvc/mcp-workspace-1 -n ${{ env.NS_WORKSPACES }} --timeout=300s || true
           kubectl wait --for=condition=ready ksvc/docs -n ${{ env.NS_SYSTEM }} --timeout=300s || true
 
       - name: Restart image prepuller
