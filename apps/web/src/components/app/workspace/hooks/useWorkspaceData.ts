@@ -588,12 +588,21 @@ export function useWorkspaceData(): WorkspaceDataState {
   }
 
   // Get projects from shared workspaces
-  // Use p.workspaceId (plain string) instead of p.workspace?.id (safeReference)
-  // to avoid MST InvalidReferenceError when workspace isn't loaded yet
   const sharedWorkspaceIds = new Set(sharedWorkspaces.map((ws: any) => ws.id))
-  const sharedProjects = allProjects.filter((p: any) =>
+  const sharedWorkspaceProjects = allProjects.filter((p: any) =>
     sharedWorkspaceIds.has(p.workspaceId)
   )
+
+  // Also include projects where user has direct project-level membership
+  const directProjectMembers = userId && store?.memberCollection
+    ? store.memberCollection.all.filter((m: any) => m.userId === userId && m.projectId)
+    : []
+  const directProjectIds = new Set(directProjectMembers.map((m: any) => m.projectId))
+  const directSharedProjects = allProjects.filter((p: any) =>
+    directProjectIds.has(p.id) && !sharedWorkspaceIds.has(p.workspaceId)
+  )
+
+  const sharedProjects = [...sharedWorkspaceProjects, ...directSharedProjects]
 
   // Helper function to check if a project is starred
   const isProjectStarred = useCallback((projectId: string): boolean => {

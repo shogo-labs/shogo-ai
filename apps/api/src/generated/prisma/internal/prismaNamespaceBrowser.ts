@@ -64,6 +64,7 @@ export const ModelName = {
   Member: 'Member',
   BillingAccount: 'BillingAccount',
   Invitation: 'Invitation',
+  InviteLink: 'InviteLink',
   Folder: 'Folder',
   Notification: 'Notification',
   Subscription: 'Subscription',
@@ -315,6 +316,23 @@ export const InvitationScalarFieldEnum = {
 } as const
 
 export type InvitationScalarFieldEnum = (typeof InvitationScalarFieldEnum)[keyof typeof InvitationScalarFieldEnum]
+
+
+export const InviteLinkScalarFieldEnum = {
+  id: 'id',
+  token: 'token',
+  projectId: 'projectId',
+  workspaceId: 'workspaceId',
+  role: 'role',
+  createdBy: 'createdBy',
+  enabled: 'enabled',
+  expiresAt: 'expiresAt',
+  useCount: 'useCount',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type InviteLinkScalarFieldEnum = (typeof InviteLinkScalarFieldEnum)[keyof typeof InviteLinkScalarFieldEnum]
 
 
 export const FolderScalarFieldEnum = {

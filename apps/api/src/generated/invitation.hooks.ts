@@ -49,9 +49,6 @@ export interface InvitationHooks {
   afterDelete?: (id: string, ctx: HookContext) => Promise<void>
 }
 
-/**
- * Look up the current user's email from the database
- */
 async function getUserEmail(prisma: any, userId: string): Promise<string | null> {
   const user = await prisma.user.findUnique({
     where: { id: userId },
@@ -61,28 +58,63 @@ async function getUserEmail(prisma: any, userId: string): Promise<string | null>
 }
 
 /**
- * Default Invitation hooks (customize as needed)
+ * Check if user has admin/owner access to a workspace or project.
+ * Returns the membership if found, null otherwise.
  */
+async function getAdminAccess(prisma: any, userId: string, opts: { workspaceId?: string; projectId?: string }) {
+  if (opts.projectId) {
+    // For project invitations, check project-level membership first, then workspace-level
+    const projectMember = await prisma.member.findFirst({
+      where: { userId, projectId: opts.projectId },
+    })
+    if (projectMember && (projectMember.role === 'owner' || projectMember.role === 'admin')) {
+      return projectMember
+    }
+    // Fall back to workspace membership via project
+    const project = await prisma.project.findUnique({
+      where: { id: opts.projectId },
+      select: { workspaceId: true },
+    })
+    if (project) {
+      const wsMember = await prisma.member.findFirst({
+        where: { userId, workspaceId: project.workspaceId },
+      })
+      if (wsMember && (wsMember.role === 'owner' || wsMember.role === 'admin')) {
+        return wsMember
+      }
+    }
+    return null
+  }
+  if (opts.workspaceId) {
+    const member = await prisma.member.findFirst({
+      where: { userId, workspaceId: opts.workspaceId },
+    })
+    if (member && (member.role === 'owner' || member.role === 'admin')) {
+      return member
+    }
+    return null
+  }
+  return null
+}
+
 export const invitationHooks: InvitationHooks = {
   /**
    * Filter invitations based on context:
-   * - ?email=X  → invitees can see their own invitations
-   * - ?workspaceId=X → workspace admins/owners can see workspace invitations
-   * - (neither) → invitations from all accessible workspaces
+   * - ?email=X        → invitees see their own invitations
+   * - ?workspaceId=X  → workspace members see workspace invitations
+   * - ?projectId=X    → project/workspace members see project invitations
+   * - (neither)       → invitations from all accessible workspaces
    */
   beforeList: async (ctx) => {
     const userId = ctx.userId
     if (!userId) {
-      return {
-        ok: false,
-        error: { code: "unauthorized", message: "Authentication required" },
-      }
+      return { ok: false, error: { code: "unauthorized", message: "Authentication required" } }
     }
 
     const emailFilter = ctx.query.email
     const workspaceId = ctx.query.workspaceId
+    const projectId = ctx.query.projectId
 
-    // Email-based query: allow users to see invitations addressed to them
     if (emailFilter) {
       const userEmail = await getUserEmail(ctx.prisma, userId)
       if (userEmail && userEmail === emailFilter.toLowerCase()) {
@@ -94,221 +126,163 @@ export const invitationHooks: InvitationHooks = {
           },
         }
       }
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Cannot view invitations for other users" },
-      }
+      return { ok: false, error: { code: "forbidden", message: "Cannot view invitations for other users" } }
     }
 
-    if (!workspaceId) {
-      // Return invitations from all accessible workspaces
-      return {
-        ok: true,
-        data: {
-          where: {
-            workspace: {
-              members: {
-                some: { userId },
-              },
-            },
-          },
-          include: {
-            workspace: true,
-          },
-        },
+    if (projectId) {
+      // Verify user has access to this project (project member or workspace member)
+      const projectMember = await ctx.prisma.member.findFirst({ where: { userId, projectId } })
+      if (!projectMember) {
+        const project = await ctx.prisma.project.findUnique({ where: { id: projectId }, select: { workspaceId: true } })
+        if (project) {
+          const wsMember = await ctx.prisma.member.findFirst({ where: { userId, workspaceId: project.workspaceId } })
+          if (!wsMember) {
+            return { ok: false, error: { code: "forbidden", message: "Access denied to this project" } }
+          }
+        } else {
+          return { ok: false, error: { code: "not_found", message: "Project not found" } }
+        }
       }
+      return { ok: true, data: { where: { projectId }, include: { workspace: true } } }
     }
 
-    // Verify user has access to this workspace
-    const membership = await ctx.prisma.member.findFirst({
-      where: { userId, workspaceId },
-    })
-
-    if (!membership) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied to this workspace" },
+    if (workspaceId) {
+      const membership = await ctx.prisma.member.findFirst({ where: { userId, workspaceId } })
+      if (!membership) {
+        return { ok: false, error: { code: "forbidden", message: "Access denied to this workspace" } }
       }
+      return { ok: true, data: { where: { workspaceId }, include: { workspace: true } } }
     }
 
+    // No filter: return invitations from all accessible workspaces
     return {
       ok: true,
       data: {
-        where: { workspaceId },
-        include: {
-          workspace: true,
+        where: {
+          workspace: { members: { some: { userId } } },
         },
+        include: { workspace: true },
       },
     }
   },
 
-  /**
-   * Verify user has access to view the invitation.
-   * Allows both workspace members and the invitee (matched by email).
-   */
   beforeGet: async (id, ctx) => {
     const userId = ctx.userId
     if (!userId) {
-      return {
-        ok: false,
-        error: { code: "unauthorized", message: "Authentication required" },
-      }
+      return { ok: false, error: { code: "unauthorized", message: "Authentication required" } }
     }
 
     const invitation = await ctx.prisma.invitation.findUnique({
       where: { id },
-      include: {
-        workspace: {
-          include: { members: true },
-        },
-      },
+      include: { workspace: { include: { members: true } } },
     })
-
     if (!invitation) {
-      return {
-        ok: false,
-        error: { code: "not_found", message: "Invitation not found" },
-      }
+      return { ok: false, error: { code: "not_found", message: "Invitation not found" } }
     }
 
-    // Allow if user is the invitee
     const userEmail = await getUserEmail(ctx.prisma, userId)
-    if (userEmail && userEmail === invitation.email.toLowerCase()) {
-      return { ok: true }
+    if (userEmail && userEmail === invitation.email.toLowerCase()) return { ok: true }
+
+    // Check project-level access
+    if (invitation.projectId) {
+      const projectMember = await ctx.prisma.member.findFirst({ where: { userId, projectId: invitation.projectId } })
+      if (projectMember) return { ok: true }
     }
 
-    // Allow if user is a member of the workspace
     const hasAccess = invitation.workspace?.members.some((m: any) => m.userId === userId)
     if (!hasAccess) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied" },
-      }
+      return { ok: false, error: { code: "forbidden", message: "Access denied" } }
     }
-
     return { ok: true }
   },
 
   /**
-   * Set default expiration and status for new invitations, verify workspace access
+   * Create invitation for workspace or project.
+   * Requires workspaceId OR projectId (or both).
    */
   beforeCreate: async (input, ctx) => {
     const userId = ctx.userId
     if (!userId) {
-      return {
-        ok: false,
-        error: { code: "unauthorized", message: "Authentication required" },
-      }
+      return { ok: false, error: { code: "unauthorized", message: "Authentication required" } }
     }
 
     const workspaceId = input.workspaceId
-    if (!workspaceId) {
-      return {
-        ok: false,
-        error: { code: "bad_request", message: "workspaceId is required" },
-      }
+    const projectId = input.projectId
+
+    if (!workspaceId && !projectId) {
+      return { ok: false, error: { code: "bad_request", message: "workspaceId or projectId is required" } }
     }
 
-    // Verify user has admin access to this workspace
-    const membership = await ctx.prisma.member.findFirst({
-      where: { userId, workspaceId },
-    })
-
-    if (!membership) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied to this workspace" },
+    // For project invitations, resolve workspace from project
+    if (projectId && !workspaceId) {
+      const project = await ctx.prisma.project.findUnique({ where: { id: projectId }, select: { workspaceId: true } })
+      if (!project) {
+        return { ok: false, error: { code: "not_found", message: "Project not found" } }
       }
+      input.workspaceId = project.workspaceId
     }
 
-    if (membership.role !== 'owner' && membership.role !== 'admin') {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Only workspace owners and admins can send invitations" },
-      }
+    const adminAccess = await getAdminAccess(ctx.prisma, userId, { workspaceId: input.workspaceId, projectId })
+    if (!adminAccess) {
+      return { ok: false, error: { code: "forbidden", message: "Only admins and owners can send invitations" } }
     }
 
-    // Set default expiration (7 days) or convert timestamp to Date
     if (!input.expiresAt) {
       input.expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
     } else if (typeof input.expiresAt === 'number') {
       input.expiresAt = new Date(input.expiresAt)
     }
 
-    // Set default status
-    if (!input.status) {
-      input.status = "pending"
+    if (!input.status) input.status = "pending"
+    if (!input.invitedBy && userId) input.invitedBy = userId
+
+    // Duplicate check
+    const existingWhere: any = {
+      email: input.email?.toLowerCase(),
+      status: "pending",
     }
-
-    // Set invitedBy if not provided
-    if (!input.invitedBy && userId) {
-      input.invitedBy = userId
+    if (projectId) {
+      existingWhere.projectId = projectId
+    } else {
+      existingWhere.workspaceId = input.workspaceId
     }
-
-    // Check for existing pending invitation
-    const existing = await ctx.prisma.invitation.findFirst({
-      where: {
-        email: input.email?.toLowerCase(),
-        workspaceId: input.workspaceId,
-        status: "pending",
-      },
-    })
-
+    const existing = await ctx.prisma.invitation.findFirst({ where: existingWhere })
     if (existing) {
-      return {
-        ok: false,
-        error: {
-          code: "invitation_exists",
-          message: "An invitation for this email is already pending",
-        },
-      }
+      return { ok: false, error: { code: "invitation_exists", message: "An invitation for this email is already pending" } }
     }
 
-    // Normalize email
-    if (input.email) {
-      input.email = input.email.toLowerCase()
-    }
+    if (input.email) input.email = input.email.toLowerCase()
 
     return { ok: true, data: input }
   },
 
-  /**
-   * Send invitation email after creating
-   */
   afterCreate: async (invitation, ctx) => {
-    // Get workspace and inviter details
-    const [workspace, inviter] = await Promise.all([
-      ctx.prisma.workspace.findUnique({
-        where: { id: invitation.workspaceId },
-        select: { name: true },
-      }),
+    const [workspace, project, inviter] = await Promise.all([
+      invitation.workspaceId
+        ? ctx.prisma.workspace.findUnique({ where: { id: invitation.workspaceId }, select: { name: true } })
+        : null,
+      invitation.projectId
+        ? ctx.prisma.project.findUnique({ where: { id: invitation.projectId }, select: { name: true } })
+        : null,
       invitation.invitedBy
-        ? ctx.prisma.user.findUnique({
-            where: { id: invitation.invitedBy },
-            select: { name: true, email: true },
-          })
+        ? ctx.prisma.user.findUnique({ where: { id: invitation.invitedBy }, select: { name: true, email: true } })
         : null,
     ])
 
-    if (!workspace) {
-      console.warn(`[Invitation] Workspace ${invitation.workspaceId} not found, skipping email`)
-      return
-    }
+    const resourceName = project?.name || workspace?.name
+    if (!resourceName) return
 
-    // Build accept URL
     const baseUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'
     const acceptUrl = `${baseUrl}/invitations/${invitation.id}/accept`
 
-    // Send the email (non-blocking - don't fail the invitation if email fails)
     const emailResult = await sendInvitationEmail({
       to: invitation.email,
       inviterName: inviter?.name || inviter?.email || 'A team member',
-      workspaceName: workspace.name,
+      workspaceName: resourceName,
       role: invitation.role,
       acceptUrl,
     })
 
-    // Update invitation with email status
     await ctx.prisma.invitation.update({
       where: { id: invitation.id },
       data: {
@@ -319,51 +293,29 @@ export const invitationHooks: InvitationHooks = {
     })
   },
 
-  /**
-   * Verify user has access to update the invitation.
-   * - Invitees can accept or decline their own invitations
-   * - Workspace admins/owners can make other changes (e.g. cancel)
-   */
   beforeUpdate: async (id, input, ctx) => {
     const userId = ctx.userId
     if (!userId) {
-      return {
-        ok: false,
-        error: { code: "unauthorized", message: "Authentication required" },
-      }
+      return { ok: false, error: { code: "unauthorized", message: "Authentication required" } }
     }
 
     const invitation = await ctx.prisma.invitation.findUnique({
       where: { id },
-      include: {
-        workspace: {
-          include: { members: true },
-        },
-      },
+      include: { workspace: { include: { members: true } } },
     })
-
     if (!invitation) {
-      return {
-        ok: false,
-        error: { code: "not_found", message: "Invitation not found" },
-      }
+      return { ok: false, error: { code: "not_found", message: "Invitation not found" } }
     }
 
-    // Allow invitees to accept or decline their own invitation
+    // Invitees can accept or decline
     const userEmail = await getUserEmail(ctx.prisma, userId)
     if (userEmail && userEmail === invitation.email.toLowerCase()) {
       const actionableStatuses = ['pending', 'accepted']
       if (!actionableStatuses.includes(invitation.status)) {
-        return {
-          ok: false,
-          error: { code: "bad_request", message: "Invitation can no longer be modified" },
-        }
+        return { ok: false, error: { code: "bad_request", message: "Invitation can no longer be modified" } }
       }
       if (invitation.expiresAt && new Date(invitation.expiresAt) < new Date()) {
-        return {
-          ok: false,
-          error: { code: "expired", message: "Invitation has expired" },
-        }
+        return { ok: false, error: { code: "expired", message: "Invitation has expired" } }
       }
       const allowedStatuses = ['accepted', 'declined']
       if (input.status && allowedStatuses.includes(input.status)) {
@@ -371,66 +323,38 @@ export const invitationHooks: InvitationHooks = {
       }
     }
 
-    // For admin/owner operations (cancel, etc.)
-    const member = invitation.workspace?.members.find((m: any) => m.userId === userId)
-    if (!member) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied" },
-      }
-    }
-
-    if (member.role !== 'owner' && member.role !== 'admin') {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Only workspace owners and admins can update invitations" },
-      }
+    // Admin/owner operations
+    const adminAccess = await getAdminAccess(ctx.prisma, userId, {
+      workspaceId: invitation.workspaceId,
+      projectId: invitation.projectId,
+    })
+    if (!adminAccess) {
+      return { ok: false, error: { code: "forbidden", message: "Access denied" } }
     }
 
     return { ok: true }
   },
 
-  /**
-   * Verify user has access to delete the invitation (admin/owner only)
-   */
   beforeDelete: async (id, ctx) => {
     const userId = ctx.userId
     if (!userId) {
-      return {
-        ok: false,
-        error: { code: "unauthorized", message: "Authentication required" },
-      }
+      return { ok: false, error: { code: "unauthorized", message: "Authentication required" } }
     }
 
     const invitation = await ctx.prisma.invitation.findUnique({
       where: { id },
-      include: {
-        workspace: {
-          include: { members: true },
-        },
-      },
+      include: { workspace: { include: { members: true } } },
     })
-
     if (!invitation) {
-      return {
-        ok: false,
-        error: { code: "not_found", message: "Invitation not found" },
-      }
+      return { ok: false, error: { code: "not_found", message: "Invitation not found" } }
     }
 
-    const member = invitation.workspace.members.find((m: any) => m.userId === userId)
-    if (!member) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied" },
-      }
-    }
-
-    if (member.role !== 'owner' && member.role !== 'admin') {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Only workspace owners and admins can delete invitations" },
-      }
+    const adminAccess = await getAdminAccess(ctx.prisma, userId, {
+      workspaceId: invitation.workspaceId,
+      projectId: invitation.projectId,
+    })
+    if (!adminAccess) {
+      return { ok: false, error: { code: "forbidden", message: "Only admins and owners can delete invitations" } }
     }
 
     return { ok: true }

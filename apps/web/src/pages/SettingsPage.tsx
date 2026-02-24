@@ -1017,6 +1017,8 @@ interface Member {
   role: "owner" | "admin" | "member" | "viewer"
   createdAt: number
   updatedAt?: number
+  userName?: string
+  userEmail?: string
 }
 
 function PeopleTab() {
@@ -1051,17 +1053,28 @@ function PeopleTab() {
 
     setIsLoading(true)
     try {
-      await store.memberCollection.loadAll({ workspaceId: currentWorkspace.id })
-      const workspaceMembers = store.memberCollection.all.filter(
+      const res = await fetch(`/api/members?workspaceId=${currentWorkspace.id}`, {
+        credentials: 'include',
+      })
+      if (!res.ok) throw new Error(`Failed to load members: ${res.status}`)
+      const data = await res.json()
+      const rawItems: any[] = data.items || []
+
+      const workspaceMembers = rawItems.filter(
         (m: any) => m.workspaceId === currentWorkspace.id && !m.projectId
       )
       setMembers(workspaceMembers.map((m: any) => ({
         id: m.id,
         userId: m.userId,
         role: m.role,
-        createdAt: m.createdAt,
-        updatedAt: m.updatedAt,
+        createdAt: typeof m.createdAt === 'string' ? new Date(m.createdAt).getTime() : m.createdAt,
+        updatedAt: typeof m.updatedAt === 'string' ? new Date(m.updatedAt).getTime() : m.updatedAt,
+        userName: m.user?.name || undefined,
+        userEmail: m.user?.email || undefined,
       })))
+
+      // Sync MST collection for role change / remove operations
+      await store.memberCollection.loadAll({ workspaceId: currentWorkspace.id })
     } catch (err) {
       console.error("[PeopleTab] Failed to load members:", err)
     } finally {
@@ -1077,7 +1090,11 @@ function PeopleTab() {
     if (roleFilter !== "all" && member.role !== roleFilter) return false
     if (searchQuery) {
       const query = searchQuery.toLowerCase()
-      return member.userId.toLowerCase().includes(query)
+      return (
+        member.userId.toLowerCase().includes(query) ||
+        (member.userName?.toLowerCase().includes(query) ?? false) ||
+        (member.userEmail?.toLowerCase().includes(query) ?? false)
+      )
     }
     return true
   })
@@ -1088,8 +1105,8 @@ function PeopleTab() {
 
     filteredMembers.forEach((member) => {
       const isCurrentUser = member.userId === currentUserId
-      const name = isCurrentUser ? currentUserName : `User ${member.userId.slice(0, 8)}`
-      const email = isCurrentUser ? currentUserEmail : member.userId
+      const name = isCurrentUser ? currentUserName : (member.userName || `User ${member.userId.slice(0, 8)}`)
+      const email = isCurrentUser ? currentUserEmail : (member.userEmail || member.userId)
       const role = member.role.charAt(0).toUpperCase() + member.role.slice(1)
       const joined = format(new Date(member.createdAt), "MMM d, yyyy")
       csvRows.push(`"${name}","${email}","${role}","${joined}"`)
@@ -1110,7 +1127,7 @@ function PeopleTab() {
   const canManageMember = (member: Member): boolean => {
     if (member.userId === currentUserId) return false
     const memberLevel = RoleLevels[member.role] ?? 0
-    return currentUserLevel > memberLevel
+    return currentUserLevel >= memberLevel
   }
 
   const getAvailableRoles = (member: Member): string[] => {
@@ -1170,7 +1187,6 @@ function PeopleTab() {
           <TabsList className="h-8">
             <TabsTrigger value="all" className="text-xs px-3 h-7">All</TabsTrigger>
             <TabsTrigger value="invitations" className="text-xs px-3 h-7">Invitations</TabsTrigger>
-            <TabsTrigger value="collaborators" className="text-xs px-3 h-7">Collaborators</TabsTrigger>
           </TabsList>
 
           <div className="flex items-center gap-2">
@@ -1253,14 +1269,16 @@ function PeopleTab() {
                         <td className="px-3 py-2">
                           <div className="flex items-center gap-2">
                             <div className="h-7 w-7 rounded-full bg-primary/10 flex items-center justify-center text-xs font-medium shrink-0">
-                              {isCurrentUser ? currentUserName[0]?.toUpperCase() : member.userId[0]?.toUpperCase() || "U"}
+                              {(isCurrentUser ? currentUserName : member.userName || member.userEmail || member.userId)?.[0]?.toUpperCase() || "U"}
                             </div>
                             <div className="min-w-0">
                               <div className="font-medium truncate">
-                                {isCurrentUser ? `${currentUserName} (you)` : `User ${member.userId.slice(0, 8)}`}
+                                {isCurrentUser
+                                  ? `${currentUserName} (you)`
+                                  : (member.userName || member.userEmail || `User ${member.userId.slice(0, 8)}`)}
                               </div>
                               <div className="text-xs text-muted-foreground truncate">
-                                {isCurrentUser ? currentUserEmail : `${member.userId.slice(0, 16)}...`}
+                                {isCurrentUser ? currentUserEmail : (member.userEmail || member.userId)}
                               </div>
                             </div>
                           </div>
@@ -1329,26 +1347,26 @@ function PeopleTab() {
         </TabsContent>
 
         <TabsContent value="invitations" className="mt-3 space-y-6">
-          <MyInvitationsView onInvitationResponse={loadMembers} />
-          {currentWorkspace?.id ? (
-            <PendingInvitationsView
-              orgId={currentWorkspace.id}
-              onInvitationsChange={loadMembers}
-            />
-          ) : (
-            <div className="text-center py-8 text-sm text-muted-foreground">
-              <UserPlus className="h-8 w-8 mx-auto mb-2 opacity-50" />
-              <p>No workspace selected</p>
-            </div>
-          )}
-        </TabsContent>
-
-        <TabsContent value="collaborators" className="mt-3">
-          <div className="text-center py-8 text-sm text-muted-foreground">
-            <Users className="h-8 w-8 mx-auto mb-2 opacity-50" />
-            <p>No collaborators</p>
+          <div>
+            <h4 className="text-sm font-medium text-muted-foreground mb-3">Received</h4>
+            <MyInvitationsView onInvitationResponse={loadMembers} />
+          </div>
+          <div>
+            <h4 className="text-sm font-medium text-muted-foreground mb-3">Sent</h4>
+            {currentWorkspace?.id ? (
+              <PendingInvitationsView
+                orgId={currentWorkspace.id}
+                onInvitationsChange={loadMembers}
+              />
+            ) : (
+              <div className="text-center py-8 text-sm text-muted-foreground">
+                <UserPlus className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                <p>No workspace selected</p>
+              </div>
+            )}
           </div>
         </TabsContent>
+
       </Tabs>
 
       <InviteMemberModal

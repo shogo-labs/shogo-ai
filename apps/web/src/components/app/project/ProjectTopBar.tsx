@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button"
 import { useNavigate } from "react-router-dom"
 import { ProjectNameDropdown } from "./ProjectNameDropdown"
 import { PreviewControls, type ViewportSize } from "./PreviewControls"
-// import { ShareDropdown } from "./ShareDropdown"
+import { ShareDropdown } from "./ShareDropdown"
 import { PublishDropdown, type AccessLevel } from "./PublishDropdown"
 import { GitHubConnectDialog } from "./GitHubConnectDialog"
 import { SyncIndicator } from "./SyncIndicator"
@@ -25,6 +25,7 @@ export interface ProjectTopBarProps {
   projectIcon?: string
   projectSubtitle?: string
   isStarred?: boolean
+  workspaceId?: string
   workspaceName?: string
   credits?: number
   maxCredits?: number
@@ -82,6 +83,7 @@ export function ProjectTopBar({
   projectIcon,
   projectSubtitle = "Previewing last saved version",
   isStarred = false,
+  workspaceId,
   workspaceName = "My Workspace",
   credits,
   maxCredits,
@@ -278,6 +280,14 @@ export function ProjectTopBar({
         {syncProjectId && (
           <SyncIndicator projectId={syncProjectId} />
         )}
+
+        {/* Share Dropdown */}
+        <ShareDropdown
+          projectId={projectId}
+          workspaceId={workspaceId}
+          workspaceName={workspaceName}
+          userInitial={initial}
+        />
 
         {/* GitHub Button - minimal icon */}
         <Button

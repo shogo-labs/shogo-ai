@@ -965,6 +965,7 @@ export const ProjectLayout = observer(function ProjectLayout() {
         <ProjectTopBar
           projectName={project.name}
           projectId={projectId || ""}
+          workspaceId={project?.workspaceId || undefined}
           credits={creditsRemaining}
           maxCredits={maxCredits}
           currentUserName={currentUserName}
