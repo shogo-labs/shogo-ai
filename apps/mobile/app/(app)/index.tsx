@@ -18,9 +18,9 @@ import { useAuth } from '../../contexts/auth'
 import {
   useProjectCollection,
   useWorkspaceCollection,
+  useDomainActions,
 } from '../../contexts/domain'
 import { CompactChatInput } from '../../components/chat/CompactChatInput'
-import { API_URL } from '../../lib/api'
 
 const SUGGESTION_CHIPS = [
   'Build a customer support agent',
@@ -62,51 +62,6 @@ const GRADIENT_KEYFRAMES = `
   50% { opacity: 0.5; transform: scale(1.1); }
 }
 `
-
-// Direct API helpers — bypass MobX domain actions to avoid observer race conditions
-// during project creation + navigation (mirrors staging-ui WorkspaceLayout pattern)
-
-interface ApiResponse<T> { ok: boolean; data: T }
-
-async function apiPost<T>(url: string, body: Record<string, unknown>): Promise<T> {
-  const res = await fetch(`${API_URL}${url}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(body),
-  })
-  if (!res.ok) throw new Error(`API ${url} failed: ${res.status}`)
-  const json: ApiResponse<T> = await res.json()
-  return json.data
-}
-
-function createProjectViaApi(data: {
-  name: string
-  workspaceId: string
-  description?: string
-  createdBy: string
-  type?: "APP" | "AGENT"
-}) {
-  return apiPost<{ id: string; name: string; type?: string }>("/api/projects", {
-    name: data.name,
-    workspaceId: data.workspaceId,
-    description: data.description,
-    createdBy: data.createdBy,
-    tier: "starter",
-    status: "draft",
-    accessLevel: "anyone",
-    schemas: [],
-    type: data.type || "AGENT",
-  })
-}
-
-function createChatSessionViaApi(data: {
-  inferredName: string
-  contextType: string
-  contextId?: string
-}) {
-  return apiPost<{ id: string }>("/api/chat-sessions", data)
-}
 
 function generateProjectNameFromPrompt(prompt: string): string {
   const fillerWords = new Set([
@@ -248,6 +203,7 @@ const HomeScreen = observer(function HomeScreen() {
   const { user, isAuthenticated } = useAuth()
   const projects = useProjectCollection()
   const workspaces = useWorkspaceCollection()
+  const actions = useDomainActions()
 
   const [prompt, setPrompt] = useState('')
   const [isCreating, setIsCreating] = useState(false)
@@ -273,14 +229,15 @@ const HomeScreen = observer(function HomeScreen() {
     try {
       const projectName = generateProjectNameFromPrompt(text)
 
-      const newProject = await createProjectViaApi({
-        name: projectName,
-        workspaceId: currentWorkspace.id,
-        createdBy: user.id,
-        type: 'AGENT',
-      })
+      const newProject = await actions.createProject(
+        projectName,
+        currentWorkspace.id,
+        undefined,
+        user.id,
+        'AGENT',
+      )
 
-      const chatSession = await createChatSessionViaApi({
+      const chatSession = await actions.createChatSession({
         inferredName: `Chat - ${projectName}`,
         contextType: 'project',
         contextId: newProject.id,
@@ -301,7 +258,7 @@ const HomeScreen = observer(function HomeScreen() {
     } finally {
       setIsCreating(false)
     }
-  }, [user?.id, currentWorkspace?.id, projects, router])
+  }, [actions, user?.id, currentWorkspace?.id, projects, router])
 
   const handleTemplatePress = useCallback(async (template: CanvasTemplate) => {
     if (!user?.id || !currentWorkspace?.id) {
@@ -312,15 +269,15 @@ const HomeScreen = observer(function HomeScreen() {
     try {
       const projectName = template.name
 
-      const newProject = await createProjectViaApi({
-        name: projectName,
-        workspaceId: currentWorkspace.id,
-        description: `Created from ${projectName} canvas template`,
-        createdBy: user.id,
-        type: 'AGENT',
-      })
+      const newProject = await actions.createProject(
+        projectName,
+        currentWorkspace.id,
+        `Created from ${projectName} canvas template`,
+        user.id,
+        'AGENT',
+      )
 
-      const chatSession = await createChatSessionViaApi({
+      const chatSession = await actions.createChatSession({
         inferredName: `Chat - ${projectName}`,
         contextType: 'project',
         contextId: newProject.id,
@@ -341,7 +298,7 @@ const HomeScreen = observer(function HomeScreen() {
     } finally {
       setLoadingTemplate(null)
     }
-  }, [user?.id, currentWorkspace?.id, projects, router])
+  }, [actions, user?.id, currentWorkspace?.id, projects, router])
 
   if (!isAuthenticated) {
     return (

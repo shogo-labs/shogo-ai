@@ -30,8 +30,9 @@ import {
   ChevronDown,
 } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
-import { useWorkspaceCollection } from '../../contexts/domain'
+import { useWorkspaceCollection, useDomainHttp } from '../../contexts/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
+import { api } from '../../lib/api'
 import {
   Card,
   CardContent,
@@ -188,6 +189,7 @@ export default observer(function BillingPage() {
   const router = useRouter()
   const { user, isLoading: isAuthLoading } = useAuth()
   const workspaces = useWorkspaceCollection()
+  const http = useDomainHttp()
 
   useEffect(() => {
     if (user?.id && workspaces) {
@@ -228,18 +230,12 @@ export default observer(function BillingPage() {
     setIsCheckoutLoading(true)
     try {
       const planId = credits === 100 ? planType : `${planType}_${credits}`
-      const response = await fetch('/api/billing/checkout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          workspaceId: currentWorkspace.id,
-          planId,
-          billingInterval,
-          userEmail: user?.email,
-        }),
+      const data = await api.createCheckoutSession(http, {
+        workspaceId: currentWorkspace.id,
+        planId,
+        billingInterval,
+        userEmail: user?.email,
       })
-      const data = await response.json()
       if (data.url) {
         if (Platform.OS === 'web') {
           window.location.href = data.url
@@ -252,7 +248,7 @@ export default observer(function BillingPage() {
     } finally {
       setIsCheckoutLoading(false)
     }
-  }, [currentWorkspace?.id, billingInterval, user?.email])
+  }, [http, currentWorkspace?.id, billingInterval, user?.email])
 
   if (isAuthLoading || isBillingLoading) {
     return (
