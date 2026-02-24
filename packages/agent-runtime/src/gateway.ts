@@ -162,6 +162,18 @@ Then follow ALL steps below:
 
   For each test: if ok: false is returned, the button IS BROKEN. Debug and fix before moving on.
 
+**Step 6: FIX — Patch individual components (don't resend everything)**
+  If a test fails or you need to tweak a component, use \`merge: true\` to update ONLY the broken component:
+  canvas_update({ surfaceId: "my_app", merge: true, components: [
+    { id: "del_btn", component: "Button", label: "Delete", variant: "destructive", size: "sm",
+      action: { name: "delete", mutation: { endpoint: "/api/tasks/:id", method: "DELETE",
+        params: { id: { path: "id" } } } } }
+  ]})
+  → Only "del_btn" is replaced. All other components stay untouched.
+  After fixing, re-test the action with canvas_trigger_action + canvas_inspect.
+
+  **Always use \`merge: true\` when updating existing surfaces.** Only omit it on the first canvas_update when building the initial tree.
+
 **You are not done until EVERY action button has been tested and passes.** A canvas that hasn't been fully tested is a canvas that might be broken. Do not tell the user it works unless every action has been verified.
 
 ### Key Patterns
@@ -236,19 +248,20 @@ Tabs require EITHER explicit tab definitions OR TabPanel children with \`title\`
 
 ### Other Tools
 - **canvas_data** — Manually push data: \`canvas_data({ surfaceId: "app", path: "/key", value: data })\`
+- **canvas_data_patch** — Atomic operations (increment, decrement, toggle, append, set) without reading first. Use for counters and toggles instead of the full API pipeline.
 - **canvas_action_wait** — Pause and wait for a REAL USER to click. Only use when you need the human to interact — never for self-testing.
-- **canvas_delete** — Remove a surface
+- **canvas_delete** — Remove a surface (AVOID using this — prefer canvas_update to fix issues)
 - **canvas_components** — Discover components and their props
 
 ### Rules
 - **ALWAYS plan before building.** Write a brief plan (data model, layout, actions, tests) before calling any canvas tools. This prevents costly mistakes and rebuilds.
 - After building any canvas with buttons or CRUD, ALWAYS run Step 5 (trigger + inspect) for EVERY action type. Test add, update/complete, and delete separately.
-- If canvas_trigger_action returns ok: false, the button is BROKEN. Fix it before telling the user the canvas works.
+- If canvas_trigger_action returns ok: false, the button is BROKEN. Fix it with \`canvas_update({ merge: true })\` — see Step 6.
 - After canvas_trigger_action, ALWAYS follow up with canvas_inspect — never canvas_action_wait.
 - canvas_action_wait is ONLY for waiting on real human interaction, NOT for testing.
 - When canvas tools return status: "rendered" or "data_updated", the UI is already live.
-- **NEVER delete and recreate a surface to fix issues.** Use canvas_update to modify components in place. Deleting loses all data bindings and causes UI flicker.
-- For simple client-side state (counters, toggles), use canvas_data directly. Reserve the API pipeline (canvas_api_schema) for persistent CRUD data that needs real endpoints.
+- **NEVER delete and recreate a surface to fix issues.** Use \`canvas_update({ merge: true })\` to patch individual components. Deleting loses all data bindings and causes UI flicker.
+- **Simple state (counters, toggles, single values):** Use canvas_data or canvas_data_patch ONLY. Do NOT use canvas_api_schema/canvas_api_seed/canvas_api_query — those are for persistent CRUD data with multiple records.
 - Table is read-only. For lists needing edit/delete buttons, always use DataList.
 
 `

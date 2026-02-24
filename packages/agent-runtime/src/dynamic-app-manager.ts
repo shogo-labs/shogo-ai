@@ -156,6 +156,71 @@ export class DynamicAppManager {
     }
   }
 
+  patchData(surfaceId: string, operations: Array<{ op: string; path: string; value?: unknown }>): Record<string, unknown> {
+    const surface = this.surfaces.get(surfaceId)
+    if (!surface) {
+      return { ok: false, error: `Surface "${surfaceId}" does not exist. Create it with canvas_create first.` }
+    }
+
+    const results: string[] = []
+    for (const op of operations) {
+      const { path } = op
+      if (!path || !path.startsWith('/')) {
+        results.push(`Skipped invalid path "${path}" — must start with /`)
+        continue
+      }
+      const current = getByPointer(surface.dataModel, path)
+      switch (op.op) {
+        case 'increment': {
+          const amount = typeof op.value === 'number' ? op.value : 1
+          const newVal = (typeof current === 'number' ? current : 0) + amount
+          setByPointer(surface.dataModel, path, newVal)
+          results.push(`${path}: ${current} → ${newVal}`)
+          break
+        }
+        case 'decrement': {
+          const amount = typeof op.value === 'number' ? op.value : 1
+          const newVal = (typeof current === 'number' ? current : 0) - amount
+          setByPointer(surface.dataModel, path, newVal)
+          results.push(`${path}: ${current} → ${newVal}`)
+          break
+        }
+        case 'toggle': {
+          const newVal = !current
+          setByPointer(surface.dataModel, path, newVal)
+          results.push(`${path}: ${current} → ${newVal}`)
+          break
+        }
+        case 'append': {
+          const arr = Array.isArray(current) ? current : []
+          arr.push(op.value)
+          setByPointer(surface.dataModel, path, arr)
+          results.push(`${path}: appended item (now ${arr.length} items)`)
+          break
+        }
+        case 'set': {
+          setByPointer(surface.dataModel, path, op.value)
+          results.push(`${path}: set to ${JSON.stringify(op.value)}`)
+          break
+        }
+        default:
+          results.push(`Unknown operation "${op.op}" — use increment, decrement, toggle, append, or set`)
+      }
+    }
+
+    surface.updatedAt = new Date().toISOString()
+    this.broadcast({ type: 'updateData', surfaceId, path: '/', value: surface.dataModel })
+    this.scheduleSave()
+
+    return {
+      ok: true,
+      surfaceId,
+      status: 'data_patched',
+      operations: results,
+      message: `Applied ${operations.length} operation(s) on "${surfaceId}". Bound components now reflect the changes.`,
+    }
+  }
+
   deleteSurface(surfaceId: string): Record<string, unknown> {
     if (!this.surfaces.has(surfaceId)) {
       return { ok: false, error: `Surface "${surfaceId}" does not exist` }

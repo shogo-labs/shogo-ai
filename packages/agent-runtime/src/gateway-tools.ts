@@ -824,15 +824,31 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop â€
         }, { additionalProperties: true }),
         { description: 'Array of component definitions' },
       ),
+      merge: Type.Optional(Type.Boolean({ description: 'If true, merge with existing components instead of validating as a complete tree. Use for updating individual components without resending the full tree.' })),
     }),
     execute: async (_toolCallId, params) => {
-      const { surfaceId, components: rawComponents } = params as { surfaceId: string; components: any[] }
+      const { surfaceId, components: rawComponents, merge } = params as { surfaceId: string; components: any[]; merge?: boolean }
 
       // Auto-correct known variant/enum mismatches before validation
       const { components: normalizedComponents, corrections } = normalizeComponents(rawComponents)
       const components = normalizedComponents as typeof rawComponents
 
-      const lint = lintComponents(components)
+      // When merging, lint against the full merged component set
+      let lintTarget = components
+      if (merge) {
+        const manager = getDynamicAppManager()
+        const surface = manager.getSurface(surfaceId)
+        if (surface) {
+          const existing = [...surface.components.values()] as typeof components
+          const incomingIds = new Set(components.map(c => String(c.id)))
+          const merged = [
+            ...existing.filter(c => !incomingIds.has(String(c.id))),
+            ...components,
+          ]
+          lintTarget = merged
+        }
+      }
+      const lint = lintComponents(lintTarget)
       const errors = lint.filter((m) => m.severity === 'error')
       const warnings = lint.filter((m) => m.severity === 'warning')
 
@@ -931,6 +947,33 @@ function autoParseJsonString(value: unknown): unknown {
     }
   }
   return value
+}
+
+function createCanvasDataPatchTool(): AgentTool {
+  return {
+    name: 'canvas_data_patch',
+    description:
+      'Apply atomic operations to the data model without replacing entire values. ' +
+      'Supports: increment/decrement (numbers), toggle (booleans), append (arrays), set (any). ' +
+      'Use this for counters, toggles, and adding items to lists without reading the current value first.',
+    label: 'Patch Canvas Data',
+    parameters: Type.Object({
+      surfaceId: Type.String({ description: 'Surface ID to patch' }),
+      operations: Type.Array(
+        Type.Object({
+          op: Type.String({ description: 'Operation: "increment", "decrement", "toggle", "append", or "set"' }),
+          path: Type.String({ description: 'JSON Pointer path (e.g. "/count", "/items")' }),
+          value: Type.Optional(Type.Unknown({ description: 'Value for the operation. For increment/decrement: amount (default 1). For append: item to add. For set: new value.' })),
+        }),
+        { description: 'Array of patch operations to apply atomically' },
+      ),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { surfaceId, operations } = params as { surfaceId: string; operations: Array<{ op: string; path: string; value?: unknown }> }
+      const manager = getDynamicAppManager()
+      return textResult(manager.patchData(surfaceId, operations))
+    },
+  }
 }
 
 function createCanvasDeleteTool(): AgentTool {
@@ -1836,7 +1879,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   memory: ['memory_read', 'memory_write', 'memory_search'],
   messaging: ['send_message'],
   cron: ['cron'],
-  canvas: ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_delete', 'canvas_action_wait', 'canvas_components', 'canvas_trigger_action', 'canvas_inspect'],
+  canvas: ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_action_wait', 'canvas_components', 'canvas_trigger_action', 'canvas_inspect'],
   api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query'],
   personality: ['personality_update'],
   mcp_discovery: ['mcp_search', 'mcp_install', 'mcp_uninstall', 'mcp_list_installed'],
@@ -1845,7 +1888,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
 export const ALL_TOOL_NAMES = [
   'exec', 'read_file', 'write_file', 'web_fetch', 'web_search', 'browser',
   'memory_read', 'memory_write', 'memory_search', 'send_message', 'cron',
-  'canvas_create', 'canvas_update', 'canvas_data', 'canvas_delete', 'canvas_action_wait', 'canvas_components',
+  'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_action_wait', 'canvas_components',
   'canvas_trigger_action', 'canvas_inspect',
   'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query',
   'personality_update',
@@ -1892,6 +1935,7 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createCanvasCreateTool(),
     createCanvasUpdateTool(),
     createCanvasDataTool(),
+    createCanvasDataPatchTool(),
     createCanvasDeleteTool(),
     createCanvasActionWaitTool(),
     createCanvasComponentsTool(),
