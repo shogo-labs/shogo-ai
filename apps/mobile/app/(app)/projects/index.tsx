@@ -28,6 +28,7 @@ import {
   Pressable,
   FlatList,
   TextInput,
+  Modal,
   useWindowDimensions,
   Alert,
 } from 'react-native'
@@ -45,6 +46,8 @@ import {
   ChevronRight,
   ArrowLeft,
   FolderOpen,
+  FolderPlus,
+  CheckSquare,
 } from 'lucide-react-native'
 import {
   useSDKDomain,
@@ -107,6 +110,9 @@ export default observer(function AllProjectsPage() {
   const actions = useDomainActions()
   const { width } = useWindowDimensions()
 
+  type VisibilityFilter = 'any' | 'public' | 'private'
+  type StatusFilter = 'any' | 'draft' | 'published'
+
   // State
   const [searchQuery, setSearchQuery] = useState('')
   const [sortBy, setSortBy] = useState<SortBy>('lastEdited')
@@ -114,6 +120,12 @@ export default observer(function AllProjectsPage() {
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null)
   const [starredIds, setStarredIds] = useState<Set<string>>(new Set())
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const [visibilityFilter, setVisibilityFilter] = useState<VisibilityFilter>('any')
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('any')
+  const [selectMode, setSelectMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [newFolderModalVisible, setNewFolderModalVisible] = useState(false)
+  const [newFolderName, setNewFolderName] = useState('')
 
   // Determine grid columns based on screen width
   const numColumns = viewMode === 'grid' ? (width >= 768 ? 3 : 2) : 1
@@ -185,7 +197,6 @@ export default observer(function AllProjectsPage() {
       currentFolderId ? p.folderId === currentFolderId : !p.folderId,
     )
 
-    // Filter by workspace
     if (currentWorkspace?.id) {
       result = result.filter((p: any) => p.workspaceId === currentWorkspace.id)
     }
@@ -195,6 +206,17 @@ export default observer(function AllProjectsPage() {
       result = result.filter(
         (p) => p.name.toLowerCase().includes(q) || p.description?.toLowerCase().includes(q),
       )
+    }
+
+    if (visibilityFilter !== 'any') {
+      result = result.filter((p: any) => {
+        const access = p.accessLevel || 'anyone'
+        return visibilityFilter === 'public' ? access === 'anyone' : access !== 'anyone'
+      })
+    }
+
+    if (statusFilter !== 'any') {
+      result = result.filter((p) => p.status === statusFilter)
     }
 
     result.sort((a, b) => {
@@ -209,7 +231,7 @@ export default observer(function AllProjectsPage() {
     })
 
     return result
-  }, [allProjects, currentFolderId, currentWorkspace?.id, searchQuery, sortBy])
+  }, [allProjects, currentFolderId, currentWorkspace?.id, searchQuery, sortBy, visibilityFilter, statusFilter])
 
   // Handlers
   const handleProjectPress = useCallback(
@@ -263,7 +285,7 @@ export default observer(function AllProjectsPage() {
           { text: 'Cancel', style: 'cancel' },
           {
             text: 'Rename',
-            onPress: async (newName) => {
+            onPress: async (newName?: string) => {
               if (!newName?.trim()) return
               try {
                 await actions.updateProject(project.id, { name: newName.trim() })
@@ -364,6 +386,50 @@ export default observer(function AllProjectsPage() {
       { text: 'Cancel', style: 'cancel' },
     ])
   }, [])
+
+  const handleVisibilityFilter = useCallback(() => {
+    Alert.alert('Visibility', undefined, [
+      { text: 'Any visibility', onPress: () => setVisibilityFilter('any') },
+      { text: 'Public', onPress: () => setVisibilityFilter('public') },
+      { text: 'Private', onPress: () => setVisibilityFilter('private') },
+      { text: 'Cancel', style: 'cancel' },
+    ])
+  }, [])
+
+  const handleStatusFilter = useCallback(() => {
+    Alert.alert('Status', undefined, [
+      { text: 'Any status', onPress: () => setStatusFilter('any') },
+      { text: 'Draft', onPress: () => setStatusFilter('draft') },
+      { text: 'Published', onPress: () => setStatusFilter('published') },
+      { text: 'Cancel', style: 'cancel' },
+    ])
+  }, [])
+
+  const handleCreateFolder = useCallback(async () => {
+    const name = newFolderName.trim()
+    if (!name || !currentWorkspace?.id) return
+    try {
+      await actions.createFolder(name, currentWorkspace.id, currentFolderId)
+      store?.folderCollection?.loadAll({ workspaceId: currentWorkspace.id }).catch(() => {})
+    } catch (err) {
+      console.error('[AllProjectsPage] Failed to create folder:', err)
+    }
+    setNewFolderName('')
+    setNewFolderModalVisible(false)
+  }, [newFolderName, currentWorkspace?.id, currentFolderId, actions, store])
+
+  const handleToggleSelect = useCallback(() => {
+    setSelectMode((s) => !s)
+    setSelectedIds(new Set())
+  }, [])
+
+  const handleMoreOptions = useCallback(() => {
+    Alert.alert('More options', undefined, [
+      { text: 'New folder', onPress: () => setNewFolderModalVisible(true) },
+      { text: 'Select projects', onPress: handleToggleSelect },
+      { text: 'Cancel', style: 'cancel' },
+    ])
+  }, [handleToggleSelect])
 
   // Build combined data for FlatList (folders first, then projects)
   type ListItem =
@@ -622,8 +688,11 @@ export default observer(function AllProjectsPage() {
   return (
     <View className="flex-1 bg-background">
       {/* Header */}
-      <View className="px-4 pt-3 pb-1">
+      <View className="flex-row items-center justify-between px-4 pt-3 pb-1">
         <Text className="text-lg font-semibold text-foreground">Projects</Text>
+        <Pressable onPress={handleMoreOptions} className="p-1.5 rounded-md active:bg-muted">
+          <MoreHorizontal size={18} className="text-muted-foreground" />
+        </Pressable>
       </View>
 
       {/* Breadcrumb navigation */}
@@ -657,15 +726,60 @@ export default observer(function AllProjectsPage() {
           />
         </View>
 
-        {/* Sort + View toggle row */}
-        <View className="flex-row items-center justify-between">
-          {/* Sort button */}
+        {/* Sort + Filters + View toggle row */}
+        <View className="flex-row items-center gap-1.5 flex-wrap">
+          {/* Sort */}
           <Pressable
             onPress={handleSortPress}
-            className="flex-row items-center gap-1 px-3 py-1.5 rounded-lg border border-input"
+            className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input"
           >
             <Text className="text-xs text-foreground">{sortLabel}</Text>
             <ChevronDown size={14} className="text-muted-foreground" />
+          </Pressable>
+
+          {/* Visibility filter */}
+          <Pressable
+            onPress={handleVisibilityFilter}
+            className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input"
+          >
+            <Text className="text-xs text-foreground">
+              {visibilityFilter === 'any' ? 'Any visibility' : visibilityFilter === 'public' ? 'Public' : 'Private'}
+            </Text>
+            <ChevronDown size={14} className="text-muted-foreground" />
+          </Pressable>
+
+          {/* Status filter */}
+          <Pressable
+            onPress={handleStatusFilter}
+            className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input"
+          >
+            <Text className="text-xs text-foreground">
+              {statusFilter === 'any' ? 'Any status' : statusFilter === 'draft' ? 'Draft' : 'Published'}
+            </Text>
+            <ChevronDown size={14} className="text-muted-foreground" />
+          </Pressable>
+
+          {/* Spacer */}
+          <View className="flex-1" />
+
+          {/* New folder */}
+          <Pressable
+            onPress={() => setNewFolderModalVisible(true)}
+            className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input active:bg-muted"
+          >
+            <FolderPlus size={14} className="text-muted-foreground" />
+            <Text className="text-xs text-foreground">New folder</Text>
+          </Pressable>
+
+          {/* Select */}
+          <Pressable
+            onPress={handleToggleSelect}
+            className={cn(
+              'w-8 h-8 items-center justify-center rounded-lg',
+              selectMode ? 'bg-primary/10' : 'bg-transparent',
+            )}
+          >
+            <CheckSquare size={16} className={selectMode ? 'text-primary' : 'text-muted-foreground'} />
           </Pressable>
 
           {/* View toggle */}
@@ -742,6 +856,61 @@ export default observer(function AllProjectsPage() {
           }
         />
       )}
+
+      {/* New Folder Modal */}
+      <Modal
+        visible={newFolderModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setNewFolderModalVisible(false)}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 items-center justify-center"
+          onPress={() => setNewFolderModalVisible(false)}
+        >
+          <Pressable
+            className="bg-card rounded-xl p-6 w-80 border border-border"
+            onPress={(e) => e.stopPropagation()}
+          >
+            <Text className="text-base font-semibold text-foreground mb-1">Create new folder</Text>
+            <Text className="text-sm text-muted-foreground mb-4">
+              Create a new folder to organize your projects
+            </Text>
+            <TextInput
+              value={newFolderName}
+              onChangeText={setNewFolderName}
+              placeholder="Enter folder name"
+              placeholderTextColor="#9ca3af"
+              className="border border-border rounded-md px-3 py-2 text-sm text-foreground bg-background mb-4"
+              autoFocus
+              onSubmitEditing={handleCreateFolder}
+            />
+            <View className="flex-row gap-2 justify-end">
+              <Pressable
+                onPress={() => setNewFolderModalVisible(false)}
+                className="px-4 py-2 rounded-md border border-border active:bg-muted"
+              >
+                <Text className="text-sm text-foreground">Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={handleCreateFolder}
+                className={cn(
+                  'px-4 py-2 rounded-md',
+                  newFolderName.trim() ? 'bg-primary active:bg-primary/80' : 'bg-muted'
+                )}
+                disabled={!newFolderName.trim()}
+              >
+                <Text className={cn(
+                  'text-sm',
+                  newFolderName.trim() ? 'text-primary-foreground' : 'text-muted-foreground'
+                )}>
+                  Create folder
+                </Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   )
 })

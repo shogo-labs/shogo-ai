@@ -6,6 +6,8 @@ import {
   FlatList,
   ActivityIndicator,
   Alert,
+  Platform,
+  ScrollView,
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useRouter } from 'expo-router'
@@ -319,23 +321,48 @@ export default observer(function TemplatesPage() {
   )
 
   return (
-    <SafeAreaView className="flex-1 bg-background">
+    <View className="flex-1 bg-background">
       {/* Header */}
-      <View className="px-4 pt-4 pb-2">
-        <Text className="text-foreground text-2xl font-semibold">Canvas Templates</Text>
+      <View className="px-6 pt-6 pb-2">
+        <Text className="text-foreground text-2xl font-semibold">Agent Templates</Text>
         <Text className="text-muted-foreground mt-1">
-          Start from a template — tap to create a project with this prompt
+          Start from a template to build your next agent
         </Text>
       </View>
 
       {/* Templates Grid */}
-      <FlatList
-        data={templates}
-        keyExtractor={(item) => item.id}
-        numColumns={2}
-        contentContainerClassName="px-2.5 pt-2 pb-6"
-        renderItem={renderItem}
-      />
-    </SafeAreaView>
+      {Platform.OS === 'web' ? (
+        <ScrollView
+          className="flex-1"
+          contentContainerStyle={{ padding: 24, paddingTop: 12 }}
+        >
+          <View
+            style={{
+              display: 'grid' as any,
+              gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
+              gap: 12,
+              maxWidth: 1200,
+            } as any}
+          >
+            {templates.map((template) => (
+              <TemplateCard
+                key={template.id}
+                template={template}
+                isLoading={loadingTemplate === template.id}
+                onPress={() => handleTemplatePress(template)}
+              />
+            ))}
+          </View>
+        </ScrollView>
+      ) : (
+        <FlatList
+          data={templates}
+          keyExtractor={(item) => item.id}
+          numColumns={2}
+          contentContainerClassName="px-2.5 pt-2 pb-6"
+          renderItem={renderItem}
+        />
+      )}
+    </View>
   )
 })

@@ -41,6 +41,7 @@ import { useAuth } from '../../../../contexts/auth'
 import { API_URL } from '../../../../lib/api'
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
 import { DynamicAppRenderer } from '../../../../components/dynamic-app/DynamicAppRenderer'
+import { ProjectTopBar } from '../../../../components/project/ProjectTopBar'
 
 type ActiveTab = 'chat' | 'canvas'
 
@@ -189,11 +190,16 @@ export default observer(function ProjectLayout() {
     setChatSessionId(sessionId)
   }, [])
 
+  // Chat panel visibility
+  const [chatCollapsed, setChatCollapsed] = useState(false)
+  const [showChatSessions, setShowChatSessions] = useState(false)
+  const [previewTab, setPreviewTab] = useState('dynamic-app')
+
   // Loading state
   if (isLoading || !project) {
     return (
       <>
-        <Stack.Screen options={{ headerShown: true, title: 'Loading...' }} />
+        <Stack.Screen options={{ headerShown: false }} />
         <View className="flex-1 bg-background items-center justify-center">
           <ActivityIndicator size="large" />
           <Text className="text-muted-foreground mt-3 text-sm">Loading project...</Text>
@@ -202,7 +208,6 @@ export default observer(function ProjectLayout() {
     )
   }
 
-  // Chat panel element (shared between wide and narrow layouts)
   const chatPanel = (
     <ChatPanel
       featureId={projectId ?? null}
@@ -218,7 +223,6 @@ export default observer(function ProjectLayout() {
     />
   )
 
-  // Canvas panel element
   const canvasPanel = (
     <CanvasPanel
       surface={activeSurface}
@@ -231,20 +235,37 @@ export default observer(function ProjectLayout() {
 
   return (
     <>
-      <Stack.Screen options={{ headerShown: true, title: project.name }} />
+      <Stack.Screen options={{ headerShown: false }} />
 
       {isWide ? (
-        // Wide layout: side-by-side
-        <View className="flex-1 flex-row bg-background">
-          <View style={{ width: CHAT_PANEL_WIDTH }} className="border-r border-border">
-            {chatPanel}
+        <View className="flex-1 bg-background">
+          <ProjectTopBar
+            projectName={project.name}
+            projectId={projectId!}
+            showChatSessions={showChatSessions}
+            isChatCollapsed={chatCollapsed}
+            onChatSessionsToggle={() => setShowChatSessions((s) => !s)}
+            onChatCollapseToggle={() => setChatCollapsed((c) => !c)}
+            activeTab={previewTab}
+            onTabChange={setPreviewTab}
+          />
+          <View className="flex-1 flex-row">
+            {!chatCollapsed && (
+              <View style={{ width: CHAT_PANEL_WIDTH }} className="border-r border-border">
+                {chatPanel}
+              </View>
+            )}
+            <View className="flex-1">{canvasPanel}</View>
           </View>
-          <View className="flex-1">{canvasPanel}</View>
         </View>
       ) : (
-        // Narrow layout: tab switcher
         <View className="flex-1 bg-background">
-          {/* Tab bar */}
+          <ProjectTopBar
+            projectName={project.name}
+            projectId={projectId!}
+            activeTab={previewTab}
+            onTabChange={setPreviewTab}
+          />
           <View className="flex-row border-b border-border">
             {(['chat', 'canvas'] as ActiveTab[]).map((tab) => (
               <Pressable
@@ -268,7 +289,6 @@ export default observer(function ProjectLayout() {
               </Pressable>
             ))}
           </View>
-
           {activeTab === 'chat' ? chatPanel : canvasPanel}
         </View>
       )}
