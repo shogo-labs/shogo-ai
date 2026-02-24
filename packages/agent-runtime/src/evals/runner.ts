@@ -192,13 +192,16 @@ async function parseSSEStream(
               })
               break
             }
-            case 'tool-result': {
+            case 'tool-result':
+            case 'tool-output-available': {
+              const output = data.result ?? data.output
+              const isError = data.isError ?? (typeof data.output === 'object' && data.output !== null && 'error' in data.output)
               for (let i = toolCalls.length - 1; i >= 0; i--) {
                 if (toolCalls[i].output === undefined) {
                   const startT = toolStartTimes[data.toolCallId]
-                  toolCalls[i].output = data.result
+                  toolCalls[i].output = output
                   toolCalls[i].durationMs = startT ? Date.now() - startT : undefined
-                  toolCalls[i].error = data.isError || false
+                  toolCalls[i].error = isError || false
                   break
                 }
               }

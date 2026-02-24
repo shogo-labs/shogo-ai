@@ -35,6 +35,65 @@ function responseContains(result: EvalResult, ...terms: string[]): boolean {
   return terms.every(t => text.includes(t.toLowerCase()))
 }
 
+/**
+ * Check that at least one canvas_trigger_action call returned ok: true.
+ */
+function triggerActionSucceeded(result: EvalResult): boolean {
+  return result.toolCalls.some(t => {
+    if (t.name !== 'canvas_trigger_action') return false
+    const output = typeof t.output === 'string' ? t.output : JSON.stringify(t.output ?? '')
+    return output.includes('"ok":true') || output.includes('"ok": true')
+  })
+}
+
+/**
+ * Check that all Button components in canvas_update calls have a mutation
+ * in their action definition.
+ */
+function allButtonsHaveMutations(result: EvalResult): boolean {
+  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
+  if (updateCalls.length === 0) return false
+  for (const call of updateCalls) {
+    const inputStr = JSON.stringify(call.input ?? '')
+    const componentArrayMatch = inputStr.match(/"components"\s*:\s*\[/)
+    if (!componentArrayMatch) continue
+    const buttonRe = /"component"\s*:\s*"Button"/g
+    let match: RegExpExecArray | null
+    while ((match = buttonRe.exec(inputStr)) !== null) {
+      const surroundingStart = Math.max(0, match.index - 500)
+      const surroundingEnd = Math.min(inputStr.length, match.index + 500)
+      const surroundingChunk = inputStr.slice(surroundingStart, surroundingEnd)
+      if (surroundingChunk.includes('"action"') && !surroundingChunk.includes('"mutation"')) {
+        return false
+      }
+    }
+  }
+  return true
+}
+
+/**
+ * Check that canvas_trigger_action output shows actual data changes
+ * (the "changes" array is populated or "VERIFIED" appears).
+ */
+function triggerActionChangedData(result: EvalResult): boolean {
+  return result.toolCalls.some(t => {
+    if (t.name !== 'canvas_trigger_action') return false
+    const output = typeof t.output === 'string' ? t.output : JSON.stringify(t.output ?? '')
+    return output.includes('count_changed') || output.includes('VERIFIED') || output.includes('"type":"added"')
+  })
+}
+
+/**
+ * Check that at least one canvas_inspect call occurs after at least one
+ * canvas_trigger_action call. Handles the common pattern where a pre-flight
+ * inspect occurs before the first trigger.
+ */
+function inspectAfterTrigger(result: EvalResult): boolean {
+  const firstTrigger = result.toolCalls.findIndex(t => t.name === 'canvas_trigger_action')
+  if (firstTrigger < 0) return false
+  return result.toolCalls.some((t, i) => t.name === 'canvas_inspect' && i > firstTrigger)
+}
+
 // ---------------------------------------------------------------------------
 // Test Cases
 // ---------------------------------------------------------------------------
@@ -218,30 +277,40 @@ export const CANVAS_EVALS: AgentEval[] = [
       {
         id: 'used-trigger-action',
         description: 'Used canvas_trigger_action to add a todo',
-        points: 20,
+        points: 10,
         phase: 'execution',
         validate: (r) => usedTool(r, 'canvas_trigger_action'),
       },
       {
+        id: 'trigger-action-succeeded',
+        description: 'canvas_trigger_action returned ok: true (mutation actually worked)',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => triggerActionSucceeded(r),
+      },
+      {
+        id: 'all-buttons-have-mutations',
+        description: 'Every Button component has a mutation in its action definition',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => allButtonsHaveMutations(r),
+      },
+      {
         id: 'used-inspect',
         description: 'Used canvas_inspect to verify the interaction result',
-        points: 15,
+        points: 10,
         phase: 'execution',
-        validate: (r) => {
-          const triggerIdx = r.toolCalls.findIndex(t => t.name === 'canvas_trigger_action')
-          const inspectIdx = r.toolCalls.findIndex(t => t.name === 'canvas_inspect')
-          return triggerIdx >= 0 && inspectIdx > triggerIdx
-        },
+        validate: (r) => inspectAfterTrigger(r),
       },
       {
         id: 'reasonable-tool-count',
         description: 'Completed in <= 18 tool calls',
-        points: 10,
+        points: 5,
         phase: 'execution',
         validate: (r) => r.toolCalls.length <= 18,
       },
     ],
-    antiPatterns: ['No tool calls at all', 'Did not verify interactions work'],
+    antiPatterns: ['No tool calls at all', 'Did not verify interactions work', 'Buttons missing mutation in action definition'],
   },
 
   // ---- Level 3: Interactive canvas with action wait ----
@@ -298,27 +367,26 @@ export const CANVAS_EVALS: AgentEval[] = [
         },
       },
       {
-        id: 'used-trigger-action',
-        description: 'Used canvas_trigger_action to test a button click',
-        points: 20,
+        id: 'handles-votes',
+        description: 'Used canvas_data_patch, canvas_action_wait, or canvas_trigger_action to handle votes',
+        points: 10,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_trigger_action'),
+        validate: (r) =>
+          usedTool(r, 'canvas_data_patch') ||
+          usedTool(r, 'canvas_action_wait') ||
+          usedTool(r, 'canvas_trigger_action'),
       },
       {
-        id: 'used-inspect',
-        description: 'Used canvas_inspect to verify the button interaction',
-        points: 15,
+        id: 'verified-state',
+        description: 'Used canvas_inspect to verify the poll state',
+        points: 10,
         phase: 'execution',
-        validate: (r) => {
-          const triggerIdx = r.toolCalls.findIndex(t => t.name === 'canvas_trigger_action')
-          const inspectIdx = r.toolCalls.findIndex(t => t.name === 'canvas_inspect')
-          return triggerIdx >= 0 && inspectIdx > triggerIdx
-        },
+        validate: (r) => usedTool(r, 'canvas_inspect'),
       },
       {
         id: 'response-explains',
         description: 'Response explains the canvas and verification result',
-        points: 15,
+        points: 10,
         phase: 'execution',
         validate: (r) => r.responseText.length > 30,
       },
@@ -586,30 +654,40 @@ export const CANVAS_EVALS: AgentEval[] = [
       {
         id: 'used-trigger-action',
         description: 'Used canvas_trigger_action to add a test ticket',
-        points: 20,
+        points: 10,
         phase: 'execution',
         validate: (r) => usedTool(r, 'canvas_trigger_action'),
       },
       {
+        id: 'trigger-action-succeeded',
+        description: 'canvas_trigger_action returned ok: true (mutation actually worked)',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => triggerActionSucceeded(r),
+      },
+      {
+        id: 'all-buttons-have-mutations',
+        description: 'Every Button component has a mutation in its action definition',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => allButtonsHaveMutations(r),
+      },
+      {
         id: 'used-inspect',
         description: 'Used canvas_inspect to verify the ticket was created',
-        points: 15,
+        points: 5,
         phase: 'execution',
-        validate: (r) => {
-          const triggerIdx = r.toolCalls.findIndex(t => t.name === 'canvas_trigger_action')
-          const inspectIdx = r.toolCalls.findIndex(t => t.name === 'canvas_inspect')
-          return triggerIdx >= 0 && inspectIdx > triggerIdx
-        },
+        validate: (r) => inspectAfterTrigger(r),
       },
       {
         id: 'reasonable-tool-count',
         description: 'Completed in <= 18 tool calls',
-        points: 10,
+        points: 5,
         phase: 'execution',
         validate: (r) => r.toolCalls.length <= 18,
       },
     ],
-    antiPatterns: ['Did not verify interactions work'],
+    antiPatterns: ['Did not verify interactions work', 'Buttons missing mutation in action definition'],
   },
 
   // ---- Level 3: Invoice Management System (n8n AI invoice agent) ----
@@ -679,30 +757,40 @@ export const CANVAS_EVALS: AgentEval[] = [
       {
         id: 'used-trigger-action',
         description: 'Used canvas_trigger_action to add a test invoice',
-        points: 20,
+        points: 10,
         phase: 'execution',
         validate: (r) => usedTool(r, 'canvas_trigger_action'),
       },
       {
+        id: 'trigger-action-succeeded',
+        description: 'canvas_trigger_action returned ok: true (mutation actually worked)',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => triggerActionSucceeded(r),
+      },
+      {
+        id: 'all-buttons-have-mutations',
+        description: 'Every Button component has a mutation in its action definition',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => allButtonsHaveMutations(r),
+      },
+      {
         id: 'used-inspect',
         description: 'Used canvas_inspect to verify the invoice was created',
-        points: 15,
+        points: 5,
         phase: 'execution',
-        validate: (r) => {
-          const triggerIdx = r.toolCalls.findIndex(t => t.name === 'canvas_trigger_action')
-          const inspectIdx = r.toolCalls.findIndex(t => t.name === 'canvas_inspect')
-          return triggerIdx >= 0 && inspectIdx > triggerIdx
-        },
+        validate: (r) => inspectAfterTrigger(r),
       },
       {
         id: 'reasonable-tool-count',
         description: 'Completed in <= 18 tool calls',
-        points: 10,
+        points: 5,
         phase: 'execution',
         validate: (r) => r.toolCalls.length <= 18,
       },
     ],
-    antiPatterns: ['Did not verify interactions work'],
+    antiPatterns: ['Did not verify interactions work', 'Buttons missing mutation in action definition'],
   },
 
   // ---- Level 3: HR Applicant Pipeline (Odin AI recruiting + n8n HR) ----
@@ -765,30 +853,40 @@ export const CANVAS_EVALS: AgentEval[] = [
       {
         id: 'used-trigger-action',
         description: 'Used canvas_trigger_action to add a test applicant',
-        points: 20,
+        points: 10,
         phase: 'execution',
         validate: (r) => usedTool(r, 'canvas_trigger_action'),
       },
       {
+        id: 'trigger-action-succeeded',
+        description: 'canvas_trigger_action returned ok: true (mutation actually worked)',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => triggerActionSucceeded(r),
+      },
+      {
+        id: 'all-buttons-have-mutations',
+        description: 'Every Button component has a mutation in its action definition',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => allButtonsHaveMutations(r),
+      },
+      {
         id: 'used-inspect',
         description: 'Used canvas_inspect to verify the applicant was added',
-        points: 20,
+        points: 10,
         phase: 'execution',
-        validate: (r) => {
-          const triggerIdx = r.toolCalls.findIndex(t => t.name === 'canvas_trigger_action')
-          const inspectIdx = r.toolCalls.findIndex(t => t.name === 'canvas_inspect')
-          return triggerIdx >= 0 && inspectIdx > triggerIdx
-        },
+        validate: (r) => inspectAfterTrigger(r),
       },
       {
         id: 'reasonable-tool-count',
         description: 'Completed in <= 18 tool calls',
-        points: 10,
+        points: 5,
         phase: 'execution',
         validate: (r) => r.toolCalls.length <= 18,
       },
     ],
-    antiPatterns: ['Did not verify interactions work'],
+    antiPatterns: ['Did not verify interactions work', 'Buttons missing mutation in action definition'],
   },
 
   // ---- Level 4: Social Media Command Center (multi-turn) ----
@@ -941,30 +1039,40 @@ export const CANVAS_EVALS: AgentEval[] = [
       {
         id: 'used-trigger-action',
         description: 'Used canvas_trigger_action to add a test order',
-        points: 20,
+        points: 10,
         phase: 'execution',
         validate: (r) => usedTool(r, 'canvas_trigger_action'),
       },
       {
+        id: 'trigger-action-succeeded',
+        description: 'canvas_trigger_action returned ok: true (mutation actually worked)',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => triggerActionSucceeded(r),
+      },
+      {
+        id: 'all-buttons-have-mutations',
+        description: 'Every Button component has a mutation in its action definition',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => allButtonsHaveMutations(r),
+      },
+      {
         id: 'used-inspect',
         description: 'Used canvas_inspect to verify the order was created',
-        points: 20,
+        points: 10,
         phase: 'execution',
-        validate: (r) => {
-          const triggerIdx = r.toolCalls.findIndex(t => t.name === 'canvas_trigger_action')
-          const inspectIdx = r.toolCalls.findIndex(t => t.name === 'canvas_inspect')
-          return triggerIdx >= 0 && inspectIdx > triggerIdx
-        },
+        validate: (r) => inspectAfterTrigger(r),
       },
       {
         id: 'reasonable-tool-count',
         description: 'Completed in <= 25 tool calls',
-        points: 10,
+        points: 5,
         phase: 'execution',
         validate: (r) => r.toolCalls.length <= 25,
       },
     ],
-    antiPatterns: ['Did not verify interactions work'],
+    antiPatterns: ['Did not verify interactions work', 'Buttons missing mutation in action definition'],
   },
 
   // ====================================================================
@@ -1009,9 +1117,16 @@ export const CANVAS_EVALS: AgentEval[] = [
         validate: (r) => usedTool(r, 'canvas_update'),
       },
       {
+        id: 'all-buttons-have-mutations',
+        description: 'Every Button component has a mutation in its action definition',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => allButtonsHaveMutations(r),
+      },
+      {
         id: 'tested-add-action',
         description: 'Tested a POST/add action via canvas_trigger_action',
-        points: 15,
+        points: 10,
         phase: 'execution',
         validate: (r) => r.toolCalls.some(t => {
           if (t.name !== 'canvas_trigger_action') return false
@@ -1022,7 +1137,7 @@ export const CANVAS_EVALS: AgentEval[] = [
       {
         id: 'tested-update-action',
         description: 'Tested a PATCH/mark-complete action via canvas_trigger_action',
-        points: 15,
+        points: 10,
         phase: 'execution',
         validate: (r) => r.toolCalls.some(t => {
           if (t.name !== 'canvas_trigger_action') return false
@@ -1042,27 +1157,30 @@ export const CANVAS_EVALS: AgentEval[] = [
         }),
       },
       {
+        id: 'trigger-action-succeeded',
+        description: 'At least one canvas_trigger_action returned ok: true',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => triggerActionSucceeded(r),
+      },
+      {
         id: 'inspect-after-each-trigger',
         description: 'canvas_inspect called at least twice to verify multiple actions',
-        points: 15,
+        points: 10,
         phase: 'execution',
         validate: (r) => toolCallCount(r, 'canvas_inspect') >= 2,
       },
       {
         id: 'inspect-after-trigger',
         description: 'canvas_inspect was called after canvas_trigger_action',
-        points: 10,
+        points: 5,
         phase: 'execution',
-        validate: (r) => {
-          const triggerIdx = r.toolCalls.findIndex(t => t.name === 'canvas_trigger_action')
-          const inspectIdx = r.toolCalls.findIndex(t => t.name === 'canvas_inspect')
-          return triggerIdx >= 0 && inspectIdx > triggerIdx
-        },
+        validate: (r) => inspectAfterTrigger(r),
       },
       {
         id: 'response-confirms-count',
         description: 'Response mentions the total count (3 todos)',
-        points: 15,
+        points: 10,
         phase: 'execution',
         validate: (r) => {
           const text = r.responseText.toLowerCase()
@@ -1070,7 +1188,7 @@ export const CANVAS_EVALS: AgentEval[] = [
         },
       },
     ],
-    antiPatterns: ['Did not use canvas_trigger_action', 'Did not use canvas_inspect', 'Only tested one action type — must test add, update, and delete'],
+    antiPatterns: ['Did not use canvas_trigger_action', 'Did not use canvas_inspect', 'Only tested one action type — must test add, update, and delete', 'Buttons missing mutation in action definition'],
   },
 
   // ---- Level 4: Counter app with self-testing loop (multi-turn) ----
@@ -1172,9 +1290,16 @@ export const CANVAS_EVALS: AgentEval[] = [
         validate: (r) => usedTool(r, 'canvas_api_seed'),
       },
       {
+        id: 'all-buttons-have-mutations',
+        description: 'Every Button component has a mutation in its action definition',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => allButtonsHaveMutations(r),
+      },
+      {
         id: 'trigger-create',
         description: 'Used canvas_trigger_action with POST mutation to add a contact',
-        points: 15,
+        points: 10,
         phase: 'execution',
         validate: (r) => {
           return r.toolCalls.some(t => {
@@ -1187,7 +1312,7 @@ export const CANVAS_EVALS: AgentEval[] = [
       {
         id: 'trigger-update',
         description: 'Used canvas_trigger_action with PATCH/PUT mutation to update a contact',
-        points: 15,
+        points: 10,
         phase: 'execution',
         validate: (r) => {
           return r.toolCalls.some(t => {
@@ -1200,7 +1325,7 @@ export const CANVAS_EVALS: AgentEval[] = [
       {
         id: 'trigger-delete',
         description: 'Used canvas_trigger_action with DELETE mutation to remove a contact',
-        points: 15,
+        points: 10,
         phase: 'execution',
         validate: (r) => {
           return r.toolCalls.some(t => {
@@ -1211,9 +1336,16 @@ export const CANVAS_EVALS: AgentEval[] = [
         },
       },
       {
+        id: 'trigger-action-succeeded',
+        description: 'At least one canvas_trigger_action returned ok: true',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => triggerActionSucceeded(r),
+      },
+      {
         id: 'inspect-after-each',
         description: 'Used canvas_inspect at least 3 times (after create, update, delete)',
-        points: 15,
+        points: 10,
         phase: 'execution',
         validate: (r) => toolCallCount(r, 'canvas_inspect') >= 3,
       },
@@ -1232,7 +1364,7 @@ export const CANVAS_EVALS: AgentEval[] = [
       {
         id: 'reasonable-tool-count',
         description: 'Completed in <= 20 tool calls',
-        points: 15,
+        points: 5,
         phase: 'execution',
         validate: (r) => r.toolCalls.length <= 20,
       },
@@ -1241,6 +1373,7 @@ export const CANVAS_EVALS: AgentEval[] = [
       'Skipped verification steps',
       'Did not use canvas_trigger_action for CRUD',
       'Did not use canvas_inspect to verify',
+      'Buttons missing mutation in action definition',
     ],
   },
 ]
