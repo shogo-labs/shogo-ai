@@ -1,18 +1,20 @@
-import { useEffect, useCallback } from 'react'
-import { useRouter } from 'expo-router'
+import { useState, useEffect, useCallback } from 'react'
 import { View, Text } from 'react-native'
+import { useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { observer } from 'mobx-react-lite'
 import { useAuth } from '../../contexts/auth'
 import { useProjectCollection, useWorkspaceCollection } from '../../contexts/domain'
-import { ProjectListScreen, type ProjectItem } from '@shogo/shared-ui/screens'
 import { Button } from '@shogo/shared-ui/primitives'
+import { HomePage } from '../../components/home/HomePage'
 
 const HomeScreen = observer(function HomeScreen() {
   const router = useRouter()
   const { user, isAuthenticated } = useAuth()
   const projects = useProjectCollection()
   const workspaces = useWorkspaceCollection()
+  const [isCreating, setIsCreating] = useState(false)
+  const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
 
   useEffect(() => {
     if (!isAuthenticated) return
@@ -20,22 +22,57 @@ const HomeScreen = observer(function HomeScreen() {
     workspaces.loadAll()
   }, [isAuthenticated])
 
-  const handleCreateAgent = useCallback(async (name: string) => {
+  const handlePromptSubmit = useCallback(async (prompt: string, _imageData?: string[]) => {
     const ws = workspaces.all[0]
-    if (!ws || !user) throw new Error('No workspace available')
+    if (!ws || !user) return
 
-    await projects.create({
-      name,
-      workspaceId: ws.id,
-      createdBy: user.id,
-      tier: 'starter',
-      status: 'draft',
-      accessLevel: 'anyone',
-      schemas: [],
-      type: 'AGENT',
-    })
-    projects.loadAll()
-  }, [workspaces.all, user, projects])
+    setIsCreating(true)
+    try {
+      const project = await projects.create({
+        name: prompt.slice(0, 60),
+        workspaceId: ws.id,
+        createdBy: user.id,
+        tier: 'starter',
+        status: 'draft',
+        accessLevel: 'anyone',
+        schemas: [],
+        type: 'AGENT',
+      })
+      if (project?.id) {
+        router.push(`/(app)/projects/${project.id}`)
+      }
+    } finally {
+      setIsCreating(false)
+    }
+  }, [workspaces.all, user, projects, router])
+
+  const handleTemplateSelect = useCallback(async (
+    templateName: string,
+    displayName: string,
+    prompt: string,
+  ) => {
+    const ws = workspaces.all[0]
+    if (!ws || !user) return
+
+    setLoadingTemplate(templateName)
+    try {
+      const project = await projects.create({
+        name: displayName,
+        workspaceId: ws.id,
+        createdBy: user.id,
+        tier: 'starter',
+        status: 'draft',
+        accessLevel: 'anyone',
+        schemas: [],
+        type: 'AGENT',
+      })
+      if (project?.id) {
+        router.push(`/(app)/projects/${project.id}`)
+      }
+    } finally {
+      setLoadingTemplate(null)
+    }
+  }, [workspaces.all, user, projects, router])
 
   if (!isAuthenticated) {
     return (
@@ -53,25 +90,14 @@ const HomeScreen = observer(function HomeScreen() {
     )
   }
 
-  const allProjects: ProjectItem[] = projects.all.slice().map((p: any) => ({
-    id: p.id,
-    name: p.name,
-    description: p.description,
-    updatedAt: p.updatedAt,
-    type: p.type || 'APP',
-    status: p.status,
-  }))
-
   return (
-    <SafeAreaView className="flex-1 bg-background">
-      <ProjectListScreen
-        projects={allProjects}
-        isLoading={false}
-        userName={user?.name ?? undefined}
-        onProjectPress={(id) => router.push(`/(app)/projects/${id}`)}
-        onCreateProject={handleCreateAgent}
-      />
-    </SafeAreaView>
+    <HomePage
+      userName={user?.name ?? undefined}
+      onPromptSubmit={handlePromptSubmit}
+      onTemplateSelect={handleTemplateSelect}
+      isLoading={isCreating}
+      loadingTemplate={loadingTemplate}
+    />
   )
 })
 

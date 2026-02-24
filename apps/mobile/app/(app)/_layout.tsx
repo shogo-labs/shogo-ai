@@ -9,7 +9,7 @@
 
 import { useState, useCallback, useEffect } from 'react'
 import { View, useWindowDimensions } from 'react-native'
-import { Slot, useRouter } from 'expo-router'
+import { Slot, useRouter, usePathname } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useAuth } from '../../contexts/auth'
 import { DomainProvider } from '../../contexts/domain'
@@ -19,9 +19,11 @@ import { AppHeader } from '../../components/layout/AppHeader'
 export default function AppLayout() {
   const { isAuthenticated, isLoading } = useAuth()
   const router = useRouter()
+  const pathname = usePathname()
   const { width } = useWindowDimensions()
   const isWide = width >= 768
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const isHomePage = pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
@@ -46,7 +48,7 @@ export default function AppLayout() {
           {isWide && <AppSidebar />}
 
           <View className="flex-1">
-            <AppHeader onMenuPress={openDrawer} />
+            {!isHomePage && <AppHeader onMenuPress={openDrawer} />}
             <View className="flex-1">
               <Slot />
             </View>
