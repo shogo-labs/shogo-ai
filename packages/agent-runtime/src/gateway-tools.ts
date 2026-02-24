@@ -866,10 +866,31 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop â€
       const { components: normalizedComponents, corrections } = normalizeComponents(rawComponents)
       const components = normalizedComponents as typeof rawComponents
 
+      // Auto-inject mutations for buttons that have action.name but no mutation
+      const autoMutationWarnings: string[] = []
+      const manager = getDynamicAppManager()
+      for (const comp of components) {
+        if (comp.component !== 'Button' || !comp.action) continue
+        const action = comp.action as Record<string, unknown>
+        if (!action.name || action.mutation) continue
+
+        const inferred = manager.inferMutationForButton(surfaceId, String(action.name))
+        if (inferred) {
+          const needsParams = inferred.endpoint.includes(':id')
+          action.mutation = {
+            endpoint: inferred.endpoint,
+            method: inferred.method,
+            ...(needsParams ? { params: { id: { path: 'id' } } } : {}),
+          }
+          autoMutationWarnings.push(
+            `[${comp.id}] Auto-injected mutation { endpoint: "${inferred.endpoint}", method: "${inferred.method}" } from action name "${action.name}". Verify this is correct and add explicit mutation props (body, params) if needed.`
+          )
+        }
+      }
+
       // When merging, lint against the full merged component set
       let lintTarget = components
       if (merge) {
-        const manager = getDynamicAppManager()
         const surface = manager.getSurface(surfaceId)
         if (surface) {
           const existing = [...surface.components.values()] as typeof components
@@ -905,7 +926,6 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop â€
       }
 
       // Render with auto-corrected components
-      const manager = getDynamicAppManager()
       const result = manager.updateComponents(surfaceId, components)
 
       // Non-fatal errors still present after auto-correction
@@ -932,11 +952,14 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop â€
         })
       }
 
-      if (corrections.length > 0) {
+      if (corrections.length > 0 || autoMutationWarnings.length > 0) {
         return textResult({
           ...result,
-          corrections,
-          note: 'Some prop values were auto-corrected. Use these corrected values in future updates.',
+          corrections: corrections.length > 0 ? corrections : undefined,
+          autoMutations: autoMutationWarnings.length > 0 ? autoMutationWarnings : undefined,
+          note: autoMutationWarnings.length > 0
+            ? 'Some buttons had missing mutations that were auto-inferred from action names. Always define explicit mutations in future updates â€” auto-inference may be incorrect.'
+            : 'Some prop values were auto-corrected. Use these corrected values in future updates.',
         })
       }
       return textResult(result)

@@ -84,9 +84,14 @@ export function DynButton({ label, text, variant = 'default', size = 'default', 
       return
     }
     if (action && onAction) {
+      if (!mutation) {
+        console.warn(`[DynamicApp] Button "${label || text || 'unnamed'}" clicked with action "${action.name}" but no _mutation in context. This button may not do anything. Ensure the button definition includes action.mutation.`)
+      }
       onAction(action.name, action.context)
+      return
     }
-  }, [href, action, onAction])
+    console.warn(`[DynamicApp] Button "${label || text || 'unnamed'}" pressed but has no action or href configured. It will do nothing.`)
+  }, [href, action, onAction, label, text])
 
   return (
     <Button
