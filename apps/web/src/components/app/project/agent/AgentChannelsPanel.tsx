@@ -356,6 +356,10 @@ export function AgentChannelsPanel({ projectId, visible, localAgentUrl }: AgentC
                 </div>
               )
             })}
+
+            <div className="text-xs text-muted-foreground mt-4">
+              Or ask the builder AI to connect channels. For example: &quot;Connect my Telegram bot&quot;, &quot;Set up Discord&quot;, &quot;Connect WhatsApp&quot;, or &quot;Add Slack&quot;.
+            </div>
           </div>
         )}
       </div>

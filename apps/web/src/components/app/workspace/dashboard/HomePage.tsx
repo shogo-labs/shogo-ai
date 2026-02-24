@@ -5,13 +5,7 @@
  * - Personalized greeting with user's name
  * - Beautiful gradient mesh background
  * - AI prompt input via ChatPanel in compact mode
- * - SDK example templates that can be selected to create new projects
- *
- * Template flow (inspired by Lovable.dev):
- * 1. User clicks a template card
- * 2. Project is created with template name
- * 3. Template files are copied via template.copy MCP
- * 4. User is navigated to the new project with a welcome message
+ * - Canvas dev example templates with preview modal
  */
 
 import { useState, useRef, type RefObject } from "react"
@@ -21,7 +15,7 @@ import { Sparkles, ChevronRight, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { ChatPanel } from "@/components/app/chat/ChatPanel"
-import { TemplateCard, formatTemplateName, type TemplateMetadata } from "./TemplateCard"
+import { TemplateCard, formatTemplateName, type CanvasTemplate } from "./TemplateCard"
 import { TemplatePreviewModal } from "./TemplatePreviewModal"
 import { useTemplates } from "@/hooks/useTemplates"
 import { useProjectTheme } from "@/hooks/useProjectTheme"
@@ -35,11 +29,11 @@ interface HomePageProps {
   userName?: string
   /** Callback when a new prompt is submitted (includes selected themeId) */
   onPromptSubmit?: (prompt: string, imageData?: string[], themeId?: string, projectType?: "APP" | "AGENT") => void
-  /** Callback when a template is selected - receives template name, display name, and themeId */
-  onTemplateSelect?: (templateName: string, displayName: string, themeId?: string) => void
+  /** Callback when a template is selected */
+  onTemplateSelect?: (templateName: string, displayName: string, prompt: string, themeId?: string) => void
   /** Loading state - true when creating project/feature from prompt */
   isLoading?: boolean
-  /** Template currently being loaded (template name) */
+  /** Template currently being loaded (template id) */
   loadingTemplate?: string | null
   /** Current transition phase for animation (default: 'idle') */
   transitionPhase?: TransitionPhase
@@ -49,12 +43,6 @@ interface HomePageProps {
   flipStyle?: React.CSSProperties | null
 }
 
-/**
- * HomePage component
- * 
- * Main landing page for the app dashboard when no project is selected.
- * Features a personalized greeting and AI-powered prompt interface.
- */
 export const HomePage = observer(function HomePage({
   userName = "there",
   onPromptSubmit,
@@ -66,41 +54,37 @@ export const HomePage = observer(function HomePage({
   flipStyle,
 }: HomePageProps) {
   const navigate = useNavigate()
-  // Prompt state managed here so suggestions can pre-fill
   const [prompt, setPrompt] = useState("")
-  // Internal ref for ChatPanel if external ref not provided
   const internalInputRef = useRef<HTMLDivElement>(null)
   const chatPanelRef = inputRef ?? internalInputRef
 
-  // Templates state - use shared hook with deduplication
   const { templates, isLoading: isLoadingTemplates } = useTemplates()
   
-  // Theme selection state
   const { 
     currentThemeId, 
     selectTheme, 
   } = useProjectTheme()
   
-  // Theme editor dialog state (for "Create new" button)
   const [isThemeEditorOpen, setIsThemeEditorOpen] = useState(false)
-  
-  // Template preview modal state
-  const [selectedTemplate, setSelectedTemplate] = useState<TemplateMetadata | null>(null)
+
+  const [selectedTemplate, setSelectedTemplate] = useState<CanvasTemplate | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
 
-  // Get first name only for greeting
   const firstName = userName.split(" ")[0] || "there"
 
-  // Handle template card click - opens preview modal
-  const handleTemplateClick = (template: TemplateMetadata) => {
+  const handleTemplateClick = (template: CanvasTemplate) => {
     setSelectedTemplate(template)
     setIsModalOpen(true)
   }
 
-  // Handle "Use template" from modal
-  const handleUseTemplate = (template: TemplateMetadata) => {
+  const handleUseTemplate = (template: CanvasTemplate) => {
     if (onTemplateSelect && !loadingTemplate) {
-      onTemplateSelect(template.name, formatTemplateName(template.name), currentThemeId !== 'default' ? currentThemeId : undefined)
+      onTemplateSelect(
+        template.id,
+        formatTemplateName(template.id),
+        template.user_request,
+        currentThemeId !== 'default' ? currentThemeId : undefined,
+      )
       setIsModalOpen(false)
     }
   }
@@ -111,9 +95,8 @@ export const HomePage = observer(function HomePage({
       data-home-element="root"
       data-transition-phase={transitionPhase}
     >
-      {/* Animated gradient mesh background - inspired by Lovable.dev */}
+      {/* Animated gradient mesh background */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        {/* Primary gradient orb - large, blue to pink */}
         <div
           className="home-gradient-orb absolute w-[800px] h-[800px] rounded-full blur-[120px] animate-gradient-shift"
           data-home-element="orb-primary"
@@ -125,7 +108,6 @@ export const HomePage = observer(function HomePage({
           }}
         />
 
-        {/* Secondary gradient orb - orange to pink */}
         <div
           className="home-gradient-orb absolute w-[600px] h-[600px] rounded-full blur-[100px]"
           data-home-element="orb-secondary"
@@ -137,7 +119,6 @@ export const HomePage = observer(function HomePage({
           }}
         />
 
-        {/* Tertiary gradient orb - cyan accent */}
         <div
           className="home-gradient-orb absolute w-[500px] h-[500px] rounded-full blur-[100px]"
           data-home-element="orb-tertiary"
@@ -149,7 +130,6 @@ export const HomePage = observer(function HomePage({
           }}
         />
 
-        {/* Hot pink accent orb */}
         <div
           className="home-gradient-orb absolute w-[400px] h-[400px] rounded-full blur-[80px]"
           data-home-element="orb-pink"
@@ -163,7 +143,6 @@ export const HomePage = observer(function HomePage({
         />
       </div>
       
-      {/* CSS Keyframe animations */}
       <style>{`
         @keyframes gradient-float {
           0%, 100% {
@@ -203,7 +182,6 @@ export const HomePage = observer(function HomePage({
 
       {/* Main content */}
       <div className="relative flex flex-col items-center justify-center p-8 min-h-[60vh]">
-        {/* Greeting */}
         <h1
           className="home-greeting text-3xl sm:text-4xl md:text-5xl font-bold text-center mb-8 bg-clip-text text-transparent bg-gradient-to-r from-foreground via-foreground to-foreground/80"
           data-home-element="greeting"
@@ -211,7 +189,6 @@ export const HomePage = observer(function HomePage({
           What's on your mind, {firstName}?
         </h1>
 
-        {/* AI Prompt Input Card - ChatPanel in compact mode */}
         <div
           ref={chatPanelRef}
           className="home-input-card w-full max-w-2xl"
@@ -257,13 +234,13 @@ export const HomePage = observer(function HomePage({
         </div>
       </div>
 
-      {/* Templates section */}
+      {/* Canvas templates section */}
       <div
         className="home-templates relative bg-card/30 backdrop-blur-sm border-t border-border py-6"
         data-home-element="templates"
       >
         <div className="flex items-center justify-between mb-4 px-6">
-          <h2 className="text-sm font-medium">Agent Templates</h2>
+          <h2 className="text-sm font-medium">Canvas Templates</h2>
           <Button
             variant="ghost"
             size="sm"
@@ -275,28 +252,27 @@ export const HomePage = observer(function HomePage({
           </Button>
         </div>
         
-        {/* Template cards - 3-column grid */}
         {isLoadingTemplates ? (
           <div className="flex items-center justify-center py-8">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
           </div>
         ) : templates.length === 0 ? (
-          <div className="flex flex-col items-center gap-2 py-8 px-6 text-center">
+          <div className="flex flex-col items-center gap-3 py-8 px-6 text-center">
             <p className="text-sm text-muted-foreground">
-              Templates are loading or not yet available.
+              No templates available right now.
             </p>
             <p className="text-xs text-muted-foreground">
-              Start a conversation above to create your first agent, or check back soon for templates.
+              Start a conversation above to create your agent from scratch — just describe what you want to build.
             </p>
           </div>
         ) : (
           <div className="px-6 pb-6">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 max-w-5xl mx-auto">
-              {templates.map((template) => (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 max-w-5xl mx-auto">
+              {templates.slice(0, 6).map((template) => (
                 <TemplateCard
-                  key={template.name}
+                  key={template.id}
                   template={template}
-                  isLoading={loadingTemplate === template.name}
+                  isLoading={loadingTemplate === template.id}
                   onClick={() => handleTemplateClick(template)}
                 />
               ))}

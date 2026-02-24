@@ -458,12 +458,12 @@ export function lintComponents(components: Array<{ id?: string; component?: stri
       continue
     }
 
-    // Children: if schema says hasChildren but neither children nor child is provided, warn
+    // Children: if schema says hasChildren but neither children nor child is provided
     if (schema.hasChildren && !comp.children && !comp.child) {
       messages.push({
-        severity: 'warning',
+        severity: 'error',
         componentId: cid,
-        message: `"${schema.type}" supports children but neither "children" (array of IDs) nor "child" (single ID) was provided. The component will render empty.`,
+        message: `"${schema.type}" supports children but neither "children" (array of IDs) nor "child" (single ID) was provided. The component will render empty. Add children or child to fix.`,
       })
     }
 
@@ -471,9 +471,9 @@ export function lintComponents(components: Array<{ id?: string; component?: stri
     for (const [propName, propDef] of Object.entries(schema.props)) {
       if (propDef.required && comp[propName] === undefined) {
         messages.push({
-          severity: 'warning',
+          severity: 'error',
           componentId: cid,
-          message: `"${schema.type}" is missing recommended prop "${propName}" (${propDef.description}).`,
+          message: `"${schema.type}" is missing required prop "${propName}" (${propDef.description}). The component will not render correctly without it.`,
         })
       }
     }
@@ -492,7 +492,72 @@ export function lintComponents(components: Array<{ id?: string; component?: stri
       }
     }
 
+    // Children/child on components that don't support them
+    if (!schema.hasChildren) {
+      if (comp.children !== undefined) {
+        messages.push({
+          severity: 'error',
+          componentId: cid,
+          message: `"${schema.type}" does not support children, but "children" was provided. It will be ignored. Remove "children" or use a container component (Column, Row, Card) instead.`,
+        })
+      }
+      if (comp.child !== undefined) {
+        messages.push({
+          severity: 'error',
+          componentId: cid,
+          message: `"${schema.type}" does not support children, but "child" was provided. It will be ignored. Remove "child" or use a container component (Column, Row, Card) instead.`,
+        })
+      }
+    }
+
+    // Button action.mutation validation
+    if (comp.component === 'Button' && comp.action) {
+      const action = comp.action as Record<string, unknown>
+      if (!action.name) {
+        messages.push({
+          severity: 'error',
+          componentId: cid,
+          message: `Button action is missing "name". Every action needs a name (e.g. { name: "add_item", mutation: { ... } }).`,
+        })
+      }
+      if (action.mutation) {
+        const mutation = action.mutation as Record<string, unknown>
+        const endpoint = mutation.endpoint
+        const method = mutation.method
+        if (!endpoint) {
+          messages.push({
+            severity: 'error',
+            componentId: cid,
+            message: `Button action.mutation is missing "endpoint". Provide the API path (e.g. "/api/items") or a URL for method "OPEN".`,
+          })
+        }
+        if (!method) {
+          messages.push({
+            severity: 'error',
+            componentId: cid,
+            message: `Button action.mutation is missing "method". Use one of: POST, PATCH, DELETE (CRUD), or OPEN (external URL in new tab).`,
+          })
+        } else if (typeof method === 'string' && !VALID_MUTATION_METHODS.has(method.toUpperCase())) {
+          messages.push({
+            severity: 'error',
+            componentId: cid,
+            message: `Button action.mutation.method "${method}" is not valid. Use one of: POST, PATCH, DELETE, OPEN.`,
+          })
+        }
+      }
+    }
+
+    // dataPath prop validation (must be a JSON Pointer starting with /)
+    if (typeof comp.dataPath === 'string' && comp.dataPath && !comp.dataPath.startsWith('/')) {
+      messages.push({
+        severity: 'error',
+        componentId: cid,
+        message: `"${schema.type}" has dataPath "${comp.dataPath}" which doesn't start with "/". dataPath must be a JSON Pointer (e.g. "/newTitle"). Add a leading "/" to fix.`,
+      })
+    }
+
     // Unknown props — error: the prop is silently ignored, so the intended behavior won't work
+    // Always include children/child in knownKeys; the explicit hasChildren check above gives a better error
     const knownKeys = new Set(['id', 'component', 'children', 'child', ...Object.keys(schema.props)])
     for (const key of Object.keys(comp)) {
       if (!knownKeys.has(key)) {
@@ -508,14 +573,69 @@ export function lintComponents(components: Array<{ id?: string; component?: stri
   // Check for root component
   if (components.length > 0 && !components.some((c) => c.id === 'root')) {
     messages.push({
-      severity: 'warning',
+      severity: 'error',
       componentId: '(tree)',
-      message: 'No component with id "root" found. The component tree needs a "root" node to render.',
+      message: 'No component with id "root" found. The component tree needs a "root" node to render. Nothing will display without it.',
     })
   }
 
-  // Cross-component: Tabs ↔ children validation
+  // ---- Cross-component validations (need full component map) ----
   const compById = new Map(components.filter((c) => c.id).map((c) => [c.id, c]))
+
+  // Children reference validation: check that referenced IDs exist
+  for (const comp of components) {
+    if (!comp.id) continue
+    const cid = String(comp.id)
+
+    if (Array.isArray(comp.children)) {
+      for (const childId of comp.children as unknown[]) {
+        if (typeof childId === 'string' && !compById.has(childId)) {
+          messages.push({
+            severity: 'error',
+            componentId: cid,
+            message: `Children references id "${childId}" which does not exist in the component set. Add a component with id "${childId}" or remove it from children.`,
+          })
+        }
+      }
+    }
+    if (typeof comp.child === 'string' && !compById.has(comp.child)) {
+      messages.push({
+        severity: 'error',
+        componentId: cid,
+        message: `"child" references id "${comp.child}" which does not exist in the component set. Add a component with id "${comp.child}" or remove it.`,
+      })
+    }
+
+    // DataList templateId validation
+    if (comp.component === 'DataList' && comp.children && typeof comp.children === 'object' && !Array.isArray(comp.children)) {
+      const childrenObj = comp.children as Record<string, unknown>
+      if (childrenObj.templateId) {
+        const tid = String(childrenObj.templateId)
+        if (!compById.has(tid)) {
+          messages.push({
+            severity: 'error',
+            componentId: cid,
+            message: `DataList templateId "${tid}" does not exist in the component set. Add a component with id "${tid}" to use as the repeating template.`,
+          })
+        }
+        if (!childrenObj.path) {
+          messages.push({
+            severity: 'error',
+            componentId: cid,
+            message: `DataList has templateId but no "path" in children. Set children to { path: "/items", templateId: "${tid}" } to bind to data.`,
+          })
+        } else if (typeof childrenObj.path === 'string' && !childrenObj.path.startsWith('/')) {
+          messages.push({
+            severity: 'error',
+            componentId: cid,
+            message: `DataList children.path "${childrenObj.path}" must start with "/" (JSON Pointer to root data model, e.g. "/tasks"). Add a leading "/" to fix.`,
+          })
+        }
+      }
+    }
+  }
+
+  // Tabs ↔ children validation
   for (const comp of components) {
     if (comp.component !== 'Tabs' || !Array.isArray(comp.children)) continue
     const cid = String(comp.id)
@@ -554,6 +674,105 @@ export function lintComponents(components: Array<{ id?: string; component?: stri
   }
 
   return messages
+}
+
+const VALID_MUTATION_METHODS = new Set(['POST', 'PATCH', 'DELETE', 'OPEN'])
+
+// ---------------------------------------------------------------------------
+// Auto-correction: normalize known variant/enum mismatches
+// ---------------------------------------------------------------------------
+
+const ENUM_ALIASES: Record<string, Record<string, Record<string, string>>> = {
+  Text: {
+    variant: {
+      xs: 'small',
+      sm: 'small',
+      md: 'body',
+      lg: 'large',
+      xl: 'h4',
+      '2xl': 'h3',
+      '3xl': 'h2',
+      '4xl': 'h1',
+      p: 'body',
+      paragraph: 'body',
+      title: 'h2',
+      subtitle: 'h4',
+      heading: 'h2',
+      subheading: 'h4',
+    },
+  },
+  Badge: {
+    variant: {
+      primary: 'default',
+      info: 'secondary',
+      error: 'destructive',
+      danger: 'destructive',
+      warning: 'outline',
+      success: 'default',
+    },
+  },
+  Button: {
+    variant: {
+      primary: 'default',
+      danger: 'destructive',
+      text: 'link',
+      flat: 'ghost',
+    },
+    size: {
+      xs: 'sm',
+      xl: 'lg',
+    },
+  },
+}
+
+export interface NormalizationResult {
+  components: Array<{ [k: string]: unknown }>
+  corrections: string[]
+}
+
+/**
+ * Auto-correct known invalid enum values in component props.
+ * Returns the corrected components array and a list of human-readable corrections.
+ */
+export function normalizeComponents(
+  components: Array<{ id?: string; component?: string;[k: string]: unknown }>
+): NormalizationResult {
+  const corrections: string[] = []
+
+  const normalized = components.map((comp) => {
+    const schema = comp.component ? getComponentSchema(comp.component) : null
+    if (!schema) return comp
+
+    const aliases = ENUM_ALIASES[schema.type]
+    if (!aliases) return comp
+
+    const patched = { ...comp }
+    for (const [propName, aliasMap] of Object.entries(aliases)) {
+      const val = patched[propName]
+      if (typeof val === 'string' && aliasMap[val]) {
+        const corrected = aliasMap[val]
+        corrections.push(`${comp.id}: ${schema.type}.${propName} "${val}" → "${corrected}"`)
+        patched[propName] = corrected
+      }
+    }
+
+    // General fallback: for any enum prop with an invalid value, try closest match
+    for (const [propName, propDef] of Object.entries(schema.props)) {
+      const val = patched[propName]
+      if (val !== undefined && propDef.enum && typeof val === 'string' && !propDef.enum.includes(val)) {
+        const lower = val.toLowerCase()
+        const match = propDef.enum.find((e: string) => e.toLowerCase() === lower)
+        if (match) {
+          corrections.push(`${comp.id}: ${schema.type}.${propName} "${val}" → "${match}" (case fix)`)
+          patched[propName] = match
+        }
+      }
+    }
+
+    return patched
+  })
+
+  return { components: normalized, corrections }
 }
 
 // ---------------------------------------------------------------------------

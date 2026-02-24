@@ -192,12 +192,13 @@ Use these **exact names** in the \`tools\` field of skill frontmatter:
 | \`read_file\` | Read a workspace file |
 | \`write_file\` | Write a workspace file |
 | \`web_fetch\` | Fetch content from a URL |
+| \`browser\` | Control a headless browser (navigate, click, fill, extract, screenshot, evaluate, select, scroll, wait_for, close) |
 | \`memory_read\` | Read from MEMORY.md or daily logs |
 | \`memory_write\` | Write to MEMORY.md or daily logs |
 | \`send_message\` | Send a message through a channel |
 | \`cron\` | Manage scheduled jobs |
 
-**Group aliases** (resolved automatically): \`shell\` → exec, \`filesystem\` → read_file + write_file, \`memory\` → memory_read + memory_write
+**Group aliases** (resolved automatically): \`shell\` → exec, \`filesystem\` → read_file + write_file, \`memory\` → memory_read + memory_write, \`browser\` → browser + web_fetch
 
 ### Creating Skills
 

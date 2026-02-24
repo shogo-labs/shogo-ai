@@ -40,6 +40,7 @@ import {
   OPTIMIZED_SESSION_SUMMARY_GUIDE,
   OPTIMIZED_SKILL_MATCHING_GUIDE,
   OPTIMIZED_MCP_DISCOVERY_GUIDE,
+  OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE,
 } from './optimized-prompts'
 
 export interface GatewayConfig {
@@ -72,9 +73,19 @@ Use them whenever a visual display would be more helpful than plain text.
 **CRITICAL: Every canvas you build with interactive elements MUST be tested before you're done.**
 Never deliver an untested canvas. Build it, test it, confirm it works, then report to the user.
 
-### Building a CRUD App — 5 Steps (Build + Test)
+### Building a Canvas App — Plan First, Then Build
 
-When the user asks for any data app (tracker, dashboard, CRM, etc.), follow ALL 5 steps:
+When the user asks for any visual app, dashboard, or interactive UI, **ALWAYS start by writing a brief plan** before calling any tools. Output your plan as a message to the user covering:
+
+1. **What you're building** — one sentence summary (e.g. "A task tracker with add, complete, and delete")
+2. **Data model** — what models/fields are needed, or "display-only, no API needed"
+3. **Component layout** — the component tree structure (e.g. "Column > Card with Metrics row + DataList of tasks with action buttons")
+4. **Actions** — what buttons/interactions it will have and their mutations
+5. **Test plan** — which actions you'll verify with canvas_trigger_action
+
+This plan helps you build the right thing the first time and avoids costly delete-and-rebuild cycles. Keep it concise — 4-6 lines, not a full essay.
+
+Then follow ALL steps below:
 
 **Step 1: canvas_create** — Create a surface
   canvas_create({ surfaceId: "my_app", title: "My App" })
@@ -123,15 +134,47 @@ When the user asks for any data app (tracker, dashboard, CRM, etc.), follow ALL 
         params: { id: { path: "id" } } } } }
   ]})
 
-**Step 5: TEST — Verify interactions actually work (REQUIRED)**
+**Step 5: TEST — Verify EVERY interactive action actually works (REQUIRED)**
+  Test EACH distinct action type (add, mark complete, delete, etc.) separately.
+  canvas_trigger_action now performs real verification — it captures data before and after the action, and returns ok: false if the mutation failed or no data changed.
+
+  Example — test add:
   canvas_trigger_action({ surfaceId: "my_app", actionName: "add", context: {
     _mutation: { endpoint: "/api/tasks", method: "POST", body: { title: "Test task" } }
   }})
+  → Check ok: true and the "changes" array. Then verify with canvas_inspect:
   canvas_inspect({ surfaceId: "my_app", mode: "data", dataPath: "/tasks" })
-  → Confirm the new record appears. If it does, tell the user "Tested — add works ✓"
-  → If it doesn't, debug and fix before reporting.
 
-**You are not done until Step 5 passes.** A canvas that hasn't been tested is a canvas that might be broken.
+  Example — test mark complete (PATCH):
+  canvas_trigger_action({ surfaceId: "my_app", actionName: "done", context: {
+    _mutation: { endpoint: "/api/tasks/ITEM_ID", method: "PATCH", body: { status: "done" } }
+  }})
+  → Use a real item ID from the seed data or the add test. Confirm the item's status actually changed.
+  canvas_inspect({ surfaceId: "my_app", mode: "data", dataPath: "/tasks" })
+  → Verify the specific record shows the updated status.
+
+  Example — test delete:
+  canvas_trigger_action({ surfaceId: "my_app", actionName: "delete", context: {
+    _mutation: { endpoint: "/api/tasks/ITEM_ID", method: "DELETE" }
+  }})
+  canvas_inspect({ surfaceId: "my_app", mode: "data", dataPath: "/tasks" })
+  → Confirm the item count decreased.
+
+  For each test: if ok: false is returned, the button IS BROKEN. Debug and fix before moving on.
+
+**Step 6: FIX — Patch individual components (don't resend everything)**
+  If a test fails or you need to tweak a component, use \`merge: true\` to update ONLY the broken component:
+  canvas_update({ surfaceId: "my_app", merge: true, components: [
+    { id: "del_btn", component: "Button", label: "Delete", variant: "destructive", size: "sm",
+      action: { name: "delete", mutation: { endpoint: "/api/tasks/:id", method: "DELETE",
+        params: { id: { path: "id" } } } } }
+  ]})
+  → Only "del_btn" is replaced. All other components stay untouched.
+  After fixing, re-test the action with canvas_trigger_action + canvas_inspect.
+
+  **Always use \`merge: true\` when updating existing surfaces.** Only omit it on the first canvas_update when building the initial tree.
+
+**You are not done until EVERY action button has been tested and passes.** A canvas that hasn't been fully tested is a canvas that might be broken. Do not tell the user it works unless every action has been verified.
 
 ### Key Patterns
 
@@ -166,6 +209,13 @@ Without \`mutation\`, the button click does nothing visible to the user. The \`m
 
 Use \`canvas_components({ action: "detail", type: "Card" })\` to look up props for any component.
 
+### When to Use Metric Components
+
+When the user asks for a dashboard, summary, overview, or mentions totals, KPIs, revenue, counts, or "at a glance" data, **always include Metric components** at the top. Metrics give instant visibility into key numbers:
+- Use a Row or Grid of Metric cards for 2-4 headline numbers
+- Bind values with \`{ path: "/revenue" }\` to the data model
+- Add \`trend\` ("up"/"down") and \`trendValue\` ("+12%") for change indicators
+
 ### Tabs — IMPORTANT
 
 Tabs require EITHER explicit tab definitions OR TabPanel children with \`title\`. Without one of these, tabs render completely empty.
@@ -191,22 +241,27 @@ Tabs require EITHER explicit tab definitions OR TabPanel children with \`title\`
 
 ### Testing Tools
 
-- **canvas_trigger_action** — YOU simulate a button click. Use to test your canvas after building it. Include \`_mutation\` context for CRUD actions.
-- **canvas_inspect** — Read the current surface state. ALWAYS call this after canvas_trigger_action to verify the result.
-- The pattern is always: **trigger → inspect → report**. No exceptions.
+- **canvas_trigger_action** — YOU simulate a button click. Now performs REAL verification: captures data before/after, reports actual changes, and returns ok: false if the mutation failed or no data changed. Include \`_mutation\` context for CRUD actions.
+- **canvas_inspect** — Read the current surface state. ALWAYS call this after canvas_trigger_action to double-check the data.
+- The pattern is always: **trigger → inspect → report** for EACH action type. No exceptions.
+- You MUST test every distinct action button (add, update/mark-complete, delete) — not just one.
 
 ### Other Tools
 - **canvas_data** — Manually push data: \`canvas_data({ surfaceId: "app", path: "/key", value: data })\`
+- **canvas_data_patch** — Atomic operations (increment, decrement, toggle, append, set) without reading first. Use for counters and toggles instead of the full API pipeline.
 - **canvas_action_wait** — Pause and wait for a REAL USER to click. Only use when you need the human to interact — never for self-testing.
-- **canvas_delete** — Remove a surface
+- **canvas_delete** — Remove a surface (AVOID using this — prefer canvas_update to fix issues)
 - **canvas_components** — Discover components and their props
 
 ### Rules
-- After building any canvas with buttons or CRUD, ALWAYS run Step 5 (trigger + inspect) to verify.
+- **ALWAYS plan before building.** Write a brief plan (data model, layout, actions, tests) before calling any canvas tools. This prevents costly mistakes and rebuilds.
+- After building any canvas with buttons or CRUD, ALWAYS run Step 5 (trigger + inspect) for EVERY action type. Test add, update/complete, and delete separately.
+- If canvas_trigger_action returns ok: false, the button is BROKEN. Fix it with \`canvas_update({ merge: true })\` — see Step 6.
 - After canvas_trigger_action, ALWAYS follow up with canvas_inspect — never canvas_action_wait.
 - canvas_action_wait is ONLY for waiting on real human interaction, NOT for testing.
 - When canvas tools return status: "rendered" or "data_updated", the UI is already live.
-- Do NOT rebuild surfaces that are working — use canvas_update to modify specific components.
+- **NEVER delete and recreate a surface to fix issues.** Use \`canvas_update({ merge: true })\` to patch individual components. Deleting loses all data bindings and causes UI flicker.
+- **Simple state (counters, toggles, single values):** Use canvas_data or canvas_data_patch ONLY. Do NOT use canvas_api_schema/canvas_api_seed/canvas_api_query — those are for persistent CRUD data with multiple records.
 - Table is read-only. For lists needing edit/delete buttons, always use DataList.
 
 `
@@ -973,6 +1028,13 @@ export class AgentGateway {
     // UI stream writer: track current text block for delta streaming
     let uiTextId: string | null = null
 
+    // Gate map: onBeforeToolCall stores a promise per toolCallId that
+    // resolves once the tool-input-start SSE events have had time to
+    // flush to the client.  onAfterToolCall awaits this promise before
+    // writing tool-output events, preventing React from batching all
+    // tool events into a single render that skips the loading state.
+    const toolFlushGates = new Map<string, Promise<void>>()
+
     try {
       const hookEmitter = this.hookEmitter
       const result = await runAgentLoop({
@@ -999,7 +1061,6 @@ export class AgentGateway {
           }
         },
         onBeforeToolCall: async (toolName, args, toolCallId) => {
-          // Close any open text block before a tool call
           if (uiWriter && uiTextId) {
             uiWriter.write({ type: 'text-end', id: uiTextId })
             uiTextId = null
@@ -1007,8 +1068,17 @@ export class AgentGateway {
           if (uiWriter) {
             uiWriter.write({ type: 'tool-input-start', toolCallId, toolName, dynamic: true })
             uiWriter.write({ type: 'tool-input-delta', toolCallId, inputTextDelta: JSON.stringify(args) })
-            uiWriter.write({ type: 'tool-input-available', toolCallId, toolName, input: args, dynamic: true })
           }
+          // Store a flush gate that resolves after a short delay, giving
+          // the HTTP layer time to deliver the tool-input-start chunk to
+          // the client before tool-output-available arrives.
+          // NOTE: the pi-agent-core event system does NOT await this
+          // callback before firing tool_execution_end, so onAfterToolCall
+          // must explicitly await this gate.
+          toolFlushGates.set(
+            toolCallId,
+            new Promise(resolve => setTimeout(resolve, 30)),
+          )
           await hookEmitter.emit(
             HookEmitter.createEvent('tool', 'before', sessionId, {
               toolName, args, toolCallId, workspaceDir: this.workspaceDir,
@@ -1016,7 +1086,15 @@ export class AgentGateway {
           )
         },
         onAfterToolCall: async (toolName, args, result, isError, toolCallId) => {
+          // Wait for onBeforeToolCall's flush gate so the client receives
+          // tool-input-start in a separate HTTP chunk before we send the output.
+          const gate = toolFlushGates.get(toolCallId)
+          if (gate) {
+            await gate
+            toolFlushGates.delete(toolCallId)
+          }
           if (uiWriter) {
+            uiWriter.write({ type: 'tool-input-available', toolCallId, toolName, input: args, dynamic: true })
             uiWriter.write({
               type: 'tool-output-available',
               toolCallId,
@@ -1154,6 +1232,7 @@ export class AgentGateway {
     parts.push(CANVAS_TOOLS_GUIDE_PREFIX + canvasExamples)
     parts.push(PERSONALITY_EVOLUTION_GUIDE_PREFIX + personalityGuide)
     parts.push(toolPlanningGuide)
+    parts.push(this.promptOverrides.get('constraint_awareness_guide') ?? OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE)
     parts.push(memoryGuide)
     parts.push(skillMatchingGuide)
     parts.push(this.promptOverrides.get('mcp_discovery_guide') ?? OPTIMIZED_MCP_DISCOVERY_GUIDE)

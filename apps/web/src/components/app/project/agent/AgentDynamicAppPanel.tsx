@@ -147,7 +147,7 @@ export function AgentDynamicAppPanel({ projectId, visible, localAgentUrl }: Agen
     return () => { cancelled = true }
   }, [projectId, localAgentUrl])
 
-  const { surfaces, connected, error, dispatchAction, updateLocalData } = useDynamicAppStream(
+  const { surfaces, connected, connecting, error, dispatchAction, updateLocalData } = useDynamicAppStream(
     visible ? agentUrl : null
   )
 

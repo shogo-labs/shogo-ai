@@ -6,11 +6,12 @@
  * Used for visual QA without needing the full app or agent runtime.
  */
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { MultiSurfaceRenderer, DynamicAppRenderer } from './DynamicAppRenderer'
 import { DEMO_SURFACES, getAllDemoSurfaces } from './demo-surfaces'
 import type { SurfaceState } from './types'
 import { Button } from '@/components/ui/button'
+import { Moon, Sun } from 'lucide-react'
 
 export function DynamicAppDevPreview() {
   const [activeSurface, setActiveSurface] = useState<Map<string, SurfaceState>>(
@@ -22,6 +23,16 @@ export function DynamicAppDevPreview() {
     }
   )
   const [activeKey, setActiveKey] = useState<string>(Object.keys(DEMO_SURFACES)[0])
+  const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains('dark'))
+
+  const toggleTheme = useCallback(() => {
+    setIsDark((prev) => {
+      const next = !prev
+      document.documentElement.classList.toggle('dark', next)
+      localStorage.setItem('theme', next ? 'dark' : 'light')
+      return next
+    })
+  }, [])
 
   const selectDemo = useCallback((key: string) => {
     if (key === 'all') {
@@ -50,9 +61,14 @@ export function DynamicAppDevPreview() {
     <div className="flex h-screen bg-background text-foreground">
       {/* Sidebar */}
       <div className="w-64 border-r bg-muted/30 flex flex-col shrink-0">
-        <div className="p-4 border-b">
-          <h1 className="text-sm font-semibold">Dynamic App Preview</h1>
-          <p className="text-xs text-muted-foreground mt-1">Visual QA for canvas components</p>
+        <div className="p-4 border-b flex items-center justify-between">
+          <div>
+            <h1 className="text-sm font-semibold">Dynamic App Preview</h1>
+            <p className="text-xs text-muted-foreground mt-1">Visual QA for canvas components</p>
+          </div>
+          <Button variant="ghost" size="icon" onClick={toggleTheme} className="size-8 shrink-0">
+            {isDark ? <Sun className="size-4" /> : <Moon className="size-4" />}
+          </Button>
         </div>
         <div className="p-3 flex flex-col gap-1">
           {Object.entries(DEMO_SURFACES).map(([key, { label }]) => (

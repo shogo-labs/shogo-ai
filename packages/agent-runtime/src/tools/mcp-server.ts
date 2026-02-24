@@ -155,8 +155,8 @@ const TOOL_GROUP_TO_NAMES: Record<string, string[]> = {
   shell: ['exec'],
   filesystem: ['read_file', 'write_file'],
   web_fetch: ['web_fetch'],
+  browser: ['browser', 'web_fetch'],
   web_search: ['web_search', 'web_fetch'],
-  browser: ['web_fetch'],
   memory: ['memory_read', 'memory_write'],
   messaging: ['send_message'],
   cron: ['cron'],
@@ -361,14 +361,14 @@ defineTool({
 
 defineTool({
   name: 'channel_connect',
-  description: 'Connect a messaging channel (telegram, discord, or email)',
+  description: 'Connect a messaging channel (telegram, discord, email, whatsapp, or slack)',
   inputSchema: {
     type: 'object',
     properties: {
-      type: { type: 'string', enum: ['telegram', 'discord', 'email'], description: 'Channel type' },
+      type: { type: 'string', enum: ['telegram', 'discord', 'email', 'whatsapp', 'slack'], description: 'Channel type' },
       config: {
         type: 'object',
-        description: 'Channel configuration (e.g., botToken for Telegram)',
+        description: 'Channel configuration. Telegram: { botToken }. Discord: { botToken, guildId? }. Email: { imapHost, smtpHost, username, password }. WhatsApp: { accessToken, phoneNumberId, verifyToken? }. Slack: { botToken, appToken }',
       },
     },
     required: ['type', 'config'],

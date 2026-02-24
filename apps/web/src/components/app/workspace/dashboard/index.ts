@@ -15,6 +15,6 @@ export { HomePage } from "./HomePage"
 export type { TransitionPhase } from "./HomePage"
 
 export { TemplateCard, formatTemplateName } from "./TemplateCard"
-export type { TemplateMetadata } from "./TemplateCard"
+export type { CanvasTemplate } from "./TemplateCard"
 
 export { TemplatePreviewModal } from "./TemplatePreviewModal"
