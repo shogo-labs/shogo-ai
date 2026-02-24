@@ -198,6 +198,7 @@ export type WorkspaceWhereInput = {
   members?: Prisma.MemberListRelationFilter
   billingAccounts?: Prisma.BillingAccountListRelationFilter
   invitations?: Prisma.InvitationListRelationFilter
+  inviteLinks?: Prisma.InviteLinkListRelationFilter
   folders?: Prisma.FolderListRelationFilter
   subscriptions?: Prisma.SubscriptionListRelationFilter
   creditLedgers?: Prisma.CreditLedgerListRelationFilter
@@ -217,6 +218,7 @@ export type WorkspaceOrderByWithRelationInput = {
   members?: Prisma.MemberOrderByRelationAggregateInput
   billingAccounts?: Prisma.BillingAccountOrderByRelationAggregateInput
   invitations?: Prisma.InvitationOrderByRelationAggregateInput
+  inviteLinks?: Prisma.InviteLinkOrderByRelationAggregateInput
   folders?: Prisma.FolderOrderByRelationAggregateInput
   subscriptions?: Prisma.SubscriptionOrderByRelationAggregateInput
   creditLedgers?: Prisma.CreditLedgerOrderByRelationAggregateInput
@@ -239,6 +241,7 @@ export type WorkspaceWhereUniqueInput = Prisma.AtLeast<{
   members?: Prisma.MemberListRelationFilter
   billingAccounts?: Prisma.BillingAccountListRelationFilter
   invitations?: Prisma.InvitationListRelationFilter
+  inviteLinks?: Prisma.InviteLinkListRelationFilter
   folders?: Prisma.FolderListRelationFilter
   subscriptions?: Prisma.SubscriptionListRelationFilter
   creditLedgers?: Prisma.CreditLedgerListRelationFilter
@@ -284,6 +287,7 @@ export type WorkspaceCreateInput = {
   members?: Prisma.MemberCreateNestedManyWithoutWorkspaceInput
   billingAccounts?: Prisma.BillingAccountCreateNestedManyWithoutWorkspaceInput
   invitations?: Prisma.InvitationCreateNestedManyWithoutWorkspaceInput
+  inviteLinks?: Prisma.InviteLinkCreateNestedManyWithoutWorkspaceInput
   folders?: Prisma.FolderCreateNestedManyWithoutWorkspaceInput
   subscriptions?: Prisma.SubscriptionCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerCreateNestedManyWithoutWorkspaceInput
@@ -303,6 +307,7 @@ export type WorkspaceUncheckedCreateInput = {
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutWorkspaceInput
   billingAccounts?: Prisma.BillingAccountUncheckedCreateNestedManyWithoutWorkspaceInput
   invitations?: Prisma.InvitationUncheckedCreateNestedManyWithoutWorkspaceInput
+  inviteLinks?: Prisma.InviteLinkUncheckedCreateNestedManyWithoutWorkspaceInput
   folders?: Prisma.FolderUncheckedCreateNestedManyWithoutWorkspaceInput
   subscriptions?: Prisma.SubscriptionUncheckedCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
@@ -322,6 +327,7 @@ export type WorkspaceUpdateInput = {
   members?: Prisma.MemberUpdateManyWithoutWorkspaceNestedInput
   billingAccounts?: Prisma.BillingAccountUpdateManyWithoutWorkspaceNestedInput
   invitations?: Prisma.InvitationUpdateManyWithoutWorkspaceNestedInput
+  inviteLinks?: Prisma.InviteLinkUpdateManyWithoutWorkspaceNestedInput
   folders?: Prisma.FolderUpdateManyWithoutWorkspaceNestedInput
   subscriptions?: Prisma.SubscriptionUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUpdateManyWithoutWorkspaceNestedInput
@@ -341,6 +347,7 @@ export type WorkspaceUncheckedUpdateInput = {
   members?: Prisma.MemberUncheckedUpdateManyWithoutWorkspaceNestedInput
   billingAccounts?: Prisma.BillingAccountUncheckedUpdateManyWithoutWorkspaceNestedInput
   invitations?: Prisma.InvitationUncheckedUpdateManyWithoutWorkspaceNestedInput
+  inviteLinks?: Prisma.InviteLinkUncheckedUpdateManyWithoutWorkspaceNestedInput
   folders?: Prisma.FolderUncheckedUpdateManyWithoutWorkspaceNestedInput
   subscriptions?: Prisma.SubscriptionUncheckedUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
@@ -490,6 +497,22 @@ export type WorkspaceUpdateOneWithoutInvitationsNestedInput = {
   update?: Prisma.XOR<Prisma.XOR<Prisma.WorkspaceUpdateToOneWithWhereWithoutInvitationsInput, Prisma.WorkspaceUpdateWithoutInvitationsInput>, Prisma.WorkspaceUncheckedUpdateWithoutInvitationsInput>
 }
 
+export type WorkspaceCreateNestedOneWithoutInviteLinksInput = {
+  create?: Prisma.XOR<Prisma.WorkspaceCreateWithoutInviteLinksInput, Prisma.WorkspaceUncheckedCreateWithoutInviteLinksInput>
+  connectOrCreate?: Prisma.WorkspaceCreateOrConnectWithoutInviteLinksInput
+  connect?: Prisma.WorkspaceWhereUniqueInput
+}
+
+export type WorkspaceUpdateOneWithoutInviteLinksNestedInput = {
+  create?: Prisma.XOR<Prisma.WorkspaceCreateWithoutInviteLinksInput, Prisma.WorkspaceUncheckedCreateWithoutInviteLinksInput>
+  connectOrCreate?: Prisma.WorkspaceCreateOrConnectWithoutInviteLinksInput
+  upsert?: Prisma.WorkspaceUpsertWithoutInviteLinksInput
+  disconnect?: Prisma.WorkspaceWhereInput | boolean
+  delete?: Prisma.WorkspaceWhereInput | boolean
+  connect?: Prisma.WorkspaceWhereUniqueInput
+  update?: Prisma.XOR<Prisma.XOR<Prisma.WorkspaceUpdateToOneWithWhereWithoutInviteLinksInput, Prisma.WorkspaceUpdateWithoutInviteLinksInput>, Prisma.WorkspaceUncheckedUpdateWithoutInviteLinksInput>
+}
+
 export type WorkspaceCreateNestedOneWithoutFoldersInput = {
   create?: Prisma.XOR<Prisma.WorkspaceCreateWithoutFoldersInput, Prisma.WorkspaceUncheckedCreateWithoutFoldersInput>
   connectOrCreate?: Prisma.WorkspaceCreateOrConnectWithoutFoldersInput
@@ -557,6 +580,7 @@ export type WorkspaceCreateWithoutProjectsInput = {
   members?: Prisma.MemberCreateNestedManyWithoutWorkspaceInput
   billingAccounts?: Prisma.BillingAccountCreateNestedManyWithoutWorkspaceInput
   invitations?: Prisma.InvitationCreateNestedManyWithoutWorkspaceInput
+  inviteLinks?: Prisma.InviteLinkCreateNestedManyWithoutWorkspaceInput
   folders?: Prisma.FolderCreateNestedManyWithoutWorkspaceInput
   subscriptions?: Prisma.SubscriptionCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerCreateNestedManyWithoutWorkspaceInput
@@ -575,6 +599,7 @@ export type WorkspaceUncheckedCreateWithoutProjectsInput = {
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutWorkspaceInput
   billingAccounts?: Prisma.BillingAccountUncheckedCreateNestedManyWithoutWorkspaceInput
   invitations?: Prisma.InvitationUncheckedCreateNestedManyWithoutWorkspaceInput
+  inviteLinks?: Prisma.InviteLinkUncheckedCreateNestedManyWithoutWorkspaceInput
   folders?: Prisma.FolderUncheckedCreateNestedManyWithoutWorkspaceInput
   subscriptions?: Prisma.SubscriptionUncheckedCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
@@ -609,6 +634,7 @@ export type WorkspaceUpdateWithoutProjectsInput = {
   members?: Prisma.MemberUpdateManyWithoutWorkspaceNestedInput
   billingAccounts?: Prisma.BillingAccountUpdateManyWithoutWorkspaceNestedInput
   invitations?: Prisma.InvitationUpdateManyWithoutWorkspaceNestedInput
+  inviteLinks?: Prisma.InviteLinkUpdateManyWithoutWorkspaceNestedInput
   folders?: Prisma.FolderUpdateManyWithoutWorkspaceNestedInput
   subscriptions?: Prisma.SubscriptionUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUpdateManyWithoutWorkspaceNestedInput
@@ -627,6 +653,7 @@ export type WorkspaceUncheckedUpdateWithoutProjectsInput = {
   members?: Prisma.MemberUncheckedUpdateManyWithoutWorkspaceNestedInput
   billingAccounts?: Prisma.BillingAccountUncheckedUpdateManyWithoutWorkspaceNestedInput
   invitations?: Prisma.InvitationUncheckedUpdateManyWithoutWorkspaceNestedInput
+  inviteLinks?: Prisma.InviteLinkUncheckedUpdateManyWithoutWorkspaceNestedInput
   folders?: Prisma.FolderUncheckedUpdateManyWithoutWorkspaceNestedInput
   subscriptions?: Prisma.SubscriptionUncheckedUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
@@ -646,6 +673,7 @@ export type WorkspaceCreateWithoutStarredProjectsInput = {
   members?: Prisma.MemberCreateNestedManyWithoutWorkspaceInput
   billingAccounts?: Prisma.BillingAccountCreateNestedManyWithoutWorkspaceInput
   invitations?: Prisma.InvitationCreateNestedManyWithoutWorkspaceInput
+  inviteLinks?: Prisma.InviteLinkCreateNestedManyWithoutWorkspaceInput
   folders?: Prisma.FolderCreateNestedManyWithoutWorkspaceInput
   subscriptions?: Prisma.SubscriptionCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerCreateNestedManyWithoutWorkspaceInput
@@ -664,6 +692,7 @@ export type WorkspaceUncheckedCreateWithoutStarredProjectsInput = {
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutWorkspaceInput
   billingAccounts?: Prisma.BillingAccountUncheckedCreateNestedManyWithoutWorkspaceInput
   invitations?: Prisma.InvitationUncheckedCreateNestedManyWithoutWorkspaceInput
+  inviteLinks?: Prisma.InviteLinkUncheckedCreateNestedManyWithoutWorkspaceInput
   folders?: Prisma.FolderUncheckedCreateNestedManyWithoutWorkspaceInput
   subscriptions?: Prisma.SubscriptionUncheckedCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
@@ -698,6 +727,7 @@ export type WorkspaceUpdateWithoutStarredProjectsInput = {
   members?: Prisma.MemberUpdateManyWithoutWorkspaceNestedInput
   billingAccounts?: Prisma.BillingAccountUpdateManyWithoutWorkspaceNestedInput
   invitations?: Prisma.InvitationUpdateManyWithoutWorkspaceNestedInput
+  inviteLinks?: Prisma.InviteLinkUpdateManyWithoutWorkspaceNestedInput
   folders?: Prisma.FolderUpdateManyWithoutWorkspaceNestedInput
   subscriptions?: Prisma.SubscriptionUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUpdateManyWithoutWorkspaceNestedInput
@@ -716,6 +746,7 @@ export type WorkspaceUncheckedUpdateWithoutStarredProjectsInput = {
   members?: Prisma.MemberUncheckedUpdateManyWithoutWorkspaceNestedInput
   billingAccounts?: Prisma.BillingAccountUncheckedUpdateManyWithoutWorkspaceNestedInput
   invitations?: Prisma.InvitationUncheckedUpdateManyWithoutWorkspaceNestedInput
+  inviteLinks?: Prisma.InviteLinkUncheckedUpdateManyWithoutWorkspaceNestedInput
   folders?: Prisma.FolderUncheckedUpdateManyWithoutWorkspaceNestedInput
   subscriptions?: Prisma.SubscriptionUncheckedUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
@@ -733,6 +764,7 @@ export type WorkspaceCreateWithoutMembersInput = {
   projects?: Prisma.ProjectCreateNestedManyWithoutWorkspaceInput
   billingAccounts?: Prisma.BillingAccountCreateNestedManyWithoutWorkspaceInput
   invitations?: Prisma.InvitationCreateNestedManyWithoutWorkspaceInput
+  inviteLinks?: Prisma.InviteLinkCreateNestedManyWithoutWorkspaceInput
   folders?: Prisma.FolderCreateNestedManyWithoutWorkspaceInput
   subscriptions?: Prisma.SubscriptionCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerCreateNestedManyWithoutWorkspaceInput
@@ -751,6 +783,7 @@ export type WorkspaceUncheckedCreateWithoutMembersInput = {
   projects?: Prisma.ProjectUncheckedCreateNestedManyWithoutWorkspaceInput
   billingAccounts?: Prisma.BillingAccountUncheckedCreateNestedManyWithoutWorkspaceInput
   invitations?: Prisma.InvitationUncheckedCreateNestedManyWithoutWorkspaceInput
+  inviteLinks?: Prisma.InviteLinkUncheckedCreateNestedManyWithoutWorkspaceInput
   folders?: Prisma.FolderUncheckedCreateNestedManyWithoutWorkspaceInput
   subscriptions?: Prisma.SubscriptionUncheckedCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
@@ -785,6 +818,7 @@ export type WorkspaceUpdateWithoutMembersInput = {
   projects?: Prisma.ProjectUpdateManyWithoutWorkspaceNestedInput
   billingAccounts?: Prisma.BillingAccountUpdateManyWithoutWorkspaceNestedInput
   invitations?: Prisma.InvitationUpdateManyWithoutWorkspaceNestedInput
+  inviteLinks?: Prisma.InviteLinkUpdateManyWithoutWorkspaceNestedInput
   folders?: Prisma.FolderUpdateManyWithoutWorkspaceNestedInput
   subscriptions?: Prisma.SubscriptionUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUpdateManyWithoutWorkspaceNestedInput
@@ -803,6 +837,7 @@ export type WorkspaceUncheckedUpdateWithoutMembersInput = {
   projects?: Prisma.ProjectUncheckedUpdateManyWithoutWorkspaceNestedInput
   billingAccounts?: Prisma.BillingAccountUncheckedUpdateManyWithoutWorkspaceNestedInput
   invitations?: Prisma.InvitationUncheckedUpdateManyWithoutWorkspaceNestedInput
+  inviteLinks?: Prisma.InviteLinkUncheckedUpdateManyWithoutWorkspaceNestedInput
   folders?: Prisma.FolderUncheckedUpdateManyWithoutWorkspaceNestedInput
   subscriptions?: Prisma.SubscriptionUncheckedUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
@@ -821,6 +856,7 @@ export type WorkspaceCreateWithoutBillingAccountsInput = {
   projects?: Prisma.ProjectCreateNestedManyWithoutWorkspaceInput
   members?: Prisma.MemberCreateNestedManyWithoutWorkspaceInput
   invitations?: Prisma.InvitationCreateNestedManyWithoutWorkspaceInput
+  inviteLinks?: Prisma.InviteLinkCreateNestedManyWithoutWorkspaceInput
   folders?: Prisma.FolderCreateNestedManyWithoutWorkspaceInput
   subscriptions?: Prisma.SubscriptionCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerCreateNestedManyWithoutWorkspaceInput
@@ -839,6 +875,7 @@ export type WorkspaceUncheckedCreateWithoutBillingAccountsInput = {
   projects?: Prisma.ProjectUncheckedCreateNestedManyWithoutWorkspaceInput
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutWorkspaceInput
   invitations?: Prisma.InvitationUncheckedCreateNestedManyWithoutWorkspaceInput
+  inviteLinks?: Prisma.InviteLinkUncheckedCreateNestedManyWithoutWorkspaceInput
   folders?: Prisma.FolderUncheckedCreateNestedManyWithoutWorkspaceInput
   subscriptions?: Prisma.SubscriptionUncheckedCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
@@ -873,6 +910,7 @@ export type WorkspaceUpdateWithoutBillingAccountsInput = {
   projects?: Prisma.ProjectUpdateManyWithoutWorkspaceNestedInput
   members?: Prisma.MemberUpdateManyWithoutWorkspaceNestedInput
   invitations?: Prisma.InvitationUpdateManyWithoutWorkspaceNestedInput
+  inviteLinks?: Prisma.InviteLinkUpdateManyWithoutWorkspaceNestedInput
   folders?: Prisma.FolderUpdateManyWithoutWorkspaceNestedInput
   subscriptions?: Prisma.SubscriptionUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUpdateManyWithoutWorkspaceNestedInput
@@ -891,6 +929,7 @@ export type WorkspaceUncheckedUpdateWithoutBillingAccountsInput = {
   projects?: Prisma.ProjectUncheckedUpdateManyWithoutWorkspaceNestedInput
   members?: Prisma.MemberUncheckedUpdateManyWithoutWorkspaceNestedInput
   invitations?: Prisma.InvitationUncheckedUpdateManyWithoutWorkspaceNestedInput
+  inviteLinks?: Prisma.InviteLinkUncheckedUpdateManyWithoutWorkspaceNestedInput
   folders?: Prisma.FolderUncheckedUpdateManyWithoutWorkspaceNestedInput
   subscriptions?: Prisma.SubscriptionUncheckedUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
@@ -909,6 +948,7 @@ export type WorkspaceCreateWithoutInvitationsInput = {
   projects?: Prisma.ProjectCreateNestedManyWithoutWorkspaceInput
   members?: Prisma.MemberCreateNestedManyWithoutWorkspaceInput
   billingAccounts?: Prisma.BillingAccountCreateNestedManyWithoutWorkspaceInput
+  inviteLinks?: Prisma.InviteLinkCreateNestedManyWithoutWorkspaceInput
   folders?: Prisma.FolderCreateNestedManyWithoutWorkspaceInput
   subscriptions?: Prisma.SubscriptionCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerCreateNestedManyWithoutWorkspaceInput
@@ -927,6 +967,7 @@ export type WorkspaceUncheckedCreateWithoutInvitationsInput = {
   projects?: Prisma.ProjectUncheckedCreateNestedManyWithoutWorkspaceInput
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutWorkspaceInput
   billingAccounts?: Prisma.BillingAccountUncheckedCreateNestedManyWithoutWorkspaceInput
+  inviteLinks?: Prisma.InviteLinkUncheckedCreateNestedManyWithoutWorkspaceInput
   folders?: Prisma.FolderUncheckedCreateNestedManyWithoutWorkspaceInput
   subscriptions?: Prisma.SubscriptionUncheckedCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
@@ -961,6 +1002,7 @@ export type WorkspaceUpdateWithoutInvitationsInput = {
   projects?: Prisma.ProjectUpdateManyWithoutWorkspaceNestedInput
   members?: Prisma.MemberUpdateManyWithoutWorkspaceNestedInput
   billingAccounts?: Prisma.BillingAccountUpdateManyWithoutWorkspaceNestedInput
+  inviteLinks?: Prisma.InviteLinkUpdateManyWithoutWorkspaceNestedInput
   folders?: Prisma.FolderUpdateManyWithoutWorkspaceNestedInput
   subscriptions?: Prisma.SubscriptionUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUpdateManyWithoutWorkspaceNestedInput
@@ -979,6 +1021,99 @@ export type WorkspaceUncheckedUpdateWithoutInvitationsInput = {
   projects?: Prisma.ProjectUncheckedUpdateManyWithoutWorkspaceNestedInput
   members?: Prisma.MemberUncheckedUpdateManyWithoutWorkspaceNestedInput
   billingAccounts?: Prisma.BillingAccountUncheckedUpdateManyWithoutWorkspaceNestedInput
+  inviteLinks?: Prisma.InviteLinkUncheckedUpdateManyWithoutWorkspaceNestedInput
+  folders?: Prisma.FolderUncheckedUpdateManyWithoutWorkspaceNestedInput
+  subscriptions?: Prisma.SubscriptionUncheckedUpdateManyWithoutWorkspaceNestedInput
+  creditLedgers?: Prisma.CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
+  usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutWorkspaceNestedInput
+  starredProjects?: Prisma.StarredProjectUncheckedUpdateManyWithoutWorkspaceNestedInput
+}
+
+export type WorkspaceCreateWithoutInviteLinksInput = {
+  id?: string
+  name: string
+  slug: string
+  description?: string | null
+  ssoSettings?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  projects?: Prisma.ProjectCreateNestedManyWithoutWorkspaceInput
+  members?: Prisma.MemberCreateNestedManyWithoutWorkspaceInput
+  billingAccounts?: Prisma.BillingAccountCreateNestedManyWithoutWorkspaceInput
+  invitations?: Prisma.InvitationCreateNestedManyWithoutWorkspaceInput
+  folders?: Prisma.FolderCreateNestedManyWithoutWorkspaceInput
+  subscriptions?: Prisma.SubscriptionCreateNestedManyWithoutWorkspaceInput
+  creditLedgers?: Prisma.CreditLedgerCreateNestedManyWithoutWorkspaceInput
+  usageEvents?: Prisma.UsageEventCreateNestedManyWithoutWorkspaceInput
+  starredProjects?: Prisma.StarredProjectCreateNestedManyWithoutWorkspaceInput
+}
+
+export type WorkspaceUncheckedCreateWithoutInviteLinksInput = {
+  id?: string
+  name: string
+  slug: string
+  description?: string | null
+  ssoSettings?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  projects?: Prisma.ProjectUncheckedCreateNestedManyWithoutWorkspaceInput
+  members?: Prisma.MemberUncheckedCreateNestedManyWithoutWorkspaceInput
+  billingAccounts?: Prisma.BillingAccountUncheckedCreateNestedManyWithoutWorkspaceInput
+  invitations?: Prisma.InvitationUncheckedCreateNestedManyWithoutWorkspaceInput
+  folders?: Prisma.FolderUncheckedCreateNestedManyWithoutWorkspaceInput
+  subscriptions?: Prisma.SubscriptionUncheckedCreateNestedManyWithoutWorkspaceInput
+  creditLedgers?: Prisma.CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
+  usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutWorkspaceInput
+  starredProjects?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutWorkspaceInput
+}
+
+export type WorkspaceCreateOrConnectWithoutInviteLinksInput = {
+  where: Prisma.WorkspaceWhereUniqueInput
+  create: Prisma.XOR<Prisma.WorkspaceCreateWithoutInviteLinksInput, Prisma.WorkspaceUncheckedCreateWithoutInviteLinksInput>
+}
+
+export type WorkspaceUpsertWithoutInviteLinksInput = {
+  update: Prisma.XOR<Prisma.WorkspaceUpdateWithoutInviteLinksInput, Prisma.WorkspaceUncheckedUpdateWithoutInviteLinksInput>
+  create: Prisma.XOR<Prisma.WorkspaceCreateWithoutInviteLinksInput, Prisma.WorkspaceUncheckedCreateWithoutInviteLinksInput>
+  where?: Prisma.WorkspaceWhereInput
+}
+
+export type WorkspaceUpdateToOneWithWhereWithoutInviteLinksInput = {
+  where?: Prisma.WorkspaceWhereInput
+  data: Prisma.XOR<Prisma.WorkspaceUpdateWithoutInviteLinksInput, Prisma.WorkspaceUncheckedUpdateWithoutInviteLinksInput>
+}
+
+export type WorkspaceUpdateWithoutInviteLinksInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.StringFieldUpdateOperationsInput | string
+  slug?: Prisma.StringFieldUpdateOperationsInput | string
+  description?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  ssoSettings?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  projects?: Prisma.ProjectUpdateManyWithoutWorkspaceNestedInput
+  members?: Prisma.MemberUpdateManyWithoutWorkspaceNestedInput
+  billingAccounts?: Prisma.BillingAccountUpdateManyWithoutWorkspaceNestedInput
+  invitations?: Prisma.InvitationUpdateManyWithoutWorkspaceNestedInput
+  folders?: Prisma.FolderUpdateManyWithoutWorkspaceNestedInput
+  subscriptions?: Prisma.SubscriptionUpdateManyWithoutWorkspaceNestedInput
+  creditLedgers?: Prisma.CreditLedgerUpdateManyWithoutWorkspaceNestedInput
+  usageEvents?: Prisma.UsageEventUpdateManyWithoutWorkspaceNestedInput
+  starredProjects?: Prisma.StarredProjectUpdateManyWithoutWorkspaceNestedInput
+}
+
+export type WorkspaceUncheckedUpdateWithoutInviteLinksInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.StringFieldUpdateOperationsInput | string
+  slug?: Prisma.StringFieldUpdateOperationsInput | string
+  description?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  ssoSettings?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  projects?: Prisma.ProjectUncheckedUpdateManyWithoutWorkspaceNestedInput
+  members?: Prisma.MemberUncheckedUpdateManyWithoutWorkspaceNestedInput
+  billingAccounts?: Prisma.BillingAccountUncheckedUpdateManyWithoutWorkspaceNestedInput
+  invitations?: Prisma.InvitationUncheckedUpdateManyWithoutWorkspaceNestedInput
   folders?: Prisma.FolderUncheckedUpdateManyWithoutWorkspaceNestedInput
   subscriptions?: Prisma.SubscriptionUncheckedUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
@@ -998,6 +1133,7 @@ export type WorkspaceCreateWithoutFoldersInput = {
   members?: Prisma.MemberCreateNestedManyWithoutWorkspaceInput
   billingAccounts?: Prisma.BillingAccountCreateNestedManyWithoutWorkspaceInput
   invitations?: Prisma.InvitationCreateNestedManyWithoutWorkspaceInput
+  inviteLinks?: Prisma.InviteLinkCreateNestedManyWithoutWorkspaceInput
   subscriptions?: Prisma.SubscriptionCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerCreateNestedManyWithoutWorkspaceInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutWorkspaceInput
@@ -1016,6 +1152,7 @@ export type WorkspaceUncheckedCreateWithoutFoldersInput = {
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutWorkspaceInput
   billingAccounts?: Prisma.BillingAccountUncheckedCreateNestedManyWithoutWorkspaceInput
   invitations?: Prisma.InvitationUncheckedCreateNestedManyWithoutWorkspaceInput
+  inviteLinks?: Prisma.InviteLinkUncheckedCreateNestedManyWithoutWorkspaceInput
   subscriptions?: Prisma.SubscriptionUncheckedCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutWorkspaceInput
@@ -1050,6 +1187,7 @@ export type WorkspaceUpdateWithoutFoldersInput = {
   members?: Prisma.MemberUpdateManyWithoutWorkspaceNestedInput
   billingAccounts?: Prisma.BillingAccountUpdateManyWithoutWorkspaceNestedInput
   invitations?: Prisma.InvitationUpdateManyWithoutWorkspaceNestedInput
+  inviteLinks?: Prisma.InviteLinkUpdateManyWithoutWorkspaceNestedInput
   subscriptions?: Prisma.SubscriptionUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUpdateManyWithoutWorkspaceNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutWorkspaceNestedInput
@@ -1068,6 +1206,7 @@ export type WorkspaceUncheckedUpdateWithoutFoldersInput = {
   members?: Prisma.MemberUncheckedUpdateManyWithoutWorkspaceNestedInput
   billingAccounts?: Prisma.BillingAccountUncheckedUpdateManyWithoutWorkspaceNestedInput
   invitations?: Prisma.InvitationUncheckedUpdateManyWithoutWorkspaceNestedInput
+  inviteLinks?: Prisma.InviteLinkUncheckedUpdateManyWithoutWorkspaceNestedInput
   subscriptions?: Prisma.SubscriptionUncheckedUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutWorkspaceNestedInput
@@ -1086,6 +1225,7 @@ export type WorkspaceCreateWithoutSubscriptionsInput = {
   members?: Prisma.MemberCreateNestedManyWithoutWorkspaceInput
   billingAccounts?: Prisma.BillingAccountCreateNestedManyWithoutWorkspaceInput
   invitations?: Prisma.InvitationCreateNestedManyWithoutWorkspaceInput
+  inviteLinks?: Prisma.InviteLinkCreateNestedManyWithoutWorkspaceInput
   folders?: Prisma.FolderCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerCreateNestedManyWithoutWorkspaceInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutWorkspaceInput
@@ -1104,6 +1244,7 @@ export type WorkspaceUncheckedCreateWithoutSubscriptionsInput = {
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutWorkspaceInput
   billingAccounts?: Prisma.BillingAccountUncheckedCreateNestedManyWithoutWorkspaceInput
   invitations?: Prisma.InvitationUncheckedCreateNestedManyWithoutWorkspaceInput
+  inviteLinks?: Prisma.InviteLinkUncheckedCreateNestedManyWithoutWorkspaceInput
   folders?: Prisma.FolderUncheckedCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutWorkspaceInput
@@ -1138,6 +1279,7 @@ export type WorkspaceUpdateWithoutSubscriptionsInput = {
   members?: Prisma.MemberUpdateManyWithoutWorkspaceNestedInput
   billingAccounts?: Prisma.BillingAccountUpdateManyWithoutWorkspaceNestedInput
   invitations?: Prisma.InvitationUpdateManyWithoutWorkspaceNestedInput
+  inviteLinks?: Prisma.InviteLinkUpdateManyWithoutWorkspaceNestedInput
   folders?: Prisma.FolderUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUpdateManyWithoutWorkspaceNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutWorkspaceNestedInput
@@ -1156,6 +1298,7 @@ export type WorkspaceUncheckedUpdateWithoutSubscriptionsInput = {
   members?: Prisma.MemberUncheckedUpdateManyWithoutWorkspaceNestedInput
   billingAccounts?: Prisma.BillingAccountUncheckedUpdateManyWithoutWorkspaceNestedInput
   invitations?: Prisma.InvitationUncheckedUpdateManyWithoutWorkspaceNestedInput
+  inviteLinks?: Prisma.InviteLinkUncheckedUpdateManyWithoutWorkspaceNestedInput
   folders?: Prisma.FolderUncheckedUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutWorkspaceNestedInput
@@ -1174,6 +1317,7 @@ export type WorkspaceCreateWithoutCreditLedgersInput = {
   members?: Prisma.MemberCreateNestedManyWithoutWorkspaceInput
   billingAccounts?: Prisma.BillingAccountCreateNestedManyWithoutWorkspaceInput
   invitations?: Prisma.InvitationCreateNestedManyWithoutWorkspaceInput
+  inviteLinks?: Prisma.InviteLinkCreateNestedManyWithoutWorkspaceInput
   folders?: Prisma.FolderCreateNestedManyWithoutWorkspaceInput
   subscriptions?: Prisma.SubscriptionCreateNestedManyWithoutWorkspaceInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutWorkspaceInput
@@ -1192,6 +1336,7 @@ export type WorkspaceUncheckedCreateWithoutCreditLedgersInput = {
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutWorkspaceInput
   billingAccounts?: Prisma.BillingAccountUncheckedCreateNestedManyWithoutWorkspaceInput
   invitations?: Prisma.InvitationUncheckedCreateNestedManyWithoutWorkspaceInput
+  inviteLinks?: Prisma.InviteLinkUncheckedCreateNestedManyWithoutWorkspaceInput
   folders?: Prisma.FolderUncheckedCreateNestedManyWithoutWorkspaceInput
   subscriptions?: Prisma.SubscriptionUncheckedCreateNestedManyWithoutWorkspaceInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutWorkspaceInput
@@ -1226,6 +1371,7 @@ export type WorkspaceUpdateWithoutCreditLedgersInput = {
   members?: Prisma.MemberUpdateManyWithoutWorkspaceNestedInput
   billingAccounts?: Prisma.BillingAccountUpdateManyWithoutWorkspaceNestedInput
   invitations?: Prisma.InvitationUpdateManyWithoutWorkspaceNestedInput
+  inviteLinks?: Prisma.InviteLinkUpdateManyWithoutWorkspaceNestedInput
   folders?: Prisma.FolderUpdateManyWithoutWorkspaceNestedInput
   subscriptions?: Prisma.SubscriptionUpdateManyWithoutWorkspaceNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutWorkspaceNestedInput
@@ -1244,6 +1390,7 @@ export type WorkspaceUncheckedUpdateWithoutCreditLedgersInput = {
   members?: Prisma.MemberUncheckedUpdateManyWithoutWorkspaceNestedInput
   billingAccounts?: Prisma.BillingAccountUncheckedUpdateManyWithoutWorkspaceNestedInput
   invitations?: Prisma.InvitationUncheckedUpdateManyWithoutWorkspaceNestedInput
+  inviteLinks?: Prisma.InviteLinkUncheckedUpdateManyWithoutWorkspaceNestedInput
   folders?: Prisma.FolderUncheckedUpdateManyWithoutWorkspaceNestedInput
   subscriptions?: Prisma.SubscriptionUncheckedUpdateManyWithoutWorkspaceNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutWorkspaceNestedInput
@@ -1262,6 +1409,7 @@ export type WorkspaceCreateWithoutUsageEventsInput = {
   members?: Prisma.MemberCreateNestedManyWithoutWorkspaceInput
   billingAccounts?: Prisma.BillingAccountCreateNestedManyWithoutWorkspaceInput
   invitations?: Prisma.InvitationCreateNestedManyWithoutWorkspaceInput
+  inviteLinks?: Prisma.InviteLinkCreateNestedManyWithoutWorkspaceInput
   folders?: Prisma.FolderCreateNestedManyWithoutWorkspaceInput
   subscriptions?: Prisma.SubscriptionCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerCreateNestedManyWithoutWorkspaceInput
@@ -1280,6 +1428,7 @@ export type WorkspaceUncheckedCreateWithoutUsageEventsInput = {
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutWorkspaceInput
   billingAccounts?: Prisma.BillingAccountUncheckedCreateNestedManyWithoutWorkspaceInput
   invitations?: Prisma.InvitationUncheckedCreateNestedManyWithoutWorkspaceInput
+  inviteLinks?: Prisma.InviteLinkUncheckedCreateNestedManyWithoutWorkspaceInput
   folders?: Prisma.FolderUncheckedCreateNestedManyWithoutWorkspaceInput
   subscriptions?: Prisma.SubscriptionUncheckedCreateNestedManyWithoutWorkspaceInput
   creditLedgers?: Prisma.CreditLedgerUncheckedCreateNestedManyWithoutWorkspaceInput
@@ -1314,6 +1463,7 @@ export type WorkspaceUpdateWithoutUsageEventsInput = {
   members?: Prisma.MemberUpdateManyWithoutWorkspaceNestedInput
   billingAccounts?: Prisma.BillingAccountUpdateManyWithoutWorkspaceNestedInput
   invitations?: Prisma.InvitationUpdateManyWithoutWorkspaceNestedInput
+  inviteLinks?: Prisma.InviteLinkUpdateManyWithoutWorkspaceNestedInput
   folders?: Prisma.FolderUpdateManyWithoutWorkspaceNestedInput
   subscriptions?: Prisma.SubscriptionUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUpdateManyWithoutWorkspaceNestedInput
@@ -1332,6 +1482,7 @@ export type WorkspaceUncheckedUpdateWithoutUsageEventsInput = {
   members?: Prisma.MemberUncheckedUpdateManyWithoutWorkspaceNestedInput
   billingAccounts?: Prisma.BillingAccountUncheckedUpdateManyWithoutWorkspaceNestedInput
   invitations?: Prisma.InvitationUncheckedUpdateManyWithoutWorkspaceNestedInput
+  inviteLinks?: Prisma.InviteLinkUncheckedUpdateManyWithoutWorkspaceNestedInput
   folders?: Prisma.FolderUncheckedUpdateManyWithoutWorkspaceNestedInput
   subscriptions?: Prisma.SubscriptionUncheckedUpdateManyWithoutWorkspaceNestedInput
   creditLedgers?: Prisma.CreditLedgerUncheckedUpdateManyWithoutWorkspaceNestedInput
@@ -1348,6 +1499,7 @@ export type WorkspaceCountOutputType = {
   members: number
   billingAccounts: number
   invitations: number
+  inviteLinks: number
   folders: number
   subscriptions: number
   creditLedgers: number
@@ -1360,6 +1512,7 @@ export type WorkspaceCountOutputTypeSelect<ExtArgs extends runtime.Types.Extensi
   members?: boolean | WorkspaceCountOutputTypeCountMembersArgs
   billingAccounts?: boolean | WorkspaceCountOutputTypeCountBillingAccountsArgs
   invitations?: boolean | WorkspaceCountOutputTypeCountInvitationsArgs
+  inviteLinks?: boolean | WorkspaceCountOutputTypeCountInviteLinksArgs
   folders?: boolean | WorkspaceCountOutputTypeCountFoldersArgs
   subscriptions?: boolean | WorkspaceCountOutputTypeCountSubscriptionsArgs
   creditLedgers?: boolean | WorkspaceCountOutputTypeCountCreditLedgersArgs
@@ -1403,6 +1556,13 @@ export type WorkspaceCountOutputTypeCountBillingAccountsArgs<ExtArgs extends run
  */
 export type WorkspaceCountOutputTypeCountInvitationsArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   where?: Prisma.InvitationWhereInput
+}
+
+/**
+ * WorkspaceCountOutputType without action
+ */
+export type WorkspaceCountOutputTypeCountInviteLinksArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  where?: Prisma.InviteLinkWhereInput
 }
 
 /**
@@ -1453,6 +1613,7 @@ export type WorkspaceSelect<ExtArgs extends runtime.Types.Extensions.InternalArg
   members?: boolean | Prisma.Workspace$membersArgs<ExtArgs>
   billingAccounts?: boolean | Prisma.Workspace$billingAccountsArgs<ExtArgs>
   invitations?: boolean | Prisma.Workspace$invitationsArgs<ExtArgs>
+  inviteLinks?: boolean | Prisma.Workspace$inviteLinksArgs<ExtArgs>
   folders?: boolean | Prisma.Workspace$foldersArgs<ExtArgs>
   subscriptions?: boolean | Prisma.Workspace$subscriptionsArgs<ExtArgs>
   creditLedgers?: boolean | Prisma.Workspace$creditLedgersArgs<ExtArgs>
@@ -1497,6 +1658,7 @@ export type WorkspaceInclude<ExtArgs extends runtime.Types.Extensions.InternalAr
   members?: boolean | Prisma.Workspace$membersArgs<ExtArgs>
   billingAccounts?: boolean | Prisma.Workspace$billingAccountsArgs<ExtArgs>
   invitations?: boolean | Prisma.Workspace$invitationsArgs<ExtArgs>
+  inviteLinks?: boolean | Prisma.Workspace$inviteLinksArgs<ExtArgs>
   folders?: boolean | Prisma.Workspace$foldersArgs<ExtArgs>
   subscriptions?: boolean | Prisma.Workspace$subscriptionsArgs<ExtArgs>
   creditLedgers?: boolean | Prisma.Workspace$creditLedgersArgs<ExtArgs>
@@ -1514,6 +1676,7 @@ export type $WorkspacePayload<ExtArgs extends runtime.Types.Extensions.InternalA
     members: Prisma.$MemberPayload<ExtArgs>[]
     billingAccounts: Prisma.$BillingAccountPayload<ExtArgs>[]
     invitations: Prisma.$InvitationPayload<ExtArgs>[]
+    inviteLinks: Prisma.$InviteLinkPayload<ExtArgs>[]
     folders: Prisma.$FolderPayload<ExtArgs>[]
     subscriptions: Prisma.$SubscriptionPayload<ExtArgs>[]
     creditLedgers: Prisma.$CreditLedgerPayload<ExtArgs>[]
@@ -1926,6 +2089,7 @@ export interface Prisma__WorkspaceClient<T, Null = never, ExtArgs extends runtim
   members<T extends Prisma.Workspace$membersArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Workspace$membersArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$MemberPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   billingAccounts<T extends Prisma.Workspace$billingAccountsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Workspace$billingAccountsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$BillingAccountPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   invitations<T extends Prisma.Workspace$invitationsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Workspace$invitationsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$InvitationPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
+  inviteLinks<T extends Prisma.Workspace$inviteLinksArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Workspace$inviteLinksArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$InviteLinkPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   folders<T extends Prisma.Workspace$foldersArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Workspace$foldersArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$FolderPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   subscriptions<T extends Prisma.Workspace$subscriptionsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Workspace$subscriptionsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$SubscriptionPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   creditLedgers<T extends Prisma.Workspace$creditLedgersArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Workspace$creditLedgersArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$CreditLedgerPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
@@ -2448,6 +2612,30 @@ export type Workspace$invitationsArgs<ExtArgs extends runtime.Types.Extensions.I
   take?: number
   skip?: number
   distinct?: Prisma.InvitationScalarFieldEnum | Prisma.InvitationScalarFieldEnum[]
+}
+
+/**
+ * Workspace.inviteLinks
+ */
+export type Workspace$inviteLinksArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  /**
+   * Select specific fields to fetch from the InviteLink
+   */
+  select?: Prisma.InviteLinkSelect<ExtArgs> | null
+  /**
+   * Omit specific fields from the InviteLink
+   */
+  omit?: Prisma.InviteLinkOmit<ExtArgs> | null
+  /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.InviteLinkInclude<ExtArgs> | null
+  where?: Prisma.InviteLinkWhereInput
+  orderBy?: Prisma.InviteLinkOrderByWithRelationInput | Prisma.InviteLinkOrderByWithRelationInput[]
+  cursor?: Prisma.InviteLinkWhereUniqueInput
+  take?: number
+  skip?: number
+  distinct?: Prisma.InviteLinkScalarFieldEnum | Prisma.InviteLinkScalarFieldEnum[]
 }
 
 /**

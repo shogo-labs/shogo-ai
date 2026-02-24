@@ -11,6 +11,7 @@ import { AppMemberManagementPage } from './pages/AppMemberManagementPage'
 import { AllProjectsPage } from './pages/AllProjectsPage'
 import { StarredProjectsPage } from './pages/StarredProjectsPage'
 import { SharedWithMePage } from './pages/SharedWithMePage'
+import { InviteAcceptPage } from './pages/InviteAcceptPage'
 import { TemplatesPage } from './pages/TemplatesPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { AuthProvider } from './contexts/AuthContext'
@@ -162,6 +163,13 @@ function AppWithSession() {
                     <Route path="workspaces" element={<AdminWorkspaces />} />
                     <Route path="analytics" element={<AdminAnalytics />} />
                   </Route>
+
+                  {/* Invite link acceptance page */}
+                  <Route path="/invite/:token" element={
+                    <AuthGate>
+                      <InviteAcceptPage />
+                    </AuthGate>
+                  } />
 
                   {/* Project view route - full screen without sidebar */}
                   <Route path="/projects/:projectId" element={
