@@ -925,6 +925,7 @@ export class AgentGateway {
       sandbox: this.config.sandbox,
       mainSessionIds: this.config.mainSessionIds,
       mcpClientManager: this.mcpClientManager,
+      connectChannel: (type, config) => this.connectChannel(type, config),
     }
 
     const baseTools = isHeartbeat

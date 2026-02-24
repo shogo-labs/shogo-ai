@@ -31,6 +31,21 @@ import type { ChannelAdapter, IncomingMessage, ChannelStatus } from '../types'
 /** Pending outbound messages keyed by channelId for poll-based consumers */
 const outboxes = new Map<string, string[]>()
 
+/** A single entry in the webhook activity log */
+export interface WebhookActivityEntry {
+  id: string
+  timestamp: string
+  direction: 'inbound' | 'outbound'
+  senderId: string
+  senderName: string
+  messagePreview: string
+  replyPreview?: string
+  status: 'success' | 'pending' | 'error' | 'timeout'
+  durationMs?: number
+}
+
+const MAX_ACTIVITY_LOG = 50
+
 export class WebhookAdapter implements ChannelAdapter {
   private messageHandler: ((msg: IncomingMessage) => void) | null = null
   private connected = false
@@ -39,6 +54,9 @@ export class WebhookAdapter implements ChannelAdapter {
   private defaultCallbackUrl: string = ''
   private callbackHeaders: Record<string, string> = {}
   private messageCount = 0
+
+  /** Recent activity log for UI visibility */
+  private activityLog: WebhookActivityEntry[] = []
 
   /** Pending sync responses: correlationId -> resolve function */
   private pendingReplies = new Map<string, {
@@ -137,7 +155,22 @@ export class WebhookAdapter implements ChannelAdapter {
         messageCount: this.messageCount,
         pendingReplies: this.pendingReplies.size,
         authenticated: !!this.secret,
+        hasSecret: !!this.secret,
+        recentActivity: this.activityLog.slice(-20),
       },
+    }
+  }
+
+  /** Get the full activity log (for the dedicated activity endpoint) */
+  getActivityLog(): WebhookActivityEntry[] {
+    return [...this.activityLog]
+  }
+
+  /** Add an entry to the activity log */
+  private logActivity(entry: WebhookActivityEntry): void {
+    this.activityLog.push(entry)
+    if (this.activityLog.length > MAX_ACTIVITY_LOG) {
+      this.activityLog = this.activityLog.slice(-MAX_ACTIVITY_LOG)
     }
   }
 
@@ -175,6 +208,10 @@ export class WebhookAdapter implements ChannelAdapter {
     this.messageCount++
     const correlationId = `webhook-${Date.now()}-${this.messageCount}`
     const callbackUrl = body.callbackUrl || this.defaultCallbackUrl
+    const startTime = Date.now()
+    const senderId = body.senderId || 'webhook'
+    const senderName = body.senderName || 'Webhook'
+    const msgPreview = body.message.length > 120 ? body.message.slice(0, 120) + '…' : body.message
 
     // For async mode (callback URL provided), dispatch and return immediately
     if (callbackUrl) {
@@ -182,20 +219,43 @@ export class WebhookAdapter implements ChannelAdapter {
         text: body.message,
         channelId: callbackUrl, // sendMessage will POST to this URL
         channelType: 'webhook',
-        senderId: body.senderId || 'webhook',
-        senderName: body.senderName || 'Webhook',
+        senderId,
+        senderName,
         timestamp: Date.now(),
         metadata: { ...body.metadata, correlationId, callbackUrl },
       }
+      this.logActivity({
+        id: correlationId,
+        timestamp: new Date().toISOString(),
+        direction: 'inbound',
+        senderId,
+        senderName,
+        messagePreview: msgPreview,
+        status: 'success',
+      })
       this.messageHandler(msg)
       return { reply: '', async: true }
     }
 
     // Sync mode: wait for the agent's reply
     const handler = this.messageHandler
+    const activityEntry: WebhookActivityEntry = {
+      id: correlationId,
+      timestamp: new Date().toISOString(),
+      direction: 'inbound',
+      senderId,
+      senderName,
+      messagePreview: msgPreview,
+      status: 'pending',
+    }
+    this.logActivity(activityEntry)
+
     return new Promise<{ reply: string; async: false }>((resolve) => {
       const timer = setTimeout(() => {
         this.pendingReplies.delete(correlationId)
+        // Update activity entry
+        activityEntry.status = 'timeout'
+        activityEntry.durationMs = Date.now() - startTime
         resolve({
           reply: 'Request timed out — the agent took too long to respond.',
           async: false,
@@ -203,7 +263,12 @@ export class WebhookAdapter implements ChannelAdapter {
       }, this.replyTimeoutMs)
 
       this.pendingReplies.set(correlationId, {
-        resolve: (reply: string) => resolve({ reply, async: false }),
+        resolve: (reply: string) => {
+          activityEntry.status = 'success'
+          activityEntry.replyPreview = reply.length > 120 ? reply.slice(0, 120) + '…' : reply
+          activityEntry.durationMs = Date.now() - startTime
+          resolve({ reply, async: false })
+        },
         timer,
       })
 
@@ -211,8 +276,8 @@ export class WebhookAdapter implements ChannelAdapter {
         text: body.message,
         channelId: correlationId, // sendMessage resolves via pendingReplies
         channelType: 'webhook',
-        senderId: body.senderId || 'webhook',
-        senderName: body.senderName || 'Webhook',
+        senderId,
+        senderName,
         timestamp: Date.now(),
         metadata: { ...body.metadata, correlationId },
       }
@@ -329,6 +394,53 @@ export class WebhookAdapter implements ChannelAdapter {
         status: adapter.connected ? 'healthy' : 'disconnected',
         ...adapter.getStatus(),
       })
+    })
+
+    // Activity log (returns recent webhook activity for the UI)
+    app.get('/agent/channels/webhook/activity', (c: any) => {
+      const adapter = getAdapter()
+      if (!adapter) {
+        return c.json({ activity: [], connected: false })
+      }
+      return c.json({
+        activity: adapter.getActivityLog(),
+        connected: adapter.connected,
+        messageCount: adapter.getStatus().metadata?.messageCount ?? 0,
+      })
+    })
+
+    // Test endpoint — sends a test message through the webhook pipeline
+    app.post('/agent/channels/webhook/test', async (c: any) => {
+      const adapter = getAdapter()
+      if (!adapter || !adapter.connected) {
+        return c.json({ error: 'Webhook channel not connected' }, 503)
+      }
+
+      let body: any = {}
+      try {
+        body = await c.req.json()
+      } catch {
+        // Use defaults
+      }
+
+      const testMessage = body.message || 'Hello! This is a test message from the Shogo webhook tester.'
+
+      try {
+        const result = await adapter.processIncoming({
+          message: testMessage,
+          senderId: 'shogo-test',
+          senderName: 'Shogo Test',
+          metadata: { isTest: true },
+        })
+
+        return c.json({
+          ok: true,
+          reply: result.reply,
+          async: result.async,
+        })
+      } catch (err: any) {
+        return c.json({ error: `Test failed: ${err.message}` }, 500)
+      }
     })
   }
 }

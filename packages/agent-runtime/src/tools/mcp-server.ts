@@ -391,9 +391,32 @@ defineTool({
     }
 
     writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
-    return {
-      ok: true,
-      message: `${input.type} channel configured. Restart the agent to connect.`,
+
+    // Hot-connect: tell the running gateway to connect the channel immediately
+    const port = process.env.PORT || '8080'
+    try {
+      const res = await fetch(`http://localhost:${port}/agent/channels/connect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: input.type, config: input.config }),
+        signal: AbortSignal.timeout(10_000),
+      })
+      if (res.ok) {
+        return {
+          ok: true,
+          message: `${input.type} channel connected and live.`,
+        }
+      }
+      const err = await res.json().catch(() => ({}))
+      return {
+        ok: true,
+        message: `${input.type} channel configured but hot-connect failed (${(err as any).error || res.status}). Restart the agent to connect.`,
+      }
+    } catch {
+      return {
+        ok: true,
+        message: `${input.type} channel configured. Restart the agent to connect.`,
+      }
     }
   },
 })
