@@ -42,6 +42,7 @@ import {
 import { useChatTransportConfig } from "@shogo/shared-app/chat"
 import { useSDKDomains, useDomainActions } from "@shogo/shared-app/domain"
 import { cn } from "@shogo/shared-ui/primitives"
+import { API_URL } from "../../lib/api"
 import { ChatHeader } from "./ChatHeader"
 import { MessageList } from "./MessageList"
 import { ChatInput, type AgentMode } from "./ChatInput"
@@ -640,7 +641,7 @@ export const ChatPanel = observer(function ChatPanel({
 
   const isAgent = projectType === "AGENT"
 
-  const transportConfig = useChatTransportConfig({ projectId, localAgentUrl })
+  const transportConfig = useChatTransportConfig({ apiBaseUrl: API_URL!, projectId, localAgentUrl })
   const chatTransport = useMemo(
     () => (transportConfig ? new DefaultChatTransport(transportConfig) : undefined),
     [transportConfig]
@@ -1130,7 +1131,7 @@ export const ChatPanel = observer(function ChatPanel({
       : localAgentUrl
         ? `${localAgentUrl}/agent/chat/stop`
         : projectId
-          ? `/api/projects/${projectId}/chat/stop`
+          ? `${API_URL}/api/projects/${projectId}/chat/stop`
           : null
     if (stopUrl) {
       fetch(stopUrl, {

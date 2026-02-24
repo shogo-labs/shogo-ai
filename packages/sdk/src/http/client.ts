@@ -31,9 +31,6 @@ export interface HttpClientConfig {
 
   /** Fetch credentials mode (default: 'same-origin'). Set to 'include' for cross-origin cookie auth. */
   credentials?: RequestCredentials
-
-  /** If true, 401 responses log a warning instead of throwing. Useful for apps where unauthenticated requests are expected during startup. */
-  suppress401?: boolean
 }
 
 /**
@@ -52,7 +49,6 @@ export class HttpClient {
   private mcpSessionId: string | null = null
   private mcpInitPromise: Promise<void> | null = null
   private credentials: RequestCredentials
-  private suppress401: boolean
 
   /** Request deduplication window in milliseconds */
   private dedupWindowMs: number
@@ -67,7 +63,6 @@ export class HttpClient {
     this.authPath = config.authPath ?? '/api/auth'
     this.dedupWindowMs = config.dedupWindowMs ?? 100
     this.credentials = config.credentials ?? 'same-origin'
-    this.suppress401 = config.suppress401 ?? false
   }
 
   /**
@@ -208,14 +203,6 @@ export class HttpClient {
       const data = await this.parseResponse<T>(response)
 
       if (!response.ok) {
-        if (this.suppress401 && response.status === 401) {
-          console.warn('[HttpClient] 401 Unauthorized (suppressed):', path)
-          return {
-            data: { ok: false, items: [], message: 'Unauthorized' } as unknown as T,
-            status: 401,
-            headers: response.headers,
-          }
-        }
         throw ShogoError.fromStatus(
           response.status,
           typeof data === 'object' && data !== null && 'message' in data
