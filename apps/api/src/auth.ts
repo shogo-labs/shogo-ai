@@ -137,8 +137,16 @@ export const auth = betterAuth({
     },
   },
 
-  // Trusted origins for CORS - configured via ALLOWED_ORIGINS env var
-  trustedOrigins: getAllowedOrigins(),
+  trustedOrigins: (request) => {
+    const origins = [...getAllowedOrigins()]
+    if (process.env.NODE_ENV !== 'production') {
+      const reqOrigin = request?.headers?.get?.('origin')
+      if (reqOrigin?.startsWith('http://localhost:') && !origins.includes(reqOrigin)) {
+        origins.push(reqOrigin)
+      }
+    }
+    return origins
+  },
 
   // Advanced configuration
   advanced: {

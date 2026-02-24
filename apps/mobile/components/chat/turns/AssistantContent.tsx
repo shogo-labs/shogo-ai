@@ -1,0 +1,316 @@
+/**
+ * AssistantContent Component (React Native)
+ *
+ * Renders assistant message parts in order (text, tools, images interleaved).
+ * Preserves the natural ordering from the AI SDK message.parts array.
+ */
+
+import { useState, useCallback, useMemo } from "react"
+import { View, Text, Image, Pressable, Linking } from "react-native"
+import { cn } from "@shogo/shared-ui/primitives"
+import type { UIMessage } from "@ai-sdk/react"
+import { InlineToolWidget } from "./InlineToolWidget"
+import { AskUserQuestionWidget } from "./AskUserQuestionWidget"
+import { TodoWidget } from "./TodoWidget"
+import { ToolCallGroup } from "./ToolCallGroup"
+import type { MessagePart, GroupedMessagePart } from "./types"
+import { type ToolCallData, getToolCategory } from "../tools/types"
+import { useChatContextSafe } from "../ChatContext"
+
+export interface AssistantContentProps {
+  message: UIMessage
+  isStreaming?: boolean
+  className?: string
+}
+
+function mapToolState(state?: string): ToolCallData["state"] {
+  if (state === "input-streaming") return "streaming"
+  if (state === "output-available") return "success"
+  if (state === "output-error") return "error"
+  if (state === "result") return "success"
+  if (state === "error") return "error"
+  return "streaming"
+}
+
+function extractOrderedParts(message: UIMessage): MessagePart[] {
+  const parts = (message as any).parts as any[] | undefined
+
+  if (!parts || !Array.isArray(parts)) {
+    if (
+      typeof (message as any).content === "string" &&
+      (message as any).content
+    ) {
+      return [{ type: "text", text: (message as any).content, id: "text-0" }]
+    }
+    return []
+  }
+
+  const result: MessagePart[] = []
+
+  for (let index = 0; index < parts.length; index++) {
+    const part = parts[index]
+
+    if (part.type === "text") {
+      if (part.text && part.text.trim()) {
+        result.push({ type: "text", text: part.text, id: `text-${index}` })
+      }
+    } else if (part.type === "tool-invocation") {
+      const inv = part.toolInvocation
+      if (inv) {
+        result.push({
+          type: "tool",
+          id: inv.toolCallId || `tool-${index}`,
+          tool: {
+            id: inv.toolCallId || `tool-${index}`,
+            toolName: inv.toolName || "unknown",
+            category: getToolCategory(inv.toolName || ""),
+            state: mapToolState(inv.state),
+            args: inv.args,
+            result: inv.result,
+            error: inv.error,
+            timestamp: Date.now(),
+          },
+        })
+      }
+    } else if (part.type === "dynamic-tool") {
+      const toolCallId = part.toolCallId || `tool-${index}`
+      const errorContent =
+        part.state === "output-error"
+          ? (part as { errorText?: string }).errorText ?? part.error
+          : part.error
+      result.push({
+        type: "tool",
+        id: toolCallId,
+        tool: {
+          id: toolCallId,
+          toolName: part.toolName || "unknown",
+          category: getToolCategory(part.toolName || ""),
+          state: mapToolState(part.state),
+          args: part.input,
+          result: part.output,
+          error: errorContent,
+          timestamp: Date.now(),
+        },
+      })
+    } else if (
+      part.type === "file" &&
+      part.mediaType?.startsWith("image/") &&
+      part.url
+    ) {
+      result.push({
+        type: "image",
+        url: part.url,
+        mediaType: part.mediaType,
+        id: `img-${index}`,
+      })
+    }
+  }
+
+  return result
+}
+
+const UNGROUPABLE_TOOLS = new Set(["AskUserQuestion", "TodoWrite"])
+const MIN_GROUP_SIZE = 2
+
+function groupConsecutiveParts(parts: MessagePart[]): GroupedMessagePart[] {
+  const result: GroupedMessagePart[] = []
+  let i = 0
+
+  while (i < parts.length) {
+    const part = parts[i]
+
+    if (part.type !== "tool" || UNGROUPABLE_TOOLS.has(part.tool.toolName)) {
+      result.push(part)
+      i++
+      continue
+    }
+
+    const toolName = part.tool.toolName
+    let j = i + 1
+    while (
+      j < parts.length &&
+      parts[j].type === "tool" &&
+      !UNGROUPABLE_TOOLS.has(
+        (parts[j] as { type: "tool"; tool: ToolCallData }).tool.toolName
+      ) &&
+      (parts[j] as { type: "tool"; tool: ToolCallData }).tool.toolName ===
+        toolName
+    ) {
+      j++
+    }
+
+    const runLength = j - i
+    if (runLength >= MIN_GROUP_SIZE) {
+      const groupTools = parts.slice(i, j).map((p) => ({
+        tool: (p as { type: "tool"; tool: ToolCallData; id: string }).tool,
+        id: p.id,
+      }))
+      result.push({
+        type: "tool-group",
+        toolName,
+        tools: groupTools,
+        id: `group-${parts[i].id}`,
+      })
+    } else {
+      result.push(part)
+    }
+
+    i = j
+  }
+
+  return result
+}
+
+function ImageThumbnail({
+  url,
+  index,
+}: {
+  url: string
+  mediaType: string
+  index: number
+}) {
+  const [hasError, setHasError] = useState(false)
+
+  const handlePress = useCallback(() => {
+    Linking.openURL(url)
+  }, [url])
+
+  if (hasError) {
+    return (
+      <View className="max-w-[200px] rounded-md border border-border bg-muted p-2">
+        <Text className="text-xs text-muted-foreground">
+          Failed to load image
+        </Text>
+      </View>
+    )
+  }
+
+  return (
+    <Pressable onPress={handlePress} testID="image-thumbnail">
+      <Image
+        source={{ uri: url }}
+        className="w-[200px] h-[150px] rounded-md border border-border"
+        resizeMode="contain"
+        accessibilityLabel={`Image attachment ${index + 1}`}
+        onError={() => setHasError(true)}
+      />
+    </Pressable>
+  )
+}
+
+export function AssistantContent({
+  message,
+  isStreaming = false,
+  className,
+}: AssistantContentProps) {
+  const chatContext = useChatContextSafe()
+
+  const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
+
+  const toggleTool = useCallback((toolId: string) => {
+    setExpandedTools((prev) => {
+      const next = new Set(prev)
+      if (next.has(toolId)) {
+        next.delete(toolId)
+      } else {
+        next.add(toolId)
+      }
+      return next
+    })
+  }, [])
+
+  const groupedParts = useMemo(() => {
+    const parts = extractOrderedParts(message)
+    return groupConsecutiveParts(parts)
+  }, [message])
+
+  if (groupedParts.length === 0) {
+    return null
+  }
+
+  return (
+    <View className={cn("gap-1.5", className)}>
+      {groupedParts.map((part, index) => {
+        if (part.type === "text") {
+          return (
+            <View key={part.id} className="px-3 py-1.5">
+              <Text className="text-foreground text-xs" selectable>
+                {part.text}
+              </Text>
+            </View>
+          )
+        }
+
+        if (part.type === "tool-group") {
+          return (
+            <ToolCallGroup
+              key={part.id}
+              toolName={part.toolName}
+              tools={part.tools}
+              isExpanded={expandedTools.has(part.id)}
+              onToggle={() => toggleTool(part.id)}
+            />
+          )
+        }
+
+        if (part.type === "tool") {
+          if (part.tool.toolName === "AskUserQuestion") {
+            const isPending = part.tool.result === undefined
+            const isExpanded = isPending || expandedTools.has(part.id)
+
+            return (
+              <AskUserQuestionWidget
+                key={part.id}
+                tool={part.tool}
+                isExpanded={isExpanded}
+                onToggle={() => toggleTool(part.id)}
+                onSubmitResponse={(response) => {
+                  if (chatContext?.sendMessage) {
+                    chatContext.sendMessage(response)
+                  }
+                }}
+              />
+            )
+          }
+
+          if (part.tool.toolName === "TodoWrite") {
+            const isExpanded = !expandedTools.has(part.id)
+
+            return (
+              <TodoWidget
+                key={part.id}
+                tool={part.tool}
+                isExpanded={isExpanded}
+                onToggle={() => toggleTool(part.id)}
+              />
+            )
+          }
+
+          return (
+            <InlineToolWidget
+              key={part.id}
+              tool={part.tool}
+              isExpanded={expandedTools.has(part.id)}
+              onToggle={() => toggleTool(part.id)}
+            />
+          )
+        }
+
+        if (part.type === "image") {
+          return (
+            <ImageThumbnail
+              key={part.id}
+              url={part.url}
+              mediaType={part.mediaType}
+              index={index}
+            />
+          )
+        }
+
+        return null
+      })}
+    </View>
+  )
+}
+
+export default AssistantContent

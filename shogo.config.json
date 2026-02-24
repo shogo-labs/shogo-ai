@@ -26,7 +26,7 @@
       "fileExtension": "ts"
     },
     {
-      "dir": "./apps/web/src/generated",
+      "dir": "./packages/domain-stores/src",
       "generate": ["types", "mst"],
       "perModel": true,
       "fileExtension": "ts"

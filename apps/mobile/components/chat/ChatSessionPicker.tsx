@@ -1,0 +1,250 @@
+/**
+ * ChatSessionPicker Component (React Native)
+ *
+ * Renders a bottom sheet / modal for selecting chat sessions.
+ * Shows session name, message count, and relative time for each session.
+ * Includes a "New Chat" option and search.
+ *
+ * Note: Drag-and-drop reordering is omitted (not practical on mobile).
+ * Rename uses a text input inline approach.
+ */
+
+import { useState, useMemo } from "react"
+import {
+  View,
+  Text,
+  Pressable,
+  TextInput,
+  FlatList,
+  Modal,
+  type ListRenderItemInfo,
+} from "react-native"
+import { cn } from "@shogo/shared-ui/primitives"
+import {
+  ChevronDown,
+  MessageSquare,
+  Plus,
+  Pencil,
+  Check,
+  X,
+  Search,
+} from "lucide-react-native"
+
+export interface ChatSession {
+  id: string
+  name: string
+  messageCount: number
+  updatedAt: number
+}
+
+export const mockChatSessions: ChatSession[] = [
+  { id: "session-1", name: "Feature Planning", messageCount: 45, updatedAt: Date.now() - 1000 * 60 * 5 },
+  { id: "session-2", name: "Bug Fix Discussion", messageCount: 12, updatedAt: Date.now() - 1000 * 60 * 15 },
+  { id: "session-3", name: "API Design Review", messageCount: 28, updatedAt: Date.now() - 1000 * 60 * 30 },
+  { id: "session-4", name: "Database Schema", messageCount: 67, updatedAt: Date.now() - 1000 * 60 * 60 },
+  { id: "session-5", name: "Auth Implementation", messageCount: 34, updatedAt: Date.now() - 1000 * 60 * 60 * 2 },
+]
+
+export interface ChatSessionPickerProps {
+  sessions: ChatSession[]
+  currentSessionId?: string
+  onSelect: (sessionId: string) => void
+  onCreate: () => void
+  onRename?: (sessionId: string, newName: string) => void
+}
+
+export function formatRelativeTime(timestamp: number): string {
+  const now = Date.now()
+  const diff = now - timestamp
+
+  const minutes = Math.floor(diff / (1000 * 60))
+  const hours = Math.floor(diff / (1000 * 60 * 60))
+  const days = Math.floor(diff / (1000 * 60 * 60 * 24))
+
+  if (days > 0) return `${days}d ago`
+  if (hours > 0) return `${hours}h ago`
+  if (minutes > 0) return `${minutes}m ago`
+  return "just now"
+}
+
+export function ChatSessionPicker({
+  sessions,
+  currentSessionId,
+  onSelect,
+  onCreate,
+  onRename,
+}: ChatSessionPickerProps) {
+  const currentSession = sessions.find((s) => s.id === currentSessionId)
+  const [isOpen, setIsOpen] = useState(false)
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
+  const [editValue, setEditValue] = useState("")
+  const [searchQuery, setSearchQuery] = useState("")
+
+  const sortedSessions = useMemo(() => {
+    return [...sessions].sort((a, b) => b.updatedAt - a.updatedAt)
+  }, [sessions])
+
+  const filteredSessions = useMemo(() => {
+    if (!searchQuery.trim()) return sortedSessions
+    const query = searchQuery.toLowerCase()
+    return sortedSessions.filter((session) =>
+      session.name.toLowerCase().includes(query)
+    )
+  }, [sortedSessions, searchQuery])
+
+  const handleSessionSelect = (sessionId: string) => {
+    if (editingSessionId === sessionId) return
+    setEditingSessionId(null)
+    onSelect(sessionId)
+    setIsOpen(false)
+  }
+
+  const handleStartEdit = (session: ChatSession) => {
+    setEditingSessionId(session.id)
+    setEditValue(session.name)
+  }
+
+  const handleSaveEdit = () => {
+    if (editingSessionId && editValue.trim() && onRename) {
+      onRename(editingSessionId, editValue.trim())
+    }
+    setEditingSessionId(null)
+  }
+
+  const handleCancelEdit = () => {
+    setEditingSessionId(null)
+  }
+
+  const handleCreateClick = () => {
+    setEditingSessionId(null)
+    onCreate()
+    setIsOpen(false)
+  }
+
+  const renderSession = ({ item: session }: ListRenderItemInfo<ChatSession>) => {
+    const isEditing = editingSessionId === session.id
+    const isCurrent = session.id === currentSessionId
+
+    return (
+      <Pressable
+        onPress={() => handleSessionSelect(session.id)}
+        className={cn(
+          "px-4 py-3 border-b border-gray-200/50 dark:border-gray-700/50",
+          isCurrent && "bg-primary/10"
+        )}
+      >
+        {isEditing ? (
+          <View className="flex-row items-center gap-2">
+            <TextInput
+              value={editValue}
+              onChangeText={setEditValue}
+              onSubmitEditing={handleSaveEdit}
+              autoFocus
+              className="flex-1 h-8 px-2 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-foreground"
+            />
+            <Pressable onPress={handleSaveEdit} className="p-1">
+              <Check className="h-4 w-4 text-green-500" size={16} />
+            </Pressable>
+            <Pressable onPress={handleCancelEdit} className="p-1">
+              <X className="h-4 w-4 text-red-500" size={16} />
+            </Pressable>
+          </View>
+        ) : (
+          <>
+            <View className="flex-row items-center justify-between">
+              <Text className="font-medium text-sm text-foreground flex-1" numberOfLines={1}>
+                {session.name}
+              </Text>
+              <View className="flex-row items-center gap-2 shrink-0">
+                {onRename && (
+                  <Pressable onPress={() => handleStartEdit(session)} className="p-1">
+                    <Pencil className="h-3 w-3 text-gray-400" size={12} />
+                  </Pressable>
+                )}
+                <Text className="text-xs text-gray-400">
+                  {formatRelativeTime(session.updatedAt)}
+                </Text>
+              </View>
+            </View>
+            <Text className="text-xs text-gray-400 mt-0.5">
+              {session.messageCount} messages
+            </Text>
+          </>
+        )}
+      </Pressable>
+    )
+  }
+
+  return (
+    <>
+      {/* Trigger button */}
+      <Pressable
+        onPress={() => setIsOpen(true)}
+        className="flex-row items-center gap-2 px-3 py-2"
+      >
+        <MessageSquare className="h-4 w-4 text-gray-400" size={16} />
+        <Text className="text-sm text-foreground" numberOfLines={1}>
+          {currentSession?.name ?? "Select Chat"}
+        </Text>
+        <ChevronDown className="h-4 w-4 text-gray-400 shrink-0" size={16} />
+      </Pressable>
+
+      {/* Session picker modal */}
+      <Modal
+        visible={isOpen}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setIsOpen(false)}
+      >
+        <View className="flex-1 bg-background">
+          {/* Modal header */}
+          <View className="flex-row items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+            <Text className="text-base font-semibold text-foreground">Chat Sessions</Text>
+            <Pressable onPress={() => setIsOpen(false)} className="p-1">
+              <X className="h-5 w-5 text-gray-400" size={20} />
+            </Pressable>
+          </View>
+
+          {/* New Chat button */}
+          <Pressable
+            onPress={handleCreateClick}
+            className="flex-row items-center gap-2 px-4 py-3 border-b border-gray-200/50 dark:border-gray-700/50"
+          >
+            <Plus className="h-4 w-4 text-primary" size={16} />
+            <Text className="text-sm font-medium text-primary">New Chat</Text>
+          </Pressable>
+
+          {/* Search */}
+          {sessions.length > 0 && (
+            <View className="px-4 py-2">
+              <View className="flex-row items-center gap-2 bg-gray-100 dark:bg-gray-800 rounded-md px-3 py-2">
+                <Search className="h-3.5 w-3.5 text-gray-400" size={14} />
+                <TextInput
+                  value={searchQuery}
+                  onChangeText={setSearchQuery}
+                  placeholder="Search chats..."
+                  placeholderTextColor="#9ca3af"
+                  className="flex-1 text-sm text-foreground"
+                />
+              </View>
+            </View>
+          )}
+
+          {/* Session list */}
+          {filteredSessions.length === 0 && searchQuery ? (
+            <View className="py-8 items-center">
+              <Text className="text-sm text-gray-400">No chats found</Text>
+            </View>
+          ) : (
+            <FlatList
+              data={filteredSessions}
+              renderItem={renderSession}
+              keyExtractor={(item) => item.id}
+              className="flex-1"
+            />
+          )}
+        </View>
+      </Modal>
+    </>
+  )
+}

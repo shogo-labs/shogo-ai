@@ -24,8 +24,17 @@ bun run dev
 ### Package-Specific Development
 
 ```bash
-# Web app development (React, http://localhost:3001)
+# Universal app (Expo) - Web development (http://localhost:8081)
 bun run web:dev
+
+# Universal app (Expo) - iOS development
+bun run mobile:ios
+
+# Universal app (Expo) - Android development
+bun run mobile:android
+
+# Universal app (Expo) - Build web bundle
+bun run web:build
 
 # API server development
 bun run api:dev
@@ -75,12 +84,6 @@ bun test --watch
 ### E2E Tests
 
 ```bash
-# Web app E2E tests (uses Playwright)
-cd apps/web && bun run test:e2e
-
-# E2E with UI mode
-cd apps/web && bun run test:e2e:ui
-
 # SDK E2E tests
 cd packages/sdk && bun run test:e2e
 ```
@@ -94,7 +97,10 @@ cd packages/sdk && bun run test:e2e
        ↑
        ├── @shogo/mcp (MCP server, FastMCP, Node.js)
        ├── @shogo/api (Hono API server, Better Auth, Prisma)
-       ├── @shogo/web (React app, Vite, MobX)
+       ├── @shogo/mobile (Universal Expo app - Web, iOS, Android)
+       │   ├── @shogo/shared-ui (Gluestack v3 universal components)
+       │   ├── @shogo/shared-app (shared hooks, domain logic, auth)
+       │   └── @shogo/ui-kit (theme, routing utilities)
        ├── @shogo/project-runtime (isolated project pods)
        └── @shogo-ai/sdk (Vite + Hono SDK, publishable)
 ```
@@ -167,9 +173,16 @@ const store = RootStoreModel.create({}, {
 - `server-http.ts` — HTTP transport for browser clients
 - `tools/` — MCP tool implementations (schema.*, store.*, view.*, data.*, agent.*)
 
-### apps/web/src/
-- `persistence/MCPPersistence.ts` — Browser HTTP adapter
-- `components/app/` — Main application components
+### apps/mobile/ (Universal Expo App — Web, iOS, Android)
+- `app/` — Expo Router file-based routes
+- `app/(app)/` — Authenticated app routes (home, projects, settings, etc.)
+- `app/(auth)/` — Auth routes (sign-in, sign-up)
+- `app/(admin)/` — Admin routes (dashboard, users, workspaces, analytics)
+- `components/chat/` — Chat panel and message rendering
+- `components/dynamic-app/` — Dynamic app renderer (canvas)
+- `components/layout/` — Responsive app shell (sidebar, header)
+- `components/ui/` — Gluestack v3 universal components
+- `contexts/` — Auth and domain providers
 
 ### apps/api/src/
 - `server.ts` — Hono API server
