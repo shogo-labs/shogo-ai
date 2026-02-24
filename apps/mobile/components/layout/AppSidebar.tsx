@@ -1,102 +1,501 @@
 /**
- * AppSidebar - Responsive navigation sidebar for mobile/tablet/web
+ * AppSidebar - Responsive navigation sidebar matching staging design
  *
- * On wide screens (>= 768px): persistent sidebar pinned to the left
- * On narrow screens (< 768px): slide-over drawer with backdrop overlay
+ * Wide screens (>= 768px): persistent sidebar pinned to the left (w-64, collapsible to w-16)
+ * Narrow screens (< 768px): slide-over drawer with backdrop overlay
+ *
+ * Sections:
+ *  - Logo row: gradient "S" badge + "Shogo" text + collapse toggle
+ *  - Workspace switcher
+ *  - Primary nav: Home + Search (Cmd+K)
+ *  - PROJECTS section: Recent (5 projects), All Projects (with New Folder), Starred, Shared
+ *  - RESOURCES section: Templates, Docs (external)
+ *  - Upgrade to Pro CTA
+ *  - User avatar + Sign Out
  */
 
-import { useCallback } from 'react'
+import { useState, useCallback, useMemo } from 'react'
 import {
   View,
   Text,
   Pressable,
   ScrollView,
+  Linking,
+  TextInput,
+  Modal,
   useWindowDimensions,
+  Platform,
 } from 'react-native'
 import { usePathname, useRouter } from 'expo-router'
 import {
   Home,
-  FolderKanban,
+  Search,
+  Clock,
+  LayoutGrid,
   Star,
   Users,
-  LayoutTemplate,
-  User,
-  CreditCard,
-  Settings,
+  FileCode2,
+  ExternalLink,
+  ChevronDown,
+  ChevronRight,
+  PanelLeftClose,
+  PanelLeft,
+  FolderPlus,
+  Plus,
   X,
+  LogOut,
+  Sun,
+  Moon,
+  Monitor,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { Avatar } from '@shogo/shared-ui/primitives'
+import { useAuth } from '../../contexts/auth'
+import {
+  useProjectCollection,
+  useWorkspaceCollection,
+  useFolderCollection,
+  useDomainActions,
+} from '../../contexts/domain'
+import { useBillingData } from '@shogo/shared-app/hooks'
 
-interface NavItem {
+function getInitials(name: string | null | undefined): string {
+  if (!name) return '?'
+  return name
+    .split(' ')
+    .map((part) => part[0])
+    .join('')
+    .toUpperCase()
+    .slice(0, 2)
+}
+
+function formatCredits(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
+  return String(n)
+}
+
+function isRouteActive(pathname: string, href: string): boolean {
+  if (href === '/') {
+    return pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
+  }
+  const normalizedPathname = pathname.replace('/(app)', '')
+  const normalizedHref = href.replace('/(app)', '')
+  if (normalizedHref === '/projects') {
+    return normalizedPathname === '/projects' || normalizedPathname.startsWith('/projects/')
+  }
+  return normalizedPathname === normalizedHref || normalizedPathname.startsWith(normalizedHref + '/')
+}
+
+// ─── NavItem ───────────────────────────────────────────────
+
+interface NavItemProps {
   icon: React.ElementType
   label: string
-  href: string
-}
-
-const mainNavItems: NavItem[] = [
-  { icon: Home, label: 'Home', href: '/(app)' },
-  { icon: FolderKanban, label: 'Projects', href: '/(app)/projects' },
-  { icon: Star, label: 'Starred', href: '/(app)/starred' },
-  { icon: Users, label: 'Shared', href: '/(app)/shared' },
-  { icon: LayoutTemplate, label: 'Templates', href: '/(app)/templates' },
-]
-
-const bottomNavItems: NavItem[] = [
-  { icon: User, label: 'Profile', href: '/(app)/settings' },
-  { icon: CreditCard, label: 'Billing', href: '/(app)/billing' },
-  { icon: Users, label: 'Members', href: '/(app)/members' },
-  { icon: Settings, label: 'Settings', href: '/(app)/settings' },
-]
-
-interface NavItemRowProps {
-  item: NavItem
-  isActive: boolean
+  href?: string
+  externalHref?: string
+  active?: boolean
+  collapsed?: boolean
   onPress?: () => void
+  shortcut?: string
+  external?: boolean
+  onNavPress?: () => void
 }
 
-function NavItemRow({ item, isActive, onPress }: NavItemRowProps) {
-  const Icon = item.icon
+function NavItem({
+  icon: Icon,
+  label,
+  href,
+  externalHref,
+  active,
+  collapsed,
+  onPress,
+  shortcut,
+  onNavPress,
+}: NavItemProps) {
   const router = useRouter()
 
   const handlePress = useCallback(() => {
-    router.push(item.href as any)
-    onPress?.()
-  }, [item.href, router, onPress])
+    if (onPress) {
+      onPress()
+      return
+    }
+    if (externalHref) {
+      Linking.openURL(externalHref)
+      return
+    }
+    if (href) {
+      router.push(href as any)
+      onNavPress?.()
+    }
+  }, [href, externalHref, onPress, router, onNavPress])
 
   return (
     <Pressable
       onPress={handlePress}
       className={cn(
-        'flex-row items-center gap-3 rounded-lg px-3 py-2.5 mx-2',
-        isActive
-          ? 'bg-primary/10'
-          : 'active:bg-muted'
+        'flex-row items-center gap-3 rounded-md px-3 py-2',
+        active
+          ? 'bg-accent'
+          : 'active:bg-accent/50',
+        collapsed && 'justify-center px-2'
       )}
     >
       <Icon
-        size={20}
+        size={16}
         className={cn(
-          isActive ? 'text-primary' : 'text-muted-foreground'
+          active ? 'text-foreground' : 'text-muted-foreground'
         )}
       />
-      <Text
+      {!collapsed && (
+        <Text
+          className={cn(
+            'text-sm flex-1',
+            active ? 'text-foreground' : 'text-muted-foreground'
+          )}
+          numberOfLines={1}
+        >
+          {label}
+        </Text>
+      )}
+      {!collapsed && shortcut && Platform.OS === 'web' && (
+        <View className="ml-auto rounded border border-border bg-muted px-1.5 py-0.5">
+          <Text className="text-[10px] font-mono text-muted-foreground">{shortcut}</Text>
+        </View>
+      )}
+      {!collapsed && externalHref && (
+        <ExternalLink size={12} className="ml-auto text-muted-foreground opacity-50" />
+      )}
+    </Pressable>
+  )
+}
+
+// ─── NavSection (collapsible) ──────────────────────────────
+
+interface NavSectionProps {
+  title: string
+  collapsed?: boolean
+  children: React.ReactNode
+  defaultExpanded?: boolean
+}
+
+function NavSection({ title, collapsed, children, defaultExpanded = true }: NavSectionProps) {
+  const [expanded, setExpanded] = useState(defaultExpanded)
+
+  if (collapsed) return <>{children}</>
+
+  return (
+    <View className="mt-4">
+      <Pressable
+        onPress={() => setExpanded(!expanded)}
+        className="flex-row items-center gap-1 px-3 py-1"
+      >
+        {expanded ? (
+          <ChevronDown size={12} className="text-muted-foreground" />
+        ) : (
+          <ChevronRight size={12} className="text-muted-foreground" />
+        )}
+        <Text className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          {title}
+        </Text>
+      </Pressable>
+      {expanded && children}
+    </View>
+  )
+}
+
+// ─── ExpandableNavItem ─────────────────────────────────────
+
+interface ExpandableNavItemProps {
+  icon: React.ElementType
+  label: string
+  href?: string
+  active?: boolean
+  collapsed?: boolean
+  defaultExpanded?: boolean
+  children?: React.ReactNode
+  onNavPress?: () => void
+}
+
+function ExpandableNavItem({
+  icon: Icon,
+  label,
+  href,
+  active,
+  collapsed,
+  defaultExpanded = true,
+  children,
+  onNavPress,
+}: ExpandableNavItemProps) {
+  const [expanded, setExpanded] = useState(defaultExpanded)
+  const router = useRouter()
+
+  const handlePress = useCallback(() => {
+    if (href) {
+      router.push(href as any)
+      onNavPress?.()
+    }
+  }, [href, router, onNavPress])
+
+  if (collapsed) {
+    return (
+      <Pressable
+        onPress={handlePress}
         className={cn(
-          'text-sm font-medium',
-          isActive ? 'text-primary' : 'text-foreground'
+          'items-center justify-center rounded-md px-2 py-2',
+          active ? 'bg-accent' : 'active:bg-accent/50'
         )}
       >
-        {item.label}
+        <Icon size={16} className={active ? 'text-foreground' : 'text-muted-foreground'} />
+      </Pressable>
+    )
+  }
+
+  return (
+    <View>
+      <Pressable
+        onPress={() => setExpanded(!expanded)}
+        className={cn(
+          'flex-row items-center gap-3 rounded-md px-3 py-2',
+          active ? 'bg-accent' : 'active:bg-accent/50'
+        )}
+      >
+        <Icon
+          size={16}
+          className={active ? 'text-foreground' : 'text-muted-foreground'}
+        />
+        <Pressable onPress={handlePress} className="flex-1">
+          <Text
+            className={cn('text-sm', active ? 'text-foreground' : 'text-muted-foreground')}
+            numberOfLines={1}
+          >
+            {label}
+          </Text>
+        </Pressable>
+        {expanded ? (
+          <ChevronDown size={14} className="text-muted-foreground" />
+        ) : (
+          <ChevronRight size={14} className="text-muted-foreground" />
+        )}
+      </Pressable>
+      {expanded && (
+        <View className="ml-6 mt-0.5">
+          {children}
+        </View>
+      )}
+    </View>
+  )
+}
+
+// ─── ProjectItem ───────────────────────────────────────────
+
+function ProjectItem({
+  name,
+  projectId,
+  onNavPress,
+}: {
+  name: string
+  projectId: string
+  onNavPress?: () => void
+}) {
+  const router = useRouter()
+  const pathname = usePathname()
+  const isActive = pathname.includes(projectId)
+
+  return (
+    <Pressable
+      onPress={() => {
+        router.push(`/(app)/projects/${projectId}` as any)
+        onNavPress?.()
+      }}
+      className={cn(
+        'flex-row items-center rounded-md px-2 py-1.5',
+        isActive ? 'bg-accent' : 'active:bg-accent/50'
+      )}
+    >
+      <Text
+        className={cn(
+          'text-sm',
+          isActive ? 'text-foreground' : 'text-muted-foreground'
+        )}
+        numberOfLines={1}
+      >
+        {name}
       </Text>
     </Pressable>
   )
 }
 
-function isRouteActive(pathname: string, href: string): boolean {
-  if (href === '/(app)') {
-    return pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
-  }
-  return pathname.startsWith(href)
+// ─── UserMenu (modal on mobile, inline on web) ────────────
+
+interface UserMenuProps {
+  visible: boolean
+  onClose: () => void
+  user: { name?: string | null; email?: string | null; image?: string | null } | null
+  onSignOut: () => void
+  onNavigate: (href: string) => void
 }
+
+function UserMenu({ visible, onClose, user, onSignOut, onNavigate }: UserMenuProps) {
+  const [theme, setThemeState] = useState<'light' | 'dark' | 'system'>('system')
+
+  const handleTheme = useCallback((t: 'light' | 'dark' | 'system') => {
+    setThemeState(t)
+    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+      if (t === 'system') {
+        localStorage.removeItem('theme')
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+        document.documentElement.classList.toggle('dark', prefersDark)
+      } else {
+        localStorage.setItem('theme', t)
+        document.documentElement.classList.toggle('dark', t === 'dark')
+      }
+    }
+  }, [])
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable className="flex-1 bg-black/50 justify-end" onPress={onClose}>
+        <Pressable
+          className="bg-card rounded-t-2xl p-4 pb-8 border-t border-border"
+          onPress={(e) => e.stopPropagation()}
+        >
+          {/* User info */}
+          <View className="flex-row items-center gap-3 pb-4 border-b border-border mb-3">
+            <Avatar
+              fallback={getInitials(user?.name)}
+              src={user?.image}
+              size="md"
+            />
+            <View className="flex-1">
+              <Text className="text-sm font-medium text-foreground">{user?.name || 'User'}</Text>
+              <Text className="text-xs text-muted-foreground">{user?.email || ''}</Text>
+            </View>
+            <Pressable onPress={onClose} className="p-1 rounded-md active:bg-muted">
+              <X size={18} className="text-muted-foreground" />
+            </Pressable>
+          </View>
+
+          {/* Profile */}
+          <Pressable
+            onPress={() => { onNavigate('/(app)/profile'); onClose() }}
+            className="flex-row items-center gap-3 px-2 py-3 rounded-md active:bg-muted"
+          >
+            <View className="h-4 w-4 items-center justify-center">
+              <Text className="text-muted-foreground text-xs">👤</Text>
+            </View>
+            <Text className="text-sm text-foreground">Profile</Text>
+          </Pressable>
+
+          {/* Appearance */}
+          <View className="px-2 py-3">
+            <Text className="text-sm text-foreground mb-2">Appearance</Text>
+            <View className="flex-row gap-2">
+              {([
+                { value: 'light' as const, label: 'Light', Icon: Sun },
+                { value: 'dark' as const, label: 'Dark', Icon: Moon },
+                { value: 'system' as const, label: 'System', Icon: Monitor },
+              ]).map(({ value, label, Icon }) => (
+                <Pressable
+                  key={value}
+                  onPress={() => handleTheme(value)}
+                  className={cn(
+                    'flex-row items-center gap-1.5 px-3 py-1.5 rounded-md border',
+                    theme === value
+                      ? 'border-primary bg-primary/10'
+                      : 'border-border active:bg-muted'
+                  )}
+                >
+                  <Icon size={14} className={theme === value ? 'text-primary' : 'text-muted-foreground'} />
+                  <Text className={cn('text-xs', theme === value ? 'text-primary' : 'text-muted-foreground')}>
+                    {label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+
+          {/* Sign Out */}
+          <Pressable
+            onPress={() => { onSignOut(); onClose() }}
+            className="flex-row items-center gap-3 px-2 py-3 rounded-md active:bg-muted mt-2 border-t border-border pt-4"
+          >
+            <LogOut size={16} className="text-muted-foreground" />
+            <Text className="text-sm text-foreground">Sign Out</Text>
+          </Pressable>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  )
+}
+
+// ─── CreateFolderModal ─────────────────────────────────────
+
+function CreateFolderModal({
+  visible,
+  onClose,
+  onSubmit,
+}: {
+  visible: boolean
+  onClose: () => void
+  onSubmit: (name: string) => void
+}) {
+  const [name, setName] = useState('')
+
+  const handleSubmit = useCallback(() => {
+    if (name.trim()) {
+      onSubmit(name.trim())
+      setName('')
+      onClose()
+    }
+  }, [name, onSubmit, onClose])
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable className="flex-1 bg-black/50 items-center justify-center" onPress={onClose}>
+        <Pressable
+          className="bg-card rounded-xl p-6 w-80 border border-border"
+          onPress={(e) => e.stopPropagation()}
+        >
+          <Text className="text-base font-semibold text-foreground mb-1">Create new folder</Text>
+          <Text className="text-sm text-muted-foreground mb-4">
+            Create a new folder to organize your projects
+          </Text>
+          <TextInput
+            value={name}
+            onChangeText={setName}
+            placeholder="Enter folder name"
+            placeholderTextColor="#9ca3af"
+            className="border border-border rounded-md px-3 py-2 text-sm text-foreground bg-background mb-4"
+            autoFocus
+            onSubmitEditing={handleSubmit}
+          />
+          <View className="flex-row gap-2 justify-end">
+            <Pressable
+              onPress={onClose}
+              className="px-4 py-2 rounded-md border border-border active:bg-muted"
+            >
+              <Text className="text-sm text-foreground">Cancel</Text>
+            </Pressable>
+            <Pressable
+              onPress={handleSubmit}
+              className={cn(
+                'px-4 py-2 rounded-md',
+                name.trim() ? 'bg-primary active:bg-primary/80' : 'bg-muted'
+              )}
+              disabled={!name.trim()}
+            >
+              <Text className={cn('text-sm', name.trim() ? 'text-primary-foreground' : 'text-muted-foreground')}>
+                Create folder
+              </Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  )
+}
+
+// ─── Main AppSidebar ───────────────────────────────────────
 
 interface AppSidebarProps {
   isOpen?: boolean
@@ -106,52 +505,312 @@ interface AppSidebarProps {
 export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
   const { width } = useWindowDimensions()
   const pathname = usePathname()
+  const router = useRouter()
   const isWide = width >= 768
 
+  const { user, signOut } = useAuth()
+  const projects = useProjectCollection()
+  const workspaces = useWorkspaceCollection()
+  const actions = useDomainActions()
+
+  const currentWorkspace = useMemo(() => {
+    try {
+      return workspaces?.all?.[0]
+    } catch {
+      return undefined
+    }
+  }, [workspaces])
+
+  const billingData = useBillingData(currentWorkspace?.id)
+
+  const recentProjects = useMemo(() => {
+    try {
+      const all = projects?.all ?? []
+      return [...all]
+        .sort((a: any, b: any) => {
+          const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0
+          const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0
+          return bTime - aTime
+        })
+        .slice(0, 5)
+    } catch {
+      return []
+    }
+  }, [projects])
+
+  const isPaidPlan = billingData.hasActiveSubscription
+
+  const [collapsed, setCollapsed] = useState(false)
+  const [userMenuOpen, setUserMenuOpen] = useState(false)
+  const [createFolderOpen, setCreateFolderOpen] = useState(false)
+
+  const toggleCollapse = useCallback(() => setCollapsed((c) => !c), [])
+
+  const handleCreateFolder = useCallback(
+    async (name: string) => {
+      if (currentWorkspace?.id) {
+        try {
+          await actions.createFolder(name, currentWorkspace.id, null)
+        } catch (e) {
+          console.warn('Failed to create folder:', e)
+        }
+      }
+    },
+    [actions, currentWorkspace]
+  )
+
+  const handleSignOut = useCallback(async () => {
+    try {
+      await signOut()
+    } catch {}
+  }, [signOut])
+
+  const onNavPress = useCallback(() => {
+    if (!isWide) onClose?.()
+  }, [isWide, onClose])
+
+  const isHomePage = pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
+  const isProjectsPage = pathname.startsWith('/projects') || pathname.startsWith('/(app)/projects')
+
   const sidebarContent = (
-    <View className="flex-1 bg-card border-r border-border">
-      {/* Header */}
-      <View className="flex-row items-center justify-between px-4 pt-4 pb-2">
-        <Text className="text-lg font-bold text-foreground">Shogo</Text>
-        {!isWide && (
-          <Pressable onPress={onClose} className="p-1 rounded-md active:bg-muted">
-            <X size={20} className="text-muted-foreground" />
+    <View className={cn('flex-1 bg-card border-r border-border', collapsed ? 'w-16' : 'w-64')}>
+      {/* ── Logo Row ── */}
+      <View
+        className={cn(
+          'h-14 border-b border-border flex-row items-center',
+          collapsed ? 'justify-center px-2' : 'justify-between px-4'
+        )}
+      >
+        {!collapsed && (
+          <>
+            <Pressable
+              onPress={() => { router.push('/(app)' as any); onNavPress() }}
+              className="flex-row items-center gap-2"
+            >
+              <View className="h-8 w-8 rounded-lg bg-blue-500 items-center justify-center"
+                style={Platform.OS === 'web'
+                  ? { backgroundImage: 'linear-gradient(to bottom right, #3b82f6, #9333ea)' } as any
+                  : undefined}
+              >
+                <Text className="text-white font-bold text-sm">S</Text>
+              </View>
+              <Text className="font-semibold text-foreground">Shogo</Text>
+            </Pressable>
+            <Pressable onPress={toggleCollapse} className="h-8 w-8 items-center justify-center rounded-md active:bg-muted">
+              <PanelLeftClose size={16} className="text-muted-foreground" />
+            </Pressable>
+          </>
+        )}
+        {collapsed && (
+          <Pressable
+            onPress={toggleCollapse}
+            className="h-8 w-8 rounded-lg bg-blue-500 items-center justify-center"
+            style={Platform.OS === 'web'
+              ? { backgroundImage: 'linear-gradient(to bottom right, #3b82f6, #9333ea)' } as any
+              : undefined}
+          >
+            <Text className="text-white font-bold text-sm">S</Text>
           </Pressable>
         )}
       </View>
 
-      {/* Main navigation */}
-      <ScrollView className="flex-1 pt-2" showsVerticalScrollIndicator={false}>
-        <View className="gap-0.5">
-          {mainNavItems.map((item) => (
-            <NavItemRow
-              key={item.href}
-              item={item}
-              isActive={isRouteActive(pathname, item.href)}
-              onPress={!isWide ? onClose : undefined}
-            />
-          ))}
+      {/* ── Workspace Switcher ── */}
+      <View className={cn('p-2 border-b border-border', collapsed && 'px-1')}>
+        <Pressable
+          className={cn(
+            'flex-row items-center gap-2 rounded-md px-2 py-1.5 active:bg-muted',
+            collapsed && 'justify-center px-0'
+          )}
+        >
+          <View className="h-6 w-6 rounded bg-primary/20 items-center justify-center">
+            <Text className="text-[10px] font-bold text-primary">
+              {currentWorkspace?.name?.[0]?.toUpperCase() || 'W'}
+            </Text>
+          </View>
+          {!collapsed && (
+            <>
+              <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
+                {currentWorkspace?.name || 'Workspace'}
+              </Text>
+              <ChevronDown size={14} className="text-muted-foreground" />
+            </>
+          )}
+        </Pressable>
+      </View>
+
+      {/* ── Main Navigation (scrollable) ── */}
+      <ScrollView className="flex-1 py-2" showsVerticalScrollIndicator={false}>
+        {/* Primary nav */}
+        <View className="px-2">
+          <NavItem
+            icon={Home}
+            label="Home"
+            href="/(app)"
+            active={isHomePage}
+            collapsed={collapsed}
+            onNavPress={onNavPress}
+          />
+          <NavItem
+            icon={Search}
+            label="Search"
+            collapsed={collapsed}
+            shortcut="⌘K"
+            onPress={() => {
+              // Command palette is web-only for now
+            }}
+          />
         </View>
+
+        {/* PROJECTS section */}
+        <NavSection title="Projects" collapsed={collapsed}>
+          <View className="px-2">
+            <ExpandableNavItem
+              icon={Clock}
+              label="Recent"
+              collapsed={collapsed}
+              defaultExpanded={true}
+            >
+              {recentProjects.map((project: any) => (
+                <ProjectItem
+                  key={project.id}
+                  name={project.name}
+                  projectId={project.id}
+                  onNavPress={onNavPress}
+                />
+              ))}
+            </ExpandableNavItem>
+
+            <ExpandableNavItem
+              icon={LayoutGrid}
+              label="All projects"
+              href="/(app)/projects"
+              active={isProjectsPage && !isHomePage}
+              collapsed={collapsed}
+              defaultExpanded={true}
+              onNavPress={onNavPress}
+            >
+              {!collapsed && (
+                <Pressable
+                  onPress={() => setCreateFolderOpen(true)}
+                  className="flex-row items-center gap-2 px-2 py-1.5 rounded-md active:bg-accent/50"
+                >
+                  <FolderPlus size={14} className="text-muted-foreground" />
+                  <Text className="text-sm text-muted-foreground">New folder</Text>
+                </Pressable>
+              )}
+            </ExpandableNavItem>
+
+            <NavItem
+              icon={Star}
+              label="Starred"
+              href="/(app)/starred"
+              active={isRouteActive(pathname, '/(app)/starred')}
+              collapsed={collapsed}
+              onNavPress={onNavPress}
+            />
+            <NavItem
+              icon={Users}
+              label="Shared with me"
+              href="/(app)/shared"
+              active={isRouteActive(pathname, '/(app)/shared')}
+              collapsed={collapsed}
+              onNavPress={onNavPress}
+            />
+          </View>
+        </NavSection>
+
+        {/* RESOURCES section */}
+        <NavSection title="Resources" collapsed={collapsed}>
+          <View className="px-2">
+            <NavItem
+              icon={FileCode2}
+              label="Templates"
+              href="/(app)/templates"
+              active={isRouteActive(pathname, '/(app)/templates')}
+              collapsed={collapsed}
+              onNavPress={onNavPress}
+            />
+            <NavItem
+              icon={ExternalLink}
+              label="Docs"
+              externalHref="https://docs-staging.shogo.ai/"
+              collapsed={collapsed}
+            />
+          </View>
+        </NavSection>
       </ScrollView>
 
-      {/* Bottom navigation */}
-      <View className="border-t border-border pt-2 pb-4 gap-0.5">
-        {bottomNavItems.map((item) => (
-          <NavItemRow
-            key={item.label}
-            item={item}
-            isActive={isRouteActive(pathname, item.href)}
-            onPress={!isWide ? onClose : undefined}
-          />
-        ))}
+      {/* ── Bottom Section ── */}
+      <View className="border-t border-border">
+        {/* Upgrade to Pro CTA */}
+        {!collapsed && !isPaidPlan && (
+          <View className="px-2 pt-2">
+            <Pressable
+              onPress={() => { router.push('/(app)/billing' as any); onNavPress() }}
+              className="flex-row items-center gap-2 px-3 py-2 rounded-md"
+              style={Platform.OS === 'web'
+                ? { backgroundImage: 'linear-gradient(to right, rgba(59,130,246,0.1), rgba(168,85,247,0.1))' } as any
+                : { backgroundColor: 'rgba(59,130,246,0.1)' }}
+            >
+              <View className="flex-1">
+                <Text className="text-sm font-medium text-foreground">Upgrade to Pro</Text>
+                <Text className="text-xs text-muted-foreground">
+                  {billingData.effectiveBalance
+                    ? `${formatCredits(billingData.effectiveBalance.total)} credits left`
+                    : 'Unlock more benefits'}
+                </Text>
+              </View>
+              <Plus size={16} className="text-primary" />
+            </Pressable>
+          </View>
+        )}
+
+        {/* User row */}
+        <View
+          className={cn(
+            'flex-row items-center gap-2 p-2 border-t border-border',
+            collapsed ? 'justify-center' : 'px-3'
+          )}
+        >
+          <Pressable
+            onPress={() => setUserMenuOpen(true)}
+            className="rounded-full active:opacity-80"
+          >
+            <Avatar
+              fallback={getInitials(user?.name)}
+              src={user?.image}
+              size="sm"
+            />
+          </Pressable>
+
+          {!collapsed && (
+            <View className="flex-1 ml-1">
+              <Text className="text-sm text-foreground" numberOfLines={1}>{user?.name || 'User'}</Text>
+            </View>
+          )}
+        </View>
       </View>
+
+      {/* Modals */}
+      <UserMenu
+        visible={userMenuOpen}
+        onClose={() => setUserMenuOpen(false)}
+        user={user}
+        onSignOut={handleSignOut}
+        onNavigate={(href) => router.push(href as any)}
+      />
+      <CreateFolderModal
+        visible={createFolderOpen}
+        onClose={() => setCreateFolderOpen(false)}
+        onSubmit={handleCreateFolder}
+      />
     </View>
   )
 
   // Wide screens: persistent sidebar
   if (isWide) {
     return (
-      <View className="w-64 h-full">
+      <View className="h-full">
         {sidebarContent}
       </View>
     )
@@ -162,12 +821,7 @@ export function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
 
   return (
     <View className="absolute inset-0 z-50 flex-row">
-      {/* Backdrop */}
-      <Pressable
-        onPress={onClose}
-        className="absolute inset-0 bg-black/50"
-      />
-      {/* Drawer panel */}
+      <Pressable onPress={onClose} className="absolute inset-0 bg-black/50" />
       <View className="w-72 h-full z-10">
         {sidebarContent}
       </View>

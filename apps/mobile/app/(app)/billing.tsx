@@ -132,6 +132,13 @@ export default observer(function BillingPage() {
   const router = useRouter()
   const { user, isLoading: isAuthLoading } = useAuth()
   const workspaces = useWorkspaceCollection()
+
+  useEffect(() => {
+    if (user?.id && workspaces) {
+      workspaces.loadAll({ userId: user.id }).catch(() => {})
+    }
+  }, [user?.id, workspaces])
+
   const currentWorkspace = workspaces.all.length > 0 ? workspaces.all[0] : null
 
   const {
