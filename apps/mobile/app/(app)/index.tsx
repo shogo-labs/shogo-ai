@@ -18,9 +18,9 @@ import { useAuth } from '../../contexts/auth'
 import {
   useProjectCollection,
   useWorkspaceCollection,
-  useDomainActions,
 } from '../../contexts/domain'
 import { CompactChatInput } from '../../components/chat/CompactChatInput'
+import { API_URL } from '../../lib/api'
 
 const SUGGESTION_CHIPS = [
   'Build a customer support agent',
@@ -62,6 +62,72 @@ const GRADIENT_KEYFRAMES = `
   50% { opacity: 0.5; transform: scale(1.1); }
 }
 `
+
+// Direct API helpers — bypass MobX domain actions to avoid observer race conditions
+// during project creation + navigation (mirrors staging-ui WorkspaceLayout pattern)
+
+interface ApiResponse<T> { ok: boolean; data: T }
+
+async function apiPost<T>(url: string, body: Record<string, unknown>): Promise<T> {
+  const res = await fetch(`${API_URL}${url}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(`API ${url} failed: ${res.status}`)
+  const json: ApiResponse<T> = await res.json()
+  return json.data
+}
+
+function createProjectViaApi(data: {
+  name: string
+  workspaceId: string
+  description?: string
+  createdBy: string
+  type?: "APP" | "AGENT"
+}) {
+  return apiPost<{ id: string; name: string; type?: string }>("/api/projects", {
+    name: data.name,
+    workspaceId: data.workspaceId,
+    description: data.description,
+    createdBy: data.createdBy,
+    tier: "starter",
+    status: "draft",
+    accessLevel: "anyone",
+    schemas: [],
+    type: data.type || "AGENT",
+  })
+}
+
+function createChatSessionViaApi(data: {
+  inferredName: string
+  contextType: string
+  contextId?: string
+}) {
+  return apiPost<{ id: string }>("/api/chat-sessions", data)
+}
+
+function generateProjectNameFromPrompt(prompt: string): string {
+  const fillerWords = new Set([
+    "a", "an", "the", "to", "for", "with", "that", "this", "is", "are",
+    "my", "me", "its", "it", "our", "your", "their",
+    "create", "build", "make", "design", "develop", "implement", "add", "include",
+    "show", "showing", "display", "have", "has", "using", "use",
+    "please", "can", "you", "i", "want", "need", "would", "like",
+    "simple", "basic", "web", "app", "application", "website", "page",
+    "where", "when", "how", "what", "which", "each", "every", "some",
+    "and", "but", "also", "then", "from", "into", "about", "just",
+    "nice", "good", "new", "should", "could",
+  ])
+  const words = prompt.toLowerCase()
+    .replace(/[^\w\s]/g, "")
+    .split(/\s+/)
+    .filter(word => word.length > 2 && !fillerWords.has(word))
+  const nameWords = words.slice(0, 3)
+  if (nameWords.length === 0) return "New Project"
+  return nameWords.map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(" ")
+}
 
 function GradientBackground() {
   if (Platform.OS !== 'web') {
@@ -182,7 +248,6 @@ const HomeScreen = observer(function HomeScreen() {
   const { user, isAuthenticated } = useAuth()
   const projects = useProjectCollection()
   const workspaces = useWorkspaceCollection()
-  const actions = useDomainActions()
 
   const [prompt, setPrompt] = useState('')
   const [isCreating, setIsCreating] = useState(false)
@@ -194,9 +259,8 @@ const HomeScreen = observer(function HomeScreen() {
     workspaces.loadAll()
   }, [isAuthenticated])
 
-  const currentWorkspace = useMemo(() => {
-    try { return workspaces.all[0] } catch { return undefined }
-  }, [workspaces])
+  let currentWorkspace: any
+  try { currentWorkspace = workspaces.all[0] } catch { currentWorkspace = undefined }
 
   const firstName = useMemo(() => {
     const name = user?.name || 'there'
@@ -207,27 +271,37 @@ const HomeScreen = observer(function HomeScreen() {
     if (!text.trim() || !user?.id || !currentWorkspace?.id) return
     setIsCreating(true)
     try {
-      const project = await actions.createProject(
-        text.slice(0, 60),
-        currentWorkspace.id,
-        undefined,
-        user.id,
-        'AGENT'
-      )
-      if (project?.id) {
-        projects.loadAll()
-        router.push({
-          pathname: '/(app)/projects/[id]',
-          params: { id: project.id, initialMessage: text },
-        } as any)
-      }
+      const projectName = generateProjectNameFromPrompt(text)
+
+      const newProject = await createProjectViaApi({
+        name: projectName,
+        workspaceId: currentWorkspace.id,
+        createdBy: user.id,
+        type: 'AGENT',
+      })
+
+      const chatSession = await createChatSessionViaApi({
+        inferredName: `Chat - ${projectName}`,
+        contextType: 'project',
+        contextId: newProject.id,
+      })
+
+      projects.loadAll()
+      router.push({
+        pathname: '/(app)/projects/[id]',
+        params: {
+          id: newProject.id,
+          chatSessionId: chatSession.id,
+          initialMessage: text,
+        },
+      } as any)
     } catch (error) {
       console.error('[Home] Failed to create project:', error)
       Alert.alert('Error', 'Failed to create project')
     } finally {
       setIsCreating(false)
     }
-  }, [user?.id, currentWorkspace?.id, actions, projects, router])
+  }, [user?.id, currentWorkspace?.id, projects, router])
 
   const handleTemplatePress = useCallback(async (template: CanvasTemplate) => {
     if (!user?.id || !currentWorkspace?.id) {
@@ -236,27 +310,38 @@ const HomeScreen = observer(function HomeScreen() {
     }
     setLoadingTemplate(template.id)
     try {
-      const project = await actions.createProject(
-        template.name,
-        currentWorkspace.id,
-        undefined,
-        user.id,
-        'AGENT'
-      )
-      if (project?.id) {
-        projects.loadAll()
-        router.push({
-          pathname: '/(app)/projects/[id]',
-          params: { id: project.id, initialMessage: template.user_request },
-        } as any)
-      }
+      const projectName = template.name
+
+      const newProject = await createProjectViaApi({
+        name: projectName,
+        workspaceId: currentWorkspace.id,
+        description: `Created from ${projectName} canvas template`,
+        createdBy: user.id,
+        type: 'AGENT',
+      })
+
+      const chatSession = await createChatSessionViaApi({
+        inferredName: `Chat - ${projectName}`,
+        contextType: 'project',
+        contextId: newProject.id,
+      })
+
+      projects.loadAll()
+      router.push({
+        pathname: '/(app)/projects/[id]',
+        params: {
+          id: newProject.id,
+          chatSessionId: chatSession.id,
+          initialMessage: template.user_request,
+        },
+      } as any)
     } catch (error) {
       console.error('[Home] Failed to create project from template:', error)
       Alert.alert('Error', 'Failed to create project from template')
     } finally {
       setLoadingTemplate(null)
     }
-  }, [user?.id, currentWorkspace?.id, actions, projects, router])
+  }, [user?.id, currentWorkspace?.id, projects, router])
 
   if (!isAuthenticated) {
     return (

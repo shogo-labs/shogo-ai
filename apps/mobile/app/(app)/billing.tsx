@@ -1,12 +1,22 @@
 /**
  * AppBillingPage - Mobile (Expo)
  *
- * Workspace billing and plan management.
- * Shows current plan, credits, upgrade options.
+ * Workspace billing and plan management matching staging design:
+ * - Current plan card with workspace avatar
+ * - Credits remaining card
+ * - Monthly/Annual billing toggle
+ * - Pro / Business / Enterprise plan cards with credit selectors
  */
 
-import { useState, useEffect } from 'react'
-import { View, Text, ScrollView, Pressable, ActivityIndicator } from 'react-native'
+import { useState, useEffect, useCallback } from 'react'
+import {
+  View,
+  Text,
+  ScrollView,
+  Pressable,
+  Linking,
+  Platform,
+} from 'react-native'
 import { useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
@@ -15,7 +25,9 @@ import {
   CheckCircle2,
   Info,
   Check,
-  Sparkles,
+  Zap,
+  Crown,
+  ChevronDown,
 } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
 import { useWorkspaceCollection } from '../../contexts/domain'
@@ -32,101 +44,145 @@ import {
   cn,
 } from '@shogo/shared-ui/primitives'
 
+const PRO_TIERS = [
+  { credits: 100, monthly: 25, annual: 250 },
+  { credits: 200, monthly: 50, annual: 500 },
+  { credits: 400, monthly: 98, annual: 980 },
+  { credits: 800, monthly: 190, annual: 1900 },
+  { credits: 1200, monthly: 280, annual: 2800 },
+  { credits: 2000, monthly: 460, annual: 4600 },
+  { credits: 3000, monthly: 680, annual: 6800 },
+  { credits: 5000, monthly: 1100, annual: 11000 },
+  { credits: 7500, monthly: 1650, annual: 16500 },
+  { credits: 10000, monthly: 2200, annual: 22000 },
+]
+
+const BUSINESS_TIERS = [
+  { credits: 100, monthly: 50, annual: 500 },
+  { credits: 200, monthly: 100, annual: 1000 },
+  { credits: 400, monthly: 195, annual: 1950 },
+  { credits: 800, monthly: 380, annual: 3800 },
+  { credits: 1200, monthly: 560, annual: 5600 },
+  { credits: 2000, monthly: 920, annual: 9200 },
+  { credits: 3000, monthly: 1350, annual: 13500 },
+  { credits: 5000, monthly: 2200, annual: 22000 },
+  { credits: 7500, monthly: 3200, annual: 32000 },
+  { credits: 10000, monthly: 4200, annual: 42000 },
+]
+
+const PRO_FEATURES = [
+  '5 daily credits (up to 150/month)',
+  'Usage-based Cloud + AI',
+  'Credit rollovers',
+  'Unlimited domains',
+  'Custom domains',
+  'Remove branding',
+  'User roles & permissions',
+]
+
+const BUSINESS_FEATURES = [
+  'Everything in Pro, plus:',
+  'SSO authentication',
+  'Personal Projects',
+  'Opt out of data training',
+  'Design templates',
+  'Priority support',
+]
+
+const ENTERPRISE_FEATURES = [
+  'Everything in Business, plus:',
+  'Dedicated support',
+  'Onboarding services',
+  'Custom connections',
+  'Group-based access control',
+  'SCIM provisioning',
+  'Custom design systems',
+]
+
 const PLAN_CREDITS: Record<string, number> = {
-  free: 0,
-  starter: 50,
-  pro: 200,
-  team: 500,
-  enterprise: 2000,
+  free: 50,
+  pro: 100,
+  business: 100,
+  enterprise: 10000,
 }
+const DAILY_CREDITS_VAL = 5
 
-const DAILY_CREDITS: Record<string, number> = {
-  free: 5,
-  starter: 10,
-  pro: 25,
-  team: 50,
-  enterprise: 100,
-}
-
-function getTotalCreditsForPlan(
-  planId: string | undefined,
-  planCredits: Record<string, number>,
-  dailyCredits: Record<string, number>
-): number {
-  if (!planId) return (planCredits['free'] || 0) + (dailyCredits['free'] || 0)
-  return (planCredits[planId] || 0) + (dailyCredits[planId] || 0)
+function getTotalCreditsForPlan(planId: string | undefined): number {
+  if (!planId) return (PLAN_CREDITS['free'] || 0) + DAILY_CREDITS_VAL
+  return (PLAN_CREDITS[planId] || 0) + DAILY_CREDITS_VAL
 }
 
 function formatCredits(n: number): string {
-  return n % 1 === 0 ? n.toString() : n.toFixed(1)
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
+  return n % 1 === 0 ? String(n) : n.toFixed(2)
 }
 
-interface PlanCardProps {
-  planId: string
-  label: string
-  monthlyCredits: number
-  dailyCredits: number
-  price: string
-  isCurrentPlan: boolean
-  onSelect?: () => void
-}
+// ─── TierSelector ──────────────────────────────────────────
 
-function PlanCard({
-  planId,
-  label,
-  monthlyCredits,
-  dailyCredits,
-  price,
-  isCurrentPlan,
+function TierSelector({
+  tiers,
+  selectedIndex,
   onSelect,
-}: PlanCardProps) {
+}: {
+  tiers: typeof PRO_TIERS
+  selectedIndex: number
+  onSelect: (idx: number) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const selected = tiers[selectedIndex]
+
   return (
-    <Card className={isCurrentPlan ? 'border-primary' : undefined}>
-      <CardContent className="p-4 gap-3">
-        <View className="flex-row items-center justify-between">
-          <View>
-            <Text className="text-lg font-semibold text-foreground">
-              {label}
-            </Text>
-            <Text className="text-sm text-muted-foreground">{price}</Text>
-          </View>
-          {isCurrentPlan && <Badge>Current Plan</Badge>}
+    <View>
+      <Pressable
+        onPress={() => setOpen(!open)}
+        className="flex-row items-center justify-between border border-border rounded-md px-3 py-2.5 bg-background"
+      >
+        <Text className="text-sm text-foreground">
+          {selected.credits.toLocaleString()} credits
+        </Text>
+        <ChevronDown size={16} className="text-muted-foreground" />
+      </Pressable>
+      {open && (
+        <View className="border border-border rounded-md mt-1 bg-card overflow-hidden">
+          {tiers.map((tier, i) => (
+            <Pressable
+              key={tier.credits}
+              onPress={() => { onSelect(i); setOpen(false) }}
+              className={cn(
+                'px-3 py-2 active:bg-muted',
+                i === selectedIndex && 'bg-accent'
+              )}
+            >
+              <Text className={cn(
+                'text-sm',
+                i === selectedIndex ? 'text-foreground font-medium' : 'text-foreground'
+              )}>
+                {tier.credits.toLocaleString()} credits
+              </Text>
+            </Pressable>
+          ))}
         </View>
-
-        <View className="gap-2">
-          <View className="flex-row items-center gap-2">
-            <Check size={14} className="text-primary" />
-            <Text className="text-sm text-foreground">
-              {monthlyCredits} monthly credits
-            </Text>
-          </View>
-          <View className="flex-row items-center gap-2">
-            <Check size={14} className="text-primary" />
-            <Text className="text-sm text-foreground">
-              {dailyCredits} daily credits
-            </Text>
-          </View>
-          <View className="flex-row items-center gap-2">
-            <Check size={14} className="text-primary" />
-            <Text className="text-sm text-foreground">
-              Credits rollover monthly
-            </Text>
-          </View>
-        </View>
-
-        {!isCurrentPlan && (
-          <Button
-            variant="outline"
-            onPress={onSelect}
-            className="w-full mt-1"
-          >
-            {planId === 'free' ? 'Downgrade' : 'Upgrade'}
-          </Button>
-        )}
-      </CardContent>
-    </Card>
+      )}
+    </View>
   )
 }
+
+// ─── FeatureList ───────────────────────────────────────────
+
+function FeatureList({ features }: { features: string[] }) {
+  return (
+    <View className="gap-2">
+      {features.map((feature) => (
+        <View key={feature} className="flex-row items-start gap-2">
+          <Check size={14} className="text-green-500 mt-0.5" />
+          <Text className="text-sm text-foreground flex-1">{feature}</Text>
+        </View>
+      ))}
+    </View>
+  )
+}
+
+// ─── Main Page ─────────────────────────────────────────────
 
 export default observer(function BillingPage() {
   const router = useRouter()
@@ -139,31 +195,64 @@ export default observer(function BillingPage() {
     }
   }, [user?.id, workspaces])
 
-  const currentWorkspace = workspaces.all.length > 0 ? workspaces.all[0] : null
+  let currentWorkspace: any
+  try {
+    currentWorkspace = workspaces?.all?.[0] ?? null
+  } catch {
+    currentWorkspace = null
+  }
 
   const {
     subscription,
-    creditLedger,
     effectiveBalance,
-    hasActiveSubscription,
     isLoading: isBillingLoading,
-    refetchSubscription,
-    refetchCreditLedger,
   } = useBillingData(currentWorkspace?.id)
 
-  const [showSuccess, setShowSuccess] = useState(false)
-  const [manageDialogOpen, setManageDialogOpen] = useState(false)
+  const [billingInterval, setBillingInterval] = useState<'monthly' | 'annual'>('monthly')
+  const [selectedProTier, setSelectedProTier] = useState(0)
+  const [selectedBusinessTier, setSelectedBusinessTier] = useState(4)
+  const [isCheckoutLoading, setIsCheckoutLoading] = useState(false)
 
-  const creditsTotal = getTotalCreditsForPlan(
-    subscription?.planId,
-    PLAN_CREDITS,
-    DAILY_CREDITS
-  )
+  const creditsTotal = getTotalCreditsForPlan(subscription?.planId)
   const creditsRemaining = effectiveBalance?.total ?? creditsTotal
 
   const planName = subscription
     ? `${subscription.planId.charAt(0).toUpperCase() + subscription.planId.slice(1)} Plan`
     : 'Free Plan'
+
+  const proTier = PRO_TIERS[selectedProTier]
+  const businessTier = BUSINESS_TIERS[selectedBusinessTier]
+
+  const handleCheckout = useCallback(async (planType: 'pro' | 'business', credits: number) => {
+    if (!currentWorkspace?.id) return
+    setIsCheckoutLoading(true)
+    try {
+      const planId = credits === 100 ? planType : `${planType}_${credits}`
+      const response = await fetch('/api/billing/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          workspaceId: currentWorkspace.id,
+          planId,
+          billingInterval,
+          userEmail: user?.email,
+        }),
+      })
+      const data = await response.json()
+      if (data.url) {
+        if (Platform.OS === 'web') {
+          window.location.href = data.url
+        } else {
+          Linking.openURL(data.url)
+        }
+      }
+    } catch (e) {
+      console.warn('Checkout failed:', e)
+    } finally {
+      setIsCheckoutLoading(false)
+    }
+  }, [currentWorkspace?.id, billingInterval, user?.email])
 
   if (isAuthLoading || isBillingLoading) {
     return (
@@ -204,7 +293,7 @@ export default observer(function BillingPage() {
   return (
     <ScrollView
       className="flex-1 bg-background"
-      contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
+      contentContainerStyle={{ padding: 16, paddingBottom: 60 }}
       showsVerticalScrollIndicator={false}
     >
       {/* Header */}
@@ -222,24 +311,6 @@ export default observer(function BillingPage() {
         </View>
       </View>
 
-      {/* Success Message */}
-      {showSuccess && (
-        <Alert className="mb-6 border-green-500 bg-green-50">
-          <View className="flex-row items-start gap-3">
-            <CheckCircle2 size={20} className="text-green-600 mt-0.5" />
-            <View className="flex-1">
-              <AlertTitle className="text-green-800">
-                Thank you for subscribing!
-              </AlertTitle>
-              <AlertDescription className="text-green-700">
-                Your subscription is now active. Your workspace has been
-                upgraded and your credits are ready to use.
-              </AlertDescription>
-            </View>
-          </View>
-        </Alert>
-      )}
-
       {/* Current Plan Card */}
       <Card className="mb-4">
         <CardContent className="p-4">
@@ -247,7 +318,7 @@ export default observer(function BillingPage() {
             <View className="flex-row items-center gap-3 flex-1">
               <View className="h-10 w-10 rounded-full bg-primary/10 items-center justify-center">
                 <Text className="text-lg font-semibold text-primary">
-                  {currentWorkspace.name[0]?.toUpperCase() || 'W'}
+                  {currentWorkspace.name?.[0]?.toUpperCase() || 'W'}
                 </Text>
               </View>
               <View className="flex-1">
@@ -259,11 +330,7 @@ export default observer(function BillingPage() {
                 </Text>
               </View>
             </View>
-            <Button
-              variant="outline"
-              size="sm"
-              onPress={() => setManageDialogOpen(true)}
-            >
+            <Button variant="outline" size="sm">
               Manage
             </Button>
           </View>
@@ -271,7 +338,7 @@ export default observer(function BillingPage() {
       </Card>
 
       {/* Credits Display */}
-      <Card className="mb-6">
+      <Card className="mb-8">
         <CardContent className="p-4 gap-4">
           <View>
             <Text className="text-sm font-medium text-foreground mb-1">
@@ -305,52 +372,190 @@ export default observer(function BillingPage() {
         </CardContent>
       </Card>
 
-      {/* Plan Selection */}
-      <View className="mb-4">
-        <Text className="text-lg font-semibold text-foreground mb-4">
-          Choose a plan
-        </Text>
-        <View className="gap-4">
-          <PlanCard
-            planId="free"
-            label="Free"
-            monthlyCredits={PLAN_CREDITS['free']}
-            dailyCredits={DAILY_CREDITS['free']}
-            price="$0 / month"
-            isCurrentPlan={!subscription}
-          />
-          <PlanCard
-            planId="starter"
-            label="Starter"
-            monthlyCredits={PLAN_CREDITS['starter']}
-            dailyCredits={DAILY_CREDITS['starter']}
-            price="$20 / month"
-            isCurrentPlan={subscription?.planId === 'starter'}
-          />
-          <PlanCard
-            planId="pro"
-            label="Pro"
-            monthlyCredits={PLAN_CREDITS['pro']}
-            dailyCredits={DAILY_CREDITS['pro']}
-            price="$50 / month"
-            isCurrentPlan={subscription?.planId === 'pro'}
-          />
-          <PlanCard
-            planId="team"
-            label="Team"
-            monthlyCredits={PLAN_CREDITS['team']}
-            dailyCredits={DAILY_CREDITS['team']}
-            price="$100 / month"
-            isCurrentPlan={subscription?.planId === 'team'}
-          />
-          <PlanCard
-            planId="enterprise"
-            label="Enterprise"
-            monthlyCredits={PLAN_CREDITS['enterprise']}
-            dailyCredits={DAILY_CREDITS['enterprise']}
-            price="Custom pricing"
-            isCurrentPlan={subscription?.planId === 'enterprise'}
-          />
+      {/* Billing Interval Toggle */}
+      <View className="items-center mb-6">
+        <View className="flex-row border border-border rounded-lg bg-muted/60 p-1">
+          <Pressable
+            onPress={() => setBillingInterval('monthly')}
+            className={cn(
+              'px-4 py-2 rounded-md',
+              billingInterval === 'monthly' && 'bg-primary'
+            )}
+          >
+            <Text className={cn(
+              'text-sm font-medium',
+              billingInterval === 'monthly' ? 'text-primary-foreground' : 'text-foreground'
+            )}>
+              Monthly
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => setBillingInterval('annual')}
+            className={cn(
+              'flex-row items-center gap-1.5 px-4 py-2 rounded-md',
+              billingInterval === 'annual' && 'bg-primary'
+            )}
+          >
+            <Text className={cn(
+              'text-sm font-medium',
+              billingInterval === 'annual' ? 'text-primary-foreground' : 'text-foreground'
+            )}>
+              Annual
+            </Text>
+            <Badge variant="secondary" className="ml-1">
+              <Text className="text-[10px]">Save ~17%</Text>
+            </Badge>
+          </Pressable>
+        </View>
+      </View>
+
+      {/* Plan Cards — 3 columns on md+, stacked on mobile */}
+      <View className="gap-6 md:flex-row md:items-start">
+        {/* Pro Plan */}
+        <View className="md:flex-1 md:w-0">
+          <Card>
+            <CardContent className="p-5 gap-5">
+              <View className="flex-row items-center gap-2">
+                <Zap size={20} className="text-blue-500" />
+                <Text className="text-lg font-semibold text-foreground">Pro</Text>
+              </View>
+              <Text className="text-sm text-muted-foreground">
+                Designed for fast-moving teams building together in real time.
+              </Text>
+
+              <View>
+                <View className="flex-row items-baseline gap-1">
+                  <Text className="text-4xl font-bold text-foreground">
+                    ${billingInterval === 'monthly' ? proTier.monthly : Math.round(proTier.annual / 12)}
+                  </Text>
+                  <Text className="text-sm text-muted-foreground">per month</Text>
+                </View>
+                <Text className="text-sm text-muted-foreground">
+                  shared across unlimited users
+                </Text>
+              </View>
+
+              <View>
+                <Text className="text-sm font-medium text-foreground mb-2">
+                  Monthly credits
+                </Text>
+                <TierSelector
+                  tiers={PRO_TIERS}
+                  selectedIndex={selectedProTier}
+                  onSelect={setSelectedProTier}
+                />
+              </View>
+
+              <Pressable
+                onPress={() => handleCheckout('pro', proTier.credits)}
+                disabled={isCheckoutLoading}
+                className="w-full items-center justify-center py-3 rounded-md bg-primary active:bg-primary/80"
+              >
+                <Text className="text-sm font-medium text-primary-foreground">
+                  {subscription?.planId?.startsWith('pro') ? 'Change Plan' : 'Upgrade to Pro'}
+                </Text>
+              </Pressable>
+
+              <View className="gap-2">
+                <Text className="text-sm font-medium text-foreground">
+                  {proTier.credits.toLocaleString()} credits / month
+                </Text>
+                <Text className="text-sm text-muted-foreground">
+                  All features in Free, plus:
+                </Text>
+                <FeatureList features={PRO_FEATURES} />
+              </View>
+            </CardContent>
+          </Card>
+        </View>
+
+        {/* Business Plan */}
+        <View className="md:flex-1 md:w-0">
+          <View className="items-center" style={{ marginBottom: -12, zIndex: 1 }}>
+            <Badge className="bg-primary">
+              <Text className="text-xs text-primary-foreground font-medium">Most Popular</Text>
+            </Badge>
+          </View>
+          <Card className="border-primary">
+            <CardContent className="p-5 gap-5 pt-6">
+              <View className="flex-row items-center gap-2">
+                <Building2 size={20} className="text-purple-500" />
+                <Text className="text-lg font-semibold text-foreground">Business</Text>
+              </View>
+              <Text className="text-sm text-muted-foreground">
+                Advanced controls and power features for growing departments
+              </Text>
+
+              <View>
+                <View className="flex-row items-baseline gap-1">
+                  <Text className="text-4xl font-bold text-foreground">
+                    ${billingInterval === 'monthly' ? businessTier.monthly : Math.round(businessTier.annual / 12)}
+                  </Text>
+                  <Text className="text-sm text-muted-foreground">per month</Text>
+                </View>
+                <Text className="text-sm text-muted-foreground">
+                  shared across unlimited users
+                </Text>
+              </View>
+
+              <View>
+                <Text className="text-sm font-medium text-foreground mb-2">
+                  Monthly credits
+                </Text>
+                <TierSelector
+                  tiers={BUSINESS_TIERS}
+                  selectedIndex={selectedBusinessTier}
+                  onSelect={setSelectedBusinessTier}
+                />
+              </View>
+
+              <Pressable
+                onPress={() => handleCheckout('business', businessTier.credits)}
+                disabled={isCheckoutLoading}
+                className="w-full items-center justify-center py-3 rounded-md bg-primary active:bg-primary/80"
+              >
+                <Text className="text-sm font-medium text-primary-foreground">
+                  {subscription?.planId?.startsWith('business') ? 'Change Plan' : 'Upgrade to Business'}
+                </Text>
+              </Pressable>
+
+              <View className="gap-2">
+                <Text className="text-sm font-medium text-foreground">
+                  {businessTier.credits.toLocaleString()} credits / month
+                </Text>
+                <FeatureList features={BUSINESS_FEATURES} />
+              </View>
+            </CardContent>
+          </Card>
+        </View>
+
+        {/* Enterprise Plan */}
+        <View className="md:flex-1 md:w-0">
+          <Card>
+            <CardContent className="p-5 gap-5">
+              <View className="flex-row items-center gap-2">
+                <Crown size={20} className="text-amber-500" />
+                <Text className="text-lg font-semibold text-foreground">Enterprise</Text>
+              </View>
+              <Text className="text-sm text-muted-foreground">
+                Built for large orgs needing flexibility, scale, and governance.
+              </Text>
+
+              <View>
+                <Text className="text-4xl font-bold text-foreground">Custom</Text>
+                <Text className="text-sm text-muted-foreground">Flexible plans</Text>
+              </View>
+
+              <Pressable
+                onPress={() => Linking.openURL('mailto:sales@shogo.ai')}
+                className="w-full items-center justify-center py-3 rounded-md border border-border active:bg-muted"
+              >
+                <Text className="text-sm font-medium text-foreground">Book a demo</Text>
+              </Pressable>
+
+              <FeatureList features={ENTERPRISE_FEATURES} />
+            </CardContent>
+          </Card>
         </View>
       </View>
     </ScrollView>

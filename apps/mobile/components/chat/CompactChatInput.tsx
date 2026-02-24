@@ -10,7 +10,7 @@
  */
 
 import { useState, useRef, useCallback, forwardRef } from "react"
-import { View, Text, TextInput, Pressable, Image, ScrollView } from "react-native"
+import { View, Text, TextInput, Pressable, Image, ScrollView, Platform } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { Paperclip, Send, Loader2, X, File, FileText, ImageIcon } from "lucide-react-native"
 
@@ -168,6 +168,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
               multiline
               className="min-h-[80px] text-base text-foreground"
               textAlignVertical="top"
+              style={Platform.OS === 'web' ? { outlineStyle: 'none', caretColor: 'auto' } as any : undefined}
             />
           </View>
 

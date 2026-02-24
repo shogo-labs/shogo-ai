@@ -14,7 +14,7 @@
  *  - User avatar + Sign Out
  */
 
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import {
   View,
   Text,
@@ -35,6 +35,7 @@ import {
   LayoutGrid,
   Star,
   Users,
+  User,
   FileCode2,
   ExternalLink,
   ChevronDown,
@@ -48,6 +49,9 @@ import {
   Sun,
   Moon,
   Monitor,
+  Settings,
+  Zap,
+  Check,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Avatar } from '@shogo/shared-ui/primitives'
@@ -72,7 +76,7 @@ function getInitials(name: string | null | undefined): string {
 
 function formatCredits(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
-  return String(n)
+  return n % 1 === 0 ? String(n) : n.toFixed(2)
 }
 
 function isRouteActive(pathname: string, href: string): boolean {
@@ -337,6 +341,7 @@ interface UserMenuProps {
 }
 
 function UserMenu({ visible, onClose, user, onSignOut, onNavigate }: UserMenuProps) {
+  const [appearanceOpen, setAppearanceOpen] = useState(false)
   const [theme, setThemeState] = useState<'light' | 'dark' | 'system'>('system')
 
   const handleTheme = useCallback((t: 'light' | 'dark' | 'system') => {
@@ -355,74 +360,250 @@ function UserMenu({ visible, onClose, user, onSignOut, onNavigate }: UserMenuPro
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable className="flex-1 bg-black/50 justify-end" onPress={onClose}>
+      <Pressable className="flex-1" onPress={onClose}>
         <Pressable
-          className="bg-card rounded-t-2xl p-4 pb-8 border-t border-border"
+          className="bg-card rounded-xl border border-border overflow-hidden"
+          style={{ position: 'absolute', bottom: 60, left: 8, width: 224 }}
           onPress={(e) => e.stopPropagation()}
         >
-          {/* User info */}
-          <View className="flex-row items-center gap-3 pb-4 border-b border-border mb-3">
-            <Avatar
-              fallback={getInitials(user?.name)}
-              src={user?.image}
-              size="md"
-            />
-            <View className="flex-1">
-              <Text className="text-sm font-medium text-foreground">{user?.name || 'User'}</Text>
-              <Text className="text-xs text-muted-foreground">{user?.email || ''}</Text>
-            </View>
-            <Pressable onPress={onClose} className="p-1 rounded-md active:bg-muted">
-              <X size={18} className="text-muted-foreground" />
+          {/* User info header */}
+          <View className="px-3 py-2.5 border-b border-border">
+            <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
+              {user?.name || 'User'}
+            </Text>
+            <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+              {user?.email || ''}
+            </Text>
+          </View>
+
+          {/* Menu items */}
+          <View className="py-1">
+            <Pressable
+              onPress={() => { onNavigate('/(app)/profile'); onClose() }}
+              className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
+            >
+              <User size={16} className="text-muted-foreground" />
+              <Text className="text-sm text-foreground">Profile</Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => setAppearanceOpen(!appearanceOpen)}
+              className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
+            >
+              <Monitor size={16} className="text-muted-foreground" />
+              <Text className="text-sm text-foreground flex-1">Appearance</Text>
+              <ChevronRight size={14} className="text-muted-foreground" />
+            </Pressable>
+
+            {appearanceOpen && (
+              <View className="pl-9 pr-3 py-1">
+                {([
+                  { value: 'light' as const, label: 'Light', Icon: Sun },
+                  { value: 'dark' as const, label: 'Dark', Icon: Moon },
+                  { value: 'system' as const, label: 'System', Icon: Monitor },
+                ] as const).map(({ value, label, Icon }) => (
+                  <Pressable
+                    key={value}
+                    onPress={() => handleTheme(value)}
+                    className="flex-row items-center gap-2 py-1.5 active:bg-muted rounded-md px-1"
+                  >
+                    <Icon size={14} className={theme === value ? 'text-primary' : 'text-muted-foreground'} />
+                    <Text className={cn('text-sm flex-1', theme === value ? 'text-primary' : 'text-foreground')}>
+                      {label}
+                    </Text>
+                    {theme === value && <Check size={14} className="text-primary" />}
+                  </Pressable>
+                ))}
+              </View>
+            )}
+          </View>
+
+          <View className="h-px bg-border" />
+
+          <View className="py-1">
+            <Pressable
+              onPress={() => { onSignOut(); onClose() }}
+              className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
+            >
+              <LogOut size={16} className="text-muted-foreground" />
+              <Text className="text-sm text-foreground">Sign Out</Text>
             </Pressable>
           </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  )
+}
 
-          {/* Profile */}
-          <Pressable
-            onPress={() => { onNavigate('/(app)/profile'); onClose() }}
-            className="flex-row items-center gap-3 px-2 py-3 rounded-md active:bg-muted"
-          >
-            <View className="h-4 w-4 items-center justify-center">
-              <Text className="text-muted-foreground text-xs">👤</Text>
-            </View>
-            <Text className="text-sm text-foreground">Profile</Text>
-          </Pressable>
+// ─── WorkspaceSwitcherModal ────────────────────────────────
 
-          {/* Appearance */}
-          <View className="px-2 py-3">
-            <Text className="text-sm text-foreground mb-2">Appearance</Text>
-            <View className="flex-row gap-2">
-              {([
-                { value: 'light' as const, label: 'Light', Icon: Sun },
-                { value: 'dark' as const, label: 'Dark', Icon: Moon },
-                { value: 'system' as const, label: 'System', Icon: Monitor },
-              ]).map(({ value, label, Icon }) => (
-                <Pressable
-                  key={value}
-                  onPress={() => handleTheme(value)}
-                  className={cn(
-                    'flex-row items-center gap-1.5 px-3 py-1.5 rounded-md border',
-                    theme === value
-                      ? 'border-primary bg-primary/10'
-                      : 'border-border active:bg-muted'
-                  )}
-                >
-                  <Icon size={14} className={theme === value ? 'text-primary' : 'text-muted-foreground'} />
-                  <Text className={cn('text-xs', theme === value ? 'text-primary' : 'text-muted-foreground')}>
-                    {label}
+interface WorkspaceSwitcherModalProps {
+  visible: boolean
+  onClose: () => void
+  workspaces: any[]
+  currentWorkspace: any
+  billingData: any
+  onNavigate: (href: string) => void
+}
+
+function WorkspaceSwitcherModal({
+  visible,
+  onClose,
+  workspaces,
+  currentWorkspace,
+  billingData,
+  onNavigate,
+}: WorkspaceSwitcherModalProps) {
+  const wsInitial = currentWorkspace?.name?.[0]?.toUpperCase() ?? 'W'
+  const planType = billingData.subscription
+    ? (billingData.subscription.planId?.charAt(0).toUpperCase() + billingData.subscription.planId?.slice(1))
+    : 'Free'
+  const effectiveBalance = billingData.effectiveBalance
+  const creditsTotal = effectiveBalance
+    ? Math.max(effectiveBalance.total, 1)
+    : 55
+  const creditsRemaining = effectiveBalance?.total ?? 0
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable className="flex-1 bg-black/50" onPress={onClose}>
+        <Pressable
+          className="bg-card rounded-xl border border-border mx-4 mt-24 overflow-hidden"
+          style={{ maxWidth: 280 }}
+          onPress={(e) => e.stopPropagation()}
+        >
+          {/* Current workspace header */}
+          {currentWorkspace && (
+            <View className="px-4 py-3">
+              <View className="flex-row items-start gap-3">
+                <View className="h-10 w-10 rounded-lg bg-primary/10 items-center justify-center">
+                  <Text className="text-sm font-medium text-primary">{wsInitial}</Text>
+                </View>
+                <View className="flex-1 min-w-0">
+                  <Text className="font-medium text-foreground" numberOfLines={1}>
+                    {currentWorkspace.name}
                   </Text>
-                </Pressable>
-              ))}
+                  <Text className="text-xs text-muted-foreground">
+                    {planType} Plan {'\u00B7'} 1 member
+                  </Text>
+                </View>
+              </View>
             </View>
+          )}
+
+          {/* Quick actions */}
+          {currentWorkspace && (
+            <View className="px-3 pb-2 flex-row gap-2">
+              <Pressable
+                onPress={() => { onNavigate('/(app)/settings'); onClose() }}
+                className="flex-1 flex-row items-center justify-center gap-1.5 h-8 rounded-md border border-border active:bg-muted"
+              >
+                <Settings size={14} className="text-muted-foreground" />
+                <Text className="text-xs text-foreground">Settings</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => { onNavigate('/(app)/members'); onClose() }}
+                className="flex-1 flex-row items-center justify-center gap-1.5 h-8 rounded-md border border-border active:bg-muted"
+              >
+                <Users size={14} className="text-muted-foreground" />
+                <Text className="text-xs text-foreground">Invite</Text>
+              </Pressable>
+            </View>
+          )}
+
+          <View className="h-px bg-border" />
+
+          {/* Credits */}
+          {currentWorkspace && (
+            <>
+              <View className="px-4 py-3 gap-2">
+                <View className="flex-row items-center justify-between">
+                  <Text className="text-sm text-muted-foreground">Credits</Text>
+                  <Text className="text-sm font-medium text-foreground">
+                    {formatCredits(creditsRemaining)} left
+                  </Text>
+                </View>
+                <View className="h-1.5 rounded-full bg-muted overflow-hidden">
+                  <View
+                    className="h-full rounded-full bg-primary"
+                    style={{ width: `${Math.min(100, (creditsRemaining / creditsTotal) * 100)}%` }}
+                  />
+                </View>
+                {effectiveBalance && (
+                  <Text className="text-xs text-muted-foreground">
+                    Daily: {formatCredits(effectiveBalance.dailyCredits)} {'\u00B7'} Monthly: {formatCredits(effectiveBalance.monthlyCredits)}
+                  </Text>
+                )}
+              </View>
+
+              <View className="h-px bg-border" />
+            </>
+          )}
+
+          {/* Upgrade CTA */}
+          {currentWorkspace && planType === 'Free' && (
+            <>
+              <View className="px-3 py-2">
+                <Pressable
+                  onPress={() => { onNavigate('/(app)/billing'); onClose() }}
+                  className="flex-row items-center justify-center gap-2 h-9 rounded-md"
+                  style={Platform.OS === 'web'
+                    ? { backgroundImage: 'linear-gradient(to right, #3b82f6, #9333ea)' } as any
+                    : { backgroundColor: '#7c3aed' }}
+                >
+                  <Zap size={16} className="text-white" />
+                  <Text className="text-sm font-medium text-white">Upgrade to Pro</Text>
+                </Pressable>
+              </View>
+
+              <View className="h-px bg-border" />
+            </>
+          )}
+
+          {/* All workspaces */}
+          <View className="py-1">
+            <Text className="px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              All workspaces
+            </Text>
+            {workspaces.map((ws: any) => {
+              const isCurrent = ws.id === currentWorkspace?.id
+              return (
+                <Pressable
+                  key={ws.id}
+                  onPress={() => onClose()}
+                  className="flex-row items-center gap-2 px-4 py-2 active:bg-muted"
+                >
+                  <View className="h-6 w-6 rounded bg-primary/10 items-center justify-center">
+                    <Text className="text-[10px] font-medium text-primary">
+                      {ws.name?.[0]?.toUpperCase() ?? 'W'}
+                    </Text>
+                  </View>
+                  <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
+                    {ws.name}
+                  </Text>
+                  <View className="rounded px-1.5 py-0.5 bg-muted">
+                    <Text className="text-[10px] text-muted-foreground">Free</Text>
+                  </View>
+                  {isCurrent && (
+                    <Check size={16} className="text-primary" />
+                  )}
+                </Pressable>
+              )
+            })}
           </View>
 
-          {/* Sign Out */}
-          <Pressable
-            onPress={() => { onSignOut(); onClose() }}
-            className="flex-row items-center gap-3 px-2 py-3 rounded-md active:bg-muted mt-2 border-t border-border pt-4"
-          >
-            <LogOut size={16} className="text-muted-foreground" />
-            <Text className="text-sm text-foreground">Sign Out</Text>
-          </Pressable>
+          <View className="h-px bg-border" />
+
+          {/* Create new workspace */}
+          <View className="p-1">
+            <Pressable
+              onPress={onClose}
+              className="flex-row items-center gap-2 px-4 py-2 rounded-md active:bg-muted"
+            >
+              <Plus size={16} className="text-muted-foreground" />
+              <Text className="text-sm text-foreground">Create new workspace</Text>
+            </Pressable>
+          </View>
         </Pressable>
       </Pressable>
     </Modal>
@@ -514,36 +695,43 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const workspaces = useWorkspaceCollection()
   const actions = useDomainActions()
 
-  const currentWorkspace = useMemo(() => {
-    try {
-      return workspaces?.all?.[0]
-    } catch {
-      return undefined
-    }
-  }, [workspaces])
+  useEffect(() => {
+    workspaces.loadAll()
+    projects.loadAll()
+  }, [])
+
+  let currentWorkspace: any
+  try {
+    currentWorkspace = workspaces?.all?.[0]
+  } catch {
+    currentWorkspace = undefined
+  }
 
   const billingData = useBillingData(currentWorkspace?.id)
 
-  const recentProjects = useMemo(() => {
-    try {
-      const all = projects?.all ?? []
-      return [...all]
-        .sort((a: any, b: any) => {
-          const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0
-          const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0
-          return bTime - aTime
-        })
-        .slice(0, 5)
-    } catch {
-      return []
-    }
-  }, [projects])
+  let recentProjects: any[]
+  try {
+    const all = projects?.all ?? []
+    recentProjects = [...all]
+      .sort((a: any, b: any) => {
+        const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0
+        const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0
+        return bTime - aTime
+      })
+      .slice(0, 5)
+  } catch {
+    recentProjects = []
+  }
 
   const isPaidPlan = billingData.hasActiveSubscription
 
   const [collapsed, setCollapsed] = useState(false)
   const [userMenuOpen, setUserMenuOpen] = useState(false)
   const [createFolderOpen, setCreateFolderOpen] = useState(false)
+  const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false)
+
+  let allWorkspaces: any[]
+  try { allWorkspaces = workspaces?.all?.slice() ?? [] } catch { allWorkspaces = [] }
 
   const toggleCollapse = useCallback(() => setCollapsed((c) => !c), [])
 
@@ -618,6 +806,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
       {/* ── Workspace Switcher ── */}
       <View className={cn('p-2 border-b border-border', collapsed && 'px-1')}>
         <Pressable
+          onPress={() => setWorkspaceSwitcherOpen(true)}
           className={cn(
             'flex-row items-center gap-2 rounded-md px-2 py-1.5 active:bg-muted',
             collapsed && 'justify-center px-0'
@@ -791,6 +980,14 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
       </View>
 
       {/* Modals */}
+      <WorkspaceSwitcherModal
+        visible={workspaceSwitcherOpen}
+        onClose={() => setWorkspaceSwitcherOpen(false)}
+        workspaces={allWorkspaces}
+        currentWorkspace={currentWorkspace}
+        billingData={billingData}
+        onNavigate={(href) => { router.push(href as any); onNavPress() }}
+      />
       <UserMenu
         visible={userMenuOpen}
         onClose={() => setUserMenuOpen(false)}

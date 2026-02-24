@@ -49,21 +49,31 @@ const WIDE_BREAKPOINT = 1024
 const CHAT_PANEL_WIDTH = 480
 
 export default observer(function ProjectLayout() {
-  const { id: projectId } = useLocalSearchParams<{ id: string }>()
+  const params = useLocalSearchParams<{
+    id: string
+    chatSessionId?: string
+    initialMessage?: string
+  }>()
+  const projectId = params.id
   const { width } = useWindowDimensions()
   const isWide = width >= WIDE_BREAKPOINT
   const { user } = useAuth()
 
   const store = useSDKDomain() as IDomainStore
-  const sdkReady = useSDKReady()
+  const { isReady: sdkReady } = useSDKReady()
   const actions = useDomainActions()
   const projects = useProjectCollection()
+
+  // Capture initialMessage once so it doesn't re-fire on re-renders
+  const [capturedInitialMessage] = useState(() => params.initialMessage ?? undefined)
 
   // Tab state for narrow screens
   const [activeTab, setActiveTab] = useState<ActiveTab>('chat')
 
-  // Chat session tracking
-  const [chatSessionId, setChatSessionId] = useState<string | null>(null)
+  // Chat session tracking — seed from route param if provided
+  const [chatSessionId, setChatSessionId] = useState<string | null>(
+    () => params.chatSessionId ?? null
+  )
 
   // Project state
   const [project, setProject] = useState<any>(null)
@@ -100,11 +110,10 @@ export default observer(function ProjectLayout() {
 
       try {
         await store.workspaceCollection.loadAll({ userId: user!.id })
-        await store.projectCollection.loadAll({ id: projectId })
+        const proj = await store.projectCollection.loadById(projectId)
 
         if (cancelled) return
 
-        const proj = store.projectCollection.all.find((p: any) => p.id === projectId)
         if (proj) {
           setProject(proj)
           setIsLoading(false)
@@ -219,6 +228,7 @@ export default observer(function ProjectLayout() {
       userId={user?.id}
       projectId={projectId}
       projectType={isAgentProject ? 'AGENT' : 'APP'}
+      initialMessage={capturedInitialMessage}
       className="flex-1"
     />
   )
