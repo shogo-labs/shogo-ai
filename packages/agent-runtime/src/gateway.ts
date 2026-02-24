@@ -22,7 +22,7 @@ import type { Message } from '@mariozechner/pi-ai'
 import type { StreamFn, AgentTool } from '@mariozechner/pi-agent-core'
 import { Type } from '@sinclair/typebox'
 import type { ChannelAdapter, IncomingMessage, AgentStatus, ChannelStatus, StreamChunkConfig, SandboxConfig } from './types'
-import { loadSkills, matchSkill, type Skill } from './skills'
+import { loadSkills, loadNativeSkills, matchSkill, type Skill } from './skills'
 import { runAgentLoop, type LoopDetectorConfig, type ToolContext } from './agent-loop'
 import { createAllTools, createHeartbeatTools, textResult } from './gateway-tools'
 import { HookEmitter, loadAllHooks } from './hooks'
@@ -427,8 +427,12 @@ export class AgentGateway {
     console.log('[AgentGateway] Starting...')
     this.running = true
 
-    // Load skills from workspace skills/ directory only (bundled skills must be explicitly installed)
-    this.skills = loadSkills(join(this.workspaceDir, 'skills'))
+    // Workspace skills first (user overrides win trigger matching), then native built-ins
+    const workspaceSkills = loadSkills(join(this.workspaceDir, 'skills'))
+    for (const s of workspaceSkills) s.native = false
+    const workspaceNames = new Set(workspaceSkills.map((s) => s.name))
+    const nativeSkills = loadNativeSkills(workspaceNames)
+    this.skills = [...workspaceSkills, ...nativeSkills]
     this.configSkills = this.loadConfigSkills()
     console.log(`[AgentGateway] Loaded ${this.skills.length} skills, ${this.configSkills.length} config skills`)
 
@@ -1349,6 +1353,7 @@ export class AgentGateway {
       name: s.name,
       trigger: s.trigger,
       description: s.description,
+      native: s.native,
     }))
     const fsSkillNames = new Set(fsSkills.map((s) => s.name))
     const configSkills = (this.configSkills ?? [])
@@ -1357,6 +1362,7 @@ export class AgentGateway {
         name: s.name,
         trigger: s.trigger || '',
         description: s.description || '',
+        native: false,
       }))
 
     return {
@@ -1384,7 +1390,11 @@ export class AgentGateway {
   reloadConfig(): void {
     const prevEnabled = this.config.heartbeatEnabled
     this.config = this.loadConfig()
-    this.skills = loadSkills(join(this.workspaceDir, 'skills'))
+    const workspaceSkills = loadSkills(join(this.workspaceDir, 'skills'))
+    for (const s of workspaceSkills) s.native = false
+    const workspaceNames = new Set(workspaceSkills.map((s) => s.name))
+    const nativeSkills = loadNativeSkills(workspaceNames)
+    this.skills = [...workspaceSkills, ...nativeSkills]
     this.configSkills = this.loadConfigSkills()
 
     // Auto-start heartbeat if it was just enabled via config change

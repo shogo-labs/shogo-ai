@@ -69,7 +69,7 @@ export interface AgentStatus {
     quietHours: { start: string; end: string; timezone: string }
   }
   channels: ChannelStatus[]
-  skills: Array<{ name: string; trigger: string; description: string }>
+  skills: Array<{ name: string; trigger: string; description: string; native: boolean }>
   model: { provider: string; name: string }
   sessions?: Array<{
     id: string
@@ -94,4 +94,6 @@ export interface SkillDefinition {
   trigger: string
   tools: string[]
   content: string
+  /** Native skills are auto-loaded without installation and cannot be removed */
+  native: boolean
 }

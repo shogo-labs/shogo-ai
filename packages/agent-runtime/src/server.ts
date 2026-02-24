@@ -702,6 +702,7 @@ app.get('/agent/bundled-skills', (c) => {
       trigger: s.trigger,
       tools: s.tools,
       content: s.content,
+      native: s.native ?? false,
     })),
   })
 })
@@ -735,6 +736,13 @@ app.delete('/agent/skills/:name', (c) => {
 
   const filePath = join(AGENT_DIR, 'skills', `${name}.md`)
   if (!existsSync(filePath)) {
+    // No workspace file — check if this is a native skill the user is trying to remove
+    const { loadBundledSkills } = require('./skills')
+    const bundled = loadBundledSkills(new Set())
+    const nativeSkill = bundled.find((s: any) => s.name === name && s.native)
+    if (nativeSkill) {
+      return c.json({ error: `"${name}" is a native built-in skill and cannot be removed` }, 403)
+    }
     return c.json({ error: `Skill "${name}" not found` }, 404)
   }
 

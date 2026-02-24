@@ -22,6 +22,8 @@ export interface Skill {
   tools: string[]
   content: string
   filePath: string
+  /** Native skills are auto-loaded without installation and cannot be removed */
+  native: boolean
 }
 
 /**
@@ -95,6 +97,7 @@ export function loadSkills(skillsDir: string): Skill[] {
         tools: resolveToolNames(rawTools),
         content,
         filePath,
+        native: metadata.native === 'true' || metadata.native === true,
       })
     } catch (error: any) {
       console.error(`[Skills] Failed to load ${file}:`, error.message)
@@ -114,6 +117,19 @@ export function loadBundledSkills(existingSkillNames: Set<string>): Skill[] {
 
   const all = loadSkills(bundledDir)
   return all.filter((s) => !existingSkillNames.has(s.name))
+}
+
+/**
+ * Load native bundled skills (marked with `native: true` in frontmatter).
+ * These auto-activate without installation. Workspace skills with the same
+ * name take precedence (allowing user overrides of native behavior).
+ */
+export function loadNativeSkills(existingSkillNames: Set<string>): Skill[] {
+  const bundledDir = join(__dirname, 'bundled-skills')
+  if (!existsSync(bundledDir)) return []
+
+  const all = loadSkills(bundledDir)
+  return all.filter((s) => s.native && !existingSkillNames.has(s.name))
 }
 
 /**

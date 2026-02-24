@@ -7,7 +7,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react'
-import { Zap, Plus, RefreshCw, BookOpen, Download, Check, Trash2 } from 'lucide-react'
+import { Zap, Plus, RefreshCw, BookOpen, Download, Check, Trash2, Shield } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAgentUrl } from '@/hooks/useAgentUrl'
 
@@ -16,6 +16,7 @@ interface Skill {
   name: string
   description: string
   trigger: string
+  native: boolean
 }
 
 interface BundledSkill {
@@ -23,6 +24,7 @@ interface BundledSkill {
   description: string
   trigger: string
   tools: string[]
+  native: boolean
 }
 
 interface AgentSkillsPanelProps {
@@ -61,6 +63,7 @@ export function AgentSkillsPanel({ projectId, visible, localAgentUrl }: AgentSki
           name: s.name,
           description: s.description || '',
           trigger: s.trigger || '',
+          native: s.native ?? false,
         }))
       )
 
@@ -132,7 +135,7 @@ export function AgentSkillsPanel({ projectId, visible, localAgentUrl }: AgentSki
         <Zap className="h-4 w-4 text-muted-foreground" />
         <span className="text-sm font-medium">Skills</span>
         <span className="text-xs text-muted-foreground">
-          {skills.length} installed
+          {skills.length} active
         </span>
         <div className="ml-auto flex items-center gap-1">
           <button
@@ -247,7 +250,7 @@ export function AgentSkillsPanel({ projectId, visible, localAgentUrl }: AgentSki
             {bundledSkills.filter((s) => installedNames.has(s.name)).length > 0 && (
               <div className="mt-4">
                 <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
-                  Already Installed
+                  Already Active
                 </div>
                 {bundledSkills
                   .filter((s) => installedNames.has(s.name))
@@ -259,6 +262,12 @@ export function AgentSkillsPanel({ projectId, visible, localAgentUrl }: AgentSki
                       <div className="flex items-center gap-2">
                         <Check className="h-3.5 w-3.5 text-green-500" />
                         <span className="text-sm font-medium">{skill.name}</span>
+                        {skill.native && (
+                          <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-blue-500/10 text-blue-600 dark:text-blue-400 text-[10px] rounded font-medium">
+                            <Shield className="h-2.5 w-2.5" />
+                            Built-in
+                          </span>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -291,26 +300,36 @@ export function AgentSkillsPanel({ projectId, visible, localAgentUrl }: AgentSki
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium">{skill.name}</div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-sm font-medium">{skill.name}</span>
+                      {skill.native && (
+                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-blue-500/10 text-blue-600 dark:text-blue-400 text-[10px] rounded font-medium">
+                          <Shield className="h-2.5 w-2.5" />
+                          Built-in
+                        </span>
+                      )}
+                    </div>
                     {skill.description && (
                       <div className="text-xs text-muted-foreground mt-0.5">
                         {skill.description}
                       </div>
                     )}
                   </div>
-                  <button
-                    onClick={() => handleRemove(skill.name)}
-                    disabled={removing === skill.name}
-                    className={cn(
-                      'shrink-0 p-1 rounded transition-colors',
-                      removing === skill.name
-                        ? 'text-muted-foreground'
-                        : 'text-muted-foreground/50 hover:text-destructive hover:bg-destructive/10'
-                    )}
-                    title="Remove skill"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+                  {!skill.native && (
+                    <button
+                      onClick={() => handleRemove(skill.name)}
+                      disabled={removing === skill.name}
+                      className={cn(
+                        'shrink-0 p-1 rounded transition-colors',
+                        removing === skill.name
+                          ? 'text-muted-foreground'
+                          : 'text-muted-foreground/50 hover:text-destructive hover:bg-destructive/10'
+                      )}
+                      title="Remove skill"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
                 {skill.trigger && (
                   <div className="mt-2 flex flex-wrap gap-1">
