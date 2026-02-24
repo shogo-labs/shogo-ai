@@ -1274,6 +1274,11 @@ export class AgentGateway {
         adapter = new WhatsAppAdapter(config)
         break
       }
+      case 'teams': {
+        const { TeamsAdapter } = await import('./channels/teams')
+        adapter = new TeamsAdapter(config)
+        break
+      }
       default:
         throw new Error(`Unknown channel type: ${type}`)
     }
@@ -1282,6 +1287,10 @@ export class AgentGateway {
     await adapter.connect(config)
     this.channels.set(type, adapter)
     console.log(`[AgentGateway] Connected channel: ${type}`)
+  }
+
+  getChannel(type: string): ChannelAdapter | undefined {
+    return this.channels.get(type)
   }
 
   async disconnectChannel(type: string): Promise<void> {

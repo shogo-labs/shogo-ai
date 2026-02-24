@@ -250,6 +250,10 @@ export const CHANNEL_SETUP_GUIDE = `## Channel Setup
 Channels connect the agent to messaging platforms. Currently supported:
 - **Telegram** — Simplest setup, just needs a bot token from @BotFather
 - **Discord** — Bot token + guild ID, enable Message Content Intent
+- **Email** — IMAP/SMTP with username and password
+- **Slack** — Bot token + app-level token for Socket Mode
+- **WhatsApp** — Meta Cloud API access token and phone number ID
+- **Microsoft Teams** — Azure Bot app ID + app password
 
 ### Telegram Setup
 1. Create a bot via Telegram's @BotFather
@@ -260,7 +264,14 @@ Channels connect the agent to messaging platforms. Currently supported:
 1. Create a bot in Discord Developer Portal
 2. Enable Message Content Intent
 3. Copy the bot token and guild ID
-4. Use \`channel.connect({ type: "discord", config: { botToken: "...", guildId: "..." } })\``
+4. Use \`channel.connect({ type: "discord", config: { botToken: "...", guildId: "..." } })\`
+
+### Microsoft Teams Setup
+1. Register a bot in the Azure Portal → Azure Bot Service
+2. Note the **Microsoft App ID** and create a **client secret** (App Password)
+3. Set the messaging endpoint to: \`<agent-url>/agent/channels/teams/messages\`
+4. Use \`channel.connect({ type: "teams", config: { appId: "...", appPassword: "...", botName: "My Agent" } })\`
+5. Install the bot in your Teams workspace via the Teams Admin Center or a Teams App manifest`
 
 export const MEMORY_GUIDE = `## Memory System
 

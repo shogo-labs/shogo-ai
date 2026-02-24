@@ -49,6 +49,11 @@ const CHANNEL_INFO: Record<string, { name: string; icon: string; setupUrl: strin
     icon: '💼',
     setupUrl: 'https://api.slack.com/apps',
   },
+  teams: {
+    name: 'Microsoft Teams',
+    icon: '🟦',
+    setupUrl: 'https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade',
+  },
 }
 
 export function AgentChannelsPanel({ projectId, visible, localAgentUrl }: AgentChannelsPanelProps) {
@@ -163,7 +168,7 @@ export function AgentChannelsPanel({ projectId, visible, localAgentUrl }: AgentC
             </div>
 
             <div className="text-xs text-muted-foreground mt-4">
-              Use the builder AI chat to connect channels. For example: "Connect my Telegram bot", "Set up Discord", "Connect WhatsApp", or "Add Slack".
+              Use the builder AI chat to connect channels. For example: "Connect my Telegram bot", "Set up Discord", "Connect WhatsApp", "Add Slack", or "Set up Microsoft Teams".
             </div>
           </div>
         )}
