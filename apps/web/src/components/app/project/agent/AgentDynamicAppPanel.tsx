@@ -2,12 +2,23 @@
  * AgentDynamicAppPanel
  *
  * Panel wrapper that connects to the agent runtime's SSE stream and renders
- * all active surfaces. Supports per-project theme switching for the canvas.
+ * all active surfaces. Supports per-project theme switching, viewport preview
+ * (mobile/tablet/desktop/wide), and opening the canvas in a new tab.
  */
 
-import { useState, useEffect, useMemo, useRef, type CSSProperties } from 'react'
+import { useState, useEffect, useMemo, useRef, useCallback, type CSSProperties } from 'react'
 import { cn } from '@/lib/utils'
-import { LayoutDashboard, Wifi, WifiOff, RefreshCw } from 'lucide-react'
+import {
+  LayoutDashboard,
+  Wifi,
+  WifiOff,
+  RefreshCw,
+  Smartphone,
+  Tablet,
+  Monitor,
+  MonitorPlay,
+  ExternalLink,
+} from 'lucide-react'
 import { useDynamicAppStream } from './dynamic-app/use-dynamic-app-stream'
 import { DynamicAppRenderer } from './dynamic-app/DynamicAppRenderer'
 import { CanvasErrorBoundary } from './dynamic-app/CanvasErrorBoundary'
@@ -23,8 +34,29 @@ import { ThemeSelector } from '@/components/app/shared/ThemeSelector'
 import { getThemeById, getDefaultTheme } from '@/lib/themes/presets'
 import type { ThemeColors } from '@/lib/themes/types'
 
+// ---------------------------------------------------------------------------
+// Viewport definitions
+// ---------------------------------------------------------------------------
+
+type CanvasViewport = 'mobile' | 'tablet' | 'desktop' | 'wide'
+
+const CANVAS_VIEWPORTS: Record<CanvasViewport, { width: number; icon: React.ElementType; label: string }> = {
+  mobile:  { width: 375,  icon: Smartphone,  label: 'Mobile' },
+  tablet:  { width: 768,  icon: Tablet,      label: 'Tablet' },
+  desktop: { width: 1024, icon: Monitor,     label: 'Desktop' },
+  wide:    { width: 0,    icon: MonitorPlay,  label: 'Full width' },
+}
+
+// ---------------------------------------------------------------------------
+// Theme helpers
+// ---------------------------------------------------------------------------
+
 function getCanvasThemeStorageKey(projectId: string) {
   return `shogo-canvas-theme-${projectId}`
+}
+
+function getCanvasViewportStorageKey(projectId: string) {
+  return `shogo-canvas-viewport-${projectId}`
 }
 
 function hsl(v: string) { return `hsl(${v})` }
@@ -74,6 +106,10 @@ function themeColorsToStyleVars(colors: ThemeColors): CSSProperties {
   } as CSSProperties
 }
 
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
 interface AgentDynamicAppPanelProps {
   projectId: string
   visible: boolean
@@ -93,12 +129,29 @@ export function AgentDynamicAppPanel({ projectId, visible, localAgentUrl }: Agen
     }
   })
 
+  // Viewport state, persisted per project
+  const [viewport, setViewport] = useState<CanvasViewport>(() => {
+    if (!projectId) return 'wide'
+    try {
+      const saved = localStorage.getItem(getCanvasViewportStorageKey(projectId))
+      if (saved && saved in CANVAS_VIEWPORTS) return saved as CanvasViewport
+    } catch {}
+    return 'wide'
+  })
+
   const handleSelectTheme = (themeId: string) => {
     setCanvasThemeId(themeId)
     try {
       localStorage.setItem(getCanvasThemeStorageKey(projectId), themeId)
     } catch {}
   }
+
+  const handleViewportChange = useCallback((vp: CanvasViewport) => {
+    setViewport(vp)
+    try {
+      localStorage.setItem(getCanvasViewportStorageKey(projectId), vp)
+    } catch {}
+  }, [projectId])
 
   // Detect dark mode
   const [isDark, setIsDark] = useState(() =>
@@ -147,7 +200,7 @@ export function AgentDynamicAppPanel({ projectId, visible, localAgentUrl }: Agen
     return () => { cancelled = true }
   }, [projectId, localAgentUrl])
 
-  const { surfaces, connected, connecting, error, dispatchAction, updateLocalData } = useDynamicAppStream(
+  const { surfaces, connected, connecting, error, dispatchAction, updateLocalData, reconnect } = useDynamicAppStream(
     visible ? agentUrl : null
   )
 
@@ -185,12 +238,24 @@ export function AgentDynamicAppPanel({ projectId, visible, localAgentUrl }: Agen
   const activeSurface = selectedSurfaceId ? surfaces.get(selectedSurfaceId) : null
   const hasSurfaces = surfaces.size > 0
 
+  const handleOpenNewTab = useCallback(() => {
+    const url = `/projects/${projectId}/canvas-preview`
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }, [projectId])
+
+  const handleRefresh = useCallback(() => {
+    reconnect()
+  }, [reconnect])
+
+  const viewportWidth = CANVAS_VIEWPORTS[viewport].width
+
   return (
     <div className={cn('absolute inset-0 flex flex-col', !visible && 'invisible pointer-events-none')}>
-      {/* Status Bar */}
-      <div className="flex items-center justify-between px-3 py-1.5 border-b bg-muted/30 shrink-0">
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <LayoutDashboard className="size-3.5" />
+      {/* Preview Toolbar */}
+      <div className="flex items-center justify-between px-3 py-1.5 border-b bg-muted/30 shrink-0 gap-2">
+        {/* Left: Surface selector */}
+        <div className="flex items-center gap-2 text-xs text-muted-foreground min-w-0">
+          <LayoutDashboard className="size-3.5 shrink-0" />
           {surfaceList.length > 1 && selectedSurfaceId ? (
             <Select value={selectedSurfaceId} onValueChange={setSelectedSurfaceId}>
               <SelectTrigger className="h-6 text-xs gap-1 border-none bg-transparent shadow-none px-1 py-0 min-w-0 w-auto">
@@ -205,55 +270,118 @@ export function AgentDynamicAppPanel({ projectId, visible, localAgentUrl }: Agen
               </SelectContent>
             </Select>
           ) : (
-            <span>{activeSurface?.title || 'Canvas'}</span>
+            <span className="truncate">{activeSurface?.title || 'Canvas'}</span>
           )}
         </div>
-        <div className="flex items-center gap-2">
+
+        {/* Center: Viewport controls */}
+        <div className="flex items-center gap-1">
+          <div className="flex items-center rounded-md bg-muted/50 p-0.5">
+            {(Object.entries(CANVAS_VIEWPORTS) as [CanvasViewport, typeof CANVAS_VIEWPORTS[CanvasViewport]][]).map(
+              ([size, { icon: Icon, label }]) => (
+                <button
+                  key={size}
+                  title={label}
+                  onClick={() => handleViewportChange(size)}
+                  className={cn(
+                    'h-6 w-6 flex items-center justify-center rounded-sm transition-colors',
+                    'text-muted-foreground hover:text-foreground',
+                    viewport === size && 'bg-background text-foreground shadow-sm'
+                  )}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                </button>
+              )
+            )}
+          </div>
+        </div>
+
+        {/* Right: Theme, refresh, open new tab, connection status */}
+        <div className="flex items-center gap-1.5 shrink-0">
           <ThemeSelector
             selectedThemeId={canvasThemeId}
             onSelectTheme={handleSelectTheme}
             variant="compact"
           />
+
+          <div className="h-4 w-px bg-border/60" />
+
+          <button
+            onClick={handleRefresh}
+            title="Refresh canvas"
+            className="h-6 w-6 flex items-center justify-center rounded-sm text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+          >
+            <RefreshCw className={cn('h-3.5 w-3.5', connecting && 'animate-spin')} />
+          </button>
+
+          <button
+            onClick={handleOpenNewTab}
+            title="Open canvas in new tab"
+            className="h-6 w-6 flex items-center justify-center rounded-sm text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+          </button>
+
+          <div className="h-4 w-px bg-border/60" />
+
           {error && (
-            <span className="text-xs text-amber-500">{error}</span>
+            <span className="text-xs text-amber-500 max-w-[120px] truncate">{error}</span>
           )}
           {connected ? (
             <div className="flex items-center gap-1 text-xs text-emerald-500">
               <Wifi className="size-3" />
-              <span>Connected</span>
+              <span className="hidden lg:inline">Live</span>
             </div>
           ) : agentUrl ? (
             <div className="flex items-center gap-1 text-xs text-muted-foreground">
               <WifiOff className="size-3" />
-              <span>Disconnected</span>
+              <span className="hidden lg:inline">Offline</span>
             </div>
           ) : (
             <div className="flex items-center gap-1 text-xs text-muted-foreground">
               <RefreshCw className="size-3 animate-spin" />
-              <span>Connecting...</span>
+              <span className="hidden lg:inline">Starting...</span>
             </div>
           )}
         </div>
       </div>
 
-      {/* Content Area — scoped theme via CSS variables */}
-      <div className="flex-1 overflow-hidden rounded-b-lg" style={canvasThemeStyle}>
+      {/* Content Area — viewport-constrained with scoped theme */}
+      <div className="flex-1 overflow-hidden rounded-b-lg bg-muted/10">
         {hasSurfaces && activeSurface ? (
-          <CanvasErrorBoundary key={activeSurface.surfaceId} surfaceTitle={activeSurface.title}>
-            <ScrollArea className="h-full">
-              <DynamicAppRenderer
-                surface={activeSurface}
-                agentUrl={agentUrl}
-                onAction={dispatchAction}
-                onDataChange={updateLocalData}
-              />
-            </ScrollArea>
-          </CanvasErrorBoundary>
+          <div className="h-full w-full flex items-start justify-center overflow-auto">
+            <div
+              className={cn(
+                'h-full transition-all duration-300 ease-in-out',
+                viewport === 'wide' ? 'w-full' : 'shadow-sm border-x border-border/30'
+              )}
+              style={
+                viewportWidth > 0
+                  ? {
+                      width: `${viewportWidth}px`,
+                      minWidth: `${viewportWidth}px`,
+                      maxWidth: `${viewportWidth}px`,
+                      ...canvasThemeStyle,
+                    }
+                  : canvasThemeStyle
+              }
+            >
+              <CanvasErrorBoundary key={activeSurface.surfaceId} surfaceTitle={activeSurface.title}>
+                <ScrollArea className="h-full">
+                  <DynamicAppRenderer
+                    surface={activeSurface}
+                    agentUrl={agentUrl}
+                    onAction={dispatchAction}
+                    onDataChange={updateLocalData}
+                  />
+                </ScrollArea>
+              </CanvasErrorBoundary>
+            </div>
+          </div>
         ) : (
-          <EmptyState
-            connected={connected}
-            agentUrl={agentUrl}
-          />
+          <div style={canvasThemeStyle} className="h-full">
+            <EmptyState connected={connected} agentUrl={agentUrl} />
+          </div>
         )}
       </div>
     </div>
@@ -274,33 +402,55 @@ function EmptyState({
   if (!agentUrl || !connected) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4 px-8 text-center">
-        <RefreshCw className="size-6 text-muted-foreground animate-spin" />
-        <p className="text-sm text-muted-foreground">
-          {!agentUrl ? 'Starting agent runtime...' : 'Connecting to agent...'}
-        </p>
+        <div className="relative">
+          <div className="absolute inset-0 bg-primary/10 rounded-full blur-xl animate-pulse" />
+          <div className="relative bg-muted/50 p-5 rounded-full border border-border/50">
+            <RefreshCw className="size-7 text-muted-foreground animate-spin" />
+          </div>
+        </div>
+        <div className="space-y-1">
+          <p className="text-sm font-medium text-foreground">
+            {!agentUrl ? 'Starting agent runtime...' : 'Connecting to agent...'}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            This usually takes a few seconds
+          </p>
+        </div>
       </div>
     )
   }
 
   return (
     <div className="flex flex-col items-center justify-center h-full gap-6 px-8 text-center">
-      <div className="w-16 h-16 rounded-2xl bg-muted flex items-center justify-center">
-        <LayoutDashboard className="size-8 text-muted-foreground" />
+      <div className="relative">
+        <div className="absolute inset-0 bg-primary/5 rounded-2xl blur-xl" />
+        <div className="relative w-16 h-16 rounded-2xl bg-muted/50 border border-border/50 flex items-center justify-center">
+          <LayoutDashboard className="size-8 text-muted-foreground" />
+        </div>
       </div>
 
-      <div>
-        <h3 className="text-base font-semibold mb-1">Canvas</h3>
+      <div className="space-y-1.5">
+        <h3 className="text-base font-semibold">Canvas Preview</h3>
         <p className="text-sm text-muted-foreground max-w-md">
-          No active surfaces. When your agent uses canvas tools to build a UI, it will appear here.
+          No active surfaces yet. When your agent builds a UI, it will appear here in real time.
         </p>
       </div>
 
-      <div className="text-xs text-muted-foreground bg-muted rounded-lg px-4 py-3 max-w-sm">
-        <p className="font-medium mb-1">Try telling your agent:</p>
-        <ul className="space-y-1 text-left">
-          <li>&ldquo;Show me a dashboard with the latest metrics&rdquo;</li>
-          <li>&ldquo;Display the search results as cards&rdquo;</li>
-          <li>&ldquo;Create a form for me to fill out&rdquo;</li>
+      <div className="text-xs text-muted-foreground bg-muted/50 rounded-xl px-5 py-4 max-w-sm border border-border/30">
+        <p className="font-medium mb-2">Try asking your agent to:</p>
+        <ul className="space-y-1.5 text-left">
+          <li className="flex items-start gap-2">
+            <span className="text-primary mt-0.5">&#8227;</span>
+            <span>&ldquo;Show me a dashboard with the latest metrics&rdquo;</span>
+          </li>
+          <li className="flex items-start gap-2">
+            <span className="text-primary mt-0.5">&#8227;</span>
+            <span>&ldquo;Display the search results as cards&rdquo;</span>
+          </li>
+          <li className="flex items-start gap-2">
+            <span className="text-primary mt-0.5">&#8227;</span>
+            <span>&ldquo;Create a form for me to fill out&rdquo;</span>
+          </li>
         </ul>
       </div>
     </div>

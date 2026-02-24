@@ -191,6 +191,27 @@ export function useDynamicAppStream(agentUrl: string | null) {
     }
   }, [connect])
 
+  const reconnect = useCallback(() => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close()
+      eventSourceRef.current = null
+    }
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current)
+      reconnectTimeoutRef.current = null
+    }
+    if (initialStateTimerRef.current) {
+      clearTimeout(initialStateTimerRef.current)
+      initialStateTimerRef.current = null
+    }
+    setSurfaces(new Map())
+    setConnected(false)
+    setConnecting(false)
+    setError(null)
+    reconnectAttemptRef.current = 0
+    connect()
+  }, [connect])
+
   const dispatchAction = useCallback(
     async (surfaceId: string, name: string, context?: Record<string, unknown>) => {
       if (!agentUrl) return
@@ -228,7 +249,7 @@ export function useDynamicAppStream(agentUrl: string | null) {
     [],
   )
 
-  return { surfaces, connected, connecting, error, dispatchAction, updateLocalData }
+  return { surfaces, connected, connecting, error, dispatchAction, updateLocalData, reconnect }
 }
 
 // ---------------------------------------------------------------------------

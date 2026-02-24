@@ -18,6 +18,7 @@ import { AuthProvider } from './contexts/AuthContext'
 import { AdminGuard } from './components/admin/AdminGuard'
 import { AdminShell } from './components/admin/AdminShell'
 import { DynamicAppDevPreview } from './components/app/project/agent/dynamic-app/DynamicAppDevPreview'
+import { CanvasPreviewPage } from './components/app/project/agent/CanvasPreviewPage'
 import { AdminDashboard } from './components/admin/pages/AdminDashboard'
 import { AdminUsers } from './components/admin/pages/AdminUsers'
 import { AdminUserDetail } from './components/admin/pages/AdminUserDetail'
@@ -167,6 +168,13 @@ function AppWithSession() {
                   <Route path="/projects/:projectId" element={
                     <AuthGate>
                       <ProjectLayout />
+                    </AuthGate>
+                  } />
+
+                  {/* Canvas preview - standalone full-screen preview for agent projects */}
+                  <Route path="/projects/:projectId/canvas-preview" element={
+                    <AuthGate>
+                      <CanvasPreviewPage />
                     </AuthGate>
                   } />
 
