@@ -119,7 +119,7 @@ const DEFAULT_CONFIG: SessionManagerConfig = {
   sessionTtlSeconds: 3600,
   maxMessages: 30,
   estimatedTokensPerMessage: 150,
-  maxEstimatedTokens: 30_000,
+  maxEstimatedTokens: 100_000,
   keepRecentMessages: 10,
   pruneIntervalSeconds: 300,
 }
@@ -272,7 +272,10 @@ export class SessionManager {
     if (session.compactedSummary) {
       tokens += Math.ceil(session.compactedSummary.length / 4)
     }
-    tokens += session.messages.length * this.config.estimatedTokensPerMessage
+    for (const msg of session.messages) {
+      const text = this.extractText(msg)
+      tokens += Math.max(this.config.estimatedTokensPerMessage, Math.ceil(text.length / 4))
+    }
     return tokens
   }
 
@@ -287,8 +290,29 @@ export class SessionManager {
     const { keepRecentMessages } = this.config
     if (session.messages.length <= keepRecentMessages) return null
 
-    const toCompact = session.messages.slice(0, -keepRecentMessages)
-    const toKeep = session.messages.slice(-keepRecentMessages)
+    // Find a safe split point that preserves complete turns.
+    // Never split in the middle of an assistant->toolResult sequence since
+    // orphaned toolResult messages create invalid Anthropic API history.
+    let splitIndex = session.messages.length - keepRecentMessages
+    while (splitIndex > 0 && splitIndex < session.messages.length) {
+      const msg = session.messages[splitIndex]
+      if (msg.role === 'user') break
+      splitIndex++
+    }
+
+    // If we walked past all messages without finding a user turn boundary,
+    // fall back to the original target but skip any leading toolResult messages.
+    if (splitIndex >= session.messages.length - 1) {
+      splitIndex = Math.max(0, session.messages.length - keepRecentMessages)
+      while (splitIndex < session.messages.length && session.messages[splitIndex].role === 'toolResult') {
+        splitIndex++
+      }
+    }
+
+    const toCompact = session.messages.slice(0, splitIndex)
+    const toKeep = session.messages.slice(splitIndex)
+
+    if (toCompact.length === 0) return null
 
     let summary: string
     if (this.summarizeFn) {

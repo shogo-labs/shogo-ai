@@ -22,6 +22,7 @@ import {
   VALID_COMPONENT_TYPES,
   getComponentSchema,
   lintComponents,
+  normalizeComponents,
   type ComponentSchema,
   type LintMessage,
 } from './canvas-component-schema'
@@ -169,10 +170,36 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
   }
 }
 
+const BROWSER_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+const WEB_FETCH_TIMEOUT_MS = 30_000
+
+function stripHtmlToText(html: string): string {
+  let text = html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<nav[\s\S]*?<\/nav>/gi, '')
+    .replace(/<footer[\s\S]*?<\/footer>/gi, '')
+    .replace(/<header[\s\S]*?<\/header>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/?(p|div|h[1-6]|li|tr|blockquote)[^>]*>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  return text
+}
+
 function createWebFetchTool(): AgentTool {
   return {
     name: 'web_fetch',
-    description: 'Fetch content from a URL and return it as text. Useful for checking APIs, web pages, or downloading data.',
+    description: 'Fetch content from a URL and return it as text. Useful for checking APIs, web pages, or downloading data. Automatically extracts readable text from HTML pages.',
     label: 'Web Fetch',
     parameters: Type.Object({
       url: Type.String({ description: 'URL to fetch' }),
@@ -181,24 +208,227 @@ function createWebFetchTool(): AgentTool {
     execute: async (_toolCallId, params) => {
       const { url, maxChars = 50000 } = params as { url: string; maxChars?: number }
 
+      const headers: Record<string, string> = {
+        'User-Agent': BROWSER_USER_AGENT,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,application/json,text/plain;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+      }
+
+      const MAX_ATTEMPTS = 2
+
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        try {
+          const response = await fetch(url, {
+            headers,
+            signal: AbortSignal.timeout(WEB_FETCH_TIMEOUT_MS),
+            redirect: 'follow',
+          })
+
+          if (response.status === 403 || response.status === 429) {
+            if (attempt < MAX_ATTEMPTS) {
+              await new Promise(r => setTimeout(r, 1000))
+              continue
+            }
+            return textResult({
+              error: `HTTP ${response.status}: Access denied or rate limited. The site may block automated requests.`,
+              url,
+              suggestion: 'Try web_search instead to find the information, or try a different source.',
+            })
+          }
+
+          if (!response.ok) {
+            return textResult({ error: `HTTP ${response.status}: ${response.statusText}`, url })
+          }
+
+          const contentType = response.headers.get('content-type') || ''
+          let text = await response.text()
+
+          if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
+            text = stripHtmlToText(text)
+          }
+
+          if (text.length > maxChars) {
+            text = text.substring(0, maxChars) + `\n\n[Truncated at ${maxChars} chars]`
+          }
+
+          return textResult({ content: text, status: response.status, bytes: text.length, url })
+        } catch (err: any) {
+          if (attempt < MAX_ATTEMPTS && (err.name === 'TimeoutError' || err.code === 'ECONNRESET')) {
+            await new Promise(r => setTimeout(r, 500))
+            continue
+          }
+          return textResult({ error: err.message, url })
+        }
+      }
+
+      return textResult({ error: 'All fetch attempts failed', url })
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Serper.dev Web Search
+// ---------------------------------------------------------------------------
+
+const SERPER_ENDPOINTS: Record<string, string> = {
+  search: 'https://google.serper.dev/search',
+  news: 'https://google.serper.dev/news',
+  images: 'https://google.serper.dev/images',
+  places: 'https://google.serper.dev/places',
+  shopping: 'https://google.serper.dev/shopping',
+}
+
+interface SerperOrganicResult {
+  title?: string
+  link?: string
+  snippet?: string
+  position?: number
+  date?: string
+  sitelinks?: Array<{ title: string; link: string }>
+}
+
+interface SerperResponse {
+  searchParameters?: Record<string, unknown>
+  knowledgeGraph?: { title?: string; description?: string; type?: string; website?: string; attributes?: Record<string, string> }
+  answerBox?: { answer?: string; snippet?: string; snippetHighlighted?: string[] }
+  organic?: SerperOrganicResult[]
+  peopleAlsoAsk?: Array<{ question: string; snippet?: string; link?: string }>
+  relatedSearches?: Array<{ query: string }>
+  news?: Array<{ title?: string; link?: string; snippet?: string; date?: string; source?: string }>
+  places?: Array<{ title?: string; address?: string; rating?: number; ratingCount?: number }>
+  images?: Array<{ title?: string; imageUrl?: string; link?: string }>
+  shopping?: Array<{ title?: string; price?: string; link?: string; source?: string }>
+  credits?: number
+}
+
+function formatSerperResults(raw: SerperResponse, searchType: string): string {
+  const parts: string[] = []
+
+  if (raw.answerBox) {
+    const ab = raw.answerBox
+    const answer = [ab.answer, ab.snippet].filter(Boolean).join(' — ')
+    if (answer) parts.push(`**Answer:** ${answer}`)
+  }
+
+  if (raw.knowledgeGraph) {
+    const kg = raw.knowledgeGraph
+    const kgParts = [`**${kg.title || 'Knowledge Graph'}**`]
+    if (kg.type) kgParts.push(`Type: ${kg.type}`)
+    if (kg.description) kgParts.push(kg.description)
+    if (kg.website) kgParts.push(`Website: ${kg.website}`)
+    if (kg.attributes) {
+      for (const [k, v] of Object.entries(kg.attributes)) {
+        kgParts.push(`${k}: ${v}`)
+      }
+    }
+    parts.push(kgParts.join('\n'))
+  }
+
+  if (searchType === 'search' && raw.organic?.length) {
+    parts.push('**Search Results:**')
+    for (const r of raw.organic.slice(0, 10)) {
+      const entry = [`${r.position ?? ''}. **${r.title}**`, r.link, r.snippet].filter(Boolean).join('\n   ')
+      parts.push(entry)
+    }
+  }
+
+  if (searchType === 'news' && raw.news?.length) {
+    parts.push('**News Results:**')
+    for (const n of raw.news.slice(0, 10)) {
+      parts.push([`- **${n.title}**`, n.source ? `(${n.source})` : '', n.date || '', n.link, n.snippet].filter(Boolean).join(' '))
+    }
+  }
+
+  if (searchType === 'places' && raw.places?.length) {
+    parts.push('**Places:**')
+    for (const p of raw.places.slice(0, 10)) {
+      parts.push(`- **${p.title}** — ${p.address || 'N/A'} (${p.rating ?? '?'}/5, ${p.ratingCount ?? 0} reviews)`)
+    }
+  }
+
+  if (searchType === 'shopping' && raw.shopping?.length) {
+    parts.push('**Shopping Results:**')
+    for (const s of raw.shopping.slice(0, 10)) {
+      parts.push(`- **${s.title}** — ${s.price || 'N/A'} (${s.source || ''}) ${s.link || ''}`)
+    }
+  }
+
+  if (raw.peopleAlsoAsk?.length) {
+    parts.push('**People Also Ask:**')
+    for (const q of raw.peopleAlsoAsk.slice(0, 5)) {
+      parts.push(`- ${q.question}${q.snippet ? ` — ${q.snippet}` : ''}`)
+    }
+  }
+
+  if (raw.relatedSearches?.length) {
+    parts.push('**Related Searches:** ' + raw.relatedSearches.map(r => r.query).join(', '))
+  }
+
+  return parts.join('\n\n') || 'No results found.'
+}
+
+function createWebSearchTool(): AgentTool {
+  return {
+    name: 'web_search',
+    description:
+      'Search the web using Google via Serper API. Returns structured search results with titles, links, snippets, and rich data (knowledge graph, answer boxes). ' +
+      'Supports search types: "search" (default), "news", "images", "places", "shopping". ' +
+      'For flights, search normally with a query like "flights from LAX to DPS April 20 2026".',
+    label: 'Web Search',
+    parameters: Type.Object({
+      query: Type.String({ description: 'Search query (e.g., "best restaurants in Bali", "flights from LAX to DPS April 2026")' }),
+      searchType: Type.Optional(Type.String({ description: 'Type of search: "search" (default), "news", "images", "places", "shopping"' })),
+      num: Type.Optional(Type.Number({ description: 'Number of results (default: 10, max: 100)' })),
+      gl: Type.Optional(Type.String({ description: 'Country code for localized results (e.g., "us", "uk", "id")' })),
+      hl: Type.Optional(Type.String({ description: 'Language code (e.g., "en", "id", "fr")' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const {
+        query,
+        searchType = 'search',
+        num = 10,
+        gl = 'us',
+        hl = 'en',
+      } = params as { query: string; searchType?: string; num?: number; gl?: string; hl?: string }
+
+      const apiKey = process.env.SERPER_API_KEY
+      if (!apiKey) {
+        return textResult({
+          error: 'SERPER_API_KEY not configured. Web search is unavailable.',
+          suggestion: 'Set the SERPER_API_KEY environment variable to enable Google search.',
+        })
+      }
+
+      const endpoint = SERPER_ENDPOINTS[searchType] || SERPER_ENDPOINTS.search
+
       try {
-        const response = await fetch(url, {
-          headers: { 'User-Agent': 'Shogo-Agent/1.0' },
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'X-API-KEY': apiKey,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ q: query, num, gl, hl }),
           signal: AbortSignal.timeout(15000),
         })
 
         if (!response.ok) {
-          return textResult({ error: `HTTP ${response.status}: ${response.statusText}`, url })
+          const errorText = await response.text().catch(() => '')
+          return textResult({ error: `Serper API error: HTTP ${response.status}`, details: errorText, query })
         }
 
-        let text = await response.text()
-        if (text.length > maxChars) {
-          text = text.substring(0, maxChars) + `\n\n[Truncated at ${maxChars} chars]`
-        }
+        const data = (await response.json()) as SerperResponse
+        const formatted = formatSerperResults(data, searchType)
 
-        return textResult({ content: text, status: response.status, bytes: text.length, url })
+        return textResult({
+          results: formatted,
+          raw: data,
+          query,
+          searchType,
+          creditsUsed: data.credits,
+        })
       } catch (err: any) {
-        return textResult({ error: err.message, url })
+        return textResult({ error: `Web search failed: ${err.message}`, query })
       }
     },
   }
@@ -627,19 +857,41 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop �
         }, { additionalProperties: true }),
         { description: 'Array of component definitions' },
       ),
+      merge: Type.Optional(Type.Boolean({ description: 'If true, merge with existing components instead of validating as a complete tree. Use for updating individual components without resending the full tree.' })),
     }),
     execute: async (_toolCallId, params) => {
-      const { surfaceId, components } = params as { surfaceId: string; components: any[] }
+      const { surfaceId, components: rawComponents, merge } = params as { surfaceId: string; components: any[]; merge?: boolean }
 
-      const lint = lintComponents(components)
+      // Auto-correct known variant/enum mismatches before validation
+      const { components: normalizedComponents, corrections } = normalizeComponents(rawComponents)
+      const components = normalizedComponents as typeof rawComponents
+
+      // When merging, lint against the full merged component set
+      let lintTarget = components
+      if (merge) {
+        const manager = getDynamicAppManager()
+        const surface = manager.getSurface(surfaceId)
+        if (surface) {
+          const existing = [...surface.components.values()] as typeof components
+          const incomingIds = new Set(components.map(c => String(c.id)))
+          const merged = [
+            ...existing.filter(c => !incomingIds.has(String(c.id))),
+            ...components,
+          ]
+          lintTarget = merged
+        }
+      }
+      const lint = lintComponents(lintTarget)
       const errors = lint.filter((m) => m.severity === 'error')
       const warnings = lint.filter((m) => m.severity === 'warning')
 
-      // Fatal structural errors (missing id, unknown component type) — don't render at all
+      // Fatal structural errors — don't render at all
       const fatalErrors = errors.filter((e) =>
         e.message.includes('missing required "id"') ||
         e.message.includes('missing required "component"') ||
-        e.message.includes('Unknown component type')
+        e.message.includes('Unknown component type') ||
+        e.message.includes('No component with id "root"') ||
+        e.message.includes('does not exist in the component set')
       )
 
       if (fatalErrors.length > 0) {
@@ -652,10 +904,11 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop �
         })
       }
 
-      // Non-fatal errors (invalid prop values, unknown props) — render best-effort but report failure
+      // Render with auto-corrected components
       const manager = getDynamicAppManager()
       const result = manager.updateComponents(surfaceId, components)
 
+      // Non-fatal errors still present after auto-correction
       if (errors.length > 0) {
         return textResult({
           ...result,
@@ -663,6 +916,7 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop �
           error: `Components rendered with ${errors.length} error(s) that MUST be fixed. The UI is broken or incomplete until these are resolved. Call canvas_update again with corrected components.`,
           errors: errors.map((e) => `[${e.componentId}] ${e.message}`),
           warnings: warnings.length > 0 ? warnings.map((w) => `[${w.componentId}] ${w.message}`) : undefined,
+          corrections: corrections.length > 0 ? corrections : undefined,
           hint: 'Use canvas_components with action "detail" to look up valid props and enum values for any component type.',
         })
       }
@@ -670,7 +924,19 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop �
       if (warnings.length > 0) {
         return textResult({
           ...result,
+          ok: false,
+          error: `Components rendered with ${warnings.length} warning(s) that should be fixed. Call canvas_update again with corrected components.`,
           warnings: warnings.map((w) => `[${w.componentId}] ${w.message}`),
+          corrections: corrections.length > 0 ? corrections : undefined,
+          hint: 'Use canvas_components with action "detail" to look up valid props for any component type.',
+        })
+      }
+
+      if (corrections.length > 0) {
+        return textResult({
+          ...result,
+          corrections,
+          note: 'Some prop values were auto-corrected. Use these corrected values in future updates.',
         })
       }
       return textResult(result)
@@ -714,6 +980,33 @@ function autoParseJsonString(value: unknown): unknown {
     }
   }
   return value
+}
+
+function createCanvasDataPatchTool(): AgentTool {
+  return {
+    name: 'canvas_data_patch',
+    description:
+      'Apply atomic operations to the data model without replacing entire values. ' +
+      'Supports: increment/decrement (numbers), toggle (booleans), append (arrays), set (any). ' +
+      'Use this for counters, toggles, and adding items to lists without reading the current value first.',
+    label: 'Patch Canvas Data',
+    parameters: Type.Object({
+      surfaceId: Type.String({ description: 'Surface ID to patch' }),
+      operations: Type.Array(
+        Type.Object({
+          op: Type.String({ description: 'Operation: "increment", "decrement", "toggle", "append", or "set"' }),
+          path: Type.String({ description: 'JSON Pointer path (e.g. "/count", "/items")' }),
+          value: Type.Optional(Type.Unknown({ description: 'Value for the operation. For increment/decrement: amount (default 1). For append: item to add. For set: new value.' })),
+        }),
+        { description: 'Array of patch operations to apply atomically' },
+      ),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { surfaceId, operations } = params as { surfaceId: string; operations: Array<{ op: string; path: string; value?: unknown }> }
+      const manager = getDynamicAppManager()
+      return textResult(manager.patchData(surfaceId, operations))
+    },
+  }
 }
 
 function createCanvasDeleteTool(): AgentTool {
@@ -1044,7 +1337,7 @@ For mutation actions (CRUD), include _mutation in the context:
 For non-mutation actions:
   canvas_trigger_action({ surfaceId: "app", actionName: "select_item", context: { itemId: "123" } })
 
-IMPORTANT: Always follow up with canvas_inspect to verify the action succeeded. The correct pattern is: trigger → inspect → report. Never use canvas_action_wait after canvas_trigger_action.`,
+This tool performs real verification: it captures data before the action, executes it, then checks what actually changed. If a mutation fails or doesn't change data as expected, it returns ok: false with details. Always follow up with canvas_inspect to double-check the data. Never use canvas_action_wait after canvas_trigger_action.`,
     label: 'Trigger Canvas Action',
     parameters: Type.Object({
       surfaceId: Type.String({ description: 'Surface ID to trigger the action on' }),
@@ -1064,34 +1357,119 @@ IMPORTANT: Always follow up with canvas_inspect to verify the action succeeded. 
         return textResult({ ok: false, error: `Surface "${surfaceId}" does not exist.` })
       }
 
-      manager.deliverAction({
+      const hasMutation = !!(context as any)?._mutation
+      const beforeSnapshot = JSON.parse(JSON.stringify(surface.dataModel))
+
+      const deliveryResult = await manager.deliverActionAsync({
         surfaceId,
         name: actionName,
         context: context || {},
         timestamp: new Date().toISOString(),
       })
 
-      // Allow async mutation execution to complete
-      const hasMutation = !!(context as any)?._mutation
-      if (hasMutation) {
-        await new Promise((r) => setTimeout(r, 150))
-      }
-
       const updatedSurface = manager.getSurface(surfaceId)
+      const afterSnapshot = updatedSurface ? JSON.parse(JSON.stringify(updatedSurface.dataModel)) : {}
       const dataKeys = updatedSurface ? Object.keys(updatedSurface.dataModel) : []
 
+      if (hasMutation) {
+        if (deliveryResult.result && !deliveryResult.result.ok) {
+          return textResult({
+            ok: false,
+            surfaceId,
+            actionName,
+            wasMutation: true,
+            error: `Mutation FAILED: ${deliveryResult.result.error ?? 'unknown error'}`,
+            status: deliveryResult.result.status,
+            message: `The "${actionName}" mutation failed on "${surfaceId}". The API returned an error. Check the endpoint, method, and body. This button is BROKEN and needs to be fixed before delivery.`,
+          })
+        }
+
+        const changes = diffDataSnapshots(beforeSnapshot, afterSnapshot)
+        if (changes.length === 0) {
+          return textResult({
+            ok: false,
+            surfaceId,
+            actionName,
+            wasMutation: true,
+            dataKeys,
+            dataBefore: beforeSnapshot,
+            dataAfter: afterSnapshot,
+            error: 'Mutation executed but NO data changed in the data model.',
+            message: `WARNING: The "${actionName}" mutation on "${surfaceId}" did not change any data. The API call may have succeeded but the data model wasn't updated. Verify the endpoint is correct and the data path matches. Use canvas_inspect to check the current state. This action may be BROKEN for users.`,
+          })
+        }
+
+        return textResult({
+          ok: true,
+          surfaceId,
+          actionName,
+          wasMutation: true,
+          dataKeys,
+          changes,
+          itemCount: deliveryResult.result?.itemCount,
+          message: `Mutation "${actionName}" VERIFIED on "${surfaceId}". Data changed: ${changes.map(c => c.summary).join('; ')}. Use canvas_inspect to double-check the full data state.`,
+        })
+      }
+
       return textResult({
-        ok: true,
+        ok: deliveryResult.handled,
         surfaceId,
         actionName,
-        wasMutation: hasMutation,
+        wasMutation: false,
         dataKeys,
-        message: hasMutation
-          ? `Mutation "${actionName}" executed on "${surfaceId}". Now use canvas_inspect to verify the data changed.`
-          : `Action "${actionName}" delivered to "${surfaceId}". Use canvas_inspect to verify the surface state.`,
+        message: deliveryResult.handled
+          ? `Action "${actionName}" delivered to "${surfaceId}". Use canvas_inspect to verify the surface state.`
+          : `Action "${actionName}" was not handled. No waiter or mutation target found.`,
       })
     },
   }
+}
+
+/**
+ * Compare two data model snapshots and describe what changed.
+ */
+function diffDataSnapshots(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): Array<{ path: string; type: 'added' | 'removed' | 'changed' | 'count_changed'; summary: string }> {
+  const changes: Array<{ path: string; type: 'added' | 'removed' | 'changed' | 'count_changed'; summary: string }> = []
+
+  const allKeys = new Set([...Object.keys(before), ...Object.keys(after)])
+  for (const key of allKeys) {
+    const bVal = before[key]
+    const aVal = after[key]
+
+    if (bVal === undefined && aVal !== undefined) {
+      changes.push({ path: `/${key}`, type: 'added', summary: `/${key} was added` })
+      continue
+    }
+    if (bVal !== undefined && aVal === undefined) {
+      changes.push({ path: `/${key}`, type: 'removed', summary: `/${key} was removed` })
+      continue
+    }
+
+    if (Array.isArray(bVal) && Array.isArray(aVal)) {
+      if (bVal.length !== aVal.length) {
+        changes.push({
+          path: `/${key}`,
+          type: 'count_changed',
+          summary: `/${key} count: ${bVal.length} → ${aVal.length}`,
+        })
+      } else if (JSON.stringify(bVal) !== JSON.stringify(aVal)) {
+        const changedItems = aVal.reduce((count, item, i) =>
+          JSON.stringify(item) !== JSON.stringify(bVal[i]) ? count + 1 : count, 0)
+        changes.push({
+          path: `/${key}`,
+          type: 'changed',
+          summary: `/${key} ${changedItems} item(s) modified (count unchanged at ${aVal.length})`,
+        })
+      }
+    } else if (JSON.stringify(bVal) !== JSON.stringify(aVal)) {
+      changes.push({ path: `/${key}`, type: 'changed', summary: `/${key} value changed` })
+    }
+  }
+
+  return changes
 }
 
 function createCanvasInspectTool(): AgentTool {
@@ -1378,7 +1756,8 @@ function createMcpSearchTool(): AgentTool {
           name: entry.name,
           qualifiedName: entry.package.replace(/@latest$/, ''),
           description: entry.description,
-          installCommand: `npx -y ${entry.package}`,
+          installCommand: `npx -y ${entry.package}${entry.defaultArgs.length ? ' ' + entry.defaultArgs.join(' ') : ''}`,
+          defaultArgs: entry.defaultArgs.length > 0 ? entry.defaultArgs : undefined,
           source: 'catalog',
         })
       }
@@ -1523,7 +1902,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   shell: ['exec'],
   filesystem: ['read_file', 'write_file'],
   web_fetch: ['web_fetch'],
-  web_search: ['web_fetch'],
+  web_search: ['web_search', 'web_fetch'],
   browser: [
     'browser',
     'mcp_playwright_browser_navigate', 'mcp_playwright_browser_snapshot',
@@ -1533,16 +1912,16 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   memory: ['memory_read', 'memory_write', 'memory_search'],
   messaging: ['send_message'],
   cron: ['cron'],
-  canvas: ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_delete', 'canvas_action_wait', 'canvas_components', 'canvas_trigger_action', 'canvas_inspect'],
+  canvas: ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_action_wait', 'canvas_components', 'canvas_trigger_action', 'canvas_inspect'],
   api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query'],
   personality: ['personality_update'],
   mcp_discovery: ['mcp_search', 'mcp_install', 'mcp_uninstall', 'mcp_list_installed'],
 }
 
 export const ALL_TOOL_NAMES = [
-  'exec', 'read_file', 'write_file', 'web_fetch', 'browser',
+  'exec', 'read_file', 'write_file', 'web_fetch', 'web_search', 'browser',
   'memory_read', 'memory_write', 'memory_search', 'send_message', 'cron',
-  'canvas_create', 'canvas_update', 'canvas_data', 'canvas_delete', 'canvas_action_wait', 'canvas_components',
+  'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_action_wait', 'canvas_components',
   'canvas_trigger_action', 'canvas_inspect',
   'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query',
   'personality_update',
@@ -1579,6 +1958,7 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createReadFileTool(ctx),
     createWriteFileTool(ctx),
     createWebFetchTool(),
+    createWebSearchTool(),
     createBrowserTool(ctx),
     createMemoryReadTool(ctx),
     createMemoryWriteTool(ctx),
@@ -1588,6 +1968,7 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createCanvasCreateTool(),
     createCanvasUpdateTool(),
     createCanvasDataTool(),
+    createCanvasDataPatchTool(),
     createCanvasDeleteTool(),
     createCanvasActionWaitTool(),
     createCanvasComponentsTool(),
@@ -1610,6 +1991,7 @@ export function createHeartbeatTools(ctx: ToolContext): AgentTool[] {
     createReadFileTool(ctx),
     createWriteFileTool(ctx),
     createWebFetchTool(),
+    createWebSearchTool(),
     createBrowserTool(ctx),
     createMemoryReadTool(ctx),
     createMemoryWriteTool(ctx),

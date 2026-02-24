@@ -15,19 +15,25 @@ import type {
   ApiModelInfo,
 } from './types'
 
+const INITIAL_STATE_TIMEOUT_MS = 5_000
+
 export interface DynamicAppStreamState {
   surfaces: Map<string, SurfaceState>
   connected: boolean
+  connecting: boolean
   error: string | null
 }
 
 export function useDynamicAppStream(agentUrl: string | null) {
   const [surfaces, setSurfaces] = useState<Map<string, SurfaceState>>(new Map())
   const [connected, setConnected] = useState(false)
+  const [connecting, setConnecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reconnectAttemptRef = useRef(0)
+  const initialStateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const receivedFirstMessage = useRef(false)
 
   const applyMessage = useCallback((msg: DynamicAppMessage) => {
     setSurfaces((prev) => {
@@ -108,9 +114,22 @@ export function useDynamicAppStream(agentUrl: string | null) {
   const connect = useCallback(() => {
     if (!agentUrl) return
 
+    setConnecting(true)
+    receivedFirstMessage.current = false
+
     const url = `${agentUrl}/agent/dynamic-app/stream`
     const es = new EventSource(url)
     eventSourceRef.current = es
+
+    // If we don't receive initial state within the timeout, mark as connected
+    // anyway so the UI can render a skeleton instead of a blank spinner.
+    if (initialStateTimerRef.current) clearTimeout(initialStateTimerRef.current)
+    initialStateTimerRef.current = setTimeout(() => {
+      if (!receivedFirstMessage.current) {
+        setConnected(true)
+        setConnecting(false)
+      }
+    }, INITIAL_STATE_TIMEOUT_MS)
 
     es.onopen = () => {
       setConnected(true)
@@ -121,6 +140,14 @@ export function useDynamicAppStream(agentUrl: string | null) {
     es.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data) as DynamicAppMessage
+        if (!receivedFirstMessage.current) {
+          receivedFirstMessage.current = true
+          setConnecting(false)
+          if (initialStateTimerRef.current) {
+            clearTimeout(initialStateTimerRef.current)
+            initialStateTimerRef.current = null
+          }
+        }
         applyMessage(msg)
       } catch {
         // Ignore parse errors (e.g. heartbeat comments)
@@ -131,6 +158,7 @@ export function useDynamicAppStream(agentUrl: string | null) {
       es.close()
       eventSourceRef.current = null
       setConnected(false)
+      setConnecting(false)
 
       const attempt = reconnectAttemptRef.current++
       const delay = Math.min(1000 * Math.pow(2, attempt), 30_000)
@@ -155,6 +183,10 @@ export function useDynamicAppStream(agentUrl: string | null) {
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current)
         reconnectTimeoutRef.current = null
+      }
+      if (initialStateTimerRef.current) {
+        clearTimeout(initialStateTimerRef.current)
+        initialStateTimerRef.current = null
       }
     }
   }, [connect])
@@ -213,7 +245,7 @@ export function useDynamicAppStream(agentUrl: string | null) {
     setTimeout(connect, 150)
   }, [connect])
 
-  return { surfaces, connected, error, dispatchAction, updateLocalData, reconnect }
+  return { surfaces, connected, connecting, error, dispatchAction, updateLocalData, reconnect }
 }
 
 // ---------------------------------------------------------------------------

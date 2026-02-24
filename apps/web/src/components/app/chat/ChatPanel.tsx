@@ -1280,6 +1280,21 @@ export const ChatPanel = observer(function ChatPanel({
       
       const contentLength = (message as any).content?.length ?? message.parts?.length ?? 0
 
+      // Detect empty agent responses (0 tokens returned, no tool calls).
+      // This can happen after session compaction corrupts the conversation context.
+      const hasTextContent = message.parts?.some(
+        (p: any) => p.type === 'text' && p.text?.trim()
+      )
+      const hasToolCalls = message.parts?.some(
+        (p: any) => p.type === 'tool-invocation' || p.type === 'tool-result'
+      )
+      if (!hasTextContent && !hasToolCalls && contentLength === 0) {
+        console.warn('[ChatPanel] Agent returned empty response — possible context corruption')
+        setEmptyResponseError('The agent returned an empty response. Try starting a new chat session.')
+      } else {
+        setEmptyResponseError(null)
+      }
+
       // chat-session-sync-fix: v3 API - Session ID from message.metadata
       // Server's messageMetadata callback sends ccSessionId via SSE message-metadata event
       const newCcSessionId = (message as any).metadata?.ccSessionId as string | undefined
@@ -1400,6 +1415,9 @@ export const ChatPanel = observer(function ChatPanel({
   useEffect(() => {
     onChatError?.(error ?? null)
   }, [error, onChatError])
+
+  // Empty response detection — backend returned 0 tokens with no tool calls
+  const [emptyResponseError, setEmptyResponseError] = useState<string | null>(null)
 
   // Optimistic first message for homepage transition: show user message before useChat adds it
   const [pendingInitialMessage, setPendingInitialMessage] = useState<string | null>(null)
@@ -2551,12 +2569,14 @@ export const ChatPanel = observer(function ChatPanel({
         </div>
 
         {/* Error Alert */}
-        {error && (
+        {(error || emptyResponseError) && (
           <div className="px-4 pb-2">
             <Alert variant="destructive">
               <AlertCircle className="h-4 w-4" />
               <AlertDescription className="flex items-center justify-between gap-2">
-                <span className="text-sm">{formatErrorMessage(error.message)}</span>
+                <span className="text-sm">
+                  {error ? formatErrorMessage(error.message) : emptyResponseError}
+                </span>
                 <Button
                   variant="outline"
                   size="sm"

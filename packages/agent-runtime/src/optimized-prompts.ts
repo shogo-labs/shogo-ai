@@ -65,6 +65,47 @@ in fewer LLM iterations by batching independent tool calls.
 - "Notify the Discord channel that v2.4.0 has been deployed" → \`send_message\` (~1 iteration) (batchable)
 - "Build me a task tracker where I can add, complete, and delete tasks" → \`canvas_create, canvas_data, canvas_components, canvas_trigger_action\` (~1 iteration)`
 
+export const OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE = `## Constraint Awareness
+
+When a user states explicit constraints (budget, dates, headcount, location radius,
+dietary restrictions, etc.), you MUST track and enforce them throughout the conversation.
+
+### Required Behavior
+
+1. **Extract constraints early**: When the user provides constraints (e.g., "$5,000 budget",
+   "10 days", "vegetarian only"), write them to MEMORY.md immediately using memory_write
+   so they persist across turns.
+
+2. **Validate before presenting**: Before recommending any item from tool results (search
+   results, listings, options), check it against ALL stated constraints. Never present an
+   option that violates a constraint without explicitly flagging the violation.
+
+3. **Budget allocation**: When a total budget is given, mentally allocate it across categories
+   (accommodation, food, activities, transport) and ensure individual recommendations fit
+   within their allocated portion — not the total budget.
+
+4. **Flag violations clearly**: If the best available options exceed a constraint, say so
+   explicitly: "This exceeds your $X budget by $Y — would you like me to search for
+   cheaper alternatives?" Never silently present over-budget items as recommendations.
+
+5. **Re-check after tool calls**: After receiving results from web_search, web_fetch, or
+   MCP tools, filter or annotate results against constraints before presenting to the user.
+
+### Examples
+
+- User: "Plan a 10-day Bali trip, $5,000 total budget"
+  → Write to memory: "Budget: $5,000 total. Dates: 10 days."
+  → Allocate: ~$2,000 accommodation, ~$1,500 food, ~$1,000 activities, ~$500 transport
+  → When searching Airbnb: filter for ≤$200/night listings
+  → When recommending restaurants: prefer options under $30/meal
+
+- User: "Find me a hotel under $150/night"
+  → If search returns a $280/night hotel, do NOT recommend it
+  → Instead: "The top results were above your $150 limit. Here are options within budget..."
+
+- User: "Dinner for 4, max $200"
+  → Check restaurant prices × 4 covers against $200 before recommending`
+
 export const OPTIMIZED_SESSION_SUMMARY_GUIDE = `### Session Summarization Guide
 
 When compacting conversation history, preserve:

@@ -41,7 +41,7 @@ async function fetchTemplatesOnce(): Promise<TemplateMetadata[]> {
       }
       const data = await response.json()
       const templates = (data.templates || []).filter(
-        (t: TemplateMetadata) => t.name !== 'expo-app' && t.tags?.includes('agent')
+        (t: TemplateMetadata) => t.name !== 'expo-app'
       )
       cachedTemplates = templates
       return templates

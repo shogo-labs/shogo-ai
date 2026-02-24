@@ -38,6 +38,12 @@
   --ring: #2563eb;
   --radius: 0.5rem;
 
+  --chart-1: #e76e50;
+  --chart-2: #2a9d90;
+  --chart-3: #274754;
+  --chart-4: #e9c46a;
+  --chart-5: #f4a261;
+
   /* Phase Colors - Unified Spectrum (Pipeline Precision) */
   --phase-discovery: #0ea5e9;      /* sky-500: open exploration */
   --phase-analysis: #6366f1;       /* indigo-500: deep investigation */
@@ -90,6 +96,12 @@
   --input: #333333;
   --ring: #2196f3;
 
+  --chart-1: #2662d9;
+  --chart-2: #e23670;
+  --chart-3: #e8a838;
+  --chart-4: #af57db;
+  --chart-5: #2eb88a;
+
   /* Phase Colors - Dark Mode (elevated luminosity) */
   --phase-discovery: #38bdf8;      /* sky-400 */
   --phase-analysis: #818cf8;       /* indigo-400 */
@@ -138,6 +150,11 @@
   --radius-sm: 0.25rem;
   --radius-md: 0.375rem;
   --radius-lg: 0.5rem;
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
 
   /* Phase Color Utilities - use as bg-phase-discovery, text-phase-discovery, etc. */
   --color-phase-discovery: var(--phase-discovery);

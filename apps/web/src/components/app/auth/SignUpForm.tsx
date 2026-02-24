@@ -9,7 +9,7 @@
  * Integration Point: ip-2-1-signup-form
  */
 
-import { useState, useMemo, type FormEvent } from "react"
+import { useState, useMemo, useEffect, type FormEvent } from "react"
 import { observer } from "mobx-react-lite"
 import { CheckCircle2, XCircle, AlertCircle, Eye, EyeOff } from "lucide-react"
 import { useDomains } from "@/contexts/DomainProvider"
@@ -134,6 +134,18 @@ export const SignUpForm = observer(function SignUpForm() {
 
   const isLoading = auth.authStatus === "loading"
 
+  // Suppress browser autofill after sign-out to prevent previous user's
+  // credentials from leaking into the new account creation form.
+  const [suppressAutofill, setSuppressAutofill] = useState(false)
+  useEffect(() => {
+    try {
+      if (sessionStorage.getItem('shogo:just-signed-out') === '1') {
+        setSuppressAutofill(true)
+        sessionStorage.removeItem('shogo:just-signed-out')
+      }
+    } catch {}
+  }, [])
+
   // Name validation — reject HTML/script content (XSS prevention)
   const nameError = useMemo(() => getDisplayNameError(name), [name])
   const isNameValid = useMemo(() => isValidDisplayName(name), [name])
@@ -189,6 +201,7 @@ export const SignUpForm = observer(function SignUpForm() {
           onBlur={() => setNameTouched(true)}
           disabled={isLoading}
           maxLength={100}
+          autoComplete={suppressAutofill ? "off" : "name"}
           className={cn(
             showNameError && "border-red-500 focus-visible:ring-red-500"
           )}
@@ -212,6 +225,7 @@ export const SignUpForm = observer(function SignUpForm() {
             onChange={(e) => setEmail(e.target.value)}
             onBlur={() => setEmailTouched(true)}
             disabled={isLoading}
+            autoComplete={suppressAutofill ? "off" : "email"}
             className={cn(
               showEmailError && "border-red-500 focus-visible:ring-red-500",
               emailTouched && isEmailValid && "border-green-500 focus-visible:ring-green-500"
@@ -245,6 +259,7 @@ export const SignUpForm = observer(function SignUpForm() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             disabled={isLoading}
+            autoComplete={suppressAutofill ? "off" : "new-password"}
             className="pr-10"
           />
           <button

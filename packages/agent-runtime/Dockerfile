@@ -117,6 +117,24 @@ COPY --from=builder /app/apps/desktop/package.json ./apps/desktop/
 RUN bun install --ignore-scripts && \
     chown -R appuser:appgroup node_modules
 
+# Pre-install popular MCP server packages for instant startup.
+# Without this, `npx -y` takes 30-45s per package (exceeding the 30s timeout).
+# With pre-installed packages, the runtime detects them and uses `node` directly (~1.6s).
+# To update this list, see `preinstalled: true` entries in mcp-catalog.ts.
+RUN mkdir -p /app/mcp-packages && \
+    cd /app/mcp-packages && \
+    npm init -y --silent 2>/dev/null && \
+    npm install --omit=dev --no-audit --no-fund \
+      @openbnb/mcp-server-airbnb@0.1.3 \
+      mcp-fetch-node@latest \
+      @modelcontextprotocol/server-github@latest \
+      @modelcontextprotocol/server-postgres@latest \
+      @modelcontextprotocol/server-brave-search@latest \
+      @notionhq/notion-mcp-server@latest \
+      @modelcontextprotocol/server-slack@latest \
+      @modelcontextprotocol/server-filesystem@latest \
+    && rm -rf /app/mcp-packages/package.json /app/mcp-packages/package-lock.json
+
 RUN mkdir -p /app/agent /app/.schemas /app/.claude && \
     chown -R appuser:appgroup /app /usr/local/lib/node_modules
 

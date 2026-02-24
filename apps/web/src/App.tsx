@@ -34,6 +34,7 @@ import { SDKDomainProvider as SDKProvider } from './contexts/SDKDomainProvider'
 // Legacy provider for backward compatibility
 import { LegacyDomainProvider, type EagerCollectionsConfig } from './contexts/LegacyDomainProvider'
 import { Toaster } from '@/components/ui/toaster'
+import { AppErrorBoundary } from '@/components/app/shared/AppErrorBoundary'
 
 // BetterAuth configuration
 // Uses VITE_BETTER_AUTH_URL or falls back to current origin for same-origin API
@@ -226,14 +227,16 @@ function AppWithSession() {
  */
 function App() {
   return (
-    <NuqsAdapter>
-      <BrowserRouter>
-        <SessionProvider>
-          <AppWithSession />
-        </SessionProvider>
-        <Toaster />
-      </BrowserRouter>
-    </NuqsAdapter>
+    <AppErrorBoundary>
+      <NuqsAdapter>
+        <BrowserRouter>
+          <SessionProvider>
+            <AppWithSession />
+          </SessionProvider>
+          <Toaster />
+        </BrowserRouter>
+      </NuqsAdapter>
+    </AppErrorBoundary>
   )
 }
 

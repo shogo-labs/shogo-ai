@@ -85,7 +85,10 @@ export function createWorkspaceRoutes(): Hono {
       if (hooks.beforeList) {
         const result = await hooks.beforeList(ctx)
         if (result && !result.ok) {
-          return c.json({ error: result.error }, 400)
+          const status = result.error?.code === 'unauthorized' ? 401
+            : result.error?.code === 'forbidden' ? 403
+            : 400
+          return c.json({ error: result.error }, status)
         }
         if (result?.data) {
           where = result.data.where || where

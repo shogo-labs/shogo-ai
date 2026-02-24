@@ -146,6 +146,26 @@ function ComponentNode({ definition, components, dataModel, onAction, onDataChan
 
 const RESERVED_KEYS = new Set(['id', 'component', 'child', 'children'])
 
+/**
+ * Props that are rendered directly as React children (e.g., {text}, {title}).
+ * If these resolve to objects from the data model, React throws Error #31:
+ * "Objects are not valid as a React child."
+ */
+const TEXT_RENDER_PROPS = new Set([
+  'text', 'title', 'label', 'description', 'footer', 'subtitle',
+  'value', 'trendValue', 'placeholder', 'content', 'message',
+])
+
+function sanitizeForRender(resolved: Record<string, unknown>): Record<string, unknown> {
+  for (const key of TEXT_RENDER_PROPS) {
+    const val = resolved[key]
+    if (val !== null && val !== undefined && typeof val === 'object' && !Array.isArray(val)) {
+      resolved[key] = JSON.stringify(val)
+    }
+  }
+  return resolved
+}
+
 function useResolvedProps(
   definition: ComponentDefinition,
   dataModel: Record<string, unknown>,
@@ -212,7 +232,7 @@ function useResolvedProps(
       resolved[key] = resolveValue(value, dataModel, apiDataSource, scopeData, scopePath)
     }
 
-    return resolved
+    return sanitizeForRender(resolved)
   }, [definition, dataModel, apiDataSource, scopeData, scopePath])
 }
 

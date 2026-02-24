@@ -70,7 +70,7 @@ interface DynAccordionProps {
 }
 
 export function DynAccordion({ children, className }: DynAccordionProps) {
-  return <div className={cn('divide-y border rounded-md', className)}>{children}</div>
+  return <div className={cn('divide-y rounded-lg border', className)}>{children}</div>
 }
 
 interface DynAccordionItemProps {

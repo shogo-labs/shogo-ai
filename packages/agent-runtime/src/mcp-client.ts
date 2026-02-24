@@ -17,8 +17,15 @@ import { Type } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 
 const MAX_MCP_SERVERS = 10
-const MCP_CONNECT_TIMEOUT_MS = 30_000
+const MCP_CONNECT_TIMEOUT_MS = 90_000
 const MCP_TOOL_LIST_TIMEOUT_MS = 15_000
+
+/**
+ * Directory where popular MCP packages are pre-installed in the Docker image.
+ * When a package exists here, we run it directly with `node` instead of
+ * going through `npx` (which takes 30-45s even with a warm npm cache).
+ */
+export const MCP_PREINSTALL_DIR = process.env.MCP_PREINSTALL_DIR || '/app/mcp-packages'
 
 export interface MCPServerConfig {
   command: string
@@ -88,9 +95,53 @@ export interface MCPServerInfo {
 export class MCPClientManager {
   private servers: Map<string, ManagedServer> = new Map()
   private workspaceDir: string | null = null
+  private onConfigPersisted: (() => void) | null = null
 
   setWorkspaceDir(dir: string): void {
     this.workspaceDir = dir
+  }
+
+  setOnConfigPersisted(callback: () => void): void {
+    this.onConfigPersisted = callback
+  }
+
+  /**
+   * For npx commands, check if the target package is pre-installed in the Docker
+   * image and resolve to a direct `node` invocation instead. This drops startup
+   * from ~43s (cold npx) to ~1.6s (direct node).
+   */
+  private resolvePreinstalled(config: MCPServerConfig): MCPServerConfig {
+    if (config.command !== 'npx') return config
+
+    const args = config.args || []
+    const pkgArg = args.find(a => !a.startsWith('-'))
+    if (!pkgArg) return config
+
+    const pkgName = pkgArg.replace(/@(latest|[\d^~>=<].*)$/, '')
+
+    const pkgJsonPath = join(MCP_PREINSTALL_DIR, 'node_modules', pkgName, 'package.json')
+    try {
+      if (!existsSync(pkgJsonPath)) return config
+
+      const pkg = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'))
+      let entrypoint: string | undefined
+      if (typeof pkg.bin === 'string') {
+        entrypoint = pkg.bin
+      } else if (pkg.bin && typeof pkg.bin === 'object') {
+        entrypoint = Object.values(pkg.bin)[0] as string
+      }
+      if (!entrypoint) return config
+
+      const fullEntrypoint = join(MCP_PREINSTALL_DIR, 'node_modules', pkgName, entrypoint)
+      if (!existsSync(fullEntrypoint)) return config
+
+      const extraArgs = args.filter(a => a !== '-y' && a !== '--yes' && a !== pkgArg)
+
+      console.log(`[MCPClient] Pre-installed hit: ${pkgName} → node ${fullEntrypoint}`)
+      return { ...config, command: 'node', args: [fullEntrypoint, ...extraArgs] }
+    } catch {
+      return config
+    }
   }
 
   async startServer(name: string, config: MCPServerConfig): Promise<AgentTool[]> {
@@ -98,6 +149,8 @@ export class MCPClientManager {
       console.warn(`[MCPClient] Server "${name}" already running, skipping`)
       return this.servers.get(name)!.tools
     }
+
+    config = this.resolvePreinstalled(config)
 
     const fullCommand = `${config.command} ${(config.args || []).join(' ')}`
     console.log(`[MCPClient] Starting MCP server "${name}": ${fullCommand}`)
@@ -295,6 +348,7 @@ export class MCPClientManager {
     existing.mcpServers = existing.mcpServers || {}
     existing.mcpServers[name] = { command: config.command, ...(config.args ? { args: config.args } : {}), ...(config.env ? { env: config.env } : {}), ...(config.cwd ? { cwd: config.cwd } : {}) }
     writeFileSync(configPath, JSON.stringify(existing, null, 2), 'utf-8')
+    this.onConfigPersisted?.()
   }
 
   private unpersistConfig(name: string): void {

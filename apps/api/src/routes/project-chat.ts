@@ -72,9 +72,14 @@ async function trackUsageFromStream(
   let currentTextPart: { type: 'text'; text: string } | null = null
   let streamInterrupted = false
 
+  const PER_CHUNK_IDLE_TIMEOUT_MS = 45_000
+
   try {
     while (true) {
-      const { done, value } = await reader.read()
+      const idleTimeout = new Promise<{ done: true; value: undefined }>((_, reject) =>
+        setTimeout(() => reject(new Error('chunk idle timeout')), PER_CHUNK_IDLE_TIMEOUT_MS)
+      )
+      const { done, value } = await Promise.race([reader.read(), idleTimeout])
       if (done) break
       buffer += decoder.decode(value, { stream: true })
 

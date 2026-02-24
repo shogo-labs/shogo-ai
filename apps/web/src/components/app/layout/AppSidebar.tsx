@@ -93,6 +93,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { useToast } from "@/hooks/use-toast"
 import { useBillingData } from "@/hooks/useBillingData"
 import { LogOut, User, Sun, Moon, Monitor } from "lucide-react"
+import { clearUserLocalStorage } from "@/lib/clear-user-storage"
 
 /**
  * Get user initials from name
@@ -1171,7 +1172,12 @@ export const AppSidebar = observer(function AppSidebar({ forceCollapsed }: AppSi
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
 
-              <DropdownMenuItem onClick={() => auth.signOut()} className="cursor-pointer">
+              <DropdownMenuItem onClick={async () => {
+                try { sessionStorage.setItem('shogo:just-signed-out', '1') } catch {}
+                try { await auth.signOut() } catch {}
+                clearUserLocalStorage()
+                window.location.reload()
+              }} className="cursor-pointer">
                 <LogOut className="mr-2 h-4 w-4" />
                 <span>Sign Out</span>
               </DropdownMenuItem>

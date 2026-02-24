@@ -26,6 +26,8 @@ export interface MCPCatalogEntry {
   icon: string
   /** Whether this server works in cloud sandboxes (some need local access) */
   cloudCompatible: boolean
+  /** Whether this package is pre-installed in the Docker image for instant startup */
+  preinstalled?: boolean
 }
 
 export type MCPCategory =
@@ -77,6 +79,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['fetch'],
     icon: '📄',
     cloudCompatible: true,
+    preinstalled: true,
   },
   {
     id: 'github',
@@ -91,6 +94,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['github_create_issue', 'github_list_issues', 'github_create_pr', 'github_search_code', 'github_get_file'],
     icon: '🐙',
     cloudCompatible: true,
+    preinstalled: true,
   },
   {
     id: 'gitlab',
@@ -134,6 +138,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['postgres_query', 'postgres_list_tables', 'postgres_describe_table'],
     icon: '🐘',
     cloudCompatible: true,
+    preinstalled: true,
   },
   {
     id: 'sqlite',
@@ -163,6 +168,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['slack_send_message', 'slack_list_channels', 'slack_read_messages', 'slack_search'],
     icon: '💼',
     cloudCompatible: true,
+    preinstalled: true,
   },
   {
     id: 'gmail',
@@ -219,6 +225,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['notion_search', 'notion_read_page', 'notion_create_page', 'notion_query_database'],
     icon: '📝',
     cloudCompatible: true,
+    preinstalled: true,
   },
   {
     id: 'stripe',
@@ -247,6 +254,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['brave_web_search', 'brave_local_search'],
     icon: '🦁',
     cloudCompatible: true,
+    preinstalled: true,
   },
   {
     id: 'exa',
@@ -283,11 +291,12 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     description: 'Search Airbnb listings by location, dates, guests, and price range. Get detailed property info including amenities, photos, and policies.',
     category: 'travel',
     package: '@openbnb/mcp-server-airbnb@latest',
-    defaultArgs: [],
+    defaultArgs: ['--ignore-robots-txt'],
     requiredEnv: {},
     providedTools: ['airbnb_search', 'airbnb_listing_details'],
     icon: '🏠',
     cloudCompatible: true,
+    preinstalled: true,
   },
   {
     id: 'filesystem',
@@ -303,12 +312,18 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['fs_read_file', 'fs_write_file', 'fs_list_directory', 'fs_search_files'],
     icon: '📂',
     cloudCompatible: false,
+    preinstalled: true,
   },
 ]
 
 /** Look up a catalog entry by ID */
 export function getCatalogEntry(id: string): MCPCatalogEntry | undefined {
   return MCP_CATALOG.find((e) => e.id === id)
+}
+
+/** Get all catalog entries marked for pre-installation */
+export function getPreinstalledPackages(): MCPCatalogEntry[] {
+  return MCP_CATALOG.filter((e) => e.preinstalled)
 }
 
 /** Get catalog entries filtered by category */

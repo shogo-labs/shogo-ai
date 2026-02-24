@@ -156,6 +156,71 @@ export class DynamicAppManager {
     }
   }
 
+  patchData(surfaceId: string, operations: Array<{ op: string; path: string; value?: unknown }>): Record<string, unknown> {
+    const surface = this.surfaces.get(surfaceId)
+    if (!surface) {
+      return { ok: false, error: `Surface "${surfaceId}" does not exist. Create it with canvas_create first.` }
+    }
+
+    const results: string[] = []
+    for (const op of operations) {
+      const { path } = op
+      if (!path || !path.startsWith('/')) {
+        results.push(`Skipped invalid path "${path}" — must start with /`)
+        continue
+      }
+      const current = getByPointer(surface.dataModel, path)
+      switch (op.op) {
+        case 'increment': {
+          const amount = typeof op.value === 'number' ? op.value : 1
+          const newVal = (typeof current === 'number' ? current : 0) + amount
+          setByPointer(surface.dataModel, path, newVal)
+          results.push(`${path}: ${current} → ${newVal}`)
+          break
+        }
+        case 'decrement': {
+          const amount = typeof op.value === 'number' ? op.value : 1
+          const newVal = (typeof current === 'number' ? current : 0) - amount
+          setByPointer(surface.dataModel, path, newVal)
+          results.push(`${path}: ${current} → ${newVal}`)
+          break
+        }
+        case 'toggle': {
+          const newVal = !current
+          setByPointer(surface.dataModel, path, newVal)
+          results.push(`${path}: ${current} → ${newVal}`)
+          break
+        }
+        case 'append': {
+          const arr = Array.isArray(current) ? current : []
+          arr.push(op.value)
+          setByPointer(surface.dataModel, path, arr)
+          results.push(`${path}: appended item (now ${arr.length} items)`)
+          break
+        }
+        case 'set': {
+          setByPointer(surface.dataModel, path, op.value)
+          results.push(`${path}: set to ${JSON.stringify(op.value)}`)
+          break
+        }
+        default:
+          results.push(`Unknown operation "${op.op}" — use increment, decrement, toggle, append, or set`)
+      }
+    }
+
+    surface.updatedAt = new Date().toISOString()
+    this.broadcast({ type: 'updateData', surfaceId, path: '/', value: surface.dataModel })
+    this.scheduleSave()
+
+    return {
+      ok: true,
+      surfaceId,
+      status: 'data_patched',
+      operations: results,
+      message: `Applied ${operations.length} operation(s) on "${surfaceId}". Bound components now reflect the changes.`,
+    }
+  }
+
   deleteSurface(surfaceId: string): Record<string, unknown> {
     if (!this.surfaces.has(surfaceId)) {
       return { ok: false, error: `Surface "${surfaceId}" does not exist` }
@@ -208,34 +273,40 @@ export class DynamicAppManager {
   // ---------------------------------------------------------------------------
 
   deliverAction(event: ActionEvent): void {
-    // Intercept mutation actions: execute against the runtime directly, then broadcast a refresh
+    this.deliverActionAsync(event).catch((err) => {
+      console.error('[DynamicAppManager] Action delivery failed:', err)
+    })
+  }
+
+  /**
+   * Async version of deliverAction that returns the mutation result.
+   * Used by canvas_trigger_action to actually verify mutations succeeded.
+   */
+  async deliverActionAsync(event: ActionEvent): Promise<{
+    handled: boolean
+    mutation?: boolean
+    result?: { ok: boolean; status?: number; error?: string; dataPath?: string; itemCount?: number }
+  }> {
     const mutation = event.context?._mutation as
       | { endpoint: string; method: string; body?: unknown }
       | undefined
     if (mutation) {
-      // OPEN mutations are handled client-side (window.open) — skip server-side execution
-      if (mutation.method?.toUpperCase() === 'OPEN') return
+      if (mutation.method?.toUpperCase() === 'OPEN') return { handled: true, mutation: true }
       const runtime = this.runtimes.get(event.surfaceId)
       if (runtime && runtime.isReady()) {
-        this.executeMutation(event.surfaceId, runtime, mutation).catch((err) => {
-          console.error('[DynamicAppManager] Mutation execution failed:', err)
-        })
-        return
+        const result = await this.executeMutation(event.surfaceId, runtime, mutation)
+        return { handled: true, mutation: true, result }
       }
+      return { handled: false, mutation: true, result: { ok: false, error: 'No API runtime available for this surface' } }
     }
 
-    // Fallback: try to infer a mutation from the action name + context when a runtime exists.
-    // This handles the common case where the agent creates buttons without explicit mutation
-    // definitions — the user click would otherwise silently fail.
     if (!mutation) {
       const runtime = this.runtimes.get(event.surfaceId)
       if (runtime && runtime.isReady()) {
         const inferred = this.inferMutation(runtime, event)
         if (inferred) {
-          this.executeMutation(event.surfaceId, runtime, inferred).catch((err) => {
-            console.error('[DynamicAppManager] Inferred mutation execution failed:', err)
-          })
-          return
+          const result = await this.executeMutation(event.surfaceId, runtime, inferred)
+          return { handled: true, mutation: true, result }
         }
       }
     }
@@ -250,9 +321,11 @@ export class DynamicAppManager {
       const waiter = this.actionWaiters.splice(idx, 1)[0]
       clearTimeout(waiter.timeout)
       waiter.resolve(event)
+      return { handled: true, mutation: false }
     } else {
       this.actionQueue.push(event)
       if (this.actionQueue.length > 100) this.actionQueue.shift()
+      return { handled: true, mutation: false }
     }
   }
 
@@ -328,11 +401,11 @@ export class DynamicAppManager {
     }
   }
 
-  private async executeMutation(
+  async executeMutation(
     surfaceId: string,
     runtime: ManagedApiRuntime,
     mutation: { endpoint: string; method: string; body?: unknown },
-  ): Promise<void> {
+  ): Promise<{ ok: boolean; status?: number; error?: string; dataPath?: string; itemCount?: number }> {
     const { endpoint, method, body } = mutation
     const url = `http://localhost${endpoint}`
     const req = new Request(url, {
@@ -344,22 +417,23 @@ export class DynamicAppManager {
     const res = await runtime.getApp().fetch(req)
     const json = await res.json() as Record<string, unknown>
 
-    if (json.ok !== false) {
-      // For item-level operations (PATCH /api/todos/:id, DELETE /api/todos/:id),
-      // derive the collection endpoint by stripping the last segment.
-      // For collection-level operations (POST /api/todos), use endpoint as-is.
-      const upperMethod = method.toUpperCase()
-      const collectionEndpoint =
-        upperMethod === 'POST' ? endpoint : endpoint.replace(/\/[^/]+$/, '') || endpoint
-      const listReq = new Request(`http://localhost${collectionEndpoint}`, { method: 'GET' })
-      const listRes = await runtime.getApp().fetch(listReq)
-      const listJson = await listRes.json() as Record<string, unknown>
-
-      if (Array.isArray(listJson.items)) {
-        const dataPath = collectionEndpoint.replace(/^\/api/, '')
-        this.updateData(surfaceId, dataPath, listJson.items)
-      }
+    if (json.ok === false) {
+      return { ok: false, status: res.status, error: json.error as string ?? 'Mutation returned ok: false' }
     }
+
+    const upperMethod = method.toUpperCase()
+    const collectionEndpoint =
+      upperMethod === 'POST' ? endpoint : endpoint.replace(/\/[^/]+$/, '') || endpoint
+    const listReq = new Request(`http://localhost${collectionEndpoint}`, { method: 'GET' })
+    const listRes = await runtime.getApp().fetch(listReq)
+    const listJson = await listRes.json() as Record<string, unknown>
+
+    const dataPath = collectionEndpoint.replace(/^\/api/, '')
+    if (Array.isArray(listJson.items)) {
+      this.updateData(surfaceId, dataPath, listJson.items)
+      return { ok: true, dataPath, itemCount: listJson.items.length }
+    }
+    return { ok: true, dataPath }
   }
 
   waitForAction(surfaceId?: string, actionName?: string, timeoutMs = 120_000): Promise<ActionEvent | null> {
@@ -555,7 +629,6 @@ export class DynamicAppManager {
       if (!surfacesObj || typeof surfacesObj !== 'object') return
 
       let restored = 0
-      let runtimesRestored = 0
       for (const [id, s] of Object.entries(surfacesObj) as [string, any][]) {
         const components = new Map<string, ComponentDefinition>()
         if (s.components && typeof s.components === 'object') {
@@ -581,6 +654,7 @@ export class DynamicAppManager {
       }
 
       // Restore API runtimes for surfaces that had active schemas
+      let runtimesRestored = 0
       for (const [id, surface] of this.surfaces) {
         if (surface.apiModels && surface.apiModels.length > 0) {
           try {

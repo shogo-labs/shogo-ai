@@ -15,6 +15,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import { useDynamicAppStream } from './dynamic-app/use-dynamic-app-stream'
 import { DynamicAppRenderer } from './dynamic-app/DynamicAppRenderer'
+import { CanvasErrorBoundary } from './dynamic-app/CanvasErrorBoundary'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   Select,
@@ -151,7 +152,7 @@ export function AgentDynamicAppPanel({ projectId, visible, localAgentUrl }: Agen
     return () => { cancelled = true }
   }, [projectId, localAgentUrl])
 
-  const { surfaces, connected, error, dispatchAction, updateLocalData, reconnect } = useDynamicAppStream(
+  const { surfaces, connected, connecting, error, dispatchAction, updateLocalData, reconnect } = useDynamicAppStream(
     visible ? agentUrl : null
   )
 
@@ -281,14 +282,16 @@ export function AgentDynamicAppPanel({ projectId, visible, localAgentUrl }: Agen
       {/* Content Area — scoped theme via CSS variables */}
       <div className="flex-1 overflow-hidden rounded-b-lg" style={canvasThemeStyle}>
         {hasSurfaces && activeSurface ? (
-          <ScrollArea className="h-full">
-            <DynamicAppRenderer
-              surface={activeSurface}
-              agentUrl={agentUrl}
-              onAction={dispatchAction}
-              onDataChange={updateLocalData}
-            />
-          </ScrollArea>
+          <CanvasErrorBoundary key={activeSurface.surfaceId} surfaceTitle={activeSurface.title}>
+            <ScrollArea className="h-full">
+              <DynamicAppRenderer
+                surface={activeSurface}
+                agentUrl={agentUrl}
+                onAction={dispatchAction}
+                onDataChange={updateLocalData}
+              />
+            </ScrollArea>
+          </CanvasErrorBoundary>
         ) : (
           <EmptyState
             connected={connected}

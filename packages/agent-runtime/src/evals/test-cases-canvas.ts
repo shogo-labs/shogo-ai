@@ -65,10 +65,10 @@ export const CANVAS_EVALS: AgentEval[] = [
       },
       {
         id: 'used-canvas-data',
-        description: 'Used canvas_data to populate data',
+        description: 'Used canvas_data or canvas_api_query to populate data',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_data'),
+        validate: (r) => usedTool(r, 'canvas_data') || usedTool(r, 'canvas_api_query'),
       },
       {
         id: 'canvas-has-temp',
@@ -143,10 +143,10 @@ export const CANVAS_EVALS: AgentEval[] = [
       },
       {
         id: 'used-canvas-data',
-        description: 'Used canvas_data to set the data model',
+        description: 'Used canvas_data or canvas_api_query to set the data model',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_data'),
+        validate: (r) => usedTool(r, 'canvas_data') || usedTool(r, 'canvas_api_query'),
       },
       {
         id: 'reasonable-tool-count',
@@ -197,10 +197,13 @@ export const CANVAS_EVALS: AgentEval[] = [
       },
       {
         id: 'has-table-component',
-        description: 'Included a Table component for displaying todos',
+        description: 'Included a Table or DataList for displaying todos',
         points: 10,
         phase: 'execution',
-        validate: (r) => JSON.stringify(r.toolCalls).includes('"Table"'),
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls);
+          return json.includes('"Table"') || json.includes('"DataList"');
+        },
       },
       {
         id: 'has-todo-model',
@@ -348,10 +351,10 @@ export const CANVAS_EVALS: AgentEval[] = [
       },
       {
         id: 'used-canvas-data',
-        description: 'Used canvas_data to populate lead data',
+        description: 'Used canvas_data or canvas_api_query to populate lead data',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_data'),
+        validate: (r) => usedTool(r, 'canvas_data') || usedTool(r, 'canvas_api_query'),
       },
       {
         id: 'has-stage-labels',
@@ -375,10 +378,10 @@ export const CANVAS_EVALS: AgentEval[] = [
       },
       {
         id: 'reasonable-tool-count',
-        description: 'Completed in <= 10 tool calls',
+        description: 'Completed in <= 15 tool calls',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 10,
+        validate: (r) => r.toolCalls.length <= 15,
       },
     ],
   },
@@ -415,10 +418,13 @@ export const CANVAS_EVALS: AgentEval[] = [
       },
       {
         id: 'has-table-component',
-        description: 'Included a Table for expense line items',
+        description: 'Included a Table or DataList for expense line items',
         points: 15,
         phase: 'execution',
-        validate: (r) => JSON.stringify(r.toolCalls).includes('"Table"'),
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls);
+          return json.includes('"Table"') || json.includes('"DataList"');
+        },
       },
       {
         id: 'has-spend-data',
@@ -442,10 +448,10 @@ export const CANVAS_EVALS: AgentEval[] = [
       },
       {
         id: 'reasonable-tool-count',
-        description: 'Completed in <= 10 tool calls',
+        description: 'Completed in <= 15 tool calls',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 10,
+        validate: (r) => r.toolCalls.length <= 15,
       },
     ],
   },
@@ -512,10 +518,10 @@ export const CANVAS_EVALS: AgentEval[] = [
       },
       {
         id: 'reasonable-tool-count',
-        description: 'Completed in <= 10 tool calls',
+        description: 'Completed in <= 15 tool calls',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 10,
+        validate: (r) => r.toolCalls.length <= 15,
       },
     ],
   },
@@ -559,10 +565,13 @@ export const CANVAS_EVALS: AgentEval[] = [
       },
       {
         id: 'has-table-component',
-        description: 'Included a Table for displaying tickets',
+        description: 'Included a Table or DataList for displaying tickets',
         points: 10,
         phase: 'execution',
-        validate: (r) => JSON.stringify(r.toolCalls).includes('"Table"'),
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls);
+          return json.includes('"Table"') || json.includes('"DataList"');
+        },
       },
       {
         id: 'has-ticket-model',
@@ -642,10 +651,13 @@ export const CANVAS_EVALS: AgentEval[] = [
       },
       {
         id: 'has-table-component',
-        description: 'Included a Table for displaying invoices',
+        description: 'Included a Table or DataList for displaying invoices',
         points: 10,
         phase: 'execution',
-        validate: (r) => JSON.stringify(r.toolCalls).includes('"Table"'),
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls);
+          return json.includes('"Table"') || json.includes('"DataList"');
+        },
       },
       {
         id: 'has-metric-component',
@@ -732,10 +744,13 @@ export const CANVAS_EVALS: AgentEval[] = [
       },
       {
         id: 'has-table-component',
-        description: 'Included a Table for displaying applicants',
+        description: 'Included a Table or DataList for displaying applicants',
         points: 10,
         phase: 'execution',
-        validate: (r) => JSON.stringify(r.toolCalls).includes('"Table"'),
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls);
+          return json.includes('"Table"') || json.includes('"DataList"');
+        },
       },
       {
         id: 'has-applicant-model',
@@ -905,10 +920,13 @@ export const CANVAS_EVALS: AgentEval[] = [
       },
       {
         id: 'has-table-component',
-        description: 'Included a Table for displaying orders',
+        description: 'Included a Table or DataList for displaying orders',
         points: 5,
         phase: 'execution',
-        validate: (r) => JSON.stringify(r.toolCalls).includes('"Table"'),
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls);
+          return json.includes('"Table"') || json.includes('"DataList"');
+        },
       },
       {
         id: 'has-order-model',
@@ -940,10 +958,10 @@ export const CANVAS_EVALS: AgentEval[] = [
       },
       {
         id: 'reasonable-tool-count',
-        description: 'Completed in <= 20 tool calls',
+        description: 'Completed in <= 25 tool calls',
         points: 10,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 20,
+        validate: (r) => r.toolCalls.length <= 25,
       },
     ],
     antiPatterns: ['Did not verify interactions work'],
@@ -972,37 +990,63 @@ export const CANVAS_EVALS: AgentEval[] = [
       {
         id: 'used-api-schema',
         description: 'Defined API schema for todos',
-        points: 10,
+        points: 5,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_api_schema'),
       },
       {
         id: 'used-api-seed',
         description: 'Seeded sample data',
-        points: 10,
+        points: 5,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_api_seed'),
       },
       {
         id: 'used-canvas-update',
         description: 'Built UI components',
-        points: 10,
+        points: 5,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_update'),
       },
       {
-        id: 'used-trigger-action',
-        description: 'Used canvas_trigger_action to simulate adding a todo',
-        points: 20,
+        id: 'tested-add-action',
+        description: 'Tested a POST/add action via canvas_trigger_action',
+        points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_trigger_action'),
+        validate: (r) => r.toolCalls.some(t => {
+          if (t.name !== 'canvas_trigger_action') return false
+          const json = JSON.stringify(t.input).toLowerCase()
+          return json.includes('post')
+        }),
       },
       {
-        id: 'used-inspect',
-        description: 'Used canvas_inspect to verify the result',
-        points: 20,
+        id: 'tested-update-action',
+        description: 'Tested a PATCH/mark-complete action via canvas_trigger_action',
+        points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_inspect'),
+        validate: (r) => r.toolCalls.some(t => {
+          if (t.name !== 'canvas_trigger_action') return false
+          const json = JSON.stringify(t.input).toLowerCase()
+          return json.includes('patch') || json.includes('put')
+        }),
+      },
+      {
+        id: 'tested-delete-action',
+        description: 'Tested a DELETE action via canvas_trigger_action',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.some(t => {
+          if (t.name !== 'canvas_trigger_action') return false
+          const json = JSON.stringify(t.input).toLowerCase()
+          return json.includes('delete')
+        }),
+      },
+      {
+        id: 'inspect-after-each-trigger',
+        description: 'canvas_inspect called at least twice to verify multiple actions',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => toolCallCount(r, 'canvas_inspect') >= 2,
       },
       {
         id: 'inspect-after-trigger',
@@ -1026,7 +1070,7 @@ export const CANVAS_EVALS: AgentEval[] = [
         },
       },
     ],
-    antiPatterns: ['Did not use canvas_trigger_action', 'Did not use canvas_inspect'],
+    antiPatterns: ['Did not use canvas_trigger_action', 'Did not use canvas_inspect', 'Only tested one action type — must test add, update, and delete'],
   },
 
   // ---- Level 4: Counter app with self-testing loop (multi-turn) ----
@@ -1088,10 +1132,10 @@ export const CANVAS_EVALS: AgentEval[] = [
       },
       {
         id: 'reasonable-tool-count',
-        description: 'Completed in <= 10 tool calls',
+        description: 'Completed in <= 20 tool calls',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 10,
+        validate: (r) => r.toolCalls.length <= 20,
       },
     ],
     antiPatterns: ['Did not trigger any actions', 'Did not inspect the result'],

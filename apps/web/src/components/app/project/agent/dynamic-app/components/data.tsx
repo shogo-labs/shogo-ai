@@ -2,6 +2,11 @@
  * Data Components for Dynamic App
  *
  * Components for displaying structured data: metrics, tables, charts.
+ *
+ * Follows the official shadcn/ui dashboard patterns:
+ * - Metric uses Card with CardHeader/CardContent hierarchy
+ * - Table renders a clean <table> (parent wraps in Card when needed)
+ * - Chart renders lightweight SVG-free bars (parent wraps in Card when needed)
  */
 
 import type { ReactNode } from 'react'
@@ -10,7 +15,18 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { TrendingUp, TrendingDown, Minus } from 'lucide-react'
 
 // ---------------------------------------------------------------------------
-// Metric
+// Helpers
+// ---------------------------------------------------------------------------
+
+function formatCompactNumber(n: number): string {
+  if (Math.abs(n) >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`
+  if (Math.abs(n) >= 10_000) return `${Math.round(n / 1_000)}K`
+  if (Math.abs(n) >= 1_000) return `${(n / 1_000).toFixed(1).replace(/\.0$/, '')}K`
+  return String(n)
+}
+
+// ---------------------------------------------------------------------------
+// Metric — follows official shadcn dashboard card pattern
 // ---------------------------------------------------------------------------
 
 interface MetricProps {
@@ -27,33 +43,34 @@ export function DynMetric({ label, value, unit, trend, trendValue, description, 
   const TrendIcon = trend === 'up' ? TrendingUp : trend === 'down' ? TrendingDown : Minus
 
   return (
-    <Card className={cn(className)}>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground">{label}</CardTitle>
+    <Card className={cn('gap-2', className)}>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-0">
+        <CardTitle className="text-sm font-medium tracking-tight text-muted-foreground">
+          {label}
+        </CardTitle>
+        {trend && <TrendIcon className={cn(
+          'size-4 text-muted-foreground',
+          trend === 'up' && 'text-emerald-500',
+          trend === 'down' && 'text-red-500',
+        )} />}
       </CardHeader>
       <CardContent>
-        <div className="flex items-baseline gap-2">
-          <span className="text-2xl font-bold">{value}{unit && <span className="text-sm font-normal text-muted-foreground ml-1">{unit}</span>}</span>
-          {trend && (
-            <span className={cn(
-              'flex items-center gap-0.5 text-xs font-medium',
-              trend === 'up' && 'text-emerald-600',
-              trend === 'down' && 'text-red-600',
-              trend === 'neutral' && 'text-muted-foreground',
-            )}>
-              <TrendIcon className="size-3" />
-              {trendValue}
-            </span>
-          )}
+        <div className="text-2xl font-bold tracking-tight">
+          {value}
+          {unit && <span className="text-sm font-normal text-muted-foreground ml-1">{unit}</span>}
         </div>
-        {description && <p className="text-xs text-muted-foreground mt-1">{description}</p>}
+        {(trendValue || description) && (
+          <p className="text-xs text-muted-foreground">
+            {trendValue}{trendValue && description ? ' · ' : ''}{description}
+          </p>
+        )}
       </CardContent>
     </Card>
   )
 }
 
 // ---------------------------------------------------------------------------
-// Table
+// Table — clean table, relies on parent Card for wrapping
 // ---------------------------------------------------------------------------
 
 interface TableColumn {
@@ -73,16 +90,16 @@ interface TableProps {
 
 export function DynTable({ columns = [], rows = [], striped, compact, className }: TableProps) {
   return (
-    <div className={cn('w-full overflow-auto rounded-md border', className)}>
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b bg-muted/50">
+    <div className={cn('relative w-full overflow-auto', className)}>
+      <table className="w-full caption-bottom text-sm">
+        <thead className="[&_tr]:border-b">
+          <tr className="border-b transition-colors hover:bg-muted/50">
             {columns.map((col) => (
               <th
                 key={col.key}
                 className={cn(
-                  'font-medium text-muted-foreground',
-                  compact ? 'px-3 py-1.5' : 'px-4 py-3',
+                  'h-10 text-left align-middle font-medium text-muted-foreground',
+                  compact ? 'px-2' : 'px-4',
                   col.align === 'center' && 'text-center',
                   col.align === 'right' && 'text-right',
                 )}
@@ -93,20 +110,22 @@ export function DynTable({ columns = [], rows = [], striped, compact, className 
             ))}
           </tr>
         </thead>
-        <tbody>
+        <tbody className="[&_tr:last-child]:border-0">
           {rows.map((row, i) => (
             <tr
               key={i}
               className={cn(
-                'border-b last:border-0',
-                striped && i % 2 === 1 && 'bg-muted/30',
+                'border-b transition-colors hover:bg-muted/50',
+                striped && i % 2 === 1 && 'bg-muted/50',
               )}
             >
-              {columns.map((col) => (
+              {columns.map((col, colIdx) => (
                 <td
                   key={col.key}
                   className={cn(
-                    compact ? 'px-3 py-1.5' : 'px-4 py-3',
+                    'align-middle',
+                    compact ? 'p-2' : 'p-4',
+                    colIdx === 0 && 'font-medium',
                     col.align === 'center' && 'text-center',
                     col.align === 'right' && 'text-right',
                   )}
@@ -118,7 +137,7 @@ export function DynTable({ columns = [], rows = [], striped, compact, className 
           ))}
           {rows.length === 0 && (
             <tr>
-              <td colSpan={columns.length} className="px-4 py-8 text-center text-muted-foreground">
+              <td colSpan={columns.length} className="h-24 text-center text-muted-foreground">
                 No data
               </td>
             </tr>
@@ -130,7 +149,7 @@ export function DynTable({ columns = [], rows = [], striped, compact, className 
 }
 
 // ---------------------------------------------------------------------------
-// Chart (simple bar/line/pie using CSS — no external library dependency)
+// Chart — lightweight CSS bars, relies on parent Card for wrapping
 // ---------------------------------------------------------------------------
 
 interface ChartDataPoint {
@@ -147,10 +166,25 @@ interface ChartProps {
   className?: string
 }
 
+const DEFAULT_COLORS = [
+  'var(--chart-1, #e76e50)',
+  'var(--chart-2, #2a9d90)',
+  'var(--chart-3, #274754)',
+  'var(--chart-4, #e9c46a)',
+  'var(--chart-5, #f4a261)',
+  '#3b82f6',
+  '#8b5cf6',
+  '#10b981',
+]
+
+function getColor(d: ChartDataPoint, i: number): string {
+  return d.color || DEFAULT_COLORS[i % DEFAULT_COLORS.length]
+}
+
 export function DynChart({ type = 'bar', data = [], title, height = 200, className }: ChartProps) {
   if (data.length === 0) {
     return (
-      <div className={cn('flex items-center justify-center text-muted-foreground border rounded-md', className)} style={{ height }}>
+      <div className={cn('flex items-center justify-center text-sm text-muted-foreground', className)} style={{ height }}>
         No chart data
       </div>
     )
@@ -160,21 +194,18 @@ export function DynChart({ type = 'bar', data = [], title, height = 200, classNa
 
   if (type === 'horizontalBar') {
     return (
-      <div className={cn('flex flex-col gap-2', className)}>
+      <div className={cn('flex flex-col gap-3', className)}>
         {title && <p className="text-sm font-medium">{title}</p>}
         {data.map((d, i) => (
-          <div key={i} className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground w-20 truncate">{d.label}</span>
-            <div className="flex-1 bg-muted rounded-full h-4 overflow-hidden">
+          <div key={i} className="flex items-center gap-3 group">
+            <span className="text-xs text-muted-foreground w-24 truncate text-right">{d.label}</span>
+            <div className="flex-1 bg-muted/50 rounded-md h-6 overflow-hidden">
               <div
-                className="h-full rounded-full transition-all"
-                style={{
-                  width: `${(d.value / max) * 100}%`,
-                  backgroundColor: d.color || 'hsl(var(--primary))',
-                }}
+                className="h-full rounded-md transition-all duration-300 ease-in-out"
+                style={{ width: `${(d.value / max) * 100}%`, backgroundColor: getColor(d, i) }}
               />
             </div>
-            <span className="text-xs font-medium w-12 text-right">{d.value}</span>
+            <span className="text-xs font-medium tabular-nums w-14 text-right">{formatCompactNumber(d.value)}</span>
           </div>
         ))}
       </div>
@@ -186,18 +217,15 @@ export function DynChart({ type = 'bar', data = [], title, height = 200, classNa
       <div className={cn('flex flex-col gap-3', className)}>
         {title && <p className="text-sm font-medium">{title}</p>}
         {data.map((d, i) => (
-          <div key={i} className="space-y-1">
+          <div key={i} className="space-y-1.5">
             <div className="flex justify-between text-xs">
-              <span>{d.label}</span>
-              <span className="text-muted-foreground">{d.value}%</span>
+              <span className="font-medium">{d.label}</span>
+              <span className="text-muted-foreground tabular-nums">{d.value}%</span>
             </div>
             <div className="bg-muted rounded-full h-2 overflow-hidden">
               <div
-                className="h-full rounded-full transition-all"
-                style={{
-                  width: `${Math.min(d.value, 100)}%`,
-                  backgroundColor: d.color || 'hsl(var(--primary))',
-                }}
+                className="h-full rounded-full transition-all duration-500 ease-out"
+                style={{ width: `${Math.min(d.value, 100)}%`, backgroundColor: getColor(d, i) }}
               />
             </div>
           </div>
@@ -207,31 +235,33 @@ export function DynChart({ type = 'bar', data = [], title, height = 200, classNa
   }
 
   // Default: vertical bar chart
+  const barAreaH = height - 40
   return (
     <div className={cn('flex flex-col gap-2', className)}>
       {title && <p className="text-sm font-medium">{title}</p>}
-      <div className="flex items-end gap-1" style={{ height }}>
-        {data.map((d, i) => (
-          <div key={i} className="flex-1 flex flex-col items-center gap-1">
-            <span className="text-[10px] font-medium">{d.value}</span>
-            <div
-              className="w-full rounded-t transition-all"
-              style={{
-                height: `${(d.value / max) * (height - 30)}px`,
-                backgroundColor: d.color || 'hsl(var(--primary))',
-                minHeight: 2,
-              }}
-            />
-            <span className="text-[10px] text-muted-foreground truncate max-w-full">{d.label}</span>
-          </div>
-        ))}
+      <div className="flex items-end gap-2" style={{ height }}>
+        {data.map((d, i) => {
+          const barH = Math.max((d.value / max) * barAreaH, 4)
+          return (
+            <div key={i} className="flex-1 flex flex-col items-center gap-1 group">
+              <span className="text-[10px] font-medium tabular-nums text-muted-foreground">
+                {formatCompactNumber(d.value)}
+              </span>
+              <div
+                className="w-full rounded-md transition-all duration-300 ease-in-out group-hover:opacity-80"
+                style={{ height: `${barH}px`, backgroundColor: getColor(d, i) }}
+              />
+              <span className="text-[10px] text-muted-foreground truncate max-w-full">{d.label}</span>
+            </div>
+          )
+        })}
       </div>
     </div>
   )
 }
 
 // ---------------------------------------------------------------------------
-// DataList (renders children for each item in a data array)
+// DataList
 // ---------------------------------------------------------------------------
 
 interface DataListProps {
