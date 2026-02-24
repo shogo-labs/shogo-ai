@@ -36,6 +36,8 @@ export interface ToolContext {
   sandbox?: Partial<import('./types').SandboxConfig>
   mainSessionIds?: string[]
   mcpClientManager?: import('./mcp-client').MCPClientManager
+  connectChannel?: (type: string, config: Record<string, string>) => Promise<void>
+  disconnectChannel?: (type: string) => Promise<void>
 }
 
 const BLOCKED_COMMANDS = [
@@ -613,6 +615,119 @@ function createSendMessageTool(ctx: ToolContext): AgentTool {
       } catch (err: any) {
         return textResult({ error: `Failed to send: ${err.message}` })
       }
+    },
+  }
+}
+
+function createChannelConnectTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'channel_connect',
+    description:
+      'Connect a messaging channel so the agent can receive and respond to messages. Persists config and hot-connects immediately.',
+    label: 'Connect Channel',
+    parameters: Type.Object({
+      type: Type.String({ description: 'Channel type: "telegram", "discord", "slack", "whatsapp", or "email"' }),
+      config: Type.Object({}, { additionalProperties: Type.String(), description: 'Channel credentials (e.g. { botToken: "...", guildId: "..." } for Discord)' }),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { type, config: channelConfig } = params as { type: string; config: Record<string, string> }
+
+      const validTypes = ['telegram', 'discord', 'slack', 'whatsapp', 'email']
+      if (!validTypes.includes(type)) {
+        return textResult({ error: `Invalid channel type: ${type}. Must be one of: ${validTypes.join(', ')}` })
+      }
+
+      if (!ctx.connectChannel) {
+        return textResult({ error: 'Channel connect not available in this context' })
+      }
+
+      try {
+        const configPath = join(ctx.workspaceDir, 'config.json')
+        let fileConfig: Record<string, any> = {}
+        if (existsSync(configPath)) {
+          try { fileConfig = JSON.parse(readFileSync(configPath, 'utf-8')) } catch { fileConfig = {} }
+        }
+
+        fileConfig.channels = fileConfig.channels || []
+        const existing = fileConfig.channels.findIndex((ch: any) => ch.type === type)
+        if (existing >= 0) {
+          fileConfig.channels[existing] = { type, config: channelConfig }
+        } else {
+          fileConfig.channels.push({ type, config: channelConfig })
+        }
+
+        await ctx.connectChannel(type, channelConfig)
+
+        writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8')
+
+        return textResult({ ok: true, type, message: `${type} channel connected and live` })
+      } catch (err: any) {
+        return textResult({ error: `Failed to connect ${type}: ${err.message}` })
+      }
+    },
+  }
+}
+
+function createChannelDisconnectTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'channel_disconnect',
+    description: 'Disconnect a messaging channel and remove it from config.',
+    label: 'Disconnect Channel',
+    parameters: Type.Object({
+      type: Type.String({ description: 'Channel type to disconnect (e.g. "discord")' }),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { type } = params as { type: string }
+
+      if (!ctx.disconnectChannel) {
+        return textResult({ error: 'Channel disconnect not available in this context' })
+      }
+
+      try {
+        await ctx.disconnectChannel(type)
+
+        const configPath = join(ctx.workspaceDir, 'config.json')
+        if (existsSync(configPath)) {
+          try {
+            const fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'))
+            fileConfig.channels = (fileConfig.channels || []).filter((ch: any) => ch.type !== type)
+            writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8')
+          } catch { /* config corrupted, skip */ }
+        }
+
+        return textResult({ ok: true, type, message: `${type} channel disconnected` })
+      } catch (err: any) {
+        return textResult({ error: `Failed to disconnect ${type}: ${err.message}` })
+      }
+    },
+  }
+}
+
+function createChannelListTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'channel_list',
+    description: 'List all configured messaging channels and their connection status.',
+    label: 'List Channels',
+    parameters: Type.Object({}),
+    execute: async () => {
+      const statuses = []
+      for (const [type, adapter] of ctx.channels) {
+        statuses.push(adapter.getStatus())
+      }
+
+      const configPath = join(ctx.workspaceDir, 'config.json')
+      let configured: string[] = []
+      if (existsSync(configPath)) {
+        try {
+          const fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'))
+          configured = (fileConfig.channels || []).map((ch: any) => ch.type)
+        } catch { /* ignore */ }
+      }
+
+      return textResult({
+        connected: statuses,
+        configured,
+      })
     },
   }
 }
@@ -1667,7 +1782,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
     'mcp_playwright_browser_screenshot', 'mcp_playwright_browser_close',
   ],
   memory: ['memory_read', 'memory_write', 'memory_search'],
-  messaging: ['send_message'],
+  messaging: ['send_message', 'channel_connect', 'channel_disconnect', 'channel_list'],
   cron: ['cron'],
   canvas: ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_delete', 'canvas_action_wait', 'canvas_components', 'canvas_trigger_action', 'canvas_inspect'],
   api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query'],
@@ -1677,7 +1792,8 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
 
 export const ALL_TOOL_NAMES = [
   'exec', 'read_file', 'write_file', 'web_fetch', 'web_search', 'browser',
-  'memory_read', 'memory_write', 'memory_search', 'send_message', 'cron',
+  'memory_read', 'memory_write', 'memory_search',
+  'send_message', 'channel_connect', 'channel_disconnect', 'channel_list', 'cron',
   'canvas_create', 'canvas_update', 'canvas_data', 'canvas_delete', 'canvas_action_wait', 'canvas_components',
   'canvas_trigger_action', 'canvas_inspect',
   'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query',
@@ -1721,6 +1837,9 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createMemoryWriteTool(ctx),
     createMemorySearchTool(ctx),
     createSendMessageTool(ctx),
+    createChannelConnectTool(ctx),
+    createChannelDisconnectTool(ctx),
+    createChannelListTool(ctx),
     createCronTool(ctx),
     createCanvasCreateTool(),
     createCanvasUpdateTool(),

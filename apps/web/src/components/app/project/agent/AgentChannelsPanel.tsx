@@ -205,10 +205,17 @@ export function AgentChannelsPanel({ projectId, visible, localAgentUrl }: AgentC
     <div className={cn('absolute inset-0 flex flex-col', !visible && 'invisible pointer-events-none')}>
       <div className="px-4 py-3 border-b flex items-center gap-2">
         <MessageSquare className="h-4 w-4 text-muted-foreground" />
-        <span className="text-sm font-medium">Channels</span>
-        <span className="text-xs text-muted-foreground">
-          {channels.filter((c) => c.connected).length} connected
-        </span>
+        <div className="flex flex-col">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium">Channels</span>
+            <span className="text-xs text-muted-foreground">
+              {channels.filter((c) => c.connected).length} connected
+            </span>
+          </div>
+          <span className="text-[10px] text-muted-foreground/70">
+            Configure below or ask the agent to set up for you
+          </span>
+        </div>
         <button
           onClick={loadChannels}
           className="ml-auto p-1 rounded hover:bg-muted text-muted-foreground"
