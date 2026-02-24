@@ -41,6 +41,7 @@ import {
   AgentSetupWizard,
   AgentAnalyticsPanel,
   AgentDynamicAppPanel,
+  AgentStatusDashboard,
 } from "./agent"
 import { cn, getTotalCreditsForPlan } from "@/lib/utils"
 import { isDesktop, getDesktopAPI } from "@/lib/desktop"
@@ -1262,6 +1263,11 @@ export const ProjectLayout = observer(function ProjectLayout() {
                     visible={previewMode === 'setup'}
                     localAgentUrl={localAgentUrl}
                     onComplete={() => setPreviewMode('dynamic-app')}
+                  />
+                  <AgentStatusDashboard
+                    projectId={projectId || ''}
+                    visible={previewMode === 'status'}
+                    localAgentUrl={localAgentUrl}
                   />
                   <AgentWorkspacePanel
                     projectId={projectId || ''}

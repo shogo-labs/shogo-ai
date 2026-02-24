@@ -234,6 +234,7 @@ export function ProjectTopBar({
         <div className="hidden md:flex items-center gap-0.5">
           {[
             { id: 'dynamic-app', label: 'Canvas' },
+            { id: 'status', label: 'Status' },
             { id: 'workspace', label: 'Workspace' },
             { id: 'skills', label: 'Skills' },
             { id: 'mcp-servers', label: 'MCP Servers' },
