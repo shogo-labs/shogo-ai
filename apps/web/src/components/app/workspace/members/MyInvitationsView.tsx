@@ -109,33 +109,34 @@ export function MyInvitationsView({ onInvitationResponse }: MyInvitationsViewPro
     setError(null)
 
     try {
-      // Load invitations from backend
+      // Fetch invitations with workspace data directly from API,
+      // since MST safeReference loses the nested workspace object
+      // when the invitee isn't yet a member of the workspace.
+      const res = await fetch(`/api/invitations?email=${encodeURIComponent(userEmail)}`, {
+        credentials: 'include',
+      })
+      if (!res.ok) {
+        throw new Error(`Request failed with status ${res.status}`)
+      }
+      const data = await res.json()
+      const rawItems: any[] = data.items || []
+
+      // Sync the collection so accept/decline actions can find items via store.get()
       await store.invitationCollection.loadAll({ email: userEmail })
-      await store.workspaceCollection.loadAll({})
 
-      // Get invitations for current user's email
-      const userInvitations = store.invitationCollection.all.filter(
-        (i: any) => i.email === userEmail
-      )
-      const pending = userInvitations.filter((i: any) => i.status === "pending")
+      const pending = rawItems.filter((i: any) => i.status === "pending")
 
-      // Get workspace details for each invitation
-      setInvitations(pending.map((i: any) => {
-        const workspace = i.workspaceId 
-          ? store.workspaceCollection.get(i.workspaceId)
-          : undefined
-        return {
-          id: i.id,
-          email: i.email,
-          role: i.role,
-          status: i.status,
-          expiresAt: i.expiresAt,
-          createdAt: i.createdAt,
-          isExpired: i.isExpired || Date.now() > i.expiresAt,
-          workspace: workspace ? { id: workspace.id, name: workspace.name } : undefined,
-          project: undefined, // Project invitations handled separately
-        }
-      }))
+      setInvitations(pending.map((i: any) => ({
+        id: i.id,
+        email: i.email,
+        role: i.role,
+        status: i.status,
+        expiresAt: typeof i.expiresAt === 'string' ? new Date(i.expiresAt).getTime() : i.expiresAt,
+        createdAt: typeof i.createdAt === 'string' ? new Date(i.createdAt).getTime() : i.createdAt,
+        isExpired: i.expiresAt ? new Date(i.expiresAt) < new Date() : false,
+        workspace: i.workspace ? { id: i.workspace.id, name: i.workspace.name } : undefined,
+        project: undefined,
+      })))
     } catch (err) {
       console.error("[MyInvitationsView] Failed to load invitations:", err)
       setError(err instanceof Error ? err.message : "Failed to load invitations")

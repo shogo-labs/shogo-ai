@@ -1328,7 +1328,8 @@ function PeopleTab() {
           )}
         </TabsContent>
 
-        <TabsContent value="invitations" className="mt-3">
+        <TabsContent value="invitations" className="mt-3 space-y-6">
+          <MyInvitationsView onInvitationResponse={loadMembers} />
           {currentWorkspace?.id ? (
             <PendingInvitationsView
               orgId={currentWorkspace.id}

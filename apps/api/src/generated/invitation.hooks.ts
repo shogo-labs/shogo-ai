@@ -50,12 +50,25 @@ export interface InvitationHooks {
 }
 
 /**
+ * Look up the current user's email from the database
+ */
+async function getUserEmail(prisma: any, userId: string): Promise<string | null> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { email: true },
+  })
+  return user?.email?.toLowerCase() ?? null
+}
+
+/**
  * Default Invitation hooks (customize as needed)
  */
 export const invitationHooks: InvitationHooks = {
   /**
-   * Filter invitations to only workspaces the user has access to
-   * Include workspace info in list responses
+   * Filter invitations based on context:
+   * - ?email=X  → invitees can see their own invitations
+   * - ?workspaceId=X → workspace admins/owners can see workspace invitations
+   * - (neither) → invitations from all accessible workspaces
    */
   beforeList: async (ctx) => {
     const userId = ctx.userId
@@ -66,7 +79,27 @@ export const invitationHooks: InvitationHooks = {
       }
     }
 
+    const emailFilter = ctx.query.email
     const workspaceId = ctx.query.workspaceId
+
+    // Email-based query: allow users to see invitations addressed to them
+    if (emailFilter) {
+      const userEmail = await getUserEmail(ctx.prisma, userId)
+      if (userEmail && userEmail === emailFilter.toLowerCase()) {
+        return {
+          ok: true,
+          data: {
+            where: { email: userEmail },
+            include: { workspace: true },
+          },
+        }
+      }
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Cannot view invitations for other users" },
+      }
+    }
+
     if (!workspaceId) {
       // Return invitations from all accessible workspaces
       return {
@@ -110,7 +143,8 @@ export const invitationHooks: InvitationHooks = {
   },
 
   /**
-   * Verify user has access to view the invitation
+   * Verify user has access to view the invitation.
+   * Allows both workspace members and the invitee (matched by email).
    */
   beforeGet: async (id, ctx) => {
     const userId = ctx.userId
@@ -137,7 +171,14 @@ export const invitationHooks: InvitationHooks = {
       }
     }
 
-    const hasAccess = invitation.workspace.members.some((m: any) => m.userId === userId)
+    // Allow if user is the invitee
+    const userEmail = await getUserEmail(ctx.prisma, userId)
+    if (userEmail && userEmail === invitation.email.toLowerCase()) {
+      return { ok: true }
+    }
+
+    // Allow if user is a member of the workspace
+    const hasAccess = invitation.workspace?.members.some((m: any) => m.userId === userId)
     if (!hasAccess) {
       return {
         ok: false,
@@ -279,7 +320,9 @@ export const invitationHooks: InvitationHooks = {
   },
 
   /**
-   * Verify user has access to update the invitation (admin/owner only)
+   * Verify user has access to update the invitation.
+   * - Invitees can accept or decline their own invitations
+   * - Workspace admins/owners can make other changes (e.g. cancel)
    */
   beforeUpdate: async (id, input, ctx) => {
     const userId = ctx.userId
@@ -306,7 +349,30 @@ export const invitationHooks: InvitationHooks = {
       }
     }
 
-    const member = invitation.workspace.members.find((m: any) => m.userId === userId)
+    // Allow invitees to accept or decline their own invitation
+    const userEmail = await getUserEmail(ctx.prisma, userId)
+    if (userEmail && userEmail === invitation.email.toLowerCase()) {
+      const actionableStatuses = ['pending', 'accepted']
+      if (!actionableStatuses.includes(invitation.status)) {
+        return {
+          ok: false,
+          error: { code: "bad_request", message: "Invitation can no longer be modified" },
+        }
+      }
+      if (invitation.expiresAt && new Date(invitation.expiresAt) < new Date()) {
+        return {
+          ok: false,
+          error: { code: "expired", message: "Invitation has expired" },
+        }
+      }
+      const allowedStatuses = ['accepted', 'declined']
+      if (input.status && allowedStatuses.includes(input.status)) {
+        return { ok: true, data: { status: input.status } }
+      }
+    }
+
+    // For admin/owner operations (cancel, etc.)
+    const member = invitation.workspace?.members.find((m: any) => m.userId === userId)
     if (!member) {
       return {
         ok: false,

@@ -161,7 +161,9 @@ export const memberHooks: MemberHooks = {
   },
 
   /**
-   * Verify user can add members to the workspace (admin/owner only)
+   * Verify user can add members to the workspace.
+   * - Admin/owner can add anyone
+   * - Users can add themselves if they have an accepted invitation
    */
   beforeCreate: async (input, ctx) => {
     const userId = ctx.userId
@@ -180,26 +182,45 @@ export const memberHooks: MemberHooks = {
       }
     }
 
-    // Verify user has admin access to this workspace
+    // Check if user is already a member with admin/owner access
     const membership = await ctx.prisma.member.findFirst({
       where: { userId, workspaceId },
     })
 
-    if (!membership) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied to this workspace" },
+    if (membership) {
+      if (membership.role === 'owner' || membership.role === 'admin') {
+        return { ok: true }
       }
-    }
-
-    if (membership.role !== 'owner' && membership.role !== 'admin') {
       return {
         ok: false,
         error: { code: "forbidden", message: "Only workspace owners and admins can add members" },
       }
     }
 
-    return { ok: true }
+    // Allow self-join via accepted invitation
+    if (input.userId === userId) {
+      const user = await ctx.prisma.user.findUnique({
+        where: { id: userId },
+        select: { email: true },
+      })
+      if (user) {
+        const invitation = await ctx.prisma.invitation.findFirst({
+          where: {
+            email: user.email.toLowerCase(),
+            workspaceId,
+            status: 'accepted',
+          },
+        })
+        if (invitation) {
+          return { ok: true }
+        }
+      }
+    }
+
+    return {
+      ok: false,
+      error: { code: "forbidden", message: "Access denied to this workspace" },
+    }
   },
 
   /**

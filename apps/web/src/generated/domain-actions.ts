@@ -196,8 +196,9 @@ export function createDomainActions(store: IDomainStore) {
       await store.memberCollection.create({
         userId,
         workspaceId: invitation.workspaceId,
-        projectId: invitation.projectId,
         role: invitation.role as any,
+        isBillingAdmin: false,
+        ...(invitation.projectId ? { projectId: invitation.projectId } : {}),
       })
 
       return invitation
