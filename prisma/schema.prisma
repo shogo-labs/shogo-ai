@@ -117,7 +117,6 @@ model Workspace {
   members         Member[]
   billingAccounts BillingAccount[]
   invitations     Invitation[]
-  inviteLinks     InviteLink[]
   folders         Folder[]
   subscriptions   Subscription[]
   creditLedgers   CreditLedger[]
@@ -151,7 +150,6 @@ model Project {
   workspace        Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   folder           Folder?            @relation(fields: [folderId], references: [id], onDelete: SetNull)
   members          Member[]
-  inviteLinks      InviteLink[]
   featureSessions  FeatureSession[]
   chatSessions     ChatSession[]
   usageEvents      UsageEvent[]
@@ -363,27 +361,6 @@ enum EmailStatus {
   not_sent
   sent
   failed
-}
-
-model InviteLink {
-  id          String     @id @default(uuid())
-  token       String     @unique @default(uuid())
-  projectId   String?
-  workspaceId String?
-  role        MemberRole @default(member)
-  createdBy   String
-  enabled     Boolean    @default(true)
-  expiresAt   DateTime?
-  useCount    Int        @default(0)
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
-
-  project   Project?   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-
-  @@index([token])
-  @@index([projectId])
-  @@map("invite_links")
 }
 
 model Folder {

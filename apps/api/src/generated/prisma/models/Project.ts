@@ -285,7 +285,6 @@ export type ProjectWhereInput = {
   workspace?: Prisma.XOR<Prisma.WorkspaceScalarRelationFilter, Prisma.WorkspaceWhereInput>
   folder?: Prisma.XOR<Prisma.FolderNullableScalarRelationFilter, Prisma.FolderWhereInput> | null
   members?: Prisma.MemberListRelationFilter
-  inviteLinks?: Prisma.InviteLinkListRelationFilter
   featureSessions?: Prisma.FeatureSessionListRelationFilter
   chatSessions?: Prisma.ChatSessionListRelationFilter
   usageEvents?: Prisma.UsageEventListRelationFilter
@@ -317,7 +316,6 @@ export type ProjectOrderByWithRelationInput = {
   workspace?: Prisma.WorkspaceOrderByWithRelationInput
   folder?: Prisma.FolderOrderByWithRelationInput
   members?: Prisma.MemberOrderByRelationAggregateInput
-  inviteLinks?: Prisma.InviteLinkOrderByRelationAggregateInput
   featureSessions?: Prisma.FeatureSessionOrderByRelationAggregateInput
   chatSessions?: Prisma.ChatSessionOrderByRelationAggregateInput
   usageEvents?: Prisma.UsageEventOrderByRelationAggregateInput
@@ -352,7 +350,6 @@ export type ProjectWhereUniqueInput = Prisma.AtLeast<{
   workspace?: Prisma.XOR<Prisma.WorkspaceScalarRelationFilter, Prisma.WorkspaceWhereInput>
   folder?: Prisma.XOR<Prisma.FolderNullableScalarRelationFilter, Prisma.FolderWhereInput> | null
   members?: Prisma.MemberListRelationFilter
-  inviteLinks?: Prisma.InviteLinkListRelationFilter
   featureSessions?: Prisma.FeatureSessionListRelationFilter
   chatSessions?: Prisma.ChatSessionListRelationFilter
   usageEvents?: Prisma.UsageEventListRelationFilter
@@ -430,7 +427,6 @@ export type ProjectCreateInput = {
   workspace: Prisma.WorkspaceCreateNestedOneWithoutProjectsInput
   folder?: Prisma.FolderCreateNestedOneWithoutProjectsInput
   members?: Prisma.MemberCreateNestedManyWithoutProjectInput
-  inviteLinks?: Prisma.InviteLinkCreateNestedManyWithoutProjectInput
   featureSessions?: Prisma.FeatureSessionCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutProjectInput
@@ -460,7 +456,6 @@ export type ProjectUncheckedCreateInput = {
   siteTitle?: string | null
   siteDescription?: string | null
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
-  inviteLinks?: Prisma.InviteLinkUncheckedCreateNestedManyWithoutProjectInput
   featureSessions?: Prisma.FeatureSessionUncheckedCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionUncheckedCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutProjectInput
@@ -490,7 +485,6 @@ export type ProjectUpdateInput = {
   workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutProjectsNestedInput
   folder?: Prisma.FolderUpdateOneWithoutProjectsNestedInput
   members?: Prisma.MemberUpdateManyWithoutProjectNestedInput
-  inviteLinks?: Prisma.InviteLinkUpdateManyWithoutProjectNestedInput
   featureSessions?: Prisma.FeatureSessionUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutProjectNestedInput
@@ -520,7 +514,6 @@ export type ProjectUncheckedUpdateInput = {
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
-  inviteLinks?: Prisma.InviteLinkUncheckedUpdateManyWithoutProjectNestedInput
   featureSessions?: Prisma.FeatureSessionUncheckedUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUncheckedUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutProjectNestedInput
@@ -823,22 +816,6 @@ export type ProjectUpdateOneWithoutMembersNestedInput = {
   update?: Prisma.XOR<Prisma.XOR<Prisma.ProjectUpdateToOneWithWhereWithoutMembersInput, Prisma.ProjectUpdateWithoutMembersInput>, Prisma.ProjectUncheckedUpdateWithoutMembersInput>
 }
 
-export type ProjectCreateNestedOneWithoutInviteLinksInput = {
-  create?: Prisma.XOR<Prisma.ProjectCreateWithoutInviteLinksInput, Prisma.ProjectUncheckedCreateWithoutInviteLinksInput>
-  connectOrCreate?: Prisma.ProjectCreateOrConnectWithoutInviteLinksInput
-  connect?: Prisma.ProjectWhereUniqueInput
-}
-
-export type ProjectUpdateOneWithoutInviteLinksNestedInput = {
-  create?: Prisma.XOR<Prisma.ProjectCreateWithoutInviteLinksInput, Prisma.ProjectUncheckedCreateWithoutInviteLinksInput>
-  connectOrCreate?: Prisma.ProjectCreateOrConnectWithoutInviteLinksInput
-  upsert?: Prisma.ProjectUpsertWithoutInviteLinksInput
-  disconnect?: Prisma.ProjectWhereInput | boolean
-  delete?: Prisma.ProjectWhereInput | boolean
-  connect?: Prisma.ProjectWhereUniqueInput
-  update?: Prisma.XOR<Prisma.XOR<Prisma.ProjectUpdateToOneWithWhereWithoutInviteLinksInput, Prisma.ProjectUpdateWithoutInviteLinksInput>, Prisma.ProjectUncheckedUpdateWithoutInviteLinksInput>
-}
-
 export type ProjectCreateNestedManyWithoutFolderInput = {
   create?: Prisma.XOR<Prisma.ProjectCreateWithoutFolderInput, Prisma.ProjectUncheckedCreateWithoutFolderInput> | Prisma.ProjectCreateWithoutFolderInput[] | Prisma.ProjectUncheckedCreateWithoutFolderInput[]
   connectOrCreate?: Prisma.ProjectCreateOrConnectWithoutFolderInput | Prisma.ProjectCreateOrConnectWithoutFolderInput[]
@@ -948,7 +925,6 @@ export type ProjectCreateWithoutWorkspaceInput = {
   siteDescription?: string | null
   folder?: Prisma.FolderCreateNestedOneWithoutProjectsInput
   members?: Prisma.MemberCreateNestedManyWithoutProjectInput
-  inviteLinks?: Prisma.InviteLinkCreateNestedManyWithoutProjectInput
   featureSessions?: Prisma.FeatureSessionCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutProjectInput
@@ -977,7 +953,6 @@ export type ProjectUncheckedCreateWithoutWorkspaceInput = {
   siteTitle?: string | null
   siteDescription?: string | null
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
-  inviteLinks?: Prisma.InviteLinkUncheckedCreateNestedManyWithoutProjectInput
   featureSessions?: Prisma.FeatureSessionUncheckedCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionUncheckedCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutProjectInput
@@ -1057,7 +1032,6 @@ export type ProjectCreateWithoutAgentConfigInput = {
   workspace: Prisma.WorkspaceCreateNestedOneWithoutProjectsInput
   folder?: Prisma.FolderCreateNestedOneWithoutProjectsInput
   members?: Prisma.MemberCreateNestedManyWithoutProjectInput
-  inviteLinks?: Prisma.InviteLinkCreateNestedManyWithoutProjectInput
   featureSessions?: Prisma.FeatureSessionCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutProjectInput
@@ -1086,7 +1060,6 @@ export type ProjectUncheckedCreateWithoutAgentConfigInput = {
   siteTitle?: string | null
   siteDescription?: string | null
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
-  inviteLinks?: Prisma.InviteLinkUncheckedCreateNestedManyWithoutProjectInput
   featureSessions?: Prisma.FeatureSessionUncheckedCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionUncheckedCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutProjectInput
@@ -1131,7 +1104,6 @@ export type ProjectUpdateWithoutAgentConfigInput = {
   workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutProjectsNestedInput
   folder?: Prisma.FolderUpdateOneWithoutProjectsNestedInput
   members?: Prisma.MemberUpdateManyWithoutProjectNestedInput
-  inviteLinks?: Prisma.InviteLinkUpdateManyWithoutProjectNestedInput
   featureSessions?: Prisma.FeatureSessionUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutProjectNestedInput
@@ -1160,7 +1132,6 @@ export type ProjectUncheckedUpdateWithoutAgentConfigInput = {
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
-  inviteLinks?: Prisma.InviteLinkUncheckedUpdateManyWithoutProjectNestedInput
   featureSessions?: Prisma.FeatureSessionUncheckedUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUncheckedUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutProjectNestedInput
@@ -1189,7 +1160,6 @@ export type ProjectCreateWithoutCheckpointsInput = {
   workspace: Prisma.WorkspaceCreateNestedOneWithoutProjectsInput
   folder?: Prisma.FolderCreateNestedOneWithoutProjectsInput
   members?: Prisma.MemberCreateNestedManyWithoutProjectInput
-  inviteLinks?: Prisma.InviteLinkCreateNestedManyWithoutProjectInput
   featureSessions?: Prisma.FeatureSessionCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutProjectInput
@@ -1218,7 +1188,6 @@ export type ProjectUncheckedCreateWithoutCheckpointsInput = {
   siteTitle?: string | null
   siteDescription?: string | null
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
-  inviteLinks?: Prisma.InviteLinkUncheckedCreateNestedManyWithoutProjectInput
   featureSessions?: Prisma.FeatureSessionUncheckedCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionUncheckedCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutProjectInput
@@ -1263,7 +1232,6 @@ export type ProjectUpdateWithoutCheckpointsInput = {
   workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutProjectsNestedInput
   folder?: Prisma.FolderUpdateOneWithoutProjectsNestedInput
   members?: Prisma.MemberUpdateManyWithoutProjectNestedInput
-  inviteLinks?: Prisma.InviteLinkUpdateManyWithoutProjectNestedInput
   featureSessions?: Prisma.FeatureSessionUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutProjectNestedInput
@@ -1292,7 +1260,6 @@ export type ProjectUncheckedUpdateWithoutCheckpointsInput = {
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
-  inviteLinks?: Prisma.InviteLinkUncheckedUpdateManyWithoutProjectNestedInput
   featureSessions?: Prisma.FeatureSessionUncheckedUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUncheckedUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutProjectNestedInput
@@ -1321,7 +1288,6 @@ export type ProjectCreateWithoutGithubConnectionInput = {
   workspace: Prisma.WorkspaceCreateNestedOneWithoutProjectsInput
   folder?: Prisma.FolderCreateNestedOneWithoutProjectsInput
   members?: Prisma.MemberCreateNestedManyWithoutProjectInput
-  inviteLinks?: Prisma.InviteLinkCreateNestedManyWithoutProjectInput
   featureSessions?: Prisma.FeatureSessionCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutProjectInput
@@ -1350,7 +1316,6 @@ export type ProjectUncheckedCreateWithoutGithubConnectionInput = {
   siteTitle?: string | null
   siteDescription?: string | null
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
-  inviteLinks?: Prisma.InviteLinkUncheckedCreateNestedManyWithoutProjectInput
   featureSessions?: Prisma.FeatureSessionUncheckedCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionUncheckedCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutProjectInput
@@ -1395,7 +1360,6 @@ export type ProjectUpdateWithoutGithubConnectionInput = {
   workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutProjectsNestedInput
   folder?: Prisma.FolderUpdateOneWithoutProjectsNestedInput
   members?: Prisma.MemberUpdateManyWithoutProjectNestedInput
-  inviteLinks?: Prisma.InviteLinkUpdateManyWithoutProjectNestedInput
   featureSessions?: Prisma.FeatureSessionUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutProjectNestedInput
@@ -1424,7 +1388,6 @@ export type ProjectUncheckedUpdateWithoutGithubConnectionInput = {
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
-  inviteLinks?: Prisma.InviteLinkUncheckedUpdateManyWithoutProjectNestedInput
   featureSessions?: Prisma.FeatureSessionUncheckedUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUncheckedUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutProjectNestedInput
@@ -1453,7 +1416,6 @@ export type ProjectCreateWithoutStarredByInput = {
   workspace: Prisma.WorkspaceCreateNestedOneWithoutProjectsInput
   folder?: Prisma.FolderCreateNestedOneWithoutProjectsInput
   members?: Prisma.MemberCreateNestedManyWithoutProjectInput
-  inviteLinks?: Prisma.InviteLinkCreateNestedManyWithoutProjectInput
   featureSessions?: Prisma.FeatureSessionCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutProjectInput
@@ -1482,7 +1444,6 @@ export type ProjectUncheckedCreateWithoutStarredByInput = {
   siteTitle?: string | null
   siteDescription?: string | null
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
-  inviteLinks?: Prisma.InviteLinkUncheckedCreateNestedManyWithoutProjectInput
   featureSessions?: Prisma.FeatureSessionUncheckedCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionUncheckedCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutProjectInput
@@ -1527,7 +1488,6 @@ export type ProjectUpdateWithoutStarredByInput = {
   workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutProjectsNestedInput
   folder?: Prisma.FolderUpdateOneWithoutProjectsNestedInput
   members?: Prisma.MemberUpdateManyWithoutProjectNestedInput
-  inviteLinks?: Prisma.InviteLinkUpdateManyWithoutProjectNestedInput
   featureSessions?: Prisma.FeatureSessionUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutProjectNestedInput
@@ -1556,7 +1516,6 @@ export type ProjectUncheckedUpdateWithoutStarredByInput = {
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
-  inviteLinks?: Prisma.InviteLinkUncheckedUpdateManyWithoutProjectNestedInput
   featureSessions?: Prisma.FeatureSessionUncheckedUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUncheckedUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutProjectNestedInput
@@ -1584,7 +1543,6 @@ export type ProjectCreateWithoutMembersInput = {
   siteDescription?: string | null
   workspace: Prisma.WorkspaceCreateNestedOneWithoutProjectsInput
   folder?: Prisma.FolderCreateNestedOneWithoutProjectsInput
-  inviteLinks?: Prisma.InviteLinkCreateNestedManyWithoutProjectInput
   featureSessions?: Prisma.FeatureSessionCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutProjectInput
@@ -1613,7 +1571,6 @@ export type ProjectUncheckedCreateWithoutMembersInput = {
   type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
-  inviteLinks?: Prisma.InviteLinkUncheckedCreateNestedManyWithoutProjectInput
   featureSessions?: Prisma.FeatureSessionUncheckedCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionUncheckedCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutProjectInput
@@ -1658,7 +1615,6 @@ export type ProjectUpdateWithoutMembersInput = {
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutProjectsNestedInput
   folder?: Prisma.FolderUpdateOneWithoutProjectsNestedInput
-  inviteLinks?: Prisma.InviteLinkUpdateManyWithoutProjectNestedInput
   featureSessions?: Prisma.FeatureSessionUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutProjectNestedInput
@@ -1687,139 +1643,6 @@ export type ProjectUncheckedUpdateWithoutMembersInput = {
   type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
-  inviteLinks?: Prisma.InviteLinkUncheckedUpdateManyWithoutProjectNestedInput
-  featureSessions?: Prisma.FeatureSessionUncheckedUpdateManyWithoutProjectNestedInput
-  chatSessions?: Prisma.ChatSessionUncheckedUpdateManyWithoutProjectNestedInput
-  usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutProjectNestedInput
-  checkpoints?: Prisma.ProjectCheckpointUncheckedUpdateManyWithoutProjectNestedInput
-  githubConnection?: Prisma.GitHubConnectionUncheckedUpdateOneWithoutProjectNestedInput
-  starredBy?: Prisma.StarredProjectUncheckedUpdateManyWithoutProjectNestedInput
-  agentConfig?: Prisma.AgentConfigUncheckedUpdateOneWithoutProjectNestedInput
-}
-
-export type ProjectCreateWithoutInviteLinksInput = {
-  id?: string
-  name: string
-  description?: string | null
-  tier?: $Enums.ProjectTier
-  status?: $Enums.ProjectStatus
-  schemas?: Prisma.ProjectCreateschemasInput | string[]
-  createdBy?: string | null
-  createdAt?: Date | string
-  updatedAt?: Date | string
-  publishedSubdomain?: string | null
-  publishedAt?: Date | string | null
-  accessLevel?: $Enums.AccessLevel
-  category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
-  siteTitle?: string | null
-  siteDescription?: string | null
-  workspace: Prisma.WorkspaceCreateNestedOneWithoutProjectsInput
-  folder?: Prisma.FolderCreateNestedOneWithoutProjectsInput
-  members?: Prisma.MemberCreateNestedManyWithoutProjectInput
-  featureSessions?: Prisma.FeatureSessionCreateNestedManyWithoutProjectInput
-  chatSessions?: Prisma.ChatSessionCreateNestedManyWithoutProjectInput
-  usageEvents?: Prisma.UsageEventCreateNestedManyWithoutProjectInput
-  checkpoints?: Prisma.ProjectCheckpointCreateNestedManyWithoutProjectInput
-  githubConnection?: Prisma.GitHubConnectionCreateNestedOneWithoutProjectInput
-  starredBy?: Prisma.StarredProjectCreateNestedManyWithoutProjectInput
-  agentConfig?: Prisma.AgentConfigCreateNestedOneWithoutProjectInput
-}
-
-export type ProjectUncheckedCreateWithoutInviteLinksInput = {
-  id?: string
-  name: string
-  description?: string | null
-  workspaceId: string
-  tier?: $Enums.ProjectTier
-  status?: $Enums.ProjectStatus
-  schemas?: Prisma.ProjectCreateschemasInput | string[]
-  createdBy?: string | null
-  createdAt?: Date | string
-  updatedAt?: Date | string
-  folderId?: string | null
-  publishedSubdomain?: string | null
-  publishedAt?: Date | string | null
-  accessLevel?: $Enums.AccessLevel
-  category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
-  siteTitle?: string | null
-  siteDescription?: string | null
-  members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
-  featureSessions?: Prisma.FeatureSessionUncheckedCreateNestedManyWithoutProjectInput
-  chatSessions?: Prisma.ChatSessionUncheckedCreateNestedManyWithoutProjectInput
-  usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutProjectInput
-  checkpoints?: Prisma.ProjectCheckpointUncheckedCreateNestedManyWithoutProjectInput
-  githubConnection?: Prisma.GitHubConnectionUncheckedCreateNestedOneWithoutProjectInput
-  starredBy?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutProjectInput
-  agentConfig?: Prisma.AgentConfigUncheckedCreateNestedOneWithoutProjectInput
-}
-
-export type ProjectCreateOrConnectWithoutInviteLinksInput = {
-  where: Prisma.ProjectWhereUniqueInput
-  create: Prisma.XOR<Prisma.ProjectCreateWithoutInviteLinksInput, Prisma.ProjectUncheckedCreateWithoutInviteLinksInput>
-}
-
-export type ProjectUpsertWithoutInviteLinksInput = {
-  update: Prisma.XOR<Prisma.ProjectUpdateWithoutInviteLinksInput, Prisma.ProjectUncheckedUpdateWithoutInviteLinksInput>
-  create: Prisma.XOR<Prisma.ProjectCreateWithoutInviteLinksInput, Prisma.ProjectUncheckedCreateWithoutInviteLinksInput>
-  where?: Prisma.ProjectWhereInput
-}
-
-export type ProjectUpdateToOneWithWhereWithoutInviteLinksInput = {
-  where?: Prisma.ProjectWhereInput
-  data: Prisma.XOR<Prisma.ProjectUpdateWithoutInviteLinksInput, Prisma.ProjectUncheckedUpdateWithoutInviteLinksInput>
-}
-
-export type ProjectUpdateWithoutInviteLinksInput = {
-  id?: Prisma.StringFieldUpdateOperationsInput | string
-  name?: Prisma.StringFieldUpdateOperationsInput | string
-  description?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
-  tier?: Prisma.EnumProjectTierFieldUpdateOperationsInput | $Enums.ProjectTier
-  status?: Prisma.EnumProjectStatusFieldUpdateOperationsInput | $Enums.ProjectStatus
-  schemas?: Prisma.ProjectUpdateschemasInput | string[]
-  createdBy?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
-  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
-  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
-  publishedSubdomain?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
-  publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
-  accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
-  category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
-  siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
-  siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
-  workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutProjectsNestedInput
-  folder?: Prisma.FolderUpdateOneWithoutProjectsNestedInput
-  members?: Prisma.MemberUpdateManyWithoutProjectNestedInput
-  featureSessions?: Prisma.FeatureSessionUpdateManyWithoutProjectNestedInput
-  chatSessions?: Prisma.ChatSessionUpdateManyWithoutProjectNestedInput
-  usageEvents?: Prisma.UsageEventUpdateManyWithoutProjectNestedInput
-  checkpoints?: Prisma.ProjectCheckpointUpdateManyWithoutProjectNestedInput
-  githubConnection?: Prisma.GitHubConnectionUpdateOneWithoutProjectNestedInput
-  starredBy?: Prisma.StarredProjectUpdateManyWithoutProjectNestedInput
-  agentConfig?: Prisma.AgentConfigUpdateOneWithoutProjectNestedInput
-}
-
-export type ProjectUncheckedUpdateWithoutInviteLinksInput = {
-  id?: Prisma.StringFieldUpdateOperationsInput | string
-  name?: Prisma.StringFieldUpdateOperationsInput | string
-  description?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
-  workspaceId?: Prisma.StringFieldUpdateOperationsInput | string
-  tier?: Prisma.EnumProjectTierFieldUpdateOperationsInput | $Enums.ProjectTier
-  status?: Prisma.EnumProjectStatusFieldUpdateOperationsInput | $Enums.ProjectStatus
-  schemas?: Prisma.ProjectUpdateschemasInput | string[]
-  createdBy?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
-  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
-  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
-  folderId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
-  publishedSubdomain?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
-  publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
-  accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
-  category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
-  siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
-  siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
-  members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
   featureSessions?: Prisma.FeatureSessionUncheckedUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUncheckedUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutProjectNestedInput
@@ -1848,7 +1671,6 @@ export type ProjectCreateWithoutFolderInput = {
   siteDescription?: string | null
   workspace: Prisma.WorkspaceCreateNestedOneWithoutProjectsInput
   members?: Prisma.MemberCreateNestedManyWithoutProjectInput
-  inviteLinks?: Prisma.InviteLinkCreateNestedManyWithoutProjectInput
   featureSessions?: Prisma.FeatureSessionCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutProjectInput
@@ -1877,7 +1699,6 @@ export type ProjectUncheckedCreateWithoutFolderInput = {
   siteTitle?: string | null
   siteDescription?: string | null
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
-  inviteLinks?: Prisma.InviteLinkUncheckedCreateNestedManyWithoutProjectInput
   featureSessions?: Prisma.FeatureSessionUncheckedCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionUncheckedCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutProjectInput
@@ -1933,7 +1754,6 @@ export type ProjectCreateWithoutUsageEventsInput = {
   workspace: Prisma.WorkspaceCreateNestedOneWithoutProjectsInput
   folder?: Prisma.FolderCreateNestedOneWithoutProjectsInput
   members?: Prisma.MemberCreateNestedManyWithoutProjectInput
-  inviteLinks?: Prisma.InviteLinkCreateNestedManyWithoutProjectInput
   featureSessions?: Prisma.FeatureSessionCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionCreateNestedManyWithoutProjectInput
   checkpoints?: Prisma.ProjectCheckpointCreateNestedManyWithoutProjectInput
@@ -1962,7 +1782,6 @@ export type ProjectUncheckedCreateWithoutUsageEventsInput = {
   siteTitle?: string | null
   siteDescription?: string | null
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
-  inviteLinks?: Prisma.InviteLinkUncheckedCreateNestedManyWithoutProjectInput
   featureSessions?: Prisma.FeatureSessionUncheckedCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionUncheckedCreateNestedManyWithoutProjectInput
   checkpoints?: Prisma.ProjectCheckpointUncheckedCreateNestedManyWithoutProjectInput
@@ -2007,7 +1826,6 @@ export type ProjectUpdateWithoutUsageEventsInput = {
   workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutProjectsNestedInput
   folder?: Prisma.FolderUpdateOneWithoutProjectsNestedInput
   members?: Prisma.MemberUpdateManyWithoutProjectNestedInput
-  inviteLinks?: Prisma.InviteLinkUpdateManyWithoutProjectNestedInput
   featureSessions?: Prisma.FeatureSessionUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUpdateManyWithoutProjectNestedInput
   checkpoints?: Prisma.ProjectCheckpointUpdateManyWithoutProjectNestedInput
@@ -2036,7 +1854,6 @@ export type ProjectUncheckedUpdateWithoutUsageEventsInput = {
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
-  inviteLinks?: Prisma.InviteLinkUncheckedUpdateManyWithoutProjectNestedInput
   featureSessions?: Prisma.FeatureSessionUncheckedUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUncheckedUpdateManyWithoutProjectNestedInput
   checkpoints?: Prisma.ProjectCheckpointUncheckedUpdateManyWithoutProjectNestedInput
@@ -2065,7 +1882,6 @@ export type ProjectCreateWithoutChatSessionsInput = {
   workspace: Prisma.WorkspaceCreateNestedOneWithoutProjectsInput
   folder?: Prisma.FolderCreateNestedOneWithoutProjectsInput
   members?: Prisma.MemberCreateNestedManyWithoutProjectInput
-  inviteLinks?: Prisma.InviteLinkCreateNestedManyWithoutProjectInput
   featureSessions?: Prisma.FeatureSessionCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutProjectInput
   checkpoints?: Prisma.ProjectCheckpointCreateNestedManyWithoutProjectInput
@@ -2094,7 +1910,6 @@ export type ProjectUncheckedCreateWithoutChatSessionsInput = {
   siteTitle?: string | null
   siteDescription?: string | null
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
-  inviteLinks?: Prisma.InviteLinkUncheckedCreateNestedManyWithoutProjectInput
   featureSessions?: Prisma.FeatureSessionUncheckedCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutProjectInput
   checkpoints?: Prisma.ProjectCheckpointUncheckedCreateNestedManyWithoutProjectInput
@@ -2139,7 +1954,6 @@ export type ProjectUpdateWithoutChatSessionsInput = {
   workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutProjectsNestedInput
   folder?: Prisma.FolderUpdateOneWithoutProjectsNestedInput
   members?: Prisma.MemberUpdateManyWithoutProjectNestedInput
-  inviteLinks?: Prisma.InviteLinkUpdateManyWithoutProjectNestedInput
   featureSessions?: Prisma.FeatureSessionUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutProjectNestedInput
   checkpoints?: Prisma.ProjectCheckpointUpdateManyWithoutProjectNestedInput
@@ -2168,7 +1982,6 @@ export type ProjectUncheckedUpdateWithoutChatSessionsInput = {
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
-  inviteLinks?: Prisma.InviteLinkUncheckedUpdateManyWithoutProjectNestedInput
   featureSessions?: Prisma.FeatureSessionUncheckedUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutProjectNestedInput
   checkpoints?: Prisma.ProjectCheckpointUncheckedUpdateManyWithoutProjectNestedInput
@@ -2197,7 +2010,6 @@ export type ProjectCreateWithoutFeatureSessionsInput = {
   workspace: Prisma.WorkspaceCreateNestedOneWithoutProjectsInput
   folder?: Prisma.FolderCreateNestedOneWithoutProjectsInput
   members?: Prisma.MemberCreateNestedManyWithoutProjectInput
-  inviteLinks?: Prisma.InviteLinkCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventCreateNestedManyWithoutProjectInput
   checkpoints?: Prisma.ProjectCheckpointCreateNestedManyWithoutProjectInput
@@ -2226,7 +2038,6 @@ export type ProjectUncheckedCreateWithoutFeatureSessionsInput = {
   siteTitle?: string | null
   siteDescription?: string | null
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutProjectInput
-  inviteLinks?: Prisma.InviteLinkUncheckedCreateNestedManyWithoutProjectInput
   chatSessions?: Prisma.ChatSessionUncheckedCreateNestedManyWithoutProjectInput
   usageEvents?: Prisma.UsageEventUncheckedCreateNestedManyWithoutProjectInput
   checkpoints?: Prisma.ProjectCheckpointUncheckedCreateNestedManyWithoutProjectInput
@@ -2271,7 +2082,6 @@ export type ProjectUpdateWithoutFeatureSessionsInput = {
   workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutProjectsNestedInput
   folder?: Prisma.FolderUpdateOneWithoutProjectsNestedInput
   members?: Prisma.MemberUpdateManyWithoutProjectNestedInput
-  inviteLinks?: Prisma.InviteLinkUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutProjectNestedInput
   checkpoints?: Prisma.ProjectCheckpointUpdateManyWithoutProjectNestedInput
@@ -2300,7 +2110,6 @@ export type ProjectUncheckedUpdateWithoutFeatureSessionsInput = {
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
-  inviteLinks?: Prisma.InviteLinkUncheckedUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUncheckedUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutProjectNestedInput
   checkpoints?: Prisma.ProjectCheckpointUncheckedUpdateManyWithoutProjectNestedInput
@@ -2348,7 +2157,6 @@ export type ProjectUpdateWithoutWorkspaceInput = {
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   folder?: Prisma.FolderUpdateOneWithoutProjectsNestedInput
   members?: Prisma.MemberUpdateManyWithoutProjectNestedInput
-  inviteLinks?: Prisma.InviteLinkUpdateManyWithoutProjectNestedInput
   featureSessions?: Prisma.FeatureSessionUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutProjectNestedInput
@@ -2377,7 +2185,6 @@ export type ProjectUncheckedUpdateWithoutWorkspaceInput = {
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
-  inviteLinks?: Prisma.InviteLinkUncheckedUpdateManyWithoutProjectNestedInput
   featureSessions?: Prisma.FeatureSessionUncheckedUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUncheckedUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutProjectNestedInput
@@ -2446,7 +2253,6 @@ export type ProjectUpdateWithoutFolderInput = {
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   workspace?: Prisma.WorkspaceUpdateOneRequiredWithoutProjectsNestedInput
   members?: Prisma.MemberUpdateManyWithoutProjectNestedInput
-  inviteLinks?: Prisma.InviteLinkUpdateManyWithoutProjectNestedInput
   featureSessions?: Prisma.FeatureSessionUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUpdateManyWithoutProjectNestedInput
@@ -2475,7 +2281,6 @@ export type ProjectUncheckedUpdateWithoutFolderInput = {
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   members?: Prisma.MemberUncheckedUpdateManyWithoutProjectNestedInput
-  inviteLinks?: Prisma.InviteLinkUncheckedUpdateManyWithoutProjectNestedInput
   featureSessions?: Prisma.FeatureSessionUncheckedUpdateManyWithoutProjectNestedInput
   chatSessions?: Prisma.ChatSessionUncheckedUpdateManyWithoutProjectNestedInput
   usageEvents?: Prisma.UsageEventUncheckedUpdateManyWithoutProjectNestedInput
@@ -2512,7 +2317,6 @@ export type ProjectUncheckedUpdateManyWithoutFolderInput = {
 
 export type ProjectCountOutputType = {
   members: number
-  inviteLinks: number
   featureSessions: number
   chatSessions: number
   usageEvents: number
@@ -2522,7 +2326,6 @@ export type ProjectCountOutputType = {
 
 export type ProjectCountOutputTypeSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   members?: boolean | ProjectCountOutputTypeCountMembersArgs
-  inviteLinks?: boolean | ProjectCountOutputTypeCountInviteLinksArgs
   featureSessions?: boolean | ProjectCountOutputTypeCountFeatureSessionsArgs
   chatSessions?: boolean | ProjectCountOutputTypeCountChatSessionsArgs
   usageEvents?: boolean | ProjectCountOutputTypeCountUsageEventsArgs
@@ -2545,13 +2348,6 @@ export type ProjectCountOutputTypeDefaultArgs<ExtArgs extends runtime.Types.Exte
  */
 export type ProjectCountOutputTypeCountMembersArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   where?: Prisma.MemberWhereInput
-}
-
-/**
- * ProjectCountOutputType without action
- */
-export type ProjectCountOutputTypeCountInviteLinksArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
-  where?: Prisma.InviteLinkWhereInput
 }
 
 /**
@@ -2612,7 +2408,6 @@ export type ProjectSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs 
   workspace?: boolean | Prisma.WorkspaceDefaultArgs<ExtArgs>
   folder?: boolean | Prisma.Project$folderArgs<ExtArgs>
   members?: boolean | Prisma.Project$membersArgs<ExtArgs>
-  inviteLinks?: boolean | Prisma.Project$inviteLinksArgs<ExtArgs>
   featureSessions?: boolean | Prisma.Project$featureSessionsArgs<ExtArgs>
   chatSessions?: boolean | Prisma.Project$chatSessionsArgs<ExtArgs>
   usageEvents?: boolean | Prisma.Project$usageEventsArgs<ExtArgs>
@@ -2695,7 +2490,6 @@ export type ProjectInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs
   workspace?: boolean | Prisma.WorkspaceDefaultArgs<ExtArgs>
   folder?: boolean | Prisma.Project$folderArgs<ExtArgs>
   members?: boolean | Prisma.Project$membersArgs<ExtArgs>
-  inviteLinks?: boolean | Prisma.Project$inviteLinksArgs<ExtArgs>
   featureSessions?: boolean | Prisma.Project$featureSessionsArgs<ExtArgs>
   chatSessions?: boolean | Prisma.Project$chatSessionsArgs<ExtArgs>
   usageEvents?: boolean | Prisma.Project$usageEventsArgs<ExtArgs>
@@ -2720,7 +2514,6 @@ export type $ProjectPayload<ExtArgs extends runtime.Types.Extensions.InternalArg
     workspace: Prisma.$WorkspacePayload<ExtArgs>
     folder: Prisma.$FolderPayload<ExtArgs> | null
     members: Prisma.$MemberPayload<ExtArgs>[]
-    inviteLinks: Prisma.$InviteLinkPayload<ExtArgs>[]
     featureSessions: Prisma.$FeatureSessionPayload<ExtArgs>[]
     chatSessions: Prisma.$ChatSessionPayload<ExtArgs>[]
     usageEvents: Prisma.$UsageEventPayload<ExtArgs>[]
@@ -3145,7 +2938,6 @@ export interface Prisma__ProjectClient<T, Null = never, ExtArgs extends runtime.
   workspace<T extends Prisma.WorkspaceDefaultArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.WorkspaceDefaultArgs<ExtArgs>>): Prisma.Prisma__WorkspaceClient<runtime.Types.Result.GetResult<Prisma.$WorkspacePayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions> | Null, Null, ExtArgs, GlobalOmitOptions>
   folder<T extends Prisma.Project$folderArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Project$folderArgs<ExtArgs>>): Prisma.Prisma__FolderClient<runtime.Types.Result.GetResult<Prisma.$FolderPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions> | null, null, ExtArgs, GlobalOmitOptions>
   members<T extends Prisma.Project$membersArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Project$membersArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$MemberPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
-  inviteLinks<T extends Prisma.Project$inviteLinksArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Project$inviteLinksArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$InviteLinkPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   featureSessions<T extends Prisma.Project$featureSessionsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Project$featureSessionsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$FeatureSessionPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   chatSessions<T extends Prisma.Project$chatSessionsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Project$chatSessionsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$ChatSessionPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   usageEvents<T extends Prisma.Project$usageEventsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Project$usageEventsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$UsageEventPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
@@ -3636,30 +3428,6 @@ export type Project$membersArgs<ExtArgs extends runtime.Types.Extensions.Interna
   take?: number
   skip?: number
   distinct?: Prisma.MemberScalarFieldEnum | Prisma.MemberScalarFieldEnum[]
-}
-
-/**
- * Project.inviteLinks
- */
-export type Project$inviteLinksArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
-  /**
-   * Select specific fields to fetch from the InviteLink
-   */
-  select?: Prisma.InviteLinkSelect<ExtArgs> | null
-  /**
-   * Omit specific fields from the InviteLink
-   */
-  omit?: Prisma.InviteLinkOmit<ExtArgs> | null
-  /**
-   * Choose, which related nodes to fetch as well
-   */
-  include?: Prisma.InviteLinkInclude<ExtArgs> | null
-  where?: Prisma.InviteLinkWhereInput
-  orderBy?: Prisma.InviteLinkOrderByWithRelationInput | Prisma.InviteLinkOrderByWithRelationInput[]
-  cursor?: Prisma.InviteLinkWhereUniqueInput
-  take?: number
-  skip?: number
-  distinct?: Prisma.InviteLinkScalarFieldEnum | Prisma.InviteLinkScalarFieldEnum[]
 }
 
 /**

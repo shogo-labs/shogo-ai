@@ -83,11 +83,6 @@ export type BillingAccount = Prisma.BillingAccountModel
  */
 export type Invitation = Prisma.InvitationModel
 /**
- * Model InviteLink
- * 
- */
-export type InviteLink = Prisma.InviteLinkModel
-/**
  * Model Folder
  * 
  */

@@ -397,7 +397,6 @@ export const ModelName = {
   Member: 'Member',
   BillingAccount: 'BillingAccount',
   Invitation: 'Invitation',
-  InviteLink: 'InviteLink',
   Folder: 'Folder',
   Notification: 'Notification',
   Subscription: 'Subscription',
@@ -439,7 +438,7 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
     omit: GlobalOmitOptions
   }
   meta: {
-    modelProps: "user" | "session" | "account" | "verification" | "workspace" | "project" | "agentConfig" | "projectCheckpoint" | "gitHubConnection" | "starredProject" | "member" | "billingAccount" | "invitation" | "inviteLink" | "folder" | "notification" | "subscription" | "creditLedger" | "usageEvent" | "chatSession" | "chatMessage" | "toolCallLog" | "featureSession" | "requirement" | "designDecision" | "classificationDecision" | "analysisFinding" | "integrationPoint" | "testCase" | "implementationTask" | "taskDependency" | "testSpecification" | "implementationRun" | "taskExecution" | "componentDefinition" | "registry" | "rendererBinding" | "layoutTemplate" | "composition" | "componentSpec"
+    modelProps: "user" | "session" | "account" | "verification" | "workspace" | "project" | "agentConfig" | "projectCheckpoint" | "gitHubConnection" | "starredProject" | "member" | "billingAccount" | "invitation" | "folder" | "notification" | "subscription" | "creditLedger" | "usageEvent" | "chatSession" | "chatMessage" | "toolCallLog" | "featureSession" | "requirement" | "designDecision" | "classificationDecision" | "analysisFinding" | "integrationPoint" | "testCase" | "implementationTask" | "taskDependency" | "testSpecification" | "implementationRun" | "taskExecution" | "componentDefinition" | "registry" | "rendererBinding" | "layoutTemplate" | "composition" | "componentSpec"
     txIsolationLevel: TransactionIsolationLevel
   }
   model: {
@@ -1402,80 +1401,6 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
         count: {
           args: Prisma.InvitationCountArgs<ExtArgs>
           result: runtime.Types.Utils.Optional<Prisma.InvitationCountAggregateOutputType> | number
-        }
-      }
-    }
-    InviteLink: {
-      payload: Prisma.$InviteLinkPayload<ExtArgs>
-      fields: Prisma.InviteLinkFieldRefs
-      operations: {
-        findUnique: {
-          args: Prisma.InviteLinkFindUniqueArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$InviteLinkPayload> | null
-        }
-        findUniqueOrThrow: {
-          args: Prisma.InviteLinkFindUniqueOrThrowArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$InviteLinkPayload>
-        }
-        findFirst: {
-          args: Prisma.InviteLinkFindFirstArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$InviteLinkPayload> | null
-        }
-        findFirstOrThrow: {
-          args: Prisma.InviteLinkFindFirstOrThrowArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$InviteLinkPayload>
-        }
-        findMany: {
-          args: Prisma.InviteLinkFindManyArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$InviteLinkPayload>[]
-        }
-        create: {
-          args: Prisma.InviteLinkCreateArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$InviteLinkPayload>
-        }
-        createMany: {
-          args: Prisma.InviteLinkCreateManyArgs<ExtArgs>
-          result: BatchPayload
-        }
-        createManyAndReturn: {
-          args: Prisma.InviteLinkCreateManyAndReturnArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$InviteLinkPayload>[]
-        }
-        delete: {
-          args: Prisma.InviteLinkDeleteArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$InviteLinkPayload>
-        }
-        update: {
-          args: Prisma.InviteLinkUpdateArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$InviteLinkPayload>
-        }
-        deleteMany: {
-          args: Prisma.InviteLinkDeleteManyArgs<ExtArgs>
-          result: BatchPayload
-        }
-        updateMany: {
-          args: Prisma.InviteLinkUpdateManyArgs<ExtArgs>
-          result: BatchPayload
-        }
-        updateManyAndReturn: {
-          args: Prisma.InviteLinkUpdateManyAndReturnArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$InviteLinkPayload>[]
-        }
-        upsert: {
-          args: Prisma.InviteLinkUpsertArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$InviteLinkPayload>
-        }
-        aggregate: {
-          args: Prisma.InviteLinkAggregateArgs<ExtArgs>
-          result: runtime.Types.Utils.Optional<Prisma.AggregateInviteLink>
-        }
-        groupBy: {
-          args: Prisma.InviteLinkGroupByArgs<ExtArgs>
-          result: runtime.Types.Utils.Optional<Prisma.InviteLinkGroupByOutputType>[]
-        }
-        count: {
-          args: Prisma.InviteLinkCountArgs<ExtArgs>
-          result: runtime.Types.Utils.Optional<Prisma.InviteLinkCountAggregateOutputType> | number
         }
       }
     }
@@ -3651,23 +3576,6 @@ export const InvitationScalarFieldEnum = {
 export type InvitationScalarFieldEnum = (typeof InvitationScalarFieldEnum)[keyof typeof InvitationScalarFieldEnum]
 
 
-export const InviteLinkScalarFieldEnum = {
-  id: 'id',
-  token: 'token',
-  projectId: 'projectId',
-  workspaceId: 'workspaceId',
-  role: 'role',
-  createdBy: 'createdBy',
-  enabled: 'enabled',
-  expiresAt: 'expiresAt',
-  useCount: 'useCount',
-  createdAt: 'createdAt',
-  updatedAt: 'updatedAt'
-} as const
-
-export type InviteLinkScalarFieldEnum = (typeof InviteLinkScalarFieldEnum)[keyof typeof InviteLinkScalarFieldEnum]
-
-
 export const FolderScalarFieldEnum = {
   id: 'id',
   name: 'name',
@@ -4755,7 +4663,6 @@ export type GlobalOmitConfig = {
   member?: Prisma.MemberOmit
   billingAccount?: Prisma.BillingAccountOmit
   invitation?: Prisma.InvitationOmit
-  inviteLink?: Prisma.InviteLinkOmit
   folder?: Prisma.FolderOmit
   notification?: Prisma.NotificationOmit
   subscription?: Prisma.SubscriptionOmit

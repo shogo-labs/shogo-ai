@@ -115,8 +115,8 @@ export function WorkspaceLayout() {
   const { data: session } = useSession()
   const { currentWorkspace } = useWorkspaceData()
 
-  const [isCreatingFromPrompt, setIsCreatingFromPrompt] = useState(false)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
+  const [isCreatingFromPrompt, setIsCreatingFromPrompt] = useState(false)
 
   /**
    * Handle prompt submission from home page.
@@ -164,23 +164,24 @@ export function WorkspaceLayout() {
   }, [session?.user?.id, currentWorkspace?.id, navigate])
 
   /**
-   * Handle canvas template selection from home page.
-   * Creates project + chat session via API, then navigates with the
-   * template's user_request as the initial prompt.
+   * Handle template selection from home page.
+   * Creates project + chat session via API, then navigates with an initial
+   * message that tells the AI to copy the template files.
+   * If a theme is selected, the AI is instructed to pass it to template_copy.
    */
-  const handleTemplateSelect = useCallback(async (templateId: string, displayName: string, prompt: string, themeId?: string) => {
+  const handleTemplateSelect = useCallback(async (templateName: string, displayName: string, themeId?: string) => {
     const userId = session?.user?.id
     const workspaceId = currentWorkspace?.id
     if (!userId || !workspaceId) return
 
-    setLoadingTemplate(templateId)
+    setLoadingTemplate(templateName)
     try {
-      const projectName = displayName
+      const projectName = `My ${displayName}`
 
       const newProject = await createProjectViaApi({
         name: projectName,
         workspaceId,
-        description: `Created from ${displayName} canvas template`,
+        description: `Created from ${displayName} template`,
         createdBy: userId,
         type: "AGENT",
       })
@@ -191,11 +192,18 @@ export function WorkspaceLayout() {
         contextId: newProject.id,
       })
 
+      // Build initial message with optional theme instruction
+      const themeInstruction = themeId
+        ? ` Use the "${themeId}" theme by passing theme: "${themeId}" to the template_copy tool.`
+        : ''
+      const initialMessage = `I want to use the ${templateName} template. Please set up this project by copying the template files${themeInstruction}, then tell me what I can do next with this ${displayName} app.`
+
       navigate(`/projects/${newProject.id}?chatSessionId=${chatSession.id}`, {
         state: {
           project: { id: newProject.id, name: newProject.name, type: "AGENT" },
           chatSessionId: chatSession.id,
-          initialMessage: prompt,
+          initialMessage,
+          fromTemplate: templateName,
         },
       })
     } catch (error) {
