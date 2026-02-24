@@ -12,6 +12,7 @@ import { View, useWindowDimensions } from 'react-native'
 import { Slot, useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useAuth } from '../../contexts/auth'
+import { DomainProvider } from '../../contexts/domain'
 import { AppSidebar } from '../../components/layout/AppSidebar'
 import { AppHeader } from '../../components/layout/AppHeader'
 
@@ -31,32 +32,31 @@ export default function AppLayout() {
   const openDrawer = useCallback(() => setDrawerOpen(true), [])
   const closeDrawer = useCallback(() => setDrawerOpen(false), [])
 
-  // Close drawer when switching to wide layout
   useEffect(() => {
     if (isWide) setDrawerOpen(false)
   }, [isWide])
 
   if (isLoading) return null
+  if (!isAuthenticated) return null
 
   return (
-    <SafeAreaView className="flex-1 bg-background">
-      <View className="flex-1 flex-row">
-        {/* Persistent sidebar on wide screens */}
-        {isWide && <AppSidebar />}
+    <DomainProvider>
+      <SafeAreaView className="flex-1 bg-background">
+        <View className="flex-1 flex-row">
+          {isWide && <AppSidebar />}
 
-        {/* Main content column */}
-        <View className="flex-1">
-          <AppHeader onMenuPress={openDrawer} />
           <View className="flex-1">
-            <Slot />
+            <AppHeader onMenuPress={openDrawer} />
+            <View className="flex-1">
+              <Slot />
+            </View>
           </View>
         </View>
-      </View>
 
-      {/* Drawer overlay on narrow screens */}
-      {!isWide && (
-        <AppSidebar isOpen={drawerOpen} onClose={closeDrawer} />
-      )}
-    </SafeAreaView>
+        {!isWide && (
+          <AppSidebar isOpen={drawerOpen} onClose={closeDrawer} />
+        )}
+      </SafeAreaView>
+    </DomainProvider>
   )
 }

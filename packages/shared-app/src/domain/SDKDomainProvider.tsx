@@ -41,6 +41,7 @@ function getOrCreateStore(apiBaseUrl: string, userId: string | null, credentials
     baseUrl: apiBaseUrl,
     getToken: () => null,
     credentials,
+    suppress401: true,
   })
 
   const env: ISDKEnvironment = {
