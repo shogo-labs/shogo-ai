@@ -124,15 +124,35 @@ When the user asks for any data app (tracker, dashboard, CRM, etc.), follow ALL 
         params: { id: { path: "id" } } } } }
   ]})
 
-**Step 5: TEST — Verify interactions actually work (REQUIRED)**
+**Step 5: TEST — Verify EVERY interactive action actually works (REQUIRED)**
+  Test EACH distinct action type (add, mark complete, delete, etc.) separately.
+  canvas_trigger_action now performs real verification — it captures data before and after the action, and returns ok: false if the mutation failed or no data changed.
+
+  Example — test add:
   canvas_trigger_action({ surfaceId: "my_app", actionName: "add", context: {
     _mutation: { endpoint: "/api/tasks", method: "POST", body: { title: "Test task" } }
   }})
+  → Check ok: true and the "changes" array. Then verify with canvas_inspect:
   canvas_inspect({ surfaceId: "my_app", mode: "data", dataPath: "/tasks" })
-  → Confirm the new record appears. If it does, tell the user "Tested — add works ✓"
-  → If it doesn't, debug and fix before reporting.
 
-**You are not done until Step 5 passes.** A canvas that hasn't been tested is a canvas that might be broken.
+  Example — test mark complete (PATCH):
+  canvas_trigger_action({ surfaceId: "my_app", actionName: "done", context: {
+    _mutation: { endpoint: "/api/tasks/ITEM_ID", method: "PATCH", body: { status: "done" } }
+  }})
+  → Use a real item ID from the seed data or the add test. Confirm the item's status actually changed.
+  canvas_inspect({ surfaceId: "my_app", mode: "data", dataPath: "/tasks" })
+  → Verify the specific record shows the updated status.
+
+  Example — test delete:
+  canvas_trigger_action({ surfaceId: "my_app", actionName: "delete", context: {
+    _mutation: { endpoint: "/api/tasks/ITEM_ID", method: "DELETE" }
+  }})
+  canvas_inspect({ surfaceId: "my_app", mode: "data", dataPath: "/tasks" })
+  → Confirm the item count decreased.
+
+  For each test: if ok: false is returned, the button IS BROKEN. Debug and fix before moving on.
+
+**You are not done until EVERY action button has been tested and passes.** A canvas that hasn't been fully tested is a canvas that might be broken. Do not tell the user it works unless every action has been verified.
 
 ### Key Patterns
 
@@ -192,9 +212,10 @@ Tabs require EITHER explicit tab definitions OR TabPanel children with \`title\`
 
 ### Testing Tools
 
-- **canvas_trigger_action** — YOU simulate a button click. Use to test your canvas after building it. Include \`_mutation\` context for CRUD actions.
-- **canvas_inspect** — Read the current surface state. ALWAYS call this after canvas_trigger_action to verify the result.
-- The pattern is always: **trigger → inspect → report**. No exceptions.
+- **canvas_trigger_action** — YOU simulate a button click. Now performs REAL verification: captures data before/after, reports actual changes, and returns ok: false if the mutation failed or no data changed. Include \`_mutation\` context for CRUD actions.
+- **canvas_inspect** — Read the current surface state. ALWAYS call this after canvas_trigger_action to double-check the data.
+- The pattern is always: **trigger → inspect → report** for EACH action type. No exceptions.
+- You MUST test every distinct action button (add, update/mark-complete, delete) — not just one.
 
 ### Other Tools
 - **canvas_data** — Manually push data: \`canvas_data({ surfaceId: "app", path: "/key", value: data })\`
@@ -203,7 +224,8 @@ Tabs require EITHER explicit tab definitions OR TabPanel children with \`title\`
 - **canvas_components** — Discover components and their props
 
 ### Rules
-- After building any canvas with buttons or CRUD, ALWAYS run Step 5 (trigger + inspect) to verify.
+- After building any canvas with buttons or CRUD, ALWAYS run Step 5 (trigger + inspect) for EVERY action type. Test add, update/complete, and delete separately.
+- If canvas_trigger_action returns ok: false, the button is BROKEN. Fix it before telling the user the canvas works.
 - After canvas_trigger_action, ALWAYS follow up with canvas_inspect — never canvas_action_wait.
 - canvas_action_wait is ONLY for waiting on real human interaction, NOT for testing.
 - When canvas tools return status: "rendered" or "data_updated", the UI is already live.

@@ -208,34 +208,40 @@ export class DynamicAppManager {
   // ---------------------------------------------------------------------------
 
   deliverAction(event: ActionEvent): void {
-    // Intercept mutation actions: execute against the runtime directly, then broadcast a refresh
+    this.deliverActionAsync(event).catch((err) => {
+      console.error('[DynamicAppManager] Action delivery failed:', err)
+    })
+  }
+
+  /**
+   * Async version of deliverAction that returns the mutation result.
+   * Used by canvas_trigger_action to actually verify mutations succeeded.
+   */
+  async deliverActionAsync(event: ActionEvent): Promise<{
+    handled: boolean
+    mutation?: boolean
+    result?: { ok: boolean; status?: number; error?: string; dataPath?: string; itemCount?: number }
+  }> {
     const mutation = event.context?._mutation as
       | { endpoint: string; method: string; body?: unknown }
       | undefined
     if (mutation) {
-      // OPEN mutations are handled client-side (window.open) — skip server-side execution
-      if (mutation.method?.toUpperCase() === 'OPEN') return
+      if (mutation.method?.toUpperCase() === 'OPEN') return { handled: true, mutation: true }
       const runtime = this.runtimes.get(event.surfaceId)
       if (runtime && runtime.isReady()) {
-        this.executeMutation(event.surfaceId, runtime, mutation).catch((err) => {
-          console.error('[DynamicAppManager] Mutation execution failed:', err)
-        })
-        return
+        const result = await this.executeMutation(event.surfaceId, runtime, mutation)
+        return { handled: true, mutation: true, result }
       }
+      return { handled: false, mutation: true, result: { ok: false, error: 'No API runtime available for this surface' } }
     }
 
-    // Fallback: try to infer a mutation from the action name + context when a runtime exists.
-    // This handles the common case where the agent creates buttons without explicit mutation
-    // definitions — the user click would otherwise silently fail.
     if (!mutation) {
       const runtime = this.runtimes.get(event.surfaceId)
       if (runtime && runtime.isReady()) {
         const inferred = this.inferMutation(runtime, event)
         if (inferred) {
-          this.executeMutation(event.surfaceId, runtime, inferred).catch((err) => {
-            console.error('[DynamicAppManager] Inferred mutation execution failed:', err)
-          })
-          return
+          const result = await this.executeMutation(event.surfaceId, runtime, inferred)
+          return { handled: true, mutation: true, result }
         }
       }
     }
@@ -250,9 +256,11 @@ export class DynamicAppManager {
       const waiter = this.actionWaiters.splice(idx, 1)[0]
       clearTimeout(waiter.timeout)
       waiter.resolve(event)
+      return { handled: true, mutation: false }
     } else {
       this.actionQueue.push(event)
       if (this.actionQueue.length > 100) this.actionQueue.shift()
+      return { handled: true, mutation: false }
     }
   }
 
@@ -328,11 +336,11 @@ export class DynamicAppManager {
     }
   }
 
-  private async executeMutation(
+  async executeMutation(
     surfaceId: string,
     runtime: ManagedApiRuntime,
     mutation: { endpoint: string; method: string; body?: unknown },
-  ): Promise<void> {
+  ): Promise<{ ok: boolean; status?: number; error?: string; dataPath?: string; itemCount?: number }> {
     const { endpoint, method, body } = mutation
     const url = `http://localhost${endpoint}`
     const req = new Request(url, {
@@ -344,22 +352,23 @@ export class DynamicAppManager {
     const res = await runtime.getApp().fetch(req)
     const json = await res.json() as Record<string, unknown>
 
-    if (json.ok !== false) {
-      // For item-level operations (PATCH /api/todos/:id, DELETE /api/todos/:id),
-      // derive the collection endpoint by stripping the last segment.
-      // For collection-level operations (POST /api/todos), use endpoint as-is.
-      const upperMethod = method.toUpperCase()
-      const collectionEndpoint =
-        upperMethod === 'POST' ? endpoint : endpoint.replace(/\/[^/]+$/, '') || endpoint
-      const listReq = new Request(`http://localhost${collectionEndpoint}`, { method: 'GET' })
-      const listRes = await runtime.getApp().fetch(listReq)
-      const listJson = await listRes.json() as Record<string, unknown>
-
-      if (Array.isArray(listJson.items)) {
-        const dataPath = collectionEndpoint.replace(/^\/api/, '')
-        this.updateData(surfaceId, dataPath, listJson.items)
-      }
+    if (json.ok === false) {
+      return { ok: false, status: res.status, error: json.error as string ?? 'Mutation returned ok: false' }
     }
+
+    const upperMethod = method.toUpperCase()
+    const collectionEndpoint =
+      upperMethod === 'POST' ? endpoint : endpoint.replace(/\/[^/]+$/, '') || endpoint
+    const listReq = new Request(`http://localhost${collectionEndpoint}`, { method: 'GET' })
+    const listRes = await runtime.getApp().fetch(listReq)
+    const listJson = await listRes.json() as Record<string, unknown>
+
+    const dataPath = collectionEndpoint.replace(/^\/api/, '')
+    if (Array.isArray(listJson.items)) {
+      this.updateData(surfaceId, dataPath, listJson.items)
+      return { ok: true, dataPath, itemCount: listJson.items.length }
+    }
+    return { ok: true, dataPath }
   }
 
   waitForAction(surfaceId?: string, actionName?: string, timeoutMs = 120_000): Promise<ActionEvent | null> {

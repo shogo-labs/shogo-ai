@@ -836,11 +836,13 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop �
       const errors = lint.filter((m) => m.severity === 'error')
       const warnings = lint.filter((m) => m.severity === 'warning')
 
-      // Fatal structural errors (missing id, unknown component type) — don't render at all
+      // Fatal structural errors — don't render at all
       const fatalErrors = errors.filter((e) =>
         e.message.includes('missing required "id"') ||
         e.message.includes('missing required "component"') ||
-        e.message.includes('Unknown component type')
+        e.message.includes('Unknown component type') ||
+        e.message.includes('No component with id "root"') ||
+        e.message.includes('does not exist in the component set')
       )
 
       if (fatalErrors.length > 0) {
@@ -870,12 +872,22 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop �
         })
       }
 
-      if (warnings.length > 0 || corrections.length > 0) {
+      if (warnings.length > 0) {
         return textResult({
           ...result,
-          warnings: warnings.length > 0 ? warnings.map((w) => `[${w.componentId}] ${w.message}`) : undefined,
+          ok: false,
+          error: `Components rendered with ${warnings.length} warning(s) that should be fixed. Call canvas_update again with corrected components.`,
+          warnings: warnings.map((w) => `[${w.componentId}] ${w.message}`),
           corrections: corrections.length > 0 ? corrections : undefined,
-          note: corrections.length > 0 ? 'Some prop values were auto-corrected. Use these corrected values in future updates.' : undefined,
+          hint: 'Use canvas_components with action "detail" to look up valid props for any component type.',
+        })
+      }
+
+      if (corrections.length > 0) {
+        return textResult({
+          ...result,
+          corrections,
+          note: 'Some prop values were auto-corrected. Use these corrected values in future updates.',
         })
       }
       return textResult(result)
@@ -1249,7 +1261,7 @@ For mutation actions (CRUD), include _mutation in the context:
 For non-mutation actions:
   canvas_trigger_action({ surfaceId: "app", actionName: "select_item", context: { itemId: "123" } })
 
-IMPORTANT: Always follow up with canvas_inspect to verify the action succeeded. The correct pattern is: trigger → inspect → report. Never use canvas_action_wait after canvas_trigger_action.`,
+This tool performs real verification: it captures data before the action, executes it, then checks what actually changed. If a mutation fails or doesn't change data as expected, it returns ok: false with details. Always follow up with canvas_inspect to double-check the data. Never use canvas_action_wait after canvas_trigger_action.`,
     label: 'Trigger Canvas Action',
     parameters: Type.Object({
       surfaceId: Type.String({ description: 'Surface ID to trigger the action on' }),
@@ -1269,34 +1281,119 @@ IMPORTANT: Always follow up with canvas_inspect to verify the action succeeded. 
         return textResult({ ok: false, error: `Surface "${surfaceId}" does not exist.` })
       }
 
-      manager.deliverAction({
+      const hasMutation = !!(context as any)?._mutation
+      const beforeSnapshot = JSON.parse(JSON.stringify(surface.dataModel))
+
+      const deliveryResult = await manager.deliverActionAsync({
         surfaceId,
         name: actionName,
         context: context || {},
         timestamp: new Date().toISOString(),
       })
 
-      // Allow async mutation execution to complete
-      const hasMutation = !!(context as any)?._mutation
-      if (hasMutation) {
-        await new Promise((r) => setTimeout(r, 150))
-      }
-
       const updatedSurface = manager.getSurface(surfaceId)
+      const afterSnapshot = updatedSurface ? JSON.parse(JSON.stringify(updatedSurface.dataModel)) : {}
       const dataKeys = updatedSurface ? Object.keys(updatedSurface.dataModel) : []
 
+      if (hasMutation) {
+        if (deliveryResult.result && !deliveryResult.result.ok) {
+          return textResult({
+            ok: false,
+            surfaceId,
+            actionName,
+            wasMutation: true,
+            error: `Mutation FAILED: ${deliveryResult.result.error ?? 'unknown error'}`,
+            status: deliveryResult.result.status,
+            message: `The "${actionName}" mutation failed on "${surfaceId}". The API returned an error. Check the endpoint, method, and body. This button is BROKEN and needs to be fixed before delivery.`,
+          })
+        }
+
+        const changes = diffDataSnapshots(beforeSnapshot, afterSnapshot)
+        if (changes.length === 0) {
+          return textResult({
+            ok: false,
+            surfaceId,
+            actionName,
+            wasMutation: true,
+            dataKeys,
+            dataBefore: beforeSnapshot,
+            dataAfter: afterSnapshot,
+            error: 'Mutation executed but NO data changed in the data model.',
+            message: `WARNING: The "${actionName}" mutation on "${surfaceId}" did not change any data. The API call may have succeeded but the data model wasn't updated. Verify the endpoint is correct and the data path matches. Use canvas_inspect to check the current state. This action may be BROKEN for users.`,
+          })
+        }
+
+        return textResult({
+          ok: true,
+          surfaceId,
+          actionName,
+          wasMutation: true,
+          dataKeys,
+          changes,
+          itemCount: deliveryResult.result?.itemCount,
+          message: `Mutation "${actionName}" VERIFIED on "${surfaceId}". Data changed: ${changes.map(c => c.summary).join('; ')}. Use canvas_inspect to double-check the full data state.`,
+        })
+      }
+
       return textResult({
-        ok: true,
+        ok: deliveryResult.handled,
         surfaceId,
         actionName,
-        wasMutation: hasMutation,
+        wasMutation: false,
         dataKeys,
-        message: hasMutation
-          ? `Mutation "${actionName}" executed on "${surfaceId}". Now use canvas_inspect to verify the data changed.`
-          : `Action "${actionName}" delivered to "${surfaceId}". Use canvas_inspect to verify the surface state.`,
+        message: deliveryResult.handled
+          ? `Action "${actionName}" delivered to "${surfaceId}". Use canvas_inspect to verify the surface state.`
+          : `Action "${actionName}" was not handled. No waiter or mutation target found.`,
       })
     },
   }
+}
+
+/**
+ * Compare two data model snapshots and describe what changed.
+ */
+function diffDataSnapshots(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): Array<{ path: string; type: 'added' | 'removed' | 'changed' | 'count_changed'; summary: string }> {
+  const changes: Array<{ path: string; type: 'added' | 'removed' | 'changed' | 'count_changed'; summary: string }> = []
+
+  const allKeys = new Set([...Object.keys(before), ...Object.keys(after)])
+  for (const key of allKeys) {
+    const bVal = before[key]
+    const aVal = after[key]
+
+    if (bVal === undefined && aVal !== undefined) {
+      changes.push({ path: `/${key}`, type: 'added', summary: `/${key} was added` })
+      continue
+    }
+    if (bVal !== undefined && aVal === undefined) {
+      changes.push({ path: `/${key}`, type: 'removed', summary: `/${key} was removed` })
+      continue
+    }
+
+    if (Array.isArray(bVal) && Array.isArray(aVal)) {
+      if (bVal.length !== aVal.length) {
+        changes.push({
+          path: `/${key}`,
+          type: 'count_changed',
+          summary: `/${key} count: ${bVal.length} → ${aVal.length}`,
+        })
+      } else if (JSON.stringify(bVal) !== JSON.stringify(aVal)) {
+        const changedItems = aVal.reduce((count, item, i) =>
+          JSON.stringify(item) !== JSON.stringify(bVal[i]) ? count + 1 : count, 0)
+        changes.push({
+          path: `/${key}`,
+          type: 'changed',
+          summary: `/${key} ${changedItems} item(s) modified (count unchanged at ${aVal.length})`,
+        })
+      }
+    } else if (JSON.stringify(bVal) !== JSON.stringify(aVal)) {
+      changes.push({ path: `/${key}`, type: 'changed', summary: `/${key} value changed` })
+    }
+  }
+
+  return changes
 }
 
 function createCanvasInspectTool(): AgentTool {

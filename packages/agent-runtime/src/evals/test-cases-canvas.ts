@@ -972,37 +972,63 @@ export const CANVAS_EVALS: AgentEval[] = [
       {
         id: 'used-api-schema',
         description: 'Defined API schema for todos',
-        points: 10,
+        points: 5,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_api_schema'),
       },
       {
         id: 'used-api-seed',
         description: 'Seeded sample data',
-        points: 10,
+        points: 5,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_api_seed'),
       },
       {
         id: 'used-canvas-update',
         description: 'Built UI components',
-        points: 10,
+        points: 5,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_update'),
       },
       {
-        id: 'used-trigger-action',
-        description: 'Used canvas_trigger_action to simulate adding a todo',
-        points: 20,
+        id: 'tested-add-action',
+        description: 'Tested a POST/add action via canvas_trigger_action',
+        points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_trigger_action'),
+        validate: (r) => r.toolCalls.some(t => {
+          if (t.name !== 'canvas_trigger_action') return false
+          const json = JSON.stringify(t.input).toLowerCase()
+          return json.includes('post')
+        }),
       },
       {
-        id: 'used-inspect',
-        description: 'Used canvas_inspect to verify the result',
-        points: 20,
+        id: 'tested-update-action',
+        description: 'Tested a PATCH/mark-complete action via canvas_trigger_action',
+        points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_inspect'),
+        validate: (r) => r.toolCalls.some(t => {
+          if (t.name !== 'canvas_trigger_action') return false
+          const json = JSON.stringify(t.input).toLowerCase()
+          return json.includes('patch') || json.includes('put')
+        }),
+      },
+      {
+        id: 'tested-delete-action',
+        description: 'Tested a DELETE action via canvas_trigger_action',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.some(t => {
+          if (t.name !== 'canvas_trigger_action') return false
+          const json = JSON.stringify(t.input).toLowerCase()
+          return json.includes('delete')
+        }),
+      },
+      {
+        id: 'inspect-after-each-trigger',
+        description: 'canvas_inspect called at least twice to verify multiple actions',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => toolCallCount(r, 'canvas_inspect') >= 2,
       },
       {
         id: 'inspect-after-trigger',
@@ -1026,7 +1052,7 @@ export const CANVAS_EVALS: AgentEval[] = [
         },
       },
     ],
-    antiPatterns: ['Did not use canvas_trigger_action', 'Did not use canvas_inspect'],
+    antiPatterns: ['Did not use canvas_trigger_action', 'Did not use canvas_inspect', 'Only tested one action type — must test add, update, and delete'],
   },
 
   // ---- Level 4: Counter app with self-testing loop (multi-turn) ----
