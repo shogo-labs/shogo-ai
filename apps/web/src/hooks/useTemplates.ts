@@ -1,93 +1,139 @@
 /**
- * useTemplates - Shared hook for fetching SDK templates
+ * useTemplates - Canvas dev examples as agent runtime templates
  *
- * Features:
- * - Deduplication: Only one fetch happens even if multiple components mount simultaneously
- * - Caching: Templates are cached and shared across all components
- * - Error handling: Graceful fallback on fetch failure
+ * Returns a curated list of canvas examples that users can click to
+ * pre-fill the prompt. These are sourced from the agent-runtime canvas
+ * eval fixtures and represent the kinds of apps the agent can build.
  */
 
-import { useState, useEffect, useRef } from 'react'
-import type { TemplateMetadata } from '@/components/app/workspace/dashboard/TemplateCard'
+import { useMemo } from 'react'
+import type { CanvasTemplate } from '@/components/app/workspace/dashboard/TemplateCard'
 
-// Re-export for convenience
-export type { TemplateMetadata }
+export type { CanvasTemplate }
 
-// Module-level cache for templates (shared across all instances)
-let cachedTemplates: TemplateMetadata[] | null = null
-let fetchPromise: Promise<TemplateMetadata[]> | null = null
+const CANVAS_TEMPLATES: CanvasTemplate[] = [
+  {
+    id: "analytics-dashboard",
+    user_request: "Create a sales analytics dashboard with revenue chart and top products",
+    needs_api_schema: false,
+    component_types: ["Column", "Row", "Text", "Badge", "Grid", "Metric", "Card", "Chart", "Table"],
+    component_count: 12,
+  },
+  {
+    id: "task-tracker-crud",
+    user_request: "Build a task tracker where I can add, complete, and delete tasks",
+    needs_api_schema: true,
+    component_types: ["Column", "Card", "Table", "Button", "TextField"],
+    component_count: 8,
+  },
+  {
+    id: "email-dashboard",
+    user_request: "Build an email dashboard with metrics, tabs, and email tables",
+    needs_api_schema: false,
+    component_types: ["Column", "Grid", "Metric", "Separator", "Tabs", "Table", "Alert", "Text"],
+    component_count: 14,
+  },
+  {
+    id: "crm-pipeline",
+    user_request: "Build a CRM pipeline canvas showing leads in 3 stages: New, Qualified, Closed with lead details",
+    needs_api_schema: false,
+    component_types: ["Column", "Grid", "Card", "Text", "Badge", "Metric"],
+    component_count: 12,
+  },
+  {
+    id: "support-tickets-crud",
+    user_request: "Build a support ticket management app with CRUD API, priority levels, and status tracking",
+    needs_api_schema: true,
+    component_types: ["Column", "Table", "Button", "Badge"],
+    component_count: 8,
+  },
+  {
+    id: "expense-dashboard",
+    user_request: "Create an expense tracker dashboard with total spend, budget remaining, and a table of recent expenses",
+    needs_api_schema: false,
+    component_types: ["Column", "Row", "Metric", "Table", "Badge"],
+    component_count: 8,
+  },
+  {
+    id: "stock-dashboard-crud",
+    user_request: "Create a stock portfolio dashboard with price tracking",
+    needs_api_schema: true,
+    component_types: ["Column", "Grid", "Metric", "Card", "Table", "Chart"],
+    component_count: 10,
+  },
+  {
+    id: "ecommerce-orders-crud",
+    user_request: "Build an order management dashboard with CRUD showing order metrics, order table with status, and seed data",
+    needs_api_schema: true,
+    component_types: ["Column", "Row", "Metric", "Table", "Badge", "Button"],
+    component_count: 12,
+  },
+  {
+    id: "meeting-scheduler",
+    user_request: "Create a meeting scheduler with date/time pickers and a submit button",
+    needs_api_schema: false,
+    component_types: ["Card", "Column", "TextField", "Select", "ChoicePicker", "Row", "Button"],
+    component_count: 9,
+  },
+  {
+    id: "notification-feed",
+    user_request: "Show a notification feed with PR reviews, build failures, and meeting reminders",
+    needs_api_schema: false,
+    component_types: ["Column", "Text", "DataList", "Card", "Row", "Badge"],
+    component_count: 7,
+  },
+  {
+    id: "cicd-monitor",
+    user_request: "Build a CI/CD pipeline monitor showing recent deploys with status and a deploy frequency chart",
+    needs_api_schema: false,
+    component_types: ["Column", "Card", "Table", "Badge", "Text", "Chart"],
+    component_count: 10,
+  },
+  {
+    id: "social-media-dashboard",
+    user_request: "Build a social media analytics dashboard with follower/engagement metrics, trends chart, and scheduled posts table",
+    needs_api_schema: false,
+    component_types: ["Column", "Row", "Grid", "Metric", "Chart", "Table", "Badge"],
+    component_count: 14,
+  },
+  {
+    id: "invoice-tracker-crud",
+    user_request: "Build an invoice tracker with CRUD API, client name, amount, due date, status, and total metric",
+    needs_api_schema: true,
+    component_types: ["Column", "Metric", "Table", "Badge", "Button"],
+    component_count: 9,
+  },
+  {
+    id: "hr-pipeline-crud",
+    user_request: "Create a recruiting pipeline app tracking applicants with name, position, stage, rating, and notes",
+    needs_api_schema: true,
+    component_types: ["Column", "Table", "Badge", "Text", "Button"],
+    component_count: 8,
+  },
+  {
+    id: "research-report",
+    user_request: "Build a research report on the EV market with progress tracking and expandable sections",
+    needs_api_schema: false,
+    component_types: ["Column", "Row", "Text", "Badge", "Card", "Chart", "Accordion", "AccordionItem", "Grid", "Metric", "Table", "Alert"],
+    component_count: 17,
+  },
+  {
+    id: "weather-display",
+    user_request: "Show me the current weather forecast",
+    needs_api_schema: false,
+    component_types: ["Column", "Text", "Badge"],
+    component_count: 4,
+  },
+  {
+    id: "flight-search",
+    user_request: "Find flights from SFO to JFK and let me pick one",
+    needs_api_schema: false,
+    component_types: ["Column", "Text", "Card", "Button"],
+    component_count: 6,
+  },
+]
 
-/**
- * Fetch templates from the API with deduplication.
- * Multiple calls while a fetch is in progress will share the same promise.
- */
-async function fetchTemplatesOnce(): Promise<TemplateMetadata[]> {
-  // Return cached templates if available
-  if (cachedTemplates !== null) {
-    return cachedTemplates
-  }
-
-  // If a fetch is already in progress, return that promise
-  if (fetchPromise !== null) {
-    return fetchPromise
-  }
-
-  // Start a new fetch
-  fetchPromise = (async () => {
-    try {
-      const response = await fetch('/api/templates')
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`)
-      }
-      const data = await response.json()
-      const templates = (data.templates || []).filter(
-        (t: TemplateMetadata) => t.name !== 'expo-app'
-      )
-      cachedTemplates = templates
-      return templates
-    } catch (error) {
-      console.error('[useTemplates] Failed to fetch templates:', error)
-      return []
-    } finally {
-      // Clear the promise after it resolves (allows retry on error)
-      fetchPromise = null
-    }
-  })()
-
-  return fetchPromise
-}
-
-/**
- * Hook to fetch and use templates.
- * Automatically deduplicates requests and caches results.
- */
 export function useTemplates() {
-  const [templates, setTemplates] = useState<TemplateMetadata[]>(cachedTemplates ?? [])
-  const [isLoading, setIsLoading] = useState(cachedTemplates === null)
-  const isMounted = useRef(true)
-
-  useEffect(() => {
-    isMounted.current = true
-
-    // If we already have cached templates, use them immediately
-    if (cachedTemplates !== null) {
-      setTemplates(cachedTemplates)
-      setIsLoading(false)
-      return
-    }
-
-    // Fetch templates
-    fetchTemplatesOnce().then((result) => {
-      if (isMounted.current) {
-        setTemplates(result)
-        setIsLoading(false)
-      }
-    })
-
-    return () => {
-      isMounted.current = false
-    }
-  }, [])
-
-  return { templates, isLoading }
+  const templates = useMemo(() => CANVAS_TEMPLATES, [])
+  return { templates, isLoading: false }
 }
