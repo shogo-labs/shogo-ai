@@ -994,6 +994,13 @@ export class AgentGateway {
     // UI stream writer: track current text block for delta streaming
     let uiTextId: string | null = null
 
+    // Gate map: onBeforeToolCall stores a promise per toolCallId that
+    // resolves once the tool-input-start SSE events have had time to
+    // flush to the client.  onAfterToolCall awaits this promise before
+    // writing tool-output events, preventing React from batching all
+    // tool events into a single render that skips the loading state.
+    const toolFlushGates = new Map<string, Promise<void>>()
+
     try {
       const hookEmitter = this.hookEmitter
       const result = await runAgentLoop({
@@ -1020,7 +1027,6 @@ export class AgentGateway {
           }
         },
         onBeforeToolCall: async (toolName, args, toolCallId) => {
-          // Close any open text block before a tool call
           if (uiWriter && uiTextId) {
             uiWriter.write({ type: 'text-end', id: uiTextId })
             uiTextId = null
@@ -1028,8 +1034,17 @@ export class AgentGateway {
           if (uiWriter) {
             uiWriter.write({ type: 'tool-input-start', toolCallId, toolName, dynamic: true })
             uiWriter.write({ type: 'tool-input-delta', toolCallId, inputTextDelta: JSON.stringify(args) })
-            uiWriter.write({ type: 'tool-input-available', toolCallId, toolName, input: args, dynamic: true })
           }
+          // Store a flush gate that resolves after a short delay, giving
+          // the HTTP layer time to deliver the tool-input-start chunk to
+          // the client before tool-output-available arrives.
+          // NOTE: the pi-agent-core event system does NOT await this
+          // callback before firing tool_execution_end, so onAfterToolCall
+          // must explicitly await this gate.
+          toolFlushGates.set(
+            toolCallId,
+            new Promise(resolve => setTimeout(resolve, 30)),
+          )
           await hookEmitter.emit(
             HookEmitter.createEvent('tool', 'before', sessionId, {
               toolName, args, toolCallId, workspaceDir: this.workspaceDir,
@@ -1037,7 +1052,15 @@ export class AgentGateway {
           )
         },
         onAfterToolCall: async (toolName, args, result, isError, toolCallId) => {
+          // Wait for onBeforeToolCall's flush gate so the client receives
+          // tool-input-start in a separate HTTP chunk before we send the output.
+          const gate = toolFlushGates.get(toolCallId)
+          if (gate) {
+            await gate
+            toolFlushGates.delete(toolCallId)
+          }
           if (uiWriter) {
+            uiWriter.write({ type: 'tool-input-available', toolCallId, toolName, input: args, dynamic: true })
             uiWriter.write({
               type: 'tool-output-available',
               toolCallId,
