@@ -161,17 +161,21 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
   }, [])
 
   // Get subscription for workspace
+  // Include collection length as dep so useMemo recomputes when data is loaded
+  // externally (e.g., AppShell checkout redirect refetch).
+  const subsLength = store?.subscriptionCollection?.all?.length ?? 0
   const subscription = useMemo(() => {
     if (!workspaceId || !store?.subscriptionCollection) return undefined
     try {
       const subs = store.subscriptionCollection.all.filter((s: any) => s.workspaceId === workspaceId)
-      return subs[0] // Return the first (and typically only) subscription
+      return subs[0]
     } catch {
       return undefined
     }
-  }, [workspaceId, store, isLoadingSubscription])
+  }, [workspaceId, store, isLoadingSubscription, subsLength])
 
   // Get credit ledger for workspace
+  const ledgerLength = store?.creditLedgerCollection?.all?.length ?? 0
   const creditLedger = useMemo(() => {
     if (!workspaceId || !store?.creditLedgerCollection) return undefined
     try {
@@ -179,7 +183,7 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
     } catch {
       return undefined
     }
-  }, [workspaceId, store, isLoadingCreditLedger])
+  }, [workspaceId, store, isLoadingCreditLedger, ledgerLength])
 
   // Compute effective balance with lazy daily reset applied
   const effectiveBalance = useMemo(() => {
@@ -218,7 +222,7 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
   }, [workspaceId, store, isLoadingUsageEvents])
 
   // Computed helpers
-  const hasActiveSubscription = subscription?.isActive ?? false
+  const hasActiveSubscription = subscription?.status === 'active' || subscription?.status === 'trialing'
   const daysRemaining = subscription?.daysRemaining
 
   const isLoading = isLoadingSubscription || isLoadingCreditLedger || isLoadingUsageEvents

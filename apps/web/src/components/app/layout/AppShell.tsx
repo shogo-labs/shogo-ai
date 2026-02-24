@@ -147,12 +147,18 @@ export const AppShell = observer(function AppShell() {
             description: `Your workspace "${workspace.name}" is now on a paid plan.`,
           })
         } else {
-          // Workspace not found in local state yet - store ID temporarily
-          // The workspace should appear after a data refresh
           toast({
             title: "Subscription activated",
             description: "Your subscription is now active.",
           })
+        }
+
+        // Refresh subscription data so Pro features (model selector, etc.) unlock immediately.
+        // Small delay to allow Stripe webhook to be processed.
+        if (workspaceId && store?.subscriptionCollection) {
+          setTimeout(() => {
+            store.subscriptionCollection.loadAll({ workspaceId }).catch(() => {})
+          }, 2000)
         }
       } else if (checkoutStatus === "canceled") {
         // User canceled checkout - optionally delete the workspace
