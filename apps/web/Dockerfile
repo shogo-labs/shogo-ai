@@ -38,6 +38,7 @@ COPY packages/sdk/package.json ./packages/sdk/
 COPY apps/web/package.json ./apps/web/
 COPY apps/api/package.json ./apps/api/
 RUN mkdir -p apps/desktop && echo '{"name":"@shogo/desktop","version":"0.1.0","private":true}' > apps/desktop/package.json
+RUN mkdir -p apps/mobile && echo '{"name":"@shogo/mobile","version":"0.1.0","private":true}' > apps/mobile/package.json
 
 # Copy scripts needed for postinstall
 COPY scripts ./scripts

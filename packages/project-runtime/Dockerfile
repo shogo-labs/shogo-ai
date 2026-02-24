@@ -42,6 +42,7 @@ COPY packages/sdk/package.json ./packages/sdk/
 COPY apps/web/package.json ./apps/web/
 COPY apps/api/package.json ./apps/api/
 COPY apps/desktop/package.json ./apps/desktop/
+COPY apps/mobile/package.json ./apps/mobile/
 
 # Copy scripts needed for postinstall (patch-claude-sdk runs during bun install)
 COPY scripts ./scripts
@@ -96,6 +97,7 @@ COPY packages/sdk/package.json ./packages/sdk/
 COPY apps/web/package.json ./apps/web/
 COPY apps/api/package.json ./apps/api/
 COPY apps/desktop/package.json ./apps/desktop/
+COPY apps/mobile/package.json ./apps/mobile/
 
 COPY scripts ./scripts
 
@@ -219,6 +221,7 @@ COPY --from=builder /app/packages/agent-runtime/package.json ./packages/agent-ru
 COPY --from=builder /app/apps/web/package.json ./apps/web/
 COPY --from=builder /app/apps/api/package.json ./apps/api/
 COPY --from=builder /app/apps/desktop/package.json ./apps/desktop/
+COPY --from=builder /app/apps/mobile/package.json ./apps/mobile/
 
 # Rebuild bun's module resolution links. Docker COPY from the deps stage
 # preserves the .bun/ cache (all packages) but destroys the internal symlinks

@@ -31,6 +31,7 @@ COPY packages/sdk/package.json ./packages/sdk/
 COPY apps/web/package.json ./apps/web/
 COPY apps/api/package.json ./apps/api/
 COPY apps/desktop/package.json ./apps/desktop/
+COPY apps/mobile/package.json ./apps/mobile/
 
 COPY scripts ./scripts
 
@@ -65,6 +66,7 @@ COPY packages/sdk/package.json ./packages/sdk/
 COPY apps/web/package.json ./apps/web/
 COPY apps/api/package.json ./apps/api/
 COPY apps/desktop/package.json ./apps/desktop/
+COPY apps/mobile/package.json ./apps/mobile/
 
 COPY scripts ./scripts
 
@@ -110,6 +112,7 @@ COPY --from=builder /app/packages/sdk/package.json ./packages/sdk/
 COPY --from=builder /app/apps/web/package.json ./apps/web/
 COPY --from=builder /app/apps/api/package.json ./apps/api/
 COPY --from=builder /app/apps/desktop/package.json ./apps/desktop/
+COPY --from=builder /app/apps/mobile/package.json ./apps/mobile/
 
 # Rebuild bun's module resolution links. Docker COPY from the deps stage
 # preserves the .bun/ cache but destroys internal symlinks bun uses for
