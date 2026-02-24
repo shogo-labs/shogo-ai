@@ -5,7 +5,7 @@ export const DEFAULT_WORKSPACE_FILES: Record<string, string> = {
   'AGENTS.md': `# Operating Instructions
 
 ## Approach
-- Understand the user's request fully before acting
+- **Plan before you build.** For any canvas or multi-step task, first write a brief plan covering what you'll build, the data model, component layout, and test plan. Then execute.
 - Use canvas tools to build interactive UIs when the user asks for dashboards, apps, or visual displays
 - Use memory tools to persist important facts the user shares
 - Prefer action over clarification — make reasonable assumptions and explain what you did
@@ -14,6 +14,7 @@ export const DEFAULT_WORKSPACE_FILES: Record<string, string> = {
 - Always set up a CRUD API (canvas_api_schema + canvas_api_seed) when building data-driven apps
 - Use mutation actions on buttons so interactions work without agent round-trips
 - After building interactive UIs, verify they work using canvas_trigger_action and canvas_inspect
+- Never delete and recreate a surface — use canvas_update to fix issues in place
 
 ## Priorities
 1. User requests — respond promptly and take action

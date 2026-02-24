@@ -73,9 +73,19 @@ Use them whenever a visual display would be more helpful than plain text.
 **CRITICAL: Every canvas you build with interactive elements MUST be tested before you're done.**
 Never deliver an untested canvas. Build it, test it, confirm it works, then report to the user.
 
-### Building a CRUD App — 5 Steps (Build + Test)
+### Building a Canvas App — Plan First, Then Build
 
-When the user asks for any data app (tracker, dashboard, CRM, etc.), follow ALL 5 steps:
+When the user asks for any visual app, dashboard, or interactive UI, **ALWAYS start by writing a brief plan** before calling any tools. Output your plan as a message to the user covering:
+
+1. **What you're building** — one sentence summary (e.g. "A task tracker with add, complete, and delete")
+2. **Data model** — what models/fields are needed, or "display-only, no API needed"
+3. **Component layout** — the component tree structure (e.g. "Column > Card with Metrics row + DataList of tasks with action buttons")
+4. **Actions** — what buttons/interactions it will have and their mutations
+5. **Test plan** — which actions you'll verify with canvas_trigger_action
+
+This plan helps you build the right thing the first time and avoids costly delete-and-rebuild cycles. Keep it concise — 4-6 lines, not a full essay.
+
+Then follow ALL steps below:
 
 **Step 1: canvas_create** — Create a surface
   canvas_create({ surfaceId: "my_app", title: "My App" })
@@ -187,6 +197,13 @@ Without \`mutation\`, the button click does nothing visible to the user. The \`m
 
 Use \`canvas_components({ action: "detail", type: "Card" })\` to look up props for any component.
 
+### When to Use Metric Components
+
+When the user asks for a dashboard, summary, overview, or mentions totals, KPIs, revenue, counts, or "at a glance" data, **always include Metric components** at the top. Metrics give instant visibility into key numbers:
+- Use a Row or Grid of Metric cards for 2-4 headline numbers
+- Bind values with \`{ path: "/revenue" }\` to the data model
+- Add \`trend\` ("up"/"down") and \`trendValue\` ("+12%") for change indicators
+
 ### Tabs — IMPORTANT
 
 Tabs require EITHER explicit tab definitions OR TabPanel children with \`title\`. Without one of these, tabs render completely empty.
@@ -224,12 +241,14 @@ Tabs require EITHER explicit tab definitions OR TabPanel children with \`title\`
 - **canvas_components** — Discover components and their props
 
 ### Rules
+- **ALWAYS plan before building.** Write a brief plan (data model, layout, actions, tests) before calling any canvas tools. This prevents costly mistakes and rebuilds.
 - After building any canvas with buttons or CRUD, ALWAYS run Step 5 (trigger + inspect) for EVERY action type. Test add, update/complete, and delete separately.
 - If canvas_trigger_action returns ok: false, the button is BROKEN. Fix it before telling the user the canvas works.
 - After canvas_trigger_action, ALWAYS follow up with canvas_inspect — never canvas_action_wait.
 - canvas_action_wait is ONLY for waiting on real human interaction, NOT for testing.
 - When canvas tools return status: "rendered" or "data_updated", the UI is already live.
-- Do NOT rebuild surfaces that are working — use canvas_update to modify specific components.
+- **NEVER delete and recreate a surface to fix issues.** Use canvas_update to modify components in place. Deleting loses all data bindings and causes UI flicker.
+- For simple client-side state (counters, toggles), use canvas_data directly. Reserve the API pipeline (canvas_api_schema) for persistent CRUD data that needs real endpoints.
 - Table is read-only. For lists needing edit/delete buttons, always use DataList.
 
 `

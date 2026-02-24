@@ -34,7 +34,6 @@ export function DynButton({ label, text, variant = 'default', size = 'default', 
       window.open(href, '_blank', 'noopener,noreferrer')
       return
     }
-    // mutation method "OPEN" opens an external URL in a new tab
     const mutation = action?.context?._mutation as { endpoint?: string; method?: string } | undefined
     if (mutation?.method?.toUpperCase() === 'OPEN' && mutation.endpoint) {
       window.open(mutation.endpoint, '_blank', 'noopener,noreferrer')
@@ -236,7 +235,7 @@ export function DynChoicePicker({ label, options = [], value, multiple, variant 
                 'px-3 py-1.5 text-sm rounded-md border transition-colors',
                 isSelected
                   ? 'bg-primary text-primary-foreground border-primary'
-                  : 'bg-background text-foreground border-border hover:bg-muted'
+                  : 'bg-background text-foreground border-input hover:bg-accent hover:text-accent-foreground'
               )}
             >
               {opt.label}

@@ -252,6 +252,238 @@ export const SCHEDULER_SURFACE = buildSurface(
 )
 
 // ---------------------------------------------------------------------------
+// Project Overview — complex nested cards to test depth
+// ---------------------------------------------------------------------------
+
+export const PROJECT_OVERVIEW_SURFACE = buildSurface(
+  'demo_project',
+  'Project Overview',
+  [
+    { id: 'root', component: 'Column', children: ['header', 'kpis', 'main_grid', 'team_section'], gap: 'lg' },
+
+    // Header
+    {
+      id: 'header', component: 'Row', children: ['title_col', 'header_actions'],
+      align: 'center', justify: 'between',
+    },
+    {
+      id: 'title_col', component: 'Column', children: ['proj_title', 'proj_desc'], gap: 'xs',
+    },
+    { id: 'proj_title', component: 'Text', text: 'Project Atlas', variant: 'h2' },
+    { id: 'proj_desc', component: 'Text', text: 'Enterprise data platform — Sprint 14', variant: 'muted' },
+    {
+      id: 'header_actions', component: 'Row', children: ['status_badge', 'edit_btn'], gap: 'sm', align: 'center',
+    },
+    { id: 'status_badge', component: 'Badge', text: 'In Progress', variant: 'default' },
+    { id: 'edit_btn', component: 'Button', label: 'Settings', variant: 'outline', size: 'sm', action: { name: 'settings' } },
+
+    // KPIs
+    {
+      id: 'kpis', component: 'Grid', columns: 4, gap: 'md',
+      children: ['kpi_tasks', 'kpi_velocity', 'kpi_bugs', 'kpi_coverage'],
+    },
+    { id: 'kpi_tasks', component: 'Metric', label: 'Open Tasks', value: '24', trend: 'down', trendValue: '-6 this week' },
+    { id: 'kpi_velocity', component: 'Metric', label: 'Velocity', value: '47', unit: 'pts', trend: 'up', trendValue: '+12%' },
+    { id: 'kpi_bugs', component: 'Metric', label: 'Open Bugs', value: '8', trend: 'down', trendValue: '-3' },
+    { id: 'kpi_coverage', component: 'Metric', label: 'Test Coverage', value: '87%', trend: 'up', trendValue: '+2.4%' },
+
+    // Main grid: left = sprint board card, right = stacked cards
+    {
+      id: 'main_grid', component: 'Grid', columns: 2, gap: 'md',
+      children: ['sprint_card', 'right_stack'],
+    },
+
+    // Sprint board (Card > inner cards for each column)
+    {
+      id: 'sprint_card', component: 'Card', title: 'Sprint Board',
+      description: 'Current sprint tasks by status', children: ['sprint_cols'],
+    },
+    {
+      id: 'sprint_cols', component: 'Grid', columns: 3, gap: 'sm',
+      children: ['col_todo', 'col_progress', 'col_done'],
+    },
+    // To Do column
+    {
+      id: 'col_todo', component: 'Column', children: ['col_todo_header', 'task_1', 'task_2', 'task_3'], gap: 'sm',
+    },
+    {
+      id: 'col_todo_header', component: 'Row', children: ['col_todo_label', 'col_todo_count'], align: 'center', justify: 'between',
+    },
+    { id: 'col_todo_label', component: 'Text', text: 'To Do', variant: 'h6' },
+    { id: 'col_todo_count', component: 'Badge', text: '3', variant: 'secondary' },
+    {
+      id: 'task_1', component: 'Card', title: 'Auth token refresh',
+      description: 'Implement silent refresh flow', children: ['task_1_meta'],
+    },
+    {
+      id: 'task_1_meta', component: 'Row', children: ['task_1_priority', 'task_1_points'], align: 'center', justify: 'between',
+    },
+    { id: 'task_1_priority', component: 'Badge', text: 'High', variant: 'destructive' },
+    { id: 'task_1_points', component: 'Text', text: '5 pts', variant: 'caption' },
+    {
+      id: 'task_2', component: 'Card', title: 'Dashboard filters',
+      description: 'Add date range & status filters', children: ['task_2_meta'],
+    },
+    {
+      id: 'task_2_meta', component: 'Row', children: ['task_2_priority', 'task_2_points'], align: 'center', justify: 'between',
+    },
+    { id: 'task_2_priority', component: 'Badge', text: 'Medium', variant: 'outline' },
+    { id: 'task_2_points', component: 'Text', text: '3 pts', variant: 'caption' },
+    {
+      id: 'task_3', component: 'Card', title: 'API rate limiting',
+      description: 'Redis-backed sliding window', children: ['task_3_meta'],
+    },
+    {
+      id: 'task_3_meta', component: 'Row', children: ['task_3_priority', 'task_3_points'], align: 'center', justify: 'between',
+    },
+    { id: 'task_3_priority', component: 'Badge', text: 'High', variant: 'destructive' },
+    { id: 'task_3_points', component: 'Text', text: '8 pts', variant: 'caption' },
+    // In Progress column
+    {
+      id: 'col_progress', component: 'Column', children: ['col_prog_header', 'task_4', 'task_5'], gap: 'sm',
+    },
+    {
+      id: 'col_prog_header', component: 'Row', children: ['col_prog_label', 'col_prog_count'], align: 'center', justify: 'between',
+    },
+    { id: 'col_prog_label', component: 'Text', text: 'In Progress', variant: 'h6' },
+    { id: 'col_prog_count', component: 'Badge', text: '2', variant: 'secondary' },
+    {
+      id: 'task_4', component: 'Card', title: 'User settings page',
+      description: 'Profile, notifications, billing', children: ['task_4_meta'],
+    },
+    {
+      id: 'task_4_meta', component: 'Row', children: ['task_4_priority', 'task_4_assign'], align: 'center', justify: 'between',
+    },
+    { id: 'task_4_priority', component: 'Badge', text: 'Medium', variant: 'outline' },
+    { id: 'task_4_assign', component: 'Text', text: '@sarah', variant: 'caption' },
+    {
+      id: 'task_5', component: 'Card', title: 'WebSocket events',
+      description: 'Real-time notification feed', children: ['task_5_meta'],
+    },
+    {
+      id: 'task_5_meta', component: 'Row', children: ['task_5_priority', 'task_5_assign'], align: 'center', justify: 'between',
+    },
+    { id: 'task_5_priority', component: 'Badge', text: 'High', variant: 'destructive' },
+    { id: 'task_5_assign', component: 'Text', text: '@mike', variant: 'caption' },
+    // Done column
+    {
+      id: 'col_done', component: 'Column', children: ['col_done_header', 'task_6', 'task_7'], gap: 'sm',
+    },
+    {
+      id: 'col_done_header', component: 'Row', children: ['col_done_label', 'col_done_count'], align: 'center', justify: 'between',
+    },
+    { id: 'col_done_label', component: 'Text', text: 'Done', variant: 'h6' },
+    { id: 'col_done_count', component: 'Badge', text: '2', variant: 'secondary' },
+    {
+      id: 'task_6', component: 'Card', title: 'CI pipeline v2',
+      description: 'Parallel test runners', children: ['task_6_meta'],
+    },
+    {
+      id: 'task_6_meta', component: 'Row', children: ['task_6_check', 'task_6_points'], align: 'center', justify: 'between',
+    },
+    { id: 'task_6_check', component: 'Icon', name: 'check-circle', size: 'sm', color: 'emerald-500' },
+    { id: 'task_6_points', component: 'Text', text: '5 pts', variant: 'caption' },
+    {
+      id: 'task_7', component: 'Card', title: 'DB migration tool',
+      description: 'Automated schema diffs', children: ['task_7_meta'],
+    },
+    {
+      id: 'task_7_meta', component: 'Row', children: ['task_7_check', 'task_7_points'], align: 'center', justify: 'between',
+    },
+    { id: 'task_7_check', component: 'Icon', name: 'check-circle', size: 'sm', color: 'emerald-500' },
+    { id: 'task_7_points', component: 'Text', text: '3 pts', variant: 'caption' },
+
+    // Right stack: burndown chart + recent activity
+    {
+      id: 'right_stack', component: 'Column', children: ['burndown_card', 'activity_card'], gap: 'md',
+    },
+    {
+      id: 'burndown_card', component: 'Card', title: 'Sprint Burndown', children: ['burndown_chart'],
+    },
+    {
+      id: 'burndown_chart', component: 'Chart', type: 'bar', height: 160,
+      data: [
+        { label: 'Mon', value: 47 },
+        { label: 'Tue', value: 42 },
+        { label: 'Wed', value: 38 },
+        { label: 'Thu', value: 31 },
+        { label: 'Fri', value: 24 },
+      ],
+    },
+    {
+      id: 'activity_card', component: 'Card', title: 'Recent Activity',
+      description: 'Last 24 hours', children: ['activity_table'],
+    },
+    {
+      id: 'activity_table', component: 'Table', compact: true,
+      columns: [
+        { key: 'who', label: 'Who', width: '25%' },
+        { key: 'action', label: 'Action' },
+        { key: 'time', label: 'When', width: '20%', align: 'right' },
+      ],
+      rows: [
+        { who: 'Sarah', action: 'Completed "User settings page"', time: '2h ago' },
+        { who: 'Mike', action: 'Pushed 3 commits to ws-events', time: '3h ago' },
+        { who: 'Alex', action: 'Opened PR #142 — Auth refresh', time: '5h ago' },
+        { who: 'Priya', action: 'Filed bug: Memory leak in SSE', time: '6h ago' },
+        { who: 'Jordan', action: 'Merged PR #139 — CI pipeline', time: '8h ago' },
+      ],
+    },
+
+    // Team section (Card with inner metric cards)
+    {
+      id: 'team_section', component: 'Card', title: 'Team Performance',
+      description: 'Individual contributor stats this sprint', children: ['team_grid'],
+    },
+    {
+      id: 'team_grid', component: 'Grid', columns: 3, gap: 'md',
+      children: ['member_1', 'member_2', 'member_3'],
+    },
+    {
+      id: 'member_1', component: 'Card', title: 'Sarah Chen', description: 'Frontend Lead',
+      children: ['m1_stats'],
+    },
+    {
+      id: 'm1_stats', component: 'Column', children: ['m1_row1', 'm1_progress'], gap: 'sm',
+    },
+    {
+      id: 'm1_row1', component: 'Row', children: ['m1_tasks', 'm1_pts'], justify: 'between',
+    },
+    { id: 'm1_tasks', component: 'Text', text: '8 tasks completed', variant: 'body' },
+    { id: 'm1_pts', component: 'Badge', text: '21 pts', variant: 'secondary' },
+    { id: 'm1_progress', component: 'Progress', value: 85, max: 100 },
+
+    {
+      id: 'member_2', component: 'Card', title: 'Mike Torres', description: 'Backend Engineer',
+      children: ['m2_stats'],
+    },
+    {
+      id: 'm2_stats', component: 'Column', children: ['m2_row1', 'm2_progress'], gap: 'sm',
+    },
+    {
+      id: 'm2_row1', component: 'Row', children: ['m2_tasks', 'm2_pts'], justify: 'between',
+    },
+    { id: 'm2_tasks', component: 'Text', text: '6 tasks completed', variant: 'body' },
+    { id: 'm2_pts', component: 'Badge', text: '18 pts', variant: 'secondary' },
+    { id: 'm2_progress', component: 'Progress', value: 72, max: 100 },
+
+    {
+      id: 'member_3', component: 'Card', title: 'Alex Kim', description: 'Full Stack',
+      children: ['m3_stats'],
+    },
+    {
+      id: 'm3_stats', component: 'Column', children: ['m3_row1', 'm3_progress'], gap: 'sm',
+    },
+    {
+      id: 'm3_row1', component: 'Row', children: ['m3_tasks', 'm3_pts'], justify: 'between',
+    },
+    { id: 'm3_tasks', component: 'Text', text: '5 tasks completed', variant: 'body' },
+    { id: 'm3_pts', component: 'Badge', text: '14 pts', variant: 'secondary' },
+    { id: 'm3_progress', component: 'Progress', value: 60, max: 100 },
+  ],
+)
+
+// ---------------------------------------------------------------------------
 // All demos indexed by name
 // ---------------------------------------------------------------------------
 
@@ -260,6 +492,7 @@ export const DEMO_SURFACES: Record<string, { label: string; surface: SurfaceStat
   email: { label: 'Email Dashboard', surface: EMAIL_DASHBOARD_SURFACE },
   analytics: { label: 'Sales Analytics', surface: ANALYTICS_SURFACE },
   scheduler: { label: 'Meeting Scheduler', surface: SCHEDULER_SURFACE },
+  project: { label: 'Project Overview', surface: PROJECT_OVERVIEW_SURFACE },
 }
 
 export function getAllDemoSurfaces(): Map<string, SurfaceState> {
