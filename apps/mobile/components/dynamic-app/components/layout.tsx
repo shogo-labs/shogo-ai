@@ -6,10 +6,14 @@
  */
 
 import React, { type ReactNode } from 'react'
-import { View, ScrollView } from 'react-native'
+import { View, ScrollView, Platform } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Text } from '@/components/ui/text'
 import { Card } from '@/components/ui/card'
+
+const CARD_SHADOW_STYLE = Platform.OS === 'web'
+  ? { boxShadow: '0 1px 3px 0 rgba(0,0,0,0.1), 0 1px 2px -1px rgba(0,0,0,0.1)' } as any
+  : {}
 
 const GAP_MAP: Record<string, string> = {
   none: 'gap-0',
@@ -89,14 +93,24 @@ interface GridProps {
   className?: string
 }
 
+const GAP_PX: Record<string, number> = {
+  none: 0,
+  xs: 4,
+  sm: 8,
+  md: 16,
+  lg: 24,
+  xl: 32,
+}
+
 export function DynGrid({ children, columns = 2, gap = 'md', className }: GridProps) {
   const cols = typeof columns === 'number' ? columns : 2
-  const basisPct = `${Math.floor(100 / cols)}%` as const
+  const gapPx = GAP_PX[gap] ?? 16
+  const totalGap = gapPx * (cols - 1)
 
   return (
-    <View className={cn('flex flex-row flex-wrap', GAP_MAP[gap] || 'gap-4', className)}>
+    <View className={cn('flex flex-row flex-wrap items-stretch', GAP_MAP[gap] || 'gap-4', className)}>
       {React.Children.map(children, (child) => (
-        <View style={{ flexBasis: basisPct, flexGrow: 0, flexShrink: 1 }}>
+        <View style={{ width: `calc(${100 / cols}% - ${totalGap / cols}px)` }} className="flex">
           {child}
         </View>
       ))}
@@ -114,16 +128,16 @@ interface CardProps {
 
 export function DynCard({ children, title, description, footer, className }: CardProps) {
   return (
-    <Card className={cn('p-0', className)}>
+    <Card variant="outline" className={cn('p-0 rounded-xl bg-card border-border flex-1', className)} style={CARD_SHADOW_STYLE}>
       {(title || description) && (
-        <View className="px-4 pt-4 pb-2">
+        <View className="px-6 pt-6 pb-2">
           {title && <Text className="text-lg font-semibold">{title}</Text>}
           {description && <Text className="text-sm text-muted-foreground">{description}</Text>}
         </View>
       )}
-      <View className="px-4 pb-4">{children}</View>
+      <View className="px-6 pb-6">{children}</View>
       {footer && (
-        <View className="px-4 pb-4 pt-0 border-t border-border">
+        <View className="px-6 pb-6 pt-0 border-t border-border">
           <Text className="text-sm text-muted-foreground pt-3">{footer}</Text>
         </View>
       )}

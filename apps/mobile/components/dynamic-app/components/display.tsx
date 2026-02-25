@@ -7,7 +7,7 @@
 import { View, Image as RNImage } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Text } from '@/components/ui/text'
-import { Badge, BadgeText } from '@/components/ui/badge'
+// Badge rendered with custom View+Text to avoid Gluestack's forced uppercase
 import { Alert, AlertText, AlertIcon } from '@/components/ui/alert'
 import { Progress, ProgressFilledTrack } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -60,11 +60,18 @@ export function DynText({ text = '', variant = 'body', align, color, weight, cla
   )
 }
 
-const BADGE_ACTION_MAP: Record<string, 'error' | 'warning' | 'success' | 'info' | 'muted'> = {
-  default: 'info',
-  secondary: 'muted',
-  destructive: 'error',
-  outline: 'muted',
+const BADGE_BG_MAP: Record<string, string> = {
+  default: 'bg-primary-100 border-primary-200',
+  secondary: 'bg-background-100 border-outline-200',
+  destructive: 'bg-error-100 border-error-200',
+  outline: 'border-outline-300 bg-transparent',
+}
+
+const BADGE_TEXT_MAP: Record<string, string> = {
+  default: 'text-primary-700',
+  secondary: 'text-typography-600',
+  destructive: 'text-error-700',
+  outline: 'text-typography-700',
 }
 
 interface BadgeProps {
@@ -75,13 +82,19 @@ interface BadgeProps {
 }
 
 export function DynBadge({ text, label, variant = 'default', className }: BadgeProps) {
-  const action = BADGE_ACTION_MAP[variant] || 'muted'
-  const badgeVariant = variant === 'outline' ? 'outline' : 'solid'
-
   return (
-    <Badge action={action} variant={badgeVariant} className={className}>
-      <BadgeText>{text || label}</BadgeText>
-    </Badge>
+    <View className={cn(
+      'flex-row items-center rounded-md px-2.5 py-0.5 border',
+      BADGE_BG_MAP[variant] || BADGE_BG_MAP.default,
+      className,
+    )}>
+      <Text className={cn(
+        'text-xs font-medium',
+        BADGE_TEXT_MAP[variant] || BADGE_TEXT_MAP.default,
+      )}>
+        {text || label}
+      </Text>
+    </View>
   )
 }
 

@@ -8,6 +8,7 @@ import { useState, useCallback } from 'react'
 import { View, Pressable, Linking } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Button, ButtonText } from '@/components/ui/button'
+
 import {
   Checkbox,
   CheckboxIndicator,
@@ -60,6 +61,24 @@ const BUTTON_SIZE_MAP: Record<string, 'xs' | 'sm' | 'md' | 'lg' | 'xl'> = {
   icon: 'sm',
 }
 
+const BUTTON_CLASS_OVERRIDES: Record<string, string> = {
+  default: 'bg-primary rounded-md',
+  secondary: 'bg-secondary rounded-md',
+  destructive: 'bg-destructive rounded-md',
+  outline: 'border-border rounded-md',
+  ghost: 'rounded-md',
+  link: '',
+}
+
+const BUTTON_TEXT_OVERRIDES: Record<string, string> = {
+  default: 'text-primary-foreground',
+  secondary: 'text-secondary-foreground',
+  destructive: 'text-destructive-foreground',
+  outline: 'text-foreground',
+  ghost: 'text-foreground',
+  link: 'text-primary',
+}
+
 interface DynButtonProps {
   label?: string
   text?: string
@@ -100,9 +119,11 @@ export function DynButton({ label, text, variant = 'default', size = 'default', 
       size={BUTTON_SIZE_MAP[size] || 'md'}
       isDisabled={disabled}
       onPress={handlePress}
-      className={className}
+      className={cn(BUTTON_CLASS_OVERRIDES[variant] || BUTTON_CLASS_OVERRIDES.default, className)}
     >
-      <ButtonText>{label || text || 'Button'}</ButtonText>
+      <ButtonText className={BUTTON_TEXT_OVERRIDES[variant] || BUTTON_TEXT_OVERRIDES.default}>
+        {label || text || 'Button'}
+      </ButtonText>
     </Button>
   )
 }
@@ -303,14 +324,14 @@ export function DynChoicePicker({ label, options = [], value, multiple, action, 
               className={cn(
                 'px-3 py-1.5 rounded-md border',
                 isSelected
-                  ? 'bg-primary-500 border-primary-500'
+                  ? 'bg-primary border-primary'
                   : 'bg-background-0 border-outline-300'
               )}
             >
               <Text
                 className={cn(
                   'text-sm',
-                  isSelected ? 'text-typography-0' : 'text-typography-900',
+                  isSelected ? 'text-primary-foreground' : 'text-foreground',
                 )}
               >
                 {opt.label}

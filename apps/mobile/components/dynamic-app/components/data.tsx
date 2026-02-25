@@ -6,11 +6,15 @@
  */
 
 import type { ReactNode } from 'react'
-import { View } from 'react-native'
+import { View, Platform } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Text } from '@/components/ui/text'
 import { Card } from '@/components/ui/card'
 import { TrendingUp, TrendingDown, Minus } from 'lucide-react-native'
+
+const CARD_SHADOW_STYLE = Platform.OS === 'web'
+  ? { boxShadow: '0 1px 3px 0 rgba(0,0,0,0.1), 0 1px 2px -1px rgba(0,0,0,0.1)' } as any
+  : {}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -41,7 +45,7 @@ export function DynMetric({ label, value, unit, trend, trendValue, description, 
   const TrendIcon = trend === 'up' ? TrendingUp : trend === 'down' ? TrendingDown : Minus
 
   return (
-    <Card className={cn('p-4 gap-2', className)}>
+    <Card variant="outline" className={cn('p-4 gap-2 rounded-xl bg-card border-border flex-1', className)} style={CARD_SHADOW_STYLE}>
       <View className="flex flex-row items-center justify-between">
         <Text className="text-sm font-medium text-muted-foreground">{label}</Text>
         {trend && (
