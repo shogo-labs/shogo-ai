@@ -11,6 +11,7 @@ import { View, Text, Image, Pressable, Linking } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import type { UIMessage } from "@ai-sdk/react"
 import { extractTextContent } from "@shogo/shared-app/chat"
+import { MarkdownText } from "../MarkdownText"
 
 export interface MessageContentProps {
   message: UIMessage
@@ -124,9 +125,12 @@ export function MessageContent({
   return (
     <View className={cn(baseClasses, "gap-2")}>
       {content ? (
-        <Text className="text-xs text-foreground" selectable>
+        <MarkdownText
+          className="text-xs text-foreground prose-sm"
+          isStreaming={isStreaming}
+        >
           {content}
-        </Text>
+        </MarkdownText>
       ) : null}
       {images.length > 0 && (
         <View className="flex-row flex-wrap gap-2">

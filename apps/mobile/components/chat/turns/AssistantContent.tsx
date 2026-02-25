@@ -16,6 +16,7 @@ import { ToolCallGroup } from "./ToolCallGroup"
 import type { MessagePart, GroupedMessagePart } from "./types"
 import { type ToolCallData, getToolCategory } from "../tools/types"
 import { useChatContextSafe } from "../ChatContext"
+import { MarkdownText } from "../MarkdownText"
 
 export interface AssistantContentProps {
   message: UIMessage
@@ -234,9 +235,12 @@ export function AssistantContent({
         if (part.type === "text") {
           return (
             <View key={part.id} className="px-3 py-1.5">
-              <Text className="text-foreground text-xs" selectable>
+              <MarkdownText
+                className="text-foreground text-xs prose-sm"
+                isStreaming={isStreaming}
+              >
                 {part.text}
-              </Text>
+              </MarkdownText>
             </View>
           )
         }

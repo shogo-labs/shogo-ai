@@ -8,6 +8,7 @@
 
 import { View, Text } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
+import { MarkdownText } from "./MarkdownText"
 
 export interface ChatMessageProps {
   message: {
@@ -36,14 +37,20 @@ export function ChatMessage({ message, isStreaming = false }: ChatMessageProps) 
             : "bg-gray-100 dark:bg-gray-800 mr-auto"
         )}
       >
-        <Text
-          className={cn(
-            "text-sm",
-            isUser ? "text-primary-foreground" : "text-foreground"
-          )}
-        >
-          {message.content}
-        </Text>
+        {isUser ? (
+          <Text
+            className={cn("text-sm text-primary-foreground")}
+          >
+            {message.content}
+          </Text>
+        ) : (
+          <MarkdownText
+            className="text-sm text-foreground prose-sm"
+            isStreaming={isStreaming}
+          >
+            {message.content}
+          </MarkdownText>
+        )}
 
         {isStreaming && !isUser && (
           <View
