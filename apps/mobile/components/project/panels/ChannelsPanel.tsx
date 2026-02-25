@@ -110,7 +110,7 @@ export function ChannelsPanel({ projectId, agentUrl, visible }: ChannelsPanelPro
                       key={i}
                       className="border border-border rounded-lg p-3 flex-row items-center gap-3"
                     >
-                      <Text className="text-lg">{meta.emoji}</Text>
+                      <Text className="text-lg text-foreground">{meta.emoji}</Text>
                       <View className="flex-1">
                         <Text className="text-sm font-medium text-foreground">{meta.name}</Text>
                         {ch.error && (
@@ -139,10 +139,10 @@ export function ChannelsPanel({ projectId, agentUrl, visible }: ChannelsPanelPro
                     key={type}
                     className="border border-dashed border-border rounded-lg p-3 flex-row items-center gap-3"
                   >
-                    <Text className="text-lg opacity-50">{meta.emoji}</Text>
+                    <Text className="text-lg text-foreground opacity-50">{meta.emoji}</Text>
                     <View className="flex-1">
                       <Text className="text-sm font-medium text-muted-foreground">{meta.name}</Text>
-                      <Text className="text-xs text-muted-foreground/70">
+                      <Text className="text-xs text-muted-foreground">
                         Not connected — ask the builder AI to set up
                       </Text>
                     </View>

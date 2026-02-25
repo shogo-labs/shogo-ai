@@ -182,7 +182,7 @@ export function MCPServersPanel({ projectId, agentUrl, visible }: MCPServersPane
                     }
                     className="px-3 py-2 flex-row items-center gap-2 active:bg-muted/50"
                   >
-                    <Text className="text-sm">{catMeta.icon}</Text>
+                    <Text className="text-sm text-foreground">{catMeta.icon}</Text>
                     <Text className="text-xs font-medium text-foreground flex-1">
                       {catMeta.label}
                     </Text>
@@ -213,7 +213,7 @@ export function MCPServersPanel({ projectId, agentUrl, visible }: MCPServersPane
                             className="border-b border-border last:border-b-0"
                           >
                             <View className="px-3 py-2.5 flex-row items-start gap-3">
-                              <Text className="text-lg mt-0.5">{entry.icon}</Text>
+                              <Text className="text-lg text-foreground mt-0.5">{entry.icon}</Text>
                               <View className="flex-1">
                                 <View className="flex-row items-center gap-2">
                                   <Text className="text-sm font-medium text-foreground">

@@ -1,5 +1,5 @@
 export { LogsPanel } from './LogsPanel'
-export { HeartbeatPanel } from './HeartbeatPanel'
+export { StatusPanel } from './StatusPanel'
 export { ChannelsPanel } from './ChannelsPanel'
 export { SkillsPanel } from './SkillsPanel'
 export { MCPServersPanel } from './MCPServersPanel'

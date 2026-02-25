@@ -12,7 +12,9 @@ import {
   DollarSign,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { API_URL } from '../../../lib/api'
+import { useDomainHttp } from '../../../contexts/domain'
+import { api } from '../../../lib/api'
+import type { HttpClient } from '@shogo-ai/sdk'
 
 type Period = '7d' | '30d' | '90d'
 
@@ -38,6 +40,7 @@ interface ChatData {
 }
 
 function useProjectAnalytics<T>(
+  http: HttpClient,
   projectId: string,
   endpoint: string,
   period: Period,
@@ -51,19 +54,14 @@ function useProjectAnalytics<T>(
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch(
-        `${API_URL}/api/projects/${projectId}/analytics/${endpoint}?period=${period}`,
-        { credentials: 'include' },
-      )
-      if (!res.ok) throw new Error('Failed to load analytics')
-      const json = await res.json()
-      setData(json.data || json)
+      const result = await api.getProjectAnalytics<T>(http, projectId, endpoint, period)
+      setData(result)
     } catch (err: any) {
       setError(err.message)
     } finally {
       setLoading(false)
     }
-  }, [projectId, endpoint, period])
+  }, [http, projectId, endpoint, period])
 
   useEffect(() => {
     if (visible) load()
@@ -79,11 +77,12 @@ interface AnalyticsPanelProps {
 }
 
 export function AnalyticsPanel({ projectId, agentUrl, visible }: AnalyticsPanelProps) {
+  const http = useDomainHttp()
   const [period, setPeriod] = useState<Period>('7d')
 
-  const overview = useProjectAnalytics<OverviewData>(projectId, 'overview', period, visible)
-  const usage = useProjectAnalytics<UsageData>(projectId, 'usage', period, visible)
-  const chat = useProjectAnalytics<ChatData>(projectId, 'chat', period, visible)
+  const overview = useProjectAnalytics<OverviewData>(http, projectId, 'overview', period, visible)
+  const usage = useProjectAnalytics<UsageData>(http, projectId, 'usage', period, visible)
+  const chat = useProjectAnalytics<ChatData>(http, projectId, 'chat', period, visible)
 
   const handleRefresh = () => {
     overview.reload()
@@ -283,7 +282,7 @@ export function AnalyticsPanel({ projectId, agentUrl, visible }: AnalyticsPanelP
           {/* Empty state */}
           {!isLoading && !hasError && overview.data?.messages === 0 && (
             <View className="items-center py-8">
-              <BarChart3 size={32} className="text-muted-foreground/30 mb-2" />
+              <BarChart3 size={32} className="text-muted-foreground mb-2" />
               <Text className="text-sm text-muted-foreground">No activity yet</Text>
               <Text className="text-xs text-muted-foreground mt-1">
                 Analytics will appear once the agent starts processing messages.

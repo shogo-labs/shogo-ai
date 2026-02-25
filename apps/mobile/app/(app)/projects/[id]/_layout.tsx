@@ -42,6 +42,15 @@ import { API_URL } from '../../../../lib/api'
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
 import { DynamicAppRenderer } from '../../../../components/dynamic-app/DynamicAppRenderer'
 import { ProjectTopBar } from '../../../../components/project/ProjectTopBar'
+import {
+  LogsPanel,
+  StatusPanel,
+  ChannelsPanel,
+  SkillsPanel,
+  MCPServersPanel,
+  WorkspacePanel,
+  AnalyticsPanel,
+} from '../../../../components/project/panels'
 
 type ActiveTab = 'chat' | 'canvas'
 
@@ -265,7 +274,21 @@ export default observer(function ProjectLayout() {
                 {chatPanel}
               </View>
             )}
-            <View className="flex-1">{canvasPanel}</View>
+            <View className="flex-1 relative">
+              <View
+                className="absolute inset-0"
+                style={previewTab !== 'dynamic-app' ? { display: 'none' } : undefined}
+              >
+                {canvasPanel}
+              </View>
+              <StatusPanel visible={previewTab === 'status'} projectId={projectId!} agentUrl={agentUrl} />
+              <WorkspacePanel visible={previewTab === 'workspace'} projectId={projectId!} agentUrl={agentUrl} />
+              <SkillsPanel visible={previewTab === 'skills'} projectId={projectId!} agentUrl={agentUrl} />
+              <MCPServersPanel visible={previewTab === 'mcp-servers'} projectId={projectId!} agentUrl={agentUrl} />
+              <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} />
+              <AnalyticsPanel visible={previewTab === 'analytics'} projectId={projectId!} agentUrl={agentUrl} />
+              <LogsPanel visible={previewTab === 'logs'} projectId={projectId!} agentUrl={agentUrl} />
+            </View>
           </View>
         </View>
       ) : (
@@ -274,13 +297,19 @@ export default observer(function ProjectLayout() {
             projectName={project.name}
             projectId={projectId!}
             activeTab={previewTab}
-            onTabChange={setPreviewTab}
+            onTabChange={(tabId) => {
+              setPreviewTab(tabId)
+              if (tabId !== 'dynamic-app') setActiveTab('canvas')
+            }}
           />
           <View className="flex-row border-b border-border">
             {(['chat', 'canvas'] as ActiveTab[]).map((tab) => (
               <Pressable
                 key={tab}
-                onPress={() => setActiveTab(tab)}
+                onPress={() => {
+                  setActiveTab(tab)
+                  if (tab === 'canvas') setPreviewTab('dynamic-app')
+                }}
                 className={cn(
                   'flex-1 py-3 items-center',
                   activeTab === tab && 'border-b-2 border-primary',
@@ -299,7 +328,21 @@ export default observer(function ProjectLayout() {
               </Pressable>
             ))}
           </View>
-          {activeTab === 'chat' ? chatPanel : canvasPanel}
+          {activeTab === 'chat' ? (
+            chatPanel
+          ) : previewTab === 'dynamic-app' ? (
+            canvasPanel
+          ) : (
+            <View className="flex-1 relative">
+              <StatusPanel visible={previewTab === 'status'} projectId={projectId!} agentUrl={agentUrl} />
+              <WorkspacePanel visible={previewTab === 'workspace'} projectId={projectId!} agentUrl={agentUrl} />
+              <SkillsPanel visible={previewTab === 'skills'} projectId={projectId!} agentUrl={agentUrl} />
+              <MCPServersPanel visible={previewTab === 'mcp-servers'} projectId={projectId!} agentUrl={agentUrl} />
+              <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} />
+              <AnalyticsPanel visible={previewTab === 'analytics'} projectId={projectId!} agentUrl={agentUrl} />
+              <LogsPanel visible={previewTab === 'logs'} projectId={projectId!} agentUrl={agentUrl} />
+            </View>
+          )}
         </View>
       )}
     </>

@@ -175,7 +175,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
               </View>
             ) : availableBundled.length === 0 ? (
               <View className="items-center py-8">
-                <BookOpen size={32} className="text-muted-foreground/50 mb-3" />
+                <BookOpen size={32} className="text-muted-foreground mb-3" />
                 <Text className="text-sm text-muted-foreground">No bundled skills available</Text>
               </View>
             ) : (
@@ -259,9 +259,9 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
           </View>
         ) : skills.length === 0 ? (
           <View className="items-center py-12">
-            <Zap size={32} className="text-muted-foreground/50 mb-3" />
+            <Zap size={32} className="text-muted-foreground mb-3" />
             <Text className="text-sm text-muted-foreground mb-1">No skills installed</Text>
-            <Text className="text-xs text-muted-foreground/70 mb-3">
+            <Text className="text-xs text-muted-foreground mb-3">
               Skills teach your agent specific behaviors triggered by keywords.
             </Text>
             <Pressable

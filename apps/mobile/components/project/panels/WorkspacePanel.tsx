@@ -121,21 +121,21 @@ export function WorkspacePanel({ projectId, agentUrl, visible }: WorkspacePanelP
               <View className="flex-row items-center gap-1.5">
                 <FileText
                   size={12}
-                  className={selectedFile === file.id ? 'text-primary' : 'text-muted-foreground'}
+                  className={selectedFile === file.id ? 'text-primary' : 'text-foreground'}
                 />
                 <Text
                   className={cn(
                     'text-xs',
                     selectedFile === file.id
                       ? 'text-primary font-medium'
-                      : 'text-muted-foreground',
+                      : 'text-foreground',
                   )}
                   numberOfLines={1}
                 >
                   {file.label}
                 </Text>
               </View>
-              <Text className="text-[10px] text-muted-foreground/70 ml-[18px]" numberOfLines={1}>
+              <Text className="text-[10px] text-muted-foreground ml-[18px]" numberOfLines={1}>
                 {file.description}
               </Text>
             </Pressable>

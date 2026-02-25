@@ -8,10 +8,10 @@ export const API_URL = Platform.select({
   default: 'http://localhost:8002',
 })
 
-// ─── Typed API helpers ──────────────────────────────────────
+// ─── Backend API helpers ────────────────────────────────────
 // For domain CRUD (projects, chat sessions, etc.) use `useDomainActions()`.
-// This `api` object is for non-domain endpoints (billing, etc.) that
-// aren't covered by the domain stores. They accept the SDK HttpClient
+// This `api` object is for non-domain endpoints (billing, analytics, etc.)
+// that aren't covered by the domain stores. They use the SDK HttpClient
 // available via `useDomainHttp()`.
 
 export interface CheckoutParams {
@@ -25,5 +25,18 @@ export const api = {
   async createCheckoutSession(http: HttpClient, params: CheckoutParams) {
     const res = await http.post<{ url?: string }>('/api/billing/checkout', params)
     return res.data
+  },
+
+  async getProjectAnalytics<T>(
+    http: HttpClient,
+    projectId: string,
+    endpoint: string,
+    period: string,
+  ): Promise<T> {
+    const res = await http.get<{ data: T }>(
+      `/api/projects/${projectId}/analytics/${endpoint}`,
+      { period },
+    )
+    return (res.data as any).data ?? res.data
   },
 }

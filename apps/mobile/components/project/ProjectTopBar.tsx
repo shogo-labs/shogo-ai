@@ -5,7 +5,7 @@
  *
  * Layout:
  *  - Left: Back button, project name + "Agent project" subtitle, chat history toggle, chat collapse toggle
- *  - Center: Tab buttons (Canvas, Workspace, Skills, MCP Servers, Heartbeat, Channels, Analytics, Logs)
+ *  - Center: Tab buttons (Canvas, Status, Workspace, Skills, MCP Servers, Channels, Analytics, Logs)
  *  - Right: GitHub icon, Upgrade button, Publish button
  */
 
@@ -25,10 +25,10 @@ import { cn } from '@shogo/shared-ui/primitives'
 
 const AGENT_TABS = [
   { id: 'dynamic-app', label: 'Canvas' },
+  { id: 'status', label: 'Status' },
   { id: 'workspace', label: 'Workspace' },
   { id: 'skills', label: 'Skills' },
   { id: 'mcp-servers', label: 'MCP Servers' },
-  { id: 'heartbeat', label: 'Heartbeat' },
   { id: 'channels', label: 'Channels' },
   { id: 'analytics', label: 'Analytics' },
   { id: 'logs', label: 'Logs' },
