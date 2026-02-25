@@ -11,7 +11,12 @@
     "build": "expo export --platform web",
     "typecheck": "tsc --noEmit",
     "ios": "expo run:ios",
-    "android": "expo run:android"
+    "android": "expo run:android",
+    "build:android:dev": "eas build --platform android --profile development",
+    "build:android": "eas build --platform android --profile preview",
+    "build:android:prod": "eas build --platform android --profile production",
+    "build:android:local": "eas build --platform android --profile preview --local",
+    "prebuild": "expo prebuild --clean"
   },
   "dependencies": {
     "@ai-sdk/react": "^3.0.99",
@@ -36,6 +41,7 @@
     "expo": "~54.0.0",
     "expo-clipboard": "~8.0.8",
     "expo-constants": "~18.0.0",
+    "expo-dev-client": "~6.0.20",
     "expo-haptics": "~15.0.0",
     "expo-linking": "~8.0.0",
     "expo-router": "~6.0.0",

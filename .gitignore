@@ -103,6 +103,7 @@ packages/agent-runtime/src/evals/dspy/__pycache__/
 packages/agent-runtime/src/evals/dspy/results/
 
 *.png
+!apps/mobile/assets/*.png
 tests/
 
 .dynamic-app-runtimes/
