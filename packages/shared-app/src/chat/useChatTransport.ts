@@ -18,12 +18,15 @@ export interface ChatTransportOptions {
   credentials?: RequestCredentials
   /** Custom fetch implementation (e.g., expo/fetch for React Native streaming) */
   fetch?: typeof globalThis.fetch
+  /** Extra headers to include with every request (e.g. Cookie for native auth) */
+  headers?: Record<string, string> | (() => Record<string, string>)
 }
 
 export interface ChatTransportConfig {
   api: string
   credentials?: RequestCredentials
   fetch?: typeof globalThis.fetch
+  headers?: Record<string, string> | (() => Record<string, string>)
 }
 
 /**
@@ -48,6 +51,7 @@ export function useChatTransportConfig({
   localAgentUrl,
   credentials,
   fetch: customFetch,
+  headers,
 }: ChatTransportOptions): ChatTransportConfig | undefined {
   return useMemo(() => {
     if (!projectId && !localAgentUrl) return undefined
@@ -56,6 +60,7 @@ export function useChatTransportConfig({
       api: buildChatApiUrl(apiBaseUrl, projectId, localAgentUrl),
       credentials,
       fetch: customFetch,
+      headers,
     }
-  }, [apiBaseUrl, projectId, localAgentUrl, credentials, customFetch])
+  }, [apiBaseUrl, projectId, localAgentUrl, credentials, customFetch, headers])
 }

@@ -773,10 +773,14 @@ const getAllowedOrigins = (): string[] => {
 const allowedOrigins = getAllowedOrigins()
 app.use('/*', cors({
   origin: (origin) => {
-    // Allow requests with no origin (like mobile apps or curl)
+    // Allow requests with no origin (mobile apps, curl, React Native on Android/iOS)
     if (!origin) return `http://localhost:${VITE_PORT}`
     // In dev mode, allow any localhost origin (for playwright, vite, etc.)
     if (process.env.NODE_ENV !== 'production' && origin?.startsWith('http://localhost:')) {
+      return origin
+    }
+    // Allow local network origins in dev (React Native on physical devices)
+    if (process.env.NODE_ENV !== 'production' && /^http:\/\/192\.168\.\d+\.\d+/.test(origin)) {
       return origin
     }
     // Check if origin is in allowed list

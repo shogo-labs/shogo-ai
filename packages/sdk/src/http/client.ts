@@ -31,6 +31,9 @@ export interface HttpClientConfig {
 
   /** Fetch credentials mode (default: 'same-origin'). Set to 'include' for cross-origin cookie auth. */
   credentials?: RequestCredentials
+
+  /** Function to get auth cookies for native apps (e.g. from expo-secure-store). When set, credentials is forced to 'omit'. */
+  getAuthCookie?: () => string | null
 }
 
 /**
@@ -49,6 +52,7 @@ export class HttpClient {
   private mcpSessionId: string | null = null
   private mcpInitPromise: Promise<void> | null = null
   private credentials: RequestCredentials
+  private getAuthCookie: (() => string | null) | null
 
   /** Request deduplication window in milliseconds */
   private dedupWindowMs: number
@@ -62,7 +66,8 @@ export class HttpClient {
     this.mcpPath = config.mcpPath ?? '/mcp'
     this.authPath = config.authPath ?? '/api/auth'
     this.dedupWindowMs = config.dedupWindowMs ?? 100
-    this.credentials = config.credentials ?? 'same-origin'
+    this.getAuthCookie = config.getAuthCookie ?? null
+    this.credentials = this.getAuthCookie ? 'omit' : (config.credentials ?? 'same-origin')
   }
 
   /**
@@ -97,6 +102,13 @@ export class HttpClient {
     const token = this.getToken()
     if (token) {
       headers['Authorization'] = `Bearer ${token}`
+    }
+
+    if (this.getAuthCookie) {
+      const cookie = this.getAuthCookie()
+      if (cookie) {
+        headers['Cookie'] = cookie
+      }
     }
 
     return headers

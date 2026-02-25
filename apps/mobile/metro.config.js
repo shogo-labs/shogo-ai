@@ -6,6 +6,7 @@ const config = getDefaultConfig(__dirname)
 
 const monorepoRoot = path.resolve(__dirname, '../..')
 
+config.resolver.unstable_enablePackageExports = true
 config.resolver.useWatchman = false
 config.resolver.blockList = [
   new RegExp(path.resolve(monorepoRoot, 'packages/sdk/examples').replace(/[/\\]/g, '[/\\\\]') + '.*'),
@@ -23,6 +24,8 @@ const SINGLETON_PACKAGES = [
   'mobx',
   'mobx-react-lite',
   'mobx-state-tree',
+  'react-native-css-interop',
+  'nativewind',
 ]
 
 const singletonPaths = {}

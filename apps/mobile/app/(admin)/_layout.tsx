@@ -5,12 +5,13 @@
  */
 
 import { useState, useEffect } from 'react'
-import { View, Text, ActivityIndicator } from 'react-native'
+import { View, Text, ActivityIndicator, Platform } from 'react-native'
 import { Stack, useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { Shield } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
 import { API_URL } from '../../lib/api'
+import { authClient } from '../../lib/auth-client'
 
 type UserRole = 'user' | 'super_admin'
 
@@ -25,7 +26,10 @@ function useAdminCheck() {
       return
     }
     let cancelled = false
-    fetch(`${API_URL}/api/me`, { credentials: 'include' })
+    const fetchOpts: RequestInit = Platform.OS === 'web'
+      ? { credentials: 'include' }
+      : { credentials: 'omit', headers: { ...(((authClient as any).getCookie?.()) ? { Cookie: (authClient as any).getCookie() } : {}) } }
+    fetch(`${API_URL}/api/me`, fetchOpts)
       .then((res) => res.json())
       .then((data: any) => {
         if (!cancelled && data.ok && data.data?.role) {

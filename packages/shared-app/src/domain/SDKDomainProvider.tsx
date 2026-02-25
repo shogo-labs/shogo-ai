@@ -20,7 +20,12 @@ let moduleStore: IDomainStore | null = null
 let moduleFacades: SDKDomainFacades | null = null
 let moduleUserId: string | null = null
 
-function getOrCreateStore(apiBaseUrl: string, userId: string | null, credentials?: RequestCredentials): {
+function getOrCreateStore(
+  apiBaseUrl: string,
+  userId: string | null,
+  credentials?: RequestCredentials,
+  getAuthCookie?: () => string | null,
+): {
   http: HttpClient
   store: IDomainStore
   facades: SDKDomainFacades
@@ -41,6 +46,7 @@ function getOrCreateStore(apiBaseUrl: string, userId: string | null, credentials
     baseUrl: apiBaseUrl,
     getToken: () => null,
     credentials,
+    getAuthCookie,
   })
 
   const env: ISDKEnvironment = {
@@ -98,14 +104,16 @@ export interface SDKDomainProviderProps {
   userId: string | null
   /** Fetch credentials mode. Set to 'include' for cross-origin cookie auth (mobile). */
   credentials?: RequestCredentials
+  /** Function to get auth cookies for native apps (e.g. from expo-secure-store via Better Auth). */
+  getAuthCookie?: () => string | null
   children: ReactNode
 }
 
-export function SDKDomainProvider({ apiBaseUrl, userId, credentials, children }: SDKDomainProviderProps) {
+export function SDKDomainProvider({ apiBaseUrl, userId, credentials, getAuthCookie, children }: SDKDomainProviderProps) {
   const [isReady, setIsReady] = useState(false)
   const prevUserIdRef = useRef<string | null | undefined>(undefined)
 
-  const { http, store, facades } = getOrCreateStore(apiBaseUrl, userId, credentials)
+  const { http, store, facades } = getOrCreateStore(apiBaseUrl, userId, credentials, getAuthCookie)
 
   useEffect(() => {
     if (prevUserIdRef.current !== undefined && prevUserIdRef.current !== userId) {

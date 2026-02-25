@@ -36,6 +36,7 @@ import {
   useAgentUrl,
 } from '@shogo/shared-app/dynamic-app'
 import type { IDomainStore } from '@shogo/domain-stores'
+import { Platform } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../../../contexts/auth'
 import { API_URL } from '../../../../lib/api'
@@ -91,7 +92,7 @@ export default observer(function ProjectLayout() {
   const isAgentProject = project?.type === 'AGENT'
 
   // Dynamic app canvas (agent projects)
-  const { agentUrl } = useAgentUrl(API_URL!, projectId, { credentials: 'include' })
+  const { agentUrl } = useAgentUrl(API_URL!, projectId, { credentials: Platform.OS === 'web' ? 'include' : 'omit' })
   const { surfaces, connected, dispatchAction, updateLocalData } = useDynamicAppStream(agentUrl)
   const activeSurface = surfaces.size > 0 ? Array.from(surfaces.values())[0] : null
 

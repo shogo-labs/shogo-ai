@@ -9,7 +9,6 @@ module.exports = {
     '../../packages/shared-app/src/**/*.{ts,tsx}',
   ],
   presets: [require('nativewind/preset')],
-  important: 'html',
   safelist: [
     {
       pattern:

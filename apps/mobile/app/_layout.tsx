@@ -3,15 +3,16 @@ import '../global.css'
 
 import { Stack } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
-import { useColorScheme } from 'react-native'
-import { GluestackUIProvider } from '@/components/ui/gluestack-ui-provider'
+import { useColorScheme, View } from 'react-native'
+import { config } from '@/components/ui/gluestack-ui-provider/config'
 import { AuthProvider } from '../contexts/auth'
 
 export default function RootLayout() {
   const colorScheme = useColorScheme()
+  const mode = colorScheme === 'dark' ? 'dark' : 'light'
 
   return (
-    <GluestackUIProvider mode={colorScheme === 'dark' ? 'dark' : 'light'}>
+    <View style={[config[mode], { flex: 1 }]}>
       <AuthProvider>
         <StatusBar style="auto" />
         <Stack screenOptions={{ headerShown: false, lazy: true }}>
@@ -21,6 +22,6 @@ export default function RootLayout() {
           <Stack.Screen name="(admin)" />
         </Stack>
       </AuthProvider>
-    </GluestackUIProvider>
+    </View>
   )
 }
