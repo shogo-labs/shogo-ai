@@ -315,6 +315,7 @@ export default observer(function StarredProjectsPage() {
         </View>
       ) : viewMode === 'grid' ? (
         <FlatList
+          key="grid-2"
           data={filteredProjects}
           keyExtractor={(item: any) => item.id}
           numColumns={2}
@@ -323,6 +324,7 @@ export default observer(function StarredProjectsPage() {
         />
       ) : (
         <FlatList
+          key="list-1"
           data={filteredProjects}
           keyExtractor={(item: any) => item.id}
           renderItem={renderListItem}
