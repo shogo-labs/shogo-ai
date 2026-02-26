@@ -93,6 +93,19 @@ export default observer(function ProjectLayout() {
 
   const isAgentProject = project?.type === 'AGENT'
 
+  const allProjects = useMemo(() => {
+    try {
+      const items = projects?.all ?? []
+      return items.map((p: any) => ({
+        id: p.id,
+        name: p.name || 'Untitled',
+        type: p.type || 'APP',
+      }))
+    } catch {
+      return []
+    }
+  }, [projects?.all])
+
   // Dynamic app canvas (agent projects)
   const { agentUrl } = useAgentUrl(API_URL!, projectId, { credentials: 'include' })
   const { surfaces, connected, dispatchAction, updateLocalData } = useDynamicAppStream(agentUrl)
@@ -122,6 +135,7 @@ export default observer(function ProjectLayout() {
 
       try {
         await store.workspaceCollection.loadAll({ userId: user!.id })
+        store.projectCollection.loadAll().catch(() => {})
         const proj = await store.projectCollection.loadById(projectId)
 
         if (cancelled) return
@@ -336,6 +350,8 @@ export default observer(function ProjectLayout() {
           <ProjectTopBar
             projectName={project.name}
             projectId={projectId!}
+            projectType={project.type}
+            projects={allProjects}
             showChatSessions={showChatSessions}
             isChatCollapsed={chatCollapsed}
             onChatSessionsToggle={() => setShowChatSessions((s) => !s)}
@@ -384,6 +400,8 @@ export default observer(function ProjectLayout() {
           <ProjectTopBar
             projectName={project.name}
             projectId={projectId!}
+            projectType={project.type}
+            projects={allProjects}
             activeTab={previewTab}
             onTabChange={(tabId) => {
               setPreviewTab(tabId)
