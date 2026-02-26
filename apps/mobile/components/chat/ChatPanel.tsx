@@ -651,12 +651,18 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [])
 
+  const expoFetch = useMemo(() => {
+    if (Platform.OS === 'web') return undefined
+    return require('expo/fetch').fetch as typeof globalThis.fetch
+  }, [])
+
   const transportConfig = useChatTransportConfig({
     apiBaseUrl: API_URL!,
     projectId,
     localAgentUrl,
     credentials: Platform.OS === 'web' ? 'include' : 'omit',
     headers: nativeHeaders,
+    fetch: expoFetch,
   })
   const chatTransport = useMemo(
     () => (transportConfig ? new DefaultChatTransport(transportConfig) : undefined),
