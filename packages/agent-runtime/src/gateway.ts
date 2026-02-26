@@ -129,16 +129,24 @@ Then follow ALL steps below:
   Hook actions: recompute (auto-update aggregates), validate (reject bad input), cascade-delete (remove children), transform (normalize fields), log (audit trail).
   → ALWAYS register recompute hooks when Metrics show aggregates. Without hooks, metrics stay stale after mutations.
 
-**Step 4: canvas_update** — Build the UI with DataList + form + mutation buttons
+**Step 4: canvas_update** — Build a polished UI with visual hierarchy
+  Note: Root Column auto-gets gap "lg", Separators auto-inject between form and data sections, numbers/dates auto-format, Metric trends auto-infer from trendValue signs.
   canvas_update({ surfaceId: "my_app", components: [
-    { id: "root", component: "Column", children: ["header", "add_section", "task_list"], gap: "md", padding: "4" },
-    { id: "header", component: "Text", text: "My Tasks", variant: "h3" },
-    { id: "add_section", component: "Card", child: "add_form", title: "Add Task" },
+    { id: "root", component: "Column", children: ["header_row", "metrics", "add_card", "list_card"] },
+    { id: "header_row", component: "Row", children: ["title", "status_badge"], align: "center", justify: "between" },
+    { id: "title", component: "Text", text: "My Tasks", variant: "h2" },
+    { id: "status_badge", component: "Badge", text: "Active", variant: "outline" },
+    { id: "metrics", component: "Grid", columns: 3, children: ["m_total", "m_done", "m_pending"] },
+    { id: "m_total", component: "Metric", label: "Total Tasks", value: { path: "/summary/total" }, trendValue: "+3 this week" },
+    { id: "m_done", component: "Metric", label: "Completed", value: { path: "/summary/done" }, trendValue: "+2" },
+    { id: "m_pending", component: "Metric", label: "Pending", value: { path: "/summary/pending" }, trendValue: "-1" },
+    { id: "add_card", component: "Card", child: "add_form", title: "Add Task", description: "Create a new task" },
     { id: "add_form", component: "Row", children: ["add_input", "add_btn"], gap: "sm", align: "end" },
     { id: "add_input", component: "TextField", placeholder: "Task title...", dataPath: "/newTaskTitle" },
     { id: "add_btn", component: "Button", label: "Add Task",
       action: { name: "add", mutation: { endpoint: "/api/tasks", method: "POST",
         body: { title: { path: "/newTaskTitle" } } } } },
+    { id: "list_card", component: "Card", child: "task_list", title: "All Tasks", description: "Manage your task list" },
     { id: "task_list", component: "DataList",
       children: { path: "/tasks", templateId: "task_card" }, emptyText: "No tasks yet" },
     { id: "task_card", component: "Card", child: "task_row" },
@@ -281,6 +289,48 @@ Tabs require EITHER explicit tab definitions OR TabPanel children with \`title\`
 - **canvas_action_wait** — Pause and wait for a REAL USER to click. Only use when you need the human to interact — never for self-testing.
 - **canvas_delete** — Remove a surface (AVOID using this — prefer canvas_update to fix issues)
 - **canvas_components** — Discover components and their props
+
+### Visual Quality & Layout
+
+The renderer auto-formats numbers (commas, compact notation), currency ($ prefix), dates (ISO → "Feb 26, 2026"), auto-infers Metric trend direction from trendValue strings, auto-wraps naked DataList/Table in Cards, auto-injects Separators between form and data sections, and defaults root Column gap to "lg". You do NOT need to manually format values, add Separators, or wrap DataList/Table in Cards — the renderer handles this.
+
+**What YOU must provide (the renderer cannot infer these):**
+
+**Component Richness:**
+- Dashboard/analytics → 12-20 components (Grid of Metrics + Charts + Tables)
+- CRUD apps → 10-18 components (Metrics + Form Card + DataList)
+- If your canvas has fewer than 8 components, it probably needs more structure
+
+**Mandatory Patterns:**
+- **Dashboard/analytics request**: Grid of 3-4 Metric components with \`trendValue\` (e.g. "+12%"), at least one Chart, Card-wrapped data sections
+- **CRUD app request**: Metric summary row, Card-wrapped form section with title, DataList
+- **Kanban/board request**: Metric summary row (counts per column), Card-wrapped columns in a Grid, inner Cards for each item
+- **Any request with data**: Header Row with title (variant "h2") + context Badge (justify: "between")
+
+**Metric trendValue format:** Use strings starting with "+" or "-" (e.g. "+12%", "-$48", "+3 this week"). The renderer auto-infers trend direction from the sign — no need to set \`trend: "up"\` manually.
+
+**Data Richness:**
+- Seed 4-6 realistic records with plausible names, amounts, and dates
+- Raw numbers and ISO dates are fine — the renderer formats them automatically
+- Charts need at least 5-6 data points with descriptive labels
+
+**Reference Layout — CRUD App:**
+\`\`\`
+Root Column
+  → Row: title (h2) + Badge (justify: between)
+  → Grid (columns: 3): Metric + Metric + Metric (with trendValues)
+  → Card (title: "Add Item"): form Row with inputs + Button
+  → Card (title: "Items"): DataList with template Cards
+\`\`\`
+
+**Reference Layout — Dashboard:**
+\`\`\`
+Root Column
+  → Row: title (h2) + Badge (justify: between)
+  → Grid (columns: 3-4): Metric cards with trendValues
+  → Grid (columns: 2): Card(Chart) + Card(Chart or Table)
+  → Card (title: "Details"): Table
+\`\`\`
 
 ### Rules
 - **ALWAYS plan before building.** Write a brief plan (data model, layout, actions, tests) before calling any canvas tools. This prevents costly mistakes and rebuilds.

@@ -91,7 +91,7 @@ const popoverArrowStyle = tva({
 });
 
 const popoverBackdropStyle = tva({
-  base: 'absolute left-0 top-0 right-0 bottom-0 web:cursor-default',
+  base: 'absolute left-0 top-0 right-0 bottom-0 web:cursor-default web:pointer-events-auto',
 });
 
 const popoverCloseButtonStyle = tva({
@@ -99,7 +99,7 @@ const popoverCloseButtonStyle = tva({
 });
 
 const popoverContentStyle = tva({
-  base: 'bg-background-0 rounded-lg overflow-hidden border border-outline-100 w-full',
+  base: 'bg-card rounded-lg overflow-hidden border border-border w-full shadow-lg',
   parentVariants: {
     size: {
       xs: 'max-w-[360px] p-3.5',
@@ -171,7 +171,7 @@ const Popover = React.forwardRef<
 const PopoverContent = React.forwardRef<
   React.ComponentRef<typeof UIPopover.Content>,
   IPopoverContentProps
->(function PopoverContent({ className, size, ...props }, ref) {
+>(function PopoverContent({ className, size, children, ...props }, ref) {
   const { size: parentSize } = useStyleContext(SCOPE);
 
   return (
@@ -189,15 +189,20 @@ const PopoverContent = React.forwardRef<
         },
       }}
       {...props}
-      className={popoverContentStyle({
-        parentVariants: {
-          size: parentSize,
-        },
-        size,
-        class: className,
-      })}
       pointerEvents="auto"
-    />
+    >
+      <View
+        className={popoverContentStyle({
+          parentVariants: {
+            size: parentSize,
+          },
+          size,
+          class: className,
+        })}
+      >
+        {children}
+      </View>
+    </UIPopover.Content>
   );
 });
 
@@ -229,6 +234,15 @@ const PopoverArrow = React.forwardRef<
   );
 });
 
+const backdropPositionStyle = {
+  position: 'absolute' as const,
+  top: 0,
+  left: 0,
+  right: 0,
+  bottom: 0,
+  pointerEvents: 'auto' as const,
+};
+
 const PopoverBackdrop = React.forwardRef<
   React.ComponentRef<typeof UIPopover.Backdrop>,
   IPopoverBackdropProps
@@ -237,6 +251,7 @@ const PopoverBackdrop = React.forwardRef<
     <UIPopover.Backdrop
       ref={ref}
       {...props}
+      style={backdropPositionStyle}
       initial={{
         opacity: 0,
       }}

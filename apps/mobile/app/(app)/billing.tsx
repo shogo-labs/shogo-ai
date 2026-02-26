@@ -214,6 +214,7 @@ export default observer(function BillingPage() {
   const [selectedProTier, setSelectedProTier] = useState(0)
   const [selectedBusinessTier, setSelectedBusinessTier] = useState(4)
   const [isCheckoutLoading, setIsCheckoutLoading] = useState(false)
+  const [isPortalLoading, setIsPortalLoading] = useState(false)
 
   const creditsTotal = getTotalCreditsForPlan(subscription?.planId)
   const creditsRemaining = effectiveBalance?.total ?? creditsTotal
@@ -249,6 +250,26 @@ export default observer(function BillingPage() {
       setIsCheckoutLoading(false)
     }
   }, [http, currentWorkspace?.id, billingInterval, user?.email])
+
+  const handleManageSubscription = useCallback(async () => {
+    if (!currentWorkspace?.id) return
+    setIsPortalLoading(true)
+    try {
+      const returnUrl = Platform.OS === 'web' ? window.location.href : undefined
+      const data = await api.createPortalSession(http, currentWorkspace.id, returnUrl)
+      if (data.url) {
+        if (Platform.OS === 'web') {
+          window.location.href = data.url
+        } else {
+          Linking.openURL(data.url)
+        }
+      }
+    } catch (e) {
+      console.warn('Portal session failed:', e)
+    } finally {
+      setIsPortalLoading(false)
+    }
+  }, [http, currentWorkspace?.id])
 
   if (isAuthLoading || isBillingLoading) {
     return (
@@ -326,9 +347,16 @@ export default observer(function BillingPage() {
                 </Text>
               </View>
             </View>
-            <Button variant="outline" size="sm">
-              Manage
-            </Button>
+            {subscription && (
+              <Button
+                variant="outline"
+                size="sm"
+                onPress={handleManageSubscription}
+                disabled={isPortalLoading}
+              >
+                {isPortalLoading ? 'Loading...' : 'Manage'}
+              </Button>
+            )}
           </View>
         </CardContent>
       </Card>

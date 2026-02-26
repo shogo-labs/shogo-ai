@@ -7,13 +7,14 @@
  */
 
 import { useState, useCallback } from 'react'
-import { View, Pressable, ScrollView, Platform } from 'react-native'
+import { View, Pressable, ScrollView } from 'react-native'
 import { useColorScheme } from 'nativewind'
 import { Text } from '@/components/ui/text'
 import { MultiSurfaceRenderer } from './DynamicAppRenderer'
 import { DEMO_SURFACES, getAllDemoSurfaces } from './demo-surfaces'
 import type { SurfaceState } from './types'
 import { Moon, Sun } from 'lucide-react-native'
+import { useTheme } from '../../contexts/theme'
 
 export function DynamicAppDevPreview() {
   const [activeSurface, setActiveSurface] = useState<Map<string, SurfaceState>>(
@@ -25,19 +26,13 @@ export function DynamicAppDevPreview() {
     }
   )
   const [activeKey, setActiveKey] = useState<string>(Object.keys(DEMO_SURFACES)[0])
-  const { colorScheme, setColorScheme } = useColorScheme()
+  const { colorScheme } = useColorScheme()
+  const { theme, setTheme } = useTheme()
   const isDark = colorScheme === 'dark'
 
   const toggleTheme = useCallback(() => {
-    const next = isDark ? 'light' : 'dark'
-    setColorScheme(next)
-    if (Platform.OS === 'web' && typeof document !== 'undefined') {
-      document.documentElement.classList.toggle('dark', next === 'dark')
-      document.documentElement.classList.toggle('light', next === 'light')
-      document.documentElement.style.colorScheme = next
-      localStorage.setItem('theme', next)
-    }
-  }, [isDark, setColorScheme])
+    setTheme(isDark ? 'light' : 'dark')
+  }, [isDark, setTheme])
 
   const selectDemo = useCallback((key: string) => {
     if (key === 'all') {

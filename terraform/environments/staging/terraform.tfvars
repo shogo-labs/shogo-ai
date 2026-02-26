@@ -13,8 +13,8 @@ vpc_cidr = "10.1.0.0/16"
 # EKS Configuration (smaller than production)
 eks_cluster_version         = "1.33"
 node_instance_types         = ["t3.xlarge"] # 58 pod limit per node, 16GB RAM
-node_desired_size           = 2             # Need 2 nodes for system + app pods
-node_min_size               = 2             # Keep 2 minimum to avoid scheduling issues
+node_desired_size           = 1             # Baseline node for system services; Karpenter handles overflow
+node_min_size               = 1             # Single always-on node; Karpenter scales workload nodes as needed
 node_max_size               = 15
 enable_secondary_node_group = false # Disabled - was duplicate of main nodegroup, wasting vCPU quota
 

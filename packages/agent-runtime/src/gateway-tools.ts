@@ -8,13 +8,14 @@
  * ToolContext, since Pi's execute() signature doesn't accept external context.
  */
 
-import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync } from 'fs'
-import { join, resolve } from 'path'
+import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, statSync } from 'fs'
+import { join, resolve, extname } from 'path'
 import { execSync } from 'child_process'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec } from './sandbox-exec'
 import { MemorySearchEngine } from './memory-search'
+import { FileIndexEngine } from './file-index-engine'
 import { MCP_CATALOG } from './mcp-catalog'
 import { getDynamicAppManager, getByPointer } from './dynamic-app-manager'
 import {
@@ -39,6 +40,8 @@ export interface ToolContext {
   mcpClientManager?: import('./mcp-client').MCPClientManager
   /** Hot-connect a channel at runtime (called by channel_connect tool) */
   connectChannel?: (type: string, config: Record<string, string>) => Promise<void>
+  /** Lazily-initialized file index engine for RAG over workspace files */
+  fileIndexEngine?: FileIndexEngine
 }
 
 const BLOCKED_COMMANDS = [
@@ -1552,20 +1555,43 @@ function resolveButtonMutation(
 }
 
 /**
+ * Collect all Button action names on a surface (for error messages).
+ */
+function listButtonActionNames(surface: { components: Map<string, any> }): string[] {
+  const names: string[] = []
+  for (const [, comp] of surface.components) {
+    if (comp.component !== 'Button') continue
+    const action = comp.action as Record<string, unknown> | undefined
+    if (action?.name) names.push(String(action.name))
+  }
+  return names
+}
+
+/**
  * Find the Button component on a surface whose action.name matches.
+ * Tries exact match first, then case-insensitive, then substring containment.
  */
 function findButtonByActionName(
   surface: { components: Map<string, any> },
   actionName: string,
 ): { id: string; action: Record<string, unknown> } | null {
+  const normalized = actionName.toLowerCase().replace(/[-_\s]/g, '')
+  let fuzzyMatch: { id: string; action: Record<string, unknown> } | null = null
+
   for (const [, comp] of surface.components) {
     if (comp.component !== 'Button') continue
     const action = comp.action as Record<string, unknown> | undefined
-    if (action && action.name === actionName) {
-      return { id: comp.id, action }
+    if (!action?.name) continue
+    const btnName = String(action.name)
+    if (btnName === actionName) return { id: comp.id, action }
+    if (!fuzzyMatch) {
+      const btnNormalized = btnName.toLowerCase().replace(/[-_\s]/g, '')
+      if (btnNormalized === normalized || btnNormalized.includes(normalized) || normalized.includes(btnNormalized)) {
+        fuzzyMatch = { id: comp.id, action }
+      }
     }
   }
-  return null
+  return fuzzyMatch
 }
 
 function createCanvasTriggerActionTool(): AgentTool {
@@ -1612,14 +1638,18 @@ This tool performs real verification: it finds the button, resolves its mutation
         })
         const updatedSurface = manager.getSurface(surfaceId)
         const dataKeys = updatedSurface ? Object.keys(updatedSurface.dataModel) : []
+        const availableActions = listButtonActionNames(surface)
         return textResult({
           ok: false,
           surfaceId,
           actionName,
           resolvedFromButton: false,
           dataKeys,
+          availableActions,
           error: `No Button with action.name "${actionName}" found in the component tree. Cannot verify this action.`,
-          message: `No button named "${actionName}" exists on surface "${surfaceId}". Check the actionName matches a Button's action.name exactly.`,
+          message: availableActions.length > 0
+            ? `No button named "${actionName}" exists on surface "${surfaceId}". Available button actions: [${availableActions.join(', ')}]. Retry with one of these exact names.`
+            : `No button named "${actionName}" exists on surface "${surfaceId}". No buttons with action.name were found on this surface.`,
         })
       }
 
@@ -2183,6 +2213,7 @@ function createMcpListInstalledTool(ctx: ToolContext): AgentTool {
 export const TOOL_GROUP_MAP: Record<string, string[]> = {
   shell: ['exec'],
   filesystem: ['read_file', 'write_file'],
+  files: ['list_files', 'delete_file', 'search_files', 'read_file', 'write_file'],
   web_fetch: ['web_fetch'],
   web_search: ['web_search', 'web_fetch'],
   browser: [
@@ -2202,6 +2233,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
 
 export const ALL_TOOL_NAMES = [
   'exec', 'read_file', 'write_file', 'web_fetch', 'web_search', 'browser',
+  'list_files', 'delete_file', 'search_files',
   'memory_read', 'memory_write', 'memory_search', 'send_message', 'channel_connect', 'cron',
   'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_action_wait', 'canvas_components',
   'canvas_trigger_action', 'canvas_inspect',
@@ -2227,6 +2259,139 @@ export function resolveToolNames(refs: string[]): string[] {
     }
   }
   return [...resolved]
+}
+
+// ---------------------------------------------------------------------------
+// File Management Tools (files/ directory with RAG search)
+// ---------------------------------------------------------------------------
+
+function getOrCreateFileIndex(ctx: ToolContext): FileIndexEngine {
+  if (!ctx.fileIndexEngine) {
+    ctx.fileIndexEngine = new FileIndexEngine(ctx.workspaceDir)
+  }
+  return ctx.fileIndexEngine
+}
+
+function createListFilesTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'list_files',
+    description:
+      'List files and directories in the workspace files/ directory. ' +
+      'Supports recursive listing and returns file metadata.',
+    label: 'List Files',
+    parameters: Type.Object({
+      path: Type.Optional(Type.String({ description: 'Subdirectory path within files/ (default: root)' })),
+      recursive: Type.Optional(Type.Boolean({ description: 'List recursively (default: false)' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { path: subPath = '', recursive = false } = params as { path?: string; recursive?: boolean }
+      const filesDir = join(ctx.workspaceDir, 'files')
+      mkdirSync(filesDir, { recursive: true })
+
+      const targetDir = subPath ? join(filesDir, subPath) : filesDir
+      const resolved = resolve(targetDir)
+      if (!resolved.startsWith(resolve(filesDir))) {
+        return textResult({ error: 'Path outside files directory' })
+      }
+      if (!existsSync(resolved)) {
+        return textResult({ error: `Directory not found: ${subPath || '/'}` })
+      }
+
+      const entries = listDirEntries(resolved, resolve(filesDir), recursive)
+      return textResult({ path: subPath || '/', entries, count: entries.length })
+    },
+  }
+}
+
+function listDirEntries(dir: string, rootDir: string, recursive: boolean): any[] {
+  const results: any[] = []
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name.startsWith('.')) continue
+    const absPath = join(dir, entry.name)
+    const relPath = absPath.slice(rootDir.length + 1)
+    const stat = statSync(absPath)
+
+    if (entry.isDirectory()) {
+      results.push({
+        name: entry.name,
+        path: relPath,
+        type: 'directory',
+        modified: stat.mtimeMs,
+      })
+      if (recursive) {
+        results.push(...listDirEntries(absPath, rootDir, true))
+      }
+    } else {
+      results.push({
+        name: entry.name,
+        path: relPath,
+        type: 'file',
+        size: stat.size,
+        modified: stat.mtimeMs,
+      })
+    }
+  }
+  return results
+}
+
+function createDeleteFileTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'delete_file',
+    description: 'Delete a file from the workspace files/ directory.',
+    label: 'Delete File',
+    parameters: Type.Object({
+      path: Type.String({ description: 'File path relative to files/' }),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { path: filePath } = params as { path: string }
+      const filesDir = join(ctx.workspaceDir, 'files')
+      const resolved = resolve(filesDir, filePath)
+
+      if (!resolved.startsWith(resolve(filesDir))) {
+        return textResult({ error: 'Path outside files directory' })
+      }
+      if (!existsSync(resolved)) {
+        return textResult({ error: `File not found: ${filePath}` })
+      }
+
+      unlinkSync(resolved)
+      return textResult({ ok: true, deleted: filePath })
+    },
+  }
+}
+
+function createSearchFilesTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'search_files',
+    description:
+      'Search across all indexed files in files/ using hybrid keyword + semantic search. ' +
+      'Supports .txt, .csv, and .md files. Returns relevant text chunks ranked by relevance.',
+    label: 'Search Files',
+    parameters: Type.Object({
+      query: Type.String({ description: 'Search query (natural language or keywords)' }),
+      limit: Type.Optional(Type.Number({ description: 'Max results (default: 10)' })),
+      path_filter: Type.Optional(Type.String({ description: 'Filter to files matching this substring' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { query, limit = 10, path_filter } = params as {
+        query: string; limit?: number; path_filter?: string
+      }
+      const engine = getOrCreateFileIndex(ctx)
+      const results = await engine.search(query, limit, path_filter)
+      return textResult({
+        query,
+        results: results.map(r => ({
+          path: r.path,
+          chunk: r.chunk,
+          score: Math.round(r.score * 1000) / 1000,
+          lines: `${r.lineStart}-${r.lineEnd}`,
+          matchType: r.matchType,
+        })),
+        count: results.length,
+        stats: engine.getStats(),
+      })
+    },
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2321,6 +2486,9 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createExecTool(ctx),
     createReadFileTool(ctx),
     createWriteFileTool(ctx),
+    createListFilesTool(ctx),
+    createDeleteFileTool(ctx),
+    createSearchFilesTool(ctx),
     createWebFetchTool(),
     createWebSearchTool(),
     createBrowserTool(ctx),

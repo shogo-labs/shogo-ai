@@ -3,18 +3,25 @@ import '../global.css'
 
 import { Stack } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
-import { useColorScheme, View } from 'react-native'
-import { config } from '@/components/ui/gluestack-ui-provider/config'
+import { useColorScheme } from 'react-native'
+import { GluestackUIProvider } from '@/components/ui/gluestack-ui-provider'
 import { AuthProvider } from '../contexts/auth'
+import { ThemeProvider, useTheme } from '../contexts/theme'
 
-export default function RootLayout() {
-  const colorScheme = useColorScheme()
-  const mode = colorScheme === 'dark' ? 'dark' : 'light'
+function RootLayoutInner() {
+  const systemColorScheme = useColorScheme()
+  const { theme, isLoaded } = useTheme()
+
+  const resolvedMode = theme === 'system'
+    ? (systemColorScheme === 'dark' ? 'dark' : 'light')
+    : theme
+
+  if (!isLoaded) return null
 
   return (
-    <View style={[config[mode], { flex: 1 }]}>
+    <GluestackUIProvider mode={resolvedMode}>
       <AuthProvider>
-        <StatusBar style="auto" />
+        <StatusBar style={resolvedMode === 'dark' ? 'light' : 'dark'} />
         <Stack screenOptions={{ headerShown: false, lazy: true }}>
           <Stack.Screen name="index" />
           <Stack.Screen name="(auth)" />
@@ -22,6 +29,14 @@ export default function RootLayout() {
           <Stack.Screen name="(admin)" />
         </Stack>
       </AuthProvider>
-    </View>
+    </GluestackUIProvider>
+  )
+}
+
+export default function RootLayout() {
+  return (
+    <ThemeProvider>
+      <RootLayoutInner />
+    </ThemeProvider>
   )
 }

@@ -44,6 +44,8 @@
     "mobile:web": "cd apps/mobile && npx expo start --web",
     "docs:dev": "bun run --cwd apps/docs dev",
     "docs:build": "bun run --cwd apps/docs build",
+    "test:e2e:staging": "npx playwright test --config e2e/playwright.config.ts",
+    "test:e2e:staging:ui": "npx playwright test --config e2e/playwright.config.ts --ui",
     "postinstall": "[ -f scripts/patch-claude-sdk.ts ] && bun scripts/patch-claude-sdk.ts || true"
   },
   "devDependencies": {

@@ -38,6 +38,7 @@ import {
 import type { IDomainStore } from '@shogo/domain-stores'
 import { Platform } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { useBillingData } from '@shogo/shared-app/hooks'
 import { useAuth } from '../../../../contexts/auth'
 import { API_URL } from '../../../../lib/api'
 import { consumePendingImageData } from '../../../../lib/pending-image-store'
@@ -52,6 +53,7 @@ import {
   SkillsPanel,
   MCPServersPanel,
   WorkspacePanel,
+  FilesBrowserPanel,
   AnalyticsPanel,
 } from '../../../../components/project/panels'
 
@@ -93,6 +95,8 @@ export default observer(function ProjectLayout() {
   const [isLoading, setIsLoading] = useState(true)
 
   const isAgentProject = project?.type === 'AGENT'
+
+  const billingData = useBillingData(project?.workspaceId)
 
   const allProjects = useMemo(() => {
     try {
@@ -328,6 +332,7 @@ export default observer(function ProjectLayout() {
       projectType={isAgentProject ? 'AGENT' : 'APP'}
       initialMessage={capturedInitialMessage}
       initialImageData={capturedInitialImageData}
+      billingData={billingData}
       className="flex-1"
     />
   )
@@ -359,6 +364,7 @@ export default observer(function ProjectLayout() {
             onChatCollapseToggle={() => setChatCollapsed((c) => !c)}
             activeTab={previewTab}
             onTabChange={setPreviewTab}
+            hasActiveSubscription={billingData.hasActiveSubscription}
           />
           <View className="flex-1 flex-row">
             {!chatCollapsed && (
@@ -387,6 +393,7 @@ export default observer(function ProjectLayout() {
                 {canvasPanel}
               </View>
               <StatusPanel visible={previewTab === 'status'} projectId={projectId!} agentUrl={agentUrl} />
+              <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
               <WorkspacePanel visible={previewTab === 'workspace'} projectId={projectId!} agentUrl={agentUrl} />
               <SkillsPanel visible={previewTab === 'skills'} projectId={projectId!} agentUrl={agentUrl} />
               <MCPServersPanel visible={previewTab === 'mcp-servers'} projectId={projectId!} agentUrl={agentUrl} />
@@ -404,6 +411,7 @@ export default observer(function ProjectLayout() {
             projectType={project.type}
             projects={allProjects}
             activeTab={previewTab}
+            hasActiveSubscription={billingData.hasActiveSubscription}
             onTabChange={(tabId) => {
               setPreviewTab(tabId)
               if (tabId !== 'dynamic-app') setActiveTab('canvas')
@@ -442,6 +450,7 @@ export default observer(function ProjectLayout() {
           ) : (
             <View className="flex-1 relative">
               <StatusPanel visible={previewTab === 'status'} projectId={projectId!} agentUrl={agentUrl} />
+              <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
               <WorkspacePanel visible={previewTab === 'workspace'} projectId={projectId!} agentUrl={agentUrl} />
               <SkillsPanel visible={previewTab === 'skills'} projectId={projectId!} agentUrl={agentUrl} />
               <MCPServersPanel visible={previewTab === 'mcp-servers'} projectId={projectId!} agentUrl={agentUrl} />
