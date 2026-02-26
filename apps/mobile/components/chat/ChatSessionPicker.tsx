@@ -166,9 +166,11 @@ export function ChatSessionPicker({
                 </Text>
               </View>
             </View>
-            <Text className="text-xs text-gray-400 mt-0.5">
-              {session.messageCount} messages
-            </Text>
+            {session.messageCount >= 0 && (
+              <Text className="text-xs text-gray-400 mt-0.5">
+                {session.messageCount} message{session.messageCount !== 1 ? 's' : ''}
+              </Text>
+            )}
           </>
         )}
       </Pressable>

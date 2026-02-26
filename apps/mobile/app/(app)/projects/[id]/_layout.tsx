@@ -13,7 +13,7 @@
  * - AsyncStorage for chat session persistence instead of localStorage
  */
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   View,
   Text,
@@ -39,7 +39,9 @@ import type { IDomainStore } from '@shogo/domain-stores'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../../../contexts/auth'
 import { API_URL } from '../../../../lib/api'
+import { consumePendingImageData } from '../../../../lib/pending-image-store'
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
+import { ChatSessionPicker, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
 import { DynamicAppRenderer } from '../../../../components/dynamic-app/DynamicAppRenderer'
 import { ProjectTopBar } from '../../../../components/project/ProjectTopBar'
 import {
@@ -73,8 +75,9 @@ export default observer(function ProjectLayout() {
   const actions = useDomainActions()
   const projects = useProjectCollection()
 
-  // Capture initialMessage once so it doesn't re-fire on re-renders
+  // Capture initialMessage and imageData once so they don't re-fire on re-renders
   const [capturedInitialMessage] = useState(() => params.initialMessage ?? undefined)
+  const [capturedInitialImageData] = useState(() => consumePendingImageData())
 
   // Tab state for narrow screens
   const [activeTab, setActiveTab] = useState<ActiveTab>('chat')
@@ -89,6 +92,19 @@ export default observer(function ProjectLayout() {
   const [isLoading, setIsLoading] = useState(true)
 
   const isAgentProject = project?.type === 'AGENT'
+
+  const allProjects = useMemo(() => {
+    try {
+      const items = projects?.all ?? []
+      return items.map((p: any) => ({
+        id: p.id,
+        name: p.name || 'Untitled',
+        type: p.type || 'APP',
+      }))
+    } catch {
+      return []
+    }
+  }, [projects?.all])
 
   // Dynamic app canvas (agent projects)
   const { agentUrl } = useAgentUrl(API_URL!, projectId, { credentials: 'include' })
@@ -119,6 +135,7 @@ export default observer(function ProjectLayout() {
 
       try {
         await store.workspaceCollection.loadAll({ userId: user!.id })
+        store.projectCollection.loadAll().catch(() => {})
         const proj = await store.projectCollection.loadById(projectId)
 
         if (cancelled) return
@@ -213,6 +230,77 @@ export default observer(function ProjectLayout() {
   const [showChatSessions, setShowChatSessions] = useState(false)
   const [previewTab, setPreviewTab] = useState('dynamic-app')
 
+  const [sessionNames, setSessionNames] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    if (!showChatSessions || !store?.chatSessionCollection || !store?.chatMessageCollection) return
+
+    const sessions = store.chatSessionCollection.all.filter((s: any) => s.contextId === projectId)
+
+    const loadNames = async () => {
+      const names: Record<string, string> = {}
+      await Promise.all(
+        sessions.map(async (s: any) => {
+          const sessionName = s.name || s.inferredName || ''
+          const isGenericName = !sessionName || sessionName.startsWith('Chat ') || sessionName.startsWith('Chat -')
+
+          if (!isGenericName) {
+            names[s.id] = sessionName
+            return
+          }
+
+          try {
+            await store.chatMessageCollection.loadAll({ sessionId: s.id })
+            const msgs = store.chatMessageCollection.all
+              .filter((m: any) => m.sessionId === s.id && m.role === 'user')
+              .sort((a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0))
+            const preview = msgs[0]?.content?.trim()
+            names[s.id] = preview
+              ? (preview.length > 40 ? preview.slice(0, 40) + '…' : preview)
+              : `Chat · ${new Date(s.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+          } catch {
+            names[s.id] = `Chat · ${new Date(s.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+          }
+        })
+      )
+      setSessionNames(names)
+    }
+
+    loadNames()
+  }, [showChatSessions, store, projectId])
+
+  const chatSessions: ChatSession[] = useMemo(() => {
+    if (!store?.chatSessionCollection) return []
+    try {
+      return store.chatSessionCollection.all
+        .filter((s: any) => s.contextId === projectId)
+        .map((s: any) => ({
+          id: s.id,
+          name: sessionNames[s.id] || s.name || s.inferredName || `Chat · ${new Date(s.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`,
+          messageCount: -1,
+          updatedAt: s.lastActiveAt || s.updatedAt || s.createdAt || Date.now(),
+        }))
+        .sort((a: ChatSession, b: ChatSession) => b.updatedAt - a.updatedAt)
+    } catch {
+      return []
+    }
+  }, [store?.chatSessionCollection?.all, sessionNames, projectId])
+
+  const handleCreateNewSession = useCallback(async () => {
+    try {
+      const newSession = await actions.createChatSession({
+        inferredName: `Chat ${new Date().toLocaleDateString()}`,
+        contextType: 'project',
+        contextId: projectId!,
+      })
+      if (newSession?.id) {
+        setChatSessionId(newSession.id)
+      }
+    } catch (err) {
+      console.error('[ProjectLayout] Failed to create chat session:', err)
+    }
+  }, [actions, projectId])
+
   // Loading state
   if (isLoading || !project) {
     return (
@@ -238,6 +326,7 @@ export default observer(function ProjectLayout() {
       projectId={projectId}
       projectType={isAgentProject ? 'AGENT' : 'APP'}
       initialMessage={capturedInitialMessage}
+      initialImageData={capturedInitialImageData}
       className="flex-1"
     />
   )
@@ -261,6 +350,8 @@ export default observer(function ProjectLayout() {
           <ProjectTopBar
             projectName={project.name}
             projectId={projectId!}
+            projectType={project.type}
+            projects={allProjects}
             showChatSessions={showChatSessions}
             isChatCollapsed={chatCollapsed}
             onChatSessionsToggle={() => setShowChatSessions((s) => !s)}
@@ -271,6 +362,19 @@ export default observer(function ProjectLayout() {
           <View className="flex-1 flex-row">
             {!chatCollapsed && (
               <View style={{ width: CHAT_PANEL_WIDTH }} className="border-r border-border">
+                {showChatSessions && (
+                  <View className="border-b border-border">
+                    <ChatSessionPicker
+                      sessions={chatSessions}
+                      currentSessionId={chatSessionId ?? undefined}
+                      onSelect={(sessionId) => {
+                        setChatSessionId(sessionId)
+                        setShowChatSessions(false)
+                      }}
+                      onCreate={handleCreateNewSession}
+                    />
+                  </View>
+                )}
                 {chatPanel}
               </View>
             )}
@@ -296,6 +400,8 @@ export default observer(function ProjectLayout() {
           <ProjectTopBar
             projectName={project.name}
             projectId={projectId!}
+            projectType={project.type}
+            projects={allProjects}
             activeTab={previewTab}
             onTabChange={(tabId) => {
               setPreviewTab(tabId)

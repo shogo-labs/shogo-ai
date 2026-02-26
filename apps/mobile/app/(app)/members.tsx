@@ -438,48 +438,16 @@ function MembersTab({
     })
   }
 
+  const [roleChangeModal, setRoleChangeModal] = useState<{ member: Member; roles: string[] } | null>(null)
+  const [removeModal, setRemoveModal] = useState<Member | null>(null)
+
   const handleChangeRole = (member: Member) => {
     const roles = getAvailableRoles(member)
-    Alert.alert(
-      'Change Role',
-      `Select a new role for this member`,
-      [
-        ...roles.map((role) => ({
-          text: role.charAt(0).toUpperCase() + role.slice(1),
-          onPress: async () => {
-            try {
-              await actions.updateMemberRole(member.id, role as any, currentUserId)
-              loadMembers()
-            } catch (err) {
-              Alert.alert('Error', 'Failed to update role')
-            }
-          },
-        })),
-        { text: 'Cancel', style: 'cancel' as const },
-      ]
-    )
+    setRoleChangeModal({ member, roles })
   }
 
   const handleRemove = (member: Member) => {
-    Alert.alert(
-      'Remove Member',
-      'Are you sure you want to remove this member? This action cannot be undone.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Remove',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await actions.removeMember(member.id, currentUserId)
-              loadMembers()
-            } catch {
-              Alert.alert('Error', 'Failed to remove member')
-            }
-          },
-        },
-      ]
-    )
+    setRemoveModal(member)
   }
 
   if (isLoading) {
@@ -508,19 +476,112 @@ function MembersTab({
   }
 
   return (
-    <FlatList
-      data={orgMembers}
-      keyExtractor={(item) => item.id}
-      renderItem={({ item }) => (
-        <MemberRow
-          member={item}
-          isCurrentUser={item.userId === currentUserId}
-          canManage={canManageMembers && canManageMember(item)}
-          onChangeRole={() => handleChangeRole(item)}
-          onRemove={() => handleRemove(item)}
-        />
-      )}
-    />
+    <>
+      <FlatList
+        data={orgMembers}
+        keyExtractor={(item) => item.id}
+        renderItem={({ item }) => (
+          <MemberRow
+            member={item}
+            isCurrentUser={item.userId === currentUserId}
+            canManage={canManageMembers && canManageMember(item)}
+            onChangeRole={() => handleChangeRole(item)}
+            onRemove={() => handleRemove(item)}
+          />
+        )}
+      />
+
+      {/* Role Change Modal */}
+      <Modal
+        visible={!!roleChangeModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setRoleChangeModal(null)}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 justify-end"
+          onPress={() => setRoleChangeModal(null)}
+        >
+          <View className="bg-background rounded-t-2xl p-4 pb-8">
+            <Text className="text-foreground text-lg font-semibold mb-3">Change Role</Text>
+            {roleChangeModal?.roles.map((role) => (
+              <Pressable
+                key={role}
+                onPress={async () => {
+                  try {
+                    await actions.updateMemberRole(roleChangeModal.member.id, role as any, currentUserId)
+                    loadMembers()
+                  } catch {
+                    Alert.alert('Error', 'Failed to update role')
+                  }
+                  setRoleChangeModal(null)
+                }}
+                className={cn(
+                  'py-3 px-4 rounded-lg mb-1',
+                  roleChangeModal.member.role === role && 'bg-primary/10'
+                )}
+              >
+                <Text className={cn(
+                  'text-sm capitalize',
+                  roleChangeModal.member.role === role ? 'text-primary font-medium' : 'text-foreground'
+                )}>
+                  {role}
+                </Text>
+              </Pressable>
+            ))}
+            <Pressable
+              onPress={() => setRoleChangeModal(null)}
+              className="py-3 px-4 rounded-lg mt-1"
+            >
+              <Text className="text-sm text-muted-foreground">Cancel</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
+
+      {/* Remove Member Modal */}
+      <Modal
+        visible={!!removeModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setRemoveModal(null)}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 items-center justify-center px-6"
+          onPress={() => setRemoveModal(null)}
+        >
+          <Pressable className="bg-background rounded-xl p-6 w-full max-w-sm gap-4" onPress={(e) => e.stopPropagation()}>
+            <Text className="text-lg font-semibold text-foreground">Remove Member</Text>
+            <Text className="text-sm text-muted-foreground">
+              Are you sure you want to remove this member? This action cannot be undone.
+            </Text>
+            <View className="flex-row gap-2 justify-end">
+              <Pressable
+                onPress={() => setRemoveModal(null)}
+                className="px-4 py-2 rounded-md border border-border"
+              >
+                <Text className="text-sm text-foreground">Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={async () => {
+                  if (!removeModal) return
+                  try {
+                    await actions.removeMember(removeModal.id, currentUserId)
+                    loadMembers()
+                  } catch {
+                    Alert.alert('Error', 'Failed to remove member')
+                  }
+                  setRemoveModal(null)
+                }}
+                className="px-4 py-2 rounded-md bg-destructive"
+              >
+                <Text className="text-sm text-destructive-foreground">Remove</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+    </>
   )
 }
 
@@ -557,26 +618,10 @@ function PendingTab({ orgId }: { orgId: string }) {
     [invitations.all, orgId]
   )
 
+  const [cancelModal, setCancelModal] = useState<Invitation | null>(null)
+
   const handleCancel = (inv: Invitation) => {
-    Alert.alert(
-      'Cancel Invitation',
-      `Cancel the invitation for ${inv.email}?`,
-      [
-        { text: 'Keep', style: 'cancel' },
-        {
-          text: 'Cancel Invitation',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await actions.cancelInvitation(inv.id)
-              loadInvitations()
-            } catch {
-              Alert.alert('Error', 'Failed to cancel invitation')
-            }
-          },
-        },
-      ]
-    )
+    setCancelModal(inv)
   }
 
   if (isLoading) {
@@ -601,58 +646,103 @@ function PendingTab({ orgId }: { orgId: string }) {
   }
 
   return (
-    <FlatList
-      data={pending}
-      keyExtractor={(item) => item.id}
-      contentContainerClassName="p-4 gap-3"
-      renderItem={({ item }) => {
-        const isExpired = Date.now() > item.expiresAt
-        return (
-          <View
-            className={cn(
-              'p-4 rounded-lg border border-border',
-              isExpired ? 'bg-muted/50 opacity-75' : 'bg-card'
-            )}
-          >
-            <View className="flex-row items-center justify-between">
-              <View className="flex-1 mr-3">
-                <View className="flex-row items-center gap-2 flex-wrap">
-                  <Text
-                    className={cn(
-                      'text-foreground font-medium',
-                      isExpired && 'line-through text-muted-foreground'
-                    )}
-                  >
-                    {item.email}
-                  </Text>
-                  <View className="bg-secondary px-2 py-0.5 rounded-full">
-                    <Text className="text-secondary-foreground text-xs capitalize">
-                      {item.role}
+    <>
+      <FlatList
+        data={pending}
+        keyExtractor={(item) => item.id}
+        contentContainerClassName="p-4 gap-3"
+        renderItem={({ item }) => {
+          const isExpired = Date.now() > item.expiresAt
+          return (
+            <View
+              className={cn(
+                'p-4 rounded-lg border border-border',
+                isExpired ? 'bg-muted/50 opacity-75' : 'bg-card'
+              )}
+            >
+              <View className="flex-row items-center justify-between">
+                <View className="flex-1 mr-3">
+                  <View className="flex-row items-center gap-2 flex-wrap">
+                    <Text
+                      className={cn(
+                        'text-foreground font-medium',
+                        isExpired && 'line-through text-muted-foreground'
+                      )}
+                    >
+                      {item.email}
                     </Text>
-                  </View>
-                  {isExpired && (
-                    <View className="bg-destructive px-2 py-0.5 rounded-full">
-                      <Text className="text-destructive-foreground text-xs">Expired</Text>
+                    <View className="bg-secondary px-2 py-0.5 rounded-full">
+                      <Text className="text-secondary-foreground text-xs capitalize">
+                        {item.role}
+                      </Text>
                     </View>
-                  )}
+                    {isExpired && (
+                      <View className="bg-destructive px-2 py-0.5 rounded-full">
+                        <Text className="text-destructive-foreground text-xs">Expired</Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text className="text-muted-foreground text-sm mt-1">
+                    Sent {formatRelativeTime(item.createdAt)}
+                    {!isExpired && ` · Expires ${formatRelativeTime(item.expiresAt)}`}
+                  </Text>
                 </View>
-                <Text className="text-muted-foreground text-sm mt-1">
-                  Sent {formatRelativeTime(item.createdAt)}
-                  {!isExpired && ` · Expires ${formatRelativeTime(item.expiresAt)}`}
-                </Text>
+                <Pressable
+                  onPress={() => handleCancel(item)}
+                  className="flex-row items-center px-3 py-1.5 rounded-lg border border-border active:bg-muted"
+                >
+                  <X size={14} className="text-muted-foreground mr-1" />
+                  <Text className="text-muted-foreground text-sm">Cancel</Text>
+                </Pressable>
               </View>
+            </View>
+          )
+        }}
+      />
+
+      {/* Cancel Invitation Modal */}
+      <Modal
+        visible={!!cancelModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCancelModal(null)}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 items-center justify-center px-6"
+          onPress={() => setCancelModal(null)}
+        >
+          <Pressable className="bg-background rounded-xl p-6 w-full max-w-sm gap-4" onPress={(e) => e.stopPropagation()}>
+            <Text className="text-lg font-semibold text-foreground">Cancel Invitation</Text>
+            <Text className="text-sm text-muted-foreground">
+              Cancel the invitation for {cancelModal?.email}?
+            </Text>
+            <View className="flex-row gap-2 justify-end">
               <Pressable
-                onPress={() => handleCancel(item)}
-                className="flex-row items-center px-3 py-1.5 rounded-lg"
+                onPress={() => setCancelModal(null)}
+                className="px-4 py-2 rounded-md border border-border"
               >
-                <X size={14} className="text-muted-foreground mr-1" />
-                <Text className="text-muted-foreground text-sm">Cancel</Text>
+                <Text className="text-sm text-foreground">Keep</Text>
+              </Pressable>
+              <Pressable
+                onPress={async () => {
+                  if (!cancelModal) return
+                  try {
+                    await actions.cancelInvitation(cancelModal.id)
+                    loadInvitations()
+                  } catch {
+                    Alert.alert('Error', 'Failed to cancel invitation')
+                  }
+                  setCancelModal(null)
+                }}
+                className="px-4 py-2 rounded-md bg-destructive"
+              >
+                <Text className="text-sm text-destructive-foreground">Cancel Invitation</Text>
               </Pressable>
             </View>
-          </View>
-        )
-      }}
-    />
+          </Pressable>
+        </Pressable>
+      </Modal>
+    </>
   )
 }
 
