@@ -1292,6 +1292,11 @@ export class AgentGateway {
         adapter = new WebhookAdapter()
         break
       }
+      case 'teams': {
+        const { TeamsAdapter } = await import('./channels/teams')
+        adapter = new TeamsAdapter(config)
+        break
+      }
       default:
         throw new Error(`Unknown channel type: ${type}`)
     }

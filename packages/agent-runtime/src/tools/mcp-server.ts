@@ -365,10 +365,10 @@ defineTool({
   inputSchema: {
     type: 'object',
     properties: {
-      type: { type: 'string', enum: ['telegram', 'discord', 'email', 'whatsapp', 'slack', 'webhook'], description: 'Channel type' },
+      type: { type: 'string', enum: ['telegram', 'discord', 'email', 'whatsapp', 'slack', 'webhook', 'teams'], description: 'Channel type' },
       config: {
         type: 'object',
-        description: 'Channel configuration. Telegram: { botToken }. Discord: { botToken, guildId? }. Email: { imapHost, smtpHost, username, password }. WhatsApp: { accessToken, phoneNumberId, verifyToken? }. Slack: { botToken, appToken }. Webhook: { secret? }',
+        description: 'Channel configuration. Telegram: { botToken }. Discord: { botToken, guildId? }. Email: { imapHost, smtpHost, username, password }. WhatsApp: { accessToken, phoneNumberId, verifyToken? }. Slack: { botToken, appToken }. Webhook: { secret? }. Teams: { appId, appPassword, botName? }',
       },
     },
     required: ['type', 'config'],

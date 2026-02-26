@@ -255,6 +255,7 @@ Channels connect the agent to messaging platforms. Currently supported:
 - **Slack** — Bot token + app token
 - **WhatsApp** — Cloud API access token + phone number ID
 - **Webhook / HTTP** — Easiest to set up, no external accounts needed. Connect any app via Zapier, Make, n8n, or direct HTTP POST.
+- **Microsoft Teams** — Azure Bot app ID + app password
 
 ### Telegram Setup
 1. Create a bot via Telegram's @BotFather
@@ -288,7 +289,14 @@ The simplest channel — no external accounts needed. Just provide an optional s
    - Header: \`Authorization: Bearer your-shared-secret\`
    - Body: \`{ "message": "...", "channelId": "default", "mode": "sync" }\`
 3. The agent processes the message and replies synchronously or asynchronously
-4. Great for integrating with Zapier, Make, n8n, or any HTTP-capable service`
+4. Great for integrating with Zapier, Make, n8n, or any HTTP-capable service
+
+### Microsoft Teams Setup
+1. Register a bot in the Azure Portal → Azure Bot Service
+2. Note the **Microsoft App ID** and create a **client secret** (App Password)
+3. Set the messaging endpoint to: \`<agent-url>/agent/channels/teams/messages\`
+4. Use \`channel_connect({ type: "teams", config: { appId: "...", appPassword: "...", botName: "My Agent" } })\`
+5. Install the bot in your Teams workspace via the Teams Admin Center or a Teams App manifest`
 
 export const MEMORY_GUIDE = `## Memory System
 

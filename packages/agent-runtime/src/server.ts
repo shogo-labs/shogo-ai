@@ -262,6 +262,14 @@ app.post('/agent/channels/connect', async (c) => {
   }
 })
 
+// Register Microsoft Teams messaging endpoint
+import('./channels/teams').then(({ TeamsAdapter }) => {
+  TeamsAdapter.registerRoutes(app, () => {
+    if (!agentGateway) return undefined
+    return agentGateway.getChannel('teams') as any
+  })
+}).catch(() => { /* Teams adapter not available */ })
+
 // Health check
 app.get('/health', (c) =>
   c.json({

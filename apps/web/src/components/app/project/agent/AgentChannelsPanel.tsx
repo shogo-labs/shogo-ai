@@ -85,6 +85,11 @@ const CHANNEL_INFO: Record<string, { name: string; icon: string; setupUrl: strin
     setupUrl: '',
     description: 'Connect any app via Zapier, Make, n8n, or direct HTTP',
   },
+  teams: {
+    name: 'Microsoft Teams',
+    icon: '🟦',
+    setupUrl: 'https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade',
+  },
 }
 
 function timeAgo(isoString: string): string {
@@ -523,7 +528,7 @@ export function AgentChannelsPanel({ projectId, visible, agentUrl }: AgentChanne
             </div>
 
             <div className="text-xs text-muted-foreground mt-4">
-              Use the builder AI chat to connect channels. For example: &quot;Connect my Telegram bot&quot;, &quot;Set up Discord&quot;, &quot;Connect WhatsApp&quot;, &quot;Add Slack&quot;, or &quot;Set up a webhook channel.&quot;
+              Use the builder AI chat to connect channels. For example: &quot;Connect my Telegram bot&quot;, &quot;Set up Discord&quot;, &quot;Connect WhatsApp&quot;, &quot;Add Slack&quot;, or &quot;Set up a webhook channel&quot;, or &quot;Set up Microsoft Teams&quot;.
             </div>
           </div>
         )}

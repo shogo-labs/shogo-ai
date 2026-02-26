@@ -46,6 +46,11 @@ const CHANNEL_META: Record<string, { name: string; emoji: string; setupUrl: stri
     emoji: '🔗',
     setupUrl: '',
   },
+  teams: {
+    name: 'Microsoft Teams',
+    emoji: '🟦',
+    setupUrl: 'https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade',
+  },
 }
 
 export function ChannelsPanel({ projectId, agentUrl, visible }: ChannelsPanelProps) {
@@ -164,7 +169,7 @@ export function ChannelsPanel({ projectId, agentUrl, visible }: ChannelsPanelPro
 
             <Text className="text-xs text-muted-foreground mt-2">
               Use the builder AI chat to connect channels. For example: "Connect my Telegram
-              bot", "Set up Discord", "Connect WhatsApp", "Add Slack", or "Set up a webhook channel".
+              bot", "Set up Discord", "Connect WhatsApp", "Add Slack", "Set up a webhook channel", or "Set up Microsoft Teams".
             </Text>
           </View>
         )}

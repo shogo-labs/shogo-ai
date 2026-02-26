@@ -2136,7 +2136,8 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
           'For telegram: { botToken: "..." }. For discord: { botToken: "...", guildId: "..." }. ' +
           'For email: { imapHost, smtpHost, username, password }. ' +
           'For slack: { botToken: "xoxb-...", appToken: "xapp-..." }. ' +
-          'For whatsapp: { accessToken, phoneNumberId, verifyToken }.',
+          'For whatsapp: { accessToken, phoneNumberId, verifyToken }. ' +
+          'For teams: { appId, appPassword, botName? }.',
       }),
     }),
     execute: async (_toolCallId, params) => {
@@ -2145,7 +2146,7 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
         config: Record<string, string>
       }
 
-      const validTypes = ['telegram', 'discord', 'email', 'slack', 'whatsapp', 'webhook']
+      const validTypes = ['telegram', 'discord', 'email', 'slack', 'whatsapp', 'webhook', 'teams']
       if (!validTypes.includes(type)) {
         return textResult({ error: `Invalid channel type: ${type}. Must be one of: ${validTypes.join(', ')}` })
       }
