@@ -99,6 +99,15 @@ export class DiscordAdapter implements ChannelAdapter {
     }
   }
 
+  async sendTyping(channelId: string): Promise<void> {
+    if (!this.botToken) return
+
+    await fetch(`${DISCORD_API}/channels/${channelId}/typing`, {
+      method: 'POST',
+      headers: { Authorization: `Bot ${this.botToken}` },
+    }).catch(() => {})
+  }
+
   onMessage(handler: (msg: IncomingMessage) => void): void {
     this.messageHandler = handler
   }
@@ -189,7 +198,7 @@ export class DiscordAdapter implements ChannelAdapter {
         op: 2,
         d: {
           token: this.botToken,
-          intents: 1 << 9 | 1 << 15, // GUILD_MESSAGES | MESSAGE_CONTENT
+          intents: (1 << 9) | (1 << 12) | (1 << 15), // GUILD_MESSAGES | DIRECT_MESSAGES | MESSAGE_CONTENT
           properties: {
             os: 'linux',
             browser: 'shogo-agent',
@@ -233,9 +242,22 @@ export class DiscordAdapter implements ChannelAdapter {
         // If guildId is set, only process messages from that guild
         if (this.guildId && data.guild_id !== this.guildId) return
 
-        if (this.messageHandler && data.content) {
+        // In guild channels, only respond when @mentioned (DMs always pass)
+        const isDM = !data.guild_id
+        const isMentioned = Array.isArray(data.mentions) &&
+          data.mentions.some((m: any) => m.id === this.botUserId)
+        if (!isDM && !isMentioned) return
+
+        // Strip the @mention from the message text so the agent gets clean input
+        let text = data.content || ''
+        if (isMentioned) {
+          text = text.replace(new RegExp(`<@!?${this.botUserId}>`, 'g'), '').trim()
+        }
+        if (!text) return
+
+        if (this.messageHandler) {
           this.messageHandler({
-            text: data.content,
+            text,
             channelId: data.channel_id,
             channelType: 'discord',
             senderId: data.author.id,
