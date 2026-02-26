@@ -22,6 +22,7 @@ import { isApiBinding, getByPointer } from '@shogo/shared-app/dynamic-app'
 import { useApiDataSource, type ApiDataSourceResult } from '@shogo/shared-app/dynamic-app'
 import { resolveValue, sanitizeForRender, RESERVED_KEYS } from '@shogo/shared-app/dynamic-app'
 import { COMPONENT_CATALOG } from './catalog'
+import { applySmartDefaults, type SmartDefaultsContext } from './smart-defaults'
 
 interface RendererProps {
   surface: SurfaceState
@@ -68,6 +69,7 @@ export function DynamicAppRenderer({ surface, agentUrl, onAction, onDataChange }
         onAction={handleAction}
         onDataChange={handleDataChange}
         apiDataSource={apiDataSource}
+        isRoot
       />
     </View>
   )
@@ -87,9 +89,11 @@ interface ComponentNodeProps {
   apiDataSource: ApiDataSourceResult
   scopeData?: Record<string, unknown>
   scopePath?: string
+  isRoot?: boolean
+  parentComponent?: string
 }
 
-function ComponentNode({ definition, components, dataModel, onAction, onDataChange, apiDataSource, scopeData, scopePath }: ComponentNodeProps) {
+function ComponentNode({ definition, components, dataModel, onAction, onDataChange, apiDataSource, scopeData, scopePath, isRoot, parentComponent }: ComponentNodeProps) {
   const catalogEntry = COMPONENT_CATALOG[definition.component]
   if (!catalogEntry) {
     return (
@@ -99,11 +103,14 @@ function ComponentNode({ definition, components, dataModel, onAction, onDataChan
     )
   }
 
-  let resolvedProps = useResolvedProps(definition, dataModel, apiDataSource, scopeData, scopePath)
+  const smartCtx: SmartDefaultsContext = { isRoot: !!isRoot, parentComponent, components }
+  const enhancedDefinition = applySmartDefaults(definition, smartCtx)
+
+  let resolvedProps = useResolvedProps(enhancedDefinition, dataModel, apiDataSource, scopeData, scopePath)
 
   // Auto-derive tabs from TabPanel children when `tabs` prop is missing
-  if (definition.component === 'Tabs' && !resolvedProps.tabs && Array.isArray(definition.children)) {
-    const childIds = definition.children as string[]
+  if (enhancedDefinition.component === 'Tabs' && !resolvedProps.tabs && Array.isArray(enhancedDefinition.children)) {
+    const childIds = enhancedDefinition.children as string[]
     const autoTabs = childIds.map((childId) => {
       const childDef = components.get(childId)
       const label = childDef?.title ?? childDef?.label
@@ -114,7 +121,7 @@ function ComponentNode({ definition, components, dataModel, onAction, onDataChan
     }
   }
 
-  const children = useRenderedChildren(definition, components, dataModel, onAction, onDataChange, apiDataSource, scopeData, scopePath)
+  const children = useRenderedChildren(enhancedDefinition, components, dataModel, onAction, onDataChange, apiDataSource, scopeData, scopePath, definition.component)
 
   const Component = catalogEntry.component
 
@@ -214,6 +221,7 @@ function useRenderedChildren(
   apiDataSource: ApiDataSourceResult,
   scopeData?: Record<string, unknown>,
   scopePath?: string,
+  parentComponent?: string,
 ): ReactNode {
   return useMemo(() => {
     if (definition.child) {
@@ -230,6 +238,7 @@ function useRenderedChildren(
           apiDataSource={apiDataSource}
           scopeData={scopeData}
           scopePath={scopePath}
+          parentComponent={parentComponent}
         />
       )
     }
@@ -254,6 +263,7 @@ function useRenderedChildren(
             apiDataSource={apiDataSource}
             scopeData={typeof item === 'object' && item !== null ? item as Record<string, unknown> : { value: item }}
             scopePath={`${tmpl.path}/${index}`}
+            parentComponent={parentComponent}
           />
         ))
       }
@@ -273,13 +283,14 @@ function useRenderedChildren(
             apiDataSource={apiDataSource}
             scopeData={scopeData}
             scopePath={scopePath}
+            parentComponent={definition.component}
           />
         )
       })
     }
 
     return null
-  }, [definition, components, dataModel, onAction, onDataChange, apiDataSource, scopeData, scopePath])
+  }, [definition, components, dataModel, onAction, onDataChange, apiDataSource, scopeData, scopePath, parentComponent])
 }
 
 // ---------------------------------------------------------------------------

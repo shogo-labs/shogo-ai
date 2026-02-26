@@ -106,14 +106,20 @@ export const EMAIL_DASHBOARD_SURFACE = buildSurface(
   'demo_email',
   'Email Dashboard',
   [
-    { id: 'root', component: 'Column', children: ['metrics_row', 'sep', 'email_table_section'], gap: 'lg' },
+    { id: 'root', component: 'Column', children: ['header', 'metrics_row', 'sep', 'email_table_section'], gap: 'lg' },
+    {
+      id: 'header', component: 'Row', children: ['email_title', 'inbox_badge'],
+      align: 'center', justify: 'between',
+    },
+    { id: 'email_title', component: 'Text', text: 'Email Dashboard', variant: 'h2' },
+    { id: 'inbox_badge', component: 'Badge', text: 'Inbox', variant: 'outline' },
     {
       id: 'metrics_row', component: 'Grid', columns: 4, gap: 'md',
       children: ['m_total', 'm_unread', 'm_flagged', 'm_drafts'],
     },
     { id: 'm_total', component: 'Metric', label: 'Total', value: { path: '/stats/total' }, description: 'Last 24 hours' },
-    { id: 'm_unread', component: 'Metric', label: 'Unread', value: { path: '/stats/unread' }, trend: 'up', trendValue: '+12' },
-    { id: 'm_flagged', component: 'Metric', label: 'Flagged', value: { path: '/stats/flagged' }, trend: 'neutral' },
+    { id: 'm_unread', component: 'Metric', label: 'Unread', value: { path: '/stats/unread' }, trendValue: '+12' },
+    { id: 'm_flagged', component: 'Metric', label: 'Flagged', value: { path: '/stats/flagged' } },
     { id: 'm_drafts', component: 'Metric', label: 'Drafts', value: { path: '/stats/drafts' } },
     { id: 'sep', component: 'Separator' },
     {
@@ -161,9 +167,9 @@ export const ANALYTICS_SURFACE = buildSurface(
       id: 'kpis', component: 'Grid', columns: 3, gap: 'md',
       children: ['kpi_rev', 'kpi_orders', 'kpi_aov'],
     },
-    { id: 'kpi_rev', component: 'Metric', label: 'Revenue', value: '$2.4M', trend: 'up', trendValue: '+18%' },
-    { id: 'kpi_orders', component: 'Metric', label: 'Orders', value: '18,200', trend: 'up', trendValue: '+7%' },
-    { id: 'kpi_aov', component: 'Metric', label: 'Avg Order Value', value: '$132', trend: 'down', trendValue: '-3%' },
+    { id: 'kpi_rev', component: 'Metric', label: 'Revenue', value: '$2.4M', trendValue: '+18%' },
+    { id: 'kpi_orders', component: 'Metric', label: 'Orders', value: '18,200', trendValue: '+7%' },
+    { id: 'kpi_aov', component: 'Metric', label: 'Avg Order Value', value: '$132', trendValue: '-3%' },
     {
       id: 'charts_row', component: 'Grid', columns: 2, gap: 'md',
       children: ['rev_card', 'cat_card'],
@@ -282,10 +288,10 @@ export const PROJECT_OVERVIEW_SURFACE = buildSurface(
       id: 'kpis', component: 'Grid', columns: 4, gap: 'md',
       children: ['kpi_tasks', 'kpi_velocity', 'kpi_bugs', 'kpi_coverage'],
     },
-    { id: 'kpi_tasks', component: 'Metric', label: 'Open Tasks', value: '24', trend: 'down', trendValue: '-6 this week' },
-    { id: 'kpi_velocity', component: 'Metric', label: 'Velocity', value: '47', unit: 'pts', trend: 'up', trendValue: '+12%' },
-    { id: 'kpi_bugs', component: 'Metric', label: 'Open Bugs', value: '8', trend: 'down', trendValue: '-3' },
-    { id: 'kpi_coverage', component: 'Metric', label: 'Test Coverage', value: '87%', trend: 'up', trendValue: '+2.4%' },
+    { id: 'kpi_tasks', component: 'Metric', label: 'Open Tasks', value: '24', trendValue: '-6 this week' },
+    { id: 'kpi_velocity', component: 'Metric', label: 'Velocity', value: '47', unit: 'pts', trendValue: '+12%' },
+    { id: 'kpi_bugs', component: 'Metric', label: 'Open Bugs', value: '8', trendValue: '-3' },
+    { id: 'kpi_coverage', component: 'Metric', label: 'Test Coverage', value: '87%', trendValue: '+2.4%' },
 
     // Main grid
     {
@@ -483,10 +489,309 @@ export const PROJECT_OVERVIEW_SURFACE = buildSurface(
 )
 
 // ---------------------------------------------------------------------------
+// Expense Tracker (CRUD with auto-formatting)
+// ---------------------------------------------------------------------------
+
+export const EXPENSE_TRACKER_SURFACE = buildSurface(
+  'demo_expenses',
+  'Expense Tracker',
+  [
+    { id: 'root', component: 'Column', children: ['header', 'kpis', 'add_card', 'expenses_card'] },
+    {
+      id: 'header', component: 'Row', children: ['title', 'period'],
+      align: 'center', justify: 'between',
+    },
+    { id: 'title', component: 'Text', text: 'Expense Tracker', variant: 'h2' },
+    { id: 'period', component: 'Badge', text: 'February 2026', variant: 'outline' },
+    {
+      id: 'kpis', component: 'Grid', columns: 3,
+      children: ['kpi_spent', 'kpi_budget', 'kpi_remaining'],
+    },
+    { id: 'kpi_spent', component: 'Metric', label: 'Total Spent', value: 1847, unit: '$', trendValue: '+$312 this week' },
+    { id: 'kpi_budget', component: 'Metric', label: 'Monthly Budget', value: 3000, unit: '$', description: 'Your limit' },
+    { id: 'kpi_remaining', component: 'Metric', label: 'Remaining', value: 1153, unit: '$', trendValue: '-10.4%' },
+    {
+      id: 'add_card', component: 'Card', title: 'Add Expense',
+      description: 'Record a new expense', child: 'add_form',
+    },
+    {
+      id: 'add_form', component: 'Row',
+      children: ['desc_input', 'amt_input', 'cat_select', 'add_btn'],
+      gap: 'sm', align: 'end',
+    },
+    { id: 'desc_input', component: 'TextField', label: 'Description', placeholder: 'Coffee, groceries...' },
+    { id: 'amt_input', component: 'TextField', label: 'Amount', placeholder: '0.00', type: 'number' },
+    {
+      id: 'cat_select', component: 'Select', label: 'Category', placeholder: 'Select...',
+      options: [
+        { label: 'Food', value: 'food' }, { label: 'Transport', value: 'transport' },
+        { label: 'Entertainment', value: 'entertainment' }, { label: 'Utilities', value: 'utilities' },
+        { label: 'Shopping', value: 'shopping' },
+      ],
+    },
+    {
+      id: 'add_btn', component: 'Button', label: 'Add Expense',
+      action: { name: 'add_expense' },
+    },
+    {
+      id: 'expenses_card', component: 'Card', title: 'Recent Expenses',
+      description: 'Your spending this month', child: 'expense_table',
+    },
+    {
+      id: 'expense_table', component: 'Table', striped: true,
+      columns: [
+        { key: 'description', label: 'Description' },
+        { key: 'category', label: 'Category' },
+        { key: 'date', label: 'Date', align: 'right' },
+        { key: 'amount', label: 'Amount', align: 'right' },
+      ],
+      rows: [
+        { description: 'Lunch at Chez Marie', category: 'Food', date: '2026-02-26T12:30:00Z', amount: 42.50 },
+        { description: 'Uber to airport', category: 'Transport', date: '2026-02-25T08:15:00Z', amount: 38.00 },
+        { description: 'Electric bill', category: 'Utilities', date: '2026-02-24T00:00:00Z', amount: 127.80 },
+        { description: 'Netflix subscription', category: 'Entertainment', date: '2026-02-23T00:00:00Z', amount: 15.99 },
+        { description: 'Grocery haul', category: 'Food', date: '2026-02-22T16:45:00Z', amount: 94.30 },
+        { description: 'Running shoes', category: 'Shopping', date: '2026-02-20T11:00:00Z', amount: 129.00 },
+      ],
+    },
+  ],
+)
+
+// ---------------------------------------------------------------------------
+// Habit Tracker (Kanban board)
+// ---------------------------------------------------------------------------
+
+export const HABIT_TRACKER_SURFACE = buildSurface(
+  'demo_habits',
+  'Habit Tracker',
+  [
+    { id: 'root', component: 'Column', children: ['header', 'kpis', 'add_card', 'board'] },
+    {
+      id: 'header', component: 'Row', children: ['title', 'date_badge'],
+      align: 'center', justify: 'between',
+    },
+    { id: 'title', component: 'Text', text: 'Habit Tracker', variant: 'h2' },
+    { id: 'date_badge', component: 'Badge', text: 'Week of Feb 23', variant: 'outline' },
+    {
+      id: 'kpis', component: 'Grid', columns: 3,
+      children: ['kpi_total', 'kpi_active', 'kpi_streak'],
+    },
+    { id: 'kpi_total', component: 'Metric', label: 'Total Habits', value: '8', trendValue: '+2 this month' },
+    { id: 'kpi_active', component: 'Metric', label: 'Active Today', value: '5', trendValue: '+1' },
+    { id: 'kpi_streak', component: 'Metric', label: 'Best Streak', value: '45 days', description: 'Drink water' },
+    {
+      id: 'add_card', component: 'Card', title: 'Quick Add',
+      description: 'Start tracking a new habit', child: 'add_row',
+    },
+    {
+      id: 'add_row', component: 'Row',
+      children: ['habit_input', 'habit_btn'],
+      gap: 'sm', align: 'end',
+    },
+    { id: 'habit_input', component: 'TextField', placeholder: 'e.g. Morning yoga', label: 'Habit Name' },
+    { id: 'habit_btn', component: 'Button', label: 'Add', action: { name: 'add_habit' } },
+    {
+      id: 'board', component: 'Grid', columns: 3, gap: 'md',
+      children: ['col_todo', 'col_progress', 'col_done'],
+    },
+    // Not Started
+    {
+      id: 'col_todo', component: 'Card', title: 'Not Started',
+      description: '3 habits', child: 'todo_list',
+    },
+    { id: 'todo_list', component: 'Column', children: ['h1', 'h2', 'h3'], gap: 'sm' },
+    {
+      id: 'h1', component: 'Card', title: 'Learn Spanish',
+      description: '30 min practice', children: ['h1_meta'],
+    },
+    {
+      id: 'h1_meta', component: 'Row',
+      children: ['h1_priority', 'h1_action'],
+      align: 'center', justify: 'between',
+    },
+    { id: 'h1_priority', component: 'Badge', text: 'Medium', variant: 'outline' },
+    { id: 'h1_action', component: 'Button', label: 'Start', size: 'sm', variant: 'outline', action: { name: 'start' } },
+    {
+      id: 'h2', component: 'Card', title: 'Cold shower',
+      description: '5 min cold exposure', children: ['h2_meta'],
+    },
+    {
+      id: 'h2_meta', component: 'Row',
+      children: ['h2_priority', 'h2_action'],
+      align: 'center', justify: 'between',
+    },
+    { id: 'h2_priority', component: 'Badge', text: 'Low', variant: 'secondary' },
+    { id: 'h2_action', component: 'Button', label: 'Start', size: 'sm', variant: 'outline', action: { name: 'start' } },
+    {
+      id: 'h3', component: 'Card', title: 'Gratitude journal',
+      description: 'Write 3 things', children: ['h3_meta'],
+    },
+    {
+      id: 'h3_meta', component: 'Row',
+      children: ['h3_priority', 'h3_action'],
+      align: 'center', justify: 'between',
+    },
+    { id: 'h3_priority', component: 'Badge', text: 'High', variant: 'destructive' },
+    { id: 'h3_action', component: 'Button', label: 'Start', size: 'sm', variant: 'outline', action: { name: 'start' } },
+    // In Progress
+    {
+      id: 'col_progress', component: 'Card', title: 'In Progress',
+      description: '3 active', child: 'progress_list',
+    },
+    { id: 'progress_list', component: 'Column', children: ['h4', 'h5', 'h6'], gap: 'sm' },
+    {
+      id: 'h4', component: 'Card', title: 'Morning exercise',
+      description: '30 min workout', children: ['h4_meta'],
+    },
+    {
+      id: 'h4_meta', component: 'Row',
+      children: ['h4_streak', 'h4_action'],
+      align: 'center', justify: 'between',
+    },
+    { id: 'h4_streak', component: 'Badge', text: '12 day streak', variant: 'default' },
+    { id: 'h4_action', component: 'Button', label: 'Done', size: 'sm', action: { name: 'complete' } },
+    {
+      id: 'h5', component: 'Card', title: 'Read 30 pages',
+      description: 'Daily reading', children: ['h5_meta'],
+    },
+    {
+      id: 'h5_meta', component: 'Row',
+      children: ['h5_streak', 'h5_action'],
+      align: 'center', justify: 'between',
+    },
+    { id: 'h5_streak', component: 'Badge', text: '8 day streak', variant: 'default' },
+    { id: 'h5_action', component: 'Button', label: 'Done', size: 'sm', action: { name: 'complete' } },
+    {
+      id: 'h6', component: 'Card', title: 'Meditation',
+      description: '10 min session', children: ['h6_meta'],
+    },
+    {
+      id: 'h6_meta', component: 'Row',
+      children: ['h6_streak', 'h6_action'],
+      align: 'center', justify: 'between',
+    },
+    { id: 'h6_streak', component: 'Badge', text: '5 day streak', variant: 'default' },
+    { id: 'h6_action', component: 'Button', label: 'Done', size: 'sm', action: { name: 'complete' } },
+    // Completed
+    {
+      id: 'col_done', component: 'Card', title: 'Completed',
+      description: '2 done today', child: 'done_list',
+    },
+    { id: 'done_list', component: 'Column', children: ['h7', 'h8'], gap: 'sm' },
+    {
+      id: 'h7', component: 'Card', title: 'Drink 8 glasses',
+      description: 'Stay hydrated', children: ['h7_meta'],
+    },
+    {
+      id: 'h7_meta', component: 'Row',
+      children: ['h7_streak', 'h7_icon'],
+      align: 'center', justify: 'between',
+    },
+    { id: 'h7_streak', component: 'Badge', text: '45 day streak', variant: 'default' },
+    { id: 'h7_icon', component: 'Icon', name: 'check-circle', size: 'sm', color: 'emerald-500' },
+    {
+      id: 'h8', component: 'Card', title: 'Walk 20 minutes',
+      description: 'After lunch walk', children: ['h8_meta'],
+    },
+    {
+      id: 'h8_meta', component: 'Row',
+      children: ['h8_streak', 'h8_icon'],
+      align: 'center', justify: 'between',
+    },
+    { id: 'h8_streak', component: 'Badge', text: '31 day streak', variant: 'default' },
+    { id: 'h8_icon', component: 'Icon', name: 'check-circle', size: 'sm', color: 'emerald-500' },
+  ],
+)
+
+// ---------------------------------------------------------------------------
+// Support Tickets
+// ---------------------------------------------------------------------------
+
+export const SUPPORT_TICKETS_SURFACE = buildSurface(
+  'demo_support',
+  'Support Tickets',
+  [
+    { id: 'root', component: 'Column', children: ['header', 'kpis', 'chart_row', 'tickets_card'] },
+    {
+      id: 'header', component: 'Row', children: ['title', 'status_badge'],
+      align: 'center', justify: 'between',
+    },
+    { id: 'title', component: 'Text', text: 'Support Dashboard', variant: 'h2' },
+    { id: 'status_badge', component: 'Badge', text: 'Live', variant: 'default' },
+    {
+      id: 'kpis', component: 'Grid', columns: 4,
+      children: ['kpi_open', 'kpi_resolved', 'kpi_avg', 'kpi_csat'],
+    },
+    { id: 'kpi_open', component: 'Metric', label: 'Open Tickets', value: 23, trendValue: '+5 today' },
+    { id: 'kpi_resolved', component: 'Metric', label: 'Resolved (7d)', value: 142, trendValue: '+18%' },
+    { id: 'kpi_avg', component: 'Metric', label: 'Avg Response', value: '2.4h', trendValue: '-15 min' },
+    { id: 'kpi_csat', component: 'Metric', label: 'CSAT Score', value: 94, unit: '%', trendValue: '+2.1%' },
+    {
+      id: 'chart_row', component: 'Grid', columns: 2, gap: 'md',
+      children: ['volume_card', 'priority_card'],
+    },
+    {
+      id: 'volume_card', component: 'Card', title: 'Ticket Volume',
+      description: 'Last 7 days', children: ['volume_chart'],
+    },
+    {
+      id: 'volume_chart', component: 'Chart', type: 'bar', height: 180,
+      data: [
+        { label: 'Mon', value: 28 },
+        { label: 'Tue', value: 35 },
+        { label: 'Wed', value: 42 },
+        { label: 'Thu', value: 31 },
+        { label: 'Fri', value: 38 },
+        { label: 'Sat', value: 12 },
+        { label: 'Sun', value: 8 },
+      ],
+    },
+    {
+      id: 'priority_card', component: 'Card', title: 'By Priority',
+      description: 'Open tickets', children: ['priority_chart'],
+    },
+    {
+      id: 'priority_chart', component: 'Chart', type: 'horizontalBar',
+      data: [
+        { label: 'Critical', value: 3, color: '#ef4444' },
+        { label: 'High', value: 7, color: '#f97316' },
+        { label: 'Medium', value: 9, color: '#eab308' },
+        { label: 'Low', value: 4, color: '#22c55e' },
+      ],
+    },
+    {
+      id: 'tickets_card', component: 'Card', title: 'Recent Tickets',
+      description: 'Requires attention', child: 'tickets_table',
+    },
+    {
+      id: 'tickets_table', component: 'Table', striped: true,
+      columns: [
+        { key: 'id', label: '#', width: '8%' },
+        { key: 'subject', label: 'Subject' },
+        { key: 'priority', label: 'Priority', width: '12%' },
+        { key: 'status', label: 'Status', width: '12%' },
+        { key: 'created', label: 'Created', align: 'right', width: '15%' },
+      ],
+      rows: [
+        { id: 'T-1024', subject: 'Cannot access billing portal', priority: 'Critical', status: 'Open', created: '2026-02-26T09:15:00Z' },
+        { id: 'T-1023', subject: 'API rate limit exceeded during peak', priority: 'High', status: 'In Progress', created: '2026-02-26T08:30:00Z' },
+        { id: 'T-1022', subject: 'PDF export shows wrong currency', priority: 'Medium', status: 'Open', created: '2026-02-25T16:45:00Z' },
+        { id: 'T-1021', subject: 'SSO login fails for new domain', priority: 'High', status: 'In Progress', created: '2026-02-25T14:20:00Z' },
+        { id: 'T-1020', subject: 'Dark mode colors inconsistent', priority: 'Low', status: 'Open', created: '2026-02-25T11:00:00Z' },
+        { id: 'T-1019', subject: 'Webhook delivery delays', priority: 'Medium', status: 'Resolved', created: '2026-02-24T22:10:00Z' },
+      ],
+    },
+  ],
+)
+
+// ---------------------------------------------------------------------------
 // All demos indexed by name
 // ---------------------------------------------------------------------------
 
 export const DEMO_SURFACES: Record<string, { label: string; surface: SurfaceState }> = {
+  expenses: { label: 'Expense Tracker', surface: EXPENSE_TRACKER_SURFACE },
+  habits: { label: 'Habit Tracker', surface: HABIT_TRACKER_SURFACE },
+  support: { label: 'Support Tickets', surface: SUPPORT_TICKETS_SURFACE },
   flights: { label: 'Flight Search', surface: FLIGHT_SEARCH_SURFACE },
   email: { label: 'Email Dashboard', surface: EMAIL_DASHBOARD_SURFACE },
   analytics: { label: 'Sales Analytics', surface: ANALYTICS_SURFACE },

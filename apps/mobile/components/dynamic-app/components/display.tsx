@@ -7,6 +7,7 @@
 import { View, Image as RNImage } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Text } from '@/components/ui/text'
+import { formatDisplayText } from '../smart-format'
 // Badge rendered with custom View+Text to avoid Gluestack's forced uppercase
 import { Alert, AlertText, AlertIcon } from '@/components/ui/alert'
 import { Progress, ProgressFilledTrack } from '@/components/ui/progress'
@@ -55,7 +56,7 @@ export function DynText({ text = '', variant = 'body', align, color, weight, cla
 
   return (
     <Text className={cn(VARIANT_CLASSES[variant] || VARIANT_CLASSES.body, alignClass, colorClass, weightClass, className)}>
-      {text}
+      {formatDisplayText(text)}
     </Text>
   )
 }

@@ -42,7 +42,47 @@ These examples show the optimal tool sequence for common canvas requests:
 - Needs API: Yes (CRUD app with auto-updating metrics)
 - Tools: canvas_create, canvas_api_schema, canvas_api_seed, canvas_api_query, canvas_api_hooks, canvas_update, canvas_trigger_action, canvas_inspect
 - Components: Column, Row, Grid, Card, Metric, DataList, Button, TextField
-- Hooks pattern: Register recompute hooks (afterCreate + afterDelete) so Metric values auto-update when expenses are added/removed. Use validate hooks (beforeCreate) for data integrity.`
+- Hooks pattern: Register recompute hooks (afterCreate + afterDelete) so Metric values auto-update when expenses are added/removed. Use validate hooks (beforeCreate) for data integrity.
+
+### Reference Component Tree — Well-Designed Expense Tracker
+
+This is the FULL component tree for a polished expense tracker canvas. The renderer auto-applies: root gap "lg", Separator injection, date/number formatting, and Metric trend inference from trendValue signs.
+
+\`\`\`json
+canvas_update({ surfaceId: "expense-tracker", components: [
+  { "id": "root", "component": "Column", "children": ["header_row", "metrics", "add_card", "expenses_card"] },
+  { "id": "header_row", "component": "Row", "children": ["title", "period_badge"], "align": "center", "justify": "between" },
+  { "id": "title", "component": "Text", "text": "Expense Tracker", "variant": "h2" },
+  { "id": "period_badge", "component": "Badge", "text": "February 2026", "variant": "outline" },
+  { "id": "metrics", "component": "Grid", "columns": 3, "children": ["m_total", "m_budget", "m_remaining"] },
+  { "id": "m_total", "component": "Metric", "label": "Total Spent", "value": { "path": "/summary/totalSpent" }, "unit": "$", "trendValue": "+$48 this week" },
+  { "id": "m_budget", "component": "Metric", "label": "Budget", "value": 1000, "unit": "$", "description": "Monthly limit" },
+  { "id": "m_remaining", "component": "Metric", "label": "Remaining", "value": { "path": "/summary/remaining" }, "unit": "$", "trendValue": "-4.8%" },
+  { "id": "add_card", "component": "Card", "title": "Add Expense", "description": "Record a new expense", "child": "add_form" },
+  { "id": "add_form", "component": "Row", "children": ["desc_input", "amt_input", "cat_select", "add_btn"], "gap": "sm", "align": "end" },
+  { "id": "desc_input", "component": "TextField", "label": "Description", "placeholder": "Coffee, groceries...", "dataPath": "/newDesc" },
+  { "id": "amt_input", "component": "TextField", "label": "Amount", "placeholder": "0.00", "type": "number", "dataPath": "/newAmount" },
+  { "id": "cat_select", "component": "Select", "label": "Category", "placeholder": "Select...", "options": [
+    { "label": "Food", "value": "food" }, { "label": "Transport", "value": "transport" },
+    { "label": "Entertainment", "value": "entertainment" }, { "label": "Utilities", "value": "utilities" }
+  ], "dataPath": "/newCategory" },
+  { "id": "add_btn", "component": "Button", "label": "Add", "action": { "name": "add_expense", "mutation": { "endpoint": "/api/expenses", "method": "POST", "body": { "description": { "path": "/newDesc" }, "amount": { "path": "/newAmount" }, "category": { "path": "/newCategory" } } } } },
+  { "id": "expenses_card", "component": "Card", "title": "Recent Expenses", "description": "Your spending history", "child": "expense_list" },
+  { "id": "expense_list", "component": "DataList", "children": { "path": "/expenses", "templateId": "expense_item" }, "emptyText": "No expenses yet" },
+  { "id": "expense_item", "component": "Card", "child": "expense_row" },
+  { "id": "expense_row", "component": "Row", "children": ["expense_info", "expense_right"], "align": "center", "justify": "between" },
+  { "id": "expense_info", "component": "Column", "children": ["expense_desc", "expense_meta"], "gap": "xs" },
+  { "id": "expense_desc", "component": "Text", "text": { "path": "description" }, "weight": "medium" },
+  { "id": "expense_meta", "component": "Row", "children": ["expense_cat", "expense_date"], "gap": "sm" },
+  { "id": "expense_cat", "component": "Badge", "text": { "path": "category" }, "variant": "secondary" },
+  { "id": "expense_date", "component": "Text", "text": { "path": "date" }, "variant": "caption" },
+  { "id": "expense_right", "component": "Row", "children": ["expense_amount", "del_btn"], "gap": "sm", "align": "center" },
+  { "id": "expense_amount", "component": "Text", "text": { "path": "amount" }, "variant": "large" },
+  { "id": "del_btn", "component": "Button", "label": "Delete", "variant": "destructive", "size": "sm", "action": { "name": "delete_expense", "mutation": { "endpoint": "/api/expenses/:id", "method": "DELETE", "params": { "id": { "path": "id" } } } } }
+]})
+\`\`\`
+
+Key design patterns: (1) header Row with title + Badge, (2) Grid of Metrics with trendValues, (3) Card-wrapped form, (4) Card-wrapped DataList with inner Cards per item. Note: root gap, Separators, number/date formatting, and trend direction are all handled automatically by the renderer.`
 
 export const OPTIMIZED_MEMORY_GUIDE = `### Memory Decision Examples
 

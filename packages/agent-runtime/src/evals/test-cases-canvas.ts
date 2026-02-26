@@ -148,6 +148,73 @@ function updateHasTestChecklist(result: EvalResult): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Visual Quality Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Count the total number of unique components in canvas_update calls.
+ */
+function componentCount(result: EvalResult): number {
+  const ids = new Set<string>()
+  for (const t of result.toolCalls) {
+    if (t.name !== 'canvas_update') continue
+    const inputStr = JSON.stringify(t.input ?? '')
+    const idMatches = inputStr.matchAll(/"id"\s*:\s*"([^"]+)"/g)
+    for (const m of idMatches) ids.add(m[1])
+  }
+  return ids.size
+}
+
+/**
+ * Check that canvas_update calls include at least N components.
+ */
+function hasMinimumComponents(result: EvalResult, min: number): boolean {
+  return componentCount(result) >= min
+}
+
+/**
+ * Check that the component tree includes a Grid of Metric components.
+ */
+function hasMetricGrid(result: EvalResult): boolean {
+  const json = JSON.stringify(result.toolCalls.filter(t => t.name === 'canvas_update').map(t => t.input))
+  return json.includes('"Grid"') && json.includes('"Metric"')
+}
+
+/**
+ * Check that the component tree includes Card-wrapped sections (Card with title).
+ */
+function hasCardWrappedSections(result: EvalResult): boolean {
+  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
+  const json = JSON.stringify(updateCalls.map(t => t.input))
+  const cardWithTitle = /"component"\s*:\s*"Card"[^}]*"title"\s*:/
+  return cardWithTitle.test(json)
+}
+
+/**
+ * Check that the component tree uses Separator components.
+ */
+function hasSeparator(result: EvalResult): boolean {
+  const json = JSON.stringify(result.toolCalls.filter(t => t.name === 'canvas_update').map(t => t.input))
+  return json.includes('"Separator"')
+}
+
+/**
+ * Check that the root Column uses gap "lg".
+ */
+function rootHasLargeGap(result: EvalResult): boolean {
+  const json = JSON.stringify(result.toolCalls.filter(t => t.name === 'canvas_update').map(t => t.input))
+  return /"id"\s*:\s*"root"[^}]*"gap"\s*:\s*"lg"/.test(json)
+}
+
+/**
+ * Check that Metric components have trend data.
+ */
+function metricsHaveTrends(result: EvalResult): boolean {
+  const json = JSON.stringify(result.toolCalls.filter(t => t.name === 'canvas_update').map(t => t.input))
+  return json.includes('"trend"') && json.includes('"trendValue"')
+}
+
+// ---------------------------------------------------------------------------
 // Test Cases
 // ---------------------------------------------------------------------------
 
@@ -1924,6 +1991,196 @@ export const CANVAS_EVALS: AgentEval[] = [
       'No before-mutation hooks (validate/transform)',
       'No cascade-delete hooks',
       'Used cron instead of hooks',
+    ],
+  },
+
+  // ---- Visual Quality: Dashboard visual polish ----
+  {
+    id: 'canvas-visual-quality-dashboard',
+    name: 'Visual Quality: Analytics dashboard has proper layout',
+    category: 'canvas',
+    level: 2,
+    input: 'Create a sales analytics dashboard with revenue charts, KPI metrics, and top products',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Added UI components',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'has-metric-grid',
+        description: 'Uses a Grid of Metric components for KPIs',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => hasMetricGrid(r),
+      },
+      {
+        id: 'metrics-have-trends',
+        description: 'Metric components include trend and trendValue',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => metricsHaveTrends(r),
+      },
+      {
+        id: 'has-chart-component',
+        description: 'Includes at least one Chart component',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls.filter(t => t.name === 'canvas_update').map(t => t.input))
+          return json.includes('"Chart"')
+        },
+      },
+      {
+        id: 'has-card-sections',
+        description: 'Data sections are wrapped in Cards with titles',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => hasCardWrappedSections(r),
+      },
+      {
+        id: 'minimum-component-count',
+        description: 'Has at least 12 components for a polished dashboard',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => hasMinimumComponents(r, 12),
+      },
+      {
+        id: 'root-gap-lg',
+        description: 'Root Column uses gap "lg" for proper spacing',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => rootHasLargeGap(r),
+      },
+      {
+        id: 'has-header-row',
+        description: 'Includes a header Row with title variant h2',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls.filter(t => t.name === 'canvas_update').map(t => t.input))
+          return json.includes('"h2"') && json.includes('"Row"')
+        },
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 12 tool calls',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 12,
+      },
+    ],
+    antiPatterns: [
+      'Fewer than 10 components (sparse layout)',
+      'No Metric components in a dashboard request',
+      'No Chart in an analytics dashboard',
+      'Missing Card wrappers on data sections',
+    ],
+  },
+
+  // ---- Visual Quality: CRUD app visual polish ----
+  {
+    id: 'canvas-visual-quality-crud',
+    name: 'Visual Quality: CRUD app has proper layout hierarchy',
+    category: 'canvas',
+    level: 3,
+    input: 'Build an expense tracker with categories, amounts, and budget tracking',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-api-schema',
+        description: 'Used canvas_api_schema for backend',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_api_schema'),
+      },
+      {
+        id: 'has-metric-grid',
+        description: 'Uses a Grid of Metric components for summary stats',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => hasMetricGrid(r),
+      },
+      {
+        id: 'metrics-have-trends',
+        description: 'Metric components include trend data',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => metricsHaveTrends(r),
+      },
+      {
+        id: 'has-card-wrapped-form',
+        description: 'Form section is wrapped in a Card with title',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => hasCardWrappedSections(r),
+      },
+      {
+        id: 'has-separator',
+        description: 'Uses Separator between form and data sections',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => hasSeparator(r),
+      },
+      {
+        id: 'minimum-component-count',
+        description: 'Has at least 10 components for a polished CRUD app',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => hasMinimumComponents(r, 10),
+      },
+      {
+        id: 'root-gap-lg',
+        description: 'Root Column uses gap "lg"',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => rootHasLargeGap(r),
+      },
+      {
+        id: 'all-buttons-have-mutations',
+        description: 'Every Button has action.mutation defined',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => allButtonsHaveMutations(r),
+      },
+      {
+        id: 'tested-actions',
+        description: 'All actions tested with canvas_trigger_action',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => triggerActionSucceeded(r),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 25 tool calls',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 25,
+      },
+    ],
+    antiPatterns: [
+      'Fewer than 8 components (sparse layout)',
+      'No Metric summary row in a CRUD app',
+      'No Separator between form and data sections',
+      'Missing Card wrappers',
+      'Root Column without gap "lg"',
     ],
   },
 ]
