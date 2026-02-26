@@ -13,7 +13,7 @@
  * - AsyncStorage for chat session persistence instead of localStorage
  */
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   View,
   Text,
@@ -41,6 +41,7 @@ import { useAuth } from '../../../../contexts/auth'
 import { API_URL } from '../../../../lib/api'
 import { consumePendingImageData } from '../../../../lib/pending-image-store'
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
+import { ChatSessionPicker, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
 import { DynamicAppRenderer } from '../../../../components/dynamic-app/DynamicAppRenderer'
 import { ProjectTopBar } from '../../../../components/project/ProjectTopBar'
 import {
@@ -215,6 +216,38 @@ export default observer(function ProjectLayout() {
   const [showChatSessions, setShowChatSessions] = useState(false)
   const [previewTab, setPreviewTab] = useState('dynamic-app')
 
+  const chatSessions: ChatSession[] = useMemo(() => {
+    if (!store?.chatSessionCollection) return []
+    try {
+      return store.chatSessionCollection.all
+        .filter((s: any) => s.contextId === projectId)
+        .map((s: any) => ({
+          id: s.id,
+          name: s.inferredName || s.name || `Chat ${new Date(s.createdAt).toLocaleDateString()}`,
+          messageCount: 0,
+          updatedAt: s.lastActiveAt || s.updatedAt || s.createdAt || Date.now(),
+        }))
+        .sort((a: ChatSession, b: ChatSession) => b.updatedAt - a.updatedAt)
+    } catch {
+      return []
+    }
+  }, [store?.chatSessionCollection?.all, projectId])
+
+  const handleCreateNewSession = useCallback(async () => {
+    try {
+      const newSession = await actions.createChatSession({
+        inferredName: `Chat ${new Date().toLocaleDateString()}`,
+        contextType: 'project',
+        contextId: projectId!,
+      })
+      if (newSession?.id) {
+        setChatSessionId(newSession.id)
+      }
+    } catch (err) {
+      console.error('[ProjectLayout] Failed to create chat session:', err)
+    }
+  }, [actions, projectId])
+
   // Loading state
   if (isLoading || !project) {
     return (
@@ -274,6 +307,19 @@ export default observer(function ProjectLayout() {
           <View className="flex-1 flex-row">
             {!chatCollapsed && (
               <View style={{ width: CHAT_PANEL_WIDTH }} className="border-r border-border">
+                {showChatSessions && (
+                  <View className="border-b border-border">
+                    <ChatSessionPicker
+                      sessions={chatSessions}
+                      currentSessionId={chatSessionId ?? undefined}
+                      onSelect={(sessionId) => {
+                        setChatSessionId(sessionId)
+                        setShowChatSessions(false)
+                      }}
+                      onCreate={handleCreateNewSession}
+                    />
+                  </View>
+                )}
                 {chatPanel}
               </View>
             )}
