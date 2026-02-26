@@ -37,6 +37,14 @@ export const api = {
     return res.data
   },
 
+  async createPortalSession(http: HttpClient, workspaceId: string, returnUrl?: string) {
+    const res = await http.post<{ url?: string }>(
+      `/api/billing/portal?workspaceId=${encodeURIComponent(workspaceId)}`,
+      returnUrl ? { returnUrl } : {},
+    )
+    return res.data
+  },
+
   async getProjectAnalytics<T>(
     http: HttpClient,
     projectId: string,

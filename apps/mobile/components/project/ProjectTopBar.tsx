@@ -67,6 +67,7 @@ export interface ProjectTopBarProps {
   activeTab?: string
   onTabChange?: (tabId: string) => void
   onProjectSwitch?: (projectId: string) => void
+  hasActiveSubscription?: boolean
 }
 
 export function ProjectTopBar({
@@ -81,6 +82,7 @@ export function ProjectTopBar({
   activeTab = 'dynamic-app',
   onTabChange,
   onProjectSwitch,
+  hasActiveSubscription = false,
 }: ProjectTopBarProps) {
   const router = useRouter()
   const { width } = useWindowDimensions()
@@ -200,13 +202,15 @@ export function ProjectTopBar({
           <Github size={16} className="text-muted-foreground" />
         </Pressable>
 
-        <Pressable
-          onPress={() => router.push('/(app)/billing' as any)}
-          className="h-8 flex-row items-center gap-1.5 px-2.5 rounded-md border border-border active:bg-muted"
-        >
-          <Zap size={14} className="text-muted-foreground" />
-          <Text className="text-xs font-medium text-foreground">Upgrade</Text>
-        </Pressable>
+        {!hasActiveSubscription && (
+          <Pressable
+            onPress={() => router.push('/(app)/billing' as any)}
+            className="h-8 flex-row items-center gap-1.5 px-2.5 rounded-md border border-border active:bg-muted"
+          >
+            <Zap size={14} className="text-muted-foreground" />
+            <Text className="text-xs font-medium text-foreground">Upgrade</Text>
+          </Pressable>
+        )}
 
         <Pressable
           onPress={() => setShowPublish(true)}

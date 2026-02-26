@@ -37,6 +37,7 @@ import {
 } from '@shogo/shared-app/dynamic-app'
 import type { IDomainStore } from '@shogo/domain-stores'
 import { cn } from '@shogo/shared-ui/primitives'
+import { useBillingData } from '@shogo/shared-app/hooks'
 import { useAuth } from '../../../../contexts/auth'
 import { API_URL } from '../../../../lib/api'
 import { consumePendingImageData } from '../../../../lib/pending-image-store'
@@ -92,6 +93,8 @@ export default observer(function ProjectLayout() {
   const [isLoading, setIsLoading] = useState(true)
 
   const isAgentProject = project?.type === 'AGENT'
+
+  const billingData = useBillingData(project?.workspaceId)
 
   const allProjects = useMemo(() => {
     try {
@@ -327,6 +330,7 @@ export default observer(function ProjectLayout() {
       projectType={isAgentProject ? 'AGENT' : 'APP'}
       initialMessage={capturedInitialMessage}
       initialImageData={capturedInitialImageData}
+      billingData={billingData}
       className="flex-1"
     />
   )
@@ -358,6 +362,7 @@ export default observer(function ProjectLayout() {
             onChatCollapseToggle={() => setChatCollapsed((c) => !c)}
             activeTab={previewTab}
             onTabChange={setPreviewTab}
+            hasActiveSubscription={billingData.hasActiveSubscription}
           />
           <View className="flex-1 flex-row">
             {!chatCollapsed && (
@@ -403,6 +408,7 @@ export default observer(function ProjectLayout() {
             projectType={project.type}
             projects={allProjects}
             activeTab={previewTab}
+            hasActiveSubscription={billingData.hasActiveSubscription}
             onTabChange={(tabId) => {
               setPreviewTab(tabId)
               if (tabId !== 'dynamic-app') setActiveTab('canvas')
