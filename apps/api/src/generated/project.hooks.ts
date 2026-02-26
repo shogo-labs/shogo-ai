@@ -114,16 +114,17 @@ export const projectHooks: ProjectHooks = {
       }
     }
 
-    // No workspaceId provided - return projects from all workspaces user is a member of
+    // No workspaceId provided - return projects user can access:
+    // 1. Projects from workspaces they're a member of
+    // 2. Projects they're directly invited to
     return {
       ok: true,
       data: {
         where: {
-          workspace: {
-            members: {
-              some: { userId },
-            },
-          },
+          OR: [
+            { workspace: { members: { some: { userId } } } },
+            { members: { some: { userId } } },
+          ],
         },
         include: { workspace: true, folder: true },
       },
@@ -161,15 +162,20 @@ export const projectHooks: ProjectHooks = {
       }
     }
 
-    const hasAccess = project.workspace.members.some((m: any) => m.userId === userId)
-    if (!hasAccess) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied to this project" },
-      }
-    }
+    // Check workspace membership
+    const hasWorkspaceAccess = project.workspace.members.some((m: any) => m.userId === userId)
+    if (hasWorkspaceAccess) return { ok: true }
 
-    return { ok: true }
+    // Check direct project membership
+    const projectMember = await ctx.prisma.member.findFirst({
+      where: { userId, projectId: id },
+    })
+    if (projectMember) return { ok: true }
+
+    return {
+      ok: false,
+      error: { code: "forbidden", message: "Access denied to this project" },
+    }
   },
 
   /**
@@ -223,7 +229,7 @@ export const projectHooks: ProjectHooks = {
   },
 
   /**
-   * Verify user has access to update the project
+   * Verify user has access to update the project (workspace member or project editor+)
    */
   beforeUpdate: async (id, input, ctx) => {
     const userId = ctx.userId
@@ -246,19 +252,22 @@ export const projectHooks: ProjectHooks = {
       }
     }
 
-    const hasAccess = project.workspace.members.some((m: any) => m.userId === userId)
-    if (!hasAccess) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied to this project" },
-      }
-    }
+    const hasWorkspaceAccess = project.workspace.members.some((m: any) => m.userId === userId)
+    if (hasWorkspaceAccess) return { ok: true }
 
-    return { ok: true }
+    const projectMember = await ctx.prisma.member.findFirst({
+      where: { userId, projectId: id },
+    })
+    if (projectMember && projectMember.role !== 'viewer') return { ok: true }
+
+    return {
+      ok: false,
+      error: { code: "forbidden", message: "Access denied to this project" },
+    }
   },
 
   /**
-   * Verify user has access to delete the project
+   * Verify user has access to delete the project (workspace admin+ or project admin+)
    */
   beforeDelete: async (id, ctx) => {
     const userId = ctx.userId
@@ -281,14 +290,21 @@ export const projectHooks: ProjectHooks = {
       }
     }
 
-    const hasAccess = project.workspace.members.some((m: any) => m.userId === userId)
-    if (!hasAccess) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied to this project" },
-      }
+    const wsMember = project.workspace.members.find((m: any) => m.userId === userId)
+    if (wsMember && (wsMember.role === 'owner' || wsMember.role === 'admin')) {
+      return { ok: true }
     }
 
-    return { ok: true }
+    const projectMember = await ctx.prisma.member.findFirst({
+      where: { userId, projectId: id },
+    })
+    if (projectMember && (projectMember.role === 'owner' || projectMember.role === 'admin')) {
+      return { ok: true }
+    }
+
+    return {
+      ok: false,
+      error: { code: "forbidden", message: "Only admins and owners can delete projects" },
+    }
   },
 }
