@@ -46,6 +46,7 @@ import { PublishDropdown } from './PublishDropdown'
 const AGENT_TABS = [
   { id: 'dynamic-app', label: 'Canvas' },
   { id: 'status', label: 'Status' },
+  { id: 'files', label: 'Files' },
   { id: 'workspace', label: 'Workspace' },
   { id: 'skills', label: 'Skills' },
   { id: 'mcp-servers', label: 'MCP Servers' },

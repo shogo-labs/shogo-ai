@@ -52,6 +52,7 @@ import {
   SkillsPanel,
   MCPServersPanel,
   WorkspacePanel,
+  FilesBrowserPanel,
   AnalyticsPanel,
 } from '../../../../components/project/panels'
 
@@ -391,6 +392,7 @@ export default observer(function ProjectLayout() {
                 {canvasPanel}
               </View>
               <StatusPanel visible={previewTab === 'status'} projectId={projectId!} agentUrl={agentUrl} />
+              <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
               <WorkspacePanel visible={previewTab === 'workspace'} projectId={projectId!} agentUrl={agentUrl} />
               <SkillsPanel visible={previewTab === 'skills'} projectId={projectId!} agentUrl={agentUrl} />
               <MCPServersPanel visible={previewTab === 'mcp-servers'} projectId={projectId!} agentUrl={agentUrl} />
@@ -447,6 +449,7 @@ export default observer(function ProjectLayout() {
           ) : (
             <View className="flex-1 relative">
               <StatusPanel visible={previewTab === 'status'} projectId={projectId!} agentUrl={agentUrl} />
+              <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
               <WorkspacePanel visible={previewTab === 'workspace'} projectId={projectId!} agentUrl={agentUrl} />
               <SkillsPanel visible={previewTab === 'skills'} projectId={projectId!} agentUrl={agentUrl} />
               <MCPServersPanel visible={previewTab === 'mcp-servers'} projectId={projectId!} agentUrl={agentUrl} />

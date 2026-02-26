@@ -48,6 +48,8 @@ import {
   writeFileSync,
   mkdirSync,
   unlinkSync,
+  readdirSync,
+  statSync,
 } from 'fs'
 import {
   initializeS3Sync,
@@ -714,6 +716,208 @@ app.put('/agent/files/:filename', async (c) => {
     const filepath = join(AGENT_DIR, filename)
     writeFileSync(filepath, content, 'utf-8')
     return c.json({ ok: true, filename })
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Workspace File Management Endpoints (files/ directory)
+// ---------------------------------------------------------------------------
+
+import { FileIndexEngine } from './file-index-engine'
+
+let fileIndexEngine: FileIndexEngine | null = null
+function getFileIndexEngine(): FileIndexEngine {
+  if (!fileIndexEngine) {
+    fileIndexEngine = new FileIndexEngine(AGENT_DIR)
+  }
+  return fileIndexEngine
+}
+
+const FILES_DIR = join(AGENT_DIR, 'files')
+
+function resolveFilesPath(subPath: string): string | null {
+  const resolved = resolve(FILES_DIR, subPath)
+  if (!resolved.startsWith(resolve(FILES_DIR))) return null
+  return resolved
+}
+
+function walkFilesTree(dir: string, rootDir: string): any[] {
+  if (!existsSync(dir)) return []
+  const results: any[] = []
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name.startsWith('.')) continue
+    const absPath = join(dir, entry.name)
+    const relPath = absPath.slice(rootDir.length + 1)
+    const stat = statSync(absPath)
+    if (entry.isDirectory()) {
+      results.push({
+        name: entry.name,
+        path: relPath,
+        type: 'directory',
+        modified: stat.mtimeMs,
+        children: walkFilesTree(absPath, rootDir),
+      })
+    } else {
+      results.push({
+        name: entry.name,
+        path: relPath,
+        type: 'file',
+        size: stat.size,
+        modified: stat.mtimeMs,
+      })
+    }
+  }
+  return results
+}
+
+// Recursive file tree for the file browser UI
+app.get('/agent/workspace/tree', (c) => {
+  mkdirSync(FILES_DIR, { recursive: true })
+  const tree = walkFilesTree(FILES_DIR, resolve(FILES_DIR))
+  return c.json({ tree })
+})
+
+// Read a file from files/
+app.get('/agent/workspace/files/*', (c) => {
+  const subPath = c.req.path.replace('/agent/workspace/files/', '')
+  if (!subPath) return c.json({ error: 'Path required' }, 400)
+
+  const resolved = resolveFilesPath(subPath)
+  if (!resolved) return c.json({ error: 'Path outside files directory' }, 400)
+  if (!existsSync(resolved)) return c.json({ error: 'File not found' }, 404)
+
+  const content = readFileSync(resolved, 'utf-8')
+  return c.json({ path: subPath, content, bytes: content.length })
+})
+
+// Write/create a file in files/
+app.put('/agent/workspace/files/*', async (c) => {
+  const subPath = c.req.path.replace('/agent/workspace/files/', '')
+  if (!subPath) return c.json({ error: 'Path required' }, 400)
+
+  const resolved = resolveFilesPath(subPath)
+  if (!resolved) return c.json({ error: 'Path outside files directory' }, 400)
+
+  const { content } = await c.req.json()
+  const dir = dirname(resolved)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(resolved, content, 'utf-8')
+
+  return c.json({ ok: true, path: subPath, bytes: content.length })
+})
+
+// Delete a file from files/
+app.delete('/agent/workspace/files/*', (c) => {
+  const subPath = c.req.path.replace('/agent/workspace/files/', '')
+  if (!subPath) return c.json({ error: 'Path required' }, 400)
+
+  const resolved = resolveFilesPath(subPath)
+  if (!resolved) return c.json({ error: 'Path outside files directory' }, 400)
+  if (!existsSync(resolved)) return c.json({ error: 'File not found' }, 404)
+
+  unlinkSync(resolved)
+  return c.json({ ok: true, deleted: subPath })
+})
+
+// Create a directory
+app.post('/agent/workspace/mkdir', async (c) => {
+  const { path: dirPath } = await c.req.json() as { path: string }
+  if (!dirPath) return c.json({ error: 'Path required' }, 400)
+
+  const resolved = resolveFilesPath(dirPath)
+  if (!resolved) return c.json({ error: 'Path outside files directory' }, 400)
+
+  mkdirSync(resolved, { recursive: true })
+  return c.json({ ok: true, path: dirPath })
+})
+
+// Upload files (multipart/form-data)
+app.post('/agent/workspace/upload', async (c) => {
+  try {
+    const formData = await c.req.formData()
+    const targetDir = (formData.get('directory') as string) || ''
+    const uploaded: string[] = []
+
+    for (const [key, value] of formData.entries()) {
+      if (key === 'directory') continue
+      if (typeof value === 'string') continue
+      const file = value as unknown as { name: string; arrayBuffer(): Promise<ArrayBuffer> }
+
+      const fileName = file.name
+      const filePath = targetDir ? `${targetDir}/${fileName}` : fileName
+      const resolved = resolveFilesPath(filePath)
+      if (!resolved) continue
+
+      const dir = dirname(resolved)
+      mkdirSync(dir, { recursive: true })
+
+      const buffer = await file.arrayBuffer()
+      writeFileSync(resolved, Buffer.from(buffer))
+      uploaded.push(filePath)
+    }
+
+    return c.json({ ok: true, uploaded, count: uploaded.length })
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500)
+  }
+})
+
+// Download a file
+app.get('/agent/workspace/download/*', (c) => {
+  const subPath = c.req.path.replace('/agent/workspace/download/', '')
+  if (!subPath) return c.json({ error: 'Path required' }, 400)
+
+  const resolved = resolveFilesPath(subPath)
+  if (!resolved) return c.json({ error: 'Path outside files directory' }, 400)
+  if (!existsSync(resolved)) return c.json({ error: 'File not found' }, 404)
+
+  const content = readFileSync(resolved)
+  const fileName = subPath.split('/').pop() || 'download'
+
+  return new Response(content, {
+    headers: {
+      'Content-Type': 'application/octet-stream',
+      'Content-Disposition': `attachment; filename="${fileName}"`,
+      'Content-Length': String(content.length),
+    },
+  })
+})
+
+// Search files via RAG engine
+app.post('/agent/workspace/search', async (c) => {
+  try {
+    const { query, limit = 10, path_filter } = await c.req.json() as {
+      query: string; limit?: number; path_filter?: string
+    }
+    if (!query) return c.json({ error: 'Query required' }, 400)
+
+    const engine = getFileIndexEngine()
+    const results = await engine.search(query, limit, path_filter)
+    return c.json({
+      query,
+      results: results.map(r => ({
+        path: r.path,
+        chunk: r.chunk,
+        score: Math.round(r.score * 1000) / 1000,
+        lines: `${r.lineStart}-${r.lineEnd}`,
+        matchType: r.matchType,
+      })),
+      count: results.length,
+      stats: engine.getStats(),
+    })
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500)
+  }
+})
+
+// Re-index files (manual trigger)
+app.post('/agent/workspace/reindex', async (c) => {
+  try {
+    const engine = getFileIndexEngine()
+    const stats = await engine.reindex()
+    return c.json({ ok: true, ...stats })
   } catch (error: any) {
     return c.json({ error: error.message }, 500)
   }
