@@ -231,6 +231,37 @@ import('./channels/whatsapp').then(({ WhatsAppAdapter }) => {
   WhatsAppAdapter.registerWebhookRoutes(app)
 }).catch(() => { /* WhatsApp adapter not available */ })
 
+// Register Webhook/HTTP channel routes
+import('./channels/webhook').then(({ WebhookAdapter }) => {
+  WebhookAdapter.registerRoutes(app, () => {
+    if (!agentGateway) return null
+    const adapter = agentGateway.getChannel('webhook')
+    return adapter && adapter.getStatus().connected ? adapter as any : null
+  })
+}).catch(() => { /* Webhook adapter not available */ })
+
+// Hot-connect a channel at runtime (called by MCP tool after writing config.json)
+app.post('/agent/channels/connect', async (c) => {
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+
+  const body = await c.req.json()
+  const { type, config: channelConfig } = body as { type: string; config: Record<string, string> }
+
+  if (!type) {
+    return c.json({ error: 'Missing required field: type' }, 400)
+  }
+
+  try {
+    await agentGateway.connectChannel(type, channelConfig || {})
+    return c.json({ ok: true, message: `${type} channel connected` })
+  } catch (err: any) {
+    console.error(`[agent-runtime] Hot-connect ${type} failed:`, err.message)
+    return c.json({ error: `Failed to connect ${type}: ${err.message}` }, 500)
+  }
+})
+
 // Health check
 app.get('/health', (c) =>
   c.json({

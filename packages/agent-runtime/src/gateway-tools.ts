@@ -37,6 +37,8 @@ export interface ToolContext {
   sandbox?: Partial<import('./types').SandboxConfig>
   mainSessionIds?: string[]
   mcpClientManager?: import('./mcp-client').MCPClientManager
+  /** Hot-connect a channel at runtime (called by channel_connect tool) */
+  connectChannel?: (type: string, config: Record<string, string>) => Promise<void>
 }
 
 const BLOCKED_COMMANDS = [
@@ -2086,7 +2088,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
 
 export const ALL_TOOL_NAMES = [
   'exec', 'read_file', 'write_file', 'web_fetch', 'web_search', 'browser',
-  'memory_read', 'memory_write', 'memory_search', 'send_message', 'cron',
+  'memory_read', 'memory_write', 'memory_search', 'send_message', 'channel_connect', 'cron',
   'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_action_wait', 'canvas_components',
   'canvas_trigger_action', 'canvas_inspect',
   'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query',
@@ -2114,6 +2116,87 @@ export function resolveToolNames(refs: string[]): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Channel Connect Tool
+// ---------------------------------------------------------------------------
+
+function createChannelConnectTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'channel_connect',
+    description:
+      'Connect a messaging channel (telegram, discord, email, slack, whatsapp, or webhook). ' +
+      'Saves the config and hot-connects the channel immediately.',
+    label: 'Connect Channel',
+    parameters: Type.Object({
+      type: Type.String({
+        description: 'Channel type: telegram, discord, email, slack, whatsapp, or webhook',
+      }),
+      config: Type.Record(Type.String(), Type.String(), {
+        description:
+          'Channel configuration. For webhook: { secret?: "shared-secret" }. ' +
+          'For telegram: { botToken: "..." }. For discord: { botToken: "...", guildId: "..." }. ' +
+          'For email: { imapHost, smtpHost, username, password }. ' +
+          'For slack: { botToken: "xoxb-...", appToken: "xapp-..." }. ' +
+          'For whatsapp: { accessToken, phoneNumberId, verifyToken }.',
+      }),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { type, config: channelConfig } = params as {
+        type: string
+        config: Record<string, string>
+      }
+
+      const validTypes = ['telegram', 'discord', 'email', 'slack', 'whatsapp', 'webhook']
+      if (!validTypes.includes(type)) {
+        return textResult({ error: `Invalid channel type: ${type}. Must be one of: ${validTypes.join(', ')}` })
+      }
+
+      try {
+        const { existsSync, readFileSync, writeFileSync } = await import('fs')
+        const { join } = await import('path')
+        const configPath = join(ctx.workspaceDir, 'config.json')
+        let savedConfig: Record<string, any> = {}
+        if (existsSync(configPath)) {
+          savedConfig = JSON.parse(readFileSync(configPath, 'utf-8'))
+        }
+        savedConfig.channels = savedConfig.channels || []
+        const existing = savedConfig.channels.findIndex((c: any) => c.type === type)
+        if (existing >= 0) {
+          savedConfig.channels[existing] = { type, config: channelConfig }
+        } else {
+          savedConfig.channels.push({ type, config: channelConfig })
+        }
+        writeFileSync(configPath, JSON.stringify(savedConfig, null, 2), 'utf-8')
+      } catch (err: any) {
+        return textResult({ error: `Failed to save config: ${err.message}` })
+      }
+
+      if (ctx.connectChannel) {
+        try {
+          await ctx.connectChannel(type, channelConfig)
+          return textResult({
+            ok: true,
+            message: `${type} channel connected and live. ` +
+              (type === 'webhook'
+                ? 'External services can now POST to /agent/channels/webhook/incoming'
+                : `The ${type} adapter is now receiving messages.`),
+          })
+        } catch (err: any) {
+          return textResult({
+            ok: true,
+            message: `${type} channel saved to config but failed to hot-connect: ${err.message}. Restart the agent to connect.`,
+          })
+        }
+      }
+
+      return textResult({
+        ok: true,
+        message: `${type} channel configured. Restart the agent to connect.`,
+      })
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Factory Functions
 // ---------------------------------------------------------------------------
 
@@ -2130,6 +2213,7 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createMemoryWriteTool(ctx),
     createMemorySearchTool(ctx),
     createSendMessageTool(ctx),
+    createChannelConnectTool(ctx),
     createCronTool(ctx),
     createCanvasCreateTool(),
     createCanvasUpdateTool(),
