@@ -9,7 +9,7 @@
  *  - Right: GitHub icon, Upgrade button, Publish button
  */
 
-import { useCallback } from 'react'
+import { useCallback, useState } from 'react'
 import { View, Text, Pressable, useWindowDimensions, ScrollView } from 'react-native'
 import { useRouter } from 'expo-router'
 import {
@@ -22,6 +22,7 @@ import {
   ChevronDown,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { PublishDropdown } from './PublishDropdown'
 
 const AGENT_TABS = [
   { id: 'dynamic-app', label: 'Canvas' },
@@ -58,6 +59,7 @@ export function ProjectTopBar({
   const router = useRouter()
   const { width } = useWindowDimensions()
   const isWide = width >= 768
+  const [showPublish, setShowPublish] = useState(false)
 
   const handleBack = useCallback(() => {
     router.push('/(app)' as any)
@@ -164,10 +166,20 @@ export function ProjectTopBar({
           <Text className="text-xs font-medium text-foreground">Upgrade</Text>
         </Pressable>
 
-        <Pressable className="h-8 flex-row items-center px-3 rounded-md bg-primary active:bg-primary/80">
+        <Pressable
+          onPress={() => setShowPublish(true)}
+          className="h-8 flex-row items-center px-3 rounded-md bg-primary active:bg-primary/80"
+        >
           <Text className="text-xs font-medium text-primary-foreground">Publish</Text>
         </Pressable>
       </View>
+
+      <PublishDropdown
+        projectId={projectId}
+        projectName={projectName}
+        visible={showPublish}
+        onClose={() => setShowPublish(false)}
+      />
     </View>
   )
 }
