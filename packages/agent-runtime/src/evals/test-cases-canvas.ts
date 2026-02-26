@@ -94,6 +94,59 @@ function inspectAfterTrigger(result: EvalResult): boolean {
   return result.toolCalls.some((t, i) => t.name === 'canvas_inspect' && i > firstTrigger)
 }
 
+/**
+ * Check that all successful canvas_trigger_action calls have resolvedFromButton: true,
+ * meaning the mutation was resolved from the actual button component definition.
+ */
+function allTriggersResolvedFromButton(result: EvalResult): boolean {
+  const triggerCalls = result.toolCalls.filter(t => t.name === 'canvas_trigger_action')
+  if (triggerCalls.length === 0) return false
+  const successfulTriggers = triggerCalls.filter(t => {
+    const output = typeof t.output === 'string' ? t.output : JSON.stringify(t.output ?? '')
+    return output.includes('"ok":true') || output.includes('"ok": true')
+  })
+  if (successfulTriggers.length === 0) return false
+  return successfulTriggers.every(t => {
+    const output = typeof t.output === 'string' ? t.output : JSON.stringify(t.output ?? '')
+    return output.includes('"resolvedFromButton":true') || output.includes('"resolvedFromButton": true')
+  })
+}
+
+/**
+ * Check that no canvas_trigger_action outputs contain unresolved parameter warnings.
+ */
+function noUnresolvedParamWarnings(result: EvalResult): boolean {
+  const triggerCalls = result.toolCalls.filter(t => t.name === 'canvas_trigger_action')
+  return triggerCalls.every(t => {
+    const output = typeof t.output === 'string' ? t.output : JSON.stringify(t.output ?? '')
+    return !output.includes('unresolved parameter')
+  })
+}
+
+/**
+ * Check that a canvas_trigger_action call produced output containing a specific
+ * HTTP method (in the resolvedMutation). This replaces checking t.input for
+ * method names since the new API resolves the mutation from the button definition.
+ */
+function triggerOutputContainsMethod(result: EvalResult, method: string): boolean {
+  return result.toolCalls.some(t => {
+    if (t.name !== 'canvas_trigger_action') return false
+    const output = typeof t.output === 'string' ? t.output : JSON.stringify(t.output ?? '')
+    return output.includes(method)
+  })
+}
+
+/**
+ * Check that canvas_update response includes a testChecklist (buttons to test).
+ */
+function updateHasTestChecklist(result: EvalResult): boolean {
+  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
+  return updateCalls.some(t => {
+    const output = typeof t.output === 'string' ? t.output : JSON.stringify(t.output ?? '')
+    return output.includes('testChecklist')
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Test Cases
 // ---------------------------------------------------------------------------
@@ -1128,33 +1181,21 @@ export const CANVAS_EVALS: AgentEval[] = [
         description: 'Tested a POST/add action via canvas_trigger_action',
         points: 10,
         phase: 'execution',
-        validate: (r) => r.toolCalls.some(t => {
-          if (t.name !== 'canvas_trigger_action') return false
-          const json = JSON.stringify(t.input).toLowerCase()
-          return json.includes('post')
-        }),
+        validate: (r) => triggerOutputContainsMethod(r, 'POST'),
       },
       {
         id: 'tested-update-action',
         description: 'Tested a PATCH/mark-complete action via canvas_trigger_action',
         points: 10,
         phase: 'execution',
-        validate: (r) => r.toolCalls.some(t => {
-          if (t.name !== 'canvas_trigger_action') return false
-          const json = JSON.stringify(t.input).toLowerCase()
-          return json.includes('patch') || json.includes('put')
-        }),
+        validate: (r) => triggerOutputContainsMethod(r, 'PATCH') || triggerOutputContainsMethod(r, 'PUT'),
       },
       {
         id: 'tested-delete-action',
         description: 'Tested a DELETE action via canvas_trigger_action',
         points: 10,
         phase: 'execution',
-        validate: (r) => r.toolCalls.some(t => {
-          if (t.name !== 'canvas_trigger_action') return false
-          const json = JSON.stringify(t.input).toLowerCase()
-          return json.includes('delete')
-        }),
+        validate: (r) => triggerOutputContainsMethod(r, 'DELETE'),
       },
       {
         id: 'trigger-action-succeeded',
@@ -1314,26 +1355,14 @@ export const CANVAS_EVALS: AgentEval[] = [
         description: 'Used canvas_trigger_action with PATCH/PUT mutation to update a contact',
         points: 10,
         phase: 'execution',
-        validate: (r) => {
-          return r.toolCalls.some(t => {
-            if (t.name !== 'canvas_trigger_action') return false
-            const json = JSON.stringify(t.input).toLowerCase()
-            return json.includes('patch') || json.includes('put')
-          })
-        },
+        validate: (r) => triggerOutputContainsMethod(r, 'PATCH') || triggerOutputContainsMethod(r, 'PUT'),
       },
       {
         id: 'trigger-delete',
         description: 'Used canvas_trigger_action with DELETE mutation to remove a contact',
         points: 10,
         phase: 'execution',
-        validate: (r) => {
-          return r.toolCalls.some(t => {
-            if (t.name !== 'canvas_trigger_action') return false
-            const json = JSON.stringify(t.input).toLowerCase()
-            return json.includes('delete')
-          })
-        },
+        validate: (r) => triggerOutputContainsMethod(r, 'DELETE'),
       },
       {
         id: 'trigger-action-succeeded',
@@ -1373,6 +1402,129 @@ export const CANVAS_EVALS: AgentEval[] = [
       'Skipped verification steps',
       'Did not use canvas_trigger_action for CRUD',
       'Did not use canvas_inspect to verify',
+      'Buttons missing mutation in action definition',
+    ],
+  },
+
+  // ====================================================================
+  // Faithful Testing Eval — proves the trigger resolves from real buttons
+  // ====================================================================
+
+  {
+    id: 'canvas-faithful-trigger-test',
+    name: 'Canvas: Faithful trigger resolves mutations from button definitions',
+    category: 'canvas',
+    level: 5,
+    input: 'Build a task list where I can add tasks, mark them done, and delete them. Seed 3 tasks. Test every action to make sure it works — I need to know the buttons actually function when clicked.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-api-schema',
+        description: 'Defined API schema for tasks',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_api_schema'),
+      },
+      {
+        id: 'used-api-seed',
+        description: 'Seeded 3 sample tasks',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_api_seed'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Built UI components',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'all-buttons-have-mutations',
+        description: 'Every Button component has a mutation in its action definition',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => allButtonsHaveMutations(r),
+      },
+      {
+        id: 'update-has-test-checklist',
+        description: 'canvas_update response includes a testChecklist with button actions',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => updateHasTestChecklist(r),
+      },
+      {
+        id: 'trigger-resolved-from-button',
+        description: 'All successful canvas_trigger_action calls resolved mutations from actual button definitions (resolvedFromButton: true)',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => allTriggersResolvedFromButton(r),
+      },
+      {
+        id: 'no-unresolved-params',
+        description: 'No canvas_trigger_action outputs have unresolved :param warnings',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => noUnresolvedParamWarnings(r),
+      },
+      {
+        id: 'tested-add-action',
+        description: 'Tested add/POST action via canvas_trigger_action',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.some(t => {
+          if (t.name !== 'canvas_trigger_action') return false
+          const output = typeof t.output === 'string' ? t.output : JSON.stringify(t.output ?? '')
+          return output.includes('"ok":true') && output.includes('POST')
+        }),
+      },
+      {
+        id: 'tested-update-action',
+        description: 'Tested complete/PATCH action via canvas_trigger_action',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.some(t => {
+          if (t.name !== 'canvas_trigger_action') return false
+          const output = typeof t.output === 'string' ? t.output : JSON.stringify(t.output ?? '')
+          return output.includes('"ok":true') && output.includes('PATCH')
+        }),
+      },
+      {
+        id: 'tested-delete-action',
+        description: 'Tested delete/DELETE action via canvas_trigger_action',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.some(t => {
+          if (t.name !== 'canvas_trigger_action') return false
+          const output = typeof t.output === 'string' ? t.output : JSON.stringify(t.output ?? '')
+          return output.includes('"ok":true') && output.includes('DELETE')
+        }),
+      },
+      {
+        id: 'inspect-after-trigger',
+        description: 'Used canvas_inspect after canvas_trigger_action',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => inspectAfterTrigger(r),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 22 tool calls',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 22,
+      },
+    ],
+    antiPatterns: [
+      'Did not use canvas_trigger_action',
+      'Did not use canvas_inspect',
       'Buttons missing mutation in action definition',
     ],
   },

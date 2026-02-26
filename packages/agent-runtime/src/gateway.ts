@@ -151,33 +151,27 @@ Then follow ALL steps below:
 
 **Step 5: TEST — Verify EVERY interactive action actually works (REQUIRED)**
   Test EACH distinct action type (add, mark complete, delete, etc.) separately.
-  canvas_trigger_action performs real verification — it captures data before and after, and returns ok: false if the mutation failed or no data changed.
+  canvas_trigger_action resolves the button's ACTUAL mutation from the component tree — the same way the real frontend does. If the button is missing a mutation or has broken params, the test will catch it.
 
-  ⚠️ **IMPORTANT: The _mutation you pass to canvas_trigger_action MUST match the mutation in your Button's action definition.**
-  Copy the exact endpoint, method, and body structure from your button component. If your button has no mutation, the test might pass (because you're manually providing one) but the real button is BROKEN for users. Always verify the button definition first (Step 4.5).
+  Just provide the actionName. For buttons inside DataList templates, also provide itemData with the item's data (use a real ID from seed data):
 
-  Example — test add (mutation must match your add_btn's action.mutation):
-  canvas_trigger_action({ surfaceId: "my_app", actionName: "add", context: {
-    _mutation: { endpoint: "/api/tasks", method: "POST", body: { title: "Test task" } }
-  }})
-  → Check ok: true and the "changes" array. Then verify with canvas_inspect:
+  Example — test add:
+  canvas_trigger_action({ surfaceId: "my_app", actionName: "add" })
+  → The tool finds the "add" button, resolves its mutation, executes it, and verifies data changed.
   canvas_inspect({ surfaceId: "my_app", mode: "data", dataPath: "/tasks" })
 
-  Example — test mark complete (mutation must match your done_btn's action.mutation):
-  canvas_trigger_action({ surfaceId: "my_app", actionName: "done", context: {
-    _mutation: { endpoint: "/api/tasks/ITEM_ID", method: "PATCH", body: { status: "done" } }
-  }})
-  → Use a real item ID from the seed data or the add test. Confirm the item's status actually changed.
+  Example — test mark complete (DataList template button — needs itemData):
+  canvas_trigger_action({ surfaceId: "my_app", actionName: "done", itemData: { id: "ITEM_ID", title: "First task", status: "todo" } })
+  → The tool resolves { path: "id" } in params against itemData, replacing :id in the endpoint.
   canvas_inspect({ surfaceId: "my_app", mode: "data", dataPath: "/tasks" })
 
-  Example — test delete (mutation must match your del_btn's action.mutation):
-  canvas_trigger_action({ surfaceId: "my_app", actionName: "delete", context: {
-    _mutation: { endpoint: "/api/tasks/ITEM_ID", method: "DELETE" }
-  }})
+  Example — test delete (DataList template button — needs itemData):
+  canvas_trigger_action({ surfaceId: "my_app", actionName: "delete", itemData: { id: "ITEM_ID" } })
   canvas_inspect({ surfaceId: "my_app", mode: "data", dataPath: "/tasks" })
   → Confirm the item count decreased.
 
   For each test: if ok: false is returned, the button IS BROKEN. Debug and fix before moving on.
+  If "resolvedFromButton: true" appears, the test used the real button definition — this is faithful to what users experience.
 
 **Step 6: FIX — Patch individual components (don't resend everything)**
   If a test fails or you need to tweak a component, use \`merge: true\` to update ONLY the broken component:
@@ -259,11 +253,10 @@ Tabs require EITHER explicit tab definitions OR TabPanel children with \`title\`
 
 ### Testing Tools
 
-- **canvas_trigger_action** — YOU simulate a button click. Performs REAL verification: captures data before/after, reports actual changes, and returns ok: false if the mutation failed or no data changed. Include \`_mutation\` context for CRUD actions.
+- **canvas_trigger_action** — Simulate a REAL button click. Finds the button by actionName, resolves its mutation from the component tree (same as the frontend), executes it, and verifies data changed. For DataList template buttons, pass \`itemData\` with the item's fields so scoped bindings (\`{ path: "id" }\`) and \`:id\` params resolve correctly. Returns \`resolvedFromButton: true\` when it used the real button definition.
 - **canvas_inspect** — Read the current surface state. ALWAYS call this after canvas_trigger_action to double-check the data. Also use with mode: "components" for the pre-flight check (Step 4.5).
 - The pattern is always: **pre-flight check → trigger → inspect → report** for EACH action type. No exceptions.
 - You MUST test every distinct action button (add, update/mark-complete, delete) — not just one.
-- The \`_mutation\` you pass to canvas_trigger_action must MATCH your button's action.mutation. Never invent a different mutation for testing — that would pass even if the button is broken.
 
 ### Other Tools
 - **canvas_data** — Manually push data: \`canvas_data({ surfaceId: "app", path: "/key", value: data })\`

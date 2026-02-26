@@ -16,7 +16,7 @@ import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec } from './sandbox-exec'
 import { MemorySearchEngine } from './memory-search'
 import { MCP_CATALOG } from './mcp-catalog'
-import { getDynamicAppManager } from './dynamic-app-manager'
+import { getDynamicAppManager, getByPointer } from './dynamic-app-manager'
 import {
   CANVAS_COMPONENT_SCHEMA,
   VALID_COMPONENT_TYPES,
@@ -928,6 +928,29 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop â€
       // Render with auto-corrected components
       const result = manager.updateComponents(surfaceId, components)
 
+      // Build test checklist for buttons with mutations (helps agent know exactly what to test)
+      const allComponents = merge
+        ? [...(manager.getSurface(surfaceId)?.components.values() ?? [])]
+        : components
+      const buttonChecklist = allComponents
+        .filter((c: any) => c.component === 'Button' && c.action?.mutation)
+        .map((c: any) => {
+          const mut = c.action.mutation as Record<string, unknown>
+          return {
+            actionName: c.action.name,
+            buttonId: c.id,
+            endpoint: mut.endpoint,
+            method: mut.method,
+            hasParams: !!mut.params,
+          }
+        })
+      const testChecklistFields = buttonChecklist.length > 0
+        ? {
+            testChecklist: buttonChecklist,
+            testHint: `Test each button with canvas_trigger_action({ surfaceId: "${surfaceId}", actionName: "..." }). For PATCH/DELETE buttons inside DataList templates, also pass itemData with a real item's data (e.g. { id: "..." }).`,
+          }
+        : {}
+
       // Non-fatal errors still present after auto-correction
       if (errors.length > 0) {
         return textResult({
@@ -937,6 +960,7 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop â€
           errors: errors.map((e) => `[${e.componentId}] ${e.message}`),
           warnings: warnings.length > 0 ? warnings.map((w) => `[${w.componentId}] ${w.message}`) : undefined,
           corrections: corrections.length > 0 ? corrections : undefined,
+          ...testChecklistFields,
           hint: 'Use canvas_components with action "detail" to look up valid props and enum values for any component type.',
         })
       }
@@ -948,6 +972,7 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop â€
           error: `Components rendered with ${warnings.length} warning(s) that should be fixed. Call canvas_update again with corrected components.`,
           warnings: warnings.map((w) => `[${w.componentId}] ${w.message}`),
           corrections: corrections.length > 0 ? corrections : undefined,
+          ...testChecklistFields,
           hint: 'Use canvas_components with action "detail" to look up valid props for any component type.',
         })
       }
@@ -957,12 +982,13 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop â€
           ...result,
           corrections: corrections.length > 0 ? corrections : undefined,
           autoMutations: autoMutationWarnings.length > 0 ? autoMutationWarnings : undefined,
+          ...testChecklistFields,
           note: autoMutationWarnings.length > 0
             ? 'Some buttons had missing mutations that were auto-inferred from action names. Always define explicit mutations in future updates â€” auto-inference may be incorrect.'
             : 'Some prop values were auto-corrected. Use these corrected values in future updates.',
         })
       }
-      return textResult(result)
+      return textResult({ ...result, ...testChecklistFields })
     },
   }
 }
@@ -1346,32 +1372,110 @@ Then in canvas_update: { id: "table", component: "Table", rows: { path: "/todos"
 // Canvas Self-Testing Tools
 // ---------------------------------------------------------------------------
 
+/**
+ * Resolve a dynamic path binding against scope data (DataList item) or root data model.
+ * Mirrors the resolution logic in shared-app/resolve-props.ts resolveValue().
+ */
+function resolveBinding(
+  value: unknown,
+  dataModel: Record<string, unknown>,
+  scopeData?: Record<string, unknown>,
+): unknown {
+  if (typeof value === 'object' && value !== null && 'path' in value && typeof (value as any).path === 'string') {
+    const path = (value as any).path as string
+    if (!path.startsWith('/') && scopeData) {
+      return (scopeData as any)[path]
+    }
+    return getByPointer(dataModel, path)
+  }
+  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    const resolved: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value)) {
+      resolved[k] = resolveBinding(v, dataModel, scopeData)
+    }
+    return resolved
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => resolveBinding(item, dataModel, scopeData))
+  }
+  return value
+}
+
+/**
+ * Resolve a button's mutation definition against the data model, matching
+ * the frontend's resolveValue() path. Returns the fully-resolved mutation
+ * (endpoint with :param placeholders replaced, body bindings resolved).
+ */
+function resolveButtonMutation(
+  mutation: Record<string, unknown>,
+  dataModel: Record<string, unknown>,
+  scopeData?: Record<string, unknown>,
+): { endpoint: string; method: string; body?: unknown } {
+  const resolvedBody = mutation.body && typeof mutation.body === 'object'
+    ? resolveBinding(mutation.body, dataModel, scopeData)
+    : mutation.body
+
+  const rawEndpoint = typeof mutation.endpoint === 'object' && mutation.endpoint !== null && 'path' in mutation.endpoint
+    ? resolveBinding(mutation.endpoint, dataModel, scopeData)
+    : mutation.endpoint
+  let resolvedEndpoint = typeof rawEndpoint === 'string' ? rawEndpoint : ''
+
+  if (resolvedEndpoint && resolvedEndpoint.includes(':')) {
+    const params = (mutation.params || {}) as Record<string, unknown>
+    for (const [pk, pv] of Object.entries(params)) {
+      const resolved = resolveBinding(pv, dataModel, scopeData)
+      resolvedEndpoint = resolvedEndpoint.replace(`:${pk}`, String(resolved ?? ''))
+    }
+  }
+
+  return {
+    endpoint: resolvedEndpoint,
+    method: String(mutation.method || 'POST'),
+    ...(resolvedBody !== undefined ? { body: resolvedBody } : {}),
+  }
+}
+
+/**
+ * Find the Button component on a surface whose action.name matches.
+ */
+function findButtonByActionName(
+  surface: { components: Map<string, any> },
+  actionName: string,
+): { id: string; action: Record<string, unknown> } | null {
+  for (const [, comp] of surface.components) {
+    if (comp.component !== 'Button') continue
+    const action = comp.action as Record<string, unknown> | undefined
+    if (action && action.name === actionName) {
+      return { id: comp.id, action }
+    }
+  }
+  return null
+}
+
 function createCanvasTriggerActionTool(): AgentTool {
   return {
     name: 'canvas_trigger_action',
     description:
-      `Programmatically simulate a user click on a canvas button or component. Use this to test and verify your canvas UIs work correctly â€” do NOT use canvas_action_wait for self-testing.
+      `Programmatically simulate a real user click on a canvas button. This resolves the button's actual mutation definition from the component tree (same as the frontend), so the test faithfully matches what the user would experience.
 
-For mutation actions (CRUD), include _mutation in the context:
-  canvas_trigger_action({ surfaceId: "app", actionName: "add_todo", context: {
-    _mutation: { endpoint: "/api/todos", method: "POST", body: { title: "Test" } }
-  }})
+Provide the actionName and optional itemData (for buttons inside DataList templates):
+  canvas_trigger_action({ surfaceId: "app", actionName: "add_todo" })
+  canvas_trigger_action({ surfaceId: "app", actionName: "delete", itemData: { id: "abc123" } })
 
-For non-mutation actions:
-  canvas_trigger_action({ surfaceId: "app", actionName: "select_item", context: { itemId: "123" } })
+For DataList template buttons, itemData provides the current item's data (like { id, title, status }) so the mutation's :id params and scoped bindings resolve correctly.
 
-This tool performs real verification: it captures data before the action, executes it, then checks what actually changed. If a mutation fails or doesn't change data as expected, it returns ok: false with details. Always follow up with canvas_inspect to double-check the data. Never use canvas_action_wait after canvas_trigger_action.`,
+This tool performs real verification: it finds the button, resolves its mutation, captures data before/after, and returns ok: false if the button has no mutation, the mutation failed, or no data changed. Always follow up with canvas_inspect to double-check.`,
     label: 'Trigger Canvas Action',
     parameters: Type.Object({
       surfaceId: Type.String({ description: 'Surface ID to trigger the action on' }),
-      actionName: Type.String({ description: 'Name of the action to trigger (matches the action.name on a Button or other interactive component)' }),
-      context: Type.Optional(Type.Object({}, { additionalProperties: true, description: 'Action context data. For mutations, include _mutation: { endpoint, method, body? }' })),
+      actionName: Type.String({ description: 'Name of the action to trigger (matches the action.name on a Button)' }),
+      itemData: Type.Optional(Type.Object({}, { additionalProperties: true, description: 'For buttons inside DataList templates: the current item data (e.g. { id: "abc123", title: "...", status: "..." }). Used to resolve scoped bindings like { path: "id" } and :id endpoint params.' })),
     }),
     execute: async (_toolCallId, params) => {
-      const { surfaceId, actionName, context } = params as {
+      const { surfaceId, actionName, itemData } = params as {
         surfaceId: string
         actionName: string
-        context?: Record<string, unknown>
+        itemData?: Record<string, unknown>
       }
       const manager = getDynamicAppManager()
 
@@ -1380,13 +1484,55 @@ This tool performs real verification: it captures data before the action, execut
         return textResult({ ok: false, error: `Surface "${surfaceId}" does not exist.` })
       }
 
-      const hasMutation = !!(context as any)?._mutation
+      const button = findButtonByActionName(surface, actionName)
+
+      if (!button) {
+        // No button found â€” deliver as a non-mutation action (e.g. for canvas_action_wait waiters)
+        const deliveryResult = await manager.deliverActionAsync({
+          surfaceId,
+          name: actionName,
+          context: {},
+          timestamp: new Date().toISOString(),
+        })
+        const updatedSurface = manager.getSurface(surfaceId)
+        const dataKeys = updatedSurface ? Object.keys(updatedSurface.dataModel) : []
+        return textResult({
+          ok: false,
+          surfaceId,
+          actionName,
+          resolvedFromButton: false,
+          dataKeys,
+          error: `No Button with action.name "${actionName}" found in the component tree. Cannot verify this action.`,
+          message: `No button named "${actionName}" exists on surface "${surfaceId}". Check the actionName matches a Button's action.name exactly.`,
+        })
+      }
+
+      const mutation = button.action.mutation as Record<string, unknown> | undefined
+      if (!mutation) {
+        return textResult({
+          ok: false,
+          surfaceId,
+          actionName,
+          resolvedFromButton: true,
+          buttonId: button.id,
+          error: `Button "${button.id}" has action.name "${actionName}" but NO mutation defined. This button does NOTHING when a real user clicks it. Fix the button with canvas_update({ merge: true }) to add: mutation: { endpoint: "/api/...", method: "POST|PATCH|DELETE", body?: {...} }`,
+          message: `BROKEN BUTTON: "${button.id}" is missing its mutation. The button looks correct in the UI but does absolutely nothing when clicked. This is the #1 canvas bug.`,
+        })
+      }
+
+      const resolvedMutation = resolveButtonMutation(mutation, surface.dataModel, itemData)
+      const warnings: string[] = []
+
+      if (resolvedMutation.endpoint.includes(':')) {
+        warnings.push(`Resolved endpoint "${resolvedMutation.endpoint}" still has unresolved parameter placeholders. The button's mutation.params may be missing or itemData was not provided. In the real UI, this will cause a 404 error.`)
+      }
+
       const beforeSnapshot = JSON.parse(JSON.stringify(surface.dataModel))
 
       const deliveryResult = await manager.deliverActionAsync({
         surfaceId,
         name: actionName,
-        context: context || {},
+        context: { _mutation: resolvedMutation },
         timestamp: new Date().toISOString(),
       })
 
@@ -1394,55 +1540,52 @@ This tool performs real verification: it captures data before the action, execut
       const afterSnapshot = updatedSurface ? JSON.parse(JSON.stringify(updatedSurface.dataModel)) : {}
       const dataKeys = updatedSurface ? Object.keys(updatedSurface.dataModel) : []
 
-      if (hasMutation) {
-        if (deliveryResult.result && !deliveryResult.result.ok) {
-          return textResult({
-            ok: false,
-            surfaceId,
-            actionName,
-            wasMutation: true,
-            error: `Mutation FAILED: ${deliveryResult.result.error ?? 'unknown error'}`,
-            status: deliveryResult.result.status,
-            message: `The "${actionName}" mutation failed on "${surfaceId}". The API returned an error. Check the endpoint, method, and body. This button is BROKEN and needs to be fixed before delivery.`,
-          })
-        }
-
-        const changes = diffDataSnapshots(beforeSnapshot, afterSnapshot)
-        if (changes.length === 0) {
-          return textResult({
-            ok: false,
-            surfaceId,
-            actionName,
-            wasMutation: true,
-            dataKeys,
-            dataBefore: beforeSnapshot,
-            dataAfter: afterSnapshot,
-            error: 'Mutation executed but NO data changed in the data model.',
-            message: `WARNING: The "${actionName}" mutation on "${surfaceId}" did not change any data. The API call may have succeeded but the data model wasn't updated. Verify the endpoint is correct and the data path matches. Use canvas_inspect to check the current state. This action may be BROKEN for users.`,
-          })
-        }
-
+      if (deliveryResult.result && !deliveryResult.result.ok) {
         return textResult({
-          ok: true,
+          ok: false,
           surfaceId,
           actionName,
           wasMutation: true,
+          resolvedFromButton: true,
+          buttonId: button.id,
+          resolvedMutation,
+          error: `Mutation FAILED: ${deliveryResult.result.error ?? 'unknown error'}`,
+          status: deliveryResult.result.status,
+          warnings: warnings.length > 0 ? warnings : undefined,
+          message: `The "${actionName}" mutation failed on "${surfaceId}". Resolved from button "${button.id}". The API returned an error. This button is BROKEN and needs to be fixed.`,
+        })
+      }
+
+      const changes = diffDataSnapshots(beforeSnapshot, afterSnapshot)
+      if (changes.length === 0) {
+        return textResult({
+          ok: false,
+          surfaceId,
+          actionName,
+          wasMutation: true,
+          resolvedFromButton: true,
+          buttonId: button.id,
+          resolvedMutation,
           dataKeys,
-          changes,
-          itemCount: deliveryResult.result?.itemCount,
-          message: `Mutation "${actionName}" VERIFIED on "${surfaceId}". Data changed: ${changes.map(c => c.summary).join('; ')}. Use canvas_inspect to double-check the full data state.`,
+          error: 'Mutation executed but NO data changed in the data model.',
+          warnings: warnings.length > 0 ? warnings : undefined,
+          message: `WARNING: The "${actionName}" mutation on "${surfaceId}" (button "${button.id}") did not change any data. The mutation may have wrong endpoint or body. This action may be BROKEN for users.`,
         })
       }
 
       return textResult({
-        ok: deliveryResult.handled,
+        ok: true,
         surfaceId,
         actionName,
-        wasMutation: false,
+        wasMutation: true,
+        resolvedFromButton: true,
+        buttonId: button.id,
+        resolvedMutation,
         dataKeys,
-        message: deliveryResult.handled
-          ? `Action "${actionName}" delivered to "${surfaceId}". Use canvas_inspect to verify the surface state.`
-          : `Action "${actionName}" was not handled. No waiter or mutation target found.`,
+        changes,
+        itemCount: deliveryResult.result?.itemCount,
+        warnings: warnings.length > 0 ? warnings : undefined,
+        message: `Mutation "${actionName}" VERIFIED on "${surfaceId}". Resolved from button "${button.id}" definition (${resolvedMutation.method} ${resolvedMutation.endpoint}). Data changed: ${changes.map(c => c.summary).join('; ')}. Use canvas_inspect to double-check.`,
       })
     },
   }

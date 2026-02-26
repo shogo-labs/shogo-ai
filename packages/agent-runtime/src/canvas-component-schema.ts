@@ -553,6 +553,13 @@ export function lintComponents(components: Array<{ id?: string; component?: stri
             message: `Button action.mutation.method "${method}" is not valid. Use one of: POST, PATCH, DELETE, OPEN.`,
           })
         }
+        if (typeof endpoint === 'string' && endpoint.includes(':') && !mutation.params) {
+          messages.push({
+            severity: 'error',
+            componentId: cid,
+            message: `Button mutation endpoint "${endpoint}" has parameter placeholders (e.g. :id) but no "params" defined. Add params: { id: { path: "id" } } to resolve :id from the current item data.`,
+          })
+        }
       }
     }
 
