@@ -44,7 +44,7 @@ import { useSDKDomains, useDomainActions } from "@shogo/shared-app/domain"
 import { Platform } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { API_URL } from "../../lib/api"
-import { authClient } from "../../lib/auth-client"
+import { getAuthCookieHeader } from "../../lib/auth-storage"
 import { ChatHeader } from "./ChatHeader"
 import { MessageList } from "./MessageList"
 import { ChatInput, type AgentMode } from "./ChatInput"
@@ -646,7 +646,7 @@ export const ChatPanel = observer(function ChatPanel({
   const nativeHeaders = useMemo(() => {
     if (Platform.OS === 'web') return undefined
     return () => {
-      const cookie = (authClient as any).getCookie?.()
+      const cookie = getAuthCookieHeader()
       return cookie ? { Cookie: cookie } : {}
     }
   }, [])

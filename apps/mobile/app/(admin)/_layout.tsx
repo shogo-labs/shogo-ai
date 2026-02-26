@@ -11,7 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context'
 import { Shield } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
 import { API_URL } from '../../lib/api'
-import { authClient } from '../../lib/auth-client'
+import { getAuthCookieHeader } from '../../lib/auth-storage'
 
 type UserRole = 'user' | 'super_admin'
 
@@ -28,7 +28,7 @@ function useAdminCheck() {
     let cancelled = false
     const fetchOpts: RequestInit = Platform.OS === 'web'
       ? { credentials: 'include' }
-      : { credentials: 'omit', headers: { ...(((authClient as any).getCookie?.()) ? { Cookie: (authClient as any).getCookie() } : {}) } }
+      : { credentials: 'omit', headers: { ...(getAuthCookieHeader() ? { Cookie: getAuthCookieHeader()! } : {}) } }
     fetch(`${API_URL}/api/me`, fetchOpts)
       .then((res) => res.json())
       .then((data: any) => {

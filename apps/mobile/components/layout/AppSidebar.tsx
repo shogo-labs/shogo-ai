@@ -27,6 +27,7 @@ import {
   Platform,
 } from 'react-native'
 import { usePathname, useRouter } from 'expo-router'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { observer } from 'mobx-react-lite'
 import {
   Home,
@@ -688,6 +689,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const { width } = useWindowDimensions()
   const pathname = usePathname()
   const router = useRouter()
+  const insets = useSafeAreaInsets()
   const isWide = width >= 768
 
   const { user, signOut } = useAuth()
@@ -696,8 +698,8 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const actions = useDomainActions()
 
   useEffect(() => {
-    workspaces.loadAll()
-    projects.loadAll()
+    workspaces.loadAll().catch(() => {})
+    projects.loadAll().catch(() => {})
   }, [])
 
   let currentWorkspace: any
@@ -929,7 +931,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
       </ScrollView>
 
       {/* ── Bottom Section ── */}
-      <View className="border-t border-border">
+      <View className="border-t border-border" style={{ paddingBottom: insets.bottom }}>
         {/* Upgrade to Pro CTA */}
         {!collapsed && !isPaidPlan && (
           <View className="px-2 pt-2">
