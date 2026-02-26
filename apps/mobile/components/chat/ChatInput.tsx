@@ -8,8 +8,8 @@
  * - Bottom toolbar with action buttons
  * - Agent mode selector via modal dropdown
  *
- * Supports image attachments via image picker (stub).
- * Drag-and-drop / paste not available on mobile.
+ * Supports image attachments via file picker, drag-and-drop, and paste (web).
+ * Mobile uses file picker stub.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
@@ -127,11 +127,14 @@ export function ChatInput({
   onReorderQueuedMessage,
 }: ChatInputProps) {
   const textInputRef = useRef<TextInput>(null)
+  const dropZoneRef = useRef<View>(null)
+  const dragCounterRef = useRef(0)
 
   const [inputValue, setInputValue] = useState("")
   const [pendingFiles, setPendingFiles] = useState<AttachedFile[]>([])
   const [fileError, setFileError] = useState<string | null>(null)
   const [isProcessingFiles, setIsProcessingFiles] = useState(false)
+  const [isDragOver, setIsDragOver] = useState(false)
   const [queueExpanded, setQueueExpanded] = useState(true)
   const [showAgentModeModal, setShowAgentModeModal] = useState(false)
 
@@ -197,25 +200,23 @@ export function ChatInput({
     }
   }, [])
 
-  const handleWebFileChange = useCallback(
-    (e: any) => {
-      const files = e.target?.files
-      if (!files || files.length === 0) return
+  const processFiles = useCallback((files: FileList | File[]) => {
+    Array.from(files).forEach((file: File) => {
+      if (file.size > MAX_FILE_SIZE) {
+        setFileError(`File "${file.name}" exceeds ${MAX_FILE_SIZE / (1024 * 1024)}MB limit`)
+        return
+      }
 
-      Array.from(files as FileList).forEach((file: File) => {
-        if (file.size > MAX_FILE_SIZE) {
-          setFileError(`File "${file.name}" exceeds ${MAX_FILE_SIZE / (1024 * 1024)}MB limit`)
-          return
-        }
-        if (pendingFiles.length >= MAX_FILES) {
-          setFileError(`Maximum ${MAX_FILES} files allowed`)
-          return
-        }
-
-        const reader = new FileReader()
-        reader.onload = () => {
-          const dataUrl = reader.result as string
-          setPendingFiles((prev) => [
+      const reader = new FileReader()
+      reader.onload = () => {
+        const dataUrl = reader.result as string
+        setPendingFiles((prev) => {
+          if (prev.length >= MAX_FILES) {
+            setFileError(`Maximum ${MAX_FILES} files allowed`)
+            return prev
+          }
+          setFileError(null)
+          return [
             ...prev,
             {
               id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -224,16 +225,99 @@ export function ChatInput({
               type: file.type,
               size: file.size,
             },
-          ])
-          setFileError(null)
-        }
-        reader.readAsDataURL(file)
-      })
+          ]
+        })
+      }
+      reader.readAsDataURL(file)
+    })
+  }, [])
 
+  const handleWebFileChange = useCallback(
+    (e: any) => {
+      const files = e.target?.files
+      if (!files || files.length === 0) return
+      processFiles(files)
       if (e.target) e.target.value = ""
     },
-    [pendingFiles]
+    [processFiles]
   )
+
+  // Drag-and-drop support (web only)
+  // Uses dragenter/dragleave counter to avoid flicker when cursor crosses child elements
+  useEffect(() => {
+    if (Platform.OS !== "web") return
+    const node = dropZoneRef.current as unknown as HTMLElement | null
+    if (!node) return
+
+    const handleDragOver = (e: DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+    }
+    const handleDragEnter = (e: DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      dragCounterRef.current++
+      if (dragCounterRef.current === 1) {
+        setIsDragOver(true)
+      }
+    }
+    const handleDragLeave = (e: DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      dragCounterRef.current--
+      if (dragCounterRef.current === 0) {
+        setIsDragOver(false)
+      }
+    }
+    const handleDrop = (e: DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      dragCounterRef.current = 0
+      setIsDragOver(false)
+      if (e.dataTransfer?.files?.length) {
+        processFiles(Array.from(e.dataTransfer.files))
+      }
+    }
+
+    node.addEventListener("dragover", handleDragOver)
+    node.addEventListener("dragenter", handleDragEnter)
+    node.addEventListener("dragleave", handleDragLeave)
+    node.addEventListener("drop", handleDrop)
+    return () => {
+      node.removeEventListener("dragover", handleDragOver)
+      node.removeEventListener("dragenter", handleDragEnter)
+      node.removeEventListener("dragleave", handleDragLeave)
+      node.removeEventListener("drop", handleDrop)
+    }
+  }, [processFiles])
+
+  // Paste image support (web only)
+  useEffect(() => {
+    if (Platform.OS !== "web") return
+    const node = dropZoneRef.current as unknown as HTMLElement | null
+    if (!node) return
+
+    const handlePaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items
+      if (!items) return
+      const imageFiles: File[] = []
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.startsWith("image/")) {
+          const file = items[i].getAsFile()
+          if (file) imageFiles.push(file)
+        }
+      }
+      if (imageFiles.length > 0) {
+        e.preventDefault()
+        processFiles(imageFiles)
+      }
+    }
+
+    node.addEventListener("paste", handlePaste as EventListener)
+    return () => {
+      node.removeEventListener("paste", handlePaste as EventListener)
+    }
+  }, [processFiles])
 
   const selectSkill = useCallback(
     (skill: SkillOption) => {
@@ -452,7 +536,13 @@ export function ChatInput({
       )}
 
       {/* Main input container */}
-      <View className="relative rounded-xl border border-border/60 bg-muted/30 overflow-hidden">
+      <View
+        ref={dropZoneRef as any}
+        className={cn(
+          "relative rounded-xl border bg-muted/30 overflow-hidden",
+          isDragOver ? "border-primary border-dashed" : "border-border/60"
+        )}
+      >
         {/* Skill picker dropdown */}
         {showSkillPicker && filteredSkills.length > 0 && (
           <View className="absolute bottom-full left-0 right-0 mb-1 max-h-[200px] rounded-md border border-border bg-popover shadow-md z-50">
