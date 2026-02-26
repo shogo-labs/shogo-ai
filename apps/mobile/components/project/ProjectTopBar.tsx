@@ -149,7 +149,10 @@ export function ProjectTopBar({
 
       {/* Right: GitHub, Upgrade, Publish */}
       <View className="flex-row items-center gap-1.5 flex-shrink-0">
-        <Pressable className="h-8 w-8 items-center justify-center rounded-md active:bg-muted">
+        <Pressable
+          onPress={() => router.push({ pathname: '/(app)/settings', params: { tab: 'github' } } as any)}
+          className="h-8 w-8 items-center justify-center rounded-md active:bg-muted"
+        >
           <Github size={16} className="text-muted-foreground" />
         </Pressable>
 
