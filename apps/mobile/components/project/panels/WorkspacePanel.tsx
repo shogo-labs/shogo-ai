@@ -6,6 +6,7 @@ import {
   ScrollView,
   TextInput,
   ActivityIndicator,
+  Platform,
 } from 'react-native'
 import { FileText, Save, RefreshCw, Eye, Pencil, Download, Upload } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -88,9 +89,19 @@ export function WorkspacePanel({ projectId, agentUrl, visible }: WorkspacePanelP
       const res = await fetch(`${agentUrl}/agent/export`)
       if (!res.ok) throw new Error('Failed to export')
       const bundle = await res.json()
-      // On native, we can't do Blob + download. Show the JSON as an alert or copy it.
-      // For now, log it. A proper implementation would use Share API.
-      console.log('[WorkspacePanel] Export bundle:', JSON.stringify(bundle, null, 2))
+      const jsonStr = JSON.stringify(bundle, null, 2)
+
+      if (Platform.OS === 'web' && typeof document !== 'undefined') {
+        const blob = new Blob([jsonStr], { type: 'application/json' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `agent-export-${new Date().toISOString().slice(0, 10)}.json`
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+      }
       setError(null)
     } catch (err: any) {
       setError(err.message)
@@ -98,6 +109,35 @@ export function WorkspacePanel({ projectId, agentUrl, visible }: WorkspacePanelP
       setIsExporting(false)
     }
   }, [agentUrl])
+
+  const handleImport = useCallback(() => {
+    if (!agentUrl) return
+
+    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+      const input = document.createElement('input')
+      input.type = 'file'
+      input.accept = '.json'
+      input.onchange = async (e: any) => {
+        const file = e.target?.files?.[0]
+        if (!file) return
+        try {
+          const text = await file.text()
+          const bundle = JSON.parse(text)
+          const res = await fetch(`${agentUrl}/agent/import`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(bundle),
+          })
+          if (!res.ok) throw new Error('Failed to import agent')
+          loadFile(selectedFile)
+          setError(null)
+        } catch (err: any) {
+          setError(err.message || 'Failed to import agent configuration')
+        }
+      }
+      input.click()
+    }
+  }, [agentUrl, selectedFile, loadFile])
 
   if (!visible) return null
 
@@ -153,7 +193,10 @@ export function WorkspacePanel({ projectId, agentUrl, visible }: WorkspacePanelP
               {isExporting ? 'Exporting...' : 'Export Agent'}
             </Text>
           </Pressable>
-          <Pressable className="flex-row items-center gap-1.5 px-2 py-1.5 rounded-md active:bg-muted">
+          <Pressable
+            onPress={handleImport}
+            className="flex-row items-center gap-1.5 px-2 py-1.5 rounded-md active:bg-muted"
+          >
             <Upload size={12} className="text-muted-foreground" />
             <Text className="text-xs text-muted-foreground">Import Agent</Text>
           </Pressable>
