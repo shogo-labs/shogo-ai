@@ -189,10 +189,51 @@ export function ChatInput({
     setFileError(null)
   }, [])
 
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+
   const handleAttachClick = useCallback(() => {
-    // TODO: Integrate expo-image-picker or expo-document-picker
-    // For now this is a stub — file picking not yet wired on mobile
+    if (Platform.OS === "web") {
+      fileInputRef.current?.click()
+    }
   }, [])
+
+  const handleWebFileChange = useCallback(
+    (e: any) => {
+      const files = e.target?.files
+      if (!files || files.length === 0) return
+
+      Array.from(files as FileList).forEach((file: File) => {
+        if (file.size > MAX_FILE_SIZE) {
+          setFileError(`File "${file.name}" exceeds ${MAX_FILE_SIZE / (1024 * 1024)}MB limit`)
+          return
+        }
+        if (pendingFiles.length >= MAX_FILES) {
+          setFileError(`Maximum ${MAX_FILES} files allowed`)
+          return
+        }
+
+        const reader = new FileReader()
+        reader.onload = () => {
+          const dataUrl = reader.result as string
+          setPendingFiles((prev) => [
+            ...prev,
+            {
+              id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              dataUrl,
+              name: file.name,
+              type: file.type,
+              size: file.size,
+            },
+          ])
+          setFileError(null)
+        }
+        reader.readAsDataURL(file)
+      })
+
+      if (e.target) e.target.value = ""
+    },
+    [pendingFiles]
+  )
 
   const selectSkill = useCallback(
     (skill: SkillOption) => {
@@ -437,6 +478,18 @@ export function ChatInput({
           </View>
         )}
 
+        {/* Hidden file input for web */}
+        {Platform.OS === "web" && (
+          <input
+            ref={fileInputRef as any}
+            type="file"
+            multiple
+            accept="image/*,.pdf,.txt,.md,.csv,.json"
+            onChange={handleWebFileChange}
+            style={{ display: "none" }}
+          />
+        )}
+
         {/* TextInput */}
         <TextInput
           ref={textInputRef}
@@ -461,6 +514,7 @@ export function ChatInput({
             disabled && "opacity-50"
           )}
           textAlignVertical="top"
+          style={Platform.OS === "web" ? { outlineStyle: "none" } as any : undefined}
         />
 
         {/* Bottom toolbar */}
