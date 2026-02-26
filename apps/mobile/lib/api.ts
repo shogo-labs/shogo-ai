@@ -1,14 +1,22 @@
 import { Platform } from 'react-native'
 import type { HttpClient } from '@shogo-ai/sdk'
 
-export const API_URL =
-  process.env.EXPO_PUBLIC_API_URL ??
-  Platform.select({
+export const API_URL = (() => {
+  const envUrl = process.env.EXPO_PUBLIC_API_URL
+  if (envUrl) return envUrl
+
+  // Empty string means "same origin" (Docker/nginx proxy builds set EXPO_PUBLIC_API_URL="")
+  if (envUrl === '' && Platform.OS === 'web' && typeof window !== 'undefined') {
+    return window.location.origin
+  }
+
+  return Platform.select({
     web: 'http://localhost:8002',
     ios: 'http://localhost:8002',
     android: 'http://10.0.2.2:8002',
     default: 'http://localhost:8002',
-  })
+  })!
+})()
 
 // ─── Backend API helpers ────────────────────────────────────
 // For domain CRUD (projects, chat sessions, etc.) use `useDomainActions()`.

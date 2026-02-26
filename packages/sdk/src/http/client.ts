@@ -57,7 +57,12 @@ export class HttpClient {
   private requestCache = new Map<string, CacheEntry<any>>()
 
   constructor(config: HttpClientConfig) {
-    this.baseUrl = config.baseUrl.replace(/\/$/, '')
+    const base = config.baseUrl?.replace(/\/$/, '') || ''
+    if (!base && typeof globalThis.window !== 'undefined') {
+      this.baseUrl = globalThis.window.location.origin
+    } else {
+      this.baseUrl = base
+    }
     this.getToken = config.getToken ?? (() => null)
     this.mcpPath = config.mcpPath ?? '/mcp'
     this.authPath = config.authPath ?? '/api/auth'
