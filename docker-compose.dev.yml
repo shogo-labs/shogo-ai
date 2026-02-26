@@ -96,46 +96,8 @@ services:
     command: ["bun", "--watch", "src/server.ts"]
 
   # ---------------------------------------------------------------------------
-  # Web Frontend - Development with Vite HMR
+  # Web Frontend (Expo) - Development
   # ---------------------------------------------------------------------------
-  # Runs on port 5173 (standard Vite port) for compatibility with e2e tests.
-  # HMR WebSocket is configured to work through Docker networking.
+  # For dev, run Expo directly: bun run web:dev
+  # The Docker web service is production-only (static export + nginx).
   # ---------------------------------------------------------------------------
-  web:
-    build:
-      context: .
-      dockerfile: apps/web/Dockerfile.dev
-    ports:
-      # Expose on 5173 for e2e test compatibility
-      - "${VITE_PORT:-5173}:5173"
-    volumes:
-      - .:/app
-      - /app/node_modules
-      - /app/packages/state-api/node_modules
-      - /app/packages/mcp/node_modules
-      - /app/apps/web/node_modules
-    environment:
-      NODE_ENV: development
-      # Vite server config
-      VITE_PORT: "5173"
-      # Client-side URLs (used by browser - points to Docker exposed ports)
-      VITE_API_URL: http://localhost:8002
-      VITE_MCP_URL: http://localhost:3100
-      VITE_BETTER_AUTH_URL: http://localhost:8002
-      VITE_WORKSPACE: workspace
-      # Server-side proxy targets (Vite dev server uses Docker networking)
-      VITE_API_PROXY_TARGET: http://api:8002
-      VITE_MCP_PROXY_TARGET: http://mcp:3100
-      # HMR configuration for Docker
-      VITE_HMR_HOST: localhost
-      VITE_HMR_PORT: "5173"
-      # Enable file watching with polling (required for Docker on macOS/Windows)
-      VITE_USE_POLLING: "true"
-      CHOKIDAR_USEPOLLING: "true"
-    command: ["bun", "run", "dev", "--host", "0.0.0.0", "--port", "5173"]
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:5173"]
-      interval: 10s
-      timeout: 5s
-      start_period: 30s
-      retries: 3

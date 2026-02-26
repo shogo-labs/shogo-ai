@@ -39,9 +39,11 @@ COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY packages/agent-runtime/package.json ./packages/agent-runtime/
 COPY packages/shared-runtime/package.json ./packages/shared-runtime/
 COPY packages/sdk/package.json ./packages/sdk/
-COPY apps/web/package.json ./apps/web/
+COPY packages/domain-stores/package.json ./packages/domain-stores/
+COPY packages/shared-app/package.json ./packages/shared-app/
+COPY packages/shared-ui/package.json ./packages/shared-ui/
+COPY packages/ui-kit/package.json ./packages/ui-kit/
 COPY apps/api/package.json ./apps/api/
-COPY apps/desktop/package.json ./apps/desktop/
 COPY apps/mobile/package.json ./apps/mobile/
 
 # Copy scripts needed for postinstall (patch-claude-sdk runs during bun install)
@@ -94,9 +96,11 @@ COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY packages/agent-runtime/package.json ./packages/agent-runtime/
 COPY packages/shared-runtime/package.json ./packages/shared-runtime/
 COPY packages/sdk/package.json ./packages/sdk/
-COPY apps/web/package.json ./apps/web/
+COPY packages/domain-stores/package.json ./packages/domain-stores/
+COPY packages/shared-app/package.json ./packages/shared-app/
+COPY packages/shared-ui/package.json ./packages/shared-ui/
+COPY packages/ui-kit/package.json ./packages/ui-kit/
 COPY apps/api/package.json ./apps/api/
-COPY apps/desktop/package.json ./apps/desktop/
 COPY apps/mobile/package.json ./apps/mobile/
 
 COPY scripts ./scripts
@@ -218,9 +222,11 @@ COPY --chown=appuser:appgroup --from=builder /app/tsconfig.base.json ./
 # Workspace member package.jsons needed by bun install for resolution
 COPY --from=builder /app/packages/sdk/package.json ./packages/sdk/
 COPY --from=builder /app/packages/agent-runtime/package.json ./packages/agent-runtime/
-COPY --from=builder /app/apps/web/package.json ./apps/web/
+COPY --from=builder /app/packages/domain-stores/package.json ./packages/domain-stores/
+COPY --from=builder /app/packages/shared-app/package.json ./packages/shared-app/
+COPY --from=builder /app/packages/shared-ui/package.json ./packages/shared-ui/
+COPY --from=builder /app/packages/ui-kit/package.json ./packages/ui-kit/
 COPY --from=builder /app/apps/api/package.json ./apps/api/
-COPY --from=builder /app/apps/desktop/package.json ./apps/desktop/
 COPY --from=builder /app/apps/mobile/package.json ./apps/mobile/
 
 # Rebuild bun's module resolution links. Docker COPY from the deps stage
