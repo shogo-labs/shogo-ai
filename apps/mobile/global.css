@@ -1,0 +1,47 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-background: #ffffff;
+  --color-foreground: #0a0a0a;
+  --color-card: #ffffff;
+  --color-card-foreground: #0a0a0a;
+  --color-popover: #ffffff;
+  --color-popover-foreground: #0a0a0a;
+  --color-primary: #2563eb;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #f4f4f5;
+  --color-secondary-foreground: #18181b;
+  --color-muted: #f4f4f5;
+  --color-muted-foreground: #71717a;
+  --color-accent: #f4f4f5;
+  --color-accent-foreground: #18181b;
+  --color-destructive: #dc2626;
+  --color-destructive-foreground: #ffffff;
+  --color-border: #e4e4e7;
+  --color-input: #e4e4e7;
+  --color-ring: #2563eb;
+}
+
+.dark {
+  --color-background: #121212;
+  --color-foreground: rgba(255, 255, 255, 0.87);
+  --color-card: #1e1e1e;
+  --color-card-foreground: rgba(255, 255, 255, 0.87);
+  --color-popover: #1e1e1e;
+  --color-popover-foreground: rgba(255, 255, 255, 0.87);
+  --color-primary: #2196f3;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #333333;
+  --color-secondary-foreground: #ffffff;
+  --color-muted: #2a2a2a;
+  --color-muted-foreground: rgba(255, 255, 255, 0.6);
+  --color-accent: #333333;
+  --color-accent-foreground: #ffffff;
+  --color-destructive: #dc2626;
+  --color-destructive-foreground: #ffffff;
+  --color-border: #333333;
+  --color-input: #333333;
+  --color-ring: #2196f3;
+}

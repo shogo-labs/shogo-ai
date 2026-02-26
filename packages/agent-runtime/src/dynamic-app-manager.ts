@@ -487,6 +487,56 @@ export class DynamicAppManager {
     return [...this.surfaces.keys()]
   }
 
+  /**
+   * Public helper for canvas_update: attempt to infer a mutation for a button
+   * component that has an action.name but no mutation defined.
+   * Returns the inferred mutation or null if inference fails.
+   */
+  inferMutationForButton(
+    surfaceId: string,
+    actionName: string,
+  ): { endpoint: string; method: string } | null {
+    const runtime = this.runtimes.get(surfaceId)
+    if (!runtime || !runtime.isReady()) return null
+
+    const endpoints = runtime.getEndpoints()
+    if (endpoints.length === 0) return null
+
+    const name = actionName.toLowerCase()
+    const parts = name.split('_')
+    if (parts.length < 2) return null
+
+    const verb = parts[0]
+    const noun = parts.slice(1).join('_')
+
+    const matchedEndpoint = endpoints.find((ep) => {
+      const epNoun = ep.path.replace('/api/', '').toLowerCase()
+      return epNoun.startsWith(noun) || noun.startsWith(epNoun.replace(/s$|es$|ies$/, ''))
+    })
+    if (!matchedEndpoint) return null
+
+    switch (verb) {
+      case 'save':
+      case 'add':
+      case 'create':
+      case 'reserve':
+      case 'book':
+        return { endpoint: matchedEndpoint.path, method: 'POST' }
+      case 'delete':
+      case 'remove':
+      case 'cancel':
+        return { endpoint: `${matchedEndpoint.path}/:id`, method: 'DELETE' }
+      case 'update':
+      case 'edit':
+      case 'toggle':
+      case 'mark':
+      case 'patch':
+        return { endpoint: `${matchedEndpoint.path}/:id`, method: 'PATCH' }
+      default:
+        return null
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Managed API Runtime (per-surface data layer)
   // ---------------------------------------------------------------------------

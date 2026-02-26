@@ -1913,30 +1913,26 @@ describe('Dynamic App E2E: Agent Self-Testing Tools', () => {
           arguments: {
             surfaceId: 'todo_test',
             components: [
-              { id: 'root', component: 'Column', children: ['list'], gap: 'md' },
+              { id: 'root', component: 'Column', children: ['add_btn', 'list'], gap: 'md' },
+              { id: 'add_btn', component: 'Button', label: 'Add Todo',
+                action: { name: 'add_todo', mutation: { endpoint: '/api/todos', method: 'POST', body: { title: 'Self-test todo', done: false } } } },
               { id: 'list', component: 'DataList', children: { path: '/todos', templateId: 'todo_item' }, emptyText: 'No todos' },
               { id: 'todo_item', component: 'Card', child: 'todo_row' },
               { id: 'todo_row', component: 'Row', children: ['todo_title', 'delete_btn'], align: 'center', justify: 'between' },
               { id: 'todo_title', component: 'Text', text: { path: 'title' } },
-              { id: 'delete_btn', component: 'Button', label: 'Delete', variant: 'destructive', action: { name: 'delete_todo' } },
+              { id: 'delete_btn', component: 'Button', label: 'Delete', variant: 'destructive',
+                action: { name: 'delete_todo', mutation: { endpoint: '/api/todos/:id', method: 'DELETE', params: { id: { path: 'id' } } } } },
             ],
           },
           id: 'toolu_5',
         },
       ]),
-      // Step 3: Self-test — trigger add mutation
+      // Step 3: Self-test — trigger add mutation (resolves from the add_btn definition)
       buildToolUseResponse([{
         name: 'canvas_trigger_action',
         arguments: {
           surfaceId: 'todo_test',
           actionName: 'add_todo',
-          context: {
-            _mutation: {
-              endpoint: '/api/todos',
-              method: 'POST',
-              body: { title: 'Self-test todo', done: false },
-            },
-          },
         },
         id: 'toolu_6',
       }]),
@@ -1962,7 +1958,7 @@ describe('Dynamic App E2E: Agent Self-Testing Tools', () => {
     // Verify the state
     const mgr = getDynamicAppManager()
     const surface = mgr.getSurface('todo_test')!
-    expect(surface.components.size).toBe(6)
+    expect(surface.components.size).toBe(7)
 
     const todos = surface.dataModel.todos as any[]
     expect(todos.length).toBe(2)

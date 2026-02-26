@@ -520,6 +520,15 @@ export function lintComponents(components: Array<{ id?: string; component?: stri
           message: `Button action is missing "name". Every action needs a name (e.g. { name: "add_item", mutation: { ... } }).`,
         })
       }
+      if (!action.mutation) {
+        const name = String(action.name ?? '').toLowerCase()
+        const isLikelyCrud = /^(add|create|save|delete|remove|update|edit|mark|toggle|patch|cancel|book|reserve)/.test(name)
+        messages.push({
+          severity: isLikelyCrud ? 'error' : 'warning',
+          componentId: cid,
+          message: `Button "${cid}" has action.name "${action.name}" but NO mutation. Without mutation, this button does NOTHING when clicked. Add: mutation: { endpoint: "/api/...", method: "POST|PATCH|DELETE", body?: {...} }`,
+        })
+      }
       if (action.mutation) {
         const mutation = action.mutation as Record<string, unknown>
         const endpoint = mutation.endpoint
@@ -542,6 +551,13 @@ export function lintComponents(components: Array<{ id?: string; component?: stri
             severity: 'error',
             componentId: cid,
             message: `Button action.mutation.method "${method}" is not valid. Use one of: POST, PATCH, DELETE, OPEN.`,
+          })
+        }
+        if (typeof endpoint === 'string' && endpoint.includes(':') && !mutation.params) {
+          messages.push({
+            severity: 'error',
+            componentId: cid,
+            message: `Button mutation endpoint "${endpoint}" has parameter placeholders (e.g. :id) but no "params" defined. Add params: { id: { path: "id" } } to resolve :id from the current item data.`,
           })
         }
       }

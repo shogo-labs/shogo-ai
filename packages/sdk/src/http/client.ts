@@ -28,6 +28,9 @@ export interface HttpClientConfig {
 
   /** Request deduplication window in ms (default: 100) */
   dedupWindowMs?: number
+
+  /** Fetch credentials mode (default: 'same-origin'). Set to 'include' for cross-origin cookie auth. */
+  credentials?: RequestCredentials
 }
 
 /**
@@ -45,6 +48,7 @@ export class HttpClient {
   private authPath: string
   private mcpSessionId: string | null = null
   private mcpInitPromise: Promise<void> | null = null
+  private credentials: RequestCredentials
 
   /** Request deduplication window in milliseconds */
   private dedupWindowMs: number
@@ -53,12 +57,12 @@ export class HttpClient {
   private requestCache = new Map<string, CacheEntry<any>>()
 
   constructor(config: HttpClientConfig) {
-    // Remove trailing slash from baseUrl
     this.baseUrl = config.baseUrl.replace(/\/$/, '')
     this.getToken = config.getToken ?? (() => null)
     this.mcpPath = config.mcpPath ?? '/mcp'
     this.authPath = config.authPath ?? '/api/auth'
     this.dedupWindowMs = config.dedupWindowMs ?? 100
+    this.credentials = config.credentials ?? 'same-origin'
   }
 
   /**
@@ -193,6 +197,7 @@ export class HttpClient {
         headers: requestHeaders,
         body: body ? JSON.stringify(body) : undefined,
         signal,
+        credentials: this.credentials,
       })
 
       const data = await this.parseResponse<T>(response)
@@ -346,6 +351,7 @@ export class HttpClient {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify(request),
+      credentials: this.credentials,
     })
 
     // Extract session ID from response header
@@ -393,6 +399,7 @@ export class HttpClient {
       method: 'POST',
       headers,
       body: JSON.stringify(request),
+      credentials: this.credentials,
     })
 
     const result = await response.json() as MCPResponse<{ content: Array<{ type: string; text: string }> }>

@@ -1,0 +1,1024 @@
+/**
+ * AppSidebar - Responsive navigation sidebar matching staging design
+ *
+ * Wide screens (>= 768px): persistent sidebar pinned to the left (w-64, collapsible to w-16)
+ * Narrow screens (< 768px): slide-over drawer with backdrop overlay
+ *
+ * Sections:
+ *  - Logo row: gradient "S" badge + "Shogo" text + collapse toggle
+ *  - Workspace switcher
+ *  - Primary nav: Home + Search (Cmd+K)
+ *  - PROJECTS section: Recent (5 projects), All Projects (with New Folder), Starred, Shared
+ *  - RESOURCES section: Templates, Docs (external)
+ *  - Upgrade to Pro CTA
+ *  - User avatar + Sign Out
+ */
+
+import { useState, useCallback, useEffect } from 'react'
+import {
+  View,
+  Text,
+  Pressable,
+  ScrollView,
+  Linking,
+  TextInput,
+  Modal,
+  useWindowDimensions,
+  Platform,
+} from 'react-native'
+import { usePathname, useRouter } from 'expo-router'
+import { observer } from 'mobx-react-lite'
+import {
+  Home,
+  Search,
+  Clock,
+  LayoutGrid,
+  Star,
+  Users,
+  User,
+  FileCode2,
+  ExternalLink,
+  ChevronDown,
+  ChevronRight,
+  PanelLeftClose,
+  PanelLeft,
+  FolderPlus,
+  Plus,
+  X,
+  LogOut,
+  Sun,
+  Moon,
+  Monitor,
+  Settings,
+  Zap,
+  Check,
+} from 'lucide-react-native'
+import { cn } from '@shogo/shared-ui/primitives'
+import { Avatar } from '@shogo/shared-ui/primitives'
+import { useAuth } from '../../contexts/auth'
+import {
+  useProjectCollection,
+  useWorkspaceCollection,
+  useFolderCollection,
+  useDomainActions,
+} from '../../contexts/domain'
+import { useBillingData } from '@shogo/shared-app/hooks'
+
+function getInitials(name: string | null | undefined): string {
+  if (!name) return '?'
+  return name
+    .split(' ')
+    .map((part) => part[0])
+    .join('')
+    .toUpperCase()
+    .slice(0, 2)
+}
+
+function formatCredits(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
+  return n % 1 === 0 ? String(n) : n.toFixed(2)
+}
+
+function isRouteActive(pathname: string, href: string): boolean {
+  if (href === '/') {
+    return pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
+  }
+  const normalizedPathname = pathname.replace('/(app)', '')
+  const normalizedHref = href.replace('/(app)', '')
+  if (normalizedHref === '/projects') {
+    return normalizedPathname === '/projects' || normalizedPathname.startsWith('/projects/')
+  }
+  return normalizedPathname === normalizedHref || normalizedPathname.startsWith(normalizedHref + '/')
+}
+
+// ─── NavItem ───────────────────────────────────────────────
+
+interface NavItemProps {
+  icon: React.ElementType
+  label: string
+  href?: string
+  externalHref?: string
+  active?: boolean
+  collapsed?: boolean
+  onPress?: () => void
+  shortcut?: string
+  external?: boolean
+  onNavPress?: () => void
+}
+
+function NavItem({
+  icon: Icon,
+  label,
+  href,
+  externalHref,
+  active,
+  collapsed,
+  onPress,
+  shortcut,
+  onNavPress,
+}: NavItemProps) {
+  const router = useRouter()
+
+  const handlePress = useCallback(() => {
+    if (onPress) {
+      onPress()
+      return
+    }
+    if (externalHref) {
+      Linking.openURL(externalHref)
+      return
+    }
+    if (href) {
+      router.push(href as any)
+      onNavPress?.()
+    }
+  }, [href, externalHref, onPress, router, onNavPress])
+
+  return (
+    <Pressable
+      onPress={handlePress}
+      className={cn(
+        'flex-row items-center gap-3 rounded-md px-3 py-2',
+        active
+          ? 'bg-accent'
+          : 'active:bg-accent/50',
+        collapsed && 'justify-center px-2'
+      )}
+    >
+      <Icon
+        size={16}
+        className={cn(
+          active ? 'text-foreground' : 'text-muted-foreground'
+        )}
+      />
+      {!collapsed && (
+        <Text
+          className={cn(
+            'text-sm flex-1',
+            active ? 'text-foreground' : 'text-muted-foreground'
+          )}
+          numberOfLines={1}
+        >
+          {label}
+        </Text>
+      )}
+      {!collapsed && shortcut && Platform.OS === 'web' && (
+        <View className="ml-auto rounded border border-border bg-muted px-1.5 py-0.5">
+          <Text className="text-[10px] font-mono text-muted-foreground">{shortcut}</Text>
+        </View>
+      )}
+      {!collapsed && externalHref && (
+        <ExternalLink size={12} className="ml-auto text-muted-foreground opacity-50" />
+      )}
+    </Pressable>
+  )
+}
+
+// ─── NavSection (collapsible) ──────────────────────────────
+
+interface NavSectionProps {
+  title: string
+  collapsed?: boolean
+  children: React.ReactNode
+  defaultExpanded?: boolean
+}
+
+function NavSection({ title, collapsed, children, defaultExpanded = true }: NavSectionProps) {
+  const [expanded, setExpanded] = useState(defaultExpanded)
+
+  if (collapsed) return <>{children}</>
+
+  return (
+    <View className="mt-4">
+      <Pressable
+        onPress={() => setExpanded(!expanded)}
+        className="flex-row items-center gap-1 px-3 py-1"
+      >
+        {expanded ? (
+          <ChevronDown size={12} className="text-muted-foreground" />
+        ) : (
+          <ChevronRight size={12} className="text-muted-foreground" />
+        )}
+        <Text className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          {title}
+        </Text>
+      </Pressable>
+      {expanded && children}
+    </View>
+  )
+}
+
+// ─── ExpandableNavItem ─────────────────────────────────────
+
+interface ExpandableNavItemProps {
+  icon: React.ElementType
+  label: string
+  href?: string
+  active?: boolean
+  collapsed?: boolean
+  defaultExpanded?: boolean
+  children?: React.ReactNode
+  onNavPress?: () => void
+}
+
+function ExpandableNavItem({
+  icon: Icon,
+  label,
+  href,
+  active,
+  collapsed,
+  defaultExpanded = true,
+  children,
+  onNavPress,
+}: ExpandableNavItemProps) {
+  const [expanded, setExpanded] = useState(defaultExpanded)
+  const router = useRouter()
+
+  const handlePress = useCallback(() => {
+    if (href) {
+      router.push(href as any)
+      onNavPress?.()
+    }
+  }, [href, router, onNavPress])
+
+  if (collapsed) {
+    return (
+      <Pressable
+        onPress={handlePress}
+        className={cn(
+          'items-center justify-center rounded-md px-2 py-2',
+          active ? 'bg-accent' : 'active:bg-accent/50'
+        )}
+      >
+        <Icon size={16} className={active ? 'text-foreground' : 'text-muted-foreground'} />
+      </Pressable>
+    )
+  }
+
+  return (
+    <View>
+      <Pressable
+        onPress={() => setExpanded(!expanded)}
+        className={cn(
+          'flex-row items-center gap-3 rounded-md px-3 py-2',
+          active ? 'bg-accent' : 'active:bg-accent/50'
+        )}
+      >
+        <Icon
+          size={16}
+          className={active ? 'text-foreground' : 'text-muted-foreground'}
+        />
+        <Pressable onPress={handlePress} className="flex-1">
+          <Text
+            className={cn('text-sm', active ? 'text-foreground' : 'text-muted-foreground')}
+            numberOfLines={1}
+          >
+            {label}
+          </Text>
+        </Pressable>
+        {expanded ? (
+          <ChevronDown size={14} className="text-muted-foreground" />
+        ) : (
+          <ChevronRight size={14} className="text-muted-foreground" />
+        )}
+      </Pressable>
+      {expanded && (
+        <View className="ml-6 mt-0.5">
+          {children}
+        </View>
+      )}
+    </View>
+  )
+}
+
+// ─── ProjectItem ───────────────────────────────────────────
+
+function ProjectItem({
+  name,
+  projectId,
+  onNavPress,
+}: {
+  name: string
+  projectId: string
+  onNavPress?: () => void
+}) {
+  const router = useRouter()
+  const pathname = usePathname()
+  const isActive = pathname.includes(projectId)
+
+  return (
+    <Pressable
+      onPress={() => {
+        router.push(`/(app)/projects/${projectId}` as any)
+        onNavPress?.()
+      }}
+      className={cn(
+        'flex-row items-center rounded-md px-2 py-1.5',
+        isActive ? 'bg-accent' : 'active:bg-accent/50'
+      )}
+    >
+      <Text
+        className={cn(
+          'text-sm',
+          isActive ? 'text-foreground' : 'text-muted-foreground'
+        )}
+        numberOfLines={1}
+      >
+        {name}
+      </Text>
+    </Pressable>
+  )
+}
+
+// ─── UserMenu (modal on mobile, inline on web) ────────────
+
+interface UserMenuProps {
+  visible: boolean
+  onClose: () => void
+  user: { name?: string | null; email?: string | null; image?: string | null } | null
+  onSignOut: () => void
+  onNavigate: (href: string) => void
+}
+
+function UserMenu({ visible, onClose, user, onSignOut, onNavigate }: UserMenuProps) {
+  const [appearanceOpen, setAppearanceOpen] = useState(false)
+  const [theme, setThemeState] = useState<'light' | 'dark' | 'system'>('system')
+
+  const handleTheme = useCallback((t: 'light' | 'dark' | 'system') => {
+    setThemeState(t)
+    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+      if (t === 'system') {
+        localStorage.removeItem('theme')
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+        document.documentElement.classList.toggle('dark', prefersDark)
+      } else {
+        localStorage.setItem('theme', t)
+        document.documentElement.classList.toggle('dark', t === 'dark')
+      }
+    }
+  }, [])
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable className="flex-1" onPress={onClose}>
+        <Pressable
+          className="bg-card rounded-xl border border-border overflow-hidden"
+          style={{ position: 'absolute', bottom: 60, left: 8, width: 224 }}
+          onPress={(e) => e.stopPropagation()}
+        >
+          {/* User info header */}
+          <View className="px-3 py-2.5 border-b border-border">
+            <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
+              {user?.name || 'User'}
+            </Text>
+            <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+              {user?.email || ''}
+            </Text>
+          </View>
+
+          {/* Menu items */}
+          <View className="py-1">
+            <Pressable
+              onPress={() => { onNavigate('/(app)/profile'); onClose() }}
+              className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
+            >
+              <User size={16} className="text-muted-foreground" />
+              <Text className="text-sm text-foreground">Profile</Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => setAppearanceOpen(!appearanceOpen)}
+              className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
+            >
+              <Monitor size={16} className="text-muted-foreground" />
+              <Text className="text-sm text-foreground flex-1">Appearance</Text>
+              <ChevronRight size={14} className="text-muted-foreground" />
+            </Pressable>
+
+            {appearanceOpen && (
+              <View className="pl-9 pr-3 py-1">
+                {([
+                  { value: 'light' as const, label: 'Light', Icon: Sun },
+                  { value: 'dark' as const, label: 'Dark', Icon: Moon },
+                  { value: 'system' as const, label: 'System', Icon: Monitor },
+                ] as const).map(({ value, label, Icon }) => (
+                  <Pressable
+                    key={value}
+                    onPress={() => handleTheme(value)}
+                    className="flex-row items-center gap-2 py-1.5 active:bg-muted rounded-md px-1"
+                  >
+                    <Icon size={14} className={theme === value ? 'text-primary' : 'text-muted-foreground'} />
+                    <Text className={cn('text-sm flex-1', theme === value ? 'text-primary' : 'text-foreground')}>
+                      {label}
+                    </Text>
+                    {theme === value && <Check size={14} className="text-primary" />}
+                  </Pressable>
+                ))}
+              </View>
+            )}
+          </View>
+
+          <View className="h-px bg-border" />
+
+          <View className="py-1">
+            <Pressable
+              onPress={() => { onSignOut(); onClose() }}
+              className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
+            >
+              <LogOut size={16} className="text-muted-foreground" />
+              <Text className="text-sm text-foreground">Sign Out</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  )
+}
+
+// ─── WorkspaceSwitcherModal ────────────────────────────────
+
+interface WorkspaceSwitcherModalProps {
+  visible: boolean
+  onClose: () => void
+  workspaces: any[]
+  currentWorkspace: any
+  billingData: any
+  onNavigate: (href: string) => void
+}
+
+function WorkspaceSwitcherModal({
+  visible,
+  onClose,
+  workspaces,
+  currentWorkspace,
+  billingData,
+  onNavigate,
+}: WorkspaceSwitcherModalProps) {
+  const wsInitial = currentWorkspace?.name?.[0]?.toUpperCase() ?? 'W'
+  const planType = billingData.subscription
+    ? (billingData.subscription.planId?.charAt(0).toUpperCase() + billingData.subscription.planId?.slice(1))
+    : 'Free'
+  const effectiveBalance = billingData.effectiveBalance
+  const creditsTotal = effectiveBalance
+    ? Math.max(effectiveBalance.total, 1)
+    : 55
+  const creditsRemaining = effectiveBalance?.total ?? 0
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable className="flex-1 bg-black/50" onPress={onClose}>
+        <Pressable
+          className="bg-card rounded-xl border border-border mx-4 mt-24 overflow-hidden"
+          style={{ maxWidth: 280 }}
+          onPress={(e) => e.stopPropagation()}
+        >
+          {/* Current workspace header */}
+          {currentWorkspace && (
+            <View className="px-4 py-3">
+              <View className="flex-row items-start gap-3">
+                <View className="h-10 w-10 rounded-lg bg-primary/10 items-center justify-center">
+                  <Text className="text-sm font-medium text-primary">{wsInitial}</Text>
+                </View>
+                <View className="flex-1 min-w-0">
+                  <Text className="font-medium text-foreground" numberOfLines={1}>
+                    {currentWorkspace.name}
+                  </Text>
+                  <Text className="text-xs text-muted-foreground">
+                    {planType} Plan {'\u00B7'} 1 member
+                  </Text>
+                </View>
+              </View>
+            </View>
+          )}
+
+          {/* Quick actions */}
+          {currentWorkspace && (
+            <View className="px-3 pb-2 flex-row gap-2">
+              <Pressable
+                onPress={() => { onNavigate('/(app)/settings'); onClose() }}
+                className="flex-1 flex-row items-center justify-center gap-1.5 h-8 rounded-md border border-border active:bg-muted"
+              >
+                <Settings size={14} className="text-muted-foreground" />
+                <Text className="text-xs text-foreground">Settings</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => { onNavigate('/(app)/members'); onClose() }}
+                className="flex-1 flex-row items-center justify-center gap-1.5 h-8 rounded-md border border-border active:bg-muted"
+              >
+                <Users size={14} className="text-muted-foreground" />
+                <Text className="text-xs text-foreground">Invite</Text>
+              </Pressable>
+            </View>
+          )}
+
+          <View className="h-px bg-border" />
+
+          {/* Credits */}
+          {currentWorkspace && (
+            <>
+              <View className="px-4 py-3 gap-2">
+                <View className="flex-row items-center justify-between">
+                  <Text className="text-sm text-muted-foreground">Credits</Text>
+                  <Text className="text-sm font-medium text-foreground">
+                    {formatCredits(creditsRemaining)} left
+                  </Text>
+                </View>
+                <View className="h-1.5 rounded-full bg-muted overflow-hidden">
+                  <View
+                    className="h-full rounded-full bg-primary"
+                    style={{ width: `${Math.min(100, (creditsRemaining / creditsTotal) * 100)}%` }}
+                  />
+                </View>
+                {effectiveBalance && (
+                  <Text className="text-xs text-muted-foreground">
+                    Daily: {formatCredits(effectiveBalance.dailyCredits)} {'\u00B7'} Monthly: {formatCredits(effectiveBalance.monthlyCredits)}
+                  </Text>
+                )}
+              </View>
+
+              <View className="h-px bg-border" />
+            </>
+          )}
+
+          {/* Upgrade CTA */}
+          {currentWorkspace && planType === 'Free' && (
+            <>
+              <View className="px-3 py-2">
+                <Pressable
+                  onPress={() => { onNavigate('/(app)/billing'); onClose() }}
+                  className="flex-row items-center justify-center gap-2 h-9 rounded-md"
+                  style={Platform.OS === 'web'
+                    ? { backgroundImage: 'linear-gradient(to right, #3b82f6, #9333ea)' } as any
+                    : { backgroundColor: '#7c3aed' }}
+                >
+                  <Zap size={16} className="text-white" />
+                  <Text className="text-sm font-medium text-white">Upgrade to Pro</Text>
+                </Pressable>
+              </View>
+
+              <View className="h-px bg-border" />
+            </>
+          )}
+
+          {/* All workspaces */}
+          <View className="py-1">
+            <Text className="px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              All workspaces
+            </Text>
+            {workspaces.map((ws: any) => {
+              const isCurrent = ws.id === currentWorkspace?.id
+              return (
+                <Pressable
+                  key={ws.id}
+                  onPress={() => onClose()}
+                  className="flex-row items-center gap-2 px-4 py-2 active:bg-muted"
+                >
+                  <View className="h-6 w-6 rounded bg-primary/10 items-center justify-center">
+                    <Text className="text-[10px] font-medium text-primary">
+                      {ws.name?.[0]?.toUpperCase() ?? 'W'}
+                    </Text>
+                  </View>
+                  <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
+                    {ws.name}
+                  </Text>
+                  <View className="rounded px-1.5 py-0.5 bg-muted">
+                    <Text className="text-[10px] text-muted-foreground">Free</Text>
+                  </View>
+                  {isCurrent && (
+                    <Check size={16} className="text-primary" />
+                  )}
+                </Pressable>
+              )
+            })}
+          </View>
+
+          <View className="h-px bg-border" />
+
+          {/* Create new workspace */}
+          <View className="p-1">
+            <Pressable
+              onPress={onClose}
+              className="flex-row items-center gap-2 px-4 py-2 rounded-md active:bg-muted"
+            >
+              <Plus size={16} className="text-muted-foreground" />
+              <Text className="text-sm text-foreground">Create new workspace</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  )
+}
+
+// ─── CreateFolderModal ─────────────────────────────────────
+
+function CreateFolderModal({
+  visible,
+  onClose,
+  onSubmit,
+}: {
+  visible: boolean
+  onClose: () => void
+  onSubmit: (name: string) => void
+}) {
+  const [name, setName] = useState('')
+
+  const handleSubmit = useCallback(() => {
+    if (name.trim()) {
+      onSubmit(name.trim())
+      setName('')
+      onClose()
+    }
+  }, [name, onSubmit, onClose])
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable className="flex-1 bg-black/50 items-center justify-center" onPress={onClose}>
+        <Pressable
+          className="bg-card rounded-xl p-6 w-80 border border-border"
+          onPress={(e) => e.stopPropagation()}
+        >
+          <Text className="text-base font-semibold text-foreground mb-1">Create new folder</Text>
+          <Text className="text-sm text-muted-foreground mb-4">
+            Create a new folder to organize your projects
+          </Text>
+          <TextInput
+            value={name}
+            onChangeText={setName}
+            placeholder="Enter folder name"
+            placeholderTextColor="#9ca3af"
+            className="border border-border rounded-md px-3 py-2 text-sm text-foreground bg-background mb-4"
+            autoFocus
+            onSubmitEditing={handleSubmit}
+          />
+          <View className="flex-row gap-2 justify-end">
+            <Pressable
+              onPress={onClose}
+              className="px-4 py-2 rounded-md border border-border active:bg-muted"
+            >
+              <Text className="text-sm text-foreground">Cancel</Text>
+            </Pressable>
+            <Pressable
+              onPress={handleSubmit}
+              className={cn(
+                'px-4 py-2 rounded-md',
+                name.trim() ? 'bg-primary active:bg-primary/80' : 'bg-muted'
+              )}
+              disabled={!name.trim()}
+            >
+              <Text className={cn('text-sm', name.trim() ? 'text-primary-foreground' : 'text-muted-foreground')}>
+                Create folder
+              </Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  )
+}
+
+// ─── Main AppSidebar ───────────────────────────────────────
+
+interface AppSidebarProps {
+  isOpen?: boolean
+  onClose?: () => void
+}
+
+export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppSidebarProps) {
+  const { width } = useWindowDimensions()
+  const pathname = usePathname()
+  const router = useRouter()
+  const isWide = width >= 768
+
+  const { user, signOut } = useAuth()
+  const projects = useProjectCollection()
+  const workspaces = useWorkspaceCollection()
+  const actions = useDomainActions()
+
+  useEffect(() => {
+    workspaces.loadAll()
+    projects.loadAll()
+  }, [])
+
+  let currentWorkspace: any
+  try {
+    currentWorkspace = workspaces?.all?.[0]
+  } catch {
+    currentWorkspace = undefined
+  }
+
+  const billingData = useBillingData(currentWorkspace?.id)
+
+  let recentProjects: any[]
+  try {
+    const all = projects?.all ?? []
+    recentProjects = [...all]
+      .sort((a: any, b: any) => {
+        const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0
+        const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0
+        return bTime - aTime
+      })
+      .slice(0, 5)
+  } catch {
+    recentProjects = []
+  }
+
+  const isPaidPlan = billingData.hasActiveSubscription
+
+  const [collapsed, setCollapsed] = useState(false)
+  const [userMenuOpen, setUserMenuOpen] = useState(false)
+  const [createFolderOpen, setCreateFolderOpen] = useState(false)
+  const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false)
+
+  let allWorkspaces: any[]
+  try { allWorkspaces = workspaces?.all?.slice() ?? [] } catch { allWorkspaces = [] }
+
+  const toggleCollapse = useCallback(() => setCollapsed((c) => !c), [])
+
+  const handleCreateFolder = useCallback(
+    async (name: string) => {
+      if (currentWorkspace?.id) {
+        try {
+          await actions.createFolder(name, currentWorkspace.id, null)
+        } catch (e) {
+          console.warn('Failed to create folder:', e)
+        }
+      }
+    },
+    [actions, currentWorkspace]
+  )
+
+  const handleSignOut = useCallback(async () => {
+    try {
+      await signOut()
+    } catch {}
+  }, [signOut])
+
+  const onNavPress = useCallback(() => {
+    if (!isWide) onClose?.()
+  }, [isWide, onClose])
+
+  const isHomePage = pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
+  const isProjectsPage = pathname.startsWith('/projects') || pathname.startsWith('/(app)/projects')
+
+  const sidebarContent = (
+    <View className={cn('flex-1 bg-card border-r border-border', collapsed ? 'w-16' : 'w-64')}>
+      {/* ── Logo Row ── */}
+      <View
+        className={cn(
+          'h-14 border-b border-border flex-row items-center',
+          collapsed ? 'justify-center px-2' : 'justify-between px-4'
+        )}
+      >
+        {!collapsed && (
+          <>
+            <Pressable
+              onPress={() => { router.push('/(app)' as any); onNavPress() }}
+              className="flex-row items-center gap-2"
+            >
+              <View className="h-8 w-8 rounded-lg bg-blue-500 items-center justify-center"
+                style={Platform.OS === 'web'
+                  ? { backgroundImage: 'linear-gradient(to bottom right, #3b82f6, #9333ea)' } as any
+                  : undefined}
+              >
+                <Text className="text-white font-bold text-sm">S</Text>
+              </View>
+              <Text className="font-semibold text-foreground">Shogo</Text>
+            </Pressable>
+            <Pressable onPress={toggleCollapse} className="h-8 w-8 items-center justify-center rounded-md active:bg-muted">
+              <PanelLeftClose size={16} className="text-muted-foreground" />
+            </Pressable>
+          </>
+        )}
+        {collapsed && (
+          <Pressable
+            onPress={toggleCollapse}
+            className="h-8 w-8 rounded-lg bg-blue-500 items-center justify-center"
+            style={Platform.OS === 'web'
+              ? { backgroundImage: 'linear-gradient(to bottom right, #3b82f6, #9333ea)' } as any
+              : undefined}
+          >
+            <Text className="text-white font-bold text-sm">S</Text>
+          </Pressable>
+        )}
+      </View>
+
+      {/* ── Workspace Switcher ── */}
+      <View className={cn('p-2 border-b border-border', collapsed && 'px-1')}>
+        <Pressable
+          onPress={() => setWorkspaceSwitcherOpen(true)}
+          className={cn(
+            'flex-row items-center gap-2 rounded-md px-2 py-1.5 active:bg-muted',
+            collapsed && 'justify-center px-0'
+          )}
+        >
+          <View className="h-6 w-6 rounded bg-primary/20 items-center justify-center">
+            <Text className="text-[10px] font-bold text-primary">
+              {currentWorkspace?.name?.[0]?.toUpperCase() || 'W'}
+            </Text>
+          </View>
+          {!collapsed && (
+            <>
+              <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
+                {currentWorkspace?.name || 'Workspace'}
+              </Text>
+              <ChevronDown size={14} className="text-muted-foreground" />
+            </>
+          )}
+        </Pressable>
+      </View>
+
+      {/* ── Main Navigation (scrollable) ── */}
+      <ScrollView className="flex-1 py-2" showsVerticalScrollIndicator={false}>
+        {/* Primary nav */}
+        <View className="px-2">
+          <NavItem
+            icon={Home}
+            label="Home"
+            href="/(app)"
+            active={isHomePage}
+            collapsed={collapsed}
+            onNavPress={onNavPress}
+          />
+          <NavItem
+            icon={Search}
+            label="Search"
+            collapsed={collapsed}
+            shortcut="⌘K"
+            onPress={() => {}}
+          />
+        </View>
+
+        {/* PROJECTS section */}
+        <NavSection title="Projects" collapsed={collapsed}>
+          <View className="px-2">
+            <ExpandableNavItem
+              icon={Clock}
+              label="Recent"
+              collapsed={collapsed}
+              defaultExpanded={true}
+            >
+              {recentProjects.map((project: any) => (
+                <ProjectItem
+                  key={project.id}
+                  name={project.name}
+                  projectId={project.id}
+                  onNavPress={onNavPress}
+                />
+              ))}
+            </ExpandableNavItem>
+
+            <ExpandableNavItem
+              icon={LayoutGrid}
+              label="All projects"
+              href="/(app)/projects"
+              active={isProjectsPage && !isHomePage}
+              collapsed={collapsed}
+              defaultExpanded={true}
+              onNavPress={onNavPress}
+            >
+              {!collapsed && (
+                <Pressable
+                  onPress={() => setCreateFolderOpen(true)}
+                  className="flex-row items-center gap-2 px-2 py-1.5 rounded-md active:bg-accent/50"
+                >
+                  <FolderPlus size={14} className="text-muted-foreground" />
+                  <Text className="text-sm text-muted-foreground">New folder</Text>
+                </Pressable>
+              )}
+            </ExpandableNavItem>
+
+            <NavItem
+              icon={Star}
+              label="Starred"
+              href="/(app)/starred"
+              active={isRouteActive(pathname, '/(app)/starred')}
+              collapsed={collapsed}
+              onNavPress={onNavPress}
+            />
+            <NavItem
+              icon={Users}
+              label="Shared with me"
+              href="/(app)/shared"
+              active={isRouteActive(pathname, '/(app)/shared')}
+              collapsed={collapsed}
+              onNavPress={onNavPress}
+            />
+          </View>
+        </NavSection>
+
+        {/* RESOURCES section */}
+        <NavSection title="Resources" collapsed={collapsed}>
+          <View className="px-2">
+            <NavItem
+              icon={FileCode2}
+              label="Templates"
+              href="/(app)/templates"
+              active={isRouteActive(pathname, '/(app)/templates')}
+              collapsed={collapsed}
+              onNavPress={onNavPress}
+            />
+            <NavItem
+              icon={ExternalLink}
+              label="Docs"
+              externalHref="https://docs-staging.shogo.ai/"
+              collapsed={collapsed}
+            />
+          </View>
+        </NavSection>
+      </ScrollView>
+
+      {/* ── Bottom Section ── */}
+      <View className="border-t border-border">
+        {/* Upgrade to Pro CTA */}
+        {!collapsed && !isPaidPlan && (
+          <View className="px-2 pt-2">
+            <Pressable
+              onPress={() => { router.push('/(app)/billing' as any); onNavPress() }}
+              className="flex-row items-center gap-2 px-3 py-2 rounded-md"
+              style={Platform.OS === 'web'
+                ? { backgroundImage: 'linear-gradient(to right, rgba(59,130,246,0.1), rgba(168,85,247,0.1))' } as any
+                : { backgroundColor: 'rgba(59,130,246,0.1)' }}
+            >
+              <View className="flex-1">
+                <Text className="text-sm font-medium text-foreground">Upgrade to Pro</Text>
+                <Text className="text-xs text-muted-foreground">
+                  {billingData.effectiveBalance
+                    ? `${formatCredits(billingData.effectiveBalance.total)} credits left`
+                    : 'Unlock more benefits'}
+                </Text>
+              </View>
+              <Plus size={16} className="text-primary" />
+            </Pressable>
+          </View>
+        )}
+
+        {/* User row */}
+        <View
+          className={cn(
+            'flex-row items-center gap-2 p-2 border-t border-border',
+            collapsed ? 'justify-center' : 'px-3'
+          )}
+        >
+          <Pressable
+            onPress={() => setUserMenuOpen(true)}
+            className="rounded-full active:opacity-80"
+          >
+            <Avatar
+              fallback={getInitials(user?.name)}
+              src={user?.image}
+              size="sm"
+            />
+          </Pressable>
+
+          {!collapsed && (
+            <View className="flex-1 ml-1">
+              <Text className="text-sm text-foreground" numberOfLines={1}>{user?.name || 'User'}</Text>
+            </View>
+          )}
+        </View>
+      </View>
+
+      {/* Modals */}
+      <WorkspaceSwitcherModal
+        visible={workspaceSwitcherOpen}
+        onClose={() => setWorkspaceSwitcherOpen(false)}
+        workspaces={allWorkspaces}
+        currentWorkspace={currentWorkspace}
+        billingData={billingData}
+        onNavigate={(href) => { router.push(href as any); onNavPress() }}
+      />
+      <UserMenu
+        visible={userMenuOpen}
+        onClose={() => setUserMenuOpen(false)}
+        user={user}
+        onSignOut={handleSignOut}
+        onNavigate={(href) => router.push(href as any)}
+      />
+      <CreateFolderModal
+        visible={createFolderOpen}
+        onClose={() => setCreateFolderOpen(false)}
+        onSubmit={handleCreateFolder}
+      />
+    </View>
+  )
+
+  if (isWide) {
+    return (
+      <View className="h-full">
+        {sidebarContent}
+      </View>
+    )
+  }
+
+  if (!isOpen) return null
+
+  return (
+    <View className="absolute inset-0 z-50 flex-row">
+      <Pressable onPress={onClose} className="absolute inset-0 bg-black/50" />
+      <View className="w-72 h-full z-10">
+        {sidebarContent}
+      </View>
+    </View>
+  )
+})

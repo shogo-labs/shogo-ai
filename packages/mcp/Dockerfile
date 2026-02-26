@@ -24,6 +24,7 @@ COPY packages/sdk/package.json ./packages/sdk/
 COPY apps/web/package.json ./apps/web/
 COPY apps/api/package.json ./apps/api/
 COPY apps/desktop/package.json ./apps/desktop/
+COPY apps/mobile/package.json ./apps/mobile/
 
 # Copy scripts needed for postinstall
 COPY scripts ./scripts
