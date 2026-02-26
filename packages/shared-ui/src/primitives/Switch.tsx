@@ -13,8 +13,7 @@ export function Switch({ checked, onCheckedChange, disabled, className }: Switch
   return (
     <Pressable
       className={cn(
-        'h-6 w-11 rounded-full border-2 border-transparent',
-        checked ? 'bg-primary' : 'bg-input',
+        'rounded-full',
         disabled && 'opacity-50',
         className,
       )}
@@ -22,12 +21,28 @@ export function Switch({ checked, onCheckedChange, disabled, className }: Switch
       onPress={() => onCheckedChange(!checked)}
       accessibilityRole="switch"
       accessibilityState={{ checked }}
+      style={{
+        width: 44,
+        height: 24,
+        borderRadius: 12,
+        backgroundColor: checked ? '#3b82f6' : '#d1d5db',
+        justifyContent: 'center',
+        paddingHorizontal: 2,
+      }}
     >
       <View
-        className={cn(
-          'h-5 w-5 rounded-full bg-background shadow',
-          checked ? 'translate-x-5' : 'translate-x-0',
-        )}
+        style={{
+          width: 20,
+          height: 20,
+          borderRadius: 10,
+          backgroundColor: '#ffffff',
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 1 },
+          shadowOpacity: 0.2,
+          shadowRadius: 2,
+          elevation: 2,
+          transform: [{ translateX: checked ? 20 : 0 }],
+        }}
       />
     </Pressable>
   )
