@@ -16,10 +16,15 @@ import {
   Pressable,
   useWindowDimensions,
   ScrollView,
-  Modal,
   TextInput,
   Platform,
 } from 'react-native'
+import {
+  Popover,
+  PopoverBackdrop,
+  PopoverBody,
+  PopoverContent,
+} from '@/components/ui/popover'
 import { useRouter } from 'expo-router'
 import {
   ArrowLeft,
@@ -87,7 +92,6 @@ export function ProjectTopBar({
   const router = useRouter()
   const { width } = useWindowDimensions()
   const isWide = width >= 768
-  const [showPublish, setShowPublish] = useState(false)
   const [showProjectSwitcher, setShowProjectSwitcher] = useState(false)
 
   const handleBack = useCallback(() => {
@@ -117,18 +121,39 @@ export function ProjectTopBar({
           <ArrowLeft size={14} className="text-muted-foreground" />
         </Pressable>
 
-        <Pressable
-          onPress={() => setShowProjectSwitcher(true)}
-          className="flex-row items-center gap-1.5 px-1.5 py-1 rounded-md active:bg-muted max-w-[200px]"
+        <Popover
+          placement="bottom"
+          size="md"
+          isOpen={showProjectSwitcher}
+          onOpen={() => setShowProjectSwitcher(true)}
+          onClose={() => setShowProjectSwitcher(false)}
+          trigger={(triggerProps) => (
+            <Pressable
+              {...triggerProps}
+              className="flex-row items-center gap-1.5 px-1.5 py-1 rounded-md active:bg-muted max-w-[200px]"
+            >
+              <View>
+                <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
+                  {projectName}
+                </Text>
+                <Text className="text-[10px] text-muted-foreground">{typeLabel}</Text>
+              </View>
+              <ChevronDown size={12} className="text-muted-foreground" />
+            </Pressable>
+          )}
         >
-          <View>
-            <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
-              {projectName}
-            </Text>
-            <Text className="text-[10px] text-muted-foreground">{typeLabel}</Text>
-          </View>
-          <ChevronDown size={12} className="text-muted-foreground" />
-        </Pressable>
+          <PopoverBackdrop />
+          <PopoverContent className="max-w-[320px] p-0">
+            <PopoverBody>
+              <ProjectSwitcherContent
+                projects={projects}
+                currentProjectId={projectId}
+                onSelect={handleProjectSelect}
+                onGoToDashboard={handleBack}
+              />
+            </PopoverBody>
+          </PopoverContent>
+        </Popover>
 
         {isWide && (
           <>
@@ -212,158 +237,118 @@ export function ProjectTopBar({
           </Pressable>
         )}
 
-        <Pressable
-          onPress={() => setShowPublish(true)}
-          className="h-8 flex-row items-center px-3 rounded-md bg-primary active:bg-primary/80"
-        >
-          <Text className="text-xs font-medium text-primary-foreground">Publish</Text>
-        </Pressable>
+        <PublishDropdown
+          projectId={projectId}
+          projectName={projectName}
+        />
       </View>
-
-      <PublishDropdown
-        projectId={projectId}
-        projectName={projectName}
-        visible={showPublish}
-        onClose={() => setShowPublish(false)}
-      />
-
-      <ProjectSwitcherModal
-        visible={showProjectSwitcher}
-        onClose={() => setShowProjectSwitcher(false)}
-        projects={projects}
-        currentProjectId={projectId}
-        onSelect={handleProjectSelect}
-        onGoToDashboard={handleBack}
-      />
     </View>
   )
 }
 
-function ProjectSwitcherModal({
-  visible,
-  onClose,
+function ProjectSwitcherContent({
   projects,
   currentProjectId,
   onSelect,
   onGoToDashboard,
 }: {
-  visible: boolean
-  onClose: () => void
   projects: ProjectSwitcherItem[]
   currentProjectId: string
   onSelect: (projectId: string) => void
   onGoToDashboard: () => void
 }) {
   const [search, setSearch] = useState('')
-  const inputRef = useRef<TextInput>(null)
-
-  useEffect(() => {
-    if (visible) {
-      setSearch('')
-      const timer = setTimeout(() => inputRef.current?.focus(), 100)
-      return () => clearTimeout(timer)
-    }
-  }, [visible])
 
   const filtered = search.trim()
     ? projects.filter((p) => p.name.toLowerCase().includes(search.toLowerCase()))
     : projects
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable className="flex-1 bg-black/50" onPress={onClose}>
-        <Pressable
-          className="bg-card rounded-xl border border-border mx-4 mt-14 overflow-hidden"
-          style={{ maxWidth: 320, alignSelf: 'flex-start', marginLeft: 48 }}
-          onPress={(e) => e.stopPropagation()}
-        >
-          {/* Go to Dashboard */}
-          <Pressable
-            onPress={() => { onClose(); onGoToDashboard() }}
-            className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted border-b border-border"
-          >
-            <ChevronLeft size={16} className="text-muted-foreground" />
-            <Text className="text-sm font-medium text-foreground">Go to Dashboard</Text>
-          </Pressable>
+    <>
+      {/* Go to Dashboard */}
+      <Pressable
+        onPress={onGoToDashboard}
+        className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted border-b border-border"
+      >
+        <ChevronLeft size={16} className="text-muted-foreground" />
+        <Text className="text-sm font-medium text-foreground">Go to Dashboard</Text>
+      </Pressable>
 
-          {/* Search */}
-          <View className="flex-row items-center gap-2 px-3 py-2 border-b border-border">
-            <Search size={14} className="text-muted-foreground" />
-            <TextInput
-              ref={inputRef}
-              value={search}
-              onChangeText={setSearch}
-              placeholder="Search projects..."
-              placeholderTextColor="#9ca3af"
-              className="flex-1 text-sm text-foreground py-1"
-              style={Platform.OS === 'web' ? { outlineStyle: 'none' } as any : undefined}
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-          </View>
+      {/* Search */}
+      <View className="flex-row items-center gap-2 px-3 py-2 border-b border-border">
+        <Search size={14} className="text-muted-foreground" />
+        <TextInput
+          value={search}
+          onChangeText={setSearch}
+          placeholder="Search projects..."
+          placeholderTextColor="#9ca3af"
+          className="flex-1 text-sm text-foreground py-1"
+          style={Platform.OS === 'web' ? { outlineStyle: 'none' } as any : undefined}
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+      </View>
 
-          {/* Switch project heading */}
-          <View className="px-3 pt-2 pb-1">
-            <Text className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Switch project
+      {/* Switch project heading */}
+      <View className="px-3 pt-2 pb-1">
+        <Text className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Switch project
+        </Text>
+      </View>
+
+      {/* Project list */}
+      <ScrollView
+        style={{ maxHeight: 280 }}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
+        {filtered.length === 0 ? (
+          <View className="px-4 py-6 items-center">
+            <Text className="text-sm text-muted-foreground">
+              {search.trim() ? 'No projects match your search' : 'No projects available'}
             </Text>
           </View>
-
-          {/* Project list */}
-          <ScrollView
-            style={{ maxHeight: 280 }}
-            showsVerticalScrollIndicator={false}
-            keyboardShouldPersistTaps="handled"
-          >
-            {filtered.length === 0 ? (
-              <View className="px-4 py-6 items-center">
-                <Text className="text-sm text-muted-foreground">
-                  {search.trim() ? 'No projects match your search' : 'No projects available'}
-                </Text>
-              </View>
-            ) : (
-              <View className="py-1">
-                {filtered.map((project) => {
-                  const isCurrent = project.id === currentProjectId
-                  const isAgent = project.type === 'AGENT'
-                  const TypeIcon = isAgent ? Bot : AppWindow
-                  return (
-                    <Pressable
-                      key={project.id}
-                      onPress={() => onSelect(project.id)}
-                      className={cn(
-                        'flex-row items-center gap-2.5 px-3 py-2 active:bg-muted',
-                        isCurrent && 'bg-accent/50',
-                      )}
-                    >
-                      <View className={cn(
-                        'h-7 w-7 rounded-md items-center justify-center',
-                        isAgent ? 'bg-primary/10' : 'bg-emerald-500/10',
-                      )}>
-                        <TypeIcon
-                          size={14}
-                          className={isAgent ? 'text-primary' : 'text-emerald-600'}
-                        />
-                      </View>
-                      <View className="flex-1 min-w-0">
-                        <Text className="text-sm text-foreground" numberOfLines={1}>
-                          {project.name}
-                        </Text>
-                        <Text className="text-[10px] text-muted-foreground">
-                          {isAgent ? 'Agent' : 'App'}
-                        </Text>
-                      </View>
-                      {isCurrent && (
-                        <Check size={16} className="text-primary" />
-                      )}
-                    </Pressable>
-                  )
-                })}
-              </View>
-            )}
-          </ScrollView>
-        </Pressable>
-      </Pressable>
-    </Modal>
+        ) : (
+          <View className="py-1">
+            {filtered.map((project) => {
+              const isCurrent = project.id === currentProjectId
+              const isAgent = project.type === 'AGENT'
+              const TypeIcon = isAgent ? Bot : AppWindow
+              return (
+                <Pressable
+                  key={project.id}
+                  onPress={() => onSelect(project.id)}
+                  className={cn(
+                    'flex-row items-center gap-2.5 px-3 py-2 active:bg-muted',
+                    isCurrent && 'bg-accent/50',
+                  )}
+                >
+                  <View className={cn(
+                    'h-7 w-7 rounded-md items-center justify-center',
+                    isAgent ? 'bg-primary/10' : 'bg-emerald-500/10',
+                  )}>
+                    <TypeIcon
+                      size={14}
+                      className={isAgent ? 'text-primary' : 'text-emerald-600'}
+                    />
+                  </View>
+                  <View className="flex-1 min-w-0">
+                    <Text className="text-sm text-foreground" numberOfLines={1}>
+                      {project.name}
+                    </Text>
+                    <Text className="text-[10px] text-muted-foreground">
+                      {isAgent ? 'Agent' : 'App'}
+                    </Text>
+                  </View>
+                  {isCurrent && (
+                    <Check size={16} className="text-primary" />
+                  )}
+                </Pressable>
+              )
+            })}
+          </View>
+        )}
+      </ScrollView>
+    </>
   )
 }

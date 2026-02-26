@@ -26,6 +26,12 @@ import {
   useWindowDimensions,
   Platform,
 } from 'react-native'
+import {
+  Popover,
+  PopoverBackdrop,
+  PopoverBody,
+  PopoverContent,
+} from '@/components/ui/popover'
 import { usePathname, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
@@ -330,17 +336,16 @@ function ProjectItem({
   )
 }
 
-// ─── UserMenu (modal on mobile, inline on web) ────────────
+// ─── UserMenu (popover anchored to avatar) ─────────────────
 
 interface UserMenuProps {
-  visible: boolean
-  onClose: () => void
   user: { name?: string | null; email?: string | null; image?: string | null } | null
   onSignOut: () => void
   onNavigate: (href: string) => void
 }
 
-function UserMenu({ visible, onClose, user, onSignOut, onNavigate }: UserMenuProps) {
+function UserMenu({ user, onSignOut, onNavigate }: UserMenuProps) {
+  const [isOpen, setIsOpen] = useState(false)
   const [appearanceOpen, setAppearanceOpen] = useState(false)
   const [theme, setThemeState] = useState<'light' | 'dark' | 'system'>('system')
 
@@ -359,13 +364,25 @@ function UserMenu({ visible, onClose, user, onSignOut, onNavigate }: UserMenuPro
   }, [])
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable className="flex-1" onPress={onClose}>
-        <Pressable
-          className="bg-card rounded-xl border border-border overflow-hidden"
-          style={{ position: 'absolute', bottom: 60, left: 8, width: 224 }}
-          onPress={(e) => e.stopPropagation()}
-        >
+    <Popover
+      placement="top"
+      size="xs"
+      isOpen={isOpen}
+      onOpen={() => setIsOpen(true)}
+      onClose={() => setIsOpen(false)}
+      trigger={(triggerProps) => (
+        <Pressable {...triggerProps} className="rounded-full active:opacity-80">
+          <Avatar
+            fallback={getInitials(user?.name)}
+            src={user?.image}
+            size="sm"
+          />
+        </Pressable>
+      )}
+    >
+      <PopoverBackdrop />
+      <PopoverContent className="max-w-[224px] p-0">
+        <PopoverBody>
           {/* User info header */}
           <View className="px-3 py-2.5 border-b border-border">
             <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
@@ -379,7 +396,7 @@ function UserMenu({ visible, onClose, user, onSignOut, onNavigate }: UserMenuPro
           {/* Menu items */}
           <View className="py-1">
             <Pressable
-              onPress={() => { onNavigate('/(app)/profile'); onClose() }}
+              onPress={() => { onNavigate('/(app)/profile'); setIsOpen(false) }}
               className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
             >
               <User size={16} className="text-muted-foreground" />
@@ -422,24 +439,23 @@ function UserMenu({ visible, onClose, user, onSignOut, onNavigate }: UserMenuPro
 
           <View className="py-1">
             <Pressable
-              onPress={() => { onSignOut(); onClose() }}
+              onPress={() => { onSignOut(); setIsOpen(false) }}
               className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
             >
               <LogOut size={16} className="text-muted-foreground" />
               <Text className="text-sm text-foreground">Sign Out</Text>
             </Pressable>
           </View>
-        </Pressable>
-      </Pressable>
-    </Modal>
+        </PopoverBody>
+      </PopoverContent>
+    </Popover>
   )
 }
 
-// ─── WorkspaceSwitcherModal ────────────────────────────────
+// ─── WorkspaceSwitcher (popover anchored to workspace button) ─
 
-interface WorkspaceSwitcherModalProps {
-  visible: boolean
-  onClose: () => void
+interface WorkspaceSwitcherProps {
+  collapsed: boolean
   workspaces: any[]
   currentWorkspace: any
   billingData: any
@@ -448,16 +464,17 @@ interface WorkspaceSwitcherModalProps {
   onCreateWorkspace: () => void
 }
 
-function WorkspaceSwitcherModal({
-  visible,
-  onClose,
+function WorkspaceSwitcher({
+  collapsed,
   workspaces,
   currentWorkspace,
   billingData,
   onNavigate,
   onSwitchWorkspace,
   onCreateWorkspace,
-}: WorkspaceSwitcherModalProps) {
+}: WorkspaceSwitcherProps) {
+  const [isOpen, setIsOpen] = useState(false)
+
   const wsInitial = currentWorkspace?.name?.[0]?.toUpperCase() ?? 'W'
   const planType = billingData.subscription
     ? (billingData.subscription.planId?.charAt(0).toUpperCase() + billingData.subscription.planId?.slice(1))
@@ -469,13 +486,39 @@ function WorkspaceSwitcherModal({
   const creditsRemaining = effectiveBalance?.total ?? 0
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable className="flex-1 bg-black/50" onPress={onClose}>
+    <Popover
+      placement="bottom"
+      size="sm"
+      isOpen={isOpen}
+      onOpen={() => setIsOpen(true)}
+      onClose={() => setIsOpen(false)}
+      trigger={(triggerProps) => (
         <Pressable
-          className="bg-card rounded-xl border border-border mx-4 mt-24 overflow-hidden"
-          style={{ maxWidth: 280 }}
-          onPress={(e) => e.stopPropagation()}
+          {...triggerProps}
+          className={cn(
+            'flex-row items-center gap-2 rounded-md px-2 py-1.5 active:bg-muted',
+            collapsed && 'justify-center px-0'
+          )}
         >
+          <View className="h-6 w-6 rounded bg-primary/20 items-center justify-center">
+            <Text className="text-[10px] font-bold text-primary">
+              {currentWorkspace?.name?.[0]?.toUpperCase() || 'W'}
+            </Text>
+          </View>
+          {!collapsed && (
+            <>
+              <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
+                {currentWorkspace?.name || 'Workspace'}
+              </Text>
+              <ChevronDown size={14} className="text-muted-foreground" />
+            </>
+          )}
+        </Pressable>
+      )}
+    >
+      <PopoverBackdrop />
+      <PopoverContent className="max-w-[280px] p-0">
+        <PopoverBody>
           {/* Current workspace header */}
           {currentWorkspace && (
             <View className="px-4 py-3">
@@ -499,14 +542,14 @@ function WorkspaceSwitcherModal({
           {currentWorkspace && (
             <View className="px-3 pb-2 flex-row gap-2">
               <Pressable
-                onPress={() => { onNavigate('/(app)/settings'); onClose() }}
+                onPress={() => { onNavigate('/(app)/settings'); setIsOpen(false) }}
                 className="flex-1 flex-row items-center justify-center gap-1.5 h-8 rounded-md border border-border active:bg-muted"
               >
                 <Settings size={14} className="text-muted-foreground" />
                 <Text className="text-xs text-foreground">Settings</Text>
               </Pressable>
               <Pressable
-                onPress={() => { onNavigate('/(app)/members'); onClose() }}
+                onPress={() => { onNavigate('/(app)/members'); setIsOpen(false) }}
                 className="flex-1 flex-row items-center justify-center gap-1.5 h-8 rounded-md border border-border active:bg-muted"
               >
                 <Users size={14} className="text-muted-foreground" />
@@ -549,7 +592,7 @@ function WorkspaceSwitcherModal({
             <>
               <View className="px-3 py-2">
                 <Pressable
-                  onPress={() => { onNavigate('/(app)/billing'); onClose() }}
+                  onPress={() => { onNavigate('/(app)/billing'); setIsOpen(false) }}
                   className="flex-row items-center justify-center gap-2 h-9 rounded-md"
                   style={Platform.OS === 'web'
                     ? { backgroundImage: 'linear-gradient(to right, #3b82f6, #9333ea)' } as any
@@ -578,7 +621,7 @@ function WorkspaceSwitcherModal({
                     if (!isCurrent) {
                       onSwitchWorkspace(ws.id)
                     }
-                    onClose()
+                    setIsOpen(false)
                   }}
                   className="flex-row items-center gap-2 px-4 py-2 active:bg-muted"
                 >
@@ -607,7 +650,7 @@ function WorkspaceSwitcherModal({
           <View className="p-1">
             <Pressable
               onPress={() => {
-                onClose()
+                setIsOpen(false)
                 onCreateWorkspace()
               }}
               className="flex-row items-center gap-2 px-4 py-2 rounded-md active:bg-muted"
@@ -616,9 +659,9 @@ function WorkspaceSwitcherModal({
               <Text className="text-sm text-foreground">Create new workspace</Text>
             </Pressable>
           </View>
-        </Pressable>
-      </Pressable>
-    </Modal>
+        </PopoverBody>
+      </PopoverContent>
+    </Popover>
   )
 }
 
@@ -811,9 +854,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const isPaidPlan = billingData.hasActiveSubscription
 
   const [collapsed, setCollapsed] = useState(false)
-  const [userMenuOpen, setUserMenuOpen] = useState(false)
   const [createFolderOpen, setCreateFolderOpen] = useState(false)
-  const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false)
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false)
 
   let allWorkspaces: any[]
@@ -928,27 +969,15 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
 
       {/* ── Workspace Switcher ── */}
       <View className={cn('p-2 border-b border-border', collapsed && 'px-1')}>
-        <Pressable
-          onPress={() => setWorkspaceSwitcherOpen(true)}
-          className={cn(
-            'flex-row items-center gap-2 rounded-md px-2 py-1.5 active:bg-muted',
-            collapsed && 'justify-center px-0'
-          )}
-        >
-          <View className="h-6 w-6 rounded bg-primary/20 items-center justify-center">
-            <Text className="text-[10px] font-bold text-primary">
-              {currentWorkspace?.name?.[0]?.toUpperCase() || 'W'}
-            </Text>
-          </View>
-          {!collapsed && (
-            <>
-              <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
-                {currentWorkspace?.name || 'Workspace'}
-              </Text>
-              <ChevronDown size={14} className="text-muted-foreground" />
-            </>
-          )}
-        </Pressable>
+        <WorkspaceSwitcher
+          collapsed={collapsed}
+          workspaces={allWorkspaces}
+          currentWorkspace={currentWorkspace}
+          billingData={billingData}
+          onNavigate={(href) => { router.push(href as any); onNavPress() }}
+          onSwitchWorkspace={handleSwitchWorkspace}
+          onCreateWorkspace={handleCreateWorkspace}
+        />
       </View>
 
       {/* ── Main Navigation (scrollable) ── */}
@@ -1083,16 +1112,11 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
             collapsed ? 'justify-center' : 'px-3'
           )}
         >
-          <Pressable
-            onPress={() => setUserMenuOpen(true)}
-            className="rounded-full active:opacity-80"
-          >
-            <Avatar
-              fallback={getInitials(user?.name)}
-              src={user?.image}
-              size="sm"
-            />
-          </Pressable>
+          <UserMenu
+            user={user}
+            onSignOut={handleSignOut}
+            onNavigate={(href) => router.push(href as any)}
+          />
 
           {!collapsed && (
             <View className="flex-1 ml-1">
@@ -1102,24 +1126,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
         </View>
       </View>
 
-      {/* Modals */}
-      <WorkspaceSwitcherModal
-        visible={workspaceSwitcherOpen}
-        onClose={() => setWorkspaceSwitcherOpen(false)}
-        workspaces={allWorkspaces}
-        currentWorkspace={currentWorkspace}
-        billingData={billingData}
-        onNavigate={(href) => { router.push(href as any); onNavPress() }}
-        onSwitchWorkspace={handleSwitchWorkspace}
-        onCreateWorkspace={handleCreateWorkspace}
-      />
-      <UserMenu
-        visible={userMenuOpen}
-        onClose={() => setUserMenuOpen(false)}
-        user={user}
-        onSignOut={handleSignOut}
-        onNavigate={(href) => router.push(href as any)}
-      />
+      {/* Modals (true dialogs that are fine as centered overlays) */}
       <CreateFolderModal
         visible={createFolderOpen}
         onClose={() => setCreateFolderOpen(false)}

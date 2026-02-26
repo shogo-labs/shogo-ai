@@ -6,7 +6,7 @@
  * - Rounded container with subtle border
  * - Clean TextInput with "Ask Shogo..." placeholder
  * - Bottom toolbar with action buttons
- * - Agent mode selector via modal dropdown
+ * - Agent mode selector via popover dropdown
  *
  * Supports image attachments via file picker, drag-and-drop, and paste (web).
  * Mobile uses file picker stub.
@@ -20,11 +20,16 @@ import {
   Pressable,
   Image,
   ScrollView,
-  Modal,
   KeyboardAvoidingView,
   Platform,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
+import {
+  Popover,
+  PopoverBackdrop,
+  PopoverBody,
+  PopoverContent,
+} from "@/components/ui/popover"
 import {
   ArrowUp,
   Plus,
@@ -136,7 +141,7 @@ export function ChatInput({
   const [isProcessingFiles, setIsProcessingFiles] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
   const [queueExpanded, setQueueExpanded] = useState(true)
-  const [showAgentModeModal, setShowAgentModeModal] = useState(false)
+  const [agentModeOpen, setAgentModeOpen] = useState(false)
 
   const [internalAgentMode, setInternalAgentMode] = useState<AgentMode>(
     isPro ? "advanced" : "basic"
@@ -629,32 +634,28 @@ export function ChatInput({
             </Pressable>
 
             {/* Agent mode selector */}
-            <Pressable
-              onPress={() => setShowAgentModeModal(true)}
-              disabled={disabled || isStreaming}
-              className="h-8 flex-row items-center gap-1.5 rounded-full px-3"
-            >
-              {currentAgentConfig.icon}
-              <Text className="text-xs text-muted-foreground">
-                {currentAgentConfig.label}
-              </Text>
-            </Pressable>
-
-            {/* Agent mode modal */}
-            <Modal
-              visible={showAgentModeModal}
-              transparent
-              animationType="fade"
-              onRequestClose={() => setShowAgentModeModal(false)}
-            >
-              <Pressable
-                className="flex-1 bg-black/40 justify-end"
-                onPress={() => setShowAgentModeModal(false)}
-              >
-                <View className="bg-background rounded-t-2xl p-4 pb-8">
-                  <Text className="text-base font-semibold text-foreground mb-3">
-                    Agent Mode
+            <Popover
+              placement="top"
+              size="xs"
+              isOpen={agentModeOpen}
+              onOpen={() => setAgentModeOpen(true)}
+              onClose={() => setAgentModeOpen(false)}
+              trigger={(triggerProps) => (
+                <Pressable
+                  {...triggerProps}
+                  disabled={disabled || isStreaming}
+                  className="h-8 flex-row items-center gap-1.5 rounded-full px-3"
+                >
+                  {currentAgentConfig.icon}
+                  <Text className="text-xs text-muted-foreground">
+                    {currentAgentConfig.label}
                   </Text>
+                </Pressable>
+              )}
+            >
+              <PopoverBackdrop />
+              <PopoverContent className="max-w-[280px] p-0">
+                <PopoverBody>
                   {AGENT_MODES.map((mode) => {
                     const isLocked = mode.requiresPro && !isPro
                     const isSelected = mode.id === agentMode
@@ -663,7 +664,7 @@ export function ChatInput({
                         key={mode.id}
                         onPress={() => {
                           handleAgentModeChange(mode.id)
-                          setShowAgentModeModal(false)
+                          setAgentModeOpen(false)
                         }}
                         className={cn(
                           "flex-row items-center gap-3 p-3 rounded-lg mb-1",
@@ -725,9 +726,9 @@ export function ChatInput({
                       </Pressable>
                     )
                   })}
-                </View>
-              </Pressable>
-            </Modal>
+                </PopoverBody>
+              </PopoverContent>
+            </Popover>
           </View>
 
           {/* Right side buttons */}

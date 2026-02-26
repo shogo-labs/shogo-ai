@@ -1,7 +1,7 @@
 /**
  * ChatSessionPicker Component (React Native)
  *
- * Renders a bottom sheet / modal for selecting chat sessions.
+ * Renders a popover for selecting chat sessions.
  * Shows session name, message count, and relative time for each session.
  * Includes a "New Chat" option and search.
  *
@@ -16,10 +16,15 @@ import {
   Pressable,
   TextInput,
   FlatList,
-  Modal,
   type ListRenderItemInfo,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
+import {
+  Popover,
+  PopoverBackdrop,
+  PopoverBody,
+  PopoverContent,
+} from "@/components/ui/popover"
 import {
   ChevronDown,
   MessageSquare,
@@ -178,33 +183,31 @@ export function ChatSessionPicker({
   }
 
   return (
-    <>
-      {/* Trigger button */}
-      <Pressable
-        onPress={() => setIsOpen(true)}
-        className="flex-row items-center gap-2 px-3 py-2"
-      >
-        <MessageSquare className="h-4 w-4 text-gray-400" size={16} />
-        <Text className="text-sm text-foreground" numberOfLines={1}>
-          {currentSession?.name ?? "Select Chat"}
-        </Text>
-        <ChevronDown className="h-4 w-4 text-gray-400 shrink-0" size={16} />
-      </Pressable>
-
-      {/* Session picker modal */}
-      <Modal
-        visible={isOpen}
-        animationType="slide"
-        presentationStyle="pageSheet"
-        onRequestClose={() => setIsOpen(false)}
-      >
-        <View className="flex-1 bg-background">
-          {/* Modal header */}
+    <Popover
+      placement="bottom"
+      size="full"
+      isOpen={isOpen}
+      onOpen={() => setIsOpen(true)}
+      onClose={() => setIsOpen(false)}
+      trigger={(triggerProps) => (
+        <Pressable
+          {...triggerProps}
+          className="flex-row items-center gap-2 px-3 py-2"
+        >
+          <MessageSquare className="h-4 w-4 text-gray-400" size={16} />
+          <Text className="text-sm text-foreground" numberOfLines={1}>
+            {currentSession?.name ?? "Select Chat"}
+          </Text>
+          <ChevronDown className="h-4 w-4 text-gray-400 shrink-0" size={16} />
+        </Pressable>
+      )}
+    >
+      <PopoverBackdrop />
+      <PopoverContent className="max-w-[320px] p-0 max-h-[400px]">
+        <PopoverBody>
+          {/* Header */}
           <View className="flex-row items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
             <Text className="text-base font-semibold text-foreground">Chat Sessions</Text>
-            <Pressable onPress={() => setIsOpen(false)} className="p-1">
-              <X className="h-5 w-5 text-gray-400" size={20} />
-            </Pressable>
           </View>
 
           {/* New Chat button */}
@@ -242,11 +245,11 @@ export function ChatSessionPicker({
               data={filteredSessions}
               renderItem={renderSession}
               keyExtractor={(item) => item.id}
-              className="flex-1"
+              style={{ maxHeight: 240 }}
             />
           )}
-        </View>
-      </Modal>
-    </>
+        </PopoverBody>
+      </PopoverContent>
+    </Popover>
   )
 }

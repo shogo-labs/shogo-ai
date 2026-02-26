@@ -1,7 +1,7 @@
 /**
  * PublishDropdown - React Native port of the web PublishDropdown.
  *
- * Renders as a Modal bottom sheet triggered by the "Publish" button.
+ * Renders as a Popover anchored to a "Publish" trigger button.
  * Features:
  * - Subdomain input with availability checking
  * - Access level selector (Anyone / Authenticated / Private)
@@ -15,7 +15,6 @@ import {
   Text,
   TextInput,
   Pressable,
-  Modal,
   ActivityIndicator,
   Linking,
   Platform,
@@ -30,6 +29,12 @@ import {
   ChevronDown,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import {
+  Popover,
+  PopoverBackdrop,
+  PopoverBody,
+  PopoverContent,
+} from '@/components/ui/popover'
 import { API_URL } from '../../lib/api'
 
 export type AccessLevel = 'anyone' | 'authenticated' | 'private'
@@ -45,11 +50,10 @@ const ACCESS_OPTIONS: { value: AccessLevel; label: string; Icon: any }[] = [
 interface PublishDropdownProps {
   projectId: string
   projectName: string
-  visible: boolean
-  onClose: () => void
 }
 
-export function PublishDropdown({ projectId, projectName, visible, onClose }: PublishDropdownProps) {
+export function PublishDropdown({ projectId, projectName }: PublishDropdownProps) {
+  const [isOpen, setIsOpen] = useState(false)
   const [subdomain, setSubdomain] = useState(
     () => projectName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
   )
@@ -71,9 +75,9 @@ export function PublishDropdown({ projectId, projectName, visible, onClose }: Pu
   const checkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
-    if (!visible) return
+    if (!isOpen) return
     loadPublishState()
-  }, [visible, projectId])
+  }, [isOpen, projectId])
 
   const loadPublishState = useCallback(async () => {
     try {
@@ -177,12 +181,25 @@ export function PublishDropdown({ projectId, projectName, visible, onClose }: Pu
   const currentAccess = ACCESS_OPTIONS.find(o => o.value === accessLevel) || ACCESS_OPTIONS[0]
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable className="flex-1 bg-black/50 justify-end" onPress={onClose}>
+    <Popover
+      placement="bottom"
+      size="lg"
+      isOpen={isOpen}
+      onOpen={() => setIsOpen(true)}
+      onClose={() => setIsOpen(false)}
+      trigger={(triggerProps) => (
         <Pressable
-          className="bg-background rounded-t-2xl p-5 pb-8"
-          onPress={(e) => e.stopPropagation()}
+          {...triggerProps}
+          className="h-8 flex-row items-center px-3 rounded-md bg-primary active:bg-primary/80"
         >
+          <Text className="text-xs font-medium text-primary-foreground">Publish</Text>
+        </Pressable>
+      )}
+    >
+      <PopoverBackdrop />
+      <PopoverContent className="max-w-[360px] p-0">
+        <PopoverBody>
+          <View className="p-5">
           {/* Header */}
           <View className="flex-row items-center justify-between mb-4">
             <Text className="text-lg font-semibold text-foreground">
@@ -316,7 +333,7 @@ export function PublishDropdown({ projectId, projectName, visible, onClose }: Pu
             ) : (
               <>
                 <Pressable
-                  onPress={onClose}
+                  onPress={() => setIsOpen(false)}
                   className="flex-1 h-10 rounded-lg border border-border items-center justify-center"
                 >
                   <Text className="text-sm font-medium text-foreground">Cancel</Text>
@@ -337,8 +354,9 @@ export function PublishDropdown({ projectId, projectName, visible, onClose }: Pu
               </>
             )}
           </View>
-        </Pressable>
-      </Pressable>
-    </Modal>
+          </View>
+        </PopoverBody>
+      </PopoverContent>
+    </Popover>
   )
 }
