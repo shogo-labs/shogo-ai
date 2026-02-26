@@ -164,6 +164,12 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
               value={value}
               onChangeText={setValue}
               onSubmitEditing={handleSubmit}
+              onKeyPress={(e: any) => {
+                if (Platform.OS === "web" && e.nativeEvent.key === "Enter" && !e.nativeEvent.shiftKey) {
+                  e.preventDefault()
+                  handleSubmit()
+                }
+              }}
               editable={!disabled && !isLoading}
               multiline
               className="min-h-[80px] text-base text-foreground"

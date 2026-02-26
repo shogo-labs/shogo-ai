@@ -443,6 +443,12 @@ export function ChatInput({
           value={inputValue}
           onChangeText={handleChangeText}
           onSubmitEditing={handleSubmit}
+          onKeyPress={(e: any) => {
+            if (Platform.OS === "web" && e.nativeEvent.key === "Enter" && !e.nativeEvent.shiftKey) {
+              e.preventDefault()
+              handleSubmit()
+            }
+          }}
           placeholder={placeholder}
           placeholderTextColor="#9ca3af"
           editable={!disabled}
