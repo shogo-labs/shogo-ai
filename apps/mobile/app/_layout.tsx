@@ -6,14 +6,22 @@ import { StatusBar } from 'expo-status-bar'
 import { useColorScheme } from 'react-native'
 import { GluestackUIProvider } from '@/components/ui/gluestack-ui-provider'
 import { AuthProvider } from '../contexts/auth'
+import { ThemeProvider, useTheme } from '../contexts/theme'
 
-export default function RootLayout() {
-  const colorScheme = useColorScheme()
+function RootLayoutInner() {
+  const systemColorScheme = useColorScheme()
+  const { theme, isLoaded } = useTheme()
+
+  const resolvedMode = theme === 'system'
+    ? (systemColorScheme === 'dark' ? 'dark' : 'light')
+    : theme
+
+  if (!isLoaded) return null
 
   return (
-    <GluestackUIProvider mode={colorScheme === 'dark' ? 'dark' : 'light'}>
+    <GluestackUIProvider mode={resolvedMode}>
       <AuthProvider>
-        <StatusBar style="auto" />
+        <StatusBar style={resolvedMode === 'dark' ? 'light' : 'dark'} />
         <Stack screenOptions={{ headerShown: false, lazy: true }}>
           <Stack.Screen name="index" />
           <Stack.Screen name="(auth)" />
@@ -22,5 +30,13 @@ export default function RootLayout() {
         </Stack>
       </AuthProvider>
     </GluestackUIProvider>
+  )
+}
+
+export default function RootLayout() {
+  return (
+    <ThemeProvider>
+      <RootLayoutInner />
+    </ThemeProvider>
   )
 }

@@ -26,6 +26,7 @@ import {
   useWindowDimensions,
   Platform,
 } from 'react-native'
+import { useTheme } from '../../contexts/theme'
 import {
   Popover,
   PopoverBackdrop,
@@ -347,21 +348,7 @@ interface UserMenuProps {
 function UserMenu({ user, onSignOut, onNavigate }: UserMenuProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [appearanceOpen, setAppearanceOpen] = useState(false)
-  const [theme, setThemeState] = useState<'light' | 'dark' | 'system'>('system')
-
-  const handleTheme = useCallback((t: 'light' | 'dark' | 'system') => {
-    setThemeState(t)
-    if (Platform.OS === 'web' && typeof document !== 'undefined') {
-      if (t === 'system') {
-        localStorage.removeItem('theme')
-        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-        document.documentElement.classList.toggle('dark', prefersDark)
-      } else {
-        localStorage.setItem('theme', t)
-        document.documentElement.classList.toggle('dark', t === 'dark')
-      }
-    }
-  }, [])
+  const { theme, setTheme } = useTheme()
 
   return (
     <Popover
@@ -421,7 +408,7 @@ function UserMenu({ user, onSignOut, onNavigate }: UserMenuProps) {
                 ] as const).map(({ value, label, Icon }) => (
                   <Pressable
                     key={value}
-                    onPress={() => handleTheme(value)}
+                    onPress={() => setTheme(value)}
                     className="flex-row items-center gap-2 py-1.5 active:bg-muted rounded-md px-1"
                   >
                     <Icon size={14} className={theme === value ? 'text-primary' : 'text-muted-foreground'} />
