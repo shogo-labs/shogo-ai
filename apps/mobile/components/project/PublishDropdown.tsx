@@ -31,11 +31,11 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../lib/api'
-import { getAuthCookieHeader } from '../../lib/auth-storage'
+import { authClient } from '../../lib/auth-client'
 
 function apiFetchOpts(init: RequestInit = {}): RequestInit {
   if (Platform.OS === 'web') return { ...init, credentials: 'include' }
-  const cookie = getAuthCookieHeader()
+  const cookie = authClient.getCookie()
   return {
     ...init,
     credentials: 'omit',
