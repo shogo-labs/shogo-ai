@@ -216,6 +216,45 @@ export default observer(function ProjectLayout() {
   const [showChatSessions, setShowChatSessions] = useState(false)
   const [previewTab, setPreviewTab] = useState('dynamic-app')
 
+  const [sessionNames, setSessionNames] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    if (!showChatSessions || !store?.chatSessionCollection || !store?.chatMessageCollection) return
+
+    const sessions = store.chatSessionCollection.all.filter((s: any) => s.contextId === projectId)
+
+    const loadNames = async () => {
+      const names: Record<string, string> = {}
+      await Promise.all(
+        sessions.map(async (s: any) => {
+          const sessionName = s.name || s.inferredName || ''
+          const isGenericName = !sessionName || sessionName.startsWith('Chat ') || sessionName.startsWith('Chat -')
+
+          if (!isGenericName) {
+            names[s.id] = sessionName
+            return
+          }
+
+          try {
+            await store.chatMessageCollection.loadAll({ sessionId: s.id })
+            const msgs = store.chatMessageCollection.all
+              .filter((m: any) => m.sessionId === s.id && m.role === 'user')
+              .sort((a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0))
+            const preview = msgs[0]?.content?.trim()
+            names[s.id] = preview
+              ? (preview.length > 40 ? preview.slice(0, 40) + '…' : preview)
+              : `Chat · ${new Date(s.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+          } catch {
+            names[s.id] = `Chat · ${new Date(s.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+          }
+        })
+      )
+      setSessionNames(names)
+    }
+
+    loadNames()
+  }, [showChatSessions, store, projectId])
+
   const chatSessions: ChatSession[] = useMemo(() => {
     if (!store?.chatSessionCollection) return []
     try {
@@ -223,15 +262,15 @@ export default observer(function ProjectLayout() {
         .filter((s: any) => s.contextId === projectId)
         .map((s: any) => ({
           id: s.id,
-          name: s.inferredName || s.name || `Chat ${new Date(s.createdAt).toLocaleDateString()}`,
-          messageCount: 0,
+          name: sessionNames[s.id] || s.name || s.inferredName || `Chat · ${new Date(s.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`,
+          messageCount: -1,
           updatedAt: s.lastActiveAt || s.updatedAt || s.createdAt || Date.now(),
         }))
         .sort((a: ChatSession, b: ChatSession) => b.updatedAt - a.updatedAt)
     } catch {
       return []
     }
-  }, [store?.chatSessionCollection?.all, projectId])
+  }, [store?.chatSessionCollection?.all, sessionNames, projectId])
 
   const handleCreateNewSession = useCallback(async () => {
     try {
