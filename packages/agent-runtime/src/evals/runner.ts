@@ -333,13 +333,13 @@ export async function runEval(
   const successfulTools = toolCalls.filter(t => !t.error).length
   const failedTools = toolCalls.filter(t => t.error).length
 
-  const totalInput = inputTokens + cacheReadTokens + cacheWriteTokens
+  const totalTokens = inputTokens + cacheReadTokens + cacheWriteTokens + outputTokens
   const metrics: EvalMetrics = {
     toolCallCount: toolCalls.length,
     successfulToolCalls: successfulTools,
     failedToolCalls: failedTools,
     iterations: stepCount,
-    tokens: { input: totalInput, output: outputTokens, total: totalInput + outputTokens },
+    tokens: { input: inputTokens, output: outputTokens, cacheRead: cacheReadTokens, cacheWrite: cacheWriteTokens, total: totalTokens },
     timing: { totalMs: durationMs },
   }
 

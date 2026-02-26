@@ -110,7 +110,7 @@ export interface EvalMetrics {
   successfulToolCalls: number
   failedToolCalls: number
   iterations: number
-  tokens: { input: number; output: number; total: number }
+  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number }
   timing: { totalMs: number }
 }
 

@@ -191,27 +191,12 @@ function hasCardWrappedSections(result: EvalResult): boolean {
 }
 
 /**
- * Check that the component tree uses Separator components.
+ * Check that Metric components include trendValue for auto-inferred trend display.
+ * (The renderer auto-infers trend direction from trendValue, so explicit "trend" is not required.)
  */
-function hasSeparator(result: EvalResult): boolean {
+function metricsHaveTrendValues(result: EvalResult): boolean {
   const json = JSON.stringify(result.toolCalls.filter(t => t.name === 'canvas_update').map(t => t.input))
-  return json.includes('"Separator"')
-}
-
-/**
- * Check that the root Column uses gap "lg".
- */
-function rootHasLargeGap(result: EvalResult): boolean {
-  const json = JSON.stringify(result.toolCalls.filter(t => t.name === 'canvas_update').map(t => t.input))
-  return /"id"\s*:\s*"root"[^}]*"gap"\s*:\s*"lg"/.test(json)
-}
-
-/**
- * Check that Metric components have trend data.
- */
-function metricsHaveTrends(result: EvalResult): boolean {
-  const json = JSON.stringify(result.toolCalls.filter(t => t.name === 'canvas_update').map(t => t.input))
-  return json.includes('"trend"') && json.includes('"trendValue"')
+  return json.includes('"trendValue"')
 }
 
 // ---------------------------------------------------------------------------
@@ -2020,16 +2005,16 @@ export const CANVAS_EVALS: AgentEval[] = [
       {
         id: 'has-metric-grid',
         description: 'Uses a Grid of Metric components for KPIs',
-        points: 15,
+        points: 20,
         phase: 'execution',
         validate: (r) => hasMetricGrid(r),
       },
       {
-        id: 'metrics-have-trends',
-        description: 'Metric components include trend and trendValue',
+        id: 'metrics-have-trend-values',
+        description: 'Metric components include trendValue for auto-inferred trends',
         points: 10,
         phase: 'execution',
-        validate: (r) => metricsHaveTrends(r),
+        validate: (r) => metricsHaveTrendValues(r),
       },
       {
         id: 'has-chart-component',
@@ -2044,7 +2029,7 @@ export const CANVAS_EVALS: AgentEval[] = [
       {
         id: 'has-card-sections',
         description: 'Data sections are wrapped in Cards with titles',
-        points: 10,
+        points: 15,
         phase: 'execution',
         validate: (r) => hasCardWrappedSections(r),
       },
@@ -2054,13 +2039,6 @@ export const CANVAS_EVALS: AgentEval[] = [
         points: 15,
         phase: 'execution',
         validate: (r) => hasMinimumComponents(r, 12),
-      },
-      {
-        id: 'root-gap-lg',
-        description: 'Root Column uses gap "lg" for proper spacing',
-        points: 10,
-        phase: 'execution',
-        validate: (r) => rootHasLargeGap(r),
       },
       {
         id: 'has-header-row',
@@ -2119,39 +2097,35 @@ export const CANVAS_EVALS: AgentEval[] = [
         validate: (r) => hasMetricGrid(r),
       },
       {
-        id: 'metrics-have-trends',
-        description: 'Metric components include trend data',
+        id: 'metrics-have-trend-values',
+        description: 'Metric components include trendValue for auto-inferred trends',
         points: 10,
         phase: 'execution',
-        validate: (r) => metricsHaveTrends(r),
+        validate: (r) => metricsHaveTrendValues(r),
       },
       {
         id: 'has-card-wrapped-form',
         description: 'Form section is wrapped in a Card with title',
-        points: 10,
+        points: 15,
         phase: 'execution',
         validate: (r) => hasCardWrappedSections(r),
       },
       {
-        id: 'has-separator',
-        description: 'Uses Separator between form and data sections',
-        points: 10,
+        id: 'has-header-row',
+        description: 'Includes a header Row with title',
+        points: 5,
         phase: 'execution',
-        validate: (r) => hasSeparator(r),
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls.filter(t => t.name === 'canvas_update').map(t => t.input))
+          return json.includes('"Row"') && (json.includes('"h2"') || json.includes('"h3"'))
+        },
       },
       {
         id: 'minimum-component-count',
         description: 'Has at least 10 components for a polished CRUD app',
-        points: 10,
+        points: 15,
         phase: 'execution',
         validate: (r) => hasMinimumComponents(r, 10),
-      },
-      {
-        id: 'root-gap-lg',
-        description: 'Root Column uses gap "lg"',
-        points: 10,
-        phase: 'execution',
-        validate: (r) => rootHasLargeGap(r),
       },
       {
         id: 'all-buttons-have-mutations',
@@ -2170,7 +2144,7 @@ export const CANVAS_EVALS: AgentEval[] = [
       {
         id: 'reasonable-tool-count',
         description: 'Completed in <= 25 tool calls',
-        points: 5,
+        points: 10,
         phase: 'execution',
         validate: (r) => r.toolCalls.length <= 25,
       },
@@ -2178,9 +2152,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     antiPatterns: [
       'Fewer than 8 components (sparse layout)',
       'No Metric summary row in a CRUD app',
-      'No Separator between form and data sections',
       'Missing Card wrappers',
-      'Root Column without gap "lg"',
     ],
   },
 ]

@@ -76,10 +76,10 @@ const BASE_PORT = 6400
 const REPO_ROOT = resolve(import.meta.dir, '../../../..')
 const AGENT_RUNTIME_SERVER = resolve(REPO_ROOT, 'packages/agent-runtime/src/server.ts')
 
-// Pricing per token (USD)
-const PRICING: Record<string, { input: number; output: number }> = {
-  haiku: { input: 0.0000008, output: 0.000004 },
-  sonnet: { input: 0.000003, output: 0.000015 },
+// Pricing per token (USD) — cache reads are 90% cheaper, cache writes 25% more
+const PRICING: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
+  haiku: { input: 0.0000008, output: 0.000004, cacheRead: 0.00000008, cacheWrite: 0.000001 },
+  sonnet: { input: 0.000003, output: 0.000015, cacheRead: 0.0000003, cacheWrite: 0.00000375 },
 }
 
 function getEvals(track: string): AgentEval[] {
@@ -250,7 +250,7 @@ async function runEvalOnWorker(
         successfulToolCalls: 0,
         failedToolCalls: 0,
         iterations: 0,
-        tokens: { input: 0, output: 0, total: 0 },
+        tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
         timing: { totalMs: Date.now() - startTime },
       },
       errors: [err.message],
@@ -358,8 +358,14 @@ async function main() {
     : 0
   const totalInput = results.reduce((s, r) => s + r.metrics.tokens.input, 0)
   const totalOutput = results.reduce((s, r) => s + r.metrics.tokens.output, 0)
+  const totalCacheRead = results.reduce((s, r) => s + r.metrics.tokens.cacheRead, 0)
+  const totalCacheWrite = results.reduce((s, r) => s + r.metrics.tokens.cacheWrite, 0)
   const pricing = PRICING[modelArg] || PRICING.haiku
-  const totalCost = totalInput * pricing.input + totalOutput * pricing.output
+  const totalCost =
+    totalInput * pricing.input +
+    totalOutput * pricing.output +
+    totalCacheRead * pricing.cacheRead +
+    totalCacheWrite * pricing.cacheWrite
   const totalToolCalls = results.reduce((s, r) => s + r.metrics.toolCallCount, 0)
   const totalFailed = results.reduce((s, r) => s + r.metrics.failedToolCalls, 0)
 
@@ -415,13 +421,18 @@ async function main() {
   console.log(`  Success rate:       ${totalToolCalls > 0 ? ((1 - totalFailed / totalToolCalls) * 100).toFixed(1) : 100}%`)
   console.log('')
 
+  const cacheHitRate = (totalInput + totalCacheRead + totalCacheWrite) > 0
+    ? (totalCacheRead / (totalInput + totalCacheRead + totalCacheWrite) * 100).toFixed(1)
+    : '0.0'
   console.log('COST')
   console.log('-'.repeat(40))
-  console.log(`  Input tokens:   ${totalInput.toLocaleString()}`)
-  console.log(`  Output tokens:  ${totalOutput.toLocaleString()}`)
-  console.log(`  Total cost:     $${totalCost.toFixed(4)}`)
-  console.log(`  Cost/eval:      $${(totalCost / results.length).toFixed(4)}`)
-  console.log(`  Duration:       ${totalTime.toFixed(1)}s`)
+  console.log(`  Input tokens:       ${totalInput.toLocaleString()}`)
+  console.log(`  Cache read tokens:  ${totalCacheRead.toLocaleString()} (${cacheHitRate}% hit rate)`)
+  console.log(`  Cache write tokens: ${totalCacheWrite.toLocaleString()}`)
+  console.log(`  Output tokens:      ${totalOutput.toLocaleString()}`)
+  console.log(`  Total cost:         $${totalCost.toFixed(4)}`)
+  console.log(`  Cost/eval:          $${(totalCost / results.length).toFixed(4)}`)
+  console.log(`  Duration:           ${totalTime.toFixed(1)}s`)
   console.log('')
 
   if (Object.keys(byCategory).length > 1) {
@@ -467,6 +478,8 @@ async function main() {
     byCategory,
     cost: {
       totalInputTokens: totalInput,
+      totalCacheReadTokens: totalCacheRead,
+      totalCacheWriteTokens: totalCacheWrite,
       totalOutputTokens: totalOutput,
       totalCost,
       costPerEval: totalCost / results.length,
