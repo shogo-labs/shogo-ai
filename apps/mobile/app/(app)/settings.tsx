@@ -21,7 +21,7 @@ import {
   Alert as RNAlert,
   Linking,
 } from 'react-native'
-import { useRouter } from 'expo-router'
+import { useRouter, useLocalSearchParams } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { observer } from 'mobx-react-lite'
 import {
@@ -1175,7 +1175,10 @@ function GitHubTab() {
 
 export default observer(function SettingsPage() {
   const router = useRouter()
-  const [activeTab, setActiveTab] = useState<TabId>('workspace')
+  const params = useLocalSearchParams<{ tab?: string }>()
+  const [activeTab, setActiveTab] = useState<TabId>(
+    () => (NAV_ITEMS.some(n => n.id === params.tab) ? params.tab as TabId : 'workspace')
+  )
 
   return (
     <View className="flex-1 bg-background">

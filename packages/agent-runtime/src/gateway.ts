@@ -113,6 +113,22 @@ Then follow ALL steps below:
   canvas_api_query({ surfaceId: "my_app", model: "Task", dataPath: "/tasks" })
   → Now { path: "/tasks" } is available for component data binding
 
+**Step 3.5: canvas_api_hooks** — Register hooks for auto-updating metrics and data integrity
+  When your UI has Metric components showing aggregates (totals, counts, averages) derived from a collection, register hooks so they auto-update after mutations:
+  canvas_api_hooks({ surfaceId: "my_app", model: "Task",
+    beforeCreate: [
+      { action: "validate", field: "title", rule: "required" }
+    ],
+    afterCreate: [
+      { action: "recompute", target: "/summary/taskCount", source: "/tasks", aggregate: "count" }
+    ],
+    afterDelete: [
+      { action: "recompute", target: "/summary/taskCount", source: "/tasks", aggregate: "count" }
+    ]
+  })
+  Hook actions: recompute (auto-update aggregates), validate (reject bad input), cascade-delete (remove children), transform (normalize fields), log (audit trail).
+  → ALWAYS register recompute hooks when Metrics show aggregates. Without hooks, metrics stay stale after mutations.
+
 **Step 4: canvas_update** — Build the UI with DataList + form + mutation buttons
   canvas_update({ surfaceId: "my_app", components: [
     { id: "root", component: "Column", children: ["header", "add_section", "task_list"], gap: "md", padding: "4" },
@@ -151,33 +167,27 @@ Then follow ALL steps below:
 
 **Step 5: TEST — Verify EVERY interactive action actually works (REQUIRED)**
   Test EACH distinct action type (add, mark complete, delete, etc.) separately.
-  canvas_trigger_action performs real verification — it captures data before and after, and returns ok: false if the mutation failed or no data changed.
+  canvas_trigger_action resolves the button's ACTUAL mutation from the component tree — the same way the real frontend does. If the button is missing a mutation or has broken params, the test will catch it.
 
-  ⚠️ **IMPORTANT: The _mutation you pass to canvas_trigger_action MUST match the mutation in your Button's action definition.**
-  Copy the exact endpoint, method, and body structure from your button component. If your button has no mutation, the test might pass (because you're manually providing one) but the real button is BROKEN for users. Always verify the button definition first (Step 4.5).
+  Just provide the actionName. For buttons inside DataList templates, also provide itemData with the item's data (use a real ID from seed data):
 
-  Example — test add (mutation must match your add_btn's action.mutation):
-  canvas_trigger_action({ surfaceId: "my_app", actionName: "add", context: {
-    _mutation: { endpoint: "/api/tasks", method: "POST", body: { title: "Test task" } }
-  }})
-  → Check ok: true and the "changes" array. Then verify with canvas_inspect:
+  Example — test add:
+  canvas_trigger_action({ surfaceId: "my_app", actionName: "add" })
+  → The tool finds the "add" button, resolves its mutation, executes it, and verifies data changed.
   canvas_inspect({ surfaceId: "my_app", mode: "data", dataPath: "/tasks" })
 
-  Example — test mark complete (mutation must match your done_btn's action.mutation):
-  canvas_trigger_action({ surfaceId: "my_app", actionName: "done", context: {
-    _mutation: { endpoint: "/api/tasks/ITEM_ID", method: "PATCH", body: { status: "done" } }
-  }})
-  → Use a real item ID from the seed data or the add test. Confirm the item's status actually changed.
+  Example — test mark complete (DataList template button — needs itemData):
+  canvas_trigger_action({ surfaceId: "my_app", actionName: "done", itemData: { id: "ITEM_ID", title: "First task", status: "todo" } })
+  → The tool resolves { path: "id" } in params against itemData, replacing :id in the endpoint.
   canvas_inspect({ surfaceId: "my_app", mode: "data", dataPath: "/tasks" })
 
-  Example — test delete (mutation must match your del_btn's action.mutation):
-  canvas_trigger_action({ surfaceId: "my_app", actionName: "delete", context: {
-    _mutation: { endpoint: "/api/tasks/ITEM_ID", method: "DELETE" }
-  }})
+  Example — test delete (DataList template button — needs itemData):
+  canvas_trigger_action({ surfaceId: "my_app", actionName: "delete", itemData: { id: "ITEM_ID" } })
   canvas_inspect({ surfaceId: "my_app", mode: "data", dataPath: "/tasks" })
   → Confirm the item count decreased.
 
   For each test: if ok: false is returned, the button IS BROKEN. Debug and fix before moving on.
+  If "resolvedFromButton: true" appears, the test used the real button definition — this is faithful to what users experience.
 
 **Step 6: FIX — Patch individual components (don't resend everything)**
   If a test fails or you need to tweak a component, use \`merge: true\` to update ONLY the broken component:
@@ -259,13 +269,13 @@ Tabs require EITHER explicit tab definitions OR TabPanel children with \`title\`
 
 ### Testing Tools
 
-- **canvas_trigger_action** — YOU simulate a button click. Performs REAL verification: captures data before/after, reports actual changes, and returns ok: false if the mutation failed or no data changed. Include \`_mutation\` context for CRUD actions.
+- **canvas_trigger_action** — Simulate a REAL button click. Finds the button by actionName, resolves its mutation from the component tree (same as the frontend), executes it, and verifies data changed. For DataList template buttons, pass \`itemData\` with the item's fields so scoped bindings (\`{ path: "id" }\`) and \`:id\` params resolve correctly. Returns \`resolvedFromButton: true\` when it used the real button definition.
 - **canvas_inspect** — Read the current surface state. ALWAYS call this after canvas_trigger_action to double-check the data. Also use with mode: "components" for the pre-flight check (Step 4.5).
 - The pattern is always: **pre-flight check → trigger → inspect → report** for EACH action type. No exceptions.
 - You MUST test every distinct action button (add, update/mark-complete, delete) — not just one.
-- The \`_mutation\` you pass to canvas_trigger_action must MATCH your button's action.mutation. Never invent a different mutation for testing — that would pass even if the button is broken.
 
 ### Other Tools
+- **canvas_api_hooks** — Register declarative hooks (recompute, validate, cascade-delete, transform, log) on model CRUD operations. Hooks fire automatically when data changes.
 - **canvas_data** — Manually push data: \`canvas_data({ surfaceId: "app", path: "/key", value: data })\`
 - **canvas_data_patch** — Atomic operations (increment, decrement, toggle, append, set) without reading first. Use for counters and toggles instead of the full API pipeline.
 - **canvas_action_wait** — Pause and wait for a REAL USER to click. Only use when you need the human to interact — never for self-testing.
@@ -274,6 +284,9 @@ Tabs require EITHER explicit tab definitions OR TabPanel children with \`title\`
 
 ### Rules
 - **ALWAYS plan before building.** Write a brief plan (data model, layout, actions, tests) before calling any canvas tools. This prevents costly mistakes and rebuilds.
+- **ALWAYS register recompute hooks** when Metric components display aggregates (sum, count, avg) of a collection. Without hooks, metrics display stale values after mutations. Use canvas_api_hooks with afterCreate + afterDelete (and afterUpdate if the aggregated field can change).
+- **Use validate hooks** for data integrity — required fields, positive numbers, enum constraints. These prevent bad data before it enters the database.
+- **Use cascade-delete hooks** when models have parent-child relationships (e.g. Project → Tasks). This prevents orphaned records.
 - After building any canvas with buttons or CRUD, ALWAYS run Step 5 (trigger + inspect) for EVERY action type. Test add, update/complete, and delete separately.
 - If canvas_trigger_action returns ok: false, the button is BROKEN. Fix it with \`canvas_update({ merge: true })\` — see Step 6.
 - After canvas_trigger_action, ALWAYS follow up with canvas_inspect — never canvas_action_wait.
@@ -944,6 +957,7 @@ export class AgentGateway {
       sandbox: this.config.sandbox,
       mainSessionIds: this.config.mainSessionIds,
       mcpClientManager: this.mcpClientManager,
+      connectChannel: (type, config) => this.connectChannel(type, config),
     }
 
     const baseTools = isHeartbeat
@@ -1293,6 +1307,16 @@ export class AgentGateway {
         adapter = new WhatsAppAdapter(config)
         break
       }
+      case 'webhook': {
+        const { WebhookAdapter } = await import('./channels/webhook')
+        adapter = new WebhookAdapter()
+        break
+      }
+      case 'teams': {
+        const { TeamsAdapter } = await import('./channels/teams')
+        adapter = new TeamsAdapter(config)
+        break
+      }
       default:
         throw new Error(`Unknown channel type: ${type}`)
     }
@@ -1301,6 +1325,10 @@ export class AgentGateway {
     await adapter.connect(config)
     this.channels.set(type, adapter)
     console.log(`[AgentGateway] Connected channel: ${type}`)
+  }
+
+  getChannel(type: string): ChannelAdapter | undefined {
+    return this.channels.get(type)
   }
 
   async disconnectChannel(type: string): Promise<void> {

@@ -48,6 +48,7 @@ import {
   FolderOpen,
   FolderPlus,
   CheckSquare,
+  Check,
 } from 'lucide-react-native'
 import {
   useSDKDomain,
@@ -126,6 +127,9 @@ export default observer(function AllProjectsPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [newFolderModalVisible, setNewFolderModalVisible] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
+  const [showSortMenu, setShowSortMenu] = useState(false)
+  const [showVisibilityMenu, setShowVisibilityMenu] = useState(false)
+  const [showStatusMenu, setShowStatusMenu] = useState(false)
 
   // Determine grid columns based on screen width
   const numColumns = viewMode === 'grid' ? (width >= 768 ? 3 : 2) : 1
@@ -368,41 +372,22 @@ export default observer(function AllProjectsPage() {
         ? 'Date created'
         : 'Alphabetical'
 
-  // Sort menu options
   const handleSortPress = useCallback(() => {
-    Alert.alert('Sort by', undefined, [
-      {
-        text: 'Last edited',
-        onPress: () => setSortBy('lastEdited'),
-      },
-      {
-        text: 'Date created',
-        onPress: () => setSortBy('dateCreated'),
-      },
-      {
-        text: 'Alphabetical',
-        onPress: () => setSortBy('alphabetical'),
-      },
-      { text: 'Cancel', style: 'cancel' },
-    ])
+    setShowSortMenu((v) => !v)
+    setShowVisibilityMenu(false)
+    setShowStatusMenu(false)
   }, [])
 
   const handleVisibilityFilter = useCallback(() => {
-    Alert.alert('Visibility', undefined, [
-      { text: 'Any visibility', onPress: () => setVisibilityFilter('any') },
-      { text: 'Public', onPress: () => setVisibilityFilter('public') },
-      { text: 'Private', onPress: () => setVisibilityFilter('private') },
-      { text: 'Cancel', style: 'cancel' },
-    ])
+    setShowVisibilityMenu((v) => !v)
+    setShowSortMenu(false)
+    setShowStatusMenu(false)
   }, [])
 
   const handleStatusFilter = useCallback(() => {
-    Alert.alert('Status', undefined, [
-      { text: 'Any status', onPress: () => setStatusFilter('any') },
-      { text: 'Draft', onPress: () => setStatusFilter('draft') },
-      { text: 'Published', onPress: () => setStatusFilter('published') },
-      { text: 'Cancel', style: 'cancel' },
-    ])
+    setShowStatusMenu((v) => !v)
+    setShowSortMenu(false)
+    setShowVisibilityMenu(false)
   }, [])
 
   const handleCreateFolder = useCallback(async () => {
@@ -490,15 +475,47 @@ export default observer(function AllProjectsPage() {
       // Project card
       const project = item.data
       const isStarred = starredIds.has(project.id)
+      const isSelected = selectedIds.has(project.id)
       return (
         <Pressable
-          onPress={() => handleProjectPress(project)}
+          onPress={() => {
+            if (selectMode) {
+              setSelectedIds((prev) => {
+                const next = new Set(prev)
+                if (next.has(project.id)) {
+                  next.delete(project.id)
+                } else {
+                  next.add(project.id)
+                }
+                return next
+              })
+            } else {
+              handleProjectPress(project)
+            }
+          }}
           onLongPress={() => handleProjectActions(project)}
-          className="flex-1 m-1.5 rounded-xl bg-card overflow-hidden"
+          className={cn('flex-1 m-1.5 rounded-xl bg-card overflow-hidden', isSelected && 'border-2 border-primary')}
         >
-          {/* Color banner */}
+          {/* Color banner / thumbnail placeholder */}
           <View className={cn('aspect-[16/10] items-center justify-center', getPlaceholderColor(project.name))}>
-            <FolderOpen size={40} color="rgba(255,255,255,0.3)" />
+            <View className="items-center">
+              <Text style={{ fontSize: 28, fontWeight: '700', color: 'rgba(255,255,255,0.6)' }}>
+                {project.name?.charAt(0)?.toUpperCase() || 'P'}
+              </Text>
+              <Text style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)', marginTop: 2 }}>
+                {(project as any).type === 'AGENT' ? 'Agent' : 'Project'}
+              </Text>
+            </View>
+
+            {/* Select checkbox */}
+            {selectMode && (
+              <View className={cn(
+                'absolute top-2 left-2 w-5 h-5 rounded border-2 items-center justify-center',
+                isSelected ? 'bg-primary border-primary' : 'border-white/70 bg-black/20'
+              )}>
+                {isSelected && <Check size={12} color="#fff" />}
+              </View>
+            )}
 
             {/* Star button */}
             <Pressable
@@ -549,6 +566,8 @@ export default observer(function AllProjectsPage() {
       handleProjectActions,
       handleToggleStar,
       starredIds,
+      selectedIds,
+      selectMode,
       user?.name,
     ],
   )
@@ -726,38 +745,109 @@ export default observer(function AllProjectsPage() {
           />
         </View>
 
-        {/* Sort + Filters + View toggle row */}
-        <View className="flex-row items-center gap-1.5 flex-wrap">
-          {/* Sort */}
+        {/* Dismiss overlay for open dropdowns */}
+        {(showSortMenu || showVisibilityMenu || showStatusMenu) && (
           <Pressable
-            onPress={handleSortPress}
-            className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input"
-          >
-            <Text className="text-xs text-foreground">{sortLabel}</Text>
-            <ChevronDown size={14} className="text-muted-foreground" />
-          </Pressable>
+            onPress={() => { setShowSortMenu(false); setShowVisibilityMenu(false); setShowStatusMenu(false) }}
+            style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 40 }}
+          />
+        )}
+
+        {/* Sort + Filters + View toggle row */}
+        <View className="flex-row items-center gap-1.5 flex-wrap" style={{ zIndex: 50 }}>
+          {/* Sort */}
+          <View className="relative">
+            <Pressable
+              onPress={handleSortPress}
+              className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input"
+            >
+              <Text className="text-xs text-foreground">{sortLabel}</Text>
+              <ChevronDown size={14} className="text-muted-foreground" />
+            </Pressable>
+            {showSortMenu && (
+              <View className="absolute top-full left-0 mt-1 z-50 bg-card border border-border rounded-lg shadow-lg overflow-hidden" style={{ minWidth: 150 }}>
+                {([
+                  { value: 'lastEdited' as SortBy, label: 'Last edited' },
+                  { value: 'dateCreated' as SortBy, label: 'Date created' },
+                  { value: 'alphabetical' as SortBy, label: 'Alphabetical' },
+                ] as const).map((item) => (
+                  <Pressable
+                    key={item.value}
+                    onPress={() => { setSortBy(item.value); setShowSortMenu(false) }}
+                    className={cn('px-3 py-2 active:bg-muted', sortBy === item.value && 'bg-accent')}
+                  >
+                    <Text className={cn('text-xs', sortBy === item.value ? 'text-foreground font-medium' : 'text-foreground')}>
+                      {item.label}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+          </View>
 
           {/* Visibility filter */}
-          <Pressable
-            onPress={handleVisibilityFilter}
-            className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input"
-          >
-            <Text className="text-xs text-foreground">
-              {visibilityFilter === 'any' ? 'Any visibility' : visibilityFilter === 'public' ? 'Public' : 'Private'}
-            </Text>
-            <ChevronDown size={14} className="text-muted-foreground" />
-          </Pressable>
+          <View className="relative">
+            <Pressable
+              onPress={handleVisibilityFilter}
+              className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input"
+            >
+              <Text className="text-xs text-foreground">
+                {visibilityFilter === 'any' ? 'Any visibility' : visibilityFilter === 'public' ? 'Public' : 'Private'}
+              </Text>
+              <ChevronDown size={14} className="text-muted-foreground" />
+            </Pressable>
+            {showVisibilityMenu && (
+              <View className="absolute top-full left-0 mt-1 z-50 bg-card border border-border rounded-lg shadow-lg overflow-hidden" style={{ minWidth: 150 }}>
+                {([
+                  { value: 'any' as VisibilityFilter, label: 'Any visibility' },
+                  { value: 'public' as VisibilityFilter, label: 'Public' },
+                  { value: 'private' as VisibilityFilter, label: 'Private' },
+                ] as const).map((item) => (
+                  <Pressable
+                    key={item.value}
+                    onPress={() => { setVisibilityFilter(item.value); setShowVisibilityMenu(false) }}
+                    className={cn('px-3 py-2 active:bg-muted', visibilityFilter === item.value && 'bg-accent')}
+                  >
+                    <Text className={cn('text-xs', visibilityFilter === item.value ? 'text-foreground font-medium' : 'text-foreground')}>
+                      {item.label}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+          </View>
 
           {/* Status filter */}
-          <Pressable
-            onPress={handleStatusFilter}
-            className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input"
-          >
-            <Text className="text-xs text-foreground">
-              {statusFilter === 'any' ? 'Any status' : statusFilter === 'draft' ? 'Draft' : 'Published'}
-            </Text>
-            <ChevronDown size={14} className="text-muted-foreground" />
-          </Pressable>
+          <View className="relative">
+            <Pressable
+              onPress={handleStatusFilter}
+              className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input"
+            >
+              <Text className="text-xs text-foreground">
+                {statusFilter === 'any' ? 'Any status' : statusFilter === 'draft' ? 'Draft' : 'Published'}
+              </Text>
+              <ChevronDown size={14} className="text-muted-foreground" />
+            </Pressable>
+            {showStatusMenu && (
+              <View className="absolute top-full left-0 mt-1 z-50 bg-card border border-border rounded-lg shadow-lg overflow-hidden" style={{ minWidth: 150 }}>
+                {([
+                  { value: 'any' as StatusFilter, label: 'Any status' },
+                  { value: 'draft' as StatusFilter, label: 'Draft' },
+                  { value: 'published' as StatusFilter, label: 'Published' },
+                ] as const).map((item) => (
+                  <Pressable
+                    key={item.value}
+                    onPress={() => { setStatusFilter(item.value); setShowStatusMenu(false) }}
+                    className={cn('px-3 py-2 active:bg-muted', statusFilter === item.value && 'bg-accent')}
+                  >
+                    <Text className={cn('text-xs', statusFilter === item.value ? 'text-foreground font-medium' : 'text-foreground')}>
+                      {item.label}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+          </View>
 
           {/* Spacer */}
           <View className="flex-1" />

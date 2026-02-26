@@ -296,24 +296,18 @@ services:
       - shogo-network
 
   # ---------------------------------------------------------------------------
-  # Shogo Web Frontend
+  # Shogo Web Frontend (Expo Web Export + Nginx)
   # ---------------------------------------------------------------------------
   web:
     build:
       context: .
-      dockerfile: apps/web/Dockerfile
+      dockerfile: apps/mobile/Dockerfile
       args:
-        # Build args use WEB_PORT so requests go through nginx (same-origin for cookies)
-        VITE_API_URL: http://localhost:${WEB_PORT:-3000}
-        VITE_MCP_URL: http://localhost:${WEB_PORT:-3000}
-        VITE_BETTER_AUTH_URL: http://localhost:${WEB_PORT:-3000}
-        VITE_WORKSPACE: workspace
+        EXPO_PUBLIC_API_URL: http://localhost:${WEB_PORT:-3333}
     ports:
       - "${WEB_PORT:-3333}:80"
     environment:
-      # Docker internal DNS resolver
       DNS_RESOLVER: "127.0.0.11"
-      # Internal connections (always use Docker service names)
       API_UPSTREAM: http://api:8002
       API_HOST: api
       MCP_UPSTREAM: http://mcp:3100

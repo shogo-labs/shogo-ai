@@ -445,6 +445,8 @@ interface WorkspaceSwitcherModalProps {
   currentWorkspace: any
   billingData: any
   onNavigate: (href: string) => void
+  onSwitchWorkspace: (workspaceId: string) => void
+  onCreateWorkspace: () => void
 }
 
 function WorkspaceSwitcherModal({
@@ -454,6 +456,8 @@ function WorkspaceSwitcherModal({
   currentWorkspace,
   billingData,
   onNavigate,
+  onSwitchWorkspace,
+  onCreateWorkspace,
 }: WorkspaceSwitcherModalProps) {
   const wsInitial = currentWorkspace?.name?.[0]?.toUpperCase() ?? 'W'
   const planType = billingData.subscription
@@ -571,7 +575,12 @@ function WorkspaceSwitcherModal({
               return (
                 <Pressable
                   key={ws.id}
-                  onPress={() => onClose()}
+                  onPress={() => {
+                    if (!isCurrent) {
+                      onSwitchWorkspace(ws.id)
+                    }
+                    onClose()
+                  }}
                   className="flex-row items-center gap-2 px-4 py-2 active:bg-muted"
                 >
                   <View className="h-6 w-6 rounded bg-primary/10 items-center justify-center">
@@ -598,7 +607,10 @@ function WorkspaceSwitcherModal({
           {/* Create new workspace */}
           <View className="p-1">
             <Pressable
-              onPress={onClose}
+              onPress={() => {
+                onClose()
+                onCreateWorkspace()
+              }}
               className="flex-row items-center gap-2 px-4 py-2 rounded-md active:bg-muted"
             >
               <Plus size={16} className="text-muted-foreground" />
@@ -678,6 +690,73 @@ function CreateFolderModal({
   )
 }
 
+// ─── CreateWorkspaceModal ──────────────────────────────────
+
+function CreateWorkspaceModal({
+  visible,
+  onClose,
+  onSubmit,
+}: {
+  visible: boolean
+  onClose: () => void
+  onSubmit: (name: string) => void
+}) {
+  const [name, setName] = useState('')
+
+  const handleSubmit = useCallback(() => {
+    if (name.trim()) {
+      onSubmit(name.trim())
+      setName('')
+      onClose()
+    }
+  }, [name, onSubmit, onClose])
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable className="flex-1 bg-black/50 items-center justify-center" onPress={onClose}>
+        <Pressable
+          className="bg-card rounded-xl p-6 w-80 border border-border"
+          onPress={(e) => e.stopPropagation()}
+        >
+          <Text className="text-base font-semibold text-foreground mb-1">Create new workspace</Text>
+          <Text className="text-sm text-muted-foreground mb-4">
+            Create a new workspace for your team or projects
+          </Text>
+          <TextInput
+            value={name}
+            onChangeText={setName}
+            placeholder="Enter workspace name"
+            placeholderTextColor="#9ca3af"
+            className="border border-border rounded-md px-3 py-2 text-sm text-foreground bg-background mb-4"
+            autoFocus
+            onSubmitEditing={handleSubmit}
+          />
+          <View className="flex-row gap-2 justify-end">
+            <Pressable
+              onPress={onClose}
+              className="px-4 py-2 rounded-md border border-border active:bg-muted"
+            >
+              <Text className="text-sm text-foreground">Cancel</Text>
+            </Pressable>
+            <Pressable
+              onPress={handleSubmit}
+              className={cn(
+                'px-4 py-2 rounded-md',
+                name.trim() ? 'bg-primary active:bg-primary/80' : 'bg-muted'
+              )}
+              disabled={!name.trim()}
+            >
+              <Text className={cn('text-sm', name.trim() ? 'text-primary-foreground' : 'text-muted-foreground')}>
+                Create workspace
+              </Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  )
+}
+
 // ─── Main AppSidebar ───────────────────────────────────────
 
 interface AppSidebarProps {
@@ -702,9 +781,15 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
     projects.loadAll().catch(() => {})
   }, [])
 
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
+
   let currentWorkspace: any
   try {
-    currentWorkspace = workspaces?.all?.[0]
+    if (selectedWorkspaceId) {
+      currentWorkspace = workspaces?.all?.find((w: any) => w.id === selectedWorkspaceId) ?? workspaces?.all?.[0]
+    } else {
+      currentWorkspace = workspaces?.all?.[0]
+    }
   } catch {
     currentWorkspace = undefined
   }
@@ -731,6 +816,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const [userMenuOpen, setUserMenuOpen] = useState(false)
   const [createFolderOpen, setCreateFolderOpen] = useState(false)
   const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false)
+  const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false)
 
   let allWorkspaces: any[]
   try { allWorkspaces = workspaces?.all?.slice() ?? [] } catch { allWorkspaces = [] }
@@ -750,6 +836,38 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
     [actions, currentWorkspace]
   )
 
+  const handleSwitchWorkspace = useCallback(
+    (workspaceId: string) => {
+      setSelectedWorkspaceId(workspaceId)
+      projects.loadAll({ workspaceId }).catch(() => {})
+    },
+    [projects]
+  )
+
+  const handleCreateWorkspace = useCallback(
+    () => {
+      setCreateWorkspaceOpen(true)
+    },
+    []
+  )
+
+  const handleCreateWorkspaceSubmit = useCallback(
+    async (name: string) => {
+      if (!user?.id) return
+      try {
+        const newWorkspace = await actions.createWorkspace(name, undefined, user.id)
+        if (newWorkspace?.id) {
+          setSelectedWorkspaceId(newWorkspace.id)
+          await workspaces.loadAll()
+          await projects.loadAll({ workspaceId: newWorkspace.id })
+        }
+      } catch (e) {
+        console.warn('Failed to create workspace:', e)
+      }
+    },
+    [actions, user?.id, workspaces, projects]
+  )
+
   const handleSignOut = useCallback(async () => {
     try {
       await signOut()
@@ -759,6 +877,11 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const onNavPress = useCallback(() => {
     if (!isWide) onClose?.()
   }, [isWide, onClose])
+
+  const handleSearchPress = useCallback(() => {
+    router.push('/(app)/projects' as any)
+    onNavPress()
+  }, [router, onNavPress])
 
   const isHomePage = pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
   const isProjectsPage = pathname.startsWith('/projects') || pathname.startsWith('/(app)/projects')
@@ -847,7 +970,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
             label="Search"
             collapsed={collapsed}
             shortcut="⌘K"
-            onPress={() => {}}
+            onPress={handleSearchPress}
           />
         </View>
 
@@ -989,6 +1112,8 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
         currentWorkspace={currentWorkspace}
         billingData={billingData}
         onNavigate={(href) => { router.push(href as any); onNavPress() }}
+        onSwitchWorkspace={handleSwitchWorkspace}
+        onCreateWorkspace={handleCreateWorkspace}
       />
       <UserMenu
         visible={userMenuOpen}
@@ -1001,6 +1126,11 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
         visible={createFolderOpen}
         onClose={() => setCreateFolderOpen(false)}
         onSubmit={handleCreateFolder}
+      />
+      <CreateWorkspaceModal
+        visible={createWorkspaceOpen}
+        onClose={() => setCreateWorkspaceOpen(false)}
+        onSubmit={handleCreateWorkspaceSubmit}
       />
     </View>
   )

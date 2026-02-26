@@ -87,6 +87,7 @@ function SignInForm({ onSignIn, isLoading, error, onClearError }: Pick<LoginScre
           value={email}
           onChangeText={(t) => { setEmail(t); onClearError?.() }}
           disabled={isLoading}
+          returnKeyType="next"
         />
       </View>
 
@@ -104,6 +105,8 @@ function SignInForm({ onSignIn, isLoading, error, onClearError }: Pick<LoginScre
             value={password}
             onChangeText={(t) => { setPassword(t); onClearError?.() }}
             disabled={isLoading}
+            onSubmitEditing={handleSubmit}
+            returnKeyType="go"
           />
           <Pressable
             onPress={() => setShowPassword(!showPassword)}
@@ -155,6 +158,7 @@ function SignUpForm({ onSignUp, isLoading, error, onClearError }: Pick<LoginScre
           value={name}
           onChangeText={(t) => { setName(t); onClearError?.() }}
           disabled={isLoading}
+          returnKeyType="next"
         />
       </View>
 
@@ -170,6 +174,7 @@ function SignUpForm({ onSignUp, isLoading, error, onClearError }: Pick<LoginScre
             onChangeText={(t) => { setEmail(t); onClearError?.() }}
             onBlur={() => setEmailTouched(true)}
             disabled={isLoading}
+            returnKeyType="next"
           />
           {emailTouched && email.length > 0 ? (
             <View className="absolute right-3 top-1/2 -translate-y-1/2">
@@ -193,6 +198,8 @@ function SignUpForm({ onSignUp, isLoading, error, onClearError }: Pick<LoginScre
             value={password}
             onChangeText={(t) => { setPassword(t); onClearError?.() }}
             disabled={isLoading}
+            onSubmitEditing={handleSubmit}
+            returnKeyType="go"
           />
           <Pressable
             onPress={() => setShowPassword(!showPassword)}

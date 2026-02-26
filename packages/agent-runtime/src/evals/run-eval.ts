@@ -15,7 +15,7 @@
 import { spawn, type Subprocess } from 'bun'
 import { execSync } from 'child_process'
 import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from 'fs'
-import { resolve } from 'path'
+import { resolve, join, dirname } from 'path'
 
 // Load .env.local from repo root so workers inherit API keys
 const REPO_ROOT_EARLY = resolve(import.meta.dir, '../../../..')
@@ -188,6 +188,15 @@ async function runEvalOnWorker(
   // Clean workspace between evals and re-seed base personality
   try { execSync(`rm -rf ${worker.dir}/* 2>/dev/null || true`, { stdio: 'pipe' }) } catch {}
   resetWorkspaceDefaults(worker.dir)
+
+  // Seed any eval-specific workspace files (e.g. pre-populated MEMORY.md)
+  if (ev.workspaceFiles) {
+    for (const [relPath, content] of Object.entries(ev.workspaceFiles)) {
+      const absPath = join(worker.dir, relPath)
+      mkdirSync(dirname(absPath), { recursive: true })
+      writeFileSync(absPath, content, 'utf-8')
+    }
+  }
 
   // Reset the gateway's conversation session so previous evals don't pollute context
   try {

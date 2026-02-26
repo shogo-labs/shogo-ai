@@ -240,7 +240,7 @@ export const CANVAS_COMPONENT_SCHEMA: ComponentSchema[] = [
     hasChildren: false,
     props: {
       label: str('Metric label', { required: true }),
-      value: str('Metric value (string or number), or use { path: "/revenue" } to bind to data model populated via canvas_api_query with dataPath'),
+      value: str('Metric value (string or number), or use { path: "/summary/total" } to bind to data model. Use canvas_api_hooks with recompute action to auto-update bound values after mutations.'),
       unit: str('Unit suffix (e.g. "USD", "%")'),
       trend: str('Trend direction', { enum: ['up', 'down', 'neutral'] }),
       trendValue: str('Trend amount (e.g. "+12%")'),
@@ -551,6 +551,13 @@ export function lintComponents(components: Array<{ id?: string; component?: stri
             severity: 'error',
             componentId: cid,
             message: `Button action.mutation.method "${method}" is not valid. Use one of: POST, PATCH, DELETE, OPEN.`,
+          })
+        }
+        if (typeof endpoint === 'string' && endpoint.includes(':') && !mutation.params) {
+          messages.push({
+            severity: 'error',
+            componentId: cid,
+            message: `Button mutation endpoint "${endpoint}" has parameter placeholders (e.g. :id) but no "params" defined. Add params: { id: { path: "id" } } to resolve :id from the current item data.`,
           })
         }
       }

@@ -258,16 +258,29 @@ export function MCPServersPanel({ projectId, agentUrl, visible }: MCPServersPane
                               <Pressable
                                 onPress={() => handleToggle(entry)}
                                 disabled={isToggling}
-                                className={cn(
-                                  'mt-1 w-10 h-5 rounded-full justify-center',
-                                  isEnabled ? 'bg-primary' : 'bg-muted-foreground/20',
-                                )}
-                                style={isToggling ? { opacity: 0.5 } : undefined}
+                                style={{
+                                  marginTop: 4,
+                                  width: 44,
+                                  height: 24,
+                                  borderRadius: 12,
+                                  backgroundColor: isEnabled ? '#3b82f6' : '#d1d5db',
+                                  justifyContent: 'center',
+                                  paddingHorizontal: 2,
+                                  opacity: isToggling ? 0.5 : 1,
+                                }}
                               >
                                 <View
-                                  className="w-4 h-4 rounded-full bg-white shadow-sm"
                                   style={{
-                                    marginLeft: isEnabled ? 22 : 2,
+                                    width: 20,
+                                    height: 20,
+                                    borderRadius: 10,
+                                    backgroundColor: '#ffffff',
+                                    shadowColor: '#000',
+                                    shadowOffset: { width: 0, height: 1 },
+                                    shadowOpacity: 0.2,
+                                    shadowRadius: 2,
+                                    elevation: 2,
+                                    transform: [{ translateX: isEnabled ? 20 : 0 }],
                                   }}
                                 />
                               </Pressable>

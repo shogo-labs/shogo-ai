@@ -94,6 +94,59 @@ function inspectAfterTrigger(result: EvalResult): boolean {
   return result.toolCalls.some((t, i) => t.name === 'canvas_inspect' && i > firstTrigger)
 }
 
+/**
+ * Check that all successful canvas_trigger_action calls have resolvedFromButton: true,
+ * meaning the mutation was resolved from the actual button component definition.
+ */
+function allTriggersResolvedFromButton(result: EvalResult): boolean {
+  const triggerCalls = result.toolCalls.filter(t => t.name === 'canvas_trigger_action')
+  if (triggerCalls.length === 0) return false
+  const successfulTriggers = triggerCalls.filter(t => {
+    const output = typeof t.output === 'string' ? t.output : JSON.stringify(t.output ?? '')
+    return output.includes('"ok":true') || output.includes('"ok": true')
+  })
+  if (successfulTriggers.length === 0) return false
+  return successfulTriggers.every(t => {
+    const output = typeof t.output === 'string' ? t.output : JSON.stringify(t.output ?? '')
+    return output.includes('"resolvedFromButton":true') || output.includes('"resolvedFromButton": true')
+  })
+}
+
+/**
+ * Check that no canvas_trigger_action outputs contain unresolved parameter warnings.
+ */
+function noUnresolvedParamWarnings(result: EvalResult): boolean {
+  const triggerCalls = result.toolCalls.filter(t => t.name === 'canvas_trigger_action')
+  return triggerCalls.every(t => {
+    const output = typeof t.output === 'string' ? t.output : JSON.stringify(t.output ?? '')
+    return !output.includes('unresolved parameter')
+  })
+}
+
+/**
+ * Check that a canvas_trigger_action call produced output containing a specific
+ * HTTP method (in the resolvedMutation). This replaces checking t.input for
+ * method names since the new API resolves the mutation from the button definition.
+ */
+function triggerOutputContainsMethod(result: EvalResult, method: string): boolean {
+  return result.toolCalls.some(t => {
+    if (t.name !== 'canvas_trigger_action') return false
+    const output = typeof t.output === 'string' ? t.output : JSON.stringify(t.output ?? '')
+    return output.includes(method)
+  })
+}
+
+/**
+ * Check that canvas_update response includes a testChecklist (buttons to test).
+ */
+function updateHasTestChecklist(result: EvalResult): boolean {
+  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
+  return updateCalls.some(t => {
+    const output = typeof t.output === 'string' ? t.output : JSON.stringify(t.output ?? '')
+    return output.includes('testChecklist')
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Test Cases
 // ---------------------------------------------------------------------------
@@ -1128,33 +1181,21 @@ export const CANVAS_EVALS: AgentEval[] = [
         description: 'Tested a POST/add action via canvas_trigger_action',
         points: 10,
         phase: 'execution',
-        validate: (r) => r.toolCalls.some(t => {
-          if (t.name !== 'canvas_trigger_action') return false
-          const json = JSON.stringify(t.input).toLowerCase()
-          return json.includes('post')
-        }),
+        validate: (r) => triggerOutputContainsMethod(r, 'POST'),
       },
       {
         id: 'tested-update-action',
         description: 'Tested a PATCH/mark-complete action via canvas_trigger_action',
         points: 10,
         phase: 'execution',
-        validate: (r) => r.toolCalls.some(t => {
-          if (t.name !== 'canvas_trigger_action') return false
-          const json = JSON.stringify(t.input).toLowerCase()
-          return json.includes('patch') || json.includes('put')
-        }),
+        validate: (r) => triggerOutputContainsMethod(r, 'PATCH') || triggerOutputContainsMethod(r, 'PUT'),
       },
       {
         id: 'tested-delete-action',
         description: 'Tested a DELETE action via canvas_trigger_action',
         points: 10,
         phase: 'execution',
-        validate: (r) => r.toolCalls.some(t => {
-          if (t.name !== 'canvas_trigger_action') return false
-          const json = JSON.stringify(t.input).toLowerCase()
-          return json.includes('delete')
-        }),
+        validate: (r) => triggerOutputContainsMethod(r, 'DELETE'),
       },
       {
         id: 'trigger-action-succeeded',
@@ -1314,26 +1355,14 @@ export const CANVAS_EVALS: AgentEval[] = [
         description: 'Used canvas_trigger_action with PATCH/PUT mutation to update a contact',
         points: 10,
         phase: 'execution',
-        validate: (r) => {
-          return r.toolCalls.some(t => {
-            if (t.name !== 'canvas_trigger_action') return false
-            const json = JSON.stringify(t.input).toLowerCase()
-            return json.includes('patch') || json.includes('put')
-          })
-        },
+        validate: (r) => triggerOutputContainsMethod(r, 'PATCH') || triggerOutputContainsMethod(r, 'PUT'),
       },
       {
         id: 'trigger-delete',
         description: 'Used canvas_trigger_action with DELETE mutation to remove a contact',
         points: 10,
         phase: 'execution',
-        validate: (r) => {
-          return r.toolCalls.some(t => {
-            if (t.name !== 'canvas_trigger_action') return false
-            const json = JSON.stringify(t.input).toLowerCase()
-            return json.includes('delete')
-          })
-        },
+        validate: (r) => triggerOutputContainsMethod(r, 'DELETE'),
       },
       {
         id: 'trigger-action-succeeded',
@@ -1374,6 +1403,527 @@ export const CANVAS_EVALS: AgentEval[] = [
       'Did not use canvas_trigger_action for CRUD',
       'Did not use canvas_inspect to verify',
       'Buttons missing mutation in action definition',
+    ],
+  },
+
+  // ====================================================================
+  // Faithful Testing Eval — proves the trigger resolves from real buttons
+  // ====================================================================
+
+  {
+    id: 'canvas-faithful-trigger-test',
+    name: 'Canvas: Faithful trigger resolves mutations from button definitions',
+    category: 'canvas',
+    level: 5,
+    input: 'Build a task list where I can add tasks, mark them done, and delete them. Seed 3 tasks. Test every action to make sure it works — I need to know the buttons actually function when clicked.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-api-schema',
+        description: 'Defined API schema for tasks',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_api_schema'),
+      },
+      {
+        id: 'used-api-seed',
+        description: 'Seeded 3 sample tasks',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_api_seed'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Built UI components',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'all-buttons-have-mutations',
+        description: 'Every Button component has a mutation in its action definition',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => allButtonsHaveMutations(r),
+      },
+      {
+        id: 'update-has-test-checklist',
+        description: 'canvas_update response includes a testChecklist with button actions',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => updateHasTestChecklist(r),
+      },
+      {
+        id: 'trigger-resolved-from-button',
+        description: 'All successful canvas_trigger_action calls resolved mutations from actual button definitions (resolvedFromButton: true)',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => allTriggersResolvedFromButton(r),
+      },
+      {
+        id: 'no-unresolved-params',
+        description: 'No canvas_trigger_action outputs have unresolved :param warnings',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => noUnresolvedParamWarnings(r),
+      },
+      {
+        id: 'tested-add-action',
+        description: 'Tested add/POST action via canvas_trigger_action',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.some(t => {
+          if (t.name !== 'canvas_trigger_action') return false
+          const output = typeof t.output === 'string' ? t.output : JSON.stringify(t.output ?? '')
+          return output.includes('"ok":true') && output.includes('POST')
+        }),
+      },
+      {
+        id: 'tested-update-action',
+        description: 'Tested complete/PATCH action via canvas_trigger_action',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.some(t => {
+          if (t.name !== 'canvas_trigger_action') return false
+          const output = typeof t.output === 'string' ? t.output : JSON.stringify(t.output ?? '')
+          return output.includes('"ok":true') && output.includes('PATCH')
+        }),
+      },
+      {
+        id: 'tested-delete-action',
+        description: 'Tested delete/DELETE action via canvas_trigger_action',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.some(t => {
+          if (t.name !== 'canvas_trigger_action') return false
+          const output = typeof t.output === 'string' ? t.output : JSON.stringify(t.output ?? '')
+          return output.includes('"ok":true') && output.includes('DELETE')
+        }),
+      },
+      {
+        id: 'inspect-after-trigger',
+        description: 'Used canvas_inspect after canvas_trigger_action',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => inspectAfterTrigger(r),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 22 tool calls',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 22,
+      },
+    ],
+    antiPatterns: [
+      'Did not use canvas_trigger_action',
+      'Did not use canvas_inspect',
+      'Buttons missing mutation in action definition',
+    ],
+  },
+
+  // ====================================================================
+  // Hook Evals — verify the agent uses canvas_api_hooks for auto-updating
+  // ====================================================================
+
+  // ---- Level 3: Expense tracker with recompute + validate hooks ----
+  {
+    id: 'canvas-hooks-expense-validated',
+    name: 'Canvas: Expense tracker with auto-updating metrics and validation hooks',
+    category: 'canvas',
+    level: 3,
+    input: 'Build an expense tracker with a list of expenses and summary metrics showing total spent, expense count, and average expense. The metrics should update automatically when expenses are added or removed. Also make sure expenses can\'t be added with a negative amount or without a description. Seed 3 sample expenses, then test it.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-api-schema',
+        description: 'Used canvas_api_schema with an Expense model',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_api_schema'),
+      },
+      {
+        id: 'used-api-seed',
+        description: 'Used canvas_api_seed to seed expenses',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_api_seed'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Used canvas_update with Metric and DataList/Table components',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'used-api-hooks',
+        description: 'Used canvas_api_hooks to register hooks',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_api_hooks'),
+      },
+      {
+        id: 'has-recompute-hook',
+        description: 'Hook definitions include recompute action with sum aggregate',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const hookCalls = r.toolCalls.filter(t => t.name === 'canvas_api_hooks')
+          const json = JSON.stringify(hookCalls.map(t => t.input))
+          return json.includes('"recompute"') && json.includes('"sum"')
+        },
+      },
+      {
+        id: 'has-validate-hook',
+        description: 'Hook definitions include validate action (positive or required rule)',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const hookCalls = r.toolCalls.filter(t => t.name === 'canvas_api_hooks')
+          const json = JSON.stringify(hookCalls.map(t => t.input))
+          return json.includes('"validate"') && (json.includes('"positive"') || json.includes('"required"'))
+        },
+      },
+      {
+        id: 'has-after-delete-hooks',
+        description: 'Hook definitions include afterDelete with recompute',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const hookCalls = r.toolCalls.filter(t => t.name === 'canvas_api_hooks')
+          const json = JSON.stringify(hookCalls.map(t => t.input))
+          return json.includes('"afterDelete"') && json.includes('"recompute"')
+        },
+      },
+      {
+        id: 'used-trigger-action',
+        description: 'Used canvas_trigger_action to test adding an expense',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_trigger_action'),
+      },
+      {
+        id: 'trigger-action-succeeded',
+        description: 'canvas_trigger_action returned ok: true',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => triggerActionSucceeded(r),
+      },
+      {
+        id: 'used-inspect',
+        description: 'Used canvas_inspect to verify after mutation',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => inspectAfterTrigger(r),
+      },
+      {
+        id: 'all-buttons-have-mutations',
+        description: 'Every Button component has a mutation in its action definition',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => allButtonsHaveMutations(r),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 22 tool calls',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 22,
+      },
+    ],
+    antiPatterns: [
+      'Used cron instead of hooks for metric updates',
+      'Hardcoded metric values without data binding',
+      'No validate hooks registered',
+    ],
+  },
+
+  // ---- Level 4: Project management with cascade-delete + recompute + log ----
+  {
+    id: 'canvas-hooks-project-cascade',
+    name: 'Canvas: Project management with cascade-delete, recompute, and audit log hooks',
+    category: 'canvas',
+    level: 4,
+    input: 'Build a project management board. Each project has a name and status. Each task has a title, status, and belongs to a project (projectId). Show metrics for total projects, total tasks, and completed task count. When a project is deleted, its tasks should be automatically removed too. Keep an activity log of all changes. Seed 2 projects with 3 tasks each, then test: add a new task, delete a project (should cascade-delete its tasks), and verify the activity log.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-api-schema',
+        description: 'Used canvas_api_schema with Project and Task models',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => {
+          const schemaCalls = r.toolCalls.filter(t => t.name === 'canvas_api_schema')
+          const json = JSON.stringify(schemaCalls.map(t => t.input)).toLowerCase()
+          return json.includes('project') && json.includes('task')
+        },
+      },
+      {
+        id: 'used-api-seed',
+        description: 'Used canvas_api_seed to populate sample data',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_api_seed'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Used canvas_update with Metric components',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls)
+          return usedTool(r, 'canvas_update') && json.includes('"Metric"')
+        },
+      },
+      {
+        id: 'used-api-hooks',
+        description: 'Used canvas_api_hooks with hooks on multiple models',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => {
+          const hookCalls = r.toolCalls.filter(t => t.name === 'canvas_api_hooks')
+          if (hookCalls.length === 0) return false
+          const models = new Set(hookCalls.map(t => (t.input as any)?.model?.toLowerCase()))
+          return models.size >= 1 && hookCalls.length >= 1
+        },
+      },
+      {
+        id: 'has-cascade-delete',
+        description: 'Hook definitions include cascade-delete action',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const hookCalls = r.toolCalls.filter(t => t.name === 'canvas_api_hooks')
+          const json = JSON.stringify(hookCalls.map(t => t.input))
+          return json.includes('"cascade-delete"')
+        },
+      },
+      {
+        id: 'has-recompute',
+        description: 'Hook definitions include recompute action for metrics',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const hookCalls = r.toolCalls.filter(t => t.name === 'canvas_api_hooks')
+          const json = JSON.stringify(hookCalls.map(t => t.input))
+          return json.includes('"recompute"')
+        },
+      },
+      {
+        id: 'has-log-hook',
+        description: 'Hook definitions include log action targeting an activity model',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const hookCalls = r.toolCalls.filter(t => t.name === 'canvas_api_hooks')
+          const json = JSON.stringify(hookCalls.map(t => t.input))
+          return json.includes('"log"')
+        },
+      },
+      {
+        id: 'used-trigger-action',
+        description: 'Used canvas_trigger_action to test at least one operation',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_trigger_action'),
+      },
+      {
+        id: 'trigger-action-succeeded',
+        description: 'canvas_trigger_action returned ok: true',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => triggerActionSucceeded(r),
+      },
+      {
+        id: 'used-inspect',
+        description: 'Used canvas_inspect to verify results',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_inspect'),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 25 tool calls',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 25,
+      },
+      {
+        id: 'response-describes-hooks',
+        description: 'Response describes cascade behavior or audit logging',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => {
+          const text = r.responseText.toLowerCase()
+          return text.includes('cascade') || text.includes('audit') || text.includes('log') || text.includes('hook')
+        },
+      },
+    ],
+    antiPatterns: [
+      'No cascade-delete hooks registered',
+      'Only registered hooks on one model',
+      'Manual deletion of child records instead of hooks',
+    ],
+  },
+
+  // ---- Level 5: Full hooks lifecycle with all 5 action types ----
+  {
+    id: 'canvas-hooks-full-lifecycle',
+    name: 'Canvas: Full hooks lifecycle with all 5 action types',
+    category: 'canvas',
+    level: 5,
+    input: 'Build a customer order system. Customers have a name and email. Orders have a customer name, amount, and status (pending/shipped/delivered). I need: (1) metrics for total revenue, order count, and average order value that auto-update, (2) validation so orders can\'t have negative amounts and must have a status, (3) emails should be stored lowercase and trimmed, (4) when a customer is deleted, their orders should be removed too, (5) an activity log tracking all changes. Seed 3 customers and 5 orders. Test adding a new order and verify everything works.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-api-schema',
+        description: 'Used canvas_api_schema with Customer and Order models',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => {
+          const schemaCalls = r.toolCalls.filter(t => t.name === 'canvas_api_schema')
+          const json = JSON.stringify(schemaCalls.map(t => t.input)).toLowerCase()
+          return json.includes('customer') && json.includes('order')
+        },
+      },
+      {
+        id: 'used-api-seed',
+        description: 'Used canvas_api_seed to populate data',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_api_seed'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Used canvas_update to build the UI',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'used-api-hooks-multi-model',
+        description: 'Used canvas_api_hooks on at least 2 different models',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const hookCalls = r.toolCalls.filter(t => t.name === 'canvas_api_hooks')
+          const models = new Set(hookCalls.map(t => String((t.input as any)?.model ?? '').toLowerCase()))
+          return models.size >= 2
+        },
+      },
+      {
+        id: 'has-recompute',
+        description: 'Hook definitions include recompute action',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls.filter(t => t.name === 'canvas_api_hooks').map(t => t.input))
+          return json.includes('"recompute"')
+        },
+      },
+      {
+        id: 'has-validate',
+        description: 'Hook definitions include validate action (positive amount or required status)',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls.filter(t => t.name === 'canvas_api_hooks').map(t => t.input))
+          return json.includes('"validate"')
+        },
+      },
+      {
+        id: 'has-transform',
+        description: 'Hook definitions include transform action (lowercase/trim on email)',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls.filter(t => t.name === 'canvas_api_hooks').map(t => t.input))
+          return json.includes('"transform"')
+        },
+      },
+      {
+        id: 'has-cascade-delete',
+        description: 'Hook definitions include cascade-delete action',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls.filter(t => t.name === 'canvas_api_hooks').map(t => t.input))
+          return json.includes('"cascade-delete"')
+        },
+      },
+      {
+        id: 'has-log',
+        description: 'Hook definitions include log action',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls.filter(t => t.name === 'canvas_api_hooks').map(t => t.input))
+          return json.includes('"log"')
+        },
+      },
+      {
+        id: 'used-trigger-action',
+        description: 'Used canvas_trigger_action and it returned ok: true',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => triggerActionSucceeded(r),
+      },
+      {
+        id: 'used-inspect',
+        description: 'Used canvas_inspect to verify',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_inspect'),
+      },
+      {
+        id: 'response-describes-system',
+        description: 'Response describes the hooks system and verification results',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => r.responseText.toLowerCase().includes('hook') || r.responseText.toLowerCase().includes('auto'),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 28 tool calls',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 28,
+      },
+    ],
+    antiPatterns: [
+      'Used fewer than 3 hook action types',
+      'No before-mutation hooks (validate/transform)',
+      'No cascade-delete hooks',
+      'Used cron instead of hooks',
     ],
   },
 ]

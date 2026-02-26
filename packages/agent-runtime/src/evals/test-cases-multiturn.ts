@@ -82,10 +82,11 @@ export const MULTITURN_EVALS: AgentEval[] = [
         points: 35,
         phase: 'execution',
         validate: (r) => {
-          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          const canvasCalls = r.toolCalls.filter(t => t.name.startsWith('canvas'))
+          const canvasJson = JSON.stringify(canvasCalls).toLowerCase()
           const text = r.responseText.toLowerCase()
-          const usesCelsius = json.includes('celsius') || json.includes('°c') || json.includes('25')
-          const noFahrenheit = !json.includes('fahrenheit') && !text.includes('fahrenheit')
+          const usesCelsius = canvasJson.includes('celsius') || canvasJson.includes('°c') || canvasJson.includes('25')
+          const noFahrenheit = !canvasJson.includes('fahrenheit') && !text.includes('fahrenheit')
           return usesCelsius && noFahrenheit
         },
       },

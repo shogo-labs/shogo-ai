@@ -699,10 +699,10 @@ export const COMPLEX_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-github-issues-multi',
-        description: 'Used mcp__github__list_issues at least 2 times (multi-repo)',
+        description: 'Used mcp__github__list_issues or mcp__github__list_pull_requests at least 2 times (multi-repo)',
         points: 10,
         phase: 'intention',
-        validate: (r) => toolCallCount(r, 'mcp__github__list_issues') >= 2,
+        validate: (r) => (toolCallCount(r, 'mcp__github__list_issues') + toolCallCount(r, 'mcp__github__list_pull_requests')) >= 2,
       },
       {
         id: 'used-canvas-create',

@@ -18,10 +18,24 @@ import type {
   SurfaceState,
   ComponentDefinition,
   ActionEvent,
+  HookDefinitions,
+  HookAction,
+  RecomputeAction,
+  ValidateAction,
+  CascadeDeleteAction,
+  TransformAction,
+  LogAction,
 } from './dynamic-app-types'
-import { ManagedApiRuntime, type ModelDefinition } from './managed-api-runtime'
+import { ManagedApiRuntime, type ModelDefinition, type ManagedModelHooks, type ManagedHookResult, type ManagedHookContext } from './managed-api-runtime'
 
 type SSEWriter = (message: DynamicAppMessage) => void
+
+function generateHookId(): string {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
+  let id = ''
+  for (let i = 0; i < 25; i++) id += chars[Math.floor(Math.random() * chars.length)]
+  return id
+}
 
 export class DynamicAppManager {
   private surfaces = new Map<string, SurfaceState>()
@@ -436,6 +450,295 @@ export class DynamicAppManager {
     return { ok: true, dataPath }
   }
 
+  // ---------------------------------------------------------------------------
+  // Declarative Hooks
+  // ---------------------------------------------------------------------------
+
+  registerHooks(
+    surfaceId: string,
+    modelName: string,
+    defs: HookDefinitions,
+  ): { ok: boolean; registered: string[]; error?: string } {
+    const surface = this.surfaces.get(surfaceId)
+    if (!surface) return { ok: false, registered: [], error: `Surface "${surfaceId}" not found` }
+
+    const runtime = this.runtimes.get(surfaceId)
+    if (!runtime || !runtime.isReady()) return { ok: false, registered: [], error: 'No API runtime for this surface. Call canvas_api_schema first.' }
+
+    if (!surface.hookDefinitions) surface.hookDefinitions = {}
+    surface.hookDefinitions[modelName] = defs
+
+    const hooks = this.buildHookFunctions(surfaceId, modelName, defs, runtime)
+    runtime.setModelHooks(modelName, hooks)
+    this.scheduleSave()
+
+    const registered: string[] = []
+    for (const phase of ['beforeCreate', 'beforeUpdate', 'afterCreate', 'afterUpdate', 'afterDelete'] as const) {
+      if (defs[phase]?.length) registered.push(`${phase}(${defs[phase]!.length})`)
+    }
+    return { ok: true, registered }
+  }
+
+  private buildHookFunctions(
+    surfaceId: string,
+    modelName: string,
+    defs: HookDefinitions,
+    runtime: ManagedApiRuntime,
+  ): ManagedModelHooks {
+    const hooks: ManagedModelHooks = {}
+
+    // --- beforeCreate ---
+    const beforeCreateActions = defs.beforeCreate ?? []
+    if (beforeCreateActions.length) {
+      hooks.beforeCreate = async (input, ctx) => {
+        return this.runBeforeHooks(beforeCreateActions, input, ctx)
+      }
+    }
+
+    // --- beforeUpdate ---
+    const beforeUpdateActions = defs.beforeUpdate ?? []
+    if (beforeUpdateActions.length) {
+      hooks.beforeUpdate = async (_id, input, ctx) => {
+        return this.runBeforeHooks(beforeUpdateActions, input, ctx)
+      }
+    }
+
+    // --- afterCreate ---
+    const afterCreateActions = defs.afterCreate ?? []
+    if (afterCreateActions.length) {
+      hooks.afterCreate = async (record, ctx) => {
+        await this.runAfterHooks(surfaceId, modelName, 'create', afterCreateActions, record, ctx, runtime)
+      }
+    }
+
+    // --- afterUpdate ---
+    const afterUpdateActions = defs.afterUpdate ?? []
+    if (afterUpdateActions.length) {
+      hooks.afterUpdate = async (record, ctx) => {
+        await this.runAfterHooks(surfaceId, modelName, 'update', afterUpdateActions, record, ctx, runtime)
+      }
+    }
+
+    // --- afterDelete ---
+    const afterDeleteActions = defs.afterDelete ?? []
+    if (afterDeleteActions.length) {
+      hooks.afterDelete = async (id, ctx) => {
+        await this.runAfterHooks(surfaceId, modelName, 'delete', afterDeleteActions, { id } as Record<string, unknown>, ctx, runtime)
+      }
+    }
+
+    return hooks
+  }
+
+  private runBeforeHooks(
+    actions: HookAction[],
+    input: Record<string, unknown>,
+    _ctx: ManagedHookContext,
+  ): ManagedHookResult | void {
+    const data = { ...input }
+
+    for (const action of actions) {
+      if (action.action === 'validate') {
+        const err = this.executeValidate(action, data)
+        if (err) return { ok: false, error: err }
+      } else if (action.action === 'transform') {
+        this.executeTransform(action, data)
+      }
+    }
+
+    return { ok: true, data }
+  }
+
+  private async runAfterHooks(
+    surfaceId: string,
+    modelName: string,
+    operation: string,
+    actions: HookAction[],
+    record: Record<string, unknown>,
+    ctx: ManagedHookContext,
+    runtime: ManagedApiRuntime,
+  ): Promise<void> {
+    for (const action of actions) {
+      try {
+        switch (action.action) {
+          case 'recompute':
+            await this.executeRecompute(surfaceId, action, runtime)
+            break
+          case 'cascade-delete':
+            this.executeCascadeDelete(action, record, ctx)
+            break
+          case 'log':
+            this.executeLog(action, modelName, operation, record, ctx)
+            break
+        }
+      } catch (err) {
+        console.error(`[hooks] Error executing ${action.action} on ${modelName}:`, err)
+      }
+    }
+  }
+
+  private executeValidate(action: ValidateAction, data: Record<string, unknown>): string | null {
+    const val = data[action.field]
+    const msg = action.message
+
+    switch (action.rule) {
+      case 'required':
+        if (val === undefined || val === null || val === '')
+          return msg ?? `${action.field} is required`
+        break
+      case 'positive':
+        if (typeof val !== 'number' || val <= 0)
+          return msg ?? `${action.field} must be a positive number`
+        break
+      case 'min':
+        if (typeof val === 'number' && typeof action.value === 'number' && val < action.value)
+          return msg ?? `${action.field} must be at least ${action.value}`
+        break
+      case 'max':
+        if (typeof val === 'number' && typeof action.value === 'number' && val > action.value)
+          return msg ?? `${action.field} must be at most ${action.value}`
+        break
+      case 'pattern':
+        if (typeof val === 'string' && typeof action.value === 'string' && !new RegExp(action.value).test(val))
+          return msg ?? `${action.field} does not match required pattern`
+        break
+      case 'enum': {
+        if (typeof action.value === 'string') {
+          const allowed = action.value.split(',').map(s => s.trim())
+          if (!allowed.includes(String(val)))
+            return msg ?? `${action.field} must be one of: ${allowed.join(', ')}`
+        }
+        break
+      }
+    }
+    return null
+  }
+
+  private executeTransform(action: TransformAction, data: Record<string, unknown>): void {
+    const val = data[action.field]
+    if (val === undefined || val === null) return
+
+    switch (action.transform) {
+      case 'lowercase':
+        if (typeof val === 'string') data[action.field] = val.toLowerCase()
+        break
+      case 'uppercase':
+        if (typeof val === 'string') data[action.field] = val.toUpperCase()
+        break
+      case 'trim':
+        if (typeof val === 'string') data[action.field] = val.trim()
+        break
+      case 'round':
+        if (typeof val === 'number') data[action.field] = Math.round(val)
+        break
+      case 'floor':
+        if (typeof val === 'number') data[action.field] = Math.floor(val)
+        break
+      case 'ceil':
+        if (typeof val === 'number') data[action.field] = Math.ceil(val)
+        break
+      case 'abs':
+        if (typeof val === 'number') data[action.field] = Math.abs(val)
+        break
+    }
+  }
+
+  private async executeRecompute(
+    surfaceId: string,
+    action: RecomputeAction,
+    runtime: ManagedApiRuntime,
+  ): Promise<void> {
+    const sourcePath = action.source.startsWith('/api') ? action.source : `/api${action.source}`
+    const req = new Request(`http://localhost${sourcePath}`, { method: 'GET' })
+    const res = await runtime.getApp().fetch(req)
+    const json = await res.json() as Record<string, unknown>
+
+    if (!Array.isArray(json.items)) return
+
+    const items = json.items as Record<string, unknown>[]
+    let result: unknown
+
+    switch (action.aggregate) {
+      case 'count':
+        result = items.length
+        break
+      case 'sum':
+        result = items.reduce((acc, item) => acc + (Number(item[action.field!]) || 0), 0)
+        break
+      case 'avg':
+        result = items.length > 0
+          ? items.reduce((acc, item) => acc + (Number(item[action.field!]) || 0), 0) / items.length
+          : 0
+        break
+      case 'min':
+        result = items.length > 0
+          ? Math.min(...items.map(item => Number(item[action.field!]) || 0))
+          : 0
+        break
+      case 'max':
+        result = items.length > 0
+          ? Math.max(...items.map(item => Number(item[action.field!]) || 0))
+          : 0
+        break
+    }
+
+    this.updateData(surfaceId, action.target, result)
+  }
+
+  private executeCascadeDelete(
+    action: CascadeDeleteAction,
+    record: Record<string, unknown>,
+    ctx: ManagedHookContext,
+  ): void {
+    const parentId = record.id as string
+    if (!parentId) return
+    try {
+      ctx.db.prepare(`DELETE FROM "${action.target}" WHERE "${action.foreignKey}" = ?`).run(parentId)
+    } catch (err) {
+      console.error(`[hooks] cascade-delete failed for ${action.target}.${action.foreignKey}:`, err)
+    }
+  }
+
+  private executeLog(
+    action: LogAction,
+    modelName: string,
+    operation: string,
+    record: Record<string, unknown>,
+    ctx: ManagedHookContext,
+  ): void {
+    const id = generateHookId()
+    const now = new Date().toISOString()
+
+    const builtins: Record<string, string> = {
+      '$id': String(record.id ?? ''),
+      '$operation': operation,
+      '$model': modelName,
+      '$timestamp': now,
+    }
+
+    const fields: Record<string, unknown> = {}
+    if (action.fields) {
+      for (const [col, template] of Object.entries(action.fields)) {
+        fields[col] = builtins[template] ?? template
+      }
+    } else {
+      fields.entityId = record.id ?? ''
+      fields.action = operation
+      fields.model = modelName
+    }
+
+    const allCols = ['id', 'createdAt', 'updatedAt', ...Object.keys(fields)]
+    const colsSql = allCols.map(c => `"${c}"`).join(', ')
+    const placeholders = allCols.map(() => '?').join(', ')
+    const values = [id, now, now, ...Object.values(fields).map(v => typeof v === 'object' ? JSON.stringify(v) : String(v ?? ''))]
+
+    try {
+      ctx.db.prepare(`INSERT INTO "${action.target}" (${colsSql}) VALUES (${placeholders})`).run(...values)
+    } catch (err) {
+      console.error(`[hooks] log insert into ${action.target} failed:`, err)
+    }
+  }
+
   waitForAction(surfaceId?: string, actionName?: string, timeoutMs = 120_000): Promise<ActionEvent | null> {
     const queued = this.actionQueue.findIndex((e) => {
       if (surfaceId && e.surfaceId !== surfaceId) return false
@@ -472,6 +775,7 @@ export class DynamicAppManager {
         components: Object.fromEntries(surface.components),
         dataModel: surface.dataModel,
         apiModels: surface.apiModels,
+        hookDefinitions: surface.hookDefinitions,
         createdAt: surface.createdAt,
         updatedAt: surface.updatedAt,
       }
@@ -693,6 +997,7 @@ export class DynamicAppManager {
           components,
           dataModel: s.dataModel || {},
           apiModels: s.apiModels,
+          hookDefinitions: s.hookDefinitions,
           createdAt: s.createdAt || new Date().toISOString(),
           updatedAt: s.updatedAt || new Date().toISOString(),
         })
@@ -705,6 +1010,7 @@ export class DynamicAppManager {
 
       // Restore API runtimes for surfaces that had active schemas
       let runtimesRestored = 0
+      let hooksRestored = 0
       for (const [id, surface] of this.surfaces) {
         if (surface.apiModels && surface.apiModels.length > 0) {
           try {
@@ -712,6 +1018,14 @@ export class DynamicAppManager {
             const result = runtime.applySchema(surface.apiModels as ModelDefinition[], false)
             if (result.ok) {
               runtimesRestored++
+              // Re-register hooks from persisted definitions
+              if (surface.hookDefinitions) {
+                for (const [modelName, defs] of Object.entries(surface.hookDefinitions)) {
+                  const hooks = this.buildHookFunctions(id, modelName, defs, runtime)
+                  runtime.setModelHooks(modelName, hooks)
+                  hooksRestored++
+                }
+              }
             } else {
               console.error(`[DynamicAppManager] Failed to restore runtime for "${id}":`, result.error)
             }
@@ -722,7 +1036,7 @@ export class DynamicAppManager {
       }
 
       if (runtimesRestored > 0) {
-        console.log(`[DynamicAppManager] Restored ${runtimesRestored} API runtime(s) from disk`)
+        console.log(`[DynamicAppManager] Restored ${runtimesRestored} API runtime(s) and ${hooksRestored} hook registration(s) from disk`)
       }
     } catch (err) {
       console.error('[DynamicAppManager] Failed to load canvas state:', err)

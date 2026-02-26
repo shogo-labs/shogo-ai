@@ -485,10 +485,8 @@ export const ChatPanel = observer(function ChatPanel({
   const refetchCreditLedger = billingData?.refetchCreditLedger ?? (() => {})
 
   const handleUpgradeClick = useCallback(() => {
-    if (projectId) {
-      router.push(`/projects/${projectId}/settings?tab=billing` as any)
-    }
-  }, [router, projectId])
+    router.push('/(app)/billing' as any)
+  }, [router])
 
   // Panel state
   const [internalIsCollapsed, setInternalIsCollapsed] = useState(false)
@@ -1816,14 +1814,21 @@ export const ChatPanel = observer(function ChatPanel({
     [handleSendMessage]
   )
 
-  // Homepage transition warm-start: Inject initial message on mount
+  // Homepage transition warm-start: Inject initial message on mount (only for fresh sessions)
   useEffect(() => {
-    if (initialMessage && currentSessionId && !hasInjectedInitialMessageRef.current) {
+    if (!initialMessage || !currentSessionId || !isInitialLoadComplete) return
+    if (hasInjectedInitialMessageRef.current) return
+
+    if (messages.length > 0) {
       hasInjectedInitialMessageRef.current = true
-      setPendingInitialMessage(initialMessage)
-      handleSendMessage(initialMessage, initialImageData)
+      return
     }
-  }, [initialMessage, initialImageData, currentSessionId, handleSendMessage])
+
+    hasInjectedInitialMessageRef.current = true
+    setPendingInitialMessage(initialMessage)
+    handleSendMessage(initialMessage, initialImageData)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialMessage, initialImageData, currentSessionId, isInitialLoadComplete, handleSendMessage])
 
   // Programmatic message injection
   const lastInjectedRef = useRef<string | null>(null)

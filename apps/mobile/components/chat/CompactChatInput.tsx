@@ -9,7 +9,7 @@
  * Drag-and-drop is omitted (not available on mobile).
  */
 
-import { useState, useRef, useCallback, forwardRef } from "react"
+import { useState, useRef, useCallback, forwardRef, useEffect } from "react"
 import { View, Text, TextInput, Pressable, Image, ScrollView, Platform } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { Paperclip, Send, Loader2, X, File, FileText, ImageIcon } from "lucide-react-native"
@@ -55,6 +55,8 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
 
     const [pendingFiles, setPendingFiles] = useState<AttachedFile[]>([])
     const [fileError, setFileError] = useState<string | null>(null)
+    const fileInputRef = useRef<HTMLInputElement | null>(null)
+    const dropZoneRef = useRef<View>(null)
 
     const value = controlledValue ?? internalValue
     const setValue = controlledOnChange ?? setInternalValue
@@ -80,7 +82,81 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
         pendingFiles.length > 0 ? pendingFiles.map((f) => f.dataUrl) : undefined
 
       onSubmit(trimmedContent, fileData)
+      setFileError(null)
     }, [value, disabled, isLoading, onSubmit, pendingFiles])
+
+    const handleAttachClick = useCallback(() => {
+      if (Platform.OS === "web") {
+        fileInputRef.current?.click()
+      }
+    }, [])
+
+    const processFiles = useCallback(
+      (files: FileList | File[]) => {
+        Array.from(files).forEach((file: File) => {
+          if (file.size > MAX_FILE_SIZE) {
+            setFileError(`File "${file.name}" exceeds ${MAX_FILE_SIZE / (1024 * 1024)}MB limit`)
+            return
+          }
+          if (pendingFiles.length >= MAX_FILES) {
+            setFileError(`Maximum ${MAX_FILES} files allowed`)
+            return
+          }
+          const reader = new FileReader()
+          reader.onload = () => {
+            const dataUrl = reader.result as string
+            setPendingFiles((prev) => [
+              ...prev,
+              {
+                id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                dataUrl,
+                name: file.name,
+                type: file.type,
+                size: file.size,
+              },
+            ])
+            setFileError(null)
+          }
+          reader.readAsDataURL(file)
+        })
+      },
+      [pendingFiles]
+    )
+
+    const handleWebFileChange = useCallback(
+      (e: any) => {
+        const files = e.target?.files
+        if (!files || files.length === 0) return
+        processFiles(files)
+        if (e.target) e.target.value = ""
+      },
+      [processFiles]
+    )
+
+    useEffect(() => {
+      if (Platform.OS !== "web") return
+      const node = dropZoneRef.current as unknown as HTMLElement | null
+      if (!node) return
+
+      const handleDragOver = (e: DragEvent) => {
+        e.preventDefault()
+        e.stopPropagation()
+      }
+      const handleDrop = (e: DragEvent) => {
+        e.preventDefault()
+        e.stopPropagation()
+        if (e.dataTransfer?.files?.length) {
+          processFiles(Array.from(e.dataTransfer.files) as any)
+        }
+      }
+
+      node.addEventListener("dragover", handleDragOver)
+      node.addEventListener("drop", handleDrop)
+      return () => {
+        node.removeEventListener("dragover", handleDragOver)
+        node.removeEventListener("drop", handleDrop)
+      }
+    }, [processFiles])
 
     const getFileIcon = useCallback((fileType: string) => {
       if (fileType.startsWith("image/")) {
@@ -98,7 +174,19 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
 
     return (
       <View ref={ref} className={cn("w-full", className)}>
-        <View className="bg-white/80 dark:bg-gray-900/80 border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
+        <View ref={dropZoneRef as any} className="bg-white/80 dark:bg-gray-900/80 border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
+          {/* Hidden file input for web */}
+          {Platform.OS === "web" && (
+            <input
+              ref={fileInputRef as any}
+              type="file"
+              multiple
+              accept="image/*,.pdf,.txt,.md,.csv,.json"
+              onChange={handleWebFileChange}
+              style={{ display: "none" }}
+            />
+          )}
+
           {/* File previews */}
           {pendingFiles.length > 0 && (
             <ScrollView
@@ -164,6 +252,12 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
               value={value}
               onChangeText={setValue}
               onSubmitEditing={handleSubmit}
+              onKeyPress={(e: any) => {
+                if (Platform.OS === "web" && e.nativeEvent.key === "Enter" && !e.nativeEvent.shiftKey) {
+                  e.preventDefault()
+                  handleSubmit()
+                }
+              }}
               editable={!disabled && !isLoading}
               multiline
               className="min-h-[80px] text-base text-foreground"
@@ -176,6 +270,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
           <View className="px-4 pb-4 flex-row items-center justify-between gap-2">
             <View className="flex-row items-center gap-1">
               <Pressable
+                onPress={handleAttachClick}
                 className="h-8 flex-row items-center gap-1.5 px-2"
                 disabled={disabled || isLoading || pendingFiles.length >= MAX_FILES}
               >

@@ -47,6 +47,29 @@ interface ModelEndpoint {
 }
 
 // ---------------------------------------------------------------------------
+// Hook Types
+// ---------------------------------------------------------------------------
+
+export interface ManagedHookResult {
+  ok: boolean
+  error?: string
+  data?: Record<string, unknown>
+}
+
+export interface ManagedHookContext {
+  db: Database
+  modelName: string
+}
+
+export interface ManagedModelHooks {
+  beforeCreate?: (input: Record<string, unknown>, ctx: ManagedHookContext) => Promise<ManagedHookResult | void>
+  beforeUpdate?: (id: string, input: Record<string, unknown>, ctx: ManagedHookContext) => Promise<ManagedHookResult | void>
+  afterCreate?: (record: Record<string, unknown>, ctx: ManagedHookContext) => Promise<void>
+  afterUpdate?: (record: Record<string, unknown>, ctx: ManagedHookContext) => Promise<void>
+  afterDelete?: (id: string, ctx: ManagedHookContext) => Promise<void>
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -150,6 +173,9 @@ export class ManagedApiRuntime {
   private _ready = false
   private config: ManagedApiConfig
   private dbPath: string
+  private hooksMap = new Map<string, ManagedModelHooks>()
+  /** Called after any mutation so DynamicAppManager can re-fetch / broadcast affected data */
+  onAfterMutation?: (modelName: string, operation: 'create' | 'update' | 'delete', record?: Record<string, unknown>) => Promise<void>
 
   constructor(config: ManagedApiConfig) {
     this.config = config
@@ -162,6 +188,35 @@ export class ManagedApiRuntime {
 
     this.app = new Hono()
   }
+
+  setModelHooks(modelName: string, hooks: ManagedModelHooks): void {
+    const existing = this.hooksMap.get(modelName)
+    if (existing) {
+      // Merge: combine hook functions so multiple registrations compose
+      const merged: ManagedModelHooks = { ...existing }
+      for (const phase of ['beforeCreate', 'beforeUpdate', 'afterCreate', 'afterUpdate', 'afterDelete'] as const) {
+        if (hooks[phase]) {
+          const prev = existing[phase]
+          if (prev) {
+            merged[phase] = (async (...args: any[]) => {
+              const result = await (prev as Function)(...args)
+              if (result && !result.ok) return result
+              return (hooks[phase] as Function)(...args)
+            }) as any
+          } else {
+            merged[phase] = hooks[phase] as any
+          }
+        }
+      }
+      this.hooksMap.set(modelName, merged)
+    } else {
+      this.hooksMap.set(modelName, hooks)
+    }
+    // Rebuild routes so new hooks take effect
+    this.app = this.buildRoutes()
+  }
+
+  getDatabase(): Database { return this.db }
 
   // ---------------------------------------------------------------------------
   // Schema Management
@@ -393,7 +448,16 @@ export class ManagedApiRuntime {
       app.post(basePath, async (c) => {
         try {
           const body = await c.req.json()
-          const data = coerceForInsert(body, model.fields)
+          let data = coerceForInsert(body, model.fields)
+          const hooks = this.hooksMap.get(model.name)
+          const ctx: ManagedHookContext = { db: this.db, modelName: model.name }
+
+          if (hooks?.beforeCreate) {
+            const result = await hooks.beforeCreate(data, ctx)
+            if (result && !result.ok) return c.json({ ok: false, error: result.error ?? 'Rejected by hook' }, 400)
+            if (result?.data) data = coerceForInsert(result.data, model.fields)
+          }
+
           const id = (data.id as string) || generateId()
           const now = new Date().toISOString()
 
@@ -412,7 +476,12 @@ export class ManagedApiRuntime {
           this.db.prepare(`INSERT INTO "${model.name}" (${cols}) VALUES (${placeholders})`).run(...params)
 
           const item = this.db.prepare(`SELECT * FROM "${model.name}" WHERE id = ?`).get(id) as Record<string, unknown>
-          return c.json({ ok: true, item: coerceRow(item, model.fields) }, 201)
+          const coerced = coerceRow(item, model.fields)
+
+          if (hooks?.afterCreate) await hooks.afterCreate(coerced, ctx)
+          if (this.onAfterMutation) await this.onAfterMutation(model.name, 'create', coerced)
+
+          return c.json({ ok: true, item: coerced }, 201)
         } catch (err: any) {
           return c.json({ ok: false, error: err.message }, 400)
         }
@@ -423,9 +492,17 @@ export class ManagedApiRuntime {
         try {
           const id = c.req.param('id')
           const body = await c.req.json()
-          const data = coerceForInsert(body, model.fields)
-          const now = new Date().toISOString()
+          let data = coerceForInsert(body, model.fields)
+          const hooks = this.hooksMap.get(model.name)
+          const ctx: ManagedHookContext = { db: this.db, modelName: model.name }
 
+          if (hooks?.beforeUpdate) {
+            const result = await hooks.beforeUpdate(id, data, ctx)
+            if (result && !result.ok) return c.json({ ok: false, error: result.error ?? 'Rejected by hook' }, 400)
+            if (result?.data) data = coerceForInsert(result.data, model.fields)
+          }
+
+          const now = new Date().toISOString()
           const setClauses: string[] = []
           const params: SqlParam[] = []
 
@@ -442,19 +519,30 @@ export class ManagedApiRuntime {
 
           const item = this.db.prepare(`SELECT * FROM "${model.name}" WHERE id = ?`).get(id) as Record<string, unknown> | null
           if (!item) return c.json({ ok: false, error: 'Not found' }, 404)
-          return c.json({ ok: true, item: coerceRow(item, model.fields) })
+          const coerced = coerceRow(item, model.fields)
+
+          if (hooks?.afterUpdate) await hooks.afterUpdate(coerced, ctx)
+          if (this.onAfterMutation) await this.onAfterMutation(model.name, 'update', coerced)
+
+          return c.json({ ok: true, item: coerced })
         } catch (err: any) {
           return c.json({ ok: false, error: err.message }, 400)
         }
       })
 
       // DELETE
-      app.delete(`${basePath}/:id`, (c) => {
+      app.delete(`${basePath}/:id`, async (c) => {
         try {
           const id = c.req.param('id')
           const existing = this.db.prepare(`SELECT id FROM "${model.name}" WHERE id = ?`).get(id)
           if (!existing) return c.json({ ok: false, error: 'Not found' }, 404)
           this.db.prepare(`DELETE FROM "${model.name}" WHERE id = ?`).run(id)
+
+          const hooks = this.hooksMap.get(model.name)
+          const ctx: ManagedHookContext = { db: this.db, modelName: model.name }
+          if (hooks?.afterDelete) await hooks.afterDelete(id, ctx)
+          if (this.onAfterMutation) await this.onAfterMutation(model.name, 'delete')
+
           return c.json({ ok: true })
         } catch (err: any) {
           return c.json({ ok: false, error: err.message }, 500)

@@ -390,8 +390,10 @@ resource "null_resource" "karpenter_node_pool" {
                 values: ["t3.xlarge", "t3.2xlarge", "m5.xlarge", "m5.2xlarge"]
             expireAfter: 720h
         disruption:
-          consolidationPolicy: WhenEmpty
-          consolidateAfter: 30s
+          consolidationPolicy: WhenEmptyOrUnderutilized
+          consolidateAfter: 10m
+          budgets:
+            - nodes: "1"
         limits:
           cpu: "64"
           memory: 256Gi

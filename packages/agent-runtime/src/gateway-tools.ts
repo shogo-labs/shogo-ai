@@ -16,7 +16,7 @@ import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec } from './sandbox-exec'
 import { MemorySearchEngine } from './memory-search'
 import { MCP_CATALOG } from './mcp-catalog'
-import { getDynamicAppManager } from './dynamic-app-manager'
+import { getDynamicAppManager, getByPointer } from './dynamic-app-manager'
 import {
   CANVAS_COMPONENT_SCHEMA,
   VALID_COMPONENT_TYPES,
@@ -37,6 +37,8 @@ export interface ToolContext {
   sandbox?: Partial<import('./types').SandboxConfig>
   mainSessionIds?: string[]
   mcpClientManager?: import('./mcp-client').MCPClientManager
+  /** Hot-connect a channel at runtime (called by channel_connect tool) */
+  connectChannel?: (type: string, config: Record<string, string>) => Promise<void>
 }
 
 const BLOCKED_COMMANDS = [
@@ -928,6 +930,29 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop �
       // Render with auto-corrected components
       const result = manager.updateComponents(surfaceId, components)
 
+      // Build test checklist for buttons with mutations (helps agent know exactly what to test)
+      const allComponents = merge
+        ? [...(manager.getSurface(surfaceId)?.components.values() ?? [])]
+        : components
+      const buttonChecklist = allComponents
+        .filter((c: any) => c.component === 'Button' && c.action?.mutation)
+        .map((c: any) => {
+          const mut = c.action.mutation as Record<string, unknown>
+          return {
+            actionName: c.action.name,
+            buttonId: c.id,
+            endpoint: mut.endpoint,
+            method: mut.method,
+            hasParams: !!mut.params,
+          }
+        })
+      const testChecklistFields = buttonChecklist.length > 0
+        ? {
+            testChecklist: buttonChecklist,
+            testHint: `Test each button with canvas_trigger_action({ surfaceId: "${surfaceId}", actionName: "..." }). For PATCH/DELETE buttons inside DataList templates, also pass itemData with a real item's data (e.g. { id: "..." }).`,
+          }
+        : {}
+
       // Non-fatal errors still present after auto-correction
       if (errors.length > 0) {
         return textResult({
@@ -937,6 +962,7 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop �
           errors: errors.map((e) => `[${e.componentId}] ${e.message}`),
           warnings: warnings.length > 0 ? warnings.map((w) => `[${w.componentId}] ${w.message}`) : undefined,
           corrections: corrections.length > 0 ? corrections : undefined,
+          ...testChecklistFields,
           hint: 'Use canvas_components with action "detail" to look up valid props and enum values for any component type.',
         })
       }
@@ -948,6 +974,7 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop �
           error: `Components rendered with ${warnings.length} warning(s) that should be fixed. Call canvas_update again with corrected components.`,
           warnings: warnings.map((w) => `[${w.componentId}] ${w.message}`),
           corrections: corrections.length > 0 ? corrections : undefined,
+          ...testChecklistFields,
           hint: 'Use canvas_components with action "detail" to look up valid props for any component type.',
         })
       }
@@ -957,12 +984,13 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop �
           ...result,
           corrections: corrections.length > 0 ? corrections : undefined,
           autoMutations: autoMutationWarnings.length > 0 ? autoMutationWarnings : undefined,
+          ...testChecklistFields,
           note: autoMutationWarnings.length > 0
             ? 'Some buttons had missing mutations that were auto-inferred from action names. Always define explicit mutations in future updates — auto-inference may be incorrect.'
             : 'Some prop values were auto-corrected. Use these corrected values in future updates.',
         })
       }
-      return textResult(result)
+      return textResult({ ...result, ...testChecklistFields })
     },
   }
 }
@@ -1343,35 +1371,227 @@ Then in canvas_update: { id: "table", component: "Table", rows: { path: "/todos"
 }
 
 // ---------------------------------------------------------------------------
+// Canvas API Hooks Tool
+// ---------------------------------------------------------------------------
+
+const HookActionSchema = Type.Object({
+  action: Type.Union([
+    Type.Literal('recompute'),
+    Type.Literal('validate'),
+    Type.Literal('cascade-delete'),
+    Type.Literal('transform'),
+    Type.Literal('log'),
+  ], { description: 'Hook action type' }),
+  target: Type.Optional(Type.String({ description: 'Target data path (recompute), model name (cascade-delete, log)' })),
+  source: Type.Optional(Type.String({ description: 'Source collection path for recompute (e.g. "/expenses")' })),
+  field: Type.Optional(Type.String({ description: 'Field name for recompute aggregate or validate rule' })),
+  aggregate: Type.Optional(Type.Union([
+    Type.Literal('sum'), Type.Literal('count'), Type.Literal('avg'), Type.Literal('min'), Type.Literal('max'),
+  ], { description: 'Aggregate function for recompute' })),
+  rule: Type.Optional(Type.Union([
+    Type.Literal('required'), Type.Literal('positive'), Type.Literal('min'), Type.Literal('max'), Type.Literal('pattern'), Type.Literal('enum'),
+  ], { description: 'Validation rule type' })),
+  value: Type.Optional(Type.Union([Type.Number(), Type.String()], { description: 'Threshold for min/max, regex for pattern, comma-separated values for enum' })),
+  message: Type.Optional(Type.String({ description: 'Custom validation error message' })),
+  foreignKey: Type.Optional(Type.String({ description: 'Foreign key field for cascade-delete (e.g. "projectId")' })),
+  transform: Type.Optional(Type.Union([
+    Type.Literal('lowercase'), Type.Literal('uppercase'), Type.Literal('trim'),
+    Type.Literal('round'), Type.Literal('floor'), Type.Literal('ceil'), Type.Literal('abs'),
+  ], { description: 'Transform function' })),
+  fields: Type.Optional(Type.Object({}, { additionalProperties: true, description: 'Field mappings for log action ($id, $operation, $model, $timestamp)' })),
+})
+
+function createCanvasApiHooksTool(): AgentTool {
+  return {
+    name: 'canvas_api_hooks',
+    description: `Register declarative hooks on a model's CRUD operations. Hooks fire automatically when data is mutated.
+
+HOOK ACTIONS:
+
+1. recompute — Auto-update a metric after mutations (sum, count, avg, min, max)
+   { action: "recompute", target: "/summary/totalSpent", source: "/expenses", field: "amount", aggregate: "sum" }
+
+2. validate — Reject mutations that fail validation (beforeCreate/beforeUpdate only)
+   { action: "validate", field: "amount", rule: "positive" }
+   { action: "validate", field: "status", rule: "enum", value: "pending,shipped,delivered" }
+   { action: "validate", field: "email", rule: "required" }
+
+3. cascade-delete — Delete related records when parent is deleted (afterDelete only)
+   { action: "cascade-delete", target: "Task", foreignKey: "projectId" }
+
+4. transform — Normalize field values before saving (beforeCreate/beforeUpdate only)
+   { action: "transform", field: "email", transform: "lowercase" }
+   { action: "transform", field: "name", transform: "trim" }
+
+5. log — Append an audit entry to a log model after mutations
+   { action: "log", target: "ActivityLog" }
+   { action: "log", target: "ActivityLog", fields: { "entityId": "$id", "action": "$operation", "model": "$model" } }
+
+EXAMPLE — Expense tracker with auto-updating metrics and validation:
+  canvas_api_hooks({
+    surfaceId: "app",
+    model: "Expense",
+    beforeCreate: [
+      { action: "validate", field: "amount", rule: "positive" },
+      { action: "validate", field: "description", rule: "required" },
+      { action: "transform", field: "description", transform: "trim" }
+    ],
+    afterCreate: [
+      { action: "recompute", target: "/summary/totalSpent", source: "/expenses", field: "amount", aggregate: "sum" },
+      { action: "recompute", target: "/summary/count", source: "/expenses", aggregate: "count" }
+    ],
+    afterDelete: [
+      { action: "recompute", target: "/summary/totalSpent", source: "/expenses", field: "amount", aggregate: "sum" },
+      { action: "recompute", target: "/summary/count", source: "/expenses", aggregate: "count" }
+    ]
+  })
+
+RULES:
+- ALWAYS register recompute hooks when Metric components display aggregates of a collection
+- Use validate hooks for data integrity (required fields, positive numbers, enum constraints)
+- Use cascade-delete when models have parent-child relationships
+- validate and transform actions only work in beforeCreate/beforeUpdate
+- cascade-delete, recompute, and log actions work in afterCreate/afterUpdate/afterDelete`,
+    label: 'Register API Hooks',
+    parameters: Type.Object({
+      surfaceId: Type.String({ description: 'Surface ID' }),
+      model: Type.String({ description: 'Model name to register hooks on (e.g. "Expense")' }),
+      beforeCreate: Type.Optional(Type.Array(HookActionSchema, { description: 'Hooks to run before creating a record (validate, transform)' })),
+      beforeUpdate: Type.Optional(Type.Array(HookActionSchema, { description: 'Hooks to run before updating a record (validate, transform)' })),
+      afterCreate: Type.Optional(Type.Array(HookActionSchema, { description: 'Hooks to run after creating a record (recompute, cascade-delete, log)' })),
+      afterUpdate: Type.Optional(Type.Array(HookActionSchema, { description: 'Hooks to run after updating a record (recompute, log)' })),
+      afterDelete: Type.Optional(Type.Array(HookActionSchema, { description: 'Hooks to run after deleting a record (recompute, cascade-delete, log)' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { surfaceId, model, beforeCreate, beforeUpdate, afterCreate, afterUpdate, afterDelete } = params as {
+        surfaceId: string
+        model: string
+        beforeCreate?: any[]
+        beforeUpdate?: any[]
+        afterCreate?: any[]
+        afterUpdate?: any[]
+        afterDelete?: any[]
+      }
+      const manager = getDynamicAppManager()
+      const defs = { beforeCreate, beforeUpdate, afterCreate, afterUpdate, afterDelete }
+      // Strip undefined phases
+      for (const key of Object.keys(defs) as (keyof typeof defs)[]) {
+        if (!defs[key]) delete defs[key]
+      }
+      const result = manager.registerHooks(surfaceId, model, defs)
+      return textResult(result)
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Canvas Self-Testing Tools
 // ---------------------------------------------------------------------------
+
+/**
+ * Resolve a dynamic path binding against scope data (DataList item) or root data model.
+ * Mirrors the resolution logic in shared-app/resolve-props.ts resolveValue().
+ */
+function resolveBinding(
+  value: unknown,
+  dataModel: Record<string, unknown>,
+  scopeData?: Record<string, unknown>,
+): unknown {
+  if (typeof value === 'object' && value !== null && 'path' in value && typeof (value as any).path === 'string') {
+    const path = (value as any).path as string
+    if (!path.startsWith('/') && scopeData) {
+      return (scopeData as any)[path]
+    }
+    return getByPointer(dataModel, path)
+  }
+  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    const resolved: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value)) {
+      resolved[k] = resolveBinding(v, dataModel, scopeData)
+    }
+    return resolved
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => resolveBinding(item, dataModel, scopeData))
+  }
+  return value
+}
+
+/**
+ * Resolve a button's mutation definition against the data model, matching
+ * the frontend's resolveValue() path. Returns the fully-resolved mutation
+ * (endpoint with :param placeholders replaced, body bindings resolved).
+ */
+function resolveButtonMutation(
+  mutation: Record<string, unknown>,
+  dataModel: Record<string, unknown>,
+  scopeData?: Record<string, unknown>,
+): { endpoint: string; method: string; body?: unknown } {
+  const resolvedBody = mutation.body && typeof mutation.body === 'object'
+    ? resolveBinding(mutation.body, dataModel, scopeData)
+    : mutation.body
+
+  const rawEndpoint = typeof mutation.endpoint === 'object' && mutation.endpoint !== null && 'path' in mutation.endpoint
+    ? resolveBinding(mutation.endpoint, dataModel, scopeData)
+    : mutation.endpoint
+  let resolvedEndpoint = typeof rawEndpoint === 'string' ? rawEndpoint : ''
+
+  if (resolvedEndpoint && resolvedEndpoint.includes(':')) {
+    const params = (mutation.params || {}) as Record<string, unknown>
+    for (const [pk, pv] of Object.entries(params)) {
+      const resolved = resolveBinding(pv, dataModel, scopeData)
+      resolvedEndpoint = resolvedEndpoint.replace(`:${pk}`, String(resolved ?? ''))
+    }
+  }
+
+  return {
+    endpoint: resolvedEndpoint,
+    method: String(mutation.method || 'POST'),
+    ...(resolvedBody !== undefined ? { body: resolvedBody } : {}),
+  }
+}
+
+/**
+ * Find the Button component on a surface whose action.name matches.
+ */
+function findButtonByActionName(
+  surface: { components: Map<string, any> },
+  actionName: string,
+): { id: string; action: Record<string, unknown> } | null {
+  for (const [, comp] of surface.components) {
+    if (comp.component !== 'Button') continue
+    const action = comp.action as Record<string, unknown> | undefined
+    if (action && action.name === actionName) {
+      return { id: comp.id, action }
+    }
+  }
+  return null
+}
 
 function createCanvasTriggerActionTool(): AgentTool {
   return {
     name: 'canvas_trigger_action',
     description:
-      `Programmatically simulate a user click on a canvas button or component. Use this to test and verify your canvas UIs work correctly — do NOT use canvas_action_wait for self-testing.
+      `Programmatically simulate a real user click on a canvas button. This resolves the button's actual mutation definition from the component tree (same as the frontend), so the test faithfully matches what the user would experience.
 
-For mutation actions (CRUD), include _mutation in the context:
-  canvas_trigger_action({ surfaceId: "app", actionName: "add_todo", context: {
-    _mutation: { endpoint: "/api/todos", method: "POST", body: { title: "Test" } }
-  }})
+Provide the actionName and optional itemData (for buttons inside DataList templates):
+  canvas_trigger_action({ surfaceId: "app", actionName: "add_todo" })
+  canvas_trigger_action({ surfaceId: "app", actionName: "delete", itemData: { id: "abc123" } })
 
-For non-mutation actions:
-  canvas_trigger_action({ surfaceId: "app", actionName: "select_item", context: { itemId: "123" } })
+For DataList template buttons, itemData provides the current item's data (like { id, title, status }) so the mutation's :id params and scoped bindings resolve correctly.
 
-This tool performs real verification: it captures data before the action, executes it, then checks what actually changed. If a mutation fails or doesn't change data as expected, it returns ok: false with details. Always follow up with canvas_inspect to double-check the data. Never use canvas_action_wait after canvas_trigger_action.`,
+This tool performs real verification: it finds the button, resolves its mutation, captures data before/after, and returns ok: false if the button has no mutation, the mutation failed, or no data changed. Always follow up with canvas_inspect to double-check.`,
     label: 'Trigger Canvas Action',
     parameters: Type.Object({
       surfaceId: Type.String({ description: 'Surface ID to trigger the action on' }),
-      actionName: Type.String({ description: 'Name of the action to trigger (matches the action.name on a Button or other interactive component)' }),
-      context: Type.Optional(Type.Object({}, { additionalProperties: true, description: 'Action context data. For mutations, include _mutation: { endpoint, method, body? }' })),
+      actionName: Type.String({ description: 'Name of the action to trigger (matches the action.name on a Button)' }),
+      itemData: Type.Optional(Type.Object({}, { additionalProperties: true, description: 'For buttons inside DataList templates: the current item data (e.g. { id: "abc123", title: "...", status: "..." }). Used to resolve scoped bindings like { path: "id" } and :id endpoint params.' })),
     }),
     execute: async (_toolCallId, params) => {
-      const { surfaceId, actionName, context } = params as {
+      const { surfaceId, actionName, itemData } = params as {
         surfaceId: string
         actionName: string
-        context?: Record<string, unknown>
+        itemData?: Record<string, unknown>
       }
       const manager = getDynamicAppManager()
 
@@ -1380,13 +1600,55 @@ This tool performs real verification: it captures data before the action, execut
         return textResult({ ok: false, error: `Surface "${surfaceId}" does not exist.` })
       }
 
-      const hasMutation = !!(context as any)?._mutation
+      const button = findButtonByActionName(surface, actionName)
+
+      if (!button) {
+        // No button found — deliver as a non-mutation action (e.g. for canvas_action_wait waiters)
+        const deliveryResult = await manager.deliverActionAsync({
+          surfaceId,
+          name: actionName,
+          context: {},
+          timestamp: new Date().toISOString(),
+        })
+        const updatedSurface = manager.getSurface(surfaceId)
+        const dataKeys = updatedSurface ? Object.keys(updatedSurface.dataModel) : []
+        return textResult({
+          ok: false,
+          surfaceId,
+          actionName,
+          resolvedFromButton: false,
+          dataKeys,
+          error: `No Button with action.name "${actionName}" found in the component tree. Cannot verify this action.`,
+          message: `No button named "${actionName}" exists on surface "${surfaceId}". Check the actionName matches a Button's action.name exactly.`,
+        })
+      }
+
+      const mutation = button.action.mutation as Record<string, unknown> | undefined
+      if (!mutation) {
+        return textResult({
+          ok: false,
+          surfaceId,
+          actionName,
+          resolvedFromButton: true,
+          buttonId: button.id,
+          error: `Button "${button.id}" has action.name "${actionName}" but NO mutation defined. This button does NOTHING when a real user clicks it. Fix the button with canvas_update({ merge: true }) to add: mutation: { endpoint: "/api/...", method: "POST|PATCH|DELETE", body?: {...} }`,
+          message: `BROKEN BUTTON: "${button.id}" is missing its mutation. The button looks correct in the UI but does absolutely nothing when clicked. This is the #1 canvas bug.`,
+        })
+      }
+
+      const resolvedMutation = resolveButtonMutation(mutation, surface.dataModel, itemData)
+      const warnings: string[] = []
+
+      if (resolvedMutation.endpoint.includes(':')) {
+        warnings.push(`Resolved endpoint "${resolvedMutation.endpoint}" still has unresolved parameter placeholders. The button's mutation.params may be missing or itemData was not provided. In the real UI, this will cause a 404 error.`)
+      }
+
       const beforeSnapshot = JSON.parse(JSON.stringify(surface.dataModel))
 
       const deliveryResult = await manager.deliverActionAsync({
         surfaceId,
         name: actionName,
-        context: context || {},
+        context: { _mutation: resolvedMutation },
         timestamp: new Date().toISOString(),
       })
 
@@ -1394,55 +1656,52 @@ This tool performs real verification: it captures data before the action, execut
       const afterSnapshot = updatedSurface ? JSON.parse(JSON.stringify(updatedSurface.dataModel)) : {}
       const dataKeys = updatedSurface ? Object.keys(updatedSurface.dataModel) : []
 
-      if (hasMutation) {
-        if (deliveryResult.result && !deliveryResult.result.ok) {
-          return textResult({
-            ok: false,
-            surfaceId,
-            actionName,
-            wasMutation: true,
-            error: `Mutation FAILED: ${deliveryResult.result.error ?? 'unknown error'}`,
-            status: deliveryResult.result.status,
-            message: `The "${actionName}" mutation failed on "${surfaceId}". The API returned an error. Check the endpoint, method, and body. This button is BROKEN and needs to be fixed before delivery.`,
-          })
-        }
-
-        const changes = diffDataSnapshots(beforeSnapshot, afterSnapshot)
-        if (changes.length === 0) {
-          return textResult({
-            ok: false,
-            surfaceId,
-            actionName,
-            wasMutation: true,
-            dataKeys,
-            dataBefore: beforeSnapshot,
-            dataAfter: afterSnapshot,
-            error: 'Mutation executed but NO data changed in the data model.',
-            message: `WARNING: The "${actionName}" mutation on "${surfaceId}" did not change any data. The API call may have succeeded but the data model wasn't updated. Verify the endpoint is correct and the data path matches. Use canvas_inspect to check the current state. This action may be BROKEN for users.`,
-          })
-        }
-
+      if (deliveryResult.result && !deliveryResult.result.ok) {
         return textResult({
-          ok: true,
+          ok: false,
           surfaceId,
           actionName,
           wasMutation: true,
+          resolvedFromButton: true,
+          buttonId: button.id,
+          resolvedMutation,
+          error: `Mutation FAILED: ${deliveryResult.result.error ?? 'unknown error'}`,
+          status: deliveryResult.result.status,
+          warnings: warnings.length > 0 ? warnings : undefined,
+          message: `The "${actionName}" mutation failed on "${surfaceId}". Resolved from button "${button.id}". The API returned an error. This button is BROKEN and needs to be fixed.`,
+        })
+      }
+
+      const changes = diffDataSnapshots(beforeSnapshot, afterSnapshot)
+      if (changes.length === 0) {
+        return textResult({
+          ok: false,
+          surfaceId,
+          actionName,
+          wasMutation: true,
+          resolvedFromButton: true,
+          buttonId: button.id,
+          resolvedMutation,
           dataKeys,
-          changes,
-          itemCount: deliveryResult.result?.itemCount,
-          message: `Mutation "${actionName}" VERIFIED on "${surfaceId}". Data changed: ${changes.map(c => c.summary).join('; ')}. Use canvas_inspect to double-check the full data state.`,
+          error: 'Mutation executed but NO data changed in the data model.',
+          warnings: warnings.length > 0 ? warnings : undefined,
+          message: `WARNING: The "${actionName}" mutation on "${surfaceId}" (button "${button.id}") did not change any data. The mutation may have wrong endpoint or body. This action may be BROKEN for users.`,
         })
       }
 
       return textResult({
-        ok: deliveryResult.handled,
+        ok: true,
         surfaceId,
         actionName,
-        wasMutation: false,
+        wasMutation: true,
+        resolvedFromButton: true,
+        buttonId: button.id,
+        resolvedMutation,
         dataKeys,
-        message: deliveryResult.handled
-          ? `Action "${actionName}" delivered to "${surfaceId}". Use canvas_inspect to verify the surface state.`
-          : `Action "${actionName}" was not handled. No waiter or mutation target found.`,
+        changes,
+        itemCount: deliveryResult.result?.itemCount,
+        warnings: warnings.length > 0 ? warnings : undefined,
+        message: `Mutation "${actionName}" VERIFIED on "${surfaceId}". Resolved from button "${button.id}" definition (${resolvedMutation.method} ${resolvedMutation.endpoint}). Data changed: ${changes.map(c => c.summary).join('; ')}. Use canvas_inspect to double-check.`,
       })
     },
   }
@@ -1936,17 +2195,17 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   messaging: ['send_message'],
   cron: ['cron'],
   canvas: ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_action_wait', 'canvas_components', 'canvas_trigger_action', 'canvas_inspect'],
-  api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query'],
+  api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks'],
   personality: ['personality_update'],
   mcp_discovery: ['mcp_search', 'mcp_install', 'mcp_uninstall', 'mcp_list_installed'],
 }
 
 export const ALL_TOOL_NAMES = [
   'exec', 'read_file', 'write_file', 'web_fetch', 'web_search', 'browser',
-  'memory_read', 'memory_write', 'memory_search', 'send_message', 'cron',
+  'memory_read', 'memory_write', 'memory_search', 'send_message', 'channel_connect', 'cron',
   'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_action_wait', 'canvas_components',
   'canvas_trigger_action', 'canvas_inspect',
-  'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query',
+  'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks',
   'personality_update',
   'mcp_search', 'mcp_install', 'mcp_uninstall', 'mcp_list_installed',
 ] as const
@@ -1971,6 +2230,88 @@ export function resolveToolNames(refs: string[]): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Channel Connect Tool
+// ---------------------------------------------------------------------------
+
+function createChannelConnectTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'channel_connect',
+    description:
+      'Connect a messaging channel (telegram, discord, email, slack, whatsapp, or webhook). ' +
+      'Saves the config and hot-connects the channel immediately.',
+    label: 'Connect Channel',
+    parameters: Type.Object({
+      type: Type.String({
+        description: 'Channel type: telegram, discord, email, slack, whatsapp, or webhook',
+      }),
+      config: Type.Record(Type.String(), Type.String(), {
+        description:
+          'Channel configuration. For webhook: { secret?: "shared-secret" }. ' +
+          'For telegram: { botToken: "..." }. For discord: { botToken: "...", guildId: "..." }. ' +
+          'For email: { imapHost, smtpHost, username, password }. ' +
+          'For slack: { botToken: "xoxb-...", appToken: "xapp-..." }. ' +
+          'For whatsapp: { accessToken, phoneNumberId, verifyToken }. ' +
+          'For teams: { appId, appPassword, botName? }.',
+      }),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { type, config: channelConfig } = params as {
+        type: string
+        config: Record<string, string>
+      }
+
+      const validTypes = ['telegram', 'discord', 'email', 'slack', 'whatsapp', 'webhook', 'teams']
+      if (!validTypes.includes(type)) {
+        return textResult({ error: `Invalid channel type: ${type}. Must be one of: ${validTypes.join(', ')}` })
+      }
+
+      try {
+        const { existsSync, readFileSync, writeFileSync } = await import('fs')
+        const { join } = await import('path')
+        const configPath = join(ctx.workspaceDir, 'config.json')
+        let savedConfig: Record<string, any> = {}
+        if (existsSync(configPath)) {
+          savedConfig = JSON.parse(readFileSync(configPath, 'utf-8'))
+        }
+        savedConfig.channels = savedConfig.channels || []
+        const existing = savedConfig.channels.findIndex((c: any) => c.type === type)
+        if (existing >= 0) {
+          savedConfig.channels[existing] = { type, config: channelConfig }
+        } else {
+          savedConfig.channels.push({ type, config: channelConfig })
+        }
+        writeFileSync(configPath, JSON.stringify(savedConfig, null, 2), 'utf-8')
+      } catch (err: any) {
+        return textResult({ error: `Failed to save config: ${err.message}` })
+      }
+
+      if (ctx.connectChannel) {
+        try {
+          await ctx.connectChannel(type, channelConfig)
+          return textResult({
+            ok: true,
+            message: `${type} channel connected and live. ` +
+              (type === 'webhook'
+                ? 'External services can now POST to /agent/channels/webhook/incoming'
+                : `The ${type} adapter is now receiving messages.`),
+          })
+        } catch (err: any) {
+          return textResult({
+            ok: true,
+            message: `${type} channel saved to config but failed to hot-connect: ${err.message}. Restart the agent to connect.`,
+          })
+        }
+      }
+
+      return textResult({
+        ok: true,
+        message: `${type} channel configured. Restart the agent to connect.`,
+      })
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Factory Functions
 // ---------------------------------------------------------------------------
 
@@ -1987,6 +2328,7 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createMemoryWriteTool(ctx),
     createMemorySearchTool(ctx),
     createSendMessageTool(ctx),
+    createChannelConnectTool(ctx),
     createCronTool(ctx),
     createCanvasCreateTool(),
     createCanvasUpdateTool(),
@@ -1998,6 +2340,7 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createCanvasApiSchemaTool(),
     createCanvasApiSeedTool(),
     createCanvasApiQueryTool(),
+    createCanvasApiHooksTool(),
     createCanvasTriggerActionTool(),
     createCanvasInspectTool(),
     createPersonalityUpdateTool(ctx),
