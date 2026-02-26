@@ -1371,6 +1371,120 @@ Then in canvas_update: { id: "table", component: "Table", rows: { path: "/todos"
 }
 
 // ---------------------------------------------------------------------------
+// Canvas API Hooks Tool
+// ---------------------------------------------------------------------------
+
+const HookActionSchema = Type.Object({
+  action: Type.Union([
+    Type.Literal('recompute'),
+    Type.Literal('validate'),
+    Type.Literal('cascade-delete'),
+    Type.Literal('transform'),
+    Type.Literal('log'),
+  ], { description: 'Hook action type' }),
+  target: Type.Optional(Type.String({ description: 'Target data path (recompute), model name (cascade-delete, log)' })),
+  source: Type.Optional(Type.String({ description: 'Source collection path for recompute (e.g. "/expenses")' })),
+  field: Type.Optional(Type.String({ description: 'Field name for recompute aggregate or validate rule' })),
+  aggregate: Type.Optional(Type.Union([
+    Type.Literal('sum'), Type.Literal('count'), Type.Literal('avg'), Type.Literal('min'), Type.Literal('max'),
+  ], { description: 'Aggregate function for recompute' })),
+  rule: Type.Optional(Type.Union([
+    Type.Literal('required'), Type.Literal('positive'), Type.Literal('min'), Type.Literal('max'), Type.Literal('pattern'), Type.Literal('enum'),
+  ], { description: 'Validation rule type' })),
+  value: Type.Optional(Type.Union([Type.Number(), Type.String()], { description: 'Threshold for min/max, regex for pattern, comma-separated values for enum' })),
+  message: Type.Optional(Type.String({ description: 'Custom validation error message' })),
+  foreignKey: Type.Optional(Type.String({ description: 'Foreign key field for cascade-delete (e.g. "projectId")' })),
+  transform: Type.Optional(Type.Union([
+    Type.Literal('lowercase'), Type.Literal('uppercase'), Type.Literal('trim'),
+    Type.Literal('round'), Type.Literal('floor'), Type.Literal('ceil'), Type.Literal('abs'),
+  ], { description: 'Transform function' })),
+  fields: Type.Optional(Type.Object({}, { additionalProperties: true, description: 'Field mappings for log action ($id, $operation, $model, $timestamp)' })),
+})
+
+function createCanvasApiHooksTool(): AgentTool {
+  return {
+    name: 'canvas_api_hooks',
+    description: `Register declarative hooks on a model's CRUD operations. Hooks fire automatically when data is mutated.
+
+HOOK ACTIONS:
+
+1. recompute — Auto-update a metric after mutations (sum, count, avg, min, max)
+   { action: "recompute", target: "/summary/totalSpent", source: "/expenses", field: "amount", aggregate: "sum" }
+
+2. validate — Reject mutations that fail validation (beforeCreate/beforeUpdate only)
+   { action: "validate", field: "amount", rule: "positive" }
+   { action: "validate", field: "status", rule: "enum", value: "pending,shipped,delivered" }
+   { action: "validate", field: "email", rule: "required" }
+
+3. cascade-delete — Delete related records when parent is deleted (afterDelete only)
+   { action: "cascade-delete", target: "Task", foreignKey: "projectId" }
+
+4. transform — Normalize field values before saving (beforeCreate/beforeUpdate only)
+   { action: "transform", field: "email", transform: "lowercase" }
+   { action: "transform", field: "name", transform: "trim" }
+
+5. log — Append an audit entry to a log model after mutations
+   { action: "log", target: "ActivityLog" }
+   { action: "log", target: "ActivityLog", fields: { "entityId": "$id", "action": "$operation", "model": "$model" } }
+
+EXAMPLE — Expense tracker with auto-updating metrics and validation:
+  canvas_api_hooks({
+    surfaceId: "app",
+    model: "Expense",
+    beforeCreate: [
+      { action: "validate", field: "amount", rule: "positive" },
+      { action: "validate", field: "description", rule: "required" },
+      { action: "transform", field: "description", transform: "trim" }
+    ],
+    afterCreate: [
+      { action: "recompute", target: "/summary/totalSpent", source: "/expenses", field: "amount", aggregate: "sum" },
+      { action: "recompute", target: "/summary/count", source: "/expenses", aggregate: "count" }
+    ],
+    afterDelete: [
+      { action: "recompute", target: "/summary/totalSpent", source: "/expenses", field: "amount", aggregate: "sum" },
+      { action: "recompute", target: "/summary/count", source: "/expenses", aggregate: "count" }
+    ]
+  })
+
+RULES:
+- ALWAYS register recompute hooks when Metric components display aggregates of a collection
+- Use validate hooks for data integrity (required fields, positive numbers, enum constraints)
+- Use cascade-delete when models have parent-child relationships
+- validate and transform actions only work in beforeCreate/beforeUpdate
+- cascade-delete, recompute, and log actions work in afterCreate/afterUpdate/afterDelete`,
+    label: 'Register API Hooks',
+    parameters: Type.Object({
+      surfaceId: Type.String({ description: 'Surface ID' }),
+      model: Type.String({ description: 'Model name to register hooks on (e.g. "Expense")' }),
+      beforeCreate: Type.Optional(Type.Array(HookActionSchema, { description: 'Hooks to run before creating a record (validate, transform)' })),
+      beforeUpdate: Type.Optional(Type.Array(HookActionSchema, { description: 'Hooks to run before updating a record (validate, transform)' })),
+      afterCreate: Type.Optional(Type.Array(HookActionSchema, { description: 'Hooks to run after creating a record (recompute, cascade-delete, log)' })),
+      afterUpdate: Type.Optional(Type.Array(HookActionSchema, { description: 'Hooks to run after updating a record (recompute, log)' })),
+      afterDelete: Type.Optional(Type.Array(HookActionSchema, { description: 'Hooks to run after deleting a record (recompute, cascade-delete, log)' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { surfaceId, model, beforeCreate, beforeUpdate, afterCreate, afterUpdate, afterDelete } = params as {
+        surfaceId: string
+        model: string
+        beforeCreate?: any[]
+        beforeUpdate?: any[]
+        afterCreate?: any[]
+        afterUpdate?: any[]
+        afterDelete?: any[]
+      }
+      const manager = getDynamicAppManager()
+      const defs = { beforeCreate, beforeUpdate, afterCreate, afterUpdate, afterDelete }
+      // Strip undefined phases
+      for (const key of Object.keys(defs) as (keyof typeof defs)[]) {
+        if (!defs[key]) delete defs[key]
+      }
+      const result = manager.registerHooks(surfaceId, model, defs)
+      return textResult(result)
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Canvas Self-Testing Tools
 // ---------------------------------------------------------------------------
 
@@ -2081,7 +2195,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   messaging: ['send_message'],
   cron: ['cron'],
   canvas: ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_action_wait', 'canvas_components', 'canvas_trigger_action', 'canvas_inspect'],
-  api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query'],
+  api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks'],
   personality: ['personality_update'],
   mcp_discovery: ['mcp_search', 'mcp_install', 'mcp_uninstall', 'mcp_list_installed'],
 }
@@ -2091,7 +2205,7 @@ export const ALL_TOOL_NAMES = [
   'memory_read', 'memory_write', 'memory_search', 'send_message', 'channel_connect', 'cron',
   'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_action_wait', 'canvas_components',
   'canvas_trigger_action', 'canvas_inspect',
-  'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query',
+  'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks',
   'personality_update',
   'mcp_search', 'mcp_install', 'mcp_uninstall', 'mcp_list_installed',
 ] as const
@@ -2226,6 +2340,7 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createCanvasApiSchemaTool(),
     createCanvasApiSeedTool(),
     createCanvasApiQueryTool(),
+    createCanvasApiHooksTool(),
     createCanvasTriggerActionTool(),
     createCanvasInspectTool(),
     createPersonalityUpdateTool(ctx),

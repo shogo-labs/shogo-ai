@@ -35,7 +35,14 @@ These examples show the optimal tool sequence for common canvas requests:
 - Surface: \`sales-analytics\`
 - Needs API: No (display only)
 - Tools: canvas_create, canvas_update, canvas_data
-- Components: Column, Grid, Metric, Card, Chart, Table, Text, Badge`
+- Components: Column, Grid, Metric, Card, Chart, Table, Text, Badge
+
+**Example 5:** "Build an expense tracker with total spent, budget remaining, and a table of expenses"
+- Surface: \`expense-tracker\`
+- Needs API: Yes (CRUD app with auto-updating metrics)
+- Tools: canvas_create, canvas_api_schema, canvas_api_seed, canvas_api_query, canvas_api_hooks, canvas_update, canvas_trigger_action, canvas_inspect
+- Components: Column, Row, Grid, Card, Metric, DataList, Button, TextField
+- Hooks pattern: Register recompute hooks (afterCreate + afterDelete) so Metric values auto-update when expenses are added/removed. Use validate hooks (beforeCreate) for data integrity.`
 
 export const OPTIMIZED_MEMORY_GUIDE = `### Memory Decision Examples
 

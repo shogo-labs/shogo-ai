@@ -124,6 +124,72 @@ export type DynamicAppMessage =
   | ConfigureApiMessage
 
 // ---------------------------------------------------------------------------
+// Hook Actions (declarative behaviors registered via canvas_api_hooks)
+// ---------------------------------------------------------------------------
+
+/** Recompute an aggregate from a collection and write to a data path */
+export interface RecomputeAction {
+  action: 'recompute'
+  /** Data path to write the result, e.g. "/summary/totalSpent" */
+  target: string
+  /** API collection to aggregate, e.g. "/expenses" */
+  source: string
+  /** Field to aggregate (required for sum/avg/min/max, optional for count) */
+  field?: string
+  aggregate: 'sum' | 'count' | 'avg' | 'min' | 'max'
+}
+
+/** Validate a field before saving — rejects mutation if rule fails */
+export interface ValidateAction {
+  action: 'validate'
+  field: string
+  rule: 'required' | 'positive' | 'min' | 'max' | 'pattern' | 'enum'
+  /** Threshold for min/max, regex string for pattern, comma-separated values for enum */
+  value?: number | string
+  message?: string
+}
+
+/** Delete related records in another model when parent is deleted */
+export interface CascadeDeleteAction {
+  action: 'cascade-delete'
+  /** Target model name, e.g. "Task" */
+  target: string
+  /** Foreign key field in target model, e.g. "projectId" */
+  foreignKey: string
+}
+
+/** Transform a field value before saving */
+export interface TransformAction {
+  action: 'transform'
+  field: string
+  transform: 'lowercase' | 'uppercase' | 'trim' | 'round' | 'floor' | 'ceil' | 'abs'
+}
+
+/** Append an audit entry to a log model after mutation */
+export interface LogAction {
+  action: 'log'
+  /** Log model name, e.g. "ActivityLog" */
+  target: string
+  /** Optional field mappings — $id, $operation, $model, $timestamp are built-in variables */
+  fields?: Record<string, string>
+}
+
+export type HookAction =
+  | RecomputeAction
+  | ValidateAction
+  | CascadeDeleteAction
+  | TransformAction
+  | LogAction
+
+export interface HookDefinitions {
+  beforeCreate?: HookAction[]
+  beforeUpdate?: HookAction[]
+  afterCreate?: HookAction[]
+  afterUpdate?: HookAction[]
+  afterDelete?: HookAction[]
+}
+
+// ---------------------------------------------------------------------------
 // Surface State (maintained by the state manager)
 // ---------------------------------------------------------------------------
 
@@ -135,6 +201,8 @@ export interface SurfaceState {
   dataModel: Record<string, unknown>
   /** Persisted API model definitions so runtimes can be restored after restart */
   apiModels?: Array<{ name: string; fields: Array<{ name: string; type: string; optional?: boolean; default?: unknown; unique?: boolean }> }>
+  /** Declarative hook definitions per model, registered via canvas_api_hooks */
+  hookDefinitions?: Record<string, HookDefinitions>
   createdAt: string
   updatedAt: string
 }

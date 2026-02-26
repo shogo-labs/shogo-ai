@@ -113,6 +113,22 @@ Then follow ALL steps below:
   canvas_api_query({ surfaceId: "my_app", model: "Task", dataPath: "/tasks" })
   → Now { path: "/tasks" } is available for component data binding
 
+**Step 3.5: canvas_api_hooks** — Register hooks for auto-updating metrics and data integrity
+  When your UI has Metric components showing aggregates (totals, counts, averages) derived from a collection, register hooks so they auto-update after mutations:
+  canvas_api_hooks({ surfaceId: "my_app", model: "Task",
+    beforeCreate: [
+      { action: "validate", field: "title", rule: "required" }
+    ],
+    afterCreate: [
+      { action: "recompute", target: "/summary/taskCount", source: "/tasks", aggregate: "count" }
+    ],
+    afterDelete: [
+      { action: "recompute", target: "/summary/taskCount", source: "/tasks", aggregate: "count" }
+    ]
+  })
+  Hook actions: recompute (auto-update aggregates), validate (reject bad input), cascade-delete (remove children), transform (normalize fields), log (audit trail).
+  → ALWAYS register recompute hooks when Metrics show aggregates. Without hooks, metrics stay stale after mutations.
+
 **Step 4: canvas_update** — Build the UI with DataList + form + mutation buttons
   canvas_update({ surfaceId: "my_app", components: [
     { id: "root", component: "Column", children: ["header", "add_section", "task_list"], gap: "md", padding: "4" },
@@ -259,6 +275,7 @@ Tabs require EITHER explicit tab definitions OR TabPanel children with \`title\`
 - You MUST test every distinct action button (add, update/mark-complete, delete) — not just one.
 
 ### Other Tools
+- **canvas_api_hooks** — Register declarative hooks (recompute, validate, cascade-delete, transform, log) on model CRUD operations. Hooks fire automatically when data changes.
 - **canvas_data** — Manually push data: \`canvas_data({ surfaceId: "app", path: "/key", value: data })\`
 - **canvas_data_patch** — Atomic operations (increment, decrement, toggle, append, set) without reading first. Use for counters and toggles instead of the full API pipeline.
 - **canvas_action_wait** — Pause and wait for a REAL USER to click. Only use when you need the human to interact — never for self-testing.
@@ -267,6 +284,9 @@ Tabs require EITHER explicit tab definitions OR TabPanel children with \`title\`
 
 ### Rules
 - **ALWAYS plan before building.** Write a brief plan (data model, layout, actions, tests) before calling any canvas tools. This prevents costly mistakes and rebuilds.
+- **ALWAYS register recompute hooks** when Metric components display aggregates (sum, count, avg) of a collection. Without hooks, metrics display stale values after mutations. Use canvas_api_hooks with afterCreate + afterDelete (and afterUpdate if the aggregated field can change).
+- **Use validate hooks** for data integrity — required fields, positive numbers, enum constraints. These prevent bad data before it enters the database.
+- **Use cascade-delete hooks** when models have parent-child relationships (e.g. Project → Tasks). This prevents orphaned records.
 - After building any canvas with buttons or CRUD, ALWAYS run Step 5 (trigger + inspect) for EVERY action type. Test add, update/complete, and delete separately.
 - If canvas_trigger_action returns ok: false, the button is BROKEN. Fix it with \`canvas_update({ merge: true })\` — see Step 6.
 - After canvas_trigger_action, ALWAYS follow up with canvas_inspect — never canvas_action_wait.

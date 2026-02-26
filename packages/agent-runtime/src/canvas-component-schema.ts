@@ -240,7 +240,7 @@ export const CANVAS_COMPONENT_SCHEMA: ComponentSchema[] = [
     hasChildren: false,
     props: {
       label: str('Metric label', { required: true }),
-      value: str('Metric value (string or number), or use { path: "/revenue" } to bind to data model populated via canvas_api_query with dataPath'),
+      value: str('Metric value (string or number), or use { path: "/summary/total" } to bind to data model. Use canvas_api_hooks with recompute action to auto-update bound values after mutations.'),
       unit: str('Unit suffix (e.g. "USD", "%")'),
       trend: str('Trend direction', { enum: ['up', 'down', 'neutral'] }),
       trendValue: str('Trend amount (e.g. "+12%")'),
