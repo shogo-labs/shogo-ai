@@ -39,6 +39,7 @@ import type { IDomainStore } from '@shogo/domain-stores'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../../../contexts/auth'
 import { API_URL } from '../../../../lib/api'
+import { consumePendingImageData } from '../../../../lib/pending-image-store'
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
 import { DynamicAppRenderer } from '../../../../components/dynamic-app/DynamicAppRenderer'
 import { ProjectTopBar } from '../../../../components/project/ProjectTopBar'
@@ -73,8 +74,9 @@ export default observer(function ProjectLayout() {
   const actions = useDomainActions()
   const projects = useProjectCollection()
 
-  // Capture initialMessage once so it doesn't re-fire on re-renders
+  // Capture initialMessage and imageData once so they don't re-fire on re-renders
   const [capturedInitialMessage] = useState(() => params.initialMessage ?? undefined)
+  const [capturedInitialImageData] = useState(() => consumePendingImageData())
 
   // Tab state for narrow screens
   const [activeTab, setActiveTab] = useState<ActiveTab>('chat')
@@ -238,6 +240,7 @@ export default observer(function ProjectLayout() {
       projectId={projectId}
       projectType={isAgentProject ? 'AGENT' : 'APP'}
       initialMessage={capturedInitialMessage}
+      initialImageData={capturedInitialImageData}
       className="flex-1"
     />
   )

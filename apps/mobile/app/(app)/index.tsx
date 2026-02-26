@@ -21,6 +21,7 @@ import {
   useDomainActions,
 } from '../../contexts/domain'
 import { CompactChatInput } from '../../components/chat/CompactChatInput'
+import { setPendingImageData } from '../../lib/pending-image-store'
 
 const SUGGESTION_CHIPS = [
   'Build a customer support agent',
@@ -223,7 +224,7 @@ const HomeScreen = observer(function HomeScreen() {
     return name.split(' ')[0] || 'there'
   }, [user?.name])
 
-  const handlePromptSubmit = useCallback(async (text: string) => {
+  const handlePromptSubmit = useCallback(async (text: string, imageData?: string[]) => {
     if (!text.trim() || !user?.id || !currentWorkspace?.id) return
     setIsCreating(true)
     try {
@@ -242,6 +243,10 @@ const HomeScreen = observer(function HomeScreen() {
         contextType: 'project',
         contextId: newProject.id,
       })
+
+      if (imageData && imageData.length > 0) {
+        setPendingImageData(imageData)
+      }
 
       projects.loadAll()
       router.push({
