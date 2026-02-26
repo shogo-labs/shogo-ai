@@ -42,6 +42,8 @@ export interface AgentEval {
   maxScore: number
   /** Per-eval tool mock overrides (merged with defaults by buildMockPayload) */
   toolMocks?: import('./tool-mocks').ToolMockMap
+  /** Files to write into the workspace before running the eval (path relative to workspace root -> content) */
+  workspaceFiles?: Record<string, string>
 }
 
 export interface ConversationTurn {

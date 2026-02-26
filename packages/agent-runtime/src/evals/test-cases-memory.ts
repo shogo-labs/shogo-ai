@@ -270,10 +270,19 @@ export const MEMORY_EVALS: AgentEval[] = [
     name: 'Memory: Search and synthesize from memory',
     category: 'memory',
     level: 2,
-    conversationHistory: [
-      { role: 'user', content: 'We agreed on this deployment process: 1) Create a PR to staging, 2) Run the e2e suite, 3) Get sign-off from the on-call engineer, 4) Merge to main which auto-deploys to production.' },
-    ],
-    input: 'What deployment process did we agree on last time?',
+    workspaceFiles: {
+      'memory/MEMORY.md': `# Memory
+
+## Deployment Process
+
+We agreed on this deployment process:
+1. Create a PR to staging
+2. Run the e2e suite
+3. Get sign-off from the on-call engineer
+4. Merge to main which auto-deploys to production
+`,
+    },
+    input: 'What deployment process did we agree on? I know we wrote it down somewhere — check your notes.',
     maxScore: 100,
     validationCriteria: [
       {

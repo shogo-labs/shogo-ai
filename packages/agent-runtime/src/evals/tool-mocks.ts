@@ -155,6 +155,42 @@ export const COMPETITIVE_INTEL_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const GITHUB_TRIAGE_MOCKS: ToolMockMap = {
+  mcp_list_installed: {
+    type: 'static',
+    description: 'List all currently installed MCP servers and their available tools.',
+    paramKeys: [],
+    response: { servers: [], totalServers: 0, totalTools: 0 },
+  },
+  mcp_search: {
+    type: 'static',
+    description: 'Search for MCP servers by capability or keyword.',
+    paramKeys: ['query', 'limit'],
+    response: {
+      query: 'github',
+      results: [
+        { name: 'GitHub', qualifiedName: '@modelcontextprotocol/server-github', description: 'Access GitHub repos, issues, PRs, and actions. List, create, and update issues and pull requests.', installCommand: 'npx -y @modelcontextprotocol/server-github', source: 'catalog' },
+      ],
+      message: 'Found 1 MCP server(s). Use mcp_install to add one.',
+    },
+  },
+  mcp_install: {
+    type: 'static',
+    description: 'Install and start an MCP server, making its tools available immediately.',
+    paramKeys: ['name', 'command', 'args', 'env'],
+    response: {
+      ok: true,
+      server: 'github',
+      toolCount: 5,
+      tools: [
+        { name: 'mcp__github__list_issues', description: 'List issues in a GitHub repository' },
+        { name: 'mcp__github__create_issue', description: 'Create a new issue' },
+        { name: 'mcp__github__update_issue', description: 'Update an existing issue' },
+        { name: 'mcp__github__search_issues', description: 'Search issues across repositories' },
+        { name: 'mcp__github__get_issue', description: 'Get details of a specific issue' },
+      ],
+      message: 'Installed "github" with 5 tool(s). They are now available for use.',
+    },
+  },
   mcp__github__list_issues: {
     type: 'static',
     description: 'List issues in a GitHub repository. Returns an array of issues with title, labels, assignee, and state.',
@@ -444,36 +480,79 @@ export const STRIPE_REVENUE_MOCKS: ToolMockMap = {
 // Fixture: Multi-Repo PR Review Queue (Case 8)
 // ---------------------------------------------------------------------------
 
+const PR_DATA_BY_REPO: Record<string, any[]> = {
+  frontend: [
+    { number: 142, title: 'Fix navigation layout on mobile', user: { login: 'alice' }, labels: ['bug'], created_at: '2026-02-19T10:00:00Z', pull_request: { url: 'https://api.github.com/repos/org/frontend/pulls/142' }, draft: false, ci_status: 'success' },
+    { number: 139, title: 'Add dark mode toggle', user: { login: 'bob' }, labels: ['enhancement'], created_at: '2026-02-21T05:00:00Z', pull_request: { url: 'https://api.github.com/repos/org/frontend/pulls/139' }, draft: false, ci_status: 'pending' },
+    { number: 135, title: 'Refactor auth flow to use new SDK', user: { login: 'carol' }, labels: ['refactor'], created_at: '2026-02-17T08:00:00Z', pull_request: { url: 'https://api.github.com/repos/org/frontend/pulls/135' }, draft: false, ci_status: 'failure' },
+  ],
+  backend: [
+    { number: 89, title: 'Implement API rate limiting middleware', user: { login: 'dave' }, labels: ['feature'], created_at: '2026-02-20T09:00:00Z', pull_request: { url: 'https://api.github.com/repos/org/backend/pulls/89' }, draft: false, ci_status: 'success' },
+    { number: 87, title: 'Database migration v12 — add indexes', user: { login: 'eve' }, labels: ['database'], created_at: '2026-02-21T04:00:00Z', pull_request: { url: 'https://api.github.com/repos/org/backend/pulls/87' }, draft: false, ci_status: 'success' },
+  ],
+  infra: [
+    { number: 56, title: 'Bump Terraform provider to 5.x', user: { login: 'frank' }, labels: ['infrastructure'], created_at: '2026-02-18T14:00:00Z', pull_request: { url: 'https://api.github.com/repos/org/infra/pulls/56' }, draft: false, ci_status: 'success' },
+    { number: 54, title: 'Add Datadog monitoring for new services', user: { login: 'grace' }, labels: ['monitoring'], created_at: '2026-02-20T18:00:00Z', pull_request: { url: 'https://api.github.com/repos/org/infra/pulls/54' }, draft: false, ci_status: 'pending' },
+  ],
+}
+
+const PR_PATTERN_SPEC: ToolMockSpec = {
+  type: 'pattern',
+  description: 'List issues and pull requests in a GitHub repository. Filter by state, labels, etc. Returns array of issues/PRs with title, user, labels, created_at, and pull_request URL.',
+  paramKeys: ['owner', 'repo', 'state', 'labels', 'per_page'],
+  patterns: [
+    { match: { repo: 'frontend' }, response: PR_DATA_BY_REPO.frontend },
+    { match: { repo: 'backend' }, response: PR_DATA_BY_REPO.backend },
+    { match: { repo: 'infra' }, response: PR_DATA_BY_REPO.infra },
+  ],
+  default: [],
+}
+
 export const PR_REVIEW_MOCKS: ToolMockMap = {
-  mcp__github__list_issues: {
-    type: 'pattern',
-    description: 'List issues and pull requests in a GitHub repository. Filter by state, labels, etc. Returns array of issues/PRs with title, user, labels, created_at, and pull_request URL.',
-    paramKeys: ['owner', 'repo', 'state', 'labels', 'per_page'],
-    patterns: [
-      {
-        match: { repo: 'frontend' },
-        response: [
-          { number: 142, title: 'Fix navigation layout on mobile', user: { login: 'alice' }, labels: ['bug'], created_at: '2026-02-19T10:00:00Z', pull_request: { url: 'https://api.github.com/repos/org/frontend/pulls/142' }, draft: false, ci_status: 'success' },
-          { number: 139, title: 'Add dark mode toggle', user: { login: 'bob' }, labels: ['enhancement'], created_at: '2026-02-21T05:00:00Z', pull_request: { url: 'https://api.github.com/repos/org/frontend/pulls/139' }, draft: false, ci_status: 'pending' },
-          { number: 135, title: 'Refactor auth flow to use new SDK', user: { login: 'carol' }, labels: ['refactor'], created_at: '2026-02-17T08:00:00Z', pull_request: { url: 'https://api.github.com/repos/org/frontend/pulls/135' }, draft: false, ci_status: 'failure' },
-        ],
-      },
-      {
-        match: { repo: 'backend' },
-        response: [
-          { number: 89, title: 'Implement API rate limiting middleware', user: { login: 'dave' }, labels: ['feature'], created_at: '2026-02-20T09:00:00Z', pull_request: { url: 'https://api.github.com/repos/org/backend/pulls/89' }, draft: false, ci_status: 'success' },
-          { number: 87, title: 'Database migration v12 — add indexes', user: { login: 'eve' }, labels: ['database'], created_at: '2026-02-21T04:00:00Z', pull_request: { url: 'https://api.github.com/repos/org/backend/pulls/87' }, draft: false, ci_status: 'success' },
-        ],
-      },
-      {
-        match: { repo: 'infra' },
-        response: [
-          { number: 56, title: 'Bump Terraform provider to 5.x', user: { login: 'frank' }, labels: ['infrastructure'], created_at: '2026-02-18T14:00:00Z', pull_request: { url: 'https://api.github.com/repos/org/infra/pulls/56' }, draft: false, ci_status: 'success' },
-          { number: 54, title: 'Add Datadog monitoring for new services', user: { login: 'grace' }, labels: ['monitoring'], created_at: '2026-02-20T18:00:00Z', pull_request: { url: 'https://api.github.com/repos/org/infra/pulls/54' }, draft: false, ci_status: 'pending' },
-        ],
-      },
-    ],
-    default: [],
+  mcp_list_installed: {
+    type: 'static',
+    description: 'List all currently installed MCP servers and their available tools.',
+    paramKeys: [],
+    response: { servers: [], totalServers: 0, totalTools: 0 },
+  },
+  mcp_search: {
+    type: 'static',
+    description: 'Search for MCP servers by capability or keyword.',
+    paramKeys: ['query', 'limit'],
+    response: {
+      query: 'github',
+      results: [
+        { name: 'GitHub', qualifiedName: '@modelcontextprotocol/server-github', description: 'Access GitHub repos, issues, PRs, and actions. List, create, and update issues and pull requests.', installCommand: 'npx -y @modelcontextprotocol/server-github', source: 'catalog' },
+      ],
+      message: 'Found 1 MCP server(s). Use mcp_install to add one.',
+    },
+  },
+  mcp_install: {
+    type: 'static',
+    description: 'Install and start an MCP server, making its tools available immediately.',
+    paramKeys: ['name', 'command', 'args', 'env'],
+    response: {
+      ok: true,
+      server: 'github',
+      toolCount: 6,
+      tools: [
+        { name: 'mcp__github__list_issues', description: 'List issues in a GitHub repository' },
+        { name: 'mcp__github__list_pull_requests', description: 'List pull requests in a GitHub repository' },
+        { name: 'mcp__github__create_issue', description: 'Create a new issue' },
+        { name: 'mcp__github__update_issue', description: 'Update an existing issue' },
+        { name: 'mcp__github__create_pull_request_review', description: 'Create a review on a pull request (approve, request changes)' },
+        { name: 'mcp__github__get_pull_request', description: 'Get details of a specific pull request' },
+      ],
+      message: 'Installed "github" with 6 tool(s). They are now available for use.',
+    },
+  },
+  mcp__github__list_issues: PR_PATTERN_SPEC,
+  mcp__github__list_pull_requests: PR_PATTERN_SPEC,
+  mcp__github__create_pull_request_review: {
+    type: 'static',
+    description: 'Create a review on a pull request (approve, request changes).',
+    paramKeys: ['owner', 'repo', 'pull_number', 'event', 'body'],
+    response: { id: 'review-001', state: 'APPROVED', submitted_at: '2026-02-25T12:00:00Z' },
   },
   send_message: {
     type: 'static',
