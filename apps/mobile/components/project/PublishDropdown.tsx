@@ -31,6 +31,17 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../lib/api'
+import { getAuthCookieHeader } from '../../lib/auth-storage'
+
+function apiFetchOpts(init: RequestInit = {}): RequestInit {
+  if (Platform.OS === 'web') return { ...init, credentials: 'include' }
+  const cookie = getAuthCookieHeader()
+  return {
+    ...init,
+    credentials: 'omit',
+    headers: { ...init.headers, ...(cookie ? { Cookie: cookie } : {}) },
+  }
+}
 
 export type AccessLevel = 'anyone' | 'authenticated' | 'private'
 
@@ -77,9 +88,7 @@ export function PublishDropdown({ projectId, projectName, visible, onClose }: Pu
 
   const loadPublishState = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/api/projects/${projectId}/publish`, {
-        credentials: 'include',
-      })
+      const res = await fetch(`${API_URL}/api/projects/${projectId}/publish`, apiFetchOpts())
       if (res.ok) {
         const data = await res.json()
         if (data.subdomain) {
@@ -105,7 +114,7 @@ export function PublishDropdown({ projectId, projectName, visible, onClose }: Pu
       try {
         const res = await fetch(
           `${API_URL}/api/subdomains/${encodeURIComponent(subdomain)}/check`,
-          { credentials: 'include' }
+          apiFetchOpts(),
         )
         const data = await res.json()
         setSubdomainStatus({ checking: false, available: data.available, reason: data.reason })
@@ -122,12 +131,10 @@ export function PublishDropdown({ projectId, projectName, visible, onClose }: Pu
     setIsPublishing(true)
     setError(null)
     try {
-      const res = await fetch(`${API_URL}/api/projects/${projectId}/publish`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ subdomain, accessLevel }),
-      })
+      const res = await fetch(
+        `${API_URL}/api/projects/${projectId}/publish`,
+        apiFetchOpts({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subdomain, accessLevel }) }),
+      )
       if (!res.ok) {
         const data = await res.json()
         throw new Error(data.error?.message || 'Publish failed')
@@ -147,10 +154,10 @@ export function PublishDropdown({ projectId, projectName, visible, onClose }: Pu
     setIsUnpublishing(true)
     setError(null)
     try {
-      const res = await fetch(`${API_URL}/api/projects/${projectId}/unpublish`, {
-        method: 'POST',
-        credentials: 'include',
-      })
+      const res = await fetch(
+        `${API_URL}/api/projects/${projectId}/unpublish`,
+        apiFetchOpts({ method: 'POST' }),
+      )
       if (!res.ok) throw new Error('Failed to unpublish')
       setIsPublished(false)
       setPublishedSubdomain(null)

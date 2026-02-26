@@ -16,12 +16,7 @@ export default function RootLayout() {
   useEffect(() => {
     if (Platform.OS === 'web') return
     import('../lib/auth-storage').then(({ initAuthStorage }) =>
-      initAuthStorage().then(() => {
-        import('../lib/native-fetch-cookies').then(({ patchFetchWithCookies }) => {
-          patchFetchWithCookies()
-          setStorageReady(true)
-        })
-      }),
+      initAuthStorage().then(() => setStorageReady(true)),
     )
   }, [])
 
