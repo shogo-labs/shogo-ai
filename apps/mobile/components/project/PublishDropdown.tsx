@@ -17,7 +17,6 @@ import {
   Pressable,
   ActivityIndicator,
   Linking,
-  Platform,
 } from 'react-native'
 import {
   Globe,
@@ -35,7 +34,8 @@ import {
   PopoverBody,
   PopoverContent,
 } from '@/components/ui/popover'
-import { API_URL } from '../../lib/api'
+import { api } from '../../lib/api'
+import { useDomainHttp } from '../../contexts/domain'
 
 export type AccessLevel = 'anyone' | 'authenticated' | 'private'
 
@@ -53,6 +53,7 @@ interface PublishDropdownProps {
 }
 
 export function PublishDropdown({ projectId, projectName }: PublishDropdownProps) {
+  const http = useDomainHttp()
   const [isOpen, setIsOpen] = useState(false)
   const [subdomain, setSubdomain] = useState(
     () => projectName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
@@ -81,21 +82,16 @@ export function PublishDropdown({ projectId, projectName }: PublishDropdownProps
 
   const loadPublishState = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/api/projects/${projectId}/publish`, {
-        credentials: 'include',
-      })
-      if (res.ok) {
-        const data = await res.json()
-        if (data.subdomain) {
-          setIsPublished(true)
-          setPublishedSubdomain(data.subdomain)
-          setSubdomain(data.subdomain)
-          setPublishedAt(data.publishedAt)
-          if (data.accessLevel) setAccessLevel(data.accessLevel)
-        }
+      const data = await api.getPublishState(http, projectId)
+      if (data.subdomain) {
+        setIsPublished(true)
+        setPublishedSubdomain(data.subdomain)
+        setSubdomain(data.subdomain)
+        setPublishedAt(data.publishedAt ?? null)
+        if (data.accessLevel) setAccessLevel(data.accessLevel as AccessLevel)
       }
     } catch {}
-  }, [projectId])
+  }, [http, projectId])
 
   useEffect(() => {
     if (checkTimerRef.current) clearTimeout(checkTimerRef.current)
@@ -107,11 +103,7 @@ export function PublishDropdown({ projectId, projectName }: PublishDropdownProps
     setSubdomainStatus({ checking: true, available: null })
     checkTimerRef.current = setTimeout(async () => {
       try {
-        const res = await fetch(
-          `${API_URL}/api/subdomains/${encodeURIComponent(subdomain)}/check`,
-          { credentials: 'include' }
-        )
-        const data = await res.json()
+        const data = await api.checkSubdomain(http, subdomain)
         setSubdomainStatus({ checking: false, available: data.available, reason: data.reason })
       } catch {
         setSubdomainStatus({ checking: false, available: null, reason: 'Check failed' })
@@ -126,17 +118,7 @@ export function PublishDropdown({ projectId, projectName }: PublishDropdownProps
     setIsPublishing(true)
     setError(null)
     try {
-      const res = await fetch(`${API_URL}/api/projects/${projectId}/publish`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ subdomain, accessLevel }),
-      })
-      if (!res.ok) {
-        const data = await res.json()
-        throw new Error(data.error?.message || 'Publish failed')
-      }
-      const data = await res.json()
+      const data = await api.publishProject(http, projectId, subdomain, accessLevel)
       setIsPublished(true)
       setPublishedSubdomain(data.subdomain)
       setPublishedAt(data.publishedAt)
@@ -151,11 +133,7 @@ export function PublishDropdown({ projectId, projectName }: PublishDropdownProps
     setIsUnpublishing(true)
     setError(null)
     try {
-      const res = await fetch(`${API_URL}/api/projects/${projectId}/unpublish`, {
-        method: 'POST',
-        credentials: 'include',
-      })
-      if (!res.ok) throw new Error('Failed to unpublish')
+      await api.unpublishProject(http, projectId)
       setIsPublished(false)
       setPublishedSubdomain(null)
       setPublishedAt(null)
@@ -242,8 +220,7 @@ export function PublishDropdown({ projectId, projectName }: PublishDropdownProps
                 placeholderTextColor="#9ca3af"
                 autoCapitalize="none"
                 autoCorrect={false}
-                className="flex-1 h-10 px-3 text-sm text-foreground"
-                style={Platform.OS === 'web' ? { outlineStyle: 'none' } as any : undefined}
+                className="flex-1 h-10 px-3 text-sm text-foreground web:outline-none"
               />
               <View className="pr-3">
                 {subdomainStatus.checking && <ActivityIndicator size="small" />}

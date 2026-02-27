@@ -57,4 +57,69 @@ export const api = {
     )
     return (res.data as any).data ?? res.data
   },
+
+  // ─── Publish ─────────────────────────────────────────────
+
+  async getPublishState(http: HttpClient, projectId: string) {
+    const res = await http.get<{ subdomain?: string; publishedAt?: number; accessLevel?: string }>(
+      `/api/projects/${projectId}/publish`,
+    )
+    return res.data
+  },
+
+  async checkSubdomain(http: HttpClient, subdomain: string) {
+    const res = await http.get<{ available: boolean; reason?: string }>(
+      `/api/subdomains/${encodeURIComponent(subdomain)}/check`,
+    )
+    return res.data
+  },
+
+  async publishProject(http: HttpClient, projectId: string, subdomain: string, accessLevel: string) {
+    const res = await http.post<{ subdomain: string; publishedAt: number }>(
+      `/api/projects/${projectId}/publish`,
+      { subdomain, accessLevel },
+    )
+    return res.data
+  },
+
+  async unpublishProject(http: HttpClient, projectId: string) {
+    await http.post(`/api/projects/${projectId}/unpublish`)
+  },
+
+  // ─── Integrations ────────────────────────────────────────
+
+  async getIntegrationConnections(http: HttpClient, projectId: string) {
+    const res = await http.get<{ data: Array<{ toolkit?: string; status: string }> }>(
+      '/api/integrations/connections',
+      { projectId },
+    )
+    return res.data.data ?? []
+  },
+
+  async connectIntegration(http: HttpClient, toolkit: string, projectId: string, callbackUrl: string) {
+    const res = await http.post<{ data?: { redirectUrl?: string } }>(
+      '/api/integrations/connect',
+      { toolkit, projectId, callbackUrl },
+    )
+    return res.data
+  },
+
+  async getIntegrationStatus(http: HttpClient, toolkit: string, projectId: string) {
+    const res = await http.get<{ data?: { connectionId?: string } }>(
+      `/api/integrations/status/${toolkit}`,
+      { projectId },
+    )
+    return res.data
+  },
+
+  async disconnectIntegration(http: HttpClient, connectionId: string) {
+    await http.delete(`/api/integrations/connections/${connectionId}`)
+  },
+
+  // ─── Admin ───────────────────────────────────────────────
+
+  async getMe(http: HttpClient) {
+    const res = await http.get<{ ok: boolean; data?: { role?: string } }>('/api/me')
+    return res.data
+  },
 }
