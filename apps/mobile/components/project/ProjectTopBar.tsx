@@ -6,7 +6,7 @@
  * Layout:
  *  - Left: Back button, project name + "Agent project" subtitle, chat history toggle, chat collapse toggle
  *  - Center: Tab buttons (Canvas, Status, Workspace, Skills, MCP Servers, Channels, Analytics, Logs)
- *  - Right: GitHub icon, Upgrade button, Publish button
+ *  - Right: GitHub icon (app only), Upgrade button, Publish button (app only)
  */
 
 import { useCallback, useState, useRef, useEffect } from 'react'
@@ -219,14 +219,16 @@ export function ProjectTopBar({
         </ScrollView>
       )}
 
-      {/* Right: GitHub, Upgrade, Publish */}
+      {/* Right: GitHub (app only), Upgrade, Publish (app only) */}
       <View className="flex-row items-center gap-1.5 flex-shrink-0">
-        <Pressable
-          onPress={() => router.push({ pathname: '/(app)/settings', params: { tab: 'github' } } as any)}
-          className="h-8 w-8 items-center justify-center rounded-md active:bg-muted"
-        >
-          <Github size={16} className="text-muted-foreground" />
-        </Pressable>
+        {projectType !== 'AGENT' && (
+          <Pressable
+            onPress={() => router.push({ pathname: '/(app)/settings', params: { tab: 'github' } } as any)}
+            className="h-8 w-8 items-center justify-center rounded-md active:bg-muted"
+          >
+            <Github size={16} className="text-muted-foreground" />
+          </Pressable>
+        )}
 
         {!hasActiveSubscription && (
           <Pressable
@@ -238,10 +240,12 @@ export function ProjectTopBar({
           </Pressable>
         )}
 
-        <PublishDropdown
-          projectId={projectId}
-          projectName={projectName}
-        />
+        {projectType !== 'AGENT' && (
+          <PublishDropdown
+            projectId={projectId}
+            projectName={projectName}
+          />
+        )}
       </View>
     </View>
   )
