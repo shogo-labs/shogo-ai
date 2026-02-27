@@ -45,6 +45,7 @@ import {
   Link as LinkIcon,
   BookOpen,
   MessageSquare,
+  X,
 } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
 import {
@@ -352,16 +353,21 @@ function WorkspaceSettingsTab() {
         visible={isDeleteDialogOpen}
         transparent
         animationType="fade"
-        onRequestClose={() => setIsDeleteDialogOpen(false)}
+        onRequestClose={() => { setIsDeleteDialogOpen(false); setDeleteConfirmText('') }}
       >
         <Pressable
           className="flex-1 bg-black/50 justify-center items-center px-6"
-          onPress={() => setIsDeleteDialogOpen(false)}
+          onPress={() => { setIsDeleteDialogOpen(false); setDeleteConfirmText('') }}
         >
           <Pressable className="bg-background rounded-xl p-6 w-full max-w-sm gap-4">
-            <Text className="text-lg font-semibold text-destructive">
-              Delete workspace
-            </Text>
+            <View className="flex-row items-center justify-between">
+              <Text className="text-lg font-semibold text-destructive">
+                Delete workspace
+              </Text>
+              <Pressable onPress={() => { setIsDeleteDialogOpen(false); setDeleteConfirmText('') }} className="p-1">
+                <X size={20} className="text-muted-foreground" />
+              </Pressable>
+            </View>
             <Text className="text-sm text-muted-foreground">
               This action cannot be undone. This will permanently delete the
               workspace "{currentWorkspace?.name}".

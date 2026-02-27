@@ -23,6 +23,7 @@ import {
   StarOff,
   FolderOpen,
   Settings,
+  X,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
@@ -335,7 +336,12 @@ export default observer(function StarredProjectsPage() {
       <Modal visible={sortModalVisible} transparent animationType="fade" onRequestClose={() => setSortModalVisible(false)}>
         <Pressable onPress={() => setSortModalVisible(false)} className="flex-1 bg-black/50 justify-end">
           <View className="bg-background rounded-t-2xl p-4 pb-8">
-            <Text className="text-foreground text-lg font-semibold mb-3">Sort by</Text>
+            <View className="flex-row items-center justify-between mb-3">
+              <Text className="text-foreground text-lg font-semibold">Sort by</Text>
+              <Pressable onPress={() => setSortModalVisible(false)} className="p-1">
+                <X size={20} className="text-muted-foreground" />
+              </Pressable>
+            </View>
             {SORT_OPTIONS.map((option) => (
               <Pressable
                 key={option.value}

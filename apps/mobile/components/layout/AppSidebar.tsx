@@ -681,7 +681,12 @@ function CreateFolderModal({
           className="bg-card rounded-xl p-6 w-80 border border-border"
           onPress={(e) => e.stopPropagation()}
         >
-          <Text className="text-base font-semibold text-foreground mb-1">Create new folder</Text>
+          <View className="flex-row items-center justify-between mb-1">
+            <Text className="text-base font-semibold text-foreground">Create new folder</Text>
+            <Pressable onPress={onClose} className="p-1">
+              <X size={20} className="text-muted-foreground" />
+            </Pressable>
+          </View>
           <Text className="text-sm text-muted-foreground mb-4">
             Create a new folder to organize your projects
           </Text>
@@ -748,7 +753,12 @@ function CreateWorkspaceModal({
           className="bg-card rounded-xl p-6 w-80 border border-border"
           onPress={(e) => e.stopPropagation()}
         >
-          <Text className="text-base font-semibold text-foreground mb-1">Create new workspace</Text>
+          <View className="flex-row items-center justify-between mb-1">
+            <Text className="text-base font-semibold text-foreground">Create new workspace</Text>
+            <Pressable onPress={onClose} className="p-1">
+              <X size={20} className="text-muted-foreground" />
+            </Pressable>
+          </View>
           <Text className="text-sm text-muted-foreground mb-4">
             Create a new workspace for your team or projects
           </Text>

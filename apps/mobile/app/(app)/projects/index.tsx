@@ -49,6 +49,7 @@ import {
   FolderPlus,
   CheckSquare,
   Check,
+  X,
 } from 'lucide-react-native'
 import {
   useSDKDomain,
@@ -972,7 +973,12 @@ export default observer(function AllProjectsPage() {
             className="bg-card rounded-xl p-6 w-80 border border-border"
             onPress={(e) => e.stopPropagation()}
           >
-            <Text className="text-base font-semibold text-foreground mb-1">Create new folder</Text>
+            <View className="flex-row items-center justify-between mb-1">
+              <Text className="text-base font-semibold text-foreground">Create new folder</Text>
+              <Pressable onPress={() => setNewFolderModalVisible(false)} className="p-1">
+                <X size={20} className="text-muted-foreground" />
+              </Pressable>
+            </View>
             <Text className="text-sm text-muted-foreground mb-4">
               Create a new folder to organize your projects
             </Text>

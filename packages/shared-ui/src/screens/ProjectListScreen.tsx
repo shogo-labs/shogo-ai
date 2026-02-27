@@ -145,11 +145,16 @@ export function ProjectListScreen({
         />
       )}
 
-      <Modal visible={showCreate} transparent animationType="fade">
+      <Modal visible={showCreate} transparent animationType="fade" onRequestClose={() => { setShowCreate(false); setNewName(''); setCreateError(null) }}>
         <View className="flex-1 justify-center items-center bg-black/50 px-6">
           <Card className="w-full max-w-sm">
             <CardContent className="p-6">
-              <Text className="text-lg font-bold text-foreground mb-4">Create New Agent</Text>
+              <View className="flex-row items-center justify-between mb-4">
+                <Text className="text-lg font-bold text-foreground">Create New Agent</Text>
+                <Pressable onPress={() => { setShowCreate(false); setNewName(''); setCreateError(null) }} className="p-1">
+                  <Text className="text-muted-foreground text-lg leading-none">✕</Text>
+                </Pressable>
+              </View>
               <Input
                 placeholder="Agent name"
                 value={newName}
