@@ -416,107 +416,318 @@ Root Column
 
 `
 
-const BASIC_CANVAS_TOOLS_GUIDE = `## Canvas (Dynamic UI) — DISPLAY-ONLY MODE
+const BASIC_CANVAS_TOOLS_GUIDE = `## Canvas (Dynamic UI)
 
-You have canvas tools that let you build read-only display UIs. Use them whenever a visual display would be more helpful than plain text.
+You have canvas tools that let you build UIs the user can see in real time.
+Use them whenever a visual display would be more helpful than plain text.
+This agent is **display-only** — you fetch and present information. You do NOT create, update, or delete records through buttons.
 
-### HARD RULES — READ THESE FIRST
+⚠️ **THE #1 RULE: Buttons are for external links ONLY.**
+The only mutation method you may use is \`"OPEN"\`, which opens a URL in a new browser tab.
+Do NOT use POST, PATCH, or DELETE mutations. Do NOT add form inputs that feed into mutation bodies.
 
-1. **NO BUTTONS** — Do not add any Button components to the canvas. The one exception is external link buttons (see rule 2).
-2. **EXTERNAL LINK BUTTONS ONLY** — The only Button you may ever create is one that opens an outside website. Use the \`href\` prop:
-   \`{ id: "link", component: "Button", label: "Visit Website", href: "https://example.com", variant: "outline" }\`
-   For links inside a DataList template where the URL comes from data, use a data binding:
-   \`{ id: "link", component: "Button", label: "Open Link", href: { path: "url" }, variant: "outline", size: "sm" }\`
-   Do NOT use \`action\` or \`mutation\` on buttons — only \`href\`.
-3. **NO FORM INPUTS** — Never add TextField, Select, Checkbox, or ChoicePicker components.
-4. **NO MUTATIONS** — Never use \`action.mutation\` with POST, PATCH, or DELETE methods. Never reference mutation endpoints. The word "mutation" should not appear in any component definition you create.
-5. **NO TESTING WORKFLOW** — Do not use canvas_trigger_action or test buttons. There are no interactive actions to test.
+### Building a Canvas App — Plan First, Then Build
 
-**If a user asks you to add buttons, forms, add/edit/delete functionality, or any interactive feature:**
-- Politely refuse. Say something like: "I can build a display dashboard to view this data, but I'm not able to add interactive actions like add/edit/delete buttons. Would you like me to create a read-only view instead?"
-- Never attempt to work around this constraint. Never add a button and say it "should" work. Just refuse and offer a display alternative.
+When the user asks for any visual app, dashboard, or display UI, **ALWAYS start by writing a brief plan** before calling any tools. Output your plan as a message to the user covering:
 
-### Building a Canvas — Plan First, Then Build
+1. **What you're building** — one sentence summary (e.g. "A sales dashboard with revenue metrics and top products")
+2. **Data sources** — what data is needed and how you'll get it (API schema + seed, manual canvas_data, or web_fetch)
+3. **Component layout** — the component tree structure (e.g. "Column > Grid of Metrics + Card with Chart + Card with Table")
 
-When the user asks for any visual display, **start with a brief plan**:
-1. **What you're building** — one sentence summary
-2. **Data model** — what fields to display
-3. **Component layout** — the component tree
+This plan helps you build the right thing the first time and avoids costly delete-and-rebuild cycles. Keep it concise — 3-4 lines, not a full essay.
 
-Then follow these steps:
+Then follow ALL steps below:
 
 **Step 1: canvas_create** — Create a surface
   canvas_create({ surfaceId: "my_app", title: "My App" })
 
-**Step 2: canvas_api_schema** — Define data model
+**Step 2 (option A): canvas_api_schema + canvas_api_seed + canvas_api_query** — For structured data with multiple records
   canvas_api_schema({ surfaceId: "my_app", models: [{
-    name: "Task", fields: [
-      { name: "title", type: "String" },
-      { name: "status", type: "String", default: "todo" }
+    name: "Product", fields: [
+      { name: "name", type: "String" },
+      { name: "category", type: "String" },
+      { name: "revenue", type: "Float" },
+      { name: "url", type: "String" }
     ]
   }]})
-
-**Step 3: canvas_api_seed + canvas_api_query** — Populate and load data
-  canvas_api_seed({ surfaceId: "my_app", model: "Task", records: [
-    { title: "First task" }, { title: "Second task", status: "done" }
+  canvas_api_seed({ surfaceId: "my_app", model: "Product", records: [
+    { name: "Widget Pro", category: "Hardware", revenue: 45200, url: "https://example.com/widget-pro" },
+    { name: "Cloud Suite", category: "Software", revenue: 128900, url: "https://example.com/cloud-suite" }
   ]})
-  canvas_api_query({ surfaceId: "my_app", model: "Task", dataPath: "/tasks" })
+  canvas_api_query({ surfaceId: "my_app", model: "Product", dataPath: "/products" })
+  → Now { path: "/products" } is available for component data binding
 
-**Step 4: canvas_update** — Build the display UI
+**Step 2 (option B): canvas_data** — For simple or pre-computed data
+  canvas_data({ surfaceId: "my_app", data: {
+    "/summary": { revenue: 174100, products: 2, avgOrder: 87050 },
+    "/chartData": [{ label: "Q1", value: 42000 }, { label: "Q2", value: 58000 }]
+  }})
+  → Use this when you don't need a queryable model — just push JSON directly
+
+**Step 3: canvas_update** — Build a polished UI with visual hierarchy
+  Note: Root Column auto-gets gap "lg", numbers/dates auto-format, Metric trends auto-infer from trendValue signs.
   canvas_update({ surfaceId: "my_app", components: [
     { id: "root", component: "Column", children: ["header_row", "metrics", "list_card"] },
-    { id: "header_row", component: "Row", children: ["title", "badge"], align: "center", justify: "between" },
-    { id: "title", component: "Text", text: "My Tasks", variant: "h2" },
-    { id: "badge", component: "Badge", text: "Active", variant: "outline" },
-    { id: "metrics", component: "Grid", columns: 2, children: ["m_total", "m_done"] },
-    { id: "m_total", component: "Metric", label: "Total", value: { path: "/summary/total" } },
-    { id: "m_done", component: "Metric", label: "Done", value: { path: "/summary/done" } },
-    { id: "list_card", component: "Card", child: "task_list", title: "Tasks" },
-    { id: "task_list", component: "DataList",
-      children: { path: "/tasks", templateId: "task_card" }, emptyText: "No tasks" },
-    { id: "task_card", component: "Card", child: "task_row" },
-    { id: "task_row", component: "Row", children: ["task_title", "task_status"], align: "center", justify: "between" },
-    { id: "task_title", component: "Text", text: { path: "title" }, weight: "medium" },
-    { id: "task_status", component: "Badge", text: { path: "status" } }
+    { id: "header_row", component: "Row", children: ["title", "status_badge"], align: "center", justify: "between" },
+    { id: "title", component: "Text", text: "Product Catalog", variant: "h2" },
+    { id: "status_badge", component: "Badge", text: "Live", variant: "outline" },
+    { id: "metrics", component: "Grid", columns: 3, children: ["m_revenue", "m_products", "m_avg"] },
+    { id: "m_revenue", component: "Metric", label: "Total Revenue", value: { path: "/summary/revenue" }, unit: "$", trendValue: "+12%" },
+    { id: "m_products", component: "Metric", label: "Products", value: { path: "/summary/products" }, trendValue: "+2" },
+    { id: "m_avg", component: "Metric", label: "Avg Revenue", value: { path: "/summary/avgOrder" }, unit: "$", trendValue: "+8%" },
+    { id: "list_card", component: "Card", child: "product_list", title: "All Products" },
+    { id: "product_list", component: "DataList",
+      children: { path: "/products", templateId: "product_card" }, emptyText: "No products yet" },
+    { id: "product_card", component: "Card", child: "product_row" },
+    { id: "product_row", component: "Row", children: ["product_info", "view_btn"], align: "center", justify: "between" },
+    { id: "product_info", component: "Column", children: ["product_name", "product_category"], gap: "xs" },
+    { id: "product_name", component: "Text", text: { path: "name" }, weight: "medium" },
+    { id: "product_category", component: "Badge", text: { path: "category" } },
+    { id: "view_btn", component: "Button", label: "View Details", variant: "outline", size: "sm",
+      action: { name: "view", mutation: { endpoint: { path: "url" }, method: "OPEN" } } }
   ]})
 
-Note: NO buttons in the example above. This is correct. Display-only canvases show data, not actions.
+**Step 4: Verify** — Use canvas_inspect to confirm the surface looks correct
+  canvas_inspect({ surfaceId: "my_app", mode: "summary" })
+  Check that data bindings resolved and components rendered as expected.
 
-### Data Binding
+**Step 5: FIX — Patch individual components (don't resend everything)**
+  If you need to tweak a component, use \`merge: true\` to update ONLY that component:
+  canvas_update({ surfaceId: "my_app", merge: true, components: [
+    { id: "view_btn", component: "Button", label: "Open", variant: "outline", size: "sm",
+      action: { name: "view", mutation: { endpoint: { path: "url" }, method: "OPEN" } } }
+  ]})
+  → Only "view_btn" is replaced. All other components stay untouched.
 
-- \`{ path: "/field" }\` (leading /) reads from root data model
-- \`{ path: "field" }\` (no leading /) reads from current item inside DataList template
+  **Always use \`merge: true\` when updating existing surfaces.** Only omit it on the first canvas_update when building the initial tree.
+
+### Key Patterns
+
+**Data Binding:**
+- \`{ path: "/field" }\` (with leading /) reads from the ROOT data model
+- \`{ path: "field" }\` (NO leading /) reads from the CURRENT ITEM inside a DataList template
+
+**DataList (repeating template):**
+- Set children to: \`{ path: "/items", templateId: "template_id" }\`
+- The template component + its descendants render once per item
+- Use DataList for any list of items. Table is also available for simple read-only tabular data.
+
+**Buttons (External Links Only):**
+Buttons open external URLs using the OPEN mutation. Do NOT use POST, PATCH, or DELETE.
+- Static URL: \`action: { name: "visit", mutation: { endpoint: "https://example.com", method: "OPEN" } }\`
+- Dynamic URL (per-item in DataList): \`action: { name: "view", mutation: { endpoint: { path: "url" }, method: "OPEN" } }\`
+  \`method: "OPEN"\` opens the resolved URL in a new browser tab.
+  Inside a DataList template, use \`{ path: "fieldName" }\` to bind per-item URLs from your data.
+
+### Search & Filter Patterns
+
+When the user wants to search, filter, or find items in a list, use one of these patterns:
+
+**Pattern 1 — Client-side filter (best for small lists, instant results):**
+Add a TextField with \`dataPath\`, and set \`filterPath\` + \`filterFields\` on the DataList. The list filters in real time as the user types — no API calls, no lag.
+\`\`\`json
+{ "id": "search", "component": "TextField", "placeholder": "Search...", "dataPath": "/searchTerm" }
+{ "id": "list", "component": "DataList",
+  "children": { "path": "/tasks", "templateId": "task_card" },
+  "filterPath": "/searchTerm", "filterFields": ["title", "description"] }
+\`\`\`
+- \`filterPath\`: JSON Pointer to where the search text lives in the data model (matches the TextField's \`dataPath\`)
+- \`filterFields\`: array of item field names to match against (case-insensitive substring search)
+- Use this when the data is already loaded via \`canvas_api_query\` (typically < 100 items)
+
+**Pattern 2 — Server-side search (best for large datasets):**
+Use the managed API's \`_search\` and \`_searchFields\` query params via an API binding with reactive params. The API refetches with each search term change.
+\`\`\`json
+{ "id": "search", "component": "TextField", "placeholder": "Search employees...", "dataPath": "/searchTerm", "debounceMs": 300 }
+{ "id": "list", "component": "DataList",
+  "children": { "path": "/employees", "templateId": "emp_card" } }
+\`\`\`
+For server-side search, use \`canvas_api_query\` with the collection's data path, then load the DataList with \`{ api: "/api/employees", params: { "_search": { path: "/searchTerm" }, "_searchFields": "name,title" } }\` on a Table or in a binding.
+- Set \`debounceMs: 300\` on the TextField to avoid excessive API calls
+- The API performs case-insensitive LIKE matching across the specified fields
+
+**Pattern 3 — Exact-value filter with \`where\` (best for categorized views, status-based columns):**
+Use the \`where\` prop on DataList to show only items matching specific field values. Multiple DataLists can share the same data path but display different subsets.
+\`\`\`json
+{ "id": "new_col", "component": "DataList",
+  "children": { "path": "/leads", "templateId": "lead_card" },
+  "where": { "stage": "new" } }
+{ "id": "qualified_col", "component": "DataList",
+  "children": { "path": "/leads", "templateId": "lead_card" },
+  "where": { "stage": "qualified" } }
+{ "id": "closed_col", "component": "DataList",
+  "children": { "path": "/leads", "templateId": "lead_card" },
+  "where": { "stage": "closed" } }
+\`\`\`
+- \`where\`: object with field-value pairs. Only items where ALL fields match are shown.
+- Load ALL items into one array with a single \`canvas_api_query\` (no per-column queries needed).
+- ALWAYS prefer this pattern for categorized/status-based views over creating separate filtered queries.
+
+**When to use which:**
+- Categorized columns / status-based views → Pattern 3 (\`where\` prop)
+- Small list with search box (seeded data, < ~50 items) → Pattern 1 (client-side \`filterPath\`)
+- Large dataset or user asks for "search" specifically → Pattern 2 (API \`_search\`)
+- When in doubt for search, use Pattern 1 — it's simpler and works for most canvas use cases
 
 ### Component Types
 
 **Layout:** Column, Row, Grid, Card, ScrollArea, Tabs, TabPanel, Accordion, AccordionItem
 **Display:** Text, Badge, Image, Icon, Separator, Progress, Skeleton, Alert
-**Data:** Table, Metric, Chart (bar/line/area/pie/donut), DataList
+**Data:** Table (read-only), Metric, Chart (bar/line/area/pie/donut), DataList (repeating template)
+**Interactive:** Button (OPEN links only), TextField (for search/filter), Select, Checkbox, ChoicePicker
 
-**The ONLY interactive component you may use:** Button with \`href\` pointing to an external URL.
-**FORBIDDEN:** TextField, Select, Checkbox, ChoicePicker, any Button without \`href\`, any \`action.mutation\`.
+Use \`canvas_components({ action: "detail", type: "Card" })\` to look up props for any component.
 
-### Visual Quality
+### When to Use Metric Components
 
-The renderer auto-formats numbers, currency, and dates.
+When the user asks for a dashboard, summary, overview, or mentions totals, KPIs, revenue, counts, or "at a glance" data, **always include Metric components** at the top. Metrics give instant visibility into key numbers:
+- Use a Row or Grid of Metric cards for 2-4 headline numbers
+- Bind values with \`{ path: "/revenue" }\` to the data model
+- Add \`trend\` ("up"/"down") and \`trendValue\` ("+12%") for change indicators
+
+### Tabs — IMPORTANT
+
+Tabs require EITHER explicit tab definitions OR TabPanel children with \`title\`. Without one of these, tabs render completely empty.
+
+**Preferred pattern — TabPanel with title (auto-derives tab labels):**
+\`\`\`json
+{ "id": "my_tabs", "component": "Tabs", "children": ["hotels_panel", "restaurants_panel"] }
+{ "id": "hotels_panel", "component": "TabPanel", "title": "Hotels", "children": ["hotels_content"] }
+{ "id": "restaurants_panel", "component": "TabPanel", "title": "Restaurants", "children": ["rest_content"] }
+\`\`\`
+
+**Alternative — explicit tabs prop (any children type):**
+\`\`\`json
+{ "id": "my_tabs", "component": "Tabs",
+  "tabs": [{ "id": "hotels", "label": "Hotels" }, { "id": "rest", "label": "Restaurants" }],
+  "children": ["hotels_section", "restaurants_section"] }
+\`\`\`
+
+**NEVER do this — it will render empty:**
+- Tabs with Column/Card children and NO \`tabs\` prop (auto-derive fails)
+- TabPanel children without \`title\` prop (auto-derive has no label)
+- Mismatched count between \`tabs\` array and \`children\` array
+
+### Other Tools
+- **canvas_data** — Manually push data: \`canvas_data({ surfaceId: "app", path: "/key", value: data })\`
+- **canvas_inspect** — Read the current surface state. Use mode: "summary", "data", or "components" to check different aspects.
+- **canvas_delete** — Remove a surface (AVOID using this — prefer canvas_update to fix issues)
+- **canvas_components** — Discover components and their props
+
+### Visual Quality & Layout
+
+The renderer auto-formats numbers (commas, compact notation), currency ($ prefix), dates (ISO → "Feb 26, 2026"), auto-infers Metric trend direction from trendValue strings, auto-wraps naked DataList/Table in Cards, and defaults root Column gap to "lg". You do NOT need to manually format values or wrap DataList/Table in Cards — the renderer handles this.
+
+**What YOU must provide (the renderer cannot infer these):**
 
 **Component Richness:**
-- Dashboards → 12-20 components (Metrics + Charts + Tables)
-- Data displays → 10-18 components (Metrics + DataList)
+- Dashboard/analytics → 12-20 components (Grid of Metrics + Charts + Tables)
+- Display apps → 10-18 components (Metrics + DataList or Table)
+- If your canvas has fewer than 8 components, it probably needs more structure
 
-**Chart Types:** bar, horizontalBar, line, area, pie, donut, progress
+**Mandatory Patterns:**
+- **Dashboard/analytics request**: Grid of 3-4 Metric components with \`trendValue\` (e.g. "+12%"), at least one Chart, Card-wrapped data sections
+- **Data display request**: Metric summary row, Card-wrapped DataList or Table
+- **Categorized view request**: Metric summary row (counts per category), Card-wrapped columns in a Grid, each with a DataList using \`where\` prop to filter by field value — load ALL items into one array, use \`where: { "field": "value" }\` per column
+- **Any request with data**: Header Row with title (variant "h2") + context Badge (justify: "between")
 
-**Data:** Seed 4-6 realistic records. Charts need 5-6+ data points.
+**Chart Type Selection:**
+- \`bar\` — Compare values across categories (e.g. sales by region)
+- \`horizontalBar\` — Same as bar but better for long category labels
+- \`line\` — Show trends over time (e.g. monthly revenue, user growth)
+- \`area\` — Like line but with filled area under the curve (good for volume/growth)
+- \`pie\` — Show proportional breakdown of a whole (e.g. market share, budget)
+- \`donut\` — Same as pie but with a center hole (cleaner look, good for dashboards)
+- \`progress\` — Percentage bars (e.g. completion rates, goal progress)
+Use \`line\`/\`area\` for time series, \`pie\`/\`donut\` for proportional data, \`bar\` for comparisons. For pie/donut, provide 3-7 labeled segments.
+
+**Metric trendValue format:** Use strings starting with "+" or "-" (e.g. "+12%", "-$48", "+3 this week"). The renderer auto-infers trend direction from the sign — no need to set \`trend: "up"\` manually.
+
+**Data Richness:**
+- Seed 4-6 realistic records with plausible names, amounts, and dates
+- Raw numbers and ISO dates are fine — the renderer formats them automatically
+- Bar/line/area charts need at least 5-6 data points with descriptive labels
+- Pie/donut charts need 3-7 labeled segments with values summing to a meaningful total
+
+**Reference Layout — Dashboard:**
+\`\`\`
+Root Column
+  → Row: title (h2) + Badge (justify: between)
+  → Grid (columns: 3-4): Metric cards with trendValues
+  → Grid (columns: 2): Card(Chart type=line/area) + Card(Chart type=pie/donut or Table)
+  → Card (title: "Details"): Table or DataList
+\`\`\`
+
+**Reference Layout — Data Display with Links:**
+\`\`\`
+Root Column
+  → Row: title (h2) + Badge (justify: between)
+  → Grid (columns: 3): Metric + Metric + Metric (with trendValues)
+  → Card (title: "Items"): DataList with template Cards, each with OPEN link Button
+\`\`\`
 
 ### Rules
-- **ALWAYS plan before building.**
-- **NEVER add Buttons** unless they have an \`href\` to an external website.
-- **NEVER add form inputs** (TextField, Select, Checkbox, ChoicePicker).
-- **NEVER use action.mutation** on any component.
-- If asked for interactive features, **refuse and offer a display alternative**.
-- Use \`canvas_update({ merge: true })\` to patch components. Never delete and recreate.
+- **ALWAYS plan before building.** Write a brief plan (data sources, layout) before calling any canvas tools. This prevents costly mistakes and rebuilds.
+- **Buttons are for external links only.** Always use \`method: "OPEN"\` — never POST, PATCH, or DELETE.
+- When canvas tools return status: "rendered" or "data_updated", the UI is already live.
+- **NEVER delete and recreate a surface to fix issues.** Use \`canvas_update({ merge: true })\` to patch individual components. Deleting loses all data bindings and causes UI flicker.
+- **Simple state (counters, single values):** Use canvas_data. Do NOT use canvas_api_schema/canvas_api_seed/canvas_api_query unless you need a queryable model with multiple records.
+- Table and DataList are both suitable for displaying lists. Use DataList when you need per-item OPEN link buttons or custom card layouts; use Table for simple tabular data.
 
 `
+
+const BASIC_CANVAS_EXAMPLES = `### Optimized Planning Examples
+
+These examples show the optimal tool sequence for common canvas requests:
+
+**Example 1:** "Show me the current weather forecast"
+- Surface: \`weather-forecast\`
+- Needs API: No (display only)
+- Tools: canvas_create, canvas_update, canvas_data
+- Components: Column, Grid, Card, Metric, Text, Icon, Badge, Alert
+
+**Example 2:** "Build an email dashboard with metrics, tabs, and email tables"
+- Surface: \`email-dashboard\`
+- Needs API: No (display only)
+- Tools: canvas_create, canvas_update, canvas_data
+- Components: Column, Row, Grid, Card, Metric, Tabs, TabPanel, Table, Text, Badge
+- Tabs pattern: Use TabPanel children with title prop (e.g. { component: "TabPanel", title: "Important", children: [...] })
+
+**Example 3:** "Create a sales analytics dashboard with revenue chart and top products"
+- Surface: \`sales-analytics\`
+- Needs API: No (display only)
+- Tools: canvas_create, canvas_update, canvas_data
+- Components: Column, Grid, Metric, Card, Chart, Table, Text, Badge
+
+### Reference Component Tree — Well-Designed Sales Dashboard
+
+This is the FULL component tree for a polished display-only dashboard. The renderer auto-applies: root gap "lg", Separator injection, date/number formatting, and Metric trend inference from trendValue signs.
+
+\`\`\`json
+canvas_update({ surfaceId: "sales-dashboard", components: [
+  { "id": "root", "component": "Column", "children": ["header_row", "metrics", "charts_row", "details_card"] },
+  { "id": "header_row", "component": "Row", "children": ["title", "period_badge"], "align": "center", "justify": "between" },
+  { "id": "title", "component": "Text", "text": "Sales Dashboard", "variant": "h2" },
+  { "id": "period_badge", "component": "Badge", "text": "February 2026", "variant": "outline" },
+  { "id": "metrics", "component": "Grid", "columns": 3, "children": ["m_revenue", "m_orders", "m_avg"] },
+  { "id": "m_revenue", "component": "Metric", "label": "Total Revenue", "value": { "path": "/summary/revenue" }, "unit": "$", "trendValue": "+12% vs last month" },
+  { "id": "m_orders", "component": "Metric", "label": "Orders", "value": { "path": "/summary/orders" }, "trendValue": "+8%" },
+  { "id": "m_avg", "component": "Metric", "label": "Avg Order Value", "value": { "path": "/summary/avgOrder" }, "unit": "$", "trendValue": "-2%" },
+  { "id": "charts_row", "component": "Grid", "columns": 2, "children": ["revenue_chart_card", "category_chart_card"] },
+  { "id": "revenue_chart_card", "component": "Card", "title": "Monthly Revenue", "child": "revenue_chart" },
+  { "id": "revenue_chart", "component": "Chart", "type": "area", "data": { "path": "/charts/monthlyRevenue" } },
+  { "id": "category_chart_card", "component": "Card", "title": "Sales by Category", "child": "category_chart" },
+  { "id": "category_chart", "component": "Chart", "type": "donut", "data": { "path": "/charts/categories" } },
+  { "id": "details_card", "component": "Card", "title": "Top Products", "child": "products_table" },
+  { "id": "products_table", "component": "Table", "columns": [
+    { "key": "name", "label": "Product" },
+    { "key": "sales", "label": "Sales", "align": "right" },
+    { "key": "revenue", "label": "Revenue", "align": "right" }
+  ], "rows": { "path": "/topProducts" } }
+]})
+\`\`\`
+
+Key design patterns: (1) header Row with title + Badge, (2) Grid of Metrics with trendValues, (3) Grid of Card-wrapped Charts, (4) Card-wrapped Table for details. Note: root gap, Separators, number/date formatting, and trend direction are all handled automatically by the renderer.`
 
 const PERSONALITY_EVOLUTION_GUIDE_PREFIX = `## Personality Self-Update
 
@@ -1614,7 +1825,7 @@ export class AgentGateway {
     const skillMatchingGuide = this.promptOverrides.get('skill_matching_guide') ?? OPTIMIZED_SKILL_MATCHING_GUIDE
 
     if (isBasicAgent()) {
-      parts.push(BASIC_CANVAS_TOOLS_GUIDE)
+      parts.push(BASIC_CANVAS_TOOLS_GUIDE + BASIC_CANVAS_EXAMPLES)
     } else {
       const canvasExamples = this.promptOverrides.get('canvas_examples') ?? OPTIMIZED_CANVAS_EXAMPLES
       parts.push(CANVAS_TOOLS_GUIDE_PREFIX + canvasExamples)
