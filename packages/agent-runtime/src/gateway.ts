@@ -16,7 +16,7 @@
  * multi-provider LLMs (Anthropic, OpenAI, Google, xAI, Groq, etc.).
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'fs'
 import { join } from 'path'
 import type { Message } from '@mariozechner/pi-ai'
 import type { StreamFn, AgentTool } from '@mariozechner/pi-agent-core'
@@ -1470,6 +1470,11 @@ export class AgentGateway {
       'When users mention dates without a year, default to the current or next occurrence (never a past date).',
     ].join('\n'))
 
+    const uploadedFilesContext = this.buildUploadedFilesContext()
+    if (uploadedFilesContext) {
+      parts.push(uploadedFilesContext)
+    }
+
     const canvasExamples = this.promptOverrides.get('canvas_examples') ?? OPTIMIZED_CANVAS_EXAMPLES
     const personalityGuide = this.promptOverrides.get('personality_guide') ?? OPTIMIZED_PERSONALITY_GUIDE
     const toolPlanningGuide = this.promptOverrides.get('tool_planning_guide') ?? OPTIMIZED_TOOL_PLANNING_GUIDE
@@ -1485,6 +1490,69 @@ export class AgentGateway {
     parts.push(this.promptOverrides.get('mcp_discovery_guide') ?? OPTIMIZED_MCP_DISCOVERY_GUIDE)
 
     return parts.join('\n\n---\n\n')
+  }
+
+  /**
+   * Build a context section listing files the user has uploaded to files/.
+   * Included in the system prompt so the agent knows what data is available
+   * and can proactively use list_files/search_files/read_file to access it.
+   */
+  private buildUploadedFilesContext(): string | null {
+    const filesDir = join(this.workspaceDir, 'files')
+    if (!existsSync(filesDir)) return null
+
+    try {
+      const entries = this.walkUploadedFiles(filesDir, '')
+      if (entries.length === 0) return null
+
+      const lines = [
+        '## Workspace Uploaded Files',
+        '',
+        'The user has uploaded the following files to the workspace `files/` directory.',
+        'Use `list_files` to browse, `search_files` to search content, or `read_file` with path `files/<name>` to read them.',
+        '',
+      ]
+
+      for (const entry of entries.slice(0, 50)) {
+        const sizeStr = entry.size < 1024
+          ? `${entry.size}B`
+          : entry.size < 1024 * 1024
+            ? `${Math.round(entry.size / 1024)}KB`
+            : `${(entry.size / (1024 * 1024)).toFixed(1)}MB`
+        lines.push(`- \`${entry.path}\` (${sizeStr})`)
+      }
+
+      if (entries.length > 50) {
+        lines.push(`- ... and ${entries.length - 50} more files`)
+      }
+
+      return lines.join('\n')
+    } catch {
+      return null
+    }
+  }
+
+  private walkUploadedFiles(
+    dir: string,
+    prefix: string,
+  ): Array<{ path: string; size: number }> {
+    const results: Array<{ path: string; size: number }> = []
+    try {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name.startsWith('.')) continue
+        const absPath = join(dir, entry.name)
+        const relPath = prefix ? `${prefix}/${entry.name}` : entry.name
+        if (entry.isDirectory()) {
+          results.push(...this.walkUploadedFiles(absPath, relPath))
+        } else {
+          const stat = statSync(absPath)
+          results.push({ path: relPath, size: stat.size })
+        }
+      }
+    } catch {
+      // Ignore permission or other errors
+    }
+    return results
   }
 
   // ---------------------------------------------------------------------------

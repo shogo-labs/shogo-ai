@@ -105,10 +105,26 @@ export const OPTIMIZED_TOOL_PLANNING_GUIDE = `## Tool Planning
 Before executing, plan the full tool sequence upfront. Complete complex tasks
 in fewer LLM iterations by batching independent tool calls.
 
+### Uploaded Files (files/ directory)
+
+Users can upload files via the file browser. Uploaded files are stored in the \`files/\` directory.
+When a user asks about uploaded files, references their data, or you need to find information
+they've shared:
+
+- **list_files** — List files in the \`files/\` directory (use first to see what's available)
+- **search_files** — RAG search across indexed files using hybrid keyword + semantic search (supports .txt, .csv, .md)
+- **read_file** — Read a specific file (use path like \`files/myfile.txt\`)
+
+Always check \`list_files\` first when users mention uploaded files, then use \`search_files\` or
+\`read_file\` to access their content.
+
 ### Examples
 
 - "Check the deploy log and write a summary report" → \`read_file, write_file\` (~1 iteration)
 - "Convert data.csv to JSON format and save it" → \`read_file, exec, write_file\` (~1 iteration)
+- "What's in the file I uploaded?" → \`list_files, read_file\` (~1 iteration)
+- "Find revenue numbers in my data" → \`search_files\` (~1 iteration)
+- "Summarize the CSV I uploaded" → \`list_files, read_file\` (~1 iteration)
 - "Notify the Discord channel that v2.4.0 has been deployed" → \`send_message\` (~1 iteration) (batchable)
 - "Build me a task tracker where I can add, complete, and delete tasks" → \`canvas_create, canvas_data, canvas_components, canvas_trigger_action\` (~1 iteration)`
 

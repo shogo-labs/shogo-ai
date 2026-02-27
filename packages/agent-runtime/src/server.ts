@@ -62,6 +62,7 @@ import { AgentGateway } from './gateway'
 import { userMessage } from './pi-adapter'
 import { getDynamicAppManager, initDynamicAppManager } from './dynamic-app-manager'
 import type { ActionEvent } from './dynamic-app-types'
+import { extractFilePartsAsText } from './file-attachment-utils'
 import { fileURLToPath } from 'url'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -377,7 +378,7 @@ app.post('/agent/chat', async (c) => {
 
   const body = await c.req.json()
 
-  const allMessages = (body.messages || []) as Array<{ role: string; parts: Array<{ type: string; text: string }> }>
+  const allMessages = (body.messages || []) as Array<{ role: string; parts: Array<{ type: string; text?: string; mediaType?: string; url?: string }> }>
 
   let userText: string | undefined
   if (allMessages.length > 0) {
@@ -387,6 +388,11 @@ app.post('/agent/chat', async (c) => {
         .filter((p: any) => p.type === 'text')
         .map((p: any) => p.text)
         .join('\n')
+
+      const fileContext = extractFilePartsAsText(last.parts)
+      if (fileContext) {
+        userText = (userText || '') + '\n\n' + fileContext
+      }
     }
   }
 
