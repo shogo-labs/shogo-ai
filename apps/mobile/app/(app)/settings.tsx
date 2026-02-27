@@ -22,6 +22,7 @@ import {
   ActivityIndicator,
   Alert as RNAlert,
   Linking,
+  Platform,
   useWindowDimensions,
 } from 'react-native'
 import { useRouter, useLocalSearchParams } from 'expo-router'
@@ -62,6 +63,18 @@ import {
 } from '../../contexts/domain'
 import { useDomainActions } from '@shogo/shared-app/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
+import {
+  PRO_TIERS,
+  BUSINESS_TIERS,
+  PRO_FEATURES,
+  BUSINESS_FEATURES,
+  ENTERPRISE_FEATURES,
+  BASE_TIER_CREDITS,
+  getTotalCreditsForPlan as getBillingCreditsTotal,
+  formatCredits,
+} from '../../lib/billing-config'
+import { TierSelector } from '../../components/billing/TierSelector'
+import { FeatureList } from '../../components/billing/FeatureList'
 import {
   Card,
   CardContent,
@@ -891,175 +904,296 @@ function AccountTab() {
 }
 
 // ============================================================================
-// BILLING TAB
+// BILLING TAB — Lovable-style layout
 // ============================================================================
 
-const PLAN_CREDITS: Record<string, number> = {
-  free: 0,
-  starter: 50,
-  pro: 200,
-  team: 500,
-  enterprise: 2000,
-}
-
-const DAILY_CREDITS: Record<string, number> = {
-  free: 5,
-  starter: 10,
-  pro: 25,
-  team: 50,
-  enterprise: 100,
-}
-
-function getTotalCreditsForPlan(
-  planId: string | undefined,
-  planCredits: Record<string, number>,
-  dailyCredits: Record<string, number>
-): number {
-  if (!planId) return (planCredits['free'] || 0) + (dailyCredits['free'] || 0)
-  return (planCredits[planId] || 0) + (dailyCredits[planId] || 0)
-}
-
-function formatCredits(n: number): string {
-  return n % 1 === 0 ? n.toString() : n.toFixed(1)
-}
-
 function BillingTab() {
+  const { user } = useAuth()
+  const actions = useDomainActions()
   const workspaces = useWorkspaceCollection()
   const currentWorkspace = workspaces.all.length > 0 ? workspaces.all[0] : null
 
   const {
     subscription,
     effectiveBalance,
-    hasActiveSubscription,
     isLoading: isBillingLoading,
   } = useBillingData(currentWorkspace?.id)
 
-  const planType = subscription
+  const [selectedProTier, setSelectedProTier] = useState(0)
+  const [selectedBusinessTier, setSelectedBusinessTier] = useState(0)
+  const [proAnnual, setProAnnual] = useState(false)
+  const [businessAnnual, setBusinessAnnual] = useState(false)
+  const [isCheckoutLoading, setIsCheckoutLoading] = useState<string | null>(null)
+  const [isPortalLoading, setIsPortalLoading] = useState(false)
+
+  const planLabel = subscription
     ? subscription.planId.charAt(0).toUpperCase() + subscription.planId.slice(1)
     : 'Free'
 
-  const creditsTotal = getTotalCreditsForPlan(
-    subscription?.planId,
-    PLAN_CREDITS,
-    DAILY_CREDITS
-  )
+  const creditsTotal = getBillingCreditsTotal(subscription?.planId)
   const creditsRemaining = effectiveBalance?.total ?? creditsTotal
+
+  const proTier = PRO_TIERS[selectedProTier]
+  const businessTier = BUSINESS_TIERS[selectedBusinessTier]
+
+  const handleCheckout = useCallback(
+    async (planType: 'pro' | 'business', credits: number, annual: boolean) => {
+      if (!currentWorkspace?.id) return
+      setIsCheckoutLoading(planType)
+      try {
+        const planId = credits === BASE_TIER_CREDITS ? planType : `${planType}_${credits}`
+        const data = await actions.createCheckoutSession({
+          workspaceId: currentWorkspace.id,
+          planId,
+          billingInterval: annual ? 'annual' : 'monthly',
+          userEmail: user?.email,
+        })
+        if (data.url) {
+          if (Platform.OS === 'web') {
+            window.location.href = data.url
+          } else {
+            Linking.openURL(data.url)
+          }
+        }
+      } catch (e) {
+        console.warn('Checkout failed:', e)
+      } finally {
+        setIsCheckoutLoading(null)
+      }
+    },
+    [actions, currentWorkspace?.id, user?.email],
+  )
+
+  const handleManageSubscription = useCallback(async () => {
+    if (!currentWorkspace?.id) return
+    setIsPortalLoading(true)
+    try {
+      const returnUrl = Platform.OS === 'web' ? window.location.href : undefined
+      const data = await actions.createPortalSession(currentWorkspace.id, returnUrl)
+      if (data.url) {
+        if (Platform.OS === 'web') {
+          window.location.href = data.url
+        } else {
+          Linking.openURL(data.url)
+        }
+      }
+    } catch (e) {
+      console.warn('Portal session failed:', e)
+    } finally {
+      setIsPortalLoading(false)
+    }
+  }, [actions, currentWorkspace?.id])
 
   if (isBillingLoading) {
     return (
       <View className="items-center justify-center py-20">
         <ActivityIndicator />
-        <Text className="mt-2 text-sm text-muted-foreground">
-          Loading billing...
-        </Text>
+        <Text className="mt-2 text-sm text-muted-foreground">Loading billing...</Text>
       </View>
     )
   }
 
   return (
     <View className="gap-8">
+      {/* Header */}
       <View>
-        <Text className="text-xl font-semibold text-foreground">
-          Plans & credits
-        </Text>
+        <Text className="text-xl font-semibold text-foreground">Plans & credits</Text>
         <Text className="text-sm text-muted-foreground mt-1">
           Manage your subscription plan and credit balance.
         </Text>
       </View>
 
-      {/* Current plan */}
-      <Card>
-        <CardContent className="p-5">
-          <View className="flex-row items-center gap-3">
-            <View className="h-10 w-10 rounded-lg bg-primary/10 items-center justify-center">
-              <Sparkles size={20} className="text-primary" />
+      {/* Current plan + Credits remaining — side-by-side on desktop */}
+      <View className="gap-4 md:flex-row">
+        <Card className="md:flex-1">
+          <CardContent className="p-5 gap-4">
+            <View className="flex-row items-center gap-3">
+              <View className="h-10 w-10 rounded-lg bg-primary/10 items-center justify-center">
+                <Sparkles size={20} className="text-primary" />
+              </View>
+              <View className="flex-1">
+                <Text className="text-sm font-semibold text-foreground">
+                  You're on {planLabel} Plan
+                </Text>
+                <Text className="text-sm text-muted-foreground">Upgrade anytime</Text>
+              </View>
             </View>
-            <View className="flex-1">
-              <Text className="text-sm font-semibold text-foreground">
-                You're on {planType} Plan
-              </Text>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                {subscription ? 'Manage your subscription' : 'Upgrade anytime'}
-              </Text>
-            </View>
-          </View>
-        </CardContent>
-      </Card>
+            <Button
+              variant="outline"
+              size="sm"
+              onPress={handleManageSubscription}
+              disabled={isPortalLoading}
+              className="self-start"
+            >
+              {isPortalLoading ? 'Loading...' : 'Manage'}
+            </Button>
+          </CardContent>
+        </Card>
 
-      {/* Credits */}
-      <Card>
-        <CardContent className="p-5 gap-3">
-          <View className="flex-row justify-between">
-            <Text className="text-sm text-muted-foreground">
-              Credits remaining
-            </Text>
-            <Text className="text-sm font-medium text-foreground">
-              {formatCredits(creditsRemaining)} of {creditsTotal}
-            </Text>
-          </View>
-          <Progress
-            value={(creditsRemaining / Math.max(creditsTotal, 1)) * 100}
-            className="h-2"
-          />
-          {effectiveBalance && (
-            <Text className="text-xs text-muted-foreground">
-              Daily: {formatCredits(effectiveBalance.dailyCredits)} · Monthly:{' '}
-              {formatCredits(effectiveBalance.monthlyCredits)}
-            </Text>
-          )}
-          <View className="gap-1">
-            <View className="flex-row items-center gap-2">
-              {subscription ? (
-                <>
-                  <Check size={12} className="text-foreground" />
-                  <Text className="text-xs text-muted-foreground">
-                    Credits rollover to next month
-                  </Text>
-                </>
-              ) : (
+        <Card className="md:flex-1">
+          <CardContent className="p-5 gap-3">
+            <View className="flex-row justify-between items-center">
+              <Text className="text-sm text-muted-foreground">Credits remaining</Text>
+              <Text className="text-sm font-medium text-foreground">
+                {formatCredits(creditsRemaining)} of {creditsTotal}
+              </Text>
+            </View>
+            <Progress
+              value={(creditsRemaining / Math.max(creditsTotal, 1)) * 100}
+              className="h-2"
+            />
+            <View className="gap-1.5">
+              <View className="flex-row items-center gap-2">
+                <View className="h-2 w-2 rounded-full bg-primary" />
+                <Text className="text-xs text-muted-foreground">Daily credits used first</Text>
+              </View>
+              <View className="flex-row items-center gap-2">
+                {subscription ? (
+                  <>
+                    <Check size={12} className="text-foreground" />
+                    <Text className="text-xs text-muted-foreground">Credits will rollover</Text>
+                  </>
+                ) : (
+                  <>
+                    <X size={12} className="text-muted-foreground" />
+                    <Text className="text-xs text-muted-foreground">No credits will rollover</Text>
+                  </>
+                )}
+              </View>
+              <View className="flex-row items-center gap-2">
+                <Check size={12} className="text-foreground" />
                 <Text className="text-xs text-muted-foreground">
-                  × No credits will rollover
+                  Daily credits reset at midnight UTC
                 </Text>
-              )}
+              </View>
             </View>
-            <View className="flex-row items-center gap-2">
-              <Check size={12} className="text-foreground" />
-              <Text className="text-xs text-muted-foreground">
-                Daily credits reset at midnight UTC
-              </Text>
-            </View>
-          </View>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      </View>
 
-      {/* Plan cards */}
-      {(['starter', 'pro', 'team'] as const).map((planId) => {
-        const isCurrentPlan = subscription?.planId === planId
-        return (
-          <Card
-            key={planId}
-            className={isCurrentPlan ? 'border-primary' : undefined}
-          >
-            <CardContent className="p-5 gap-2">
-              <View className="flex-row items-center justify-between">
-                <Text className="text-base font-semibold text-foreground capitalize">
-                  {planId}
+      {/* Plan cards — 3 columns on desktop, stacked on mobile */}
+      <View className="gap-6 md:flex-row md:items-start">
+        {/* Pro */}
+        <Card className="md:flex-1 md:w-0">
+          <CardContent className="p-5 gap-4">
+            <Text className="text-lg font-semibold text-foreground">Pro</Text>
+            <Text className="text-sm text-muted-foreground">
+              Designed for fast-moving teams building together in real time.
+            </Text>
+            <View>
+              <View className="flex-row items-baseline gap-1">
+                <Text className="text-3xl font-bold text-foreground">
+                  ${proAnnual ? Math.round(proTier.annual / 12) : proTier.monthly}
                 </Text>
-                {isCurrentPlan && <Badge>Current</Badge>}
+                <Text className="text-sm text-muted-foreground">per month</Text>
               </View>
               <Text className="text-sm text-muted-foreground">
-                {PLAN_CREDITS[planId]} monthly + {DAILY_CREDITS[planId]} daily
-                credits
+                shared across unlimited users
               </Text>
-              {!isCurrentPlan && (
-                <Button variant="outline" size="sm" className="mt-2">
-                  {subscription ? 'Switch Plan' : 'Upgrade'}
-                </Button>
-              )}
-            </CardContent>
-          </Card>
-        )
-      })}
+            </View>
+            <View className="flex-row items-center gap-2">
+              <Switch checked={proAnnual} onCheckedChange={setProAnnual} />
+              <Text className="text-sm text-foreground">Annual</Text>
+            </View>
+            <Button
+              onPress={() => handleCheckout('pro', proTier.credits, proAnnual)}
+              disabled={isCheckoutLoading !== null || subscription?.planId?.startsWith('pro')}
+            >
+              {isCheckoutLoading === 'pro'
+                ? 'Loading...'
+                : subscription?.planId?.startsWith('pro')
+                  ? 'Current Plan'
+                  : 'Upgrade'}
+            </Button>
+            <TierSelector
+              tiers={PRO_TIERS}
+              selectedIndex={selectedProTier}
+              onSelect={setSelectedProTier}
+              suffix=" / month"
+            />
+            <View className="gap-2">
+              <Text className="text-sm text-muted-foreground">
+                All features in Free, plus:
+              </Text>
+              <FeatureList features={PRO_FEATURES} />
+            </View>
+          </CardContent>
+        </Card>
+
+        {/* Business */}
+        <Card className="md:flex-1 md:w-0">
+          <CardContent className="p-5 gap-4">
+            <Text className="text-lg font-semibold text-foreground">Business</Text>
+            <Text className="text-sm text-muted-foreground">
+              Advanced controls and power features for growing departments
+            </Text>
+            <View>
+              <View className="flex-row items-baseline gap-1">
+                <Text className="text-3xl font-bold text-foreground">
+                  ${businessAnnual ? Math.round(businessTier.annual / 12) : businessTier.monthly}
+                </Text>
+                <Text className="text-sm text-muted-foreground">per month</Text>
+              </View>
+              <Text className="text-sm text-muted-foreground">
+                shared across unlimited users
+              </Text>
+            </View>
+            <View className="flex-row items-center gap-2">
+              <Switch checked={businessAnnual} onCheckedChange={setBusinessAnnual} />
+              <Text className="text-sm text-foreground">Annual</Text>
+            </View>
+            <Button
+              variant="outline"
+              onPress={() => handleCheckout('business', businessTier.credits, businessAnnual)}
+              disabled={isCheckoutLoading !== null || subscription?.planId?.startsWith('business')}
+            >
+              {isCheckoutLoading === 'business'
+                ? 'Loading...'
+                : subscription?.planId?.startsWith('business')
+                  ? 'Current Plan'
+                  : 'Upgrade'}
+            </Button>
+            <TierSelector
+              tiers={BUSINESS_TIERS}
+              selectedIndex={selectedBusinessTier}
+              onSelect={setSelectedBusinessTier}
+              suffix=" / month"
+            />
+            <View className="gap-2">
+              <Text className="text-sm text-muted-foreground">
+                All features in Pro, plus:
+              </Text>
+              <FeatureList features={BUSINESS_FEATURES} />
+            </View>
+          </CardContent>
+        </Card>
+
+        {/* Enterprise */}
+        <Card className="md:flex-1 md:w-0">
+          <CardContent className="p-5 gap-4">
+            <Text className="text-lg font-semibold text-foreground">Enterprise</Text>
+            <Text className="text-sm text-muted-foreground">
+              Built for large orgs needing flexibility, scale, and governance.
+            </Text>
+            <View>
+              <Text className="text-3xl font-bold text-foreground">Custom</Text>
+              <Text className="text-sm text-muted-foreground">Flexible plans</Text>
+            </View>
+            <Button
+              variant="outline"
+              onPress={() => Linking.openURL('mailto:sales@shogo.ai')}
+            >
+              Book a demo
+            </Button>
+            <View className="gap-2">
+              <Text className="text-sm text-muted-foreground">
+                All features in Business, plus:
+              </Text>
+              <FeatureList features={ENTERPRISE_FEATURES} />
+            </View>
+          </CardContent>
+        </Card>
+      </View>
     </View>
   )
 }

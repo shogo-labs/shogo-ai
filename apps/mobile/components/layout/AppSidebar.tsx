@@ -72,6 +72,7 @@ import {
   useDomainHttp,
 } from '../../contexts/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
+import { formatCredits } from '../../lib/billing-config'
 import { api } from '../../lib/api'
 
 function getInitials(name: string | null | undefined): string {
@@ -82,11 +83,6 @@ function getInitials(name: string | null | undefined): string {
     .join('')
     .toUpperCase()
     .slice(0, 2)
-}
-
-function formatCredits(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
-  return n % 1 === 0 ? String(n) : n.toFixed(2)
 }
 
 function isRouteActive(pathname: string, href: string): boolean {

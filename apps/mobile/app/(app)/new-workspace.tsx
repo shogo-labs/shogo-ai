@@ -32,6 +32,7 @@ import {
   PRO_FEATURES,
   BUSINESS_FEATURES,
   ENTERPRISE_FEATURES,
+  BASE_TIER_CREDITS,
 } from '../../lib/billing-config'
 import { TierSelector } from '../../components/billing/TierSelector'
 import { FeatureList } from '../../components/billing/FeatureList'
@@ -62,7 +63,7 @@ export default function NewWorkspacePage() {
     setIsCheckoutLoading(true)
     setError(null)
     try {
-      const planId = credits === 100 ? planType : `${planType}_${credits}`
+      const planId = credits === BASE_TIER_CREDITS ? planType : `${planType}_${credits}`
       const data = await api.createWorkspaceCheckout(http, {
         workspaceName: workspaceName.trim(),
         planId,

@@ -28,15 +28,16 @@ import {
   Crown,
 } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
-import { useWorkspaceCollection, useDomainHttp } from '../../contexts/domain'
+import { useWorkspaceCollection } from '../../contexts/domain'
+import { useDomainActions } from '@shogo/shared-app/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
-import { api } from '../../lib/api'
 import {
   PRO_TIERS,
   BUSINESS_TIERS,
   PRO_FEATURES,
   BUSINESS_FEATURES,
   ENTERPRISE_FEATURES,
+  BASE_TIER_CREDITS,
   getTotalCreditsForPlan,
   formatCredits,
 } from '../../lib/billing-config'
@@ -60,7 +61,7 @@ export default observer(function BillingPage() {
   const router = useRouter()
   const { user, isLoading: isAuthLoading } = useAuth()
   const workspaces = useWorkspaceCollection()
-  const http = useDomainHttp()
+  const actions = useDomainActions()
 
   useEffect(() => {
     if (user?.id && workspaces) {
@@ -101,8 +102,8 @@ export default observer(function BillingPage() {
     if (!currentWorkspace?.id) return
     setIsCheckoutLoading(true)
     try {
-      const planId = credits === 100 ? planType : `${planType}_${credits}`
-      const data = await api.createCheckoutSession(http, {
+      const planId = credits === BASE_TIER_CREDITS ? planType : `${planType}_${credits}`
+      const data = await actions.createCheckoutSession({
         workspaceId: currentWorkspace.id,
         planId,
         billingInterval,
@@ -120,14 +121,14 @@ export default observer(function BillingPage() {
     } finally {
       setIsCheckoutLoading(false)
     }
-  }, [http, currentWorkspace?.id, billingInterval, user?.email])
+  }, [actions, currentWorkspace?.id, billingInterval, user?.email])
 
   const handleManageSubscription = useCallback(async () => {
     if (!currentWorkspace?.id) return
     setIsPortalLoading(true)
     try {
       const returnUrl = Platform.OS === 'web' ? window.location.href : undefined
-      const data = await api.createPortalSession(http, currentWorkspace.id, returnUrl)
+      const data = await actions.createPortalSession(currentWorkspace.id, returnUrl)
       if (data.url) {
         if (Platform.OS === 'web') {
           window.location.href = data.url
@@ -140,7 +141,7 @@ export default observer(function BillingPage() {
     } finally {
       setIsPortalLoading(false)
     }
-  }, [http, currentWorkspace?.id])
+  }, [actions, currentWorkspace?.id])
 
   if (isAuthLoading || isBillingLoading) {
     return (

@@ -1,6 +1,6 @@
 /**
  * Billing Configuration — single source of truth for plan tiers, features, and credit constants.
- * Used by: billing.tsx, new-workspace.tsx
+ * Import from here rather than defining billing values locally in components.
  */
 
 export interface PriceTier {
@@ -8,6 +8,9 @@ export interface PriceTier {
   monthly: number
   annual: number
 }
+
+/** The base credit amount that maps 1:1 to a plan name (no suffix needed in planId). */
+export const BASE_TIER_CREDITS = 100
 
 export const PRO_TIERS: PriceTier[] = [
   { credits: 100, monthly: 25, annual: 250 },

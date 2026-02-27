@@ -374,6 +374,36 @@ export function createDomainActions(store: IDomainStore) {
       // Then delete workspace
       return store.workspaceCollection.delete(workspaceId)
     },
+
+    // =========================================================================
+    // Billing Actions
+    // =========================================================================
+
+    /**
+     * Create a Stripe checkout session and return the redirect URL
+     */
+    createCheckoutSession: async (params: {
+      workspaceId: string
+      planId: string
+      billingInterval: "monthly" | "annual"
+      userEmail?: string
+    }) => {
+      const env = getEnv<ISDKEnvironment>(store)
+      const res = await env.http.post<{ url?: string }>("/api/billing/checkout", params)
+      return res.data
+    },
+
+    /**
+     * Create a Stripe billing portal session and return the redirect URL
+     */
+    createPortalSession: async (workspaceId: string, returnUrl?: string) => {
+      const env = getEnv<ISDKEnvironment>(store)
+      const res = await env.http.post<{ url?: string }>(
+        `/api/billing/portal?workspaceId=${encodeURIComponent(workspaceId)}`,
+        returnUrl ? { returnUrl } : {},
+      )
+      return res.data
+    },
   }
 }
 

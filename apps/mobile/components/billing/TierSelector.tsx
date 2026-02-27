@@ -8,10 +8,12 @@ export function TierSelector({
   tiers,
   selectedIndex,
   onSelect,
+  suffix = '',
 }: {
   tiers: PriceTier[]
   selectedIndex: number
   onSelect: (idx: number) => void
+  suffix?: string
 }) {
   const [open, setOpen] = useState(false)
   const selected = tiers[selectedIndex]
@@ -23,7 +25,7 @@ export function TierSelector({
         className="flex-row items-center justify-between border border-border rounded-md px-3 py-2.5 bg-background"
       >
         <Text className="text-sm text-foreground">
-          {selected.credits.toLocaleString()} credits
+          {selected.credits.toLocaleString()} credits{suffix}
         </Text>
         <ChevronDown size={16} className="text-muted-foreground" />
       </Pressable>
@@ -42,7 +44,7 @@ export function TierSelector({
                 'text-sm',
                 i === selectedIndex ? 'text-foreground font-medium' : 'text-foreground'
               )}>
-                {tier.credits.toLocaleString()} credits
+                {tier.credits.toLocaleString()} credits{suffix}
               </Text>
             </Pressable>
           ))}
