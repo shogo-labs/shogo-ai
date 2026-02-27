@@ -2597,6 +2597,41 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
   ]
 }
 
+/** Basic agent tools — full non-canvas set + display-only canvas (no mutation tools) */
+export function createBasicTools(ctx: ToolContext): AgentTool[] {
+  return [
+    createExecTool(ctx),
+    createReadFileTool(ctx),
+    createWriteFileTool(ctx),
+    createListFilesTool(ctx),
+    createDeleteFileTool(ctx),
+    createSearchFilesTool(ctx),
+    createWebFetchTool(),
+    createWebSearchTool(),
+    createBrowserTool(ctx),
+    createMemoryReadTool(ctx),
+    createMemoryWriteTool(ctx),
+    createMemorySearchTool(ctx),
+    createSendMessageTool(ctx),
+    createChannelConnectTool(ctx),
+    createCronTool(ctx),
+    createCanvasCreateTool(),
+    createCanvasUpdateTool(),
+    createCanvasDataTool(),
+    createCanvasDeleteTool(),
+    createCanvasComponentsTool(),
+    createCanvasApiSchemaTool(),
+    createCanvasApiSeedTool(),
+    createCanvasApiQueryTool(),
+    createCanvasInspectTool(),
+    createPersonalityUpdateTool(ctx),
+    createMcpSearchTool(),
+    createMcpInstallTool(ctx),
+    createMcpUninstallTool(ctx),
+    createMcpListInstalledTool(ctx),
+  ]
+}
+
 /** Reduced tool set for heartbeat ticks (no exec, no send_message) */
 export function createHeartbeatTools(ctx: ToolContext): AgentTool[] {
   return [

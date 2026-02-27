@@ -24,7 +24,7 @@ import { Type } from '@sinclair/typebox'
 import type { ChannelAdapter, IncomingMessage, AgentStatus, ChannelStatus, StreamChunkConfig, SandboxConfig } from './types'
 import { loadSkills, matchSkill, type Skill } from './skills'
 import { runAgentLoop, type LoopDetectorConfig, type ToolContext } from './agent-loop'
-import { createAllTools, createHeartbeatTools, textResult } from './gateway-tools'
+import { createAllTools, createBasicTools, createHeartbeatTools, textResult } from './gateway-tools'
 import { HookEmitter, loadAllHooks } from './hooks'
 import { parseSlashCommand, type SlashCommandContext } from './slash-commands'
 import { SessionManager, type SessionManagerConfig } from './session-manager'
@@ -64,6 +64,11 @@ export interface GatewayConfig {
   mainSessionIds?: string[]
   /** MCP servers to spawn on gateway start — tools from these become available to the agent */
   mcpServers?: Record<string, MCPServerConfig>
+}
+
+function isBasicAgent(): boolean {
+  const variant = process.env.AGENT_VARIANT?.toLowerCase()
+  return !variant || variant === 'basic'
 }
 
 const CANVAS_TOOLS_GUIDE_PREFIX = `## Canvas (Dynamic UI)
@@ -408,6 +413,133 @@ Root Column
 - **NEVER delete and recreate a surface to fix issues.** Use \`canvas_update({ merge: true })\` to patch individual components. Deleting loses all data bindings and causes UI flicker.
 - **Simple state (counters, toggles, single values):** Use canvas_data or canvas_data_patch ONLY. Do NOT use canvas_api_schema/canvas_api_seed/canvas_api_query — those are for persistent CRUD data with multiple records.
 - Table is read-only. For lists needing edit/delete buttons, always use DataList.
+
+`
+
+const BASIC_CANVAS_TOOLS_GUIDE = `## Canvas (Dynamic UI) — Display Mode
+
+You have canvas tools that let you build UIs the user can see in real time.
+Use them whenever a visual display would be more helpful than plain text.
+
+**CRITICAL CONSTRAINT: This agent runs in DISPLAY-ONLY mode.**
+- You MUST NOT add Buttons that perform mutations (POST, PATCH, DELETE).
+- You MUST NOT add form inputs (TextField, Select, Checkbox, ChoicePicker) bound to mutations.
+- The ONLY Buttons you may create are **external link buttons** using \`method: "OPEN"\`:
+  \`{ id: "link_btn", component: "Button", label: "Visit Website", action: { name: "open_site", mutation: { endpoint: "https://example.com", method: "OPEN" } } }\`
+- If a user asks for CRUD actions, interactive forms, add/edit/delete buttons, or any mutation-based interactivity, **politely explain that this app is in display mode and does not support interactive actions**. Suggest they view the data as a read-only dashboard instead.
+
+### Building a Canvas App — Plan First, Then Build
+
+When the user asks for any visual app or dashboard, **ALWAYS start by writing a brief plan**:
+1. **What you're building** — one sentence summary
+2. **Data model** — what models/fields are needed for display
+3. **Component layout** — the component tree structure
+4. **Links** — any external link buttons it will have
+
+Then follow these steps:
+
+**Step 1: canvas_create** — Create a surface
+  canvas_create({ surfaceId: "my_app", title: "My App" })
+
+**Step 2: canvas_api_schema** — Define data model + auto-generate API (for read-only data)
+  canvas_api_schema({ surfaceId: "my_app", models: [{
+    name: "Task", fields: [
+      { name: "title", type: "String" },
+      { name: "status", type: "String", default: "todo" },
+      { name: "priority", type: "String", default: "medium" }
+    ]
+  }]})
+
+**Step 3: canvas_api_seed + canvas_api_query** — Populate and load data
+  canvas_api_seed({ surfaceId: "my_app", model: "Task", records: [
+    { title: "First task", priority: "high" },
+    { title: "Second task", status: "done" }
+  ]})
+  canvas_api_query({ surfaceId: "my_app", model: "Task", dataPath: "/tasks" })
+
+**Step 4: canvas_update** — Build a polished display-only UI
+  canvas_update({ surfaceId: "my_app", components: [
+    { id: "root", component: "Column", children: ["header_row", "metrics", "list_card"] },
+    { id: "header_row", component: "Row", children: ["title", "status_badge"], align: "center", justify: "between" },
+    { id: "title", component: "Text", text: "My Tasks", variant: "h2" },
+    { id: "status_badge", component: "Badge", text: "Active", variant: "outline" },
+    { id: "metrics", component: "Grid", columns: 3, children: ["m_total", "m_done", "m_pending"] },
+    { id: "m_total", component: "Metric", label: "Total Tasks", value: { path: "/summary/total" }, trendValue: "+3 this week" },
+    { id: "m_done", component: "Metric", label: "Completed", value: { path: "/summary/done" }, trendValue: "+2" },
+    { id: "m_pending", component: "Metric", label: "Pending", value: { path: "/summary/pending" }, trendValue: "-1" },
+    { id: "list_card", component: "Card", child: "task_list", title: "All Tasks" },
+    { id: "task_list", component: "DataList",
+      children: { path: "/tasks", templateId: "task_card" }, emptyText: "No tasks yet" },
+    { id: "task_card", component: "Card", child: "task_row" },
+    { id: "task_row", component: "Row", children: ["task_info"], align: "center" },
+    { id: "task_info", component: "Column", children: ["task_title", "task_status"], gap: "xs" },
+    { id: "task_title", component: "Text", text: { path: "title" }, weight: "medium" },
+    { id: "task_status", component: "Badge", text: { path: "status" } }
+  ]})
+
+### Key Patterns
+
+**Data Binding (read-only):**
+- \`{ path: "/field" }\` (with leading /) reads from the ROOT data model
+- \`{ path: "field" }\` (NO leading /) reads from the CURRENT ITEM inside a DataList template
+
+**DataList (repeating template — display only):**
+- Set children to: \`{ path: "/items", templateId: "template_id" }\`
+- The template component + its descendants render once per item
+
+**External Link Buttons (the ONLY allowed button type):**
+- \`{ mutation: { endpoint: "https://example.com", method: "OPEN" } }\`
+- Use for linking to external websites, documentation, or resources
+- NEVER use POST, PATCH, or DELETE methods
+
+**Client-side filtering (read-only):**
+- Add \`filterPath\` + \`filterFields\` on DataList for client-side search
+- Use \`where\` prop on DataList for status/category filtering
+
+### Component Types
+
+**Layout:** Column, Row, Grid, Card, ScrollArea, Tabs, TabPanel, Accordion, AccordionItem
+**Display:** Text, Badge, Image, Icon, Separator, Progress, Skeleton, Alert
+**Data:** Table (read-only), Metric, Chart (bar/line/area/pie/donut), DataList (display-only)
+**Allowed Interactive:** Button (ONLY with method: "OPEN" for external links)
+**NOT ALLOWED:** TextField, Select, Checkbox, ChoicePicker, or any Button with POST/PATCH/DELETE mutations
+
+Use \`canvas_components({ action: "detail", type: "Card" })\` to look up props for any component.
+
+### Visual Quality & Layout
+
+The renderer auto-formats numbers, currency, dates, and auto-infers Metric trend direction. You do NOT need to manually format values.
+
+**Component Richness:**
+- Dashboard/analytics → 12-20 components (Grid of Metrics + Charts + Tables)
+- Display apps → 10-18 components (Metrics + DataList)
+- If your canvas has fewer than 8 components, it probably needs more structure
+
+**Mandatory Patterns:**
+- **Dashboard request**: Grid of 3-4 Metric components with \`trendValue\`, at least one Chart, Card-wrapped data sections
+- **Any request with data**: Header Row with title (variant "h2") + context Badge (justify: "between")
+
+**Chart Type Selection:**
+- \`bar\` — Compare values across categories
+- \`horizontalBar\` — Same as bar but better for long category labels
+- \`line\` — Show trends over time
+- \`area\` — Like line but with filled area
+- \`pie\` — Show proportional breakdown
+- \`donut\` — Same as pie with center hole
+- \`progress\` — Percentage bars
+
+**Data Richness:**
+- Seed 4-6 realistic records with plausible names, amounts, and dates
+- Bar/line/area charts need at least 5-6 data points
+- Pie/donut charts need 3-7 labeled segments
+
+### Rules
+- **ALWAYS plan before building.**
+- When canvas tools return status: "rendered" or "data_updated", the UI is already live.
+- **NEVER delete and recreate a surface to fix issues.** Use \`canvas_update({ merge: true })\` to patch individual components.
+- Table is read-only — great for display mode.
+- **NEVER add Buttons with POST, PATCH, or DELETE mutations.** Only \`method: "OPEN"\` for external links.
+- If a user asks for interactive features (add, edit, delete, forms), explain that the app is in display-only mode and offer a read-only dashboard alternative.
 
 `
 
@@ -1177,7 +1309,7 @@ export class AgentGateway {
 
     const baseTools = isHeartbeat
       ? createHeartbeatTools(toolContext)
-      : createAllTools(toolContext)
+      : isBasicAgent() ? createBasicTools(toolContext) : createAllTools(toolContext)
 
     const mcpTools = this.mcpClientManager.getTools()
     let assembledTools = mcpTools.length > 0 ? [...baseTools, ...mcpTools] : baseTools
@@ -1494,13 +1626,17 @@ export class AgentGateway {
       parts.push(uploadedFilesContext)
     }
 
-    const canvasExamples = this.promptOverrides.get('canvas_examples') ?? OPTIMIZED_CANVAS_EXAMPLES
     const personalityGuide = this.promptOverrides.get('personality_guide') ?? OPTIMIZED_PERSONALITY_GUIDE
     const toolPlanningGuide = this.promptOverrides.get('tool_planning_guide') ?? OPTIMIZED_TOOL_PLANNING_GUIDE
     const memoryGuide = this.promptOverrides.get('memory_guide') ?? OPTIMIZED_MEMORY_GUIDE
     const skillMatchingGuide = this.promptOverrides.get('skill_matching_guide') ?? OPTIMIZED_SKILL_MATCHING_GUIDE
 
-    parts.push(CANVAS_TOOLS_GUIDE_PREFIX + canvasExamples)
+    if (isBasicAgent()) {
+      parts.push(BASIC_CANVAS_TOOLS_GUIDE)
+    } else {
+      const canvasExamples = this.promptOverrides.get('canvas_examples') ?? OPTIMIZED_CANVAS_EXAMPLES
+      parts.push(CANVAS_TOOLS_GUIDE_PREFIX + canvasExamples)
+    }
     parts.push(PERSONALITY_EVOLUTION_GUIDE_PREFIX + personalityGuide)
     parts.push(toolPlanningGuide)
     parts.push(this.promptOverrides.get('constraint_awareness_guide') ?? OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE)
