@@ -22,7 +22,7 @@ export const useCardDepth = () => useContext(CardDepthContext)
 // Colors defined in global.css as --color-surface-{0..3} and auto-switch
 // between light/dark via the .dark class — no JS theme detection needed.
 const SURFACE_BG = ['bg-surface-0', 'bg-surface-1', 'bg-surface-2', 'bg-surface-3']
-const SURFACE_BORDER = ['border-border', 'border-border/50', 'border-border/30', 'border-border/20']
+const SURFACE_BORDER = ['border-border', 'border-border', 'border-border', 'border-border']
 
 // Shadow diminishes with depth — nested cards feel visually "inset".
 const SHADOW_STYLES = [
