@@ -21,7 +21,7 @@
  *    that the agent uses the installed tools effectively.
  */
 
-import type { AgentEval, EvalResult } from './types'
+import type { AgentEval } from './types'
 import {
   MCP_LIST_INSTALLED_MOCKS,
   MCP_SEARCH_BASIC_MOCKS,
@@ -32,31 +32,13 @@ import {
   MCP_MULTI_SERVER_MOCKS,
   MCP_DISCOVERY_PERSONALITY_MOCKS,
 } from './tool-mocks'
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function usedTool(result: EvalResult, toolName: string): boolean {
-  return result.toolCalls.some(t => t.name === toolName)
-}
-
-function usedToolInFinalTurn(result: EvalResult, toolName: string): boolean {
-  return result.finalTurnToolCalls.some(t => t.name === toolName)
-}
-
-function toolCallCount(result: EvalResult, toolName: string): number {
-  return result.toolCalls.filter(t => t.name === toolName).length
-}
-
-function responseContains(result: EvalResult, ...terms: string[]): boolean {
-  const text = result.responseText.toLowerCase()
-  return terms.every(t => text.includes(t.toLowerCase()))
-}
-
-function toolCallsJson(result: EvalResult): string {
-  return JSON.stringify(result.toolCalls).toLowerCase()
-}
+import {
+  usedTool,
+  usedToolInFinalTurn,
+  toolCallCount,
+  responseContains,
+  toolCallsJson,
+} from './eval-helpers'
 
 // ---------------------------------------------------------------------------
 // Test Cases

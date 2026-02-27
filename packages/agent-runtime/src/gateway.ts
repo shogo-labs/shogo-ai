@@ -32,6 +32,7 @@ import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { CronManager, type CronJob } from './cron-manager'
 import { BlockChunker } from './block-chunker'
 import { MCPClientManager, type MCPServerConfig } from './mcp-client'
+import { connectComposioMCP, disconnectComposioMCP, isComposioEnabled } from './composio'
 import {
   OPTIMIZED_CANVAS_EXAMPLES,
   OPTIMIZED_MEMORY_GUIDE,
@@ -398,6 +399,10 @@ export class AgentGateway {
   private toolMocks = new Map<string, (params: Record<string, any>) => any>()
   /** Synthetic tool definitions for mocked MCP tools that don't exist in the base tool set */
   private syntheticTools = new Map<string, { description: string; paramKeys: string[] }>()
+  /** Tools that have mock responses but should not appear until promoted via mcp_install */
+  private hiddenMockTools = new Set<string>()
+  /** Hidden mocks promoted to visible after mcp_install is called during a turn */
+  private promotedMockTools: AgentTool[] = []
   /** Usage from the most recent agentTurn (consumed by server.ts for the finish event) */
   private _lastTurnUsage: {
     inputTokens: number
@@ -437,9 +442,12 @@ export class AgentGateway {
   setToolMocks(
     mocks: Record<string, (params: Record<string, any>) => any>,
     syntheticDefs?: Record<string, { description: string; paramKeys: string[] }>,
+    hiddenTools?: Set<string>,
   ): void {
     this.toolMocks.clear()
     this.syntheticTools.clear()
+    this.hiddenMockTools.clear()
+    this.promotedMockTools = []
     for (const [name, fn] of Object.entries(mocks)) {
       this.toolMocks.set(name, fn)
     }
@@ -448,11 +456,51 @@ export class AgentGateway {
         this.syntheticTools.set(name, def)
       }
     }
+    if (hiddenTools) {
+      for (const name of hiddenTools) {
+        this.hiddenMockTools.add(name)
+      }
+    }
   }
 
   clearToolMocks(): void {
     this.toolMocks.clear()
     this.syntheticTools.clear()
+    this.hiddenMockTools.clear()
+    this.promotedMockTools = []
+  }
+
+  /** After mock mcp_install returns, promote hidden mock tools listed in the response */
+  _promoteHiddenMocksFromInstall(result: any): void {
+    const tools = result?.tools
+    if (!Array.isArray(tools)) return
+    for (const entry of tools) {
+      const toolName = typeof entry === 'string' ? entry : entry?.name
+      if (!toolName) continue
+      if (!this.hiddenMockTools.has(toolName)) continue
+      if (this.promotedMockTools.some(t => t.name === toolName)) continue
+      const mockFn = this.toolMocks.get(toolName)
+      if (!mockFn) continue
+      const synDef = this.syntheticTools.get(toolName)
+      const paramProps: Record<string, any> = {}
+      if (synDef?.paramKeys) {
+        for (const key of synDef.paramKeys) {
+          paramProps[key] = Type.Optional(Type.String({ description: key }))
+        }
+      }
+      paramProps['input'] = Type.Optional(Type.String({ description: 'Input data or query' }))
+      this.promotedMockTools.push({
+        name: toolName,
+        description: synDef?.description || `External integration tool: ${toolName}`,
+        label: toolName.replace(/__/g, ' > ').replace(/_/g, ' '),
+        parameters: Type.Object(paramProps),
+        execute: async (_id: string, params: any) => {
+          const r = mockFn(params)
+          return textResult(r)
+        },
+      })
+      this.hiddenMockTools.delete(toolName)
+    }
   }
 
   /** Consume usage data from the most recent agent turn (returns null if none available) */
@@ -553,6 +601,16 @@ export class AgentGateway {
         await this.mcpClientManager.startAll(this.config.mcpServers)
       } catch (error: any) {
         console.error('[AgentGateway] MCP server startup error:', error.message)
+      }
+    }
+
+    // Connect to Composio MCP endpoint for managed OAuth integrations
+    if (isComposioEnabled()) {
+      try {
+        const userId = process.env.USER_ID || 'default'
+        await connectComposioMCP(this.mcpClientManager, userId, this.projectId)
+      } catch (error: any) {
+        console.error('[AgentGateway] Composio MCP connection error:', error.message)
       }
     }
 
@@ -853,9 +911,20 @@ export class AgentGateway {
 
         const matchedSkill = matchSkill(this.skills, message.text)
         let prompt = message.text
+        let activeSkill: { name: string } | undefined
 
         if (matchedSkill) {
-          prompt = `[Skill: ${matchedSkill.name}]\n${matchedSkill.content}\n\n[User Message]\n${message.text}`
+          prompt = [
+            `[Skill: ${matchedSkill.name}]`,
+            `A saved skill matched this request. Follow its instructions for this integration.`,
+            `You can still use mcp_search if you need additional tools beyond what the skill provides.`,
+            ``,
+            matchedSkill.content,
+            ``,
+            `[User Message]`,
+            message.text,
+          ].join('\n')
+          activeSkill = { name: matchedSkill.name }
         }
 
         const adapter = (message.channelId && this.channels.has(message.channelType || ''))
@@ -865,7 +934,7 @@ export class AgentGateway {
           ? { adapter, channelId: message.channelId }
           : undefined
 
-        const response = await this.agentTurn(prompt, sessionId, false, streamTarget)
+        const response = await this.agentTurn(prompt, sessionId, false, streamTarget, undefined, activeSkill)
 
         if (adapter && message.channelId && !streamTarget) {
           await adapter.sendMessage(message.channelId, response)
@@ -903,27 +972,40 @@ export class AgentGateway {
     return `[Agent Setup — First Message]\nThis is a brand new agent that has not been configured yet. The user's message below describes what they want the agent to do. Use your tools to set up the agent:\n\n1. Write IDENTITY.md with a fitting name, emoji, and tagline\n2. Write SOUL.md with personality, tone, and boundaries appropriate for this use case\n3. Write AGENTS.md with specific operating instructions and priorities (IMPORTANT: replace the default content)\n4. Write HEARTBEAT.md with a relevant checklist if the agent should run autonomously\n5. Create any relevant skills in the skills/ directory\n6. Update config.json if heartbeat should be enabled\n\nAfter setting up, give the user a brief summary of what you configured.\n\n[User Message]\n${userText}`
   }
 
-  private buildChatPrompt(text: string): string {
+  private buildChatPrompt(text: string): { prompt: string; activeSkill?: { name: string } } {
     const matchedSkill = matchSkill(this.skills, text)
     if (matchedSkill) {
       this.emitLog(`Matched skill: ${matchedSkill.name}`)
-      return `[Skill: ${matchedSkill.name}]\n${matchedSkill.content}\n\n[User Message]\n${text}`
+      const prompt = [
+        `[Skill: ${matchedSkill.name}]`,
+        `A saved skill matched this request. Follow its instructions for this integration.`,
+        `You can still use mcp_search if you need additional tools beyond what the skill provides.`,
+        ``,
+        matchedSkill.content,
+        ``,
+        `[User Message]`,
+        text,
+      ].join('\n')
+      return { prompt, activeSkill: { name: matchedSkill.name } }
     }
-    return `[Chat — User Message]\nThis is a direct message from a user, NOT a heartbeat trigger. Respond conversationally and helpfully. Do NOT respond with HEARTBEAT_OK.\n\n${text}`
+    return { prompt: `[Chat — User Message]\nThis is a direct message from a user, NOT a heartbeat trigger. Respond conversationally and helpfully. Do NOT respond with HEARTBEAT_OK.\n\n${text}` }
   }
 
   async processChatMessage(text: string): Promise<string> {
     this.emitLog(`Chat message received: "${text.substring(0, 100)}"`)
 
-    const prompt = this.isUnconfigured()
-      ? this.buildSetupPrompt(text)
-      : this.buildChatPrompt(text)
-
+    let prompt: string
+    let activeSkill: { name: string } | undefined
     if (this.isUnconfigured()) {
+      prompt = this.buildSetupPrompt(text)
       this.emitLog('Agent is not configured — running setup from user message')
+    } else {
+      const result = this.buildChatPrompt(text)
+      prompt = result.prompt
+      activeSkill = result.activeSkill
     }
 
-    const response = await this.agentTurn(prompt, 'chat')
+    const response = await this.agentTurn(prompt, 'chat', false, undefined, undefined, activeSkill)
     this.emitLog(`Chat response: "${response.substring(0, 100)}"`)
 
     this.appendDailyMemory(`chat: "${text.substring(0, 100)}" -> "${response.substring(0, 100)}"`)
@@ -946,15 +1028,18 @@ export class AgentGateway {
     }
     this.emitLog(`Chat message received (stream): "${text.substring(0, 100)}"`)
 
-    const prompt = this.isUnconfigured()
-      ? this.buildSetupPrompt(text)
-      : this.buildChatPrompt(text)
-
+    let prompt: string
+    let activeSkill: { name: string } | undefined
     if (this.isUnconfigured()) {
+      prompt = this.buildSetupPrompt(text)
       this.emitLog('Agent is not configured — running setup from user message')
+    } else {
+      const result = this.buildChatPrompt(text)
+      prompt = result.prompt
+      activeSkill = result.activeSkill
     }
 
-    const response = await this.agentTurn(prompt, 'chat', false, undefined, writer)
+    const response = await this.agentTurn(prompt, 'chat', false, undefined, writer, activeSkill)
     this.emitLog(`Chat response (stream): "${response.substring(0, 100)}"`)
 
     this.appendDailyMemory(`chat: "${text.substring(0, 100)}" -> "${response.substring(0, 100)}"`)
@@ -991,8 +1076,26 @@ export class AgentGateway {
     isHeartbeat: boolean = false,
     streamTarget?: { adapter: ChannelAdapter; channelId: string },
     uiWriter?: { write(chunk: Record<string, any>): void },
+    activeSkill?: { name: string },
   ): Promise<string> {
+    if (activeSkill) {
+      const skillOverride = [
+        `## MCP Server Discovery — Skill Active`,
+        ``,
+        `The skill "${activeSkill.name}" has been loaded for this request.`,
+        `Follow the skill's instructions directly for this integration:`,
+        `- Call mcp_install if the skill says to (ensures server connection)`,
+        `- Call COMPOSIO_MANAGE_CONNECTIONS if needed (ensures auth)`,
+        `- Proceed to execution with the tool slugs from the skill`,
+        ``,
+        `You can still use mcp_search if you need additional integrations beyond what the skill provides.`,
+      ].join('\n')
+      this.promptOverrides.set('mcp_discovery_guide', skillOverride)
+    }
     const systemPrompt = this.loadBootstrapContext()
+    if (activeSkill) {
+      this.promptOverrides.delete('mcp_discovery_guide')
+    }
     const session = this.sessionManager.getOrCreate(sessionId)
     const modelId = session.modelOverride || this.config.model.name
     const provider = this.config.model.provider
@@ -1015,16 +1118,30 @@ export class AgentGateway {
       : createAllTools(toolContext)
 
     const mcpTools = this.mcpClientManager.getTools()
-    const assembledTools = mcpTools.length > 0 ? [...baseTools, ...mcpTools] : baseTools
+    let assembledTools = mcpTools.length > 0 ? [...baseTools, ...mcpTools] : baseTools
 
     let staticTools = assembledTools
     if (this.toolMocks.size > 0) {
       const existingNames = new Set(assembledTools.map(t => t.name))
+      const gateway = this
 
       // Wrap existing tools with mock interceptors
       staticTools = assembledTools.map(tool => {
         const mockFn = this.toolMocks.get(tool.name)
         if (!mockFn) return tool
+
+        // Special handling for mcp_install: promote hidden mocks listed in the response
+        if (tool.name === 'mcp_install') {
+          return {
+            ...tool,
+            execute: async (_id: string, params: any) => {
+              const result = mockFn(params)
+              gateway._promoteHiddenMocksFromInstall(result)
+              return textResult(result)
+            },
+          }
+        }
+
         return {
           ...tool,
           execute: async (_id: string, params: any) => {
@@ -1035,8 +1152,10 @@ export class AgentGateway {
       })
 
       // Inject synthetic tool definitions for mocked tools not in the base set
+      // Skip hidden tools — they become available only after mcp_install promotes them
       for (const [name, mockFn] of this.toolMocks) {
         if (existingNames.has(name)) continue
+        if (this.hiddenMockTools.has(name)) continue
         const synDef = this.syntheticTools.get(name)
         const paramProps: Record<string, any> = {}
         if (synDef?.paramKeys) {
@@ -1062,7 +1181,9 @@ export class AgentGateway {
     // Dynamic tools proxy: pi-agent-core uses tools.find() and iterates tools.
     // When mcp_install hot-adds servers mid-turn, their tools must be visible
     // immediately. This proxy merges staticTools with live MCP tools on access.
+    // Also includes promotedMockTools (hidden mocks promoted via mock mcp_install).
     const mcpMgr = this.mcpClientManager
+    const promoted = this.promotedMockTools
     const staticNames = new Set(staticTools.map(t => t.name))
     const tools = new Proxy(staticTools, {
       get(target, prop, receiver) {
@@ -1071,7 +1192,9 @@ export class AgentGateway {
             prop === Symbol.iterator || prop === 'length' ||
             prop === 'slice' || prop === 'concat' || prop === 'includes') {
           const liveMcpTools = mcpMgr.getTools().filter(t => !staticNames.has(t.name))
-          const merged = liveMcpTools.length > 0 ? [...target, ...liveMcpTools] : target
+          const promotedNew = promoted.filter(t => !staticNames.has(t.name))
+          const extras = [...liveMcpTools, ...promotedNew]
+          const merged = extras.length > 0 ? [...target, ...extras] : target
           if (prop === 'length') return merged.length
           if (prop === Symbol.iterator) return merged[Symbol.iterator].bind(merged)
           return (merged as any)[prop].bind(merged)

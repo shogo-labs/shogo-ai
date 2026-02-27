@@ -16,6 +16,7 @@
     "@aws-sdk/client-s3": "^3.975.0",
     "@aws-sdk/client-ses": "^3.700.0",
     "@aws-sdk/s3-request-presigner": "^3.700.0",
+    "@composio/core": "^0.6.3",
     "@kubernetes/client-node": "^1.4.0",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/exporter-metrics-otlp-http": "^0.212.0",

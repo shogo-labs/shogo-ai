@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   View,
   Text,
@@ -6,9 +6,12 @@ import {
   ScrollView,
   ActivityIndicator,
   TextInput,
+  Linking,
+  Platform,
 } from 'react-native'
-import { Server, RefreshCw, ChevronDown, ChevronRight, Key } from 'lucide-react-native'
+import { Server, RefreshCw, ChevronDown, ChevronRight, Key, Link2, CheckCircle2 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { API_URL } from '../../../lib/api'
 
 interface MCPCatalogEntry {
   id: string
@@ -21,6 +24,8 @@ interface MCPCatalogEntry {
   providedTools: string[]
   icon: string
   cloudCompatible: boolean
+  authType?: 'composio' | 'api_key' | 'none'
+  composioToolkit?: string
 }
 
 interface CategoryMeta {
@@ -44,6 +49,8 @@ export function MCPServersPanel({ projectId, agentUrl, visible }: MCPServersPane
   const [expandedCategory, setExpandedCategory] = useState<string | null>(null)
   const [envInputs, setEnvInputs] = useState<Record<string, Record<string, string>>>({})
   const [showEnvForm, setShowEnvForm] = useState<string | null>(null)
+  const [composioConnections, setComposioConnections] = useState<Record<string, boolean>>({})
+  const [connecting, setConnecting] = useState<string | null>(null)
 
   const loadData = useCallback(async () => {
     if (!agentUrl) return
@@ -71,12 +78,30 @@ export function MCPServersPanel({ projectId, agentUrl, visible }: MCPServersPane
           }
         }
       }
+
+      // Load Composio connection status for entries with authType: 'composio'
+      try {
+        const connectionsRes = await fetch(
+          `${API_URL}/api/integrations/connections?projectId=${projectId}`,
+          { credentials: 'include' },
+        )
+        if (connectionsRes.ok) {
+          const connectionsData = await connectionsRes.json()
+          const connMap: Record<string, boolean> = {}
+          for (const conn of connectionsData.data || []) {
+            connMap[conn.toolkit?.toLowerCase()] = conn.status === 'active'
+          }
+          setComposioConnections(connMap)
+        }
+      } catch {
+        // Composio status check is non-critical
+      }
     } catch (err: any) {
       setError(err.message)
     } finally {
       setIsLoading(false)
     }
-  }, [agentUrl])
+  }, [agentUrl, projectId])
 
   useEffect(() => {
     if (visible) loadData()
@@ -123,6 +148,93 @@ export function MCPServersPanel({ projectId, agentUrl, visible }: MCPServersPane
       }
     },
     [agentUrl, enabledServers, envInputs],
+  )
+
+  const handleComposioConnect = useCallback(
+    async (entry: MCPCatalogEntry) => {
+      if (!entry.composioToolkit) return
+      setConnecting(entry.id)
+      setError(null)
+      try {
+        const callbackUrl = `${API_URL}/api/integrations/callback`
+        const res = await fetch(`${API_URL}/api/integrations/connect`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            toolkit: entry.composioToolkit,
+            projectId,
+            callbackUrl,
+          }),
+        })
+        if (!res.ok) {
+          const data = await res.json()
+          throw new Error(data.error || 'Failed to initiate connection')
+        }
+        const data = await res.json()
+        const redirectUrl = data.data?.redirectUrl
+        if (redirectUrl) {
+          if (Platform.OS === 'web') {
+            const popup = window.open(redirectUrl, 'composio-connect', 'width=600,height=700,popup=yes')
+            const checkInterval = setInterval(() => {
+              if (popup?.closed) {
+                clearInterval(checkInterval)
+                setConnecting(null)
+                loadData()
+              }
+            }, 500)
+            setTimeout(() => {
+              clearInterval(checkInterval)
+              setConnecting(null)
+              loadData()
+            }, 120_000)
+          } else {
+            await Linking.openURL(redirectUrl)
+            setTimeout(() => {
+              setConnecting(null)
+              loadData()
+            }, 5000)
+          }
+        }
+      } catch (err: any) {
+        setError(err.message)
+        setConnecting(null)
+      }
+    },
+    [projectId, loadData],
+  )
+
+  const handleComposioDisconnect = useCallback(
+    async (entry: MCPCatalogEntry) => {
+      if (!entry.composioToolkit) return
+      setConnecting(entry.id)
+      try {
+        const statusRes = await fetch(
+          `${API_URL}/api/integrations/status/${entry.composioToolkit}?projectId=${projectId}`,
+          { credentials: 'include' },
+        )
+        if (statusRes.ok) {
+          const statusData = await statusRes.json()
+          const connectionId = statusData.data?.connectionId
+          if (connectionId) {
+            await fetch(`${API_URL}/api/integrations/connections/${connectionId}`, {
+              method: 'DELETE',
+              credentials: 'include',
+            })
+          }
+        }
+        setComposioConnections((prev) => {
+          const next = { ...prev }
+          delete next[entry.composioToolkit!.toLowerCase()]
+          return next
+        })
+      } catch (err: any) {
+        setError(err.message)
+      } finally {
+        setConnecting(null)
+      }
+    },
+    [projectId],
   )
 
   const grouped = useMemo(() => {
@@ -206,6 +318,11 @@ export function MCPServersPanel({ projectId, agentUrl, visible }: MCPServersPane
                         const isEnabled = entry.id in enabledServers
                         const isToggling = toggling === entry.id
                         const showingEnv = showEnvForm === entry.id
+                        const isComposio = entry.authType === 'composio'
+                        const isComposioConnected = isComposio && entry.composioToolkit
+                          ? !!composioConnections[entry.composioToolkit.toLowerCase()]
+                          : false
+                        const isConnecting = connecting === entry.id
 
                         return (
                           <View
@@ -223,6 +340,14 @@ export function MCPServersPanel({ projectId, agentUrl, visible }: MCPServersPane
                                     <View className="px-1 py-0.5 rounded bg-amber-500/10">
                                       <Text className="text-[10px] text-amber-600">
                                         Desktop only
+                                      </Text>
+                                    </View>
+                                  )}
+                                  {isComposioConnected && (
+                                    <View className="px-1.5 py-0.5 rounded-full bg-green-500/10 flex-row items-center gap-1">
+                                      <CheckCircle2 size={10} color="#22c55e" />
+                                      <Text className="text-[10px] text-green-600 font-medium">
+                                        Connected
                                       </Text>
                                     </View>
                                   )}
@@ -244,7 +369,7 @@ export function MCPServersPanel({ projectId, agentUrl, visible }: MCPServersPane
                                     </Text>
                                   )}
                                 </View>
-                                {Object.keys(entry.requiredEnv).length > 0 && !isEnabled && (
+                                {!isComposio && Object.keys(entry.requiredEnv).length > 0 && !isEnabled && (
                                   <View className="flex-row items-center gap-1 mt-1.5">
                                     <Key size={10} className="text-muted-foreground" />
                                     <Text className="text-[10px] text-muted-foreground">
@@ -254,39 +379,72 @@ export function MCPServersPanel({ projectId, agentUrl, visible }: MCPServersPane
                                 )}
                               </View>
 
-                              {/* Toggle switch */}
-                              <Pressable
-                                onPress={() => handleToggle(entry)}
-                                disabled={isToggling}
-                                style={{
-                                  marginTop: 4,
-                                  width: 44,
-                                  height: 24,
-                                  borderRadius: 12,
-                                  backgroundColor: isEnabled ? '#3b82f6' : '#d1d5db',
-                                  justifyContent: 'center',
-                                  paddingHorizontal: 2,
-                                  opacity: isToggling ? 0.5 : 1,
-                                }}
-                              >
-                                <View
+                              {/* Composio OAuth: Connect/Disconnect button */}
+                              {isComposio ? (
+                                <Pressable
+                                  onPress={() =>
+                                    isComposioConnected
+                                      ? handleComposioDisconnect(entry)
+                                      : handleComposioConnect(entry)
+                                  }
+                                  disabled={isConnecting}
+                                  className={`mt-1 px-3 py-1.5 rounded-md ${
+                                    isComposioConnected
+                                      ? 'border border-border active:bg-muted'
+                                      : 'bg-primary active:bg-primary/80'
+                                  }`}
+                                  style={{ opacity: isConnecting ? 0.5 : 1 }}
+                                >
+                                  {isConnecting ? (
+                                    <ActivityIndicator size="small" color={isComposioConnected ? '#666' : '#fff'} />
+                                  ) : (
+                                    <View className="flex-row items-center gap-1.5">
+                                      <Link2 size={12} color={isComposioConnected ? '#666' : '#fff'} />
+                                      <Text
+                                        className={`text-xs font-medium ${
+                                          isComposioConnected ? 'text-foreground' : 'text-primary-foreground'
+                                        }`}
+                                      >
+                                        {isComposioConnected ? 'Disconnect' : 'Connect'}
+                                      </Text>
+                                    </View>
+                                  )}
+                                </Pressable>
+                              ) : (
+                                /* Standard toggle switch for non-Composio entries */
+                                <Pressable
+                                  onPress={() => handleToggle(entry)}
+                                  disabled={isToggling}
                                   style={{
-                                    width: 20,
-                                    height: 20,
-                                    borderRadius: 10,
-                                    backgroundColor: '#ffffff',
-                                    shadowColor: '#000',
-                                    shadowOffset: { width: 0, height: 1 },
-                                    shadowOpacity: 0.2,
-                                    shadowRadius: 2,
-                                    elevation: 2,
-                                    transform: [{ translateX: isEnabled ? 20 : 0 }],
+                                    marginTop: 4,
+                                    width: 44,
+                                    height: 24,
+                                    borderRadius: 12,
+                                    backgroundColor: isEnabled ? '#3b82f6' : '#d1d5db',
+                                    justifyContent: 'center',
+                                    paddingHorizontal: 2,
+                                    opacity: isToggling ? 0.5 : 1,
                                   }}
-                                />
-                              </Pressable>
+                                >
+                                  <View
+                                    style={{
+                                      width: 20,
+                                      height: 20,
+                                      borderRadius: 10,
+                                      backgroundColor: '#ffffff',
+                                      shadowColor: '#000',
+                                      shadowOffset: { width: 0, height: 1 },
+                                      shadowOpacity: 0.2,
+                                      shadowRadius: 2,
+                                      elevation: 2,
+                                      transform: [{ translateX: isEnabled ? 20 : 0 }],
+                                    }}
+                                  />
+                                </Pressable>
+                              )}
                             </View>
 
-                            {showingEnv && (
+                            {showingEnv && !isComposio && (
                               <View className="px-3 pb-3 ml-9">
                                 <View className="border border-border rounded-md p-3 bg-muted/30 gap-2">
                                   <Text className="text-xs font-medium text-foreground">

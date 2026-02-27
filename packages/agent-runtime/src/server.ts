@@ -601,12 +601,14 @@ app.delete('/agent/prompt-override', (c) => {
 })
 
 // Session reset — used by eval runner to clear conversation history between tests
-app.post('/agent/session/reset', (c) => {
+app.post('/agent/session/reset', async (c) => {
   if (!agentGateway) {
     return c.json({ error: 'Agent gateway not running' }, 503)
   }
   const sm = agentGateway.getSessionManager()
   sm.clearHistory('chat')
+  agentGateway.reloadConfig()
+  await agentGateway.getMCPClientManager().stopAll()
   return c.json({ ok: true })
 })
 
@@ -621,17 +623,20 @@ app.post('/agent/tool-mocks', async (c) => {
       response: any
       description?: string
       paramKeys?: string[]
+      hidden?: boolean
     } | {
       type: 'pattern'
       patterns: Array<{ match: Record<string, string>; response: any }>
       default?: any
       description?: string
       paramKeys?: string[]
+      hidden?: boolean
     }>
   }
 
   const fns: Record<string, (params: Record<string, any>) => any> = {}
   const syntheticDefs: Record<string, { description: string; paramKeys: string[] }> = {}
+  const hiddenTools = new Set<string>()
 
   for (const [toolName, spec] of Object.entries(body.mocks)) {
     if (spec.type === 'static') {
@@ -658,8 +663,11 @@ app.post('/agent/tool-mocks', async (c) => {
         paramKeys: spec.paramKeys || [],
       }
     }
+    if ((spec as any).hidden) {
+      hiddenTools.add(toolName)
+    }
   }
-  agentGateway.setToolMocks(fns, syntheticDefs)
+  agentGateway.setToolMocks(fns, syntheticDefs, hiddenTools)
   return c.json({ ok: true, mockedTools: Object.keys(fns) })
 })
 

@@ -5,11 +5,8 @@
  * Memory is stored as markdown files in the workspace/memory/ directory.
  */
 
-import type { AgentEval, EvalResult } from './types'
-
-function usedTool(result: EvalResult, name: string): boolean {
-  return result.toolCalls.some(t => t.name === name)
-}
+import type { AgentEval } from './types'
+import { usedTool } from './eval-helpers'
 
 export const MEMORY_EVALS: AgentEval[] = [
   {

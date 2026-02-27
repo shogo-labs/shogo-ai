@@ -33,6 +33,7 @@ import { calculateCreditCost } from './lib/credit-cost'
 import { openSession as openBillingSession, closeSession as closeBillingSession } from './lib/proxy-billing-session'
 import { adminRoutes } from './routes/admin'
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
+import { integrationRoutes } from './routes/integrations'
 import { requireSuperAdmin } from './middleware/super-admin'
 // Generated admin CRUD routes (unrestricted, middleware-protected)
 import { createAdminRoutes } from './generated/admin-routes'
@@ -3821,6 +3822,9 @@ app.route('/api/admin', adminRoutes())
 
 // Scoped analytics routes handle their own auth (workspace/project membership checks)
 app.route('/api', scopedAnalyticsRoutes())
+
+// Composio integration routes for managed OAuth (connect/disconnect/status)
+app.route('/api', integrationRoutes())
 
 // =============================================================================
 // Current User Route (/api/me) - Returns user profile with role

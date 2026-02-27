@@ -10,29 +10,17 @@
  */
 
 import type { AgentEval, EvalResult, ValidationPhase } from './types'
+import { usedTool, toolCallCount, responseContains } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Canvas-specific helpers
 // ---------------------------------------------------------------------------
-
-function usedTool(result: EvalResult, toolName: string): boolean {
-  return result.toolCalls.some(t => t.name === toolName)
-}
-
-function toolCallCount(result: EvalResult, toolName: string): number {
-  return result.toolCalls.filter(t => t.name === toolName).length
-}
 
 function canvasState(result: EvalResult): any {
   const stateCall = result.toolCalls.find(t =>
     t.name === 'canvas_create' || t.name === 'canvas_update' || t.name === 'canvas_data'
   )
   return stateCall?.output
-}
-
-function responseContains(result: EvalResult, ...terms: string[]): boolean {
-  const text = result.responseText.toLowerCase()
-  return terms.every(t => text.includes(t.toLowerCase()))
 }
 
 /**
