@@ -203,7 +203,7 @@ function SettingsSidebar({
   return (
     <View style={{ width: 210 }} className="pt-4 pb-3 px-3">
       <Pressable
-        onPress={() => router.back()}
+        onPress={() => router.canGoBack() ? router.back() : router.replace('/(app)/projects')}
         className="flex-row items-center gap-1 px-2 py-1.5 mb-4"
       >
         <ArrowLeft size={14} className="text-muted-foreground" />
@@ -1908,7 +1908,7 @@ export default observer(function SettingsPage() {
   return (
     <View className="flex-1 bg-background">
       <View className="flex-row items-center gap-3 px-4 py-3 border-b border-border">
-        <Pressable onPress={() => router.back()}>
+        <Pressable onPress={() => router.canGoBack() ? router.back() : router.replace('/(app)/projects')}>
           <ArrowLeft size={20} className="text-foreground" />
         </Pressable>
         <Text className="text-xl font-bold text-foreground">Settings</Text>
