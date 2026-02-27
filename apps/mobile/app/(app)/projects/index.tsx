@@ -57,6 +57,12 @@ import {
 } from '@shogo/shared-app/domain'
 import type { IDomainStore } from '@shogo/domain-stores'
 import { cn } from '@shogo/shared-ui/primitives'
+import {
+  Popover,
+  PopoverBackdrop,
+  PopoverBody,
+  PopoverContent,
+} from '@/components/ui/popover'
 import { useAuth } from '../../../contexts/auth'
 
 // Types
@@ -112,7 +118,7 @@ export default observer(function AllProjectsPage() {
   const { width } = useWindowDimensions()
 
   type VisibilityFilter = 'any' | 'public' | 'private'
-  type StatusFilter = 'any' | 'draft' | 'published'
+  type StatusFilter = 'any' | 'draft' | 'active' | 'archived'
 
   // State
   const [searchQuery, setSearchQuery] = useState('')
@@ -127,9 +133,9 @@ export default observer(function AllProjectsPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [newFolderModalVisible, setNewFolderModalVisible] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
-  const [showSortMenu, setShowSortMenu] = useState(false)
-  const [showVisibilityMenu, setShowVisibilityMenu] = useState(false)
-  const [showStatusMenu, setShowStatusMenu] = useState(false)
+  const [sortOpen, setSortOpen] = useState(false)
+  const [visibilityOpen, setVisibilityOpen] = useState(false)
+  const [statusOpen, setStatusOpen] = useState(false)
 
   // Determine grid columns based on screen width
   const numColumns = viewMode === 'grid' ? (width >= 768 ? 3 : 2) : 1
@@ -372,23 +378,14 @@ export default observer(function AllProjectsPage() {
         ? 'Date created'
         : 'Alphabetical'
 
-  const handleSortPress = useCallback(() => {
-    setShowSortMenu((v) => !v)
-    setShowVisibilityMenu(false)
-    setShowStatusMenu(false)
-  }, [])
+  const visibilityLabel =
+    visibilityFilter === 'any' ? 'Any visibility' : visibilityFilter === 'public' ? 'Public' : 'Private'
 
-  const handleVisibilityFilter = useCallback(() => {
-    setShowVisibilityMenu((v) => !v)
-    setShowSortMenu(false)
-    setShowStatusMenu(false)
-  }, [])
-
-  const handleStatusFilter = useCallback(() => {
-    setShowStatusMenu((v) => !v)
-    setShowSortMenu(false)
-    setShowVisibilityMenu(false)
-  }, [])
+  const statusLabel =
+    statusFilter === 'any' ? 'Any status'
+      : statusFilter === 'draft' ? 'Draft'
+        : statusFilter === 'active' ? 'Active'
+          : 'Archived'
 
   const handleCreateFolder = useCallback(async () => {
     const name = newFolderName.trim()
@@ -745,27 +742,27 @@ export default observer(function AllProjectsPage() {
           />
         </View>
 
-        {/* Dismiss overlay for open dropdowns */}
-        {(showSortMenu || showVisibilityMenu || showStatusMenu) && (
-          <Pressable
-            onPress={() => { setShowSortMenu(false); setShowVisibilityMenu(false); setShowStatusMenu(false) }}
-            style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 40 }}
-          />
-        )}
-
         {/* Sort + Filters + View toggle row */}
-        <View className="flex-row items-center gap-1.5 flex-wrap" style={{ zIndex: 50 }}>
+        <View className="flex-row items-center gap-1.5 flex-wrap">
           {/* Sort */}
-          <View className="relative">
-            <Pressable
-              onPress={handleSortPress}
-              className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input"
-            >
-              <Text className="text-xs text-foreground">{sortLabel}</Text>
-              <ChevronDown size={14} className="text-muted-foreground" />
-            </Pressable>
-            {showSortMenu && (
-              <View className="absolute top-full left-0 mt-1 z-50 bg-card border border-border rounded-lg shadow-lg overflow-hidden" style={{ minWidth: 150 }}>
+          <Popover
+            placement="bottom left"
+            isOpen={sortOpen}
+            onOpen={() => setSortOpen(true)}
+            onClose={() => setSortOpen(false)}
+            trigger={(triggerProps) => (
+              <Pressable
+                {...triggerProps}
+                className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input"
+              >
+                <Text className="text-xs text-foreground">{sortLabel}</Text>
+                <ChevronDown size={14} className="text-muted-foreground" />
+              </Pressable>
+            )}
+          >
+            <PopoverBackdrop />
+            <PopoverContent className="p-0 min-w-[150px]">
+              <PopoverBody>
                 {([
                   { value: 'lastEdited' as SortBy, label: 'Last edited' },
                   { value: 'dateCreated' as SortBy, label: 'Date created' },
@@ -773,7 +770,7 @@ export default observer(function AllProjectsPage() {
                 ] as const).map((item) => (
                   <Pressable
                     key={item.value}
-                    onPress={() => { setSortBy(item.value); setShowSortMenu(false) }}
+                    onPress={() => { setSortBy(item.value); setSortOpen(false) }}
                     className={cn('px-3 py-2 active:bg-muted', sortBy === item.value && 'bg-accent')}
                   >
                     <Text className={cn('text-xs', sortBy === item.value ? 'text-foreground font-medium' : 'text-foreground')}>
@@ -781,23 +778,29 @@ export default observer(function AllProjectsPage() {
                     </Text>
                   </Pressable>
                 ))}
-              </View>
-            )}
-          </View>
+              </PopoverBody>
+            </PopoverContent>
+          </Popover>
 
           {/* Visibility filter */}
-          <View className="relative">
-            <Pressable
-              onPress={handleVisibilityFilter}
-              className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input"
-            >
-              <Text className="text-xs text-foreground">
-                {visibilityFilter === 'any' ? 'Any visibility' : visibilityFilter === 'public' ? 'Public' : 'Private'}
-              </Text>
-              <ChevronDown size={14} className="text-muted-foreground" />
-            </Pressable>
-            {showVisibilityMenu && (
-              <View className="absolute top-full left-0 mt-1 z-50 bg-card border border-border rounded-lg shadow-lg overflow-hidden" style={{ minWidth: 150 }}>
+          <Popover
+            placement="bottom left"
+            isOpen={visibilityOpen}
+            onOpen={() => setVisibilityOpen(true)}
+            onClose={() => setVisibilityOpen(false)}
+            trigger={(triggerProps) => (
+              <Pressable
+                {...triggerProps}
+                className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input"
+              >
+                <Text className="text-xs text-foreground">{visibilityLabel}</Text>
+                <ChevronDown size={14} className="text-muted-foreground" />
+              </Pressable>
+            )}
+          >
+            <PopoverBackdrop />
+            <PopoverContent className="p-0 min-w-[150px]">
+              <PopoverBody>
                 {([
                   { value: 'any' as VisibilityFilter, label: 'Any visibility' },
                   { value: 'public' as VisibilityFilter, label: 'Public' },
@@ -805,7 +808,7 @@ export default observer(function AllProjectsPage() {
                 ] as const).map((item) => (
                   <Pressable
                     key={item.value}
-                    onPress={() => { setVisibilityFilter(item.value); setShowVisibilityMenu(false) }}
+                    onPress={() => { setVisibilityFilter(item.value); setVisibilityOpen(false) }}
                     className={cn('px-3 py-2 active:bg-muted', visibilityFilter === item.value && 'bg-accent')}
                   >
                     <Text className={cn('text-xs', visibilityFilter === item.value ? 'text-foreground font-medium' : 'text-foreground')}>
@@ -813,31 +816,38 @@ export default observer(function AllProjectsPage() {
                     </Text>
                   </Pressable>
                 ))}
-              </View>
-            )}
-          </View>
+              </PopoverBody>
+            </PopoverContent>
+          </Popover>
 
           {/* Status filter */}
-          <View className="relative">
-            <Pressable
-              onPress={handleStatusFilter}
-              className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input"
-            >
-              <Text className="text-xs text-foreground">
-                {statusFilter === 'any' ? 'Any status' : statusFilter === 'draft' ? 'Draft' : 'Published'}
-              </Text>
-              <ChevronDown size={14} className="text-muted-foreground" />
-            </Pressable>
-            {showStatusMenu && (
-              <View className="absolute top-full left-0 mt-1 z-50 bg-card border border-border rounded-lg shadow-lg overflow-hidden" style={{ minWidth: 150 }}>
+          <Popover
+            placement="bottom left"
+            isOpen={statusOpen}
+            onOpen={() => setStatusOpen(true)}
+            onClose={() => setStatusOpen(false)}
+            trigger={(triggerProps) => (
+              <Pressable
+                {...triggerProps}
+                className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input"
+              >
+                <Text className="text-xs text-foreground">{statusLabel}</Text>
+                <ChevronDown size={14} className="text-muted-foreground" />
+              </Pressable>
+            )}
+          >
+            <PopoverBackdrop />
+            <PopoverContent className="p-0 min-w-[150px]">
+              <PopoverBody>
                 {([
                   { value: 'any' as StatusFilter, label: 'Any status' },
                   { value: 'draft' as StatusFilter, label: 'Draft' },
-                  { value: 'published' as StatusFilter, label: 'Published' },
+                  { value: 'active' as StatusFilter, label: 'Active' },
+                  { value: 'archived' as StatusFilter, label: 'Archived' },
                 ] as const).map((item) => (
                   <Pressable
                     key={item.value}
-                    onPress={() => { setStatusFilter(item.value); setShowStatusMenu(false) }}
+                    onPress={() => { setStatusFilter(item.value); setStatusOpen(false) }}
                     className={cn('px-3 py-2 active:bg-muted', statusFilter === item.value && 'bg-accent')}
                   >
                     <Text className={cn('text-xs', statusFilter === item.value ? 'text-foreground font-medium' : 'text-foreground')}>
@@ -845,9 +855,9 @@ export default observer(function AllProjectsPage() {
                     </Text>
                   </Pressable>
                 ))}
-              </View>
-            )}
-          </View>
+              </PopoverBody>
+            </PopoverContent>
+          </Popover>
 
           {/* Spacer */}
           <View className="flex-1" />
