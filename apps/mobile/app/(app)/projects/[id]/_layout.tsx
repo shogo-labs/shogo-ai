@@ -48,6 +48,8 @@ import { EditModeProvider, useEditModeOptional } from '../../../../components/dy
 import { EditToolbar } from '../../../../components/dynamic-app/edit/EditToolbar'
 import { InspectorPanel } from '../../../../components/dynamic-app/edit/InspectorPanel'
 import { ComponentTreePanel } from '../../../../components/dynamic-app/edit/ComponentTreePanel'
+import { CanvasThemeProvider, CanvasThemedContainer } from '../../../../components/dynamic-app/CanvasThemeContext'
+import { CanvasThemePicker } from '../../../../components/dynamic-app/CanvasThemePicker'
 import { ProjectTopBar } from '../../../../components/project/ProjectTopBar'
 import {
   LogsPanel,
@@ -341,15 +343,17 @@ export default observer(function ProjectLayout() {
   )
 
   const canvasPanel = (
-    <EditModeProvider agentUrl={agentUrl}>
-      <CanvasPanel
-        surface={activeSurface}
-        connected={connected}
-        agentUrl={agentUrl}
-        onAction={handleCanvasAction}
-        onDataChange={updateLocalData}
-      />
-    </EditModeProvider>
+    <CanvasThemeProvider>
+      <EditModeProvider agentUrl={agentUrl}>
+        <CanvasPanel
+          surface={activeSurface}
+          connected={connected}
+          agentUrl={agentUrl}
+          onAction={handleCanvasAction}
+          onDataChange={updateLocalData}
+        />
+      </EditModeProvider>
+    </CanvasThemeProvider>
   )
 
   return (
@@ -506,25 +510,31 @@ function CanvasPanel({
     )
   }
 
+  const themePicker = <CanvasThemePicker />
+
   if (!surface) {
     return (
       <View className="flex-1">
-        <EditToolbar surfaceId={null} />
-        <View className="flex-1 items-center justify-center px-6">
-          <View
-            className={cn(
-              'w-3 h-3 rounded-full mb-3',
-              connected ? 'bg-emerald-500' : 'bg-muted',
-            )}
-          />
-          <Text className="text-foreground font-semibold mb-1">
-            {connected ? 'Connected' : 'Waiting for connection...'}
-          </Text>
-          <Text className="text-muted-foreground text-center text-sm">
-            {connected
-              ? 'The canvas will appear once the agent creates a UI. Ask it to build something!'
-              : 'Connecting to the agent runtime...'}
-          </Text>
+        <EditToolbar surfaceId={null} trailing={themePicker} />
+        <View className="flex-1 p-3">
+          <CanvasThemedContainer>
+            <View className="flex-1 items-center justify-center px-6">
+              <View
+                className={cn(
+                  'w-3 h-3 rounded-full mb-3',
+                  connected ? 'bg-emerald-500' : 'bg-muted',
+                )}
+              />
+              <Text className="text-foreground font-semibold mb-1">
+                {connected ? 'Connected' : 'Waiting for connection...'}
+              </Text>
+              <Text className="text-muted-foreground text-center text-sm">
+                {connected
+                  ? 'The canvas will appear once the agent creates a UI. Ask it to build something!'
+                  : 'Connecting to the agent runtime...'}
+              </Text>
+            </View>
+          </CanvasThemedContainer>
         </View>
       </View>
     )
@@ -532,19 +542,23 @@ function CanvasPanel({
 
   return (
     <View className="flex-1">
-      <EditToolbar surfaceId={surfaceId} components={surface.components} />
+      <EditToolbar surfaceId={surfaceId} components={surface.components} trailing={themePicker} />
       <View className="flex-1 flex-row">
         {isEditMode && showTreePanel && (
           <ComponentTreePanel surfaceId={surfaceId} components={surface.components} />
         )}
-        <ScrollView className="flex-1" contentContainerStyle={{ padding: 16 }}>
-          <DynamicAppRenderer
-            surface={surface}
-            agentUrl={agentUrl}
-            onAction={onAction}
-            onDataChange={onDataChange}
-          />
-        </ScrollView>
+        <View className="flex-1 p-3">
+          <CanvasThemedContainer>
+            <ScrollView className="flex-1" contentContainerStyle={{ padding: 16 }}>
+              <DynamicAppRenderer
+                surface={surface}
+                agentUrl={agentUrl}
+                onAction={onAction}
+                onDataChange={onDataChange}
+              />
+            </ScrollView>
+          </CanvasThemedContainer>
+        </View>
         {isEditMode && (
           <InspectorPanel surfaceId={surfaceId} components={surface.components} />
         )}

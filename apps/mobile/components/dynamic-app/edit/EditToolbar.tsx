@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import React, { useState, useCallback } from 'react'
 import { View, Pressable, Platform } from 'react-native'
 import { Text } from '@/components/ui/text'
 import { Pencil, Eye, ListTree, Plus, Trash2 } from 'lucide-react-native'
@@ -9,9 +9,10 @@ import type { ComponentDefinition } from '@shogo/shared-app/dynamic-app'
 interface EditToolbarProps {
   surfaceId: string | null
   components?: Map<string, ComponentDefinition>
+  trailing?: React.ReactNode
 }
 
-export function EditToolbar({ surfaceId, components }: EditToolbarProps) {
+export function EditToolbar({ surfaceId, components, trailing }: EditToolbarProps) {
   if (Platform.OS !== 'web') return null
 
   const {
@@ -99,6 +100,13 @@ export function EditToolbar({ surfaceId, components }: EditToolbarProps) {
                 <Text testID="component-breadcrumb" className="text-xs text-muted-foreground font-mono">{breadcrumb}</Text>
               </>
             )}
+          </>
+        )}
+
+        {trailing && (
+          <>
+            <View className="flex-1" />
+            {trailing}
           </>
         )}
       </View>

@@ -19,6 +19,8 @@ import { EditModeProvider, useEditModeOptional, type EditAction, type EditAction
 import { EditToolbar } from './edit/EditToolbar'
 import { InspectorPanel } from './edit/InspectorPanel'
 import { ComponentTreePanel } from './edit/ComponentTreePanel'
+import { CanvasThemeProvider, CanvasThemedContainer } from './CanvasThemeContext'
+import { CanvasThemePicker } from './CanvasThemePicker'
 
 export function DynamicAppDevPreview() {
   const [activeSurface, setActiveSurface] = useState<SurfaceState>(
@@ -30,7 +32,7 @@ export function DynamicAppDevPreview() {
   const [activeKey, setActiveKey] = useState<string>(Object.keys(DEMO_SURFACES)[0])
   const { colorScheme } = useColorScheme()
   const { theme, setTheme } = useTheme()
-  const isDark = colorScheme === 'dark'
+  const isDark = theme === 'system' ? colorScheme === 'dark' : theme === 'dark'
 
   const toggleTheme = useCallback(() => {
     setTheme(isDark ? 'light' : 'dark')
@@ -135,6 +137,7 @@ export function DynamicAppDevPreview() {
   }, [])
 
   return (
+    <CanvasThemeProvider>
     <EditModeProvider onEditAction={handleEditAction}>
       <View className="flex-1 flex-row bg-background text-foreground">
         {/* Sidebar */}
@@ -196,6 +199,7 @@ export function DynamicAppDevPreview() {
         <CanvasArea surface={activeSurface} onAction={handleAction} />
       </View>
     </EditModeProvider>
+    </CanvasThemeProvider>
   )
 }
 
@@ -206,18 +210,22 @@ function CanvasArea({ surface, onAction }: { surface: SurfaceState; onAction: (s
 
   return (
     <View className="flex-1">
-      <EditToolbar surfaceId={surface.surfaceId} components={surface.components} />
+      <EditToolbar surfaceId={surface.surfaceId} components={surface.components} trailing={<CanvasThemePicker />} />
       <View className="flex-1 flex-row">
         {isEditMode && showTreePanel && (
           <ComponentTreePanel surfaceId={surface.surfaceId} components={surface.components} />
         )}
-        <ScrollView className="flex-1" contentContainerStyle={{ padding: 16 }}>
-          <DynamicAppRenderer
-            surface={surface}
-            agentUrl={null}
-            onAction={onAction}
-          />
-        </ScrollView>
+        <View className="flex-1 p-3">
+          <CanvasThemedContainer>
+            <ScrollView className="flex-1" contentContainerStyle={{ padding: 16 }}>
+              <DynamicAppRenderer
+                surface={surface}
+                agentUrl={null}
+                onAction={onAction}
+              />
+            </ScrollView>
+          </CanvasThemedContainer>
+        </View>
         {isEditMode && (
           <InspectorPanel surfaceId={surface.surfaceId} components={surface.components} />
         )}

@@ -5,15 +5,11 @@
  * resolved props from the renderer engine.
  */
 
-import React, { createContext, useContext, type ReactNode } from 'react'
+import React, { createContext, useContext, useMemo, type ReactNode } from 'react'
 import { View, ScrollView, Platform } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Text } from '@/components/ui/text'
 import { Card } from '@/components/ui/card'
-
-export const CARD_SHADOW_STYLE = Platform.OS === 'web'
-  ? { boxShadow: '0 1px 3px 0 rgba(0,0,0,0.1), 0 1px 2px -1px rgba(0,0,0,0.1)' } as any
-  : {}
 
 // ---------------------------------------------------------------------------
 // Card Depth Context — tracks nesting level for visual hierarchy
@@ -21,6 +17,28 @@ export const CARD_SHADOW_STYLE = Platform.OS === 'web'
 
 const CardDepthContext = createContext(0)
 export const useCardDepth = () => useContext(CardDepthContext)
+
+// M3-inspired surface container classes: each depth progressively tints.
+// Colors defined in global.css as --color-surface-{0..3} and auto-switch
+// between light/dark via the .dark class — no JS theme detection needed.
+const SURFACE_BG = ['bg-surface-0', 'bg-surface-1', 'bg-surface-2', 'bg-surface-3']
+const SURFACE_BORDER = ['border-border', 'border-border/50', 'border-border/30', 'border-border/20']
+
+// Shadow diminishes with depth — nested cards feel visually "inset".
+const SHADOW_STYLES = [
+  Platform.OS === 'web' ? { boxShadow: '0 1px 3px 0 rgba(0,0,0,0.08), 0 1px 2px -1px rgba(0,0,0,0.08)' } as any : {},
+  Platform.OS === 'web' ? { boxShadow: '0 1px 2px 0 rgba(0,0,0,0.04)' } as any : {},
+]
+
+export function useCardSurfaceStyle(depth: number) {
+  return useMemo(() => {
+    const level = Math.min(depth, SURFACE_BG.length - 1)
+    const bgClass = SURFACE_BG[level]
+    const borderClass = SURFACE_BORDER[level]
+    const shadow = level < SHADOW_STYLES.length ? SHADOW_STYLES[level] : {}
+    return { bgClass, borderClass, shadow }
+  }, [depth])
+}
 
 const GAP_MAP: Record<string, string> = {
   none: 'gap-0',
@@ -135,20 +153,14 @@ interface CardProps {
 
 export function DynCard({ children, title, description, footer, className }: CardProps) {
   const depth = useCardDepth()
-  const isNested = depth > 0
-  const isEvenDepth = depth % 2 === 0
-
-  // Alternating bg: even depths (0, 2, 4…) = card surface, odd (1, 3, 5…) = muted surface
-  const bgClass = isEvenDepth ? 'bg-card' : 'bg-muted'
-  const borderClass = isNested ? 'border-border/40' : 'border-border'
-  const shadowStyle = isNested ? undefined : CARD_SHADOW_STYLE
+  const { bgClass, borderClass, shadow } = useCardSurfaceStyle(depth)
 
   return (
     <CardDepthContext.Provider value={depth + 1}>
       <Card
         variant="outline"
         className={cn('p-0 rounded-xl flex-1', bgClass, borderClass, className)}
-        style={shadowStyle}
+        style={shadow}
       >
         {(title || description) && (
           <View className="px-6 pt-6 pb-2">
@@ -158,7 +170,7 @@ export function DynCard({ children, title, description, footer, className }: Car
         )}
         <View className="px-6 pb-6">{children}</View>
         {footer && (
-          <View className="px-6 pb-6 pt-0 border-t border-border/40">
+          <View className="px-6 pb-6 pt-0 border-t border-border/30">
             <Text className="text-sm text-muted-foreground pt-3">{footer}</Text>
           </View>
         )}

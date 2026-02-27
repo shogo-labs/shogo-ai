@@ -12,7 +12,7 @@ import { Text } from '@/components/ui/text'
 import { Card } from '@/components/ui/card'
 import { TrendingUp, TrendingDown, Minus } from 'lucide-react-native'
 import { formatMetricValue, inferTrendDirection, formatCellValue } from '../smart-format'
-import { useCardDepth, CARD_SHADOW_STYLE } from './layout'
+import { useCardDepth, useCardSurfaceStyle } from './layout'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -42,18 +42,13 @@ interface MetricProps {
 export function DynMetric({ label, value, unit, trend, trendValue, description, className }: MetricProps) {
   const { displayValue, displayUnit } = formatMetricValue(value, unit)
   const depth = useCardDepth()
-  const isNested = depth > 0
-  const isEvenDepth = depth % 2 === 0
-
-  const bgClass = isEvenDepth ? 'bg-card' : 'bg-muted'
-  const borderClass = isNested ? 'border-border/40' : 'border-border'
-  const shadowStyle = isNested ? undefined : CARD_SHADOW_STYLE
+  const { bgClass, borderClass, shadow } = useCardSurfaceStyle(depth)
 
   const resolvedTrend = trend || inferTrendDirection(trendValue)
   const TrendIcon = resolvedTrend === 'up' ? TrendingUp : resolvedTrend === 'down' ? TrendingDown : Minus
 
   return (
-    <Card variant="outline" className={cn('p-4 gap-2 rounded-xl flex-1', bgClass, borderClass, className)} style={shadowStyle}>
+    <Card variant="outline" className={cn('p-4 gap-2 rounded-xl flex-1', bgClass, borderClass, className)} style={shadow}>
       <View className="flex flex-row items-center justify-between">
         <Text className="text-sm font-medium text-muted-foreground">{label}</Text>
         {resolvedTrend && (
