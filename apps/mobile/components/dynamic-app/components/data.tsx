@@ -6,16 +6,13 @@
  */
 
 import type { ReactNode } from 'react'
-import { View, Platform } from 'react-native'
+import { View } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Text } from '@/components/ui/text'
 import { Card } from '@/components/ui/card'
 import { TrendingUp, TrendingDown, Minus } from 'lucide-react-native'
 import { formatMetricValue, inferTrendDirection, formatCellValue } from '../smart-format'
-
-const CARD_SHADOW_STYLE = Platform.OS === 'web'
-  ? { boxShadow: '0 1px 3px 0 rgba(0,0,0,0.1), 0 1px 2px -1px rgba(0,0,0,0.1)' } as any
-  : {}
+import { useCardDepth, useCardSurfaceStyle } from './layout'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -44,12 +41,14 @@ interface MetricProps {
 
 export function DynMetric({ label, value, unit, trend, trendValue, description, className }: MetricProps) {
   const { displayValue, displayUnit } = formatMetricValue(value, unit)
+  const depth = useCardDepth()
+  const { bgClass, borderClass, shadow } = useCardSurfaceStyle(depth)
 
   const resolvedTrend = trend || inferTrendDirection(trendValue)
   const TrendIcon = resolvedTrend === 'up' ? TrendingUp : resolvedTrend === 'down' ? TrendingDown : Minus
 
   return (
-    <Card variant="outline" className={cn('p-4 gap-2 rounded-xl bg-card border-border flex-1', className)} style={CARD_SHADOW_STYLE}>
+    <Card variant="outline" className={cn('p-4 gap-2 rounded-xl flex-1', bgClass, borderClass, className)} style={shadow}>
       <View className="flex flex-row items-center justify-between">
         <Text className="text-sm font-medium text-muted-foreground">{label}</Text>
         {resolvedTrend && (

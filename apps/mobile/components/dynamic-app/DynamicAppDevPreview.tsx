@@ -3,49 +3,46 @@
  *
  * Standalone dev preview for the Dynamic App renderer.
  * Renders all demo surfaces with a sidebar selector for switching between them.
- * Matches the staging Tailwind/shadcn layout using NativeWind/Gluestack.
+ * Includes visual editing mode for testing the canvas editor.
  */
 
 import { useState, useCallback } from 'react'
 import { View, Pressable, ScrollView } from 'react-native'
 import { useColorScheme } from 'nativewind'
 import { Text } from '@/components/ui/text'
-import { MultiSurfaceRenderer } from './DynamicAppRenderer'
+import { DynamicAppRenderer } from './DynamicAppRenderer'
 import { DEMO_SURFACES, getAllDemoSurfaces } from './demo-surfaces'
-import type { SurfaceState } from './types'
+import type { SurfaceState, ComponentDefinition } from './types'
 import { Moon, Sun } from 'lucide-react-native'
 import { useTheme } from '../../contexts/theme'
+import { EditModeProvider, useEditModeOptional, type EditAction, type EditActionResult } from './edit/EditModeContext'
+import { EditToolbar } from './edit/EditToolbar'
+import { InspectorPanel } from './edit/InspectorPanel'
+import { ComponentTreePanel } from './edit/ComponentTreePanel'
+import { CanvasThemeProvider, CanvasThemedContainer } from './CanvasThemeContext'
+import { CanvasThemePicker } from './CanvasThemePicker'
 
 export function DynamicAppDevPreview() {
-  const [activeSurface, setActiveSurface] = useState<Map<string, SurfaceState>>(
+  const [activeSurface, setActiveSurface] = useState<SurfaceState>(
     () => {
       const first = Object.values(DEMO_SURFACES)[0]
-      const map = new Map<string, SurfaceState>()
-      map.set(first.surface.surfaceId, first.surface)
-      return map
+      return first.surface
     }
   )
   const [activeKey, setActiveKey] = useState<string>(Object.keys(DEMO_SURFACES)[0])
   const { colorScheme } = useColorScheme()
   const { theme, setTheme } = useTheme()
-  const isDark = colorScheme === 'dark'
+  const isDark = theme === 'system' ? colorScheme === 'dark' : theme === 'dark'
 
   const toggleTheme = useCallback(() => {
     setTheme(isDark ? 'light' : 'dark')
   }, [isDark, setTheme])
 
   const selectDemo = useCallback((key: string) => {
-    if (key === 'all') {
-      setActiveSurface(getAllDemoSurfaces())
-      setActiveKey('all')
-    } else {
-      const entry = DEMO_SURFACES[key]
-      if (entry) {
-        const map = new Map<string, SurfaceState>()
-        map.set(entry.surface.surfaceId, entry.surface)
-        setActiveSurface(map)
-        setActiveKey(key)
-      }
+    const entry = DEMO_SURFACES[key]
+    if (entry) {
+      setActiveSurface(entry.surface)
+      setActiveKey(key)
     }
   }, [])
 
@@ -57,94 +54,182 @@ export function DynamicAppDevPreview() {
 
   const [actionLog, setActionLog] = useState<any[]>([])
 
-  return (
-    <View className="flex-1 flex-row bg-background text-foreground">
-      {/* Sidebar */}
-      <View className="w-64 border-r border-border bg-background-muted/30 shrink-0">
-        <View className="p-4 border-b border-border flex-row items-center justify-between">
-          <View className="flex-1 mr-2">
-            <Text className="text-sm font-semibold">Dynamic App Preview</Text>
-            <Text className="text-xs text-muted-foreground mt-1">Visual QA for canvas components</Text>
-          </View>
-          <Pressable
-            onPress={toggleTheme}
-            className="w-8 h-8 items-center justify-center rounded-md shrink-0"
-          >
-            {isDark
-              ? <Sun size={16} className="text-foreground" />
-              : <Moon size={16} className="text-foreground" />
+  const handleEditAction = useCallback((action: EditAction): EditActionResult => {
+    setActiveSurface((prev) => {
+      const components = new Map(prev.components)
+
+      switch (action.action) {
+        case 'update': {
+          if (!action.componentId || !action.changes) return prev
+          const existing = components.get(action.componentId)
+          if (!existing) return prev
+          const updated = {
+            ...existing,
+            ...action.changes,
+            id: action.componentId,
+            component: (action.changes.component as any) || existing.component,
+          } as ComponentDefinition
+          components.set(action.componentId, updated)
+          break
+        }
+        case 'add': {
+          if (!action.component || !action.parentId) return prev
+          const id = (action.component.id as string) || `comp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`
+          const newComp = { ...action.component, id } as ComponentDefinition
+          components.set(id, newComp)
+          const parent = components.get(action.parentId)
+          if (parent) {
+            const childIds = Array.isArray(parent.children) ? [...(parent.children as string[])] : []
+            const idx = typeof action.index === 'number' ? Math.min(action.index, childIds.length) : childIds.length
+            childIds.splice(idx, 0, id)
+            components.set(action.parentId, { ...parent, children: childIds })
+          }
+          ;(action as any)._newComponentId = id
+          break
+        }
+        case 'delete': {
+          const ids = action.componentIds || (action.componentId ? [action.componentId] : [])
+          const deletedSet = new Set(ids)
+          for (const id of ids) {
+            components.delete(id)
+          }
+          for (const [, comp] of components) {
+            if (Array.isArray(comp.children)) {
+              const filtered = (comp.children as string[]).filter((id) => !deletedSet.has(id))
+              if (filtered.length !== (comp.children as string[]).length) {
+                components.set(comp.id, { ...comp, children: filtered })
+              }
             }
-          </Pressable>
-        </View>
-        <ScrollView className="flex-1">
-          <View className="p-3 gap-1">
-            {Object.entries(DEMO_SURFACES).map(([key, { label }]) => (
-              <Pressable
-                key={key}
-                onPress={() => selectDemo(key)}
-                className={`px-3 py-2 rounded-md ${
-                  activeKey === key
-                    ? 'bg-primary'
-                    : ''
-                }`}
-              >
-                <Text
-                  className={`text-sm ${
-                    activeKey === key
-                      ? 'text-primary-foreground font-medium'
-                      : 'text-foreground'
-                  }`}
-                >
-                  {label}
-                </Text>
-              </Pressable>
-            ))}
-            <View className="border-t border-border my-2" />
+            if (comp.child && deletedSet.has(comp.child)) {
+              const updated = { ...comp }
+              delete updated.child
+              components.set(comp.id, updated)
+            }
+          }
+          break
+        }
+        case 'move': {
+          if (!action.componentId || !action.newParentId) return prev
+          for (const [, comp] of components) {
+            if (Array.isArray(comp.children) && (comp.children as string[]).includes(action.componentId)) {
+              components.set(comp.id, {
+                ...comp,
+                children: (comp.children as string[]).filter((id) => id !== action.componentId),
+              })
+              break
+            }
+          }
+          const newParent = components.get(action.newParentId)
+          if (newParent) {
+            const childIds = Array.isArray(newParent.children) ? [...(newParent.children as string[])] : []
+            const idx = typeof action.index === 'number' ? Math.min(action.index, childIds.length) : childIds.length
+            childIds.splice(idx, 0, action.componentId!)
+            components.set(action.newParentId, { ...newParent, children: childIds })
+          }
+          break
+        }
+      }
+
+      return { ...prev, components, updatedAt: new Date().toISOString() }
+    })
+
+    return { ok: true, newComponentId: (action as any)._newComponentId }
+  }, [])
+
+  return (
+    <CanvasThemeProvider>
+    <EditModeProvider onEditAction={handleEditAction}>
+      <View className="flex-1 flex-row bg-background text-foreground">
+        {/* Sidebar */}
+        <View className="w-56 border-r border-border bg-background shrink-0">
+          <View className="p-3 border-b border-border flex-row items-center justify-between">
+            <View className="flex-1 mr-2">
+              <Text className="text-sm font-semibold">Dev Preview</Text>
+              <Text className="text-xs text-muted-foreground mt-0.5">Canvas Editor</Text>
+            </View>
             <Pressable
-              onPress={() => selectDemo('all')}
-              className={`px-3 py-2 rounded-md ${
-                activeKey === 'all'
-                  ? 'bg-primary'
-                  : ''
-              }`}
+              onPress={toggleTheme}
+              className="w-8 h-8 items-center justify-center rounded-md shrink-0"
             >
-              <Text
-                className={`text-sm ${
-                  activeKey === 'all'
-                    ? 'text-primary-foreground font-medium'
-                    : 'text-foreground'
-                }`}
-              >
-                All Surfaces
-              </Text>
+              {isDark
+                ? <Sun size={16} className="text-foreground" />
+                : <Moon size={16} className="text-foreground" />
+              }
             </Pressable>
           </View>
-
-          {/* Action Log */}
-          {actionLog.length > 0 && (
-            <View className="border-t border-border p-3">
-              <Text className="text-xs font-medium text-muted-foreground mb-2">Action Log</Text>
-              <View className="gap-1.5">
-                {actionLog.map((entry, i) => (
-                  <View key={i} className="bg-background rounded p-2 border border-border">
-                    <Text className="text-xs font-medium text-primary">{entry.action}</Text>
-                    {entry.context && Object.keys(entry.context).length > 0 && (
-                      <Text className="text-muted-foreground mt-0.5 text-[10px] font-mono">
-                        {JSON.stringify(entry.context, null, 2)}
-                      </Text>
-                    )}
-                  </View>
-                ))}
-              </View>
+          <ScrollView className="flex-1">
+            <View className="p-2 gap-0.5">
+              {Object.entries(DEMO_SURFACES).map(([key, { label }]) => (
+                <Pressable
+                  key={key}
+                  onPress={() => selectDemo(key)}
+                  className={`px-3 py-2 rounded-md ${
+                    activeKey === key ? 'bg-primary' : ''
+                  }`}
+                >
+                  <Text
+                    className={`text-sm ${
+                      activeKey === key
+                        ? 'text-primary-foreground font-medium'
+                        : 'text-foreground'
+                    }`}
+                  >
+                    {label}
+                  </Text>
+                </Pressable>
+              ))}
             </View>
-          )}
-        </ScrollView>
-      </View>
 
-      {/* Main Content */}
-      <ScrollView className="flex-1">
-        <MultiSurfaceRenderer surfaces={activeSurface} agentUrl={null} onAction={handleAction} />
-      </ScrollView>
+            {actionLog.length > 0 && (
+              <View className="border-t border-border p-2">
+                <Text className="text-xs font-medium text-muted-foreground mb-1">Action Log</Text>
+                <View className="gap-1">
+                  {actionLog.map((entry, i) => (
+                    <View key={i} className="bg-muted/50 rounded p-1.5">
+                      <Text className="text-[10px] font-medium text-primary">{entry.action}</Text>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            )}
+          </ScrollView>
+        </View>
+
+        {/* Main Content with Edit UI */}
+        <CanvasArea surface={activeSurface} onAction={handleAction} />
+      </View>
+    </EditModeProvider>
+    </CanvasThemeProvider>
+  )
+}
+
+function CanvasArea({ surface, onAction }: { surface: SurfaceState; onAction: (surfaceId: string, name: string, context?: Record<string, unknown>) => void }) {
+  const editMode = useEditModeOptional()
+  const isEditMode = editMode?.isEditMode ?? false
+  const showTreePanel = editMode?.showTreePanel ?? false
+
+  return (
+    <View className="flex-1">
+      <EditToolbar surfaceId={surface.surfaceId} components={surface.components} trailing={<CanvasThemePicker />} />
+      <View className="flex-1 flex-row">
+        {isEditMode && showTreePanel && (
+          <ComponentTreePanel surfaceId={surface.surfaceId} components={surface.components} />
+        )}
+        <View className="flex-1 p-3">
+          <CanvasThemedContainer>
+            <ScrollView className="flex-1" contentContainerStyle={{ padding: 16 }}>
+              <DynamicAppRenderer
+                surface={surface}
+                agentUrl={null}
+                onAction={onAction}
+              />
+            </ScrollView>
+          </CanvasThemedContainer>
+        </View>
+        {isEditMode && (
+          <InspectorPanel surfaceId={surface.surfaceId} components={surface.components} />
+        )}
+      </View>
     </View>
   )
 }

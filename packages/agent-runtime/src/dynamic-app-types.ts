@@ -106,6 +106,12 @@ export interface DeleteSurfaceMessage {
   surfaceId: string
 }
 
+export interface DeleteComponentsMessage {
+  type: 'deleteComponents'
+  surfaceId: string
+  componentIds: string[]
+}
+
 export interface ConfigureApiMessage {
   type: 'configureApi'
   surfaceId: string
@@ -121,6 +127,7 @@ export type DynamicAppMessage =
   | UpdateComponentsMessage
   | UpdateDataMessage
   | DeleteSurfaceMessage
+  | DeleteComponentsMessage
   | ConfigureApiMessage
 
 // ---------------------------------------------------------------------------

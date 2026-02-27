@@ -22,6 +22,12 @@
   --color-border: #e4e4e7;
   --color-input: #e4e4e7;
   --color-ring: #2563eb;
+
+  /* M3 surface container progression — each depth gets progressively darker */
+  --color-surface-0: #ffffff;
+  --color-surface-1: #f7f7f8;
+  --color-surface-2: #f0f0f1;
+  --color-surface-3: #eaeaeb;
 }
 
 .dark {
@@ -44,4 +50,10 @@
   --color-border: #333333;
   --color-input: #333333;
   --color-ring: #2196f3;
+
+  /* M3 surface container progression — each depth gets progressively lighter */
+  --color-surface-0: #1e1e1e;
+  --color-surface-1: #252526;
+  --color-surface-2: #2c2c2d;
+  --color-surface-3: #343435;
 }

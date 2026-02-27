@@ -96,6 +96,21 @@ export function useDynamicAppStream(agentUrl: string | null) {
           next.delete(msg.surfaceId)
           break
         }
+        case 'deleteComponents': {
+          const surface = next.get(msg.surfaceId)
+          if (surface) {
+            const updatedComponents = new Map(surface.components)
+            for (const id of msg.componentIds) {
+              updatedComponents.delete(id)
+            }
+            next.set(msg.surfaceId, {
+              ...surface,
+              components: updatedComponents,
+              updatedAt: now,
+            })
+          }
+          break
+        }
         case 'configureApi': {
           const surface = next.get(msg.surfaceId)
           if (surface) {

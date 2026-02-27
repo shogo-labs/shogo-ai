@@ -313,9 +313,20 @@ Full example:
   { "id": "task_row", "component": "Row", "children": ["task_title", "delete_btn"], "align": "center" }
   { "id": "task_title", "component": "Text", "text": { "path": "title" } }
   { "id": "delete_btn", "component": "Button", "label": "Delete", "variant": "destructive", "size": "sm",
-    "action": { "name": "delete", "mutation": { "endpoint": "/api/tasks/:id", "method": "DELETE", "params": { "id": { "path": "id" } } } } }`,
+    "action": { "name": "delete", "mutation": { "endpoint": "/api/tasks/:id", "method": "DELETE", "params": { "id": { "path": "id" } } } } }
+
+Search & filter: set filterPath to a JSON Pointer where a TextField writes its value, and filterFields to the item fields to search.
+The DataList will client-side filter items in real time (case-insensitive substring match).
+  { "id": "search", "component": "TextField", "placeholder": "Search...", "dataPath": "/searchTerm" }
+  { "id": "list", "component": "DataList", "children": { "path": "/tasks", "templateId": "row" },
+    "filterPath": "/searchTerm", "filterFields": ["title", "description"] }`,
     hasChildren: true,
-    props: { emptyText: str('Text to show when empty'), className: CLASS_PROP },
+    props: {
+      emptyText: str('Text to show when empty'),
+      filterPath: str('JSON Pointer to a search term in the data model (e.g. "/searchTerm"). When set with filterFields, items are filtered client-side in real time.'),
+      filterFields: arr('Item fields to match against the search term (e.g. ["title", "description"]). Used with filterPath for client-side filtering.'),
+      className: CLASS_PROP,
+    },
   },
 
   // ---- Interactive ----
@@ -354,6 +365,7 @@ Example: { id: "input", component: "TextField", placeholder: "Title...", dataPat
       disabled: bool('Disable the field'),
       action: ACTION_PROP,
       dataPath: str('JSON Pointer path — writes user input to the data model in real-time (e.g. "/newTitle")'),
+      debounceMs: num('Debounce delay in ms before writing to data model (useful for search inputs, e.g. 300)'),
       className: CLASS_PROP,
     },
   },
@@ -581,6 +593,15 @@ export function lintComponents(components: Array<{ id?: string; component?: stri
         severity: 'error',
         componentId: cid,
         message: `"${schema.type}" has dataPath "${comp.dataPath}" which doesn't start with "/". dataPath must be a JSON Pointer (e.g. "/newTitle"). Add a leading "/" to fix.`,
+      })
+    }
+
+    // filterPath prop validation (must be a JSON Pointer starting with /)
+    if (typeof comp.filterPath === 'string' && comp.filterPath && !comp.filterPath.startsWith('/')) {
+      messages.push({
+        severity: 'error',
+        componentId: cid,
+        message: `"${schema.type}" has filterPath "${comp.filterPath}" which doesn't start with "/". filterPath must be a JSON Pointer (e.g. "/searchTerm"). Add a leading "/" to fix.`,
       })
     }
 

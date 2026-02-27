@@ -136,6 +136,46 @@ function updateHasTestChecklist(result: EvalResult): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Search & filter helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Check that at least one canvas_update call includes a TextField component.
+ */
+function hasTextField(result: EvalResult): boolean {
+  const json = JSON.stringify(result.toolCalls.filter(t => t.name === 'canvas_update').map(t => t.input))
+  return json.includes('"TextField"')
+}
+
+/**
+ * Check that at least one TextField in canvas_update calls has a dataPath prop.
+ */
+function textFieldHasDataPath(result: EvalResult): boolean {
+  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
+  const json = JSON.stringify(updateCalls.map(t => t.input))
+  const textFieldPattern = /"component"\s*:\s*"TextField"[^}]*"dataPath"\s*:/
+  return textFieldPattern.test(json)
+}
+
+/**
+ * Check that a DataList component in canvas_update calls includes filterPath
+ * and filterFields props (client-side search wiring).
+ */
+function hasDataListWithFilter(result: EvalResult): boolean {
+  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
+  const json = JSON.stringify(updateCalls.map(t => t.input))
+  return json.includes('"filterPath"') && json.includes('"filterFields"')
+}
+
+/**
+ * Check that a Select component is present in canvas_update calls.
+ */
+function hasSelectComponent(result: EvalResult): boolean {
+  const json = JSON.stringify(result.toolCalls.filter(t => t.name === 'canvas_update').map(t => t.input))
+  return json.includes('"Select"')
+}
+
+// ---------------------------------------------------------------------------
 // Chart-specific helpers
 // ---------------------------------------------------------------------------
 
@@ -2560,5 +2600,445 @@ export const CANVAS_EVALS: AgentEval[] = [
       'Used bar chart for proportional distribution data when pie/donut is more appropriate',
       'Used line chart for non-sequential category data',
     ],
+  },
+
+  // ---- Search & Filter: Searchable Contact List ----
+  {
+    id: 'canvas-search-contacts',
+    name: 'Canvas: Searchable contact list',
+    category: 'canvas',
+    level: 2,
+    input: 'Build me a contact list with a search bar. I should be able to type a name and filter the list. Seed it with 6 sample contacts with name, email, and company fields.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-api-schema',
+        description: 'Used canvas_api_schema to define the Contact model',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_api_schema'),
+      },
+      {
+        id: 'used-api-seed',
+        description: 'Used canvas_api_seed to populate contacts',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_api_seed'),
+      },
+      {
+        id: 'has-textfield',
+        description: 'Includes a TextField component for search',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => hasTextField(r),
+      },
+      {
+        id: 'textfield-has-datapath',
+        description: 'TextField has a dataPath configured to write to data model',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => textFieldHasDataPath(r),
+      },
+      {
+        id: 'has-datalist',
+        description: 'Includes a DataList component for displaying contacts',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => JSON.stringify(r.toolCalls).includes('"DataList"'),
+      },
+      {
+        id: 'datalist-has-filter',
+        description: 'DataList has filterPath and filterFields for search wiring',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => hasDataListWithFilter(r),
+      },
+      {
+        id: 'minimum-components',
+        description: 'Has at least 8 components',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => hasMinimumComponents(r, 8),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 18 tool calls',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 18,
+      },
+    ],
+    antiPatterns: ['Search TextField not connected to DataList filtering', 'No TextField component for search'],
+  },
+
+  // ---- Search & Filter: Product Catalog with Search + CRUD ----
+  {
+    id: 'canvas-search-products',
+    name: 'Canvas: Product catalog with search and CRUD',
+    category: 'canvas',
+    level: 3,
+    input: 'I need a product catalog manager. Products have a name, category, price, and stock count. Include a search bar to filter products by name or category, and buttons to add new products and delete existing ones. Add 5 sample products.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-api-schema',
+        description: 'Used canvas_api_schema for Product model',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          return usedTool(r, 'canvas_api_schema') && json.includes('product') && json.includes('name') && json.includes('price')
+        },
+      },
+      {
+        id: 'used-api-seed',
+        description: 'Used canvas_api_seed to populate products',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_api_seed'),
+      },
+      {
+        id: 'has-textfield',
+        description: 'Includes a TextField for search',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => hasTextField(r),
+      },
+      {
+        id: 'textfield-has-datapath',
+        description: 'TextField has dataPath for search binding',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => textFieldHasDataPath(r),
+      },
+      {
+        id: 'has-datalist',
+        description: 'DataList or Table present for product display',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls)
+          return json.includes('"DataList"') || json.includes('"Table"')
+        },
+      },
+      {
+        id: 'datalist-has-filter',
+        description: 'DataList has filterPath + filterFields for search',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => hasDataListWithFilter(r),
+      },
+      {
+        id: 'all-buttons-have-mutations',
+        description: 'Every Button has a mutation in its action definition',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => allButtonsHaveMutations(r),
+      },
+      {
+        id: 'used-trigger-action',
+        description: 'Used canvas_trigger_action to test add/delete',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_trigger_action'),
+      },
+      {
+        id: 'trigger-action-succeeded',
+        description: 'canvas_trigger_action returned ok: true',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => triggerActionSucceeded(r),
+      },
+      {
+        id: 'used-inspect',
+        description: 'Used canvas_inspect after trigger',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => inspectAfterTrigger(r),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 25 tool calls',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 25,
+      },
+    ],
+    antiPatterns: ['Search not wired to DataList', 'Buttons missing mutation', 'Did not verify interactions'],
+  },
+
+  // ---- Search & Filter: Searchable FAQ Knowledge Base ----
+  {
+    id: 'canvas-search-faq',
+    name: 'Canvas: FAQ knowledge base with search and category filter',
+    category: 'canvas',
+    level: 3,
+    input: 'Create a FAQ knowledge base. Each entry has a question, answer, and category (General, Billing, Technical). Add a search bar that filters across both question and answer text, and a category dropdown to filter by category. Seed with 6 sample FAQs.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-api-schema',
+        description: 'Used canvas_api_schema for FAQ model',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_api_schema'),
+      },
+      {
+        id: 'used-api-seed',
+        description: 'Used canvas_api_seed to populate FAQs',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_api_seed'),
+      },
+      {
+        id: 'has-textfield',
+        description: 'Includes a TextField for text search',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => hasTextField(r),
+      },
+      {
+        id: 'has-select',
+        description: 'Includes a Select for category filter',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => hasSelectComponent(r),
+      },
+      {
+        id: 'datalist-has-filter',
+        description: 'DataList has filterPath connected to search input',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => hasDataListWithFilter(r),
+      },
+      {
+        id: 'has-faq-model',
+        description: 'FAQ model includes question, answer, category fields',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          return json.includes('question') && json.includes('answer') && json.includes('category')
+        },
+      },
+      {
+        id: 'minimum-components',
+        description: 'Has at least 10 components',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => hasMinimumComponents(r, 10),
+      },
+      {
+        id: 'has-card-sections',
+        description: 'Has Card-wrapped sections',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => hasCardWrappedSections(r),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 25 tool calls',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 25,
+      },
+      {
+        id: 'response-explains',
+        description: 'Agent response explains the search functionality',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => responseContains(r, 'search') || responseContains(r, 'filter'),
+      },
+    ],
+    antiPatterns: ['No search input', 'Search not connected to data list', 'Missing category filter'],
+  },
+
+  // ---- Search & Filter: Employee Directory with Server-Side Search ----
+  {
+    id: 'canvas-search-employees',
+    name: 'Canvas: Employee directory with server-side search',
+    category: 'canvas',
+    level: 4,
+    input: 'Build an employee directory for a large company. Employees have name, department, title, email, and phone. I need a search bar that searches across name and title — this should use the API to filter since there could be thousands of employees. Include department metrics at the top. Seed with 8 sample employees across 3 departments.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-api-schema',
+        description: 'Used canvas_api_schema for Employee model',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          return usedTool(r, 'canvas_api_schema') && json.includes('employee') && json.includes('department')
+        },
+      },
+      {
+        id: 'used-api-seed',
+        description: 'Used canvas_api_seed with employees across departments',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_api_seed'),
+      },
+      {
+        id: 'has-textfield',
+        description: 'Includes a TextField for search',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => hasTextField(r),
+      },
+      {
+        id: 'textfield-has-datapath',
+        description: 'TextField has dataPath configured',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => textFieldHasDataPath(r),
+      },
+      {
+        id: 'has-search-wiring',
+        description: 'DataList uses API binding with _search params or client-side filterPath',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls)
+          return json.includes('_search') || json.includes('filterPath')
+        },
+      },
+      {
+        id: 'has-metrics',
+        description: 'Has Metric components for department stats',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => JSON.stringify(r.toolCalls).includes('"Metric"'),
+      },
+      {
+        id: 'all-buttons-have-mutations',
+        description: 'All buttons have mutations',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => allButtonsHaveMutations(r),
+      },
+      {
+        id: 'used-trigger-action',
+        description: 'Used canvas_trigger_action',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_trigger_action'),
+      },
+      {
+        id: 'trigger-action-succeeded',
+        description: 'canvas_trigger_action returned ok: true',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => triggerActionSucceeded(r),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 22 tool calls',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 22,
+      },
+      {
+        id: 'minimum-components',
+        description: 'Has at least 12 components',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => hasMinimumComponents(r, 12),
+      },
+    ],
+    antiPatterns: ['No search input for employee lookup', 'Missing department metrics'],
+  },
+
+  // ---- Search & Filter: Recipe Finder (Simple) ----
+  {
+    id: 'canvas-search-recipes',
+    name: 'Canvas: Recipe finder with search',
+    category: 'canvas',
+    level: 2,
+    input: 'Make me a recipe browser. Show a list of recipes with name, cuisine type, and prep time. I want to be able to search by recipe name. Add 6 sample recipes.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Added components to the canvas',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'has-textfield',
+        description: 'Includes a TextField for search',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => hasTextField(r),
+      },
+      {
+        id: 'textfield-has-datapath',
+        description: 'TextField has dataPath for search binding',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => textFieldHasDataPath(r),
+      },
+      {
+        id: 'datalist-has-filter',
+        description: 'DataList present with filterPath for search',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => hasDataListWithFilter(r),
+      },
+      {
+        id: 'has-recipe-data',
+        description: 'Data includes recipe names and cuisine types',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          return (json.includes('recipe') || json.includes('cuisine')) && json.includes('name')
+        },
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 18 tool calls',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 18,
+      },
+    ],
+    antiPatterns: ['No search input', 'DataList missing filterPath'],
   },
 ]

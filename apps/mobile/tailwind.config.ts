@@ -41,6 +41,12 @@ module.exports = {
           DEFAULT: 'var(--color-destructive)',
           foreground: 'var(--color-destructive-foreground)',
         },
+        surface: {
+          0: 'var(--color-surface-0)',
+          1: 'var(--color-surface-1)',
+          2: 'var(--color-surface-2)',
+          3: 'var(--color-surface-3)',
+        },
         border: 'var(--color-border)',
         input: 'var(--color-input)',
         ring: 'var(--color-ring)',
