@@ -387,34 +387,31 @@ export default observer(function AllProjectsPage() {
     [currentWorkspace?.id, user?.id, starredIds, store],
   )
 
+  const [renameProject, setRenameProject] = useState<Project | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+
   const handleRenameProject = useCallback(
     (project: Project) => {
-      Alert.prompt(
-        'Rename project',
-        'Enter a new name',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Rename',
-            onPress: async (newName?: string) => {
-              if (!newName?.trim()) return
-              try {
-                await actions.updateProject(project.id, { name: newName.trim() })
-                store?.projectCollection
-                  ?.loadAll({ workspaceId: currentWorkspace?.id })
-                  .catch(() => {})
-              } catch (err) {
-                console.error('[AllProjectsPage] Rename failed:', err)
-              }
-            },
-          },
-        ],
-        'plain-text',
-        project.name,
-      )
+      setRenameValue(project.name)
+      setRenameProject(project)
     },
-    [actions, store, currentWorkspace?.id],
+    [],
   )
+
+  const confirmRename = useCallback(async () => {
+    if (!renameProject || !renameValue.trim()) return
+    const projectId = renameProject.id
+    const newName = renameValue.trim()
+    setRenameProject(null)
+    try {
+      await actions.updateProject(projectId, { name: newName })
+      store?.projectCollection
+        ?.loadAll({ workspaceId: currentWorkspace?.id })
+        .catch(() => {})
+    } catch (err) {
+      console.error('[AllProjectsPage] Rename failed:', err)
+    }
+  }, [renameProject, renameValue, actions, store, currentWorkspace?.id])
 
   const [singleDeleteProject, setSingleDeleteProject] = useState<Project | null>(null)
 
@@ -1336,6 +1333,67 @@ export default observer(function AllProjectsPage() {
           }
         />
       )}
+
+      {/* Rename Project Modal */}
+      <Modal
+        visible={!!renameProject}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setRenameProject(null)}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 items-center justify-center"
+          onPress={() => setRenameProject(null)}
+        >
+          <Pressable
+            className="bg-card rounded-xl p-6 w-80 border border-border"
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View className="flex-row items-center justify-between mb-1">
+              <Text className="text-base font-semibold text-foreground">Rename project</Text>
+              <Pressable onPress={() => setRenameProject(null)} className="p-1">
+                <X size={20} className="text-muted-foreground" />
+              </Pressable>
+            </View>
+            <Text className="text-sm text-muted-foreground mb-4">
+              Enter a new name for this project
+            </Text>
+            <TextInput
+              value={renameValue}
+              onChangeText={setRenameValue}
+              placeholder="Project name"
+              placeholderTextColor="#9ca3af"
+              className="border border-border rounded-md px-3 py-2 text-sm text-foreground bg-background mb-4"
+              autoFocus
+              onSubmitEditing={confirmRename}
+              selectTextOnFocus
+            />
+            <View className="flex-row gap-2 justify-end">
+              <Pressable
+                onPress={() => setRenameProject(null)}
+                className="px-4 py-2 rounded-md border border-border active:bg-muted"
+              >
+                <Text className="text-sm text-foreground">Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={confirmRename}
+                className={cn(
+                  'px-4 py-2 rounded-md',
+                  renameValue.trim() ? 'bg-primary active:bg-primary/80' : 'bg-muted'
+                )}
+                disabled={!renameValue.trim()}
+              >
+                <Text className={cn(
+                  'text-sm',
+                  renameValue.trim() ? 'text-primary-foreground' : 'text-muted-foreground'
+                )}>
+                  Rename
+                </Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* New Folder Modal */}
       <Modal
