@@ -111,7 +111,7 @@ export function PublishDropdown({ projectId, projectName }: PublishDropdownProps
     }, 500)
 
     return () => { if (checkTimerRef.current) clearTimeout(checkTimerRef.current) }
-  }, [subdomain, publishedSubdomain])
+  }, [http, subdomain, publishedSubdomain])
 
   const handlePublish = async () => {
     if (!subdomain || subdomain.length < 3) return

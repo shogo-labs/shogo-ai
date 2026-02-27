@@ -62,6 +62,7 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Avatar } from '@shogo/shared-ui/primitives'
+import { CommandPalette, useCommandPalette } from './CommandPalette'
 import { useAuth } from '../../contexts/auth'
 import {
   useProjectCollection,
@@ -843,6 +844,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const [collapsed, setCollapsed] = useState(false)
   const [createFolderOpen, setCreateFolderOpen] = useState(false)
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false)
+  const { open: commandPaletteOpen, setOpen: setCommandPaletteOpen } = useCommandPalette()
 
   let allWorkspaces: any[]
   try { allWorkspaces = workspaces?.all?.slice() ?? [] } catch { allWorkspaces = [] }
@@ -905,9 +907,8 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   }, [isWide, onClose])
 
   const handleSearchPress = useCallback(() => {
-    router.push('/(app)/projects' as any)
-    onNavPress()
-  }, [router, onNavPress])
+    setCommandPaletteOpen(true)
+  }, [setCommandPaletteOpen])
 
   const isHomePage = pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
   const isProjectsPage = pathname.startsWith('/projects') || pathname.startsWith('/(app)/projects')
@@ -1124,6 +1125,11 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
         onClose={() => setCreateWorkspaceOpen(false)}
         onSubmit={handleCreateWorkspaceSubmit}
       />
+      <CommandPalette
+        visible={commandPaletteOpen}
+        onClose={() => setCommandPaletteOpen(false)}
+      />
+
     </View>
   )
 
