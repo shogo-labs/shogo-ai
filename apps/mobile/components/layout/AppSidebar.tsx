@@ -69,8 +69,10 @@ import {
   useWorkspaceCollection,
   useFolderCollection,
   useDomainActions,
+  useDomainHttp,
 } from '../../contexts/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
+import { api } from '../../lib/api'
 
 function getInitials(name: string | null | undefined): string {
   if (!name) return '?'
@@ -447,6 +449,8 @@ interface WorkspaceSwitcherProps {
   workspaces: any[]
   currentWorkspace: any
   billingData: any
+  workspacePlan: { planId: string; status: string | null } | null
+  allPlans: Record<string, { planId: string; status: string | null }>
   onNavigate: (href: string) => void
   onSwitchWorkspace: (workspaceId: string) => void
   onCreateWorkspace: () => void
@@ -457,6 +461,8 @@ function WorkspaceSwitcher({
   workspaces,
   currentWorkspace,
   billingData,
+  workspacePlan,
+  allPlans,
   onNavigate,
   onSwitchWorkspace,
   onCreateWorkspace,
@@ -464,8 +470,9 @@ function WorkspaceSwitcher({
   const [isOpen, setIsOpen] = useState(false)
 
   const wsInitial = currentWorkspace?.name?.[0]?.toUpperCase() ?? 'W'
-  const planType = billingData.subscription
-    ? (billingData.subscription.planId?.charAt(0).toUpperCase() + billingData.subscription.planId?.slice(1))
+  const resolvedPlanId = workspacePlan?.planId ?? billingData.subscription?.planId ?? 'free'
+  const planType = resolvedPlanId !== 'free'
+    ? resolvedPlanId.charAt(0).toUpperCase() + resolvedPlanId.slice(1)
     : 'Free'
   const effectiveBalance = billingData.effectiveBalance
   const creditsTotal = effectiveBalance
@@ -621,9 +628,18 @@ function WorkspaceSwitcher({
                   <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
                     {ws.name}
                   </Text>
-                  <View className="rounded px-1.5 py-0.5 bg-muted">
-                    <Text className="text-[10px] text-muted-foreground">Free</Text>
-                  </View>
+                  {(() => {
+                    const wsPlanId = allPlans[ws.id]?.planId ?? 'free'
+                    const isPaid = wsPlanId !== 'free'
+                    const label = isPaid
+                      ? wsPlanId.charAt(0).toUpperCase() + wsPlanId.slice(1)
+                      : 'Free'
+                    return (
+                      <View className={cn('rounded px-1.5 py-0.5', isPaid ? 'bg-primary/10' : 'bg-muted')}>
+                        <Text className={cn('text-[10px]', isPaid ? 'text-primary font-medium' : 'text-muted-foreground')}>{label}</Text>
+                      </View>
+                    )
+                  })()}
                   {isCurrent && (
                     <Check size={16} className="text-primary" />
                   )}
@@ -725,7 +741,7 @@ function CreateFolderModal({
   )
 }
 
-// ─── CreateWorkspaceModal ──────────────────────────────────
+// ─── CreateWorkspaceModal (free — first workspace only) ────
 
 function CreateWorkspaceModal({
   visible,
@@ -814,10 +830,36 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const projects = useProjectCollection()
   const workspaces = useWorkspaceCollection()
   const actions = useDomainActions()
+  const http = useDomainHttp()
 
   useEffect(() => {
     workspaces.loadAll()
     projects.loadAll()
+  }, [])
+
+  // Detect return from Stripe checkout: verify payment, provision subscription, reload
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return
+    const params = new URLSearchParams(window.location.search)
+    const checkout = params.get('checkout')
+    const wsId = params.get('workspace')
+    const sessionId = params.get('session_id')
+    if (checkout === 'workspace_created' && wsId && sessionId) {
+      const provision = async () => {
+        try { await api.verifyCheckout(http, sessionId) } catch { /* webhook will handle it */ }
+        // Full reload ensures auth + billing data initialize cleanly
+        window.location.href = `/?workspace=${wsId}`
+      }
+      provision()
+    } else if (params.get('workspace') && !params.get('checkout')) {
+      // After reload: pick up the workspace param, switch to it, clean URL
+      const targetWs = params.get('workspace')!
+      workspaces.loadAll().then(() => {
+        setSelectedWorkspaceId(targetWs)
+        projects.loadAll({ workspaceId: targetWs }).catch(() => {})
+      })
+      window.history.replaceState({}, '', '/')
+    }
   }, [])
 
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
@@ -835,6 +877,8 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
 
   const billingData = useBillingData(currentWorkspace?.id)
 
+  const [allPlans, setAllPlans] = useState<Record<string, { planId: string; status: string | null }>>({})
+
   let recentProjects: any[]
   try {
     const all = projects?.all ?? []
@@ -849,8 +893,6 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
     recentProjects = []
   }
 
-  const isPaidPlan = billingData.hasActiveSubscription
-
   const [collapsed, setCollapsed] = useState(false)
   const [createFolderOpen, setCreateFolderOpen] = useState(false)
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false)
@@ -858,6 +900,20 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
 
   let allWorkspaces: any[]
   try { allWorkspaces = workspaces?.all?.slice() ?? [] } catch { allWorkspaces = [] }
+
+  // Fetch plans for all workspaces in a single call
+  useEffect(() => {
+    if (!allWorkspaces.length) return
+    let cancelled = false
+    const ids = allWorkspaces.map((w: any) => w.id)
+    api.getWorkspacePlans(http, ids)
+      .then((plans) => { if (!cancelled) setAllPlans(plans) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [allWorkspaces.length, http])
+
+  const workspacePlan = currentWorkspace?.id ? (allPlans[currentWorkspace.id] ?? null) : null
+  const isPaidPlan = billingData.hasActiveSubscription || (workspacePlan?.planId !== 'free' && workspacePlan?.status === 'active')
 
   const toggleCollapse = useCallback(() => setCollapsed((c) => !c), [])
 
@@ -884,9 +940,13 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
 
   const handleCreateWorkspace = useCallback(
     () => {
-      setCreateWorkspaceOpen(true)
+      if (allWorkspaces.length >= 1) {
+        router.push('/(app)/new-workspace' as any)
+      } else {
+        setCreateWorkspaceOpen(true)
+      }
     },
-    []
+    [allWorkspaces.length, router]
   )
 
   const handleCreateWorkspaceSubmit = useCallback(
@@ -972,6 +1032,8 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
           workspaces={allWorkspaces}
           currentWorkspace={currentWorkspace}
           billingData={billingData}
+          workspacePlan={workspacePlan}
+          allPlans={allPlans}
           onNavigate={(href) => { router.push(href as any); onNavPress() }}
           onSwitchWorkspace={handleSwitchWorkspace}
           onCreateWorkspace={handleCreateWorkspace}

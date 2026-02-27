@@ -31,9 +31,34 @@ export interface CheckoutParams {
   userEmail?: string
 }
 
+export interface WorkspaceCheckoutParams {
+  workspaceName: string
+  planId: string
+  billingInterval: 'monthly' | 'annual'
+  userId: string
+  userEmail?: string
+}
+
 export const api = {
   async createCheckoutSession(http: HttpClient, params: CheckoutParams) {
     const res = await http.post<{ url?: string }>('/api/billing/checkout', params)
+    return res.data
+  },
+
+  async createWorkspaceCheckout(http: HttpClient, params: WorkspaceCheckoutParams) {
+    const res = await http.post<{ url?: string }>('/api/billing/workspace-checkout', params)
+    return res.data
+  },
+
+  async getWorkspacePlans(http: HttpClient, workspaceIds: string[]) {
+    const res = await http.get<{ ok?: boolean; plans?: Record<string, { planId: string; status: string | null }> }>(
+      `/api/billing/workspace-plan?workspaceIds=${workspaceIds.join(',')}`
+    )
+    return res.data?.plans ?? {}
+  },
+
+  async verifyCheckout(http: HttpClient, sessionId: string) {
+    const res = await http.post<{ ok?: boolean; workspaceId?: string; planId?: string }>('/api/billing/verify-checkout', { sessionId })
     return res.data
   },
 
