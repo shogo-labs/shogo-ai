@@ -1218,7 +1218,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   if (!isOpen) return null
 
   return (
-    <View className="absolute inset-0 z-50 flex-row">
+    <View className="absolute inset-0 z-50 flex-row" style={{ paddingTop: insets.top }}>
       <Pressable onPress={onClose} className="absolute inset-0 bg-black/50" />
       <View className="w-72 h-full z-10">
         {sidebarContent}
