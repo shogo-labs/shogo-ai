@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { EventEmitter } from 'events'
 import type { SubagentProgressEvent, VirtualToolEvent } from './types/progress'
 // isVirtualTool kept in types/progress.ts for client-side use (ChatPanel handler)
-import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput, PreToolUseHookInput, CanUseTool, SDKSession, SDKMessage, SDKSessionOptions } from '@anthropic-ai/claude-agent-sdk'
+import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput, PreToolUseHookInput, CanUseTool, SDKSession, SDKMessage, SDKSessionOptions, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import { createSdkMcpServer, tool as sdkTool, unstable_v2_createSession, unstable_v2_resumeSession } from '@anthropic-ai/claude-agent-sdk'
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { resolve, join, isAbsolute } from 'path'
@@ -191,25 +191,33 @@ function convertUIMessagesToModelMessages(messages: any[]): ModelMessage[] {
 
     // If message has parts array (UIMessage format), process all part types
     if (Array.isArray(msg.parts)) {
-      const contentParts: Array<{ type: 'text'; text: string } | { type: 'image'; image: string; mimeType: string }> = []
+      const contentParts: Array<
+        | { type: 'text'; text: string }
+        | { type: 'image'; image: string; mimeType: string }
+        | { type: 'file'; data: string; mimeType: string }
+      > = []
 
       for (const part of msg.parts) {
         if (part.type === 'text' && part.text) {
-          // Text parts: extract text content
           contentParts.push({ type: 'text', text: part.text })
-        } else if (part.type === 'file' && part.mediaType?.startsWith('image/')) {
-          // File parts with image mediaType: convert to ImagePart
-          // The url field contains the data URL (data:image/png;base64,...)
-          const parsed = parseDataUrl(part.url || '')
-          if (parsed) {
+        } else if (part.type === 'file' && part.url) {
+          const parsed = parseDataUrl(part.url)
+          if (!parsed) continue
+
+          if (part.mediaType?.startsWith('image/')) {
             contentParts.push({
               type: 'image',
               image: parsed.base64Data,
               mimeType: parsed.mimeType,
             })
+          } else {
+            contentParts.push({
+              type: 'file',
+              data: parsed.base64Data,
+              mimeType: parsed.mimeType,
+            })
           }
         }
-        // Non-image file parts are gracefully ignored
       }
 
       // If we only have text parts, return as simple string (backward compatible)
@@ -217,7 +225,7 @@ function convertUIMessagesToModelMessages(messages: any[]): ModelMessage[] {
         return { role: msg.role, content: contentParts[0].text }
       }
 
-      // If we have mixed content or only images, return as array
+      // If we have mixed content (text + images/files), return as array
       if (contentParts.length > 0) {
         return { role: msg.role, content: contentParts }
       }
@@ -3109,17 +3117,66 @@ app.post('/api/chat', async (c) => {
     if (!lastUserMessage) {
       return c.json({ error: { message: 'No user message found', code: 'NO_USER_MESSAGE' } }, 400)
     }
-    // Convert UIMessage parts to plain text for V2 session.send()
-    let userText: string
+    // Build message for V2 session.send() — supports text, images, and documents (PDFs)
+    let userText = ''
+    const fileParts: Array<{ mimeType: string; base64Data: string }> = []
+
     if (typeof lastUserMessage.content === 'string') {
       userText = lastUserMessage.content
     } else if (Array.isArray(lastUserMessage.parts)) {
-      userText = lastUserMessage.parts
-        .filter((p: any) => p.type === 'text')
-        .map((p: any) => p.text)
-        .join('\n')
+      const textParts: string[] = []
+      for (const part of lastUserMessage.parts) {
+        if (part.type === 'text' && part.text) {
+          textParts.push(part.text)
+        } else if (part.type === 'file' && part.url) {
+          const parsed = parseDataUrl(part.url)
+          if (parsed) fileParts.push(parsed)
+        }
+      }
+      userText = textParts.join('\n')
     } else {
       userText = String(lastUserMessage.content ?? '')
+    }
+
+    // Build the session message — multimodal when files are attached
+    let sessionMessage: string | SDKUserMessage = userText
+    if (fileParts.length > 0) {
+      const contentBlocks: any[] = []
+      if (userText) {
+        contentBlocks.push({ type: 'text', text: userText })
+      }
+      for (const file of fileParts) {
+        if (file.mimeType.startsWith('image/')) {
+          contentBlocks.push({
+            type: 'image',
+            source: { type: 'base64', media_type: file.mimeType, data: file.base64Data },
+          })
+        } else if (file.mimeType === 'application/pdf') {
+          contentBlocks.push({
+            type: 'document',
+            source: { type: 'base64', media_type: file.mimeType, data: file.base64Data },
+          })
+        } else {
+          try {
+            const decoded = Buffer.from(file.base64Data, 'base64').toString('utf-8')
+            contentBlocks.push({ type: 'text', text: `[File content (${file.mimeType})]\n${decoded}` })
+          } catch {
+            contentBlocks.push({ type: 'text', text: `[Attached file: ${file.mimeType}]` })
+          }
+        }
+      }
+      try {
+        sessionMessage = {
+          type: 'user',
+          message: { role: 'user', content: contentBlocks },
+          parent_tool_use_id: null,
+          session_id: session.sessionId,
+        } as SDKUserMessage
+      } catch {
+        // sessionId unavailable on fresh sessions — fall back to text only
+        console.warn('[/api/chat] session.sessionId not ready, sending text-only for file message')
+        sessionMessage = userText
+      }
     }
 
     // Event buffering for progress/virtual-tool events (same pattern as before)
@@ -3147,7 +3204,7 @@ app.post('/api/chat', async (c) => {
     virtualToolEvents.on('virtual-tool', onVirtualTool)
 
     // Send the user message to the persistent V2 session
-    await session.send(userText)
+    await session.send(sessionMessage)
 
     // Create UIMessageStream that converts V2 SDK messages to UIMessageChunks
     console.log(`${LOG_PREFIX} 📡 V2 session streaming for: ${scopeKey}`)

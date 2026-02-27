@@ -101,17 +101,22 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
           timestamp: Date.now(),
         },
       })
-    } else if (
-      part.type === "file" &&
-      part.mediaType?.startsWith("image/") &&
-      part.url
-    ) {
-      result.push({
-        type: "image",
-        url: part.url,
-        mediaType: part.mediaType,
-        id: `img-${index}`,
-      })
+    } else if (part.type === "file" && part.url) {
+      if (part.mediaType?.startsWith("image/")) {
+        result.push({
+          type: "image",
+          url: part.url,
+          mediaType: part.mediaType,
+          id: `img-${index}`,
+        })
+      } else {
+        result.push({
+          type: "file",
+          url: part.url,
+          mediaType: part.mediaType || "application/octet-stream",
+          id: `file-${index}`,
+        })
+      }
     }
   }
 
