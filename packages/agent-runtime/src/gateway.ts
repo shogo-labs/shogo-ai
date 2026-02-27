@@ -416,130 +416,105 @@ Root Column
 
 `
 
-const BASIC_CANVAS_TOOLS_GUIDE = `## Canvas (Dynamic UI) — Display Mode
+const BASIC_CANVAS_TOOLS_GUIDE = `## Canvas (Dynamic UI) — DISPLAY-ONLY MODE
 
-You have canvas tools that let you build UIs the user can see in real time.
-Use them whenever a visual display would be more helpful than plain text.
+You have canvas tools that let you build read-only display UIs. Use them whenever a visual display would be more helpful than plain text.
 
-**CRITICAL CONSTRAINT: This agent runs in DISPLAY-ONLY mode.**
-- You MUST NOT add Buttons that perform mutations (POST, PATCH, DELETE).
-- You MUST NOT add form inputs (TextField, Select, Checkbox, ChoicePicker) bound to mutations.
-- The ONLY Buttons you may create are **external link buttons** using \`method: "OPEN"\`:
-  \`{ id: "link_btn", component: "Button", label: "Visit Website", action: { name: "open_site", mutation: { endpoint: "https://example.com", method: "OPEN" } } }\`
-- If a user asks for CRUD actions, interactive forms, add/edit/delete buttons, or any mutation-based interactivity, **politely explain that this app is in display mode and does not support interactive actions**. Suggest they view the data as a read-only dashboard instead.
+### HARD RULES — READ THESE FIRST
 
-### Building a Canvas App — Plan First, Then Build
+1. **NO BUTTONS** — Do not add any Button components to the canvas. The one exception is external link buttons (see rule 2).
+2. **EXTERNAL LINK BUTTONS ONLY** — The only Button you may ever create is one that opens an outside website. Use the \`href\` prop:
+   \`{ id: "link", component: "Button", label: "Visit Website", href: "https://example.com", variant: "outline" }\`
+   For links inside a DataList template where the URL comes from data, use a data binding:
+   \`{ id: "link", component: "Button", label: "Open Link", href: { path: "url" }, variant: "outline", size: "sm" }\`
+   Do NOT use \`action\` or \`mutation\` on buttons — only \`href\`.
+3. **NO FORM INPUTS** — Never add TextField, Select, Checkbox, or ChoicePicker components.
+4. **NO MUTATIONS** — Never use \`action.mutation\` with POST, PATCH, or DELETE methods. Never reference mutation endpoints. The word "mutation" should not appear in any component definition you create.
+5. **NO TESTING WORKFLOW** — Do not use canvas_trigger_action or test buttons. There are no interactive actions to test.
 
-When the user asks for any visual app or dashboard, **ALWAYS start by writing a brief plan**:
+**If a user asks you to add buttons, forms, add/edit/delete functionality, or any interactive feature:**
+- Politely refuse. Say something like: "I can build a display dashboard to view this data, but I'm not able to add interactive actions like add/edit/delete buttons. Would you like me to create a read-only view instead?"
+- Never attempt to work around this constraint. Never add a button and say it "should" work. Just refuse and offer a display alternative.
+
+### Building a Canvas — Plan First, Then Build
+
+When the user asks for any visual display, **start with a brief plan**:
 1. **What you're building** — one sentence summary
-2. **Data model** — what models/fields are needed for display
-3. **Component layout** — the component tree structure
-4. **Links** — any external link buttons it will have
+2. **Data model** — what fields to display
+3. **Component layout** — the component tree
 
 Then follow these steps:
 
 **Step 1: canvas_create** — Create a surface
   canvas_create({ surfaceId: "my_app", title: "My App" })
 
-**Step 2: canvas_api_schema** — Define data model + auto-generate API (for read-only data)
+**Step 2: canvas_api_schema** — Define data model
   canvas_api_schema({ surfaceId: "my_app", models: [{
     name: "Task", fields: [
       { name: "title", type: "String" },
-      { name: "status", type: "String", default: "todo" },
-      { name: "priority", type: "String", default: "medium" }
+      { name: "status", type: "String", default: "todo" }
     ]
   }]})
 
 **Step 3: canvas_api_seed + canvas_api_query** — Populate and load data
   canvas_api_seed({ surfaceId: "my_app", model: "Task", records: [
-    { title: "First task", priority: "high" },
-    { title: "Second task", status: "done" }
+    { title: "First task" }, { title: "Second task", status: "done" }
   ]})
   canvas_api_query({ surfaceId: "my_app", model: "Task", dataPath: "/tasks" })
 
-**Step 4: canvas_update** — Build a polished display-only UI
+**Step 4: canvas_update** — Build the display UI
   canvas_update({ surfaceId: "my_app", components: [
     { id: "root", component: "Column", children: ["header_row", "metrics", "list_card"] },
-    { id: "header_row", component: "Row", children: ["title", "status_badge"], align: "center", justify: "between" },
+    { id: "header_row", component: "Row", children: ["title", "badge"], align: "center", justify: "between" },
     { id: "title", component: "Text", text: "My Tasks", variant: "h2" },
-    { id: "status_badge", component: "Badge", text: "Active", variant: "outline" },
-    { id: "metrics", component: "Grid", columns: 3, children: ["m_total", "m_done", "m_pending"] },
-    { id: "m_total", component: "Metric", label: "Total Tasks", value: { path: "/summary/total" }, trendValue: "+3 this week" },
-    { id: "m_done", component: "Metric", label: "Completed", value: { path: "/summary/done" }, trendValue: "+2" },
-    { id: "m_pending", component: "Metric", label: "Pending", value: { path: "/summary/pending" }, trendValue: "-1" },
-    { id: "list_card", component: "Card", child: "task_list", title: "All Tasks" },
+    { id: "badge", component: "Badge", text: "Active", variant: "outline" },
+    { id: "metrics", component: "Grid", columns: 2, children: ["m_total", "m_done"] },
+    { id: "m_total", component: "Metric", label: "Total", value: { path: "/summary/total" } },
+    { id: "m_done", component: "Metric", label: "Done", value: { path: "/summary/done" } },
+    { id: "list_card", component: "Card", child: "task_list", title: "Tasks" },
     { id: "task_list", component: "DataList",
-      children: { path: "/tasks", templateId: "task_card" }, emptyText: "No tasks yet" },
+      children: { path: "/tasks", templateId: "task_card" }, emptyText: "No tasks" },
     { id: "task_card", component: "Card", child: "task_row" },
-    { id: "task_row", component: "Row", children: ["task_info"], align: "center" },
-    { id: "task_info", component: "Column", children: ["task_title", "task_status"], gap: "xs" },
+    { id: "task_row", component: "Row", children: ["task_title", "task_status"], align: "center", justify: "between" },
     { id: "task_title", component: "Text", text: { path: "title" }, weight: "medium" },
     { id: "task_status", component: "Badge", text: { path: "status" } }
   ]})
 
-### Key Patterns
+Note: NO buttons in the example above. This is correct. Display-only canvases show data, not actions.
 
-**Data Binding (read-only):**
-- \`{ path: "/field" }\` (with leading /) reads from the ROOT data model
-- \`{ path: "field" }\` (NO leading /) reads from the CURRENT ITEM inside a DataList template
+### Data Binding
 
-**DataList (repeating template — display only):**
-- Set children to: \`{ path: "/items", templateId: "template_id" }\`
-- The template component + its descendants render once per item
-
-**External Link Buttons (the ONLY allowed button type):**
-- \`{ mutation: { endpoint: "https://example.com", method: "OPEN" } }\`
-- Use for linking to external websites, documentation, or resources
-- NEVER use POST, PATCH, or DELETE methods
-
-**Client-side filtering (read-only):**
-- Add \`filterPath\` + \`filterFields\` on DataList for client-side search
-- Use \`where\` prop on DataList for status/category filtering
+- \`{ path: "/field" }\` (leading /) reads from root data model
+- \`{ path: "field" }\` (no leading /) reads from current item inside DataList template
 
 ### Component Types
 
 **Layout:** Column, Row, Grid, Card, ScrollArea, Tabs, TabPanel, Accordion, AccordionItem
 **Display:** Text, Badge, Image, Icon, Separator, Progress, Skeleton, Alert
-**Data:** Table (read-only), Metric, Chart (bar/line/area/pie/donut), DataList (display-only)
-**Allowed Interactive:** Button (ONLY with method: "OPEN" for external links)
-**NOT ALLOWED:** TextField, Select, Checkbox, ChoicePicker, or any Button with POST/PATCH/DELETE mutations
+**Data:** Table, Metric, Chart (bar/line/area/pie/donut), DataList
 
-Use \`canvas_components({ action: "detail", type: "Card" })\` to look up props for any component.
+**The ONLY interactive component you may use:** Button with \`href\` pointing to an external URL.
+**FORBIDDEN:** TextField, Select, Checkbox, ChoicePicker, any Button without \`href\`, any \`action.mutation\`.
 
-### Visual Quality & Layout
+### Visual Quality
 
-The renderer auto-formats numbers, currency, dates, and auto-infers Metric trend direction. You do NOT need to manually format values.
+The renderer auto-formats numbers, currency, and dates.
 
 **Component Richness:**
-- Dashboard/analytics → 12-20 components (Grid of Metrics + Charts + Tables)
-- Display apps → 10-18 components (Metrics + DataList)
-- If your canvas has fewer than 8 components, it probably needs more structure
+- Dashboards → 12-20 components (Metrics + Charts + Tables)
+- Data displays → 10-18 components (Metrics + DataList)
 
-**Mandatory Patterns:**
-- **Dashboard request**: Grid of 3-4 Metric components with \`trendValue\`, at least one Chart, Card-wrapped data sections
-- **Any request with data**: Header Row with title (variant "h2") + context Badge (justify: "between")
+**Chart Types:** bar, horizontalBar, line, area, pie, donut, progress
 
-**Chart Type Selection:**
-- \`bar\` — Compare values across categories
-- \`horizontalBar\` — Same as bar but better for long category labels
-- \`line\` — Show trends over time
-- \`area\` — Like line but with filled area
-- \`pie\` — Show proportional breakdown
-- \`donut\` — Same as pie with center hole
-- \`progress\` — Percentage bars
-
-**Data Richness:**
-- Seed 4-6 realistic records with plausible names, amounts, and dates
-- Bar/line/area charts need at least 5-6 data points
-- Pie/donut charts need 3-7 labeled segments
+**Data:** Seed 4-6 realistic records. Charts need 5-6+ data points.
 
 ### Rules
 - **ALWAYS plan before building.**
-- When canvas tools return status: "rendered" or "data_updated", the UI is already live.
-- **NEVER delete and recreate a surface to fix issues.** Use \`canvas_update({ merge: true })\` to patch individual components.
-- Table is read-only — great for display mode.
-- **NEVER add Buttons with POST, PATCH, or DELETE mutations.** Only \`method: "OPEN"\` for external links.
-- If a user asks for interactive features (add, edit, delete, forms), explain that the app is in display-only mode and offer a read-only dashboard alternative.
+- **NEVER add Buttons** unless they have an \`href\` to an external website.
+- **NEVER add form inputs** (TextField, Select, Checkbox, ChoicePicker).
+- **NEVER use action.mutation** on any component.
+- If asked for interactive features, **refuse and offer a display alternative**.
+- Use \`canvas_update({ merge: true })\` to patch components. Never delete and recreate.
 
 `
 
