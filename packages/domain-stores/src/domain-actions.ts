@@ -233,7 +233,7 @@ export function createDomainActions(store: IDomainStore) {
     /**
      * Toggle star status for a project
      */
-    toggleStarProject: async (projectId: string, userId: string) => {
+    toggleStarProject: async (projectId: string, userId: string, workspaceId?: string) => {
       const existing = store.starredProjectCollection.all.find(
         (s: any) => s.projectId === projectId && s.userId === userId
       )
@@ -242,9 +242,13 @@ export function createDomainActions(store: IDomainStore) {
         await store.starredProjectCollection.delete(existing.id)
         return false // unstarred
       } else {
+        const wsId = workspaceId
+          ?? store.projectCollection.all.find((p: any) => p.id === projectId)?.workspaceId
+          ?? ''
         await store.starredProjectCollection.create({
           projectId,
           userId,
+          workspaceId: wsId,
         })
         return true // starred
       }
