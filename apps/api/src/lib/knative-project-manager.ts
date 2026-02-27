@@ -801,7 +801,7 @@ export class KnativeProjectManager {
     }
 
     // Inject web search API keys for agent runtime tools (web_search, MCP servers).
-    // Keys are stored in the "agent-tool-secrets" K8s Secret in the system namespace.
+    // Keys are stored in the "agent-tool-secrets" K8s Secret in the workspaces namespace.
     if (isAgentProject) {
       env.push(
         {
@@ -820,6 +820,24 @@ export class KnativeProjectManager {
           name: "BRAVE_API_KEY",
           valueFrom: {
             secretKeyRef: { name: "agent-tool-secrets", key: "BRAVE_API_KEY", optional: true },
+          },
+        },
+        {
+          name: "COMPOSIO_API_KEY",
+          valueFrom: {
+            secretKeyRef: { name: "agent-tool-secrets", key: "COMPOSIO_API_KEY", optional: true },
+          },
+        },
+        {
+          name: "COMPOSIO_PROJECT_ID",
+          valueFrom: {
+            secretKeyRef: { name: "agent-tool-secrets", key: "COMPOSIO_PROJECT_ID", optional: true },
+          },
+        },
+        {
+          name: "OPENAI_API_KEY",
+          valueFrom: {
+            secretKeyRef: { name: "agent-tool-secrets", key: "OPENAI_API_KEY", optional: true },
           },
         },
       )

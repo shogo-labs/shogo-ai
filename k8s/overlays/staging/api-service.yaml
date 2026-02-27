@@ -208,6 +208,26 @@ spec:
                   name: api-secrets
                   key: GH_APP_SLUG
                   optional: true
+            # Composio integration
+            - name: COMPOSIO_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: COMPOSIO_API_KEY
+                  optional: true
+            - name: COMPOSIO_PROJECT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: COMPOSIO_PROJECT_ID
+                  optional: true
+            # OpenAI
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: OPENAI_API_KEY
+                  optional: true
             # Observability
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "https://ingest.us.signoz.cloud:443"
