@@ -3715,7 +3715,7 @@ app.post('/api/billing/checkout', async (c) => {
     }
 
     const body = await c.req.json()
-    const { workspaceId, planId, billingInterval, userEmail } = body
+    const { workspaceId, planId, billingInterval, userEmail, successUrl: clientSuccessUrl, cancelUrl: clientCancelUrl } = body
 
     if (!workspaceId || !planId || !billingInterval) {
       return c.json({ error: { code: 'invalid_request', message: 'Missing required fields' } }, 400)
@@ -3735,10 +3735,12 @@ app.post('/api/billing/checkout', async (c) => {
       billingInterval,
     }
 
-    // Include workspace ID in URLs for proper navigation after checkout
+    // Use client-provided URLs (native apps pass deep link URLs), fall back to web URLs
     const frontendUrl = getFrontendUrl()
-    const successUrl = `${frontendUrl}/?workspace=${workspaceId}&checkout=success&session_id={CHECKOUT_SESSION_ID}`
-    const cancelUrl = `${frontendUrl}/?workspace=${workspaceId}&checkout=canceled`
+    const successUrl = clientSuccessUrl
+      || `${frontendUrl}/?workspace=${workspaceId}&checkout=success&session_id={CHECKOUT_SESSION_ID}`
+    const cancelUrl = clientCancelUrl
+      || `${frontendUrl}/?workspace=${workspaceId}&checkout=canceled`
 
     // Create Stripe checkout session
     const session = await stripe.checkout.sessions.create({
@@ -3798,7 +3800,7 @@ app.post('/api/billing/workspace-checkout', async (c) => {
     }
 
     const body = await c.req.json()
-    const { workspaceName, planId, billingInterval, userEmail, userId } = body
+    const { workspaceName, planId, billingInterval, userEmail, userId, successUrl: clientSuccessUrl, cancelUrl: clientCancelUrl } = body
 
     if (!workspaceName || !planId || !billingInterval || !userId) {
       return c.json({ error: { code: 'invalid_request', message: 'Missing required fields: workspaceName, planId, billingInterval, userId' } }, 400)
@@ -3823,9 +3825,15 @@ app.post('/api/billing/workspace-checkout', async (c) => {
       billingInterval,
     }
 
+    // Use client-provided URLs (native apps pass deep link URLs), fall back to web URLs
+    // For workspace checkout, replace placeholder workspace ID in client URLs with the newly created one
     const frontendUrl = getFrontendUrl()
-    const successUrl = `${frontendUrl}/?workspace=${newWorkspaceId}&checkout=workspace_created&session_id={CHECKOUT_SESSION_ID}`
-    const cancelUrl = `${frontendUrl}/?workspace=${newWorkspaceId}&checkout=canceled`
+    const successUrl = clientSuccessUrl
+      ? clientSuccessUrl.replace('{WORKSPACE_ID}', newWorkspaceId)
+      : `${frontendUrl}/?workspace=${newWorkspaceId}&checkout=workspace_created&session_id={CHECKOUT_SESSION_ID}`
+    const cancelUrl = clientCancelUrl
+      ? clientCancelUrl.replace('{WORKSPACE_ID}', newWorkspaceId)
+      : `${frontendUrl}/?workspace=${newWorkspaceId}&checkout=canceled`
 
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
