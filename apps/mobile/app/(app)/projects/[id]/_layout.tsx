@@ -13,7 +13,7 @@
  * - AsyncStorage for chat session persistence instead of localStorage
  */
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   View,
   Text,
@@ -21,6 +21,7 @@ import {
   ActivityIndicator,
   useWindowDimensions,
   ScrollView,
+  Platform,
 } from 'react-native'
 import { useLocalSearchParams, Stack } from 'expo-router'
 import { observer } from 'mobx-react-lite'
@@ -36,15 +37,20 @@ import {
   useAgentUrl,
 } from '@shogo/shared-app/dynamic-app'
 import type { IDomainStore } from '@shogo/domain-stores'
-import { Platform } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { useAuth } from '../../../../contexts/auth'
-import { API_URL } from '../../../../lib/api'
+import { API_URL, api } from '../../../../lib/api'
 import { consumePendingImageData } from '../../../../lib/pending-image-store'
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
 import { ChatSessionPicker, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
 import { DynamicAppRenderer } from '../../../../components/dynamic-app/DynamicAppRenderer'
+import { EditModeProvider, useEditModeOptional } from '../../../../components/dynamic-app/edit/EditModeContext'
+import { EditToolbar } from '../../../../components/dynamic-app/edit/EditToolbar'
+import { InspectorPanel } from '../../../../components/dynamic-app/edit/InspectorPanel'
+import { ComponentTreePanel } from '../../../../components/dynamic-app/edit/ComponentTreePanel'
+import { CanvasThemeProvider, CanvasThemedContainer } from '../../../../components/dynamic-app/CanvasThemeContext'
+import { CanvasThemePicker } from '../../../../components/dynamic-app/CanvasThemePicker'
 import { ProjectTopBar } from '../../../../components/project/ProjectTopBar'
 import {
   LogsPanel,
@@ -60,7 +66,6 @@ import {
 type ActiveTab = 'chat' | 'canvas'
 
 const WIDE_BREAKPOINT = 1024
-const CHAT_PANEL_WIDTH = 480
 
 export default observer(function ProjectLayout() {
   const params = useLocalSearchParams<{
@@ -123,6 +128,47 @@ export default observer(function ProjectLayout() {
     },
     [dispatchAction],
   )
+
+  // Auto-capture thumbnail when the agent finishes building the canvas UI (web only).
+  const thumbnailCapturedRef = useRef(false)
+  const hasCanvasUI = activeSurface && activeSurface.components.size > 0 && activeSurface.components.has('root')
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return
+    if (!projectId || !hasCanvasUI || thumbnailCapturedRef.current) return
+
+    let currentProject: any
+    try {
+      currentProject = store?.projectCollection?.all?.find((p: any) => p.id === projectId)
+    } catch { return }
+    if (currentProject?.thumbnailUrl) return
+
+    thumbnailCapturedRef.current = true
+
+    const timer = setTimeout(async () => {
+      try {
+        const { default: html2canvas } = await import('html2canvas')
+        const canvasEl = document.querySelector('[data-thumbnail-target]') as HTMLElement
+          ?? document.querySelector('[class*="flex-1"] [class*="p-4"]') as HTMLElement
+        if (!canvasEl) return
+
+        const canvas = await html2canvas(canvasEl, {
+          scale: 0.5,
+          useCORS: true,
+          logging: false,
+          backgroundColor: null,
+          width: canvasEl.scrollWidth,
+          height: Math.min(canvasEl.scrollHeight, 800),
+        })
+
+        canvas.toBlob(async (blob: Blob | null) => {
+          if (!blob) return
+          await api.uploadThumbnail(blob, projectId)
+        }, 'image/png')
+      } catch {}
+    }, 1500)
+    return () => clearTimeout(timer)
+  }, [projectId, hasCanvasUI, store])
 
   // Load project data
   const domainsReady = sdkReady && !!store?.projectCollection
@@ -338,13 +384,17 @@ export default observer(function ProjectLayout() {
   )
 
   const canvasPanel = (
-    <CanvasPanel
-      surface={activeSurface}
-      connected={connected}
-      agentUrl={agentUrl}
-      onAction={handleCanvasAction}
-      onDataChange={updateLocalData}
-    />
+    <CanvasThemeProvider>
+      <EditModeProvider agentUrl={agentUrl}>
+        <CanvasPanel
+          surface={activeSurface}
+          connected={connected}
+          agentUrl={agentUrl}
+          onAction={handleCanvasAction}
+          onDataChange={updateLocalData}
+        />
+      </EditModeProvider>
+    </CanvasThemeProvider>
   )
 
   return (
@@ -368,7 +418,7 @@ export default observer(function ProjectLayout() {
           />
           <View className="flex-1 flex-row">
             {!chatCollapsed && (
-              <View style={{ width: CHAT_PANEL_WIDTH }} className="border-r border-border">
+              <View className="w-[480px] border-r border-border">
                 {showChatSessions && (
                   <View className="border-b border-border">
                     <ChatSessionPicker
@@ -482,6 +532,11 @@ function CanvasPanel({
   onAction: (surfaceId: string, name: string, context?: Record<string, unknown>) => void
   onDataChange?: (surfaceId: string, path: string, value: unknown) => void
 }) {
+  const editMode = useEditModeOptional()
+  const isEditMode = editMode?.isEditMode ?? false
+  const showTreePanel = editMode?.showTreePanel ?? false
+  const surfaceId = surface?.surfaceId ?? null
+
   if (!agentUrl) {
     return (
       <View className="flex-1 items-center justify-center px-6">
@@ -496,35 +551,63 @@ function CanvasPanel({
     )
   }
 
+  const themePicker = <CanvasThemePicker />
+
   if (!surface) {
     return (
-      <View className="flex-1 items-center justify-center px-6">
-        <View
-          className={cn(
-            'w-3 h-3 rounded-full mb-3',
-            connected ? 'bg-emerald-500' : 'bg-muted',
-          )}
-        />
-        <Text className="text-foreground font-semibold mb-1">
-          {connected ? 'Connected' : 'Waiting for connection...'}
-        </Text>
-        <Text className="text-muted-foreground text-center text-sm">
-          {connected
-            ? 'The canvas will appear once the agent creates a UI. Ask it to build something!'
-            : 'Connecting to the agent runtime...'}
-        </Text>
+      <View className="flex-1">
+        <EditToolbar surfaceId={null} trailing={themePicker} />
+        <View className="flex-1 p-3">
+          <CanvasThemedContainer>
+            <View className="flex-1 items-center justify-center px-6">
+              <View
+                className={cn(
+                  'w-3 h-3 rounded-full mb-3',
+                  connected ? 'bg-emerald-500' : 'bg-muted',
+                )}
+              />
+              <Text className="text-foreground font-semibold mb-1">
+                {connected ? 'Connected' : 'Waiting for connection...'}
+              </Text>
+              <Text className="text-muted-foreground text-center text-sm">
+                {connected
+                  ? 'The canvas will appear once the agent creates a UI. Ask it to build something!'
+                  : 'Connecting to the agent runtime...'}
+              </Text>
+            </View>
+          </CanvasThemedContainer>
+        </View>
       </View>
     )
   }
 
   return (
-    <ScrollView className="flex-1" contentContainerStyle={{ padding: 16 }}>
-      <DynamicAppRenderer
-        surface={surface}
-        agentUrl={agentUrl}
-        onAction={onAction}
-        onDataChange={onDataChange}
-      />
-    </ScrollView>
+    <View className="flex-1">
+      <EditToolbar surfaceId={surfaceId} components={surface.components} trailing={themePicker} />
+      <View className="flex-1 flex-row">
+        {isEditMode && showTreePanel && (
+          <ComponentTreePanel surfaceId={surfaceId} components={surface.components} />
+        )}
+        <View className="flex-1 p-3">
+          <CanvasThemedContainer>
+            <ScrollView
+      className="flex-1"
+      contentContainerStyle={{ padding: 16 }}
+      {...(Platform.OS === 'web' ? { dataSet: { thumbnailTarget: '' } } as any : {})}
+    >
+              <DynamicAppRenderer
+                surface={surface}
+                agentUrl={agentUrl}
+                onAction={onAction}
+                onDataChange={onDataChange}
+              />
+            </ScrollView>
+          </CanvasThemedContainer>
+        </View>
+        {isEditMode && (
+          <InspectorPanel surfaceId={surfaceId} components={surface.components} />
+        )}
+      </View>
+    </View>
   )
 }

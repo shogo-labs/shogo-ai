@@ -16,7 +16,7 @@
  * multi-provider LLMs (Anthropic, OpenAI, Google, xAI, Groq, etc.).
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'fs'
 import { join } from 'path'
 import type { Message } from '@mariozechner/pi-ai'
 import type { StreamFn, AgentTool } from '@mariozechner/pi-agent-core'
@@ -32,6 +32,7 @@ import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { CronManager, type CronJob } from './cron-manager'
 import { BlockChunker } from './block-chunker'
 import { MCPClientManager, type MCPServerConfig } from './mcp-client'
+import { connectComposioMCP, disconnectComposioMCP, isComposioEnabled } from './composio'
 import {
   OPTIMIZED_CANVAS_EXAMPLES,
   OPTIMIZED_MEMORY_GUIDE,
@@ -236,11 +237,43 @@ Then follow ALL steps below:
 - Set \`dataPath: "/newTitle"\` on TextField to write user input to the data model
 - Reference it in mutation body: \`{ title: { path: "/newTitle" } }\`
 
+### Search & Filter Patterns
+
+When the user wants to search, filter, or find items in a list, use one of these patterns:
+
+**Pattern 1 — Client-side filter (best for small lists, instant results):**
+Add a TextField with \`dataPath\`, and set \`filterPath\` + \`filterFields\` on the DataList. The list filters in real time as the user types — no API calls, no lag.
+\`\`\`json
+{ "id": "search", "component": "TextField", "placeholder": "Search...", "dataPath": "/searchTerm" }
+{ "id": "list", "component": "DataList",
+  "children": { "path": "/tasks", "templateId": "task_card" },
+  "filterPath": "/searchTerm", "filterFields": ["title", "description"] }
+\`\`\`
+- \`filterPath\`: JSON Pointer to where the search text lives in the data model (matches the TextField's \`dataPath\`)
+- \`filterFields\`: array of item field names to match against (case-insensitive substring search)
+- Use this when the data is already loaded via \`canvas_api_query\` (typically < 100 items)
+
+**Pattern 2 — Server-side search (best for large datasets):**
+Use the managed API's \`_search\` and \`_searchFields\` query params via an API binding with reactive params. The API refetches with each search term change.
+\`\`\`json
+{ "id": "search", "component": "TextField", "placeholder": "Search employees...", "dataPath": "/searchTerm", "debounceMs": 300 }
+{ "id": "list", "component": "DataList",
+  "children": { "path": "/employees", "templateId": "emp_card" } }
+\`\`\`
+For server-side search, use \`canvas_api_query\` with the collection's data path, then load the DataList with \`{ api: "/api/employees", params: { "_search": { path: "/searchTerm" }, "_searchFields": "name,title" } }\` on a Table or in a binding.
+- Set \`debounceMs: 300\` on the TextField to avoid excessive API calls
+- The API performs case-insensitive LIKE matching across the specified fields
+
+**When to use which:**
+- Small list (seeded data, < ~50 items) → Pattern 1 (client-side \`filterPath\`)
+- Large dataset or user asks for "search" specifically → Pattern 2 (API \`_search\`)
+- When in doubt, use Pattern 1 — it's simpler and works for most canvas use cases
+
 ### Component Types
 
 **Layout:** Column, Row, Grid, Card, ScrollArea, Tabs, TabPanel, Accordion, AccordionItem
 **Display:** Text, Badge, Image, Icon, Separator, Progress, Skeleton, Alert
-**Data:** Table (read-only), Metric, Chart, DataList (repeating with actions)
+**Data:** Table (read-only), Metric, Chart (bar/line/area/pie/donut), DataList (repeating with actions)
 **Interactive:** Button, TextField, Select, Checkbox, ChoicePicker
 
 Use \`canvas_components({ action: "detail", type: "Card" })\` to look up props for any component.
@@ -307,12 +340,23 @@ The renderer auto-formats numbers (commas, compact notation), currency ($ prefix
 - **Kanban/board request**: Metric summary row (counts per column), Card-wrapped columns in a Grid, inner Cards for each item
 - **Any request with data**: Header Row with title (variant "h2") + context Badge (justify: "between")
 
+**Chart Type Selection:**
+- \`bar\` — Compare values across categories (e.g. sales by region)
+- \`horizontalBar\` — Same as bar but better for long category labels
+- \`line\` — Show trends over time (e.g. monthly revenue, user growth)
+- \`area\` — Like line but with filled area under the curve (good for volume/growth)
+- \`pie\` — Show proportional breakdown of a whole (e.g. market share, budget)
+- \`donut\` — Same as pie but with a center hole (cleaner look, good for dashboards)
+- \`progress\` — Percentage bars (e.g. completion rates, goal progress)
+Use \`line\`/\`area\` for time series, \`pie\`/\`donut\` for proportional data, \`bar\` for comparisons. For pie/donut, provide 3-7 labeled segments.
+
 **Metric trendValue format:** Use strings starting with "+" or "-" (e.g. "+12%", "-$48", "+3 this week"). The renderer auto-infers trend direction from the sign — no need to set \`trend: "up"\` manually.
 
 **Data Richness:**
 - Seed 4-6 realistic records with plausible names, amounts, and dates
 - Raw numbers and ISO dates are fine — the renderer formats them automatically
-- Charts need at least 5-6 data points with descriptive labels
+- Bar/line/area charts need at least 5-6 data points with descriptive labels
+- Pie/donut charts need 3-7 labeled segments with values summing to a meaningful total
 
 **Reference Layout — CRUD App:**
 \`\`\`
@@ -328,7 +372,7 @@ Root Column
 Root Column
   → Row: title (h2) + Badge (justify: between)
   → Grid (columns: 3-4): Metric cards with trendValues
-  → Grid (columns: 2): Card(Chart) + Card(Chart or Table)
+  → Grid (columns: 2): Card(Chart type=line/area) + Card(Chart type=pie/donut or Table)
   → Card (title: "Details"): Table
 \`\`\`
 
@@ -398,6 +442,10 @@ export class AgentGateway {
   private toolMocks = new Map<string, (params: Record<string, any>) => any>()
   /** Synthetic tool definitions for mocked MCP tools that don't exist in the base tool set */
   private syntheticTools = new Map<string, { description: string; paramKeys: string[] }>()
+  /** Tools that have mock responses but should not appear until promoted via mcp_install */
+  private hiddenMockTools = new Set<string>()
+  /** Hidden mocks promoted to visible after mcp_install is called during a turn */
+  private promotedMockTools: AgentTool[] = []
   /** Usage from the most recent agentTurn (consumed by server.ts for the finish event) */
   private _lastTurnUsage: {
     inputTokens: number
@@ -437,9 +485,12 @@ export class AgentGateway {
   setToolMocks(
     mocks: Record<string, (params: Record<string, any>) => any>,
     syntheticDefs?: Record<string, { description: string; paramKeys: string[] }>,
+    hiddenTools?: Set<string>,
   ): void {
     this.toolMocks.clear()
     this.syntheticTools.clear()
+    this.hiddenMockTools.clear()
+    this.promotedMockTools = []
     for (const [name, fn] of Object.entries(mocks)) {
       this.toolMocks.set(name, fn)
     }
@@ -448,11 +499,51 @@ export class AgentGateway {
         this.syntheticTools.set(name, def)
       }
     }
+    if (hiddenTools) {
+      for (const name of hiddenTools) {
+        this.hiddenMockTools.add(name)
+      }
+    }
   }
 
   clearToolMocks(): void {
     this.toolMocks.clear()
     this.syntheticTools.clear()
+    this.hiddenMockTools.clear()
+    this.promotedMockTools = []
+  }
+
+  /** After mock mcp_install returns, promote hidden mock tools listed in the response */
+  _promoteHiddenMocksFromInstall(result: any): void {
+    const tools = result?.tools
+    if (!Array.isArray(tools)) return
+    for (const entry of tools) {
+      const toolName = typeof entry === 'string' ? entry : entry?.name
+      if (!toolName) continue
+      if (!this.hiddenMockTools.has(toolName)) continue
+      if (this.promotedMockTools.some(t => t.name === toolName)) continue
+      const mockFn = this.toolMocks.get(toolName)
+      if (!mockFn) continue
+      const synDef = this.syntheticTools.get(toolName)
+      const paramProps: Record<string, any> = {}
+      if (synDef?.paramKeys) {
+        for (const key of synDef.paramKeys) {
+          paramProps[key] = Type.Optional(Type.String({ description: key }))
+        }
+      }
+      paramProps['input'] = Type.Optional(Type.String({ description: 'Input data or query' }))
+      this.promotedMockTools.push({
+        name: toolName,
+        description: synDef?.description || `External integration tool: ${toolName}`,
+        label: toolName.replace(/__/g, ' > ').replace(/_/g, ' '),
+        parameters: Type.Object(paramProps),
+        execute: async (_id: string, params: any) => {
+          const r = mockFn(params)
+          return textResult(r)
+        },
+      })
+      this.hiddenMockTools.delete(toolName)
+    }
   }
 
   /** Consume usage data from the most recent agent turn (returns null if none available) */
@@ -553,6 +644,16 @@ export class AgentGateway {
         await this.mcpClientManager.startAll(this.config.mcpServers)
       } catch (error: any) {
         console.error('[AgentGateway] MCP server startup error:', error.message)
+      }
+    }
+
+    // Connect to Composio MCP endpoint for managed OAuth integrations
+    if (isComposioEnabled()) {
+      try {
+        const userId = process.env.USER_ID || 'default'
+        await connectComposioMCP(this.mcpClientManager, userId, this.projectId)
+      } catch (error: any) {
+        console.error('[AgentGateway] Composio MCP connection error:', error.message)
       }
     }
 
@@ -853,9 +954,20 @@ export class AgentGateway {
 
         const matchedSkill = matchSkill(this.skills, message.text)
         let prompt = message.text
+        let activeSkill: { name: string } | undefined
 
         if (matchedSkill) {
-          prompt = `[Skill: ${matchedSkill.name}]\n${matchedSkill.content}\n\n[User Message]\n${message.text}`
+          prompt = [
+            `[Skill: ${matchedSkill.name}]`,
+            `A saved skill matched this request. Follow its instructions for this integration.`,
+            `You can still use mcp_search if you need additional tools beyond what the skill provides.`,
+            ``,
+            matchedSkill.content,
+            ``,
+            `[User Message]`,
+            message.text,
+          ].join('\n')
+          activeSkill = { name: matchedSkill.name }
         }
 
         const adapter = (message.channelId && this.channels.has(message.channelType || ''))
@@ -865,7 +977,7 @@ export class AgentGateway {
           ? { adapter, channelId: message.channelId }
           : undefined
 
-        const response = await this.agentTurn(prompt, sessionId, false, streamTarget)
+        const response = await this.agentTurn(prompt, sessionId, false, streamTarget, undefined, activeSkill)
 
         if (adapter && message.channelId && !streamTarget) {
           await adapter.sendMessage(message.channelId, response)
@@ -903,27 +1015,40 @@ export class AgentGateway {
     return `[Agent Setup — First Message]\nThis is a brand new agent that has not been configured yet. The user's message below describes what they want the agent to do. Use your tools to set up the agent:\n\n1. Write IDENTITY.md with a fitting name, emoji, and tagline\n2. Write SOUL.md with personality, tone, and boundaries appropriate for this use case\n3. Write AGENTS.md with specific operating instructions and priorities (IMPORTANT: replace the default content)\n4. Write HEARTBEAT.md with a relevant checklist if the agent should run autonomously\n5. Create any relevant skills in the skills/ directory\n6. Update config.json if heartbeat should be enabled\n\nAfter setting up, give the user a brief summary of what you configured.\n\n[User Message]\n${userText}`
   }
 
-  private buildChatPrompt(text: string): string {
+  private buildChatPrompt(text: string): { prompt: string; activeSkill?: { name: string } } {
     const matchedSkill = matchSkill(this.skills, text)
     if (matchedSkill) {
       this.emitLog(`Matched skill: ${matchedSkill.name}`)
-      return `[Skill: ${matchedSkill.name}]\n${matchedSkill.content}\n\n[User Message]\n${text}`
+      const prompt = [
+        `[Skill: ${matchedSkill.name}]`,
+        `A saved skill matched this request. Follow its instructions for this integration.`,
+        `You can still use mcp_search if you need additional tools beyond what the skill provides.`,
+        ``,
+        matchedSkill.content,
+        ``,
+        `[User Message]`,
+        text,
+      ].join('\n')
+      return { prompt, activeSkill: { name: matchedSkill.name } }
     }
-    return `[Chat — User Message]\nThis is a direct message from a user, NOT a heartbeat trigger. Respond conversationally and helpfully. Do NOT respond with HEARTBEAT_OK.\n\n${text}`
+    return { prompt: `[Chat — User Message]\nThis is a direct message from a user, NOT a heartbeat trigger. Respond conversationally and helpfully. Do NOT respond with HEARTBEAT_OK.\n\n${text}` }
   }
 
   async processChatMessage(text: string): Promise<string> {
     this.emitLog(`Chat message received: "${text.substring(0, 100)}"`)
 
-    const prompt = this.isUnconfigured()
-      ? this.buildSetupPrompt(text)
-      : this.buildChatPrompt(text)
-
+    let prompt: string
+    let activeSkill: { name: string } | undefined
     if (this.isUnconfigured()) {
+      prompt = this.buildSetupPrompt(text)
       this.emitLog('Agent is not configured — running setup from user message')
+    } else {
+      const result = this.buildChatPrompt(text)
+      prompt = result.prompt
+      activeSkill = result.activeSkill
     }
 
-    const response = await this.agentTurn(prompt, 'chat')
+    const response = await this.agentTurn(prompt, 'chat', false, undefined, undefined, activeSkill)
     this.emitLog(`Chat response: "${response.substring(0, 100)}"`)
 
     this.appendDailyMemory(`chat: "${text.substring(0, 100)}" -> "${response.substring(0, 100)}"`)
@@ -946,15 +1071,18 @@ export class AgentGateway {
     }
     this.emitLog(`Chat message received (stream): "${text.substring(0, 100)}"`)
 
-    const prompt = this.isUnconfigured()
-      ? this.buildSetupPrompt(text)
-      : this.buildChatPrompt(text)
-
+    let prompt: string
+    let activeSkill: { name: string } | undefined
     if (this.isUnconfigured()) {
+      prompt = this.buildSetupPrompt(text)
       this.emitLog('Agent is not configured — running setup from user message')
+    } else {
+      const result = this.buildChatPrompt(text)
+      prompt = result.prompt
+      activeSkill = result.activeSkill
     }
 
-    const response = await this.agentTurn(prompt, 'chat', false, undefined, writer)
+    const response = await this.agentTurn(prompt, 'chat', false, undefined, writer, activeSkill)
     this.emitLog(`Chat response (stream): "${response.substring(0, 100)}"`)
 
     this.appendDailyMemory(`chat: "${text.substring(0, 100)}" -> "${response.substring(0, 100)}"`)
@@ -991,8 +1119,26 @@ export class AgentGateway {
     isHeartbeat: boolean = false,
     streamTarget?: { adapter: ChannelAdapter; channelId: string },
     uiWriter?: { write(chunk: Record<string, any>): void },
+    activeSkill?: { name: string },
   ): Promise<string> {
+    if (activeSkill) {
+      const skillOverride = [
+        `## MCP Server Discovery — Skill Active`,
+        ``,
+        `The skill "${activeSkill.name}" has been loaded for this request.`,
+        `Follow the skill's instructions directly for this integration:`,
+        `- Call mcp_install if the skill says to (ensures server connection)`,
+        `- Call COMPOSIO_MANAGE_CONNECTIONS if needed (ensures auth)`,
+        `- Proceed to execution with the tool slugs from the skill`,
+        ``,
+        `You can still use mcp_search if you need additional integrations beyond what the skill provides.`,
+      ].join('\n')
+      this.promptOverrides.set('mcp_discovery_guide', skillOverride)
+    }
     const systemPrompt = this.loadBootstrapContext()
+    if (activeSkill) {
+      this.promptOverrides.delete('mcp_discovery_guide')
+    }
     const session = this.sessionManager.getOrCreate(sessionId)
     const modelId = session.modelOverride || this.config.model.name
     const provider = this.config.model.provider
@@ -1015,16 +1161,30 @@ export class AgentGateway {
       : createAllTools(toolContext)
 
     const mcpTools = this.mcpClientManager.getTools()
-    const assembledTools = mcpTools.length > 0 ? [...baseTools, ...mcpTools] : baseTools
+    let assembledTools = mcpTools.length > 0 ? [...baseTools, ...mcpTools] : baseTools
 
     let staticTools = assembledTools
     if (this.toolMocks.size > 0) {
       const existingNames = new Set(assembledTools.map(t => t.name))
+      const gateway = this
 
       // Wrap existing tools with mock interceptors
       staticTools = assembledTools.map(tool => {
         const mockFn = this.toolMocks.get(tool.name)
         if (!mockFn) return tool
+
+        // Special handling for mcp_install: promote hidden mocks listed in the response
+        if (tool.name === 'mcp_install') {
+          return {
+            ...tool,
+            execute: async (_id: string, params: any) => {
+              const result = mockFn(params)
+              gateway._promoteHiddenMocksFromInstall(result)
+              return textResult(result)
+            },
+          }
+        }
+
         return {
           ...tool,
           execute: async (_id: string, params: any) => {
@@ -1035,8 +1195,10 @@ export class AgentGateway {
       })
 
       // Inject synthetic tool definitions for mocked tools not in the base set
+      // Skip hidden tools — they become available only after mcp_install promotes them
       for (const [name, mockFn] of this.toolMocks) {
         if (existingNames.has(name)) continue
+        if (this.hiddenMockTools.has(name)) continue
         const synDef = this.syntheticTools.get(name)
         const paramProps: Record<string, any> = {}
         if (synDef?.paramKeys) {
@@ -1062,7 +1224,9 @@ export class AgentGateway {
     // Dynamic tools proxy: pi-agent-core uses tools.find() and iterates tools.
     // When mcp_install hot-adds servers mid-turn, their tools must be visible
     // immediately. This proxy merges staticTools with live MCP tools on access.
+    // Also includes promotedMockTools (hidden mocks promoted via mock mcp_install).
     const mcpMgr = this.mcpClientManager
+    const promoted = this.promotedMockTools
     const staticNames = new Set(staticTools.map(t => t.name))
     const tools = new Proxy(staticTools, {
       get(target, prop, receiver) {
@@ -1071,7 +1235,9 @@ export class AgentGateway {
             prop === Symbol.iterator || prop === 'length' ||
             prop === 'slice' || prop === 'concat' || prop === 'includes') {
           const liveMcpTools = mcpMgr.getTools().filter(t => !staticNames.has(t.name))
-          const merged = liveMcpTools.length > 0 ? [...target, ...liveMcpTools] : target
+          const promotedNew = promoted.filter(t => !staticNames.has(t.name))
+          const extras = [...liveMcpTools, ...promotedNew]
+          const merged = extras.length > 0 ? [...target, ...extras] : target
           if (prop === 'length') return merged.length
           if (prop === Symbol.iterator) return merged[Symbol.iterator].bind(merged)
           return (merged as any)[prop].bind(merged)
@@ -1304,6 +1470,11 @@ export class AgentGateway {
       'When users mention dates without a year, default to the current or next occurrence (never a past date).',
     ].join('\n'))
 
+    const uploadedFilesContext = this.buildUploadedFilesContext()
+    if (uploadedFilesContext) {
+      parts.push(uploadedFilesContext)
+    }
+
     const canvasExamples = this.promptOverrides.get('canvas_examples') ?? OPTIMIZED_CANVAS_EXAMPLES
     const personalityGuide = this.promptOverrides.get('personality_guide') ?? OPTIMIZED_PERSONALITY_GUIDE
     const toolPlanningGuide = this.promptOverrides.get('tool_planning_guide') ?? OPTIMIZED_TOOL_PLANNING_GUIDE
@@ -1319,6 +1490,69 @@ export class AgentGateway {
     parts.push(this.promptOverrides.get('mcp_discovery_guide') ?? OPTIMIZED_MCP_DISCOVERY_GUIDE)
 
     return parts.join('\n\n---\n\n')
+  }
+
+  /**
+   * Build a context section listing files the user has uploaded to files/.
+   * Included in the system prompt so the agent knows what data is available
+   * and can proactively use list_files/search_files/read_file to access it.
+   */
+  private buildUploadedFilesContext(): string | null {
+    const filesDir = join(this.workspaceDir, 'files')
+    if (!existsSync(filesDir)) return null
+
+    try {
+      const entries = this.walkUploadedFiles(filesDir, '')
+      if (entries.length === 0) return null
+
+      const lines = [
+        '## Workspace Uploaded Files',
+        '',
+        'The user has uploaded the following files to the workspace `files/` directory.',
+        'Use `list_files` to browse, `search_files` to search content, or `read_file` with path `files/<name>` to read them.',
+        '',
+      ]
+
+      for (const entry of entries.slice(0, 50)) {
+        const sizeStr = entry.size < 1024
+          ? `${entry.size}B`
+          : entry.size < 1024 * 1024
+            ? `${Math.round(entry.size / 1024)}KB`
+            : `${(entry.size / (1024 * 1024)).toFixed(1)}MB`
+        lines.push(`- \`${entry.path}\` (${sizeStr})`)
+      }
+
+      if (entries.length > 50) {
+        lines.push(`- ... and ${entries.length - 50} more files`)
+      }
+
+      return lines.join('\n')
+    } catch {
+      return null
+    }
+  }
+
+  private walkUploadedFiles(
+    dir: string,
+    prefix: string,
+  ): Array<{ path: string; size: number }> {
+    const results: Array<{ path: string; size: number }> = []
+    try {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name.startsWith('.')) continue
+        const absPath = join(dir, entry.name)
+        const relPath = prefix ? `${prefix}/${entry.name}` : entry.name
+        if (entry.isDirectory()) {
+          results.push(...this.walkUploadedFiles(absPath, relPath))
+        } else {
+          const stat = statSync(absPath)
+          results.push({ path: relPath, size: stat.size })
+        }
+      }
+    } catch {
+      // Ignore permission or other errors
+    }
+    return results
   }
 
   // ---------------------------------------------------------------------------

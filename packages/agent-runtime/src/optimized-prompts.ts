@@ -105,10 +105,26 @@ export const OPTIMIZED_TOOL_PLANNING_GUIDE = `## Tool Planning
 Before executing, plan the full tool sequence upfront. Complete complex tasks
 in fewer LLM iterations by batching independent tool calls.
 
+### Uploaded Files (files/ directory)
+
+Users can upload files via the file browser. Uploaded files are stored in the \`files/\` directory.
+When a user asks about uploaded files, references their data, or you need to find information
+they've shared:
+
+- **list_files** — List files in the \`files/\` directory (use first to see what's available)
+- **search_files** — RAG search across indexed files using hybrid keyword + semantic search (supports .txt, .csv, .md)
+- **read_file** — Read a specific file (use path like \`files/myfile.txt\`)
+
+Always check \`list_files\` first when users mention uploaded files, then use \`search_files\` or
+\`read_file\` to access their content.
+
 ### Examples
 
 - "Check the deploy log and write a summary report" → \`read_file, write_file\` (~1 iteration)
 - "Convert data.csv to JSON format and save it" → \`read_file, exec, write_file\` (~1 iteration)
+- "What's in the file I uploaded?" → \`list_files, read_file\` (~1 iteration)
+- "Find revenue numbers in my data" → \`search_files\` (~1 iteration)
+- "Summarize the CSV I uploaded" → \`list_files, read_file\` (~1 iteration)
 - "Notify the Discord channel that v2.4.0 has been deployed" → \`send_message\` (~1 iteration) (batchable)
 - "Build me a task tracker where I can add, complete, and delete tasks" → \`canvas_create, canvas_data, canvas_components, canvas_trigger_action\` (~1 iteration)`
 
@@ -205,13 +221,36 @@ You can discover and install MCP servers at runtime to gain new capabilities.
 MCP servers provide specialized tools for databases, APIs, browser automation,
 file processing, messaging platforms, travel services, and more.
 
+### Composio Managed Integrations (Preferred)
+
+Hundreds of integrations (Google, Slack, GitHub, Linear, Notion, Jira, and many
+more) are available via **Composio managed OAuth**. These require NO manual
+credentials or API keys — authentication is handled automatically.
+
+**Always prefer Composio integrations** when available. To use them:
+- Call \`mcp_search\` — Composio results appear with source "composio"
+- Call \`mcp_install({ name: "<toolkit-slug>" })\` — no command or args needed
+- Tools become available immediately with prefix "mcp_composio_"
+
+### Skill Shortcut
+
+When the user message starts with \`[Skill: ...]\`, a saved skill provides
+setup instructions, tool slugs, and execution steps. Follow the skill
+instructions directly for that integration:
+
+- **DO** call \`mcp_install\` if the skill says to (ensures the server is connected)
+- **DO** call \`COMPOSIO_MANAGE_CONNECTIONS\` if the skill says to (ensures auth)
+- **GO STRAIGHT** to execution using the tool slugs listed in the skill
+
+You can still use \`mcp_search\` if the user also needs integrations not covered
+by the loaded skill (e.g. the skill handles Gmail but the user also asks about Calendar).
+
 ### When to Search
 
-Search for MCP servers (mcp_search) in ANY of these situations:
+Search for MCP servers (mcp_search) when any of these situations apply:
 
 1. **Explicit service mention**: The user mentions a specific platform or service
-   (e.g. Airbnb, GitHub, Slack, Figma, Stripe, Linear) — search for an MCP
-   server for that service BEFORE building anything.
+   (e.g. Airbnb, GitHub, Slack, Google Calendar) — search for it BEFORE building.
 2. **Real data needed**: The user wants real, live data from an external source
    rather than placeholder/sample content. If they ask to "find flights",
    "search for Airbnb listings", "check my PRs", or "look up restaurants",
@@ -219,18 +258,20 @@ Search for MCP servers (mcp_search) in ANY of these situations:
 3. **Missing capability**: The task requires tools you don't currently have
    (e.g. database queries, browser automation, file access).
 
-**IMPORTANT**: When a user references an external service by name, ALWAYS search
-for a relevant MCP server first and install it to fetch real data. Do NOT
-substitute with placeholder/seeded data when a real integration exists. The user
-said "airbnb" because they want actual Airbnb listings, not sample entries.
+**IMPORTANT**: When no skill is loaded (no \`[Skill: ...]\` prefix) and a user
+references an external service by name, search for a relevant MCP server first
+and install it to fetch real data. Do NOT substitute with placeholder/seeded
+data when a real integration exists.
 
 ### Decision Flow
 
 1. **Scan the request** for service names, data sources, or API references
 2. **Check what you have**: mcp_list_installed — you may already have the tools
-3. **Search**: mcp_search with the service name or capability (e.g. "airbnb", "postgres database", "github api")
-4. **Install**: mcp_install the best match — tools become available immediately
-5. **Use**: call the new tools to fetch real data, then build the UI/dashboard around it
+3. **Search**: mcp_search with the service name — results include Composio and npm
+4. **Prefer Composio**: if search returns a Composio result (source: "composio"),
+   use it — just call mcp_install with the name, no command/args needed
+5. **Install**: mcp_install the best match — tools become available immediately
+6. **Use**: call the new tools to fetch real data, then build the UI around it
 
 ### Safety
 
@@ -240,8 +281,58 @@ said "airbnb" because they want actual Airbnb listings, not sample entries.
 
 ### Examples
 
-- User: "Find me an Airbnb in Bali near organic restaurants" → mcp_search("airbnb"), mcp_install, use airbnb_search to get real listings, then build dashboard
+- User: "Show my Google Calendar events" → mcp_search("google calendar"), install the Composio result, use tools
+- User: "Find me an Airbnb in Bali" → mcp_search("airbnb"), mcp_install, use airbnb_search
 - User: "Query my Postgres database" → mcp_search("postgres"), mcp_install, use mcp_postgres_query
-- User: "Check my GitHub PRs" → mcp_search("github"), mcp_install, use mcp_github_list_pull_requests
-- User: "Send a Slack message" → mcp_search("slack"), mcp_install, use mcp_slack_send_message
-- User: "Plan a trip to Tokyo with hotel options" → mcp_search("hotel" or "booking"), mcp_install, fetch real data`
+- User: "Check my GitHub PRs" → mcp_search("github"), install the Composio result, use tools
+- User: "Send a Slack message" → mcp_search("slack"), install the Composio result, use tools
+
+### IMPORTANT: Always Save Skills After Successful Integrations
+
+**You MUST save a skill file after every successful MCP or Composio integration.**
+This is a critical part of your workflow — do not skip it. After you use tools from
+an MCP server or Composio to fulfill the user's request, you MUST save the tool
+flow as a skill before finishing your response. Do this in the same turn — do not
+wait for the user to ask. This applies to BOTH Composio integrations AND local
+MCP servers (like Airbnb, Postgres, etc.).
+
+Use \`write_file\` to save the skill. Do NOT save skills for failed or errored flows.
+
+**Before saving**, check if a skill already exists for this integration by reading
+\`skills/\` — don't create duplicates.
+
+#### Skill file — save to \`skills/{descriptive-name}.md\`:
+
+Use a short, descriptive name based on what the skill does (e.g. \`google-calendar\`,
+\`github-issues\`, \`airbnb-search\`, \`postgres-queries\`). Do NOT prefix with "composio-"
+or "mcp-" — the name should describe the capability, not the transport.
+
+\`\`\`
+---
+name: {descriptive-name}
+version: 1.0.0
+description: {what this skill does}
+trigger: "{broad keyword1}|{broad keyword2}|{broad keyword3}|{broad keyword4}"
+tools: [{tools used — e.g. mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL, mcp_install, etc.}]
+---
+# {Descriptive Name}
+
+## Setup
+{For Composio: mcp_install({ name: "{toolkit}" }) then COMPOSIO_MANAGE_CONNECTIONS}
+{For local MCP: mcp_install({ name: "{server}", command: "{cmd}", args: [...] })}
+
+## Available Tools
+{For Composio: list ALL discovered tool slugs with descriptions, e.g.:
+- GOOGLECALENDAR_LIST_EVENTS — list events from a calendar
+- GOOGLECALENDAR_CREATE_EVENT — create a new event}
+{For local MCP: list mcp_{server}_{tool} names with descriptions}
+
+## Execution
+{How to use the tools — include example calls}
+\`\`\`
+
+#### Trigger keyword guidelines
+- Use broad terms the user might say, not just the service name
+- Include synonyms and related phrases
+- Example for Google Calendar: "google calendar|calendar events|my meetings|my schedule|upcoming events|weekly calendar"
+- Example for Airbnb: "airbnb|find a place to stay|vacation rental|book accommodation|places to stay"`

@@ -324,7 +324,7 @@ export class ManagedApiRuntime {
 
   query(
     modelName: string,
-    params?: { where?: Record<string, unknown>; orderBy?: string; limit?: number; offset?: number },
+    params?: { where?: Record<string, unknown>; orderBy?: string; limit?: number; offset?: number; search?: string; searchFields?: string[] },
   ): { ok: boolean; items: Record<string, unknown>[]; count: number; error?: string } {
     const model = this.modelMap.get(modelName) || this.modelMap.get(modelName.toLowerCase())
     if (!model) {
@@ -339,7 +339,7 @@ export class ManagedApiRuntime {
 
   private buildSelectQuery(
     model: ModelDefinition,
-    params?: { where?: Record<string, unknown>; orderBy?: string; limit?: number; offset?: number },
+    params?: { where?: Record<string, unknown>; orderBy?: string; limit?: number; offset?: number; search?: string; searchFields?: string[] },
   ): { sql: string; values: SqlParam[] } {
     let sql = `SELECT * FROM "${model.name}"`
     const values: SqlParam[] = []
@@ -350,6 +350,19 @@ export class ManagedApiRuntime {
         if (val === undefined || val === null) continue
         conditions.push(`"${key}" = ?`)
         values.push(val as SqlParam)
+      }
+    }
+
+    if (params?.search && params.searchFields?.length) {
+      const validFields = new Set(['id', 'createdAt', 'updatedAt', ...model.fields.map(f => f.name)])
+      const likeConditions: string[] = []
+      for (const field of params.searchFields) {
+        if (!validFields.has(field)) continue
+        likeConditions.push(`"${field}" LIKE ?`)
+        values.push(`%${params.search}%` as SqlParam)
+      }
+      if (likeConditions.length > 0) {
+        conditions.push(`(${likeConditions.join(' OR ')})`)
       }
     }
 
@@ -408,7 +421,7 @@ export class ManagedApiRuntime {
         try {
           const url = new URL(c.req.url)
           const where: Record<string, unknown> = {}
-          const reserved = new Set(['limit', 'offset', 'orderBy'])
+          const reserved = new Set(['limit', 'offset', 'orderBy', '_search', '_searchFields'])
           const boolFields = new Set(model.fields.filter(f => f.type === 'Boolean').map(f => f.name))
 
           for (const [key, value] of url.searchParams) {
@@ -420,11 +433,17 @@ export class ManagedApiRuntime {
             }
           }
 
+          const searchTerm = url.searchParams.get('_search') || undefined
+          const searchFieldsRaw = url.searchParams.get('_searchFields')
+          const searchFields = searchFieldsRaw ? searchFieldsRaw.split(',').map(s => s.trim()).filter(Boolean) : undefined
+
           const result = this.query(model.name, {
             where: Object.keys(where).length > 0 ? where : undefined,
             orderBy: url.searchParams.get('orderBy') || undefined,
             limit: url.searchParams.has('limit') ? parseInt(url.searchParams.get('limit')!) : undefined,
             offset: url.searchParams.has('offset') ? parseInt(url.searchParams.get('offset')!) : undefined,
+            search: searchTerm,
+            searchFields,
           })
           return c.json(result)
         } catch (err: any) {

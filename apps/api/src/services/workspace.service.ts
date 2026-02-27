@@ -4,6 +4,9 @@
  */
 
 import { prisma, type Prisma } from '../lib/prisma';
+import { customAlphabet } from 'nanoid';
+
+const nanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 6);
 
 export interface CreatePersonalWorkspaceResult {
   workspace: {
@@ -127,6 +130,66 @@ export async function updateWorkspace(
   return prisma.workspace.update({
     where: { id: workspaceId },
     data,
+  });
+}
+
+/**
+ * Create a paid workspace (bypasses the beforeCreate hook limit).
+ * Called from the billing workspace-checkout endpoint after Stripe session creation.
+ */
+export async function createPaidWorkspace(
+  userId: string,
+  workspaceName: string
+): Promise<CreatePersonalWorkspaceResult> {
+  const baseSlug = workspaceName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+  const slug = `${baseSlug}-${nanoid()}`;
+
+  const result = await prisma.$transaction(async (tx) => {
+    const workspace = await tx.workspace.create({
+      data: { name: workspaceName, slug },
+    });
+
+    const member = await tx.member.create({
+      data: {
+        userId,
+        role: 'owner',
+        workspaceId: workspace.id,
+        isBillingAdmin: true,
+      },
+    });
+
+    return { workspace, member };
+  });
+
+  return {
+    workspace: {
+      id: result.workspace.id,
+      name: result.workspace.name,
+      slug: result.workspace.slug,
+    },
+    member: {
+      id: result.member.id,
+      userId: result.member.userId,
+      role: result.member.role,
+      workspaceId: result.member.workspaceId!,
+    },
+  };
+}
+
+/**
+ * Count workspaces owned by a user.
+ * Used to enforce the one-free-workspace-per-user limit.
+ */
+export async function getUserOwnedWorkspaceCount(userId: string): Promise<number> {
+  return prisma.member.count({
+    where: {
+      userId,
+      role: 'owner',
+      workspaceId: { not: null },
+    },
   });
 }
 

@@ -62,6 +62,7 @@ import { AgentGateway } from './gateway'
 import { userMessage } from './pi-adapter'
 import { getDynamicAppManager, initDynamicAppManager } from './dynamic-app-manager'
 import type { ActionEvent } from './dynamic-app-types'
+import { extractFilePartsAsText } from './file-attachment-utils'
 import { fileURLToPath } from 'url'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -377,7 +378,7 @@ app.post('/agent/chat', async (c) => {
 
   const body = await c.req.json()
 
-  const allMessages = (body.messages || []) as Array<{ role: string; parts: Array<{ type: string; text: string }> }>
+  const allMessages = (body.messages || []) as Array<{ role: string; parts: Array<{ type: string; text?: string; mediaType?: string; url?: string }> }>
 
   let userText: string | undefined
   if (allMessages.length > 0) {
@@ -387,6 +388,11 @@ app.post('/agent/chat', async (c) => {
         .filter((p: any) => p.type === 'text')
         .map((p: any) => p.text)
         .join('\n')
+
+      const fileContext = extractFilePartsAsText(last.parts)
+      if (fileContext) {
+        userText = (userText || '') + '\n\n' + fileContext
+      }
     }
   }
 
@@ -601,12 +607,14 @@ app.delete('/agent/prompt-override', (c) => {
 })
 
 // Session reset — used by eval runner to clear conversation history between tests
-app.post('/agent/session/reset', (c) => {
+app.post('/agent/session/reset', async (c) => {
   if (!agentGateway) {
     return c.json({ error: 'Agent gateway not running' }, 503)
   }
   const sm = agentGateway.getSessionManager()
   sm.clearHistory('chat')
+  agentGateway.reloadConfig()
+  await agentGateway.getMCPClientManager().stopAll()
   return c.json({ ok: true })
 })
 
@@ -621,17 +629,20 @@ app.post('/agent/tool-mocks', async (c) => {
       response: any
       description?: string
       paramKeys?: string[]
+      hidden?: boolean
     } | {
       type: 'pattern'
       patterns: Array<{ match: Record<string, string>; response: any }>
       default?: any
       description?: string
       paramKeys?: string[]
+      hidden?: boolean
     }>
   }
 
   const fns: Record<string, (params: Record<string, any>) => any> = {}
   const syntheticDefs: Record<string, { description: string; paramKeys: string[] }> = {}
+  const hiddenTools = new Set<string>()
 
   for (const [toolName, spec] of Object.entries(body.mocks)) {
     if (spec.type === 'static') {
@@ -658,8 +669,11 @@ app.post('/agent/tool-mocks', async (c) => {
         paramKeys: spec.paramKeys || [],
       }
     }
+    if ((spec as any).hidden) {
+      hiddenTools.add(toolName)
+    }
   }
-  agentGateway.setToolMocks(fns, syntheticDefs)
+  agentGateway.setToolMocks(fns, syntheticDefs, hiddenTools)
   return c.json({ ok: true, mockedTools: Object.keys(fns) })
 })
 
@@ -1174,6 +1188,110 @@ app.post('/agent/dynamic-app/action', async (c) => {
 
   manager.deliverAction(event)
   return c.json({ ok: true, event })
+})
+
+app.post('/agent/dynamic-app/edit', async (c) => {
+  const body = await c.req.json() as {
+    action: 'update' | 'add' | 'delete' | 'move'
+    surfaceId: string
+    componentId?: string
+    componentIds?: string[]
+    changes?: Record<string, unknown>
+    component?: Record<string, unknown>
+    parentId?: string
+    newParentId?: string
+    index?: number
+  }
+
+  if (!body.surfaceId || !body.action) {
+    return c.json({ error: 'Missing surfaceId or action' }, 400)
+  }
+
+  const manager = getDynamicAppManager()
+  const surfaceState = manager.getSurface(body.surfaceId)
+  if (!surfaceState) {
+    return c.json({ error: `Surface "${body.surfaceId}" does not exist` }, 404)
+  }
+
+  const components = surfaceState.components
+
+  switch (body.action) {
+    case 'update': {
+      if (!body.componentId || !body.changes) {
+        return c.json({ error: 'Missing componentId or changes for update action' }, 400)
+      }
+      const existing = components.get(body.componentId)
+      if (!existing) {
+        return c.json({ error: `Component "${body.componentId}" not found` }, 404)
+      }
+      const updated = { ...existing, ...body.changes, id: body.componentId, component: (body.changes.component || existing.component) as any }
+      const result = manager.updateComponents(body.surfaceId, [updated as any])
+      return c.json(result)
+    }
+
+    case 'add': {
+      if (!body.component || !body.parentId) {
+        return c.json({ error: 'Missing component or parentId for add action' }, 400)
+      }
+      const id = (body.component.id as string) || `comp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`
+      const newComp = { ...body.component, id } as any
+      const parent = components.get(body.parentId)
+      if (!parent) {
+        return c.json({ error: `Parent "${body.parentId}" not found` }, 404)
+      }
+      const updatedParent = { ...parent }
+      const childIds = Array.isArray(updatedParent.children) ? [...updatedParent.children] : []
+      const idx = typeof body.index === 'number' ? Math.min(body.index, childIds.length) : childIds.length
+      childIds.splice(idx, 0, id)
+      updatedParent.children = childIds
+      const result = manager.updateComponents(body.surfaceId, [newComp, updatedParent])
+      return c.json({ ...result, newComponentId: id })
+    }
+
+    case 'delete': {
+      const ids = body.componentIds || (body.componentId ? [body.componentId] : [])
+      if (ids.length === 0) {
+        return c.json({ error: 'Missing componentId or componentIds for delete action' }, 400)
+      }
+      const result = manager.deleteComponents(body.surfaceId, ids)
+      return c.json(result)
+    }
+
+    case 'move': {
+      if (!body.componentId || !body.newParentId) {
+        return c.json({ error: 'Missing componentId or newParentId for move action' }, 400)
+      }
+      const updatedParents: any[] = []
+      for (const [, comp] of components) {
+        if (Array.isArray(comp.children) && comp.children.includes(body.componentId)) {
+          const updated = { ...comp, children: comp.children.filter((id: string) => id !== body.componentId) }
+          updatedParents.push(updated)
+          break
+        }
+        if (comp.child === body.componentId) {
+          const updated = { ...comp }
+          delete updated.child
+          updatedParents.push(updated)
+          break
+        }
+      }
+      const newParent = components.get(body.newParentId)
+      if (!newParent) {
+        return c.json({ error: `New parent "${body.newParentId}" not found` }, 404)
+      }
+      const updatedNewParent = { ...newParent }
+      const newChildIds = Array.isArray(updatedNewParent.children) ? [...updatedNewParent.children] : []
+      const idx = typeof body.index === 'number' ? Math.min(body.index, newChildIds.length) : newChildIds.length
+      newChildIds.splice(idx, 0, body.componentId)
+      updatedNewParent.children = newChildIds
+      updatedParents.push(updatedNewParent)
+      const result = manager.updateComponents(body.surfaceId, updatedParents)
+      return c.json(result)
+    }
+
+    default:
+      return c.json({ error: `Unknown action "${body.action}"` }, 400)
+  }
 })
 
 // Proxy requests to managed API runtimes (per-surface data layer)

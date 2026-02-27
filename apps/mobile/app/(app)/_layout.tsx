@@ -34,6 +34,7 @@ export default function AppLayout() {
   const isProjectDetail = /^\/(app\/)?projects\/[^/]+/.test(pathname.replace(/^\/(app\/)?/, '/'))
     && pathname !== '/projects'
     && pathname !== '/(app)/projects'
+  const isSettingsPage = pathname === '/settings' || pathname === '/(app)/settings' || pathname.includes('/settings')
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
@@ -51,7 +52,7 @@ export default function AppLayout() {
   if (isLoading) return null
   if (!isAuthenticated) return null
 
-  const showSidebar = isWide && !isProjectDetail
+  const showSidebar = isWide && !isProjectDetail && !isSettingsPage
 
   return (
     <DomainProvider>
@@ -60,7 +61,7 @@ export default function AppLayout() {
           {showSidebar && <AppSidebar />}
 
           <View className="flex-1">
-            {!isWide && <AppHeader onMenuPress={openDrawer} />}
+            {!isWide && !isHomePage && !isSettingsPage && <AppHeader onMenuPress={openDrawer} />}
             <View className="flex-1">
               <Slot />
             </View>

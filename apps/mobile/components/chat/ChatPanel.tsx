@@ -267,7 +267,7 @@ function serializeParts(parts: any[] | undefined): string | undefined {
       p.type === "text" ||
       p.type === "tool-invocation" ||
       p.type === "dynamic-tool" ||
-      (p.type === "file" && p.mediaType?.startsWith("image/"))
+      p.type === "file"
   )
 
   if (persistableParts.length === 0) return undefined

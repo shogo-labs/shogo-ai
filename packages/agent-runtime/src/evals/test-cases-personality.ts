@@ -5,11 +5,8 @@
  * (SOUL.md, IDENTITY.md, AGENTS.md) via the personality_update tool.
  */
 
-import type { AgentEval, EvalResult } from './types'
-
-function usedTool(result: EvalResult, name: string): boolean {
-  return result.toolCalls.some(t => t.name === name)
-}
+import type { AgentEval } from './types'
+import { usedTool } from './eval-helpers'
 
 export const PERSONALITY_EVALS: AgentEval[] = [
   {

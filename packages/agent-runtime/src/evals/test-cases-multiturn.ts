@@ -5,15 +5,8 @@
  * maintain context, and plan tool sequences efficiently.
  */
 
-import type { AgentEval, EvalResult } from './types'
-
-function usedTool(result: EvalResult, name: string): boolean {
-  return result.toolCalls.some(t => t.name === name)
-}
-
-function usedToolInFinalTurn(result: EvalResult, name: string): boolean {
-  return result.finalTurnToolCalls.some(t => t.name === name)
-}
+import type { AgentEval } from './types'
+import { usedTool, usedToolInFinalTurn } from './eval-helpers'
 
 export const MULTITURN_EVALS: AgentEval[] = [
   {

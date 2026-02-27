@@ -189,6 +189,58 @@ describe('AgentGateway integration', () => {
     expect(capturedMessages[1].length).toBeGreaterThan(capturedMessages[0].length)
   })
 
+  test('system prompt includes uploaded files context when files exist', async () => {
+    const filesDir = join(TEST_DIR, 'files')
+    mkdirSync(filesDir, { recursive: true })
+    writeFileSync(join(filesDir, 'report.csv'), 'name,revenue\nAcme,1000\nGlobo,2000')
+    writeFileSync(join(filesDir, 'notes.txt'), 'Important meeting notes')
+
+    let systemPromptSeen = ''
+    const mockStream = createMockStreamFn(
+      [buildTextResponse('I can see your files.')],
+    )
+    const wrappedStream: any = (_model: any, context: any, options: any) => {
+      // Capture system prompt from whichever property it's on
+      const sp = context.systemPrompt || context.system || ''
+      if (sp) systemPromptSeen = sp
+      return mockStream(_model, context, options)
+    }
+
+    gateway = new AgentGateway(TEST_DIR, 'test-project')
+    gateway.setStreamFn(wrappedStream)
+    await gateway.start()
+
+    await gateway.processChatMessage('What files do I have?')
+
+    expect(systemPromptSeen).toContain('Workspace Uploaded Files')
+    expect(systemPromptSeen).toContain('report.csv')
+    expect(systemPromptSeen).toContain('notes.txt')
+  })
+
+  test('system prompt does not list files when files/ is empty', async () => {
+    let systemPromptSeen = ''
+    const mockStream = createMockStreamFn(
+      [buildTextResponse('No files here.')],
+    )
+    const wrappedStream: any = (_model: any, context: any, options: any) => {
+      const sp = context.systemPrompt || context.system || ''
+      if (sp) systemPromptSeen = sp
+      return mockStream(_model, context, options)
+    }
+
+    gateway = new AgentGateway(TEST_DIR, 'test-project')
+    gateway.setStreamFn(wrappedStream)
+    await gateway.start()
+
+    await gateway.processChatMessage('Hello')
+
+    // The tool planning guide mentions "Uploaded Files" as a section,
+    // but no specific file listings should appear
+    expect(systemPromptSeen).not.toContain('report.csv')
+    expect(systemPromptSeen).not.toContain('notes.txt')
+    expect(systemPromptSeen).not.toContain('Workspace Uploaded Files')
+  })
+
   test('daily memory is written after message processing', async () => {
     gateway = createGateway([buildTextResponse('Response here.')])
     await gateway.start()

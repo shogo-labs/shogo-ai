@@ -17,6 +17,7 @@ export type MessagePart =
   | { type: "text"; text: string; id: string }
   | { type: "tool"; tool: ToolCallData; id: string }
   | { type: "image"; url: string; mediaType: string; id: string }
+  | { type: "file"; url: string; mediaType: string; id: string }
 
 /**
  * A message part after consecutive-tool grouping.

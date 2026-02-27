@@ -269,10 +269,17 @@ export const CANVAS_COMPONENT_SCHEMA: ComponentSchema[] = [
   {
     type: 'Chart',
     category: 'data',
-    description: 'Simple chart (bar, horizontal bar, or progress). No external library needed.',
+    description: `Chart component supporting multiple visualization types.
+
+Use \`bar\` for comparisons across categories, \`horizontalBar\` for long labels, \`progress\` for percentage-based bars.
+Use \`line\` for trends over time, \`area\` for filled trend lines.
+Use \`pie\` for proportional breakdowns, \`donut\` for proportional breakdowns with a center label area.
+
+All types accept the same \`data\` array format: [{ label, value, color? }].
+For pie/donut, each item becomes a slice. For line/area, items are plotted left-to-right in order.`,
     hasChildren: false,
     props: {
-      type: str('Chart type', { enum: ['bar', 'horizontalBar', 'progress'], default: 'bar' }),
+      type: str('Chart type', { enum: ['bar', 'horizontalBar', 'progress', 'line', 'area', 'pie', 'donut'], default: 'bar' }),
       data: arr('Data points array, or use { path: "/metrics" } to bind to data model. Populate via canvas_api_query with dataPath.', {
         label: str('Point label', { required: true }),
         value: num('Point value', { required: true }),
@@ -280,6 +287,11 @@ export const CANVAS_COMPONENT_SCHEMA: ComponentSchema[] = [
       }),
       title: str('Chart title'),
       height: num('Chart height in px (default 200)'),
+      showLegend: bool('Show a legend below the chart (default true for pie/donut, false for others)'),
+      curved: bool('Use smooth curved lines instead of straight segments (line/area only, default false)'),
+      showDataPoints: bool('Show dots at each data point (line/area only, default true)'),
+      innerRadius: num('Inner radius for donut charts in px (donut only, default 60)'),
+      colors: arr('Custom color palette as hex strings. Overrides the default palette.'),
       className: CLASS_PROP,
     },
   },
@@ -301,9 +313,20 @@ Full example:
   { "id": "task_row", "component": "Row", "children": ["task_title", "delete_btn"], "align": "center" }
   { "id": "task_title", "component": "Text", "text": { "path": "title" } }
   { "id": "delete_btn", "component": "Button", "label": "Delete", "variant": "destructive", "size": "sm",
-    "action": { "name": "delete", "mutation": { "endpoint": "/api/tasks/:id", "method": "DELETE", "params": { "id": { "path": "id" } } } } }`,
+    "action": { "name": "delete", "mutation": { "endpoint": "/api/tasks/:id", "method": "DELETE", "params": { "id": { "path": "id" } } } } }
+
+Search & filter: set filterPath to a JSON Pointer where a TextField writes its value, and filterFields to the item fields to search.
+The DataList will client-side filter items in real time (case-insensitive substring match).
+  { "id": "search", "component": "TextField", "placeholder": "Search...", "dataPath": "/searchTerm" }
+  { "id": "list", "component": "DataList", "children": { "path": "/tasks", "templateId": "row" },
+    "filterPath": "/searchTerm", "filterFields": ["title", "description"] }`,
     hasChildren: true,
-    props: { emptyText: str('Text to show when empty'), className: CLASS_PROP },
+    props: {
+      emptyText: str('Text to show when empty'),
+      filterPath: str('JSON Pointer to a search term in the data model (e.g. "/searchTerm"). When set with filterFields, items are filtered client-side in real time.'),
+      filterFields: arr('Item fields to match against the search term (e.g. ["title", "description"]). Used with filterPath for client-side filtering.'),
+      className: CLASS_PROP,
+    },
   },
 
   // ---- Interactive ----
@@ -342,6 +365,7 @@ Example: { id: "input", component: "TextField", placeholder: "Title...", dataPat
       disabled: bool('Disable the field'),
       action: ACTION_PROP,
       dataPath: str('JSON Pointer path — writes user input to the data model in real-time (e.g. "/newTitle")'),
+      debounceMs: num('Debounce delay in ms before writing to data model (useful for search inputs, e.g. 300)'),
       className: CLASS_PROP,
     },
   },
@@ -569,6 +593,15 @@ export function lintComponents(components: Array<{ id?: string; component?: stri
         severity: 'error',
         componentId: cid,
         message: `"${schema.type}" has dataPath "${comp.dataPath}" which doesn't start with "/". dataPath must be a JSON Pointer (e.g. "/newTitle"). Add a leading "/" to fix.`,
+      })
+    }
+
+    // filterPath prop validation (must be a JSON Pointer starting with /)
+    if (typeof comp.filterPath === 'string' && comp.filterPath && !comp.filterPath.startsWith('/')) {
+      messages.push({
+        severity: 'error',
+        componentId: cid,
+        message: `"${schema.type}" has filterPath "${comp.filterPath}" which doesn't start with "/". filterPath must be a JSON Pointer (e.g. "/searchTerm"). Add a leading "/" to fix.`,
       })
     }
 

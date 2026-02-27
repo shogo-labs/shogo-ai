@@ -6,8 +6,8 @@
  */
 
 import { customAlphabet } from 'nanoid'
+import { getUserOwnedWorkspaceCount } from '../services/workspace.service'
 
-// Generate random 6-character suffix for slug uniqueness
 const nanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 6)
 
 /**
@@ -168,7 +168,20 @@ export const workspaceHooks: WorkspaceHooks = {
    * Fixes: Workspace creation failures (5.9% rate) from slug collisions
    */
   beforeCreate: async (input, ctx) => {
-    // Generate slug if not provided
+    const userId = ctx.body.ownerId || ctx.userId
+    if (userId) {
+      const ownedCount = await getUserOwnedWorkspaceCount(userId)
+      if (ownedCount >= 1) {
+        return {
+          ok: false,
+          error: {
+            code: "workspace_limit_reached",
+            message: "You already have a free workspace. Additional workspaces require a paid subscription.",
+          },
+        }
+      }
+    }
+
     if (!input.slug && input.name) {
       const baseSlug = input.name
         .toLowerCase()

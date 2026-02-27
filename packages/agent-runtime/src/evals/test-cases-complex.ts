@@ -13,7 +13,7 @@
  * evals run fast, deterministically, and without credentials.
  */
 
-import type { AgentEval, EvalResult } from './types'
+import type { AgentEval } from './types'
 import {
   COMPETITIVE_INTEL_MOCKS,
   GITHUB_TRIAGE_MOCKS,
@@ -24,27 +24,7 @@ import {
   STRIPE_REVENUE_MOCKS,
   PR_REVIEW_MOCKS,
 } from './tool-mocks'
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function usedTool(result: EvalResult, toolName: string): boolean {
-  return result.toolCalls.some(t => t.name === toolName)
-}
-
-function toolCallCount(result: EvalResult, toolName: string): number {
-  return result.toolCalls.filter(t => t.name === toolName).length
-}
-
-function responseContains(result: EvalResult, ...terms: string[]): boolean {
-  const text = result.responseText.toLowerCase()
-  return terms.every(t => text.includes(t.toLowerCase()))
-}
-
-function toolCallsJson(result: EvalResult): string {
-  return JSON.stringify(result.toolCalls).toLowerCase()
-}
+import { usedTool, toolCallCount, responseContains, toolCallsJson } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
 // Test Cases

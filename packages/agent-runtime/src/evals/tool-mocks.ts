@@ -13,8 +13,8 @@
 // ---------------------------------------------------------------------------
 
 export type ToolMockSpec =
-  | { type: 'static'; response: any; description?: string; paramKeys?: string[] }
-  | { type: 'pattern'; patterns: Array<{ match: Record<string, string>; response: any }>; default?: any; description?: string; paramKeys?: string[] }
+  | { type: 'static'; response: any; description?: string; paramKeys?: string[]; hidden?: boolean }
+  | { type: 'pattern'; patterns: Array<{ match: Record<string, string>; response: any }>; default?: any; description?: string; paramKeys?: string[]; hidden?: boolean }
 
 export type ToolMockMap = Record<string, ToolMockSpec>
 
@@ -1356,6 +1356,7 @@ export const AIRBNB_VACATION_PLANNER_MOCKS: ToolMockMap = {
     type: 'static',
     description: 'Search for Airbnb listings by location, dates, guests, and filters.',
     paramKeys: ['location', 'checkin', 'checkout', 'adults', 'ignoreRobotstxt'],
+    hidden: true,
     response: {
       listings: [
         { id: '1001', name: 'Ubud Jungle Retreat — Private Pool Villa', url: 'https://www.airbnb.com/rooms/1001', price: { amount: 85, currency: 'USD', period: 'night' }, rating: 4.96, reviewCount: 234, beds: '1 king', bathrooms: 1, amenities: ['Pool', 'WiFi', 'Kitchen', 'Garden view'], superhost: true, location: 'Ubud, Bali' },
@@ -1372,6 +1373,7 @@ export const AIRBNB_VACATION_PLANNER_MOCKS: ToolMockMap = {
     type: 'pattern',
     description: 'Get detailed information about a specific Airbnb listing.',
     paramKeys: ['listingId'],
+    hidden: true,
     patterns: [
       {
         match: { listingId: '1001' },
@@ -1383,6 +1385,701 @@ export const AIRBNB_VACATION_PLANNER_MOCKS: ToolMockMap = {
   mcp_list_installed: {
     type: 'static',
     description: 'List all currently installed MCP servers and their available tools.',
+    paramKeys: [],
+    response: { servers: [], totalServers: 0, totalTools: 0 },
+  },
+}
+
+// ---------------------------------------------------------------------------
+// Fixture: Composio Google Calendar Discovery (Composio Case 1)
+// Full Composio flow: mcp_search → mcp_install → SEARCH_TOOLS → MANAGE_CONNECTIONS → MULTI_EXECUTE
+// ---------------------------------------------------------------------------
+
+export const COMPOSIO_GOOGLE_CALENDAR_MOCKS: ToolMockMap = {
+  mcp_search: {
+    type: 'pattern',
+    description: 'Search for MCP servers by capability or keyword.',
+    paramKeys: ['query', 'limit'],
+    patterns: [
+      {
+        match: { query: 'google calendar' },
+        response: {
+          query: 'google calendar',
+          results: [
+            { name: 'googlecalendar', description: 'Google Calendar — manage events, check availability, create and update meetings', source: 'composio' },
+          ],
+          message: 'Found 1 integration(s). Composio results are preferred — install with just the name.',
+        },
+      },
+      {
+        match: { query: 'calendar' },
+        response: {
+          query: 'calendar',
+          results: [
+            { name: 'googlecalendar', description: 'Google Calendar — manage events, check availability, create and update meetings', source: 'composio' },
+          ],
+          message: 'Found 1 integration(s). Composio results are preferred — install with just the name.',
+        },
+      },
+    ],
+    default: { query: 'unknown', results: [], message: 'No integrations found.' },
+  },
+  mcp_install: {
+    type: 'static',
+    description: 'Install and start an MCP server, making its tools available immediately.',
+    paramKeys: ['name'],
+    response: {
+      ok: true,
+      server: 'composio',
+      toolCount: 3,
+      tools: [
+        { name: 'mcp_composio_COMPOSIO_SEARCH_TOOLS', description: 'Search for tools across 1000+ apps' },
+        { name: 'mcp_composio_COMPOSIO_MANAGE_CONNECTIONS', description: 'Handle OAuth and API key authentication' },
+        { name: 'mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL', description: 'Execute up to 20 tools in parallel' },
+      ],
+      message: 'Composio connected with 3 tool(s). Use COMPOSIO_SEARCH_TOOLS to discover available tools.',
+    },
+  },
+  mcp_composio_COMPOSIO_SEARCH_TOOLS: {
+    type: 'static',
+    description: 'Search for tools across 1000+ apps. Returns matching tool slugs with descriptions and input schemas.',
+    paramKeys: ['queries', 'session'],
+    response: {
+      tools: [
+        { slug: 'GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS', description: 'List events across all calendars within a time range', params: { time_min: 'RFC3339 timestamp', time_max: 'RFC3339 timestamp', single_events: 'boolean' } },
+        { slug: 'GOOGLECALENDAR_LIST_CALENDARS', description: 'List all accessible calendars', params: {} },
+        { slug: 'GOOGLECALENDAR_EVENTS_LIST', description: 'List events for a specific calendar', params: { calendarId: 'string', timeMin: 'string', timeMax: 'string' } },
+        { slug: 'GOOGLECALENDAR_CREATE_EVENT', description: 'Create a new calendar event', params: { summary: 'string', start: 'object', end: 'object' } },
+      ],
+      connection_status: 'active',
+      session_id: 'eval_session',
+    },
+  },
+  mcp_composio_COMPOSIO_MANAGE_CONNECTIONS: {
+    type: 'static',
+    description: 'Handle OAuth and API key authentication for toolkits.',
+    paramKeys: ['toolkits', 'session_id'],
+    response: {
+      status: 'active',
+      connected_accounts: [{ toolkit: 'googlecalendar', status: 'active', user: 'user@example.com' }],
+    },
+  },
+  mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL: {
+    type: 'static',
+    description: 'Execute up to 20 tools in parallel.',
+    paramKeys: ['tools', 'session_id'],
+    response: {
+      results: [{
+        tool_slug: 'GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS',
+        data: {
+          summary_view: [
+            { title: 'Team Standup', start: '2026-02-23T09:00:00-08:00', end: '2026-02-23T09:15:00-08:00', calendar: 'Work' },
+            { title: 'Product Review', start: '2026-02-23T11:00:00-08:00', end: '2026-02-23T12:00:00-08:00', calendar: 'Work' },
+            { title: 'Lunch with Sarah', start: '2026-02-23T12:30:00-08:00', end: '2026-02-23T13:30:00-08:00', calendar: 'Personal' },
+            { title: '1:1 with Manager', start: '2026-02-24T10:00:00-08:00', end: '2026-02-24T10:30:00-08:00', calendar: 'Work' },
+            { title: 'Sprint Planning', start: '2026-02-24T14:00:00-08:00', end: '2026-02-24T15:00:00-08:00', calendar: 'Work' },
+            { title: 'Engineering All-Hands', start: '2026-02-25T11:00:00-08:00', end: '2026-02-25T12:00:00-08:00', calendar: 'Work' },
+            { title: 'Dentist Appointment', start: '2026-02-26T15:00:00-08:00', end: '2026-02-26T16:00:00-08:00', calendar: 'Personal' },
+            { title: 'Friday Demo', start: '2026-02-27T14:00:00-08:00', end: '2026-02-27T15:00:00-08:00', calendar: 'Work' },
+          ],
+          total_events: 8,
+        },
+        successful: true,
+      }],
+    },
+  },
+  mcp_list_installed: {
+    type: 'static',
+    description: 'List all currently installed MCP servers and their available tools.',
+    paramKeys: [],
+    response: { servers: [], totalServers: 0, totalTools: 0 },
+  },
+}
+
+// ---------------------------------------------------------------------------
+// Fixture: Composio preference over local MCP (Composio Case 2)
+// mcp_search returns both Composio and npm results
+// ---------------------------------------------------------------------------
+
+export const COMPOSIO_PREFERENCE_MOCKS: ToolMockMap = {
+  mcp_search: {
+    type: 'static',
+    description: 'Search for MCP servers by capability or keyword.',
+    paramKeys: ['query', 'limit'],
+    response: {
+      query: 'github',
+      results: [
+        { name: 'github', description: 'GitHub — manage repos, issues, PRs, actions, and code', source: 'composio' },
+        { name: 'GitHub MCP Server', qualifiedName: '@modelcontextprotocol/server-github', description: 'Access GitHub repos, issues, PRs, and actions.', installCommand: 'npx -y @modelcontextprotocol/server-github', source: 'npm' },
+      ],
+      message: 'Found 2 integration(s). Composio results are preferred.',
+    },
+  },
+  mcp_install: {
+    type: 'static',
+    description: 'Install and start an MCP server.',
+    paramKeys: ['name'],
+    response: {
+      ok: true,
+      server: 'composio',
+      toolCount: 3,
+      tools: [
+        { name: 'mcp_composio_COMPOSIO_SEARCH_TOOLS', description: 'Search for tools' },
+        { name: 'mcp_composio_COMPOSIO_MANAGE_CONNECTIONS', description: 'Handle authentication' },
+        { name: 'mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL', description: 'Execute tools' },
+      ],
+      message: 'Composio connected with 3 tool(s).',
+    },
+  },
+  mcp_composio_COMPOSIO_SEARCH_TOOLS: {
+    type: 'static',
+    description: 'Search for tools across apps.',
+    paramKeys: ['queries', 'session'],
+    response: {
+      tools: [
+        { slug: 'GITHUB_LIST_ISSUES', description: 'List issues in a repository' },
+        { slug: 'GITHUB_CREATE_ISSUE', description: 'Create a new issue' },
+        { slug: 'GITHUB_LIST_PULL_REQUESTS', description: 'List pull requests' },
+      ],
+      connection_status: 'active',
+      session_id: 'eval_session',
+    },
+  },
+  mcp_composio_COMPOSIO_MANAGE_CONNECTIONS: {
+    type: 'static',
+    paramKeys: ['toolkits', 'session_id'],
+    response: { status: 'active', connected_accounts: [{ toolkit: 'github', status: 'active' }] },
+  },
+  mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL: {
+    type: 'static',
+    paramKeys: ['tools', 'session_id'],
+    response: {
+      results: [{
+        tool_slug: 'GITHUB_LIST_ISSUES',
+        data: [
+          { number: 42, title: 'Fix login SSO bug', labels: ['bug', 'critical'], assignee: 'alice', state: 'open' },
+          { number: 38, title: 'Memory leak in WS handler', labels: ['bug'], assignee: null, state: 'open' },
+          { number: 35, title: 'Add dark mode', labels: ['enhancement'], assignee: 'bob', state: 'open' },
+        ],
+        successful: true,
+      }],
+    },
+  },
+  mcp_list_installed: {
+    type: 'static',
+    paramKeys: [],
+    response: { servers: [], totalServers: 0, totalTools: 0 },
+  },
+}
+
+// ---------------------------------------------------------------------------
+// Fixture: Composio auth required (Composio Case 4)
+// MANAGE_CONNECTIONS returns needs_auth with URL
+// ---------------------------------------------------------------------------
+
+export const COMPOSIO_AUTH_REQUIRED_MOCKS: ToolMockMap = {
+  mcp_search: {
+    type: 'static',
+    paramKeys: ['query', 'limit'],
+    response: {
+      query: 'gmail',
+      results: [
+        { name: 'gmail', description: 'Gmail — send, read, and manage emails', source: 'composio' },
+      ],
+      message: 'Found 1 integration(s).',
+    },
+  },
+  mcp_install: {
+    type: 'static',
+    paramKeys: ['name'],
+    response: {
+      ok: true,
+      server: 'composio',
+      toolCount: 3,
+      tools: [
+        { name: 'mcp_composio_COMPOSIO_SEARCH_TOOLS', description: 'Search for tools' },
+        { name: 'mcp_composio_COMPOSIO_MANAGE_CONNECTIONS', description: 'Handle authentication' },
+        { name: 'mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL', description: 'Execute tools' },
+      ],
+      message: 'Composio connected with 3 tool(s).',
+    },
+  },
+  mcp_composio_COMPOSIO_SEARCH_TOOLS: {
+    type: 'static',
+    paramKeys: ['queries', 'session'],
+    response: {
+      tools: [
+        { slug: 'GMAIL_FETCH_EMAILS', description: 'Fetch emails from inbox' },
+        { slug: 'GMAIL_SEND_EMAIL', description: 'Send an email' },
+      ],
+      connection_status: 'not_connected',
+      session_id: 'eval_session',
+    },
+  },
+  mcp_composio_COMPOSIO_MANAGE_CONNECTIONS: {
+    type: 'static',
+    paramKeys: ['toolkits', 'session_id'],
+    response: {
+      status: 'needs_auth',
+      auth_url: 'https://connect.composio.dev/link/lk_test123',
+      message: 'User needs to authenticate with Gmail. Share this link: https://connect.composio.dev/link/lk_test123',
+    },
+  },
+  mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL: {
+    type: 'static',
+    paramKeys: ['tools', 'session_id'],
+    response: { error: 'Not authenticated. User must complete OAuth first.' },
+  },
+  mcp_list_installed: {
+    type: 'static',
+    paramKeys: [],
+    response: { servers: [], totalServers: 0, totalTools: 0 },
+  },
+}
+
+// ---------------------------------------------------------------------------
+// Fixture: Composio Gmail send (Composio Case 5)
+// Pre-authenticated Gmail write operation
+// ---------------------------------------------------------------------------
+
+export const COMPOSIO_GMAIL_SEND_MOCKS: ToolMockMap = {
+  mcp_search: {
+    type: 'static',
+    paramKeys: ['query', 'limit'],
+    response: {
+      query: 'gmail',
+      results: [
+        { name: 'gmail', description: 'Gmail — send, read, and manage emails', source: 'composio' },
+      ],
+      message: 'Found 1 integration(s).',
+    },
+  },
+  mcp_install: {
+    type: 'static',
+    paramKeys: ['name'],
+    response: {
+      ok: true,
+      server: 'composio',
+      toolCount: 3,
+      tools: [
+        { name: 'mcp_composio_COMPOSIO_SEARCH_TOOLS', description: 'Search for tools' },
+        { name: 'mcp_composio_COMPOSIO_MANAGE_CONNECTIONS', description: 'Handle authentication' },
+        { name: 'mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL', description: 'Execute tools' },
+      ],
+      message: 'Composio connected with 3 tool(s).',
+    },
+  },
+  mcp_composio_COMPOSIO_SEARCH_TOOLS: {
+    type: 'static',
+    paramKeys: ['queries', 'session'],
+    response: {
+      tools: [
+        { slug: 'GMAIL_SEND_EMAIL', description: 'Send an email via Gmail', params: { to: 'string', subject: 'string', body: 'string' } },
+        { slug: 'GMAIL_FETCH_EMAILS', description: 'Fetch emails from inbox' },
+        { slug: 'GMAIL_CREATE_DRAFT', description: 'Create an email draft' },
+      ],
+      connection_status: 'active',
+      session_id: 'eval_session',
+    },
+  },
+  mcp_composio_COMPOSIO_MANAGE_CONNECTIONS: {
+    type: 'static',
+    paramKeys: ['toolkits', 'session_id'],
+    response: { status: 'active', connected_accounts: [{ toolkit: 'gmail', status: 'active' }] },
+  },
+  mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL: {
+    type: 'static',
+    paramKeys: ['tools', 'session_id'],
+    response: {
+      results: [{
+        tool_slug: 'GMAIL_SEND_EMAIL',
+        data: { message_id: 'msg_abc123', thread_id: 'thread_xyz', to: 'john@example.com', subject: 'Meeting Tomorrow', status: 'sent' },
+        successful: true,
+      }],
+    },
+  },
+  mcp_list_installed: {
+    type: 'static',
+    paramKeys: [],
+    response: { servers: [], totalServers: 0, totalTools: 0 },
+  },
+}
+
+// ---------------------------------------------------------------------------
+// Fixture: Composio GitHub PR — skill auto-save eval (Composio Case 6)
+// Full discovery flow + write_file to save skill
+// ---------------------------------------------------------------------------
+
+export const COMPOSIO_GITHUB_PR_SKILL_SAVE_MOCKS: ToolMockMap = {
+  mcp_search: {
+    type: 'static',
+    paramKeys: ['query', 'limit'],
+    response: {
+      query: 'github',
+      results: [
+        { name: 'github', description: 'GitHub — manage repos, issues, PRs, actions, and code', source: 'composio' },
+      ],
+      message: 'Found 1 integration(s). Composio results are preferred.',
+    },
+  },
+  mcp_install: {
+    type: 'static',
+    paramKeys: ['name'],
+    response: {
+      ok: true,
+      server: 'composio',
+      toolCount: 3,
+      tools: [
+        { name: 'mcp_composio_COMPOSIO_SEARCH_TOOLS', description: 'Search for tools' },
+        { name: 'mcp_composio_COMPOSIO_MANAGE_CONNECTIONS', description: 'Handle authentication' },
+        { name: 'mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL', description: 'Execute tools' },
+      ],
+      message: 'Composio connected with 3 tool(s).',
+    },
+  },
+  mcp_composio_COMPOSIO_SEARCH_TOOLS: {
+    type: 'static',
+    paramKeys: ['queries', 'session'],
+    response: {
+      tools: [
+        { slug: 'GITHUB_LIST_PULL_REQUESTS', description: 'List your open pull requests across all repos' },
+        { slug: 'GITHUB_GET_PULL_REQUEST', description: 'Get details of a specific pull request' },
+        { slug: 'GITHUB_CREATE_PULL_REQUEST', description: 'Create a new pull request' },
+      ],
+      connection_status: 'active',
+      session_id: 'eval_session',
+    },
+  },
+  mcp_composio_COMPOSIO_MANAGE_CONNECTIONS: {
+    type: 'static',
+    paramKeys: ['toolkits', 'session_id'],
+    response: { status: 'active', connected_accounts: [{ toolkit: 'github', status: 'active' }] },
+  },
+  mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL: {
+    type: 'static',
+    paramKeys: ['tools', 'session_id'],
+    response: {
+      results: [{
+        tool_slug: 'GITHUB_LIST_PULL_REQUESTS',
+        data: [
+          { number: 42, title: 'Fix critical auth bypass', author: 'alice', state: 'open', labels: ['security', 'urgent'], created_at: '2026-02-20T08:00:00Z' },
+          { number: 41, title: 'Add logging middleware', author: 'bob', state: 'open', labels: ['enhancement'], created_at: '2026-02-21T10:00:00Z' },
+          { number: 40, title: 'Update dependencies', author: 'dependabot', state: 'open', labels: ['dependencies'], created_at: '2026-02-19T06:00:00Z' },
+        ],
+        successful: true,
+      }],
+    },
+  },
+  write_file: {
+    type: 'static',
+    paramKeys: ['path', 'content'],
+    response: { ok: true, path: 'skills/github-pull-requests.md', bytes: 512 },
+  },
+  list_files: {
+    type: 'static',
+    paramKeys: ['path'],
+    response: { files: [], total: 0 },
+  },
+  read_file: {
+    type: 'static',
+    paramKeys: ['path'],
+    response: { error: 'File not found' },
+  },
+  mcp_list_installed: {
+    type: 'static',
+    paramKeys: [],
+    response: { servers: [], totalServers: 0, totalTools: 0 },
+  },
+}
+
+// ---------------------------------------------------------------------------
+// Fixture: Airbnb local MCP — skill auto-save eval (Composio Case 7)
+// search → install local → use → write_file to save skill
+// ---------------------------------------------------------------------------
+
+export const AIRBNB_SKILL_SAVE_MOCKS: ToolMockMap = {
+  mcp_search: {
+    type: 'static',
+    paramKeys: ['query', 'limit'],
+    response: {
+      query: 'airbnb',
+      results: [
+        { name: 'Airbnb MCP Server', qualifiedName: '@openbnb/mcp-server-airbnb', description: 'Search Airbnb listings, get pricing, availability, and property details.', installCommand: 'npx -y @openbnb/mcp-server-airbnb', source: 'catalog' },
+      ],
+      message: 'Found 1 MCP server(s). Use mcp_install to add one.',
+    },
+  },
+  mcp_install: {
+    type: 'static',
+    paramKeys: ['name', 'command', 'args', 'env'],
+    response: {
+      ok: true,
+      server: 'airbnb',
+      toolCount: 2,
+      tools: [
+        { name: 'mcp_airbnb_airbnb_search', description: 'Search for Airbnb listings by location, dates, guests' },
+        { name: 'mcp_airbnb_airbnb_listing_details', description: 'Get details about a specific listing' },
+      ],
+      message: 'Installed "airbnb" with 2 tool(s). They are now available for use.',
+    },
+  },
+  mcp_airbnb_airbnb_search: {
+    type: 'static',
+    description: 'Search for Airbnb listings by location, dates, guests',
+    paramKeys: ['location', 'checkin', 'checkout', 'adults'],
+    hidden: true,
+    response: {
+      listings: [
+        { id: '1001', name: 'Ubud Jungle Retreat — Private Pool Villa', url: 'https://www.airbnb.com/rooms/1001', price: { amount: 85, currency: 'USD', period: 'night' }, rating: 4.96, reviewCount: 234, location: 'Ubud, Bali' },
+        { id: '1002', name: 'Rice Terrace Eco Lodge', url: 'https://www.airbnb.com/rooms/1002', price: { amount: 62, currency: 'USD', period: 'night' }, rating: 4.92, reviewCount: 187, location: 'Tegallalang, Ubud' },
+        { id: '1003', name: 'Bamboo House in Ubud', url: 'https://www.airbnb.com/rooms/1003', price: { amount: 45, currency: 'USD', period: 'night' }, rating: 4.89, reviewCount: 312, location: 'Central Ubud' },
+      ],
+      totalResults: 3,
+      location: 'Ubud, Bali',
+    },
+  },
+  write_file: {
+    type: 'static',
+    paramKeys: ['path', 'content'],
+    response: { ok: true, path: 'skills/airbnb-search.md', bytes: 480 },
+  },
+  list_files: {
+    type: 'static',
+    paramKeys: ['path'],
+    response: { files: [], total: 0 },
+  },
+  read_file: {
+    type: 'static',
+    paramKeys: ['path'],
+    response: { error: 'File not found' },
+  },
+  mcp_list_installed: {
+    type: 'static',
+    paramKeys: [],
+    response: { servers: [], totalServers: 0, totalTools: 0 },
+  },
+}
+
+// ---------------------------------------------------------------------------
+// Fixture: Composio Calendar follow-up — multi-turn eval (Composio Case 8)
+// Tools already installed from turn 1, agent creates an event in turn 2
+// ---------------------------------------------------------------------------
+
+export const COMPOSIO_CALENDAR_FOLLOWUP_MOCKS: ToolMockMap = {
+  mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL: {
+    type: 'static',
+    paramKeys: ['tools', 'session_id'],
+    response: {
+      results: [{
+        tool_slug: 'GOOGLECALENDAR_CREATE_EVENT',
+        data: { id: 'evt-new-001', summary: 'Team Sync', start: '2026-02-24T14:00:00-08:00', end: '2026-02-24T15:00:00-08:00', status: 'confirmed', htmlLink: 'https://calendar.google.com/event?eid=evt-new-001' },
+        successful: true,
+      }],
+    },
+  },
+  mcp_composio_COMPOSIO_SEARCH_TOOLS: {
+    type: 'static',
+    paramKeys: ['queries', 'session'],
+    response: {
+      tools: [
+        { slug: 'GOOGLECALENDAR_CREATE_EVENT', description: 'Create a new calendar event', params: { summary: 'string', start: 'object', end: 'object' } },
+        { slug: 'GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS', description: 'List events across calendars' },
+      ],
+      connection_status: 'active',
+      session_id: 'eval_session',
+    },
+  },
+  mcp_composio_COMPOSIO_MANAGE_CONNECTIONS: {
+    type: 'static',
+    paramKeys: ['toolkits', 'session_id'],
+    response: { status: 'active', connected_accounts: [{ toolkit: 'googlecalendar', status: 'active' }] },
+  },
+  mcp_install: {
+    type: 'static',
+    paramKeys: ['name'],
+    response: {
+      ok: true,
+      server: 'composio',
+      toolCount: 3,
+      tools: [
+        { name: 'mcp_composio_COMPOSIO_SEARCH_TOOLS', description: 'Search for tools' },
+        { name: 'mcp_composio_COMPOSIO_MANAGE_CONNECTIONS', description: 'Handle authentication' },
+        { name: 'mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL', description: 'Execute tools' },
+      ],
+      message: 'Composio connected with 3 tool(s).',
+    },
+  },
+  mcp_list_installed: {
+    type: 'static',
+    paramKeys: [],
+    response: {
+      servers: [
+        { name: 'composio', toolCount: 3, tools: ['mcp_composio_COMPOSIO_SEARCH_TOOLS', 'mcp_composio_COMPOSIO_MANAGE_CONNECTIONS', 'mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL'] },
+      ],
+      totalServers: 1, totalTools: 3,
+    },
+  },
+}
+
+// ---------------------------------------------------------------------------
+// Fixture: Gmail + Calendar multi-skill (Composio Case 9)
+// Both Gmail and Calendar via Composio in one session
+// ---------------------------------------------------------------------------
+
+export const COMPOSIO_GMAIL_CALENDAR_MULTI_MOCKS: ToolMockMap = {
+  mcp_search: {
+    type: 'pattern',
+    paramKeys: ['query', 'limit'],
+    patterns: [
+      {
+        match: { query: 'gmail' },
+        response: {
+          query: 'gmail',
+          results: [{ name: 'gmail', description: 'Gmail — send, read, and manage emails', source: 'composio' }],
+          message: 'Found 1 integration(s).',
+        },
+      },
+      {
+        match: { query: 'email' },
+        response: {
+          query: 'email',
+          results: [{ name: 'gmail', description: 'Gmail — send, read, and manage emails', source: 'composio' }],
+          message: 'Found 1 integration(s).',
+        },
+      },
+      {
+        match: { query: 'calendar' },
+        response: {
+          query: 'calendar',
+          results: [{ name: 'googlecalendar', description: 'Google Calendar — manage events, check availability', source: 'composio' }],
+          message: 'Found 1 integration(s).',
+        },
+      },
+      {
+        match: { query: 'google calendar' },
+        response: {
+          query: 'google calendar',
+          results: [{ name: 'googlecalendar', description: 'Google Calendar — manage events, check availability', source: 'composio' }],
+          message: 'Found 1 integration(s).',
+        },
+      },
+    ],
+    default: {
+      query: 'gmail calendar',
+      results: [
+        { name: 'gmail', description: 'Gmail — send, read, and manage emails', source: 'composio' },
+        { name: 'googlecalendar', description: 'Google Calendar — manage events, check availability', source: 'composio' },
+      ],
+      message: 'Found 2 integration(s).',
+    },
+  },
+  mcp_install: {
+    type: 'static',
+    paramKeys: ['name'],
+    response: {
+      ok: true,
+      server: 'composio',
+      toolCount: 3,
+      tools: [
+        { name: 'mcp_composio_COMPOSIO_SEARCH_TOOLS', description: 'Search for tools' },
+        { name: 'mcp_composio_COMPOSIO_MANAGE_CONNECTIONS', description: 'Handle authentication' },
+        { name: 'mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL', description: 'Execute tools' },
+      ],
+      message: 'Composio connected with 3 tool(s).',
+    },
+  },
+  mcp_composio_COMPOSIO_SEARCH_TOOLS: {
+    type: 'pattern',
+    paramKeys: ['queries', 'session'],
+    patterns: [
+      {
+        match: { queries: 'gmail' },
+        response: {
+          tools: [
+            { slug: 'GMAIL_FETCH_EMAILS', description: 'Fetch emails from inbox', params: { query: 'string', max_results: 'number' } },
+            { slug: 'GMAIL_SEND_EMAIL', description: 'Send an email' },
+          ],
+          connection_status: 'active',
+          session_id: 'eval_session',
+        },
+      },
+      {
+        match: { queries: 'email' },
+        response: {
+          tools: [
+            { slug: 'GMAIL_FETCH_EMAILS', description: 'Fetch emails from inbox', params: { query: 'string', max_results: 'number' } },
+            { slug: 'GMAIL_SEND_EMAIL', description: 'Send an email' },
+          ],
+          connection_status: 'active',
+          session_id: 'eval_session',
+        },
+      },
+      {
+        match: { queries: 'calendar' },
+        response: {
+          tools: [
+            { slug: 'GOOGLECALENDAR_CREATE_EVENT', description: 'Create a new calendar event', params: { summary: 'string', start: 'object', end: 'object' } },
+            { slug: 'GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS', description: 'List events across calendars' },
+          ],
+          connection_status: 'active',
+          session_id: 'eval_session',
+        },
+      },
+    ],
+    default: {
+      tools: [
+        { slug: 'GMAIL_FETCH_EMAILS', description: 'Fetch emails from inbox' },
+        { slug: 'GMAIL_SEND_EMAIL', description: 'Send an email' },
+        { slug: 'GOOGLECALENDAR_CREATE_EVENT', description: 'Create a new calendar event' },
+        { slug: 'GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS', description: 'List events across calendars' },
+      ],
+      connection_status: 'active',
+      session_id: 'eval_session',
+    },
+  },
+  mcp_composio_COMPOSIO_MANAGE_CONNECTIONS: {
+    type: 'static',
+    paramKeys: ['toolkits', 'session_id'],
+    response: { status: 'active', connected_accounts: [{ toolkit: 'gmail', status: 'active' }, { toolkit: 'googlecalendar', status: 'active' }] },
+  },
+  mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL: {
+    type: 'pattern',
+    paramKeys: ['tools', 'session_id'],
+    patterns: [
+      {
+        match: { tools: 'GMAIL_FETCH_EMAILS' },
+        response: {
+          results: [{
+            tool_slug: 'GMAIL_FETCH_EMAILS',
+            data: [
+              { from: 'john@example.com', subject: 'Re: Budget proposal for Q2', date: '2026-02-25T10:30:00Z', snippet: 'Hey, I reviewed the budget numbers. The Q2 allocation looks good but we need to discuss the marketing spend. Can we meet tomorrow?' },
+              { from: 'john@example.com', subject: 'Budget spreadsheet attached', date: '2026-02-24T14:00:00Z', snippet: 'Here is the updated budget spreadsheet with the Q1 actuals filled in. Let me know if the projections make sense.' },
+            ],
+            successful: true,
+          }],
+        },
+      },
+      {
+        match: { tools: 'GOOGLECALENDAR_CREATE_EVENT' },
+        response: {
+          results: [{
+            tool_slug: 'GOOGLECALENDAR_CREATE_EVENT',
+            data: { id: 'evt-budget-001', summary: 'Budget Review Meeting', start: '2026-02-27T15:00:00-08:00', end: '2026-02-27T16:00:00-08:00', status: 'confirmed' },
+            successful: true,
+          }],
+        },
+      },
+    ],
+    default: {
+      results: [{
+        tool_slug: 'COMPOSIO_MULTI_EXECUTE',
+        data: { ok: true },
+        successful: true,
+      }],
+    },
+  },
+  mcp_list_installed: {
+    type: 'static',
     paramKeys: [],
     response: { servers: [], totalServers: 0, totalTools: 0 },
   },

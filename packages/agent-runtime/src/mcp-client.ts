@@ -13,6 +13,7 @@ import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { Type } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 
@@ -34,12 +35,55 @@ export interface MCPServerConfig {
   cwd?: string
 }
 
+export interface RemoteMCPServerConfig {
+  url: string
+  headers?: Record<string, string>
+  /** Tool names to exclude from registration (e.g. unwanted Composio meta tools) */
+  excludeTools?: string[]
+  /** Max characters for a single tool result before truncation (default: unlimited) */
+  maxResultChars?: number
+}
+
 interface ManagedServer {
   name: string
   config: MCPServerConfig
   client: Client
   transport: StdioClientTransport
   tools: AgentTool[]
+}
+
+interface ManagedRemoteServer {
+  name: string
+  config: RemoteMCPServerConfig
+  client: Client
+  transport: StreamableHTTPClientTransport
+  tools: AgentTool[]
+}
+
+function jsonSchemaPropertyToTypebox(p: Record<string, any>): any {
+  switch (p.type) {
+    case 'string':
+      return Type.String({ description: p.description })
+    case 'number':
+    case 'integer':
+      return Type.Number({ description: p.description })
+    case 'boolean':
+      return Type.Boolean({ description: p.description })
+    case 'array': {
+      const itemSchema = p.items
+        ? jsonSchemaPropertyToTypebox(p.items as Record<string, any>)
+        : Type.Any()
+      return Type.Array(itemSchema, { description: p.description })
+    }
+    case 'object': {
+      if (p.properties) {
+        return jsonSchemaToTypebox(p)
+      }
+      return Type.Any({ description: p.description })
+    }
+    default:
+      return Type.Any({ description: p.description })
+  }
 }
 
 function jsonSchemaToTypebox(schema: Record<string, any>): any {
@@ -52,30 +96,50 @@ function jsonSchemaToTypebox(schema: Record<string, any>): any {
 
   for (const [key, prop] of Object.entries(schema.properties || {} as Record<string, any>)) {
     const p = prop as Record<string, any>
-    let typeboxProp: any
-
-    switch (p.type) {
-      case 'string':
-        typeboxProp = Type.String({ description: p.description })
-        break
-      case 'number':
-      case 'integer':
-        typeboxProp = Type.Number({ description: p.description })
-        break
-      case 'boolean':
-        typeboxProp = Type.Boolean({ description: p.description })
-        break
-      case 'array':
-        typeboxProp = Type.Array(Type.Any(), { description: p.description })
-        break
-      default:
-        typeboxProp = Type.Any({ description: p.description })
-    }
-
+    const typeboxProp = jsonSchemaPropertyToTypebox(p)
     properties[key] = required.has(key) ? typeboxProp : Type.Optional(typeboxProp)
   }
 
   return Type.Object(properties)
+}
+
+/**
+ * Build a compact schema hint string from a JSON Schema for inclusion in tool
+ * descriptions. Helps the LLM understand nested object structures. Only
+ * produced when the schema has nested objects or complex arrays.
+ */
+function buildSchemaHint(schema: Record<string, any>): string | null {
+  if (!schema?.properties) return null
+
+  const hasComplex = Object.values(schema.properties).some(
+    (p: any) => p.type === 'object' || (p.type === 'array' && p.items?.type === 'object'),
+  )
+  if (!hasComplex) return null
+
+  const requiredSet = new Set(schema.required || [])
+
+  function describeProperty(p: Record<string, any>, indent: string): string {
+    if (p.type === 'object' && p.properties) {
+      const inner = Object.entries(p.properties)
+        .map(([k, v]: [string, any]) => `${indent}  ${k}: ${describeProperty(v, indent + '  ')}`)
+        .join('\n')
+      return `{\n${inner}\n${indent}}`
+    }
+    if (p.type === 'array' && p.items) {
+      const itemDesc = describeProperty(p.items as Record<string, any>, indent)
+      return `Array<${itemDesc}>`
+    }
+    let desc = p.type || 'any'
+    if (p.description) desc += ` — ${p.description.split('\n')[0].substring(0, 120)}`
+    return desc
+  }
+
+  const lines = Object.entries(schema.properties).map(([key, prop]: [string, any]) => {
+    const opt = requiredSet.has(key) ? '' : '?'
+    return `  ${key}${opt}: ${describeProperty(prop, '  ')}`
+  })
+
+  return `{\n${lines.join('\n')}\n}`
 }
 
 function textResult(data: any): AgentToolResult<any> {
@@ -94,6 +158,7 @@ export interface MCPServerInfo {
 
 export class MCPClientManager {
   private servers: Map<string, ManagedServer> = new Map()
+  private remoteServers: Map<string, ManagedRemoteServer> = new Map()
   private workspaceDir: string | null = null
   private onConfigPersisted: (() => void) | null = null
 
@@ -277,6 +342,117 @@ export class MCPClientManager {
     return allTools
   }
 
+  async startRemoteServer(name: string, config: RemoteMCPServerConfig): Promise<AgentTool[]> {
+    if (this.remoteServers.has(name)) {
+      console.warn(`[MCPClient] Remote server "${name}" already running, skipping`)
+      return this.remoteServers.get(name)!.tools
+    }
+
+    console.log(`[MCPClient] Starting remote MCP server "${name}": ${config.url}`)
+
+    const transport = new StreamableHTTPClientTransport(
+      new URL(config.url),
+      {
+        requestInit: config.headers ? { headers: config.headers } : undefined,
+      },
+    )
+
+    const client = new Client(
+      { name: `shogo-agent-${name}`, version: '1.0.0' },
+      { capabilities: {} },
+    )
+
+    try {
+      await withTimeout(
+        client.connect(transport),
+        MCP_CONNECT_TIMEOUT_MS,
+        `Remote MCP server "${name}" connection timed out after ${MCP_CONNECT_TIMEOUT_MS / 1000}s`,
+      )
+      console.log(`[MCPClient] Connected to remote "${name}"`)
+    } catch (err: any) {
+      console.error(`[MCPClient] Failed to connect to remote "${name}": ${err.message}`)
+      try { await transport.close() } catch { /* best effort cleanup */ }
+      throw err
+    }
+
+    let mcpTools: any[] = []
+    try {
+      const result = await withTimeout(
+        client.listTools(),
+        MCP_TOOL_LIST_TIMEOUT_MS,
+        `Remote MCP server "${name}" tool listing timed out after ${MCP_TOOL_LIST_TIMEOUT_MS / 1000}s`,
+      )
+      mcpTools = result.tools || []
+      if (config.excludeTools?.length) {
+        const excluded = new Set(config.excludeTools)
+        const before = mcpTools.length
+        mcpTools = mcpTools.filter((t: any) => !excluded.has(t.name))
+        if (mcpTools.length < before) {
+          console.log(`[MCPClient] Remote "${name}": filtered ${before - mcpTools.length} excluded tool(s)`)
+        }
+      }
+      console.log(`[MCPClient] Remote "${name}" provides ${mcpTools.length} tools: ${mcpTools.map((t: any) => t.name).join(', ')}`)
+    } catch (err: any) {
+      console.error(`[MCPClient] Failed to list tools from remote "${name}": ${err.message}`)
+      mcpTools = []
+    }
+
+    const agentTools: AgentTool[] = mcpTools.map((mcpTool: any) => {
+      const toolName = `mcp_${name}_${mcpTool.name}`
+      const inputSchema = mcpTool.inputSchema || {}
+      const parameters = jsonSchemaToTypebox(inputSchema)
+
+      let description = mcpTool.description || `MCP tool: ${mcpTool.name} (from ${name})`
+      const schemaHint = buildSchemaHint(inputSchema)
+      if (schemaHint) {
+        description += `\n\nInput schema:\n${schemaHint}`
+      }
+
+      return {
+        name: toolName,
+        description,
+        label: `${name}: ${mcpTool.name}`,
+        parameters,
+        execute: async (_toolCallId: string, params: unknown) => {
+          const args = (params && typeof params === 'object') ? params as Record<string, any> : {}
+          try {
+            const result = await client.callTool({
+              name: mcpTool.name,
+              arguments: args,
+            })
+
+            const texts = (result.content as any[])
+              ?.filter((c: any) => c.type === 'text')
+              .map((c: any) => c.text)
+              .join('\n') || ''
+
+            if (result.isError) {
+              return textResult({ error: texts || 'MCP tool returned an error' })
+            }
+
+            let raw = texts || JSON.stringify(result.content)
+            const maxChars = config.maxResultChars
+            if (maxChars && raw.length > maxChars) {
+              const headSize = Math.floor(maxChars * 0.75)
+              const tailSize = Math.max(0, maxChars - headSize - 100)
+              const omitted = raw.length - headSize - tailSize
+              raw = raw.substring(0, headSize)
+                + `\n\n[... ${omitted} chars truncated ...]\n\n`
+                + (tailSize > 0 ? raw.substring(raw.length - tailSize) : '')
+            }
+
+            return textResult(raw)
+          } catch (err: any) {
+            return textResult({ error: `MCP tool "${mcpTool.name}" failed: ${err.message}` })
+          }
+        },
+      } as AgentTool
+    })
+
+    this.remoteServers.set(name, { name, config, client, transport, tools: agentTools })
+    return agentTools
+  }
+
   async stopServer(name: string): Promise<void> {
     const server = this.servers.get(name)
     if (!server) return
@@ -290,9 +466,26 @@ export class MCPClientManager {
     this.servers.delete(name)
   }
 
+  async stopRemoteServer(name: string): Promise<void> {
+    const server = this.remoteServers.get(name)
+    if (!server) return
+
+    try {
+      await server.transport.close()
+      console.log(`[MCPClient] Stopped remote "${name}"`)
+    } catch (err: any) {
+      console.error(`[MCPClient] Error stopping remote "${name}":`, err.message)
+    }
+    this.remoteServers.delete(name)
+  }
+
   async stopAll(): Promise<void> {
     const names = [...this.servers.keys()]
-    await Promise.allSettled(names.map((name) => this.stopServer(name)))
+    const remoteNames = [...this.remoteServers.keys()]
+    await Promise.allSettled([
+      ...names.map((name) => this.stopServer(name)),
+      ...remoteNames.map((name) => this.stopRemoteServer(name)),
+    ])
   }
 
   getTools(): AgentTool[] {
@@ -300,15 +493,18 @@ export class MCPClientManager {
     for (const server of this.servers.values()) {
       tools.push(...server.tools)
     }
+    for (const server of this.remoteServers.values()) {
+      tools.push(...server.tools)
+    }
     return tools
   }
 
   getServerNames(): string[] {
-    return [...this.servers.keys()]
+    return [...this.servers.keys(), ...this.remoteServers.keys()]
   }
 
   isRunning(name: string): boolean {
-    return this.servers.has(name)
+    return this.servers.has(name) || this.remoteServers.has(name)
   }
 
   getServerInfo(): MCPServerInfo[] {
@@ -319,6 +515,14 @@ export class MCPClientManager {
         toolCount: server.tools.length,
         toolNames: server.tools.map(t => t.name),
         config: server.config,
+      })
+    }
+    for (const server of this.remoteServers.values()) {
+      info.push({
+        name: server.name,
+        toolCount: server.tools.length,
+        toolNames: server.tools.map(t => t.name),
+        config: { command: 'remote', args: [server.config.url] },
       })
     }
     return info

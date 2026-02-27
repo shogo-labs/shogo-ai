@@ -62,17 +62,17 @@ export function DynText({ text = '', variant = 'body', align, color, weight, cla
 }
 
 const BADGE_BG_MAP: Record<string, string> = {
-  default: 'bg-primary-100 border-primary-200',
-  secondary: 'bg-background-100 border-outline-200',
-  destructive: 'bg-error-100 border-error-200',
-  outline: 'border-outline-300 bg-transparent',
+  default: 'bg-primary/15 border-primary/25',
+  secondary: 'bg-muted border-border/50',
+  destructive: 'bg-destructive/15 border-destructive/25',
+  outline: 'border-border bg-transparent',
 }
 
 const BADGE_TEXT_MAP: Record<string, string> = {
-  default: 'text-primary-700',
-  secondary: 'text-typography-600',
-  destructive: 'text-error-700',
-  outline: 'text-typography-700',
+  default: 'text-primary',
+  secondary: 'text-muted-foreground',
+  destructive: 'text-destructive',
+  outline: 'text-foreground',
 }
 
 interface BadgeProps {

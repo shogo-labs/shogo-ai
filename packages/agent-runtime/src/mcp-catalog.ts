@@ -6,6 +6,8 @@
  * the install command, and any required environment variables.
  */
 
+export type MCPAuthType = 'composio' | 'api_key' | 'none'
+
 export interface MCPCatalogEntry {
   /** Unique slug used as the key in config.json mcpServers */
   id: string
@@ -28,6 +30,10 @@ export interface MCPCatalogEntry {
   cloudCompatible: boolean
   /** Whether this package is pre-installed in the Docker image for instant startup */
   preinstalled?: boolean
+  /** Auth type: 'composio' for managed OAuth, 'api_key' for user-provided keys, 'none' for no auth */
+  authType?: MCPAuthType
+  /** Composio toolkit slug (e.g. 'google_calendar', 'gmail') — only used when authType is 'composio' */
+  composioToolkit?: string
 }
 
 export type MCPCategory =
@@ -95,6 +101,8 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     icon: '🐙',
     cloudCompatible: true,
     preinstalled: true,
+    authType: 'composio',
+    composioToolkit: 'github',
   },
   {
     id: 'gitlab',
@@ -124,6 +132,8 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['linear_create_issue', 'linear_list_issues', 'linear_update_issue', 'linear_search'],
     icon: '📐',
     cloudCompatible: true,
+    authType: 'composio',
+    composioToolkit: 'linear',
   },
   {
     id: 'postgres',
@@ -169,6 +179,8 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     icon: '💼',
     cloudCompatible: true,
     preinstalled: true,
+    authType: 'composio',
+    composioToolkit: 'slack',
   },
   {
     id: 'gmail',
@@ -183,6 +195,8 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['gmail_send', 'gmail_search', 'gmail_read', 'gmail_list_labels'],
     icon: '📧',
     cloudCompatible: true,
+    authType: 'composio',
+    composioToolkit: 'gmail',
   },
   {
     id: 'google-drive',
@@ -197,6 +211,8 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['drive_list_files', 'drive_read_file', 'drive_search', 'drive_create_file'],
     icon: '📁',
     cloudCompatible: true,
+    authType: 'composio',
+    composioToolkit: 'googledrive',
   },
   {
     id: 'google-calendar',
@@ -211,6 +227,8 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['calendar_list_events', 'calendar_create_event', 'calendar_update_event', 'calendar_search'],
     icon: '📅',
     cloudCompatible: true,
+    authType: 'composio',
+    composioToolkit: 'googlecalendar',
   },
   {
     id: 'notion',
@@ -226,6 +244,8 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     icon: '📝',
     cloudCompatible: true,
     preinstalled: true,
+    authType: 'composio',
+    composioToolkit: 'notion',
   },
   {
     id: 'stripe',

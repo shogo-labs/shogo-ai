@@ -17,6 +17,7 @@ import { sandboxExec } from './sandbox-exec'
 import { MemorySearchEngine } from './memory-search'
 import { FileIndexEngine } from './file-index-engine'
 import { MCP_CATALOG } from './mcp-catalog'
+import { connectComposioMCP, isComposioEnabled, searchComposioToolkits, findComposioToolkit } from './composio'
 import { getDynamicAppManager, getByPointer } from './dynamic-app-manager'
 import {
   CANVAS_COMPONENT_SCHEMA,
@@ -2035,18 +2036,38 @@ function isMcpCommandBlocked(command: string, args: string[]): boolean {
 function createMcpSearchTool(): AgentTool {
   return {
     name: 'mcp_search',
-    description: 'Search for MCP servers by capability or keyword. Searches the built-in catalog and npm registry to find servers you can install to gain new tools (e.g. database access, browser automation, API integrations).',
+    description: 'Search for MCP servers and integrations by capability or keyword. Searches the built-in catalog, Composio managed integrations (hundreds of OAuth-based services — no credentials needed), and npm. Composio integrations are preferred when available.',
     label: 'MCP: Search Registry',
     parameters: Type.Object({
-      query: Type.String({ description: 'Search query describing the capability you need (e.g. "postgres database", "browser automation", "slack messaging")' }),
+      query: Type.String({ description: 'Search query describing the capability you need (e.g. "google calendar", "slack messaging", "postgres database")' }),
       limit: Type.Optional(Type.Number({ description: 'Max results to return (default: 5)' })),
     }),
     execute: async (_id: string, params: any) => {
       const query = params.query as string
       const limit = Math.min(params.limit || 5, 10)
 
-      const results: Array<{ name: string; description: string; installCommand: string; source: string; qualifiedName?: string }> = []
+      const results: Array<Record<string, any>> = []
+      const seenSlugs = new Set<string>()
 
+      // 1. Search Composio toolkit catalog (dynamic, via API)
+      if (isComposioEnabled()) {
+        try {
+          const composioToolkits = await searchComposioToolkits(query)
+          for (const tk of composioToolkits.slice(0, limit)) {
+            seenSlugs.add(tk.slug.toLowerCase().replace(/[-_\s]/g, ''))
+            results.push({
+              name: tk.name,
+              id: tk.slug,
+              description: `${tk.name} — managed OAuth integration via Composio. No API keys or credentials needed.`,
+              installCommand: `mcp_install({ name: "${tk.slug}" })`,
+              source: 'composio',
+              logo: tk.logo,
+            })
+          }
+        } catch { /* Composio API unavailable, continue with other sources */ }
+      }
+
+      // 2. Search local MCP catalog
       const queryLower = query.toLowerCase()
       const queryWords = queryLower.split(/\s+/).filter(w => w.length > 2)
       const scored: Array<{ entry: typeof MCP_CATALOG[0]; score: number }> = []
@@ -2064,8 +2085,12 @@ function createMcpSearchTool(): AgentTool {
       }
       scored.sort((a, b) => b.score - a.score)
       for (const { entry } of scored.slice(0, limit)) {
+        const entryNorm = entry.id.toLowerCase().replace(/[-_\s]/g, '')
+        if (seenSlugs.has(entryNorm)) continue
+        seenSlugs.add(entryNorm)
         results.push({
           name: entry.name,
+          id: entry.id,
           qualifiedName: entry.package.replace(/@latest$/, ''),
           description: entry.description,
           installCommand: `npx -y ${entry.package}${entry.defaultArgs.length ? ' ' + entry.defaultArgs.join(' ') : ''}`,
@@ -2074,6 +2099,7 @@ function createMcpSearchTool(): AgentTool {
         })
       }
 
+      // 3. Search npm registry for remaining slots
       const npmSlots = Math.max(limit - results.length, 2)
       try {
         const npmRes = await fetch(
@@ -2082,7 +2108,7 @@ function createMcpSearchTool(): AgentTool {
         )
         if (npmRes.ok) {
           const data = await npmRes.json() as any
-          const catalogNames = new Set(results.map(r => r.qualifiedName))
+          const catalogNames = new Set(results.map(r => r.qualifiedName).filter(Boolean))
           for (const obj of (data.objects || []).slice(0, npmSlots)) {
             const pkg = obj.package
             if (catalogNames.has(pkg.name)) continue
@@ -2100,7 +2126,13 @@ function createMcpSearchTool(): AgentTool {
         return textResult({ query, results: [], message: 'No MCP servers found. Try a different search term.' })
       }
 
-      return textResult({ query, results, message: `Found ${results.length} MCP server(s). Use mcp_install to add one.` })
+      const composioCount = results.filter(r => r.source === 'composio').length
+      let message = `Found ${results.length} result(s). Use mcp_install to add one.`
+      if (composioCount > 0) {
+        message = `Found ${results.length} result(s). ${composioCount} are Composio managed integrations (no credentials needed) — prefer these. Just call mcp_install with the name.`
+      }
+
+      return textResult({ query, results, message })
     },
   }
 }
@@ -2108,24 +2140,70 @@ function createMcpSearchTool(): AgentTool {
 function createMcpInstallTool(ctx: ToolContext): AgentTool {
   return {
     name: 'mcp_install',
-    description: 'Install and start an MCP server, making its tools available immediately in this session. The server is also persisted to config so it survives restarts.',
+    description: 'Install and start an MCP server or Composio integration, making its tools available immediately. For Composio integrations (Google Calendar, Slack, GitHub, and hundreds more), just provide the name — no command or args needed. For local MCP servers, provide command and args.',
     label: 'MCP: Install Server',
     parameters: Type.Object({
-      name: Type.String({ description: 'A short identifier for this server (e.g. "postgres", "playwright", "slack")' }),
-      command: Type.String({ description: 'Command to run the server (e.g. "npx")' }),
-      args: Type.Optional(Type.Array(Type.String(), { description: 'Command arguments (e.g. ["-y", "@modelcontextprotocol/server-postgres"])' })),
+      name: Type.String({ description: 'Server or integration name (e.g. "googlecalendar", "slack", "postgres"). For Composio integrations, this is all you need.' }),
+      command: Type.Optional(Type.String({ description: 'Command to run a local MCP server (e.g. "npx"). Not needed for Composio integrations.' })),
+      args: Type.Optional(Type.Array(Type.String(), { description: 'Command arguments. Not needed for Composio integrations.' })),
       env: Type.Optional(Type.Any({ description: 'Environment variables for the server process' })),
     }),
     execute: async (_id: string, params: any) => {
-      const { name, command, args, env } = params as { name: string; command: string; args?: string[]; env?: Record<string, string> }
+      const { name, command, args, env } = params as { name: string; command?: string; args?: string[]; env?: Record<string, string> }
 
       if (!ctx.mcpClientManager) {
         return textResult({ error: 'MCP client manager not available' })
       }
 
+      // Check if Composio remote server is already connected
+      if (ctx.mcpClientManager.isRunning('composio') && isComposioEnabled()) {
+        const composioToolkit = await findComposioToolkit(name)
+        if (composioToolkit) {
+          const info = ctx.mcpClientManager.getServerInfo().find(s => s.name === 'composio')
+          return textResult({
+            ok: true,
+            server: 'composio',
+            integration: composioToolkit.slug,
+            toolCount: info?.toolCount || 0,
+            tools: info?.toolNames || [],
+            message: `"${composioToolkit.name}" is available via Composio managed integration (already connected with ${info?.toolCount || 0} tools). Tools are prefixed with "mcp_composio_". Use them now.`,
+          })
+        }
+      }
+
       if (ctx.mcpClientManager.isRunning(name)) {
         const info = ctx.mcpClientManager.getServerInfo().find(s => s.name === name)
         return textResult({ error: `Server "${name}" is already running with ${info?.toolCount || 0} tools`, tools: info?.toolNames })
+      }
+
+      // Dynamically check if this matches a Composio toolkit
+      if (isComposioEnabled()) {
+        const composioToolkit = await findComposioToolkit(name)
+        if (composioToolkit) {
+          try {
+            const userId = process.env.USER_ID || 'default'
+            const connected = await connectComposioMCP(ctx.mcpClientManager, userId, ctx.projectId)
+            if (connected) {
+              const info = ctx.mcpClientManager.getServerInfo().find(s => s.name === 'composio')
+              return textResult({
+                ok: true,
+                server: 'composio',
+                integration: composioToolkit.slug,
+                toolCount: info?.toolCount || 0,
+                tools: info?.toolNames?.map(t => ({ name: t })) || [],
+                message: `Connected "${composioToolkit.name}" via Composio managed OAuth with ${info?.toolCount || 0} tool(s). No manual credentials needed. Tools are prefixed with "mcp_composio_".`,
+              })
+            }
+            return textResult({ error: `Failed to connect "${composioToolkit.name}" via Composio. The integration may not be available.` })
+          } catch (err: any) {
+            return textResult({ error: `Composio connection failed for "${name}": ${err.message}` })
+          }
+        }
+      }
+
+      // Fall back to local process MCP for non-Composio servers
+      if (!command) {
+        return textResult({ error: `Server "${name}" is not a recognized Composio integration and requires a command to run. Provide command and args (e.g. command: "npx", args: ["-y", "package-name"]).` })
       }
 
       if (isMcpCommandBlocked(command, args || [])) {

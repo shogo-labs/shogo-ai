@@ -6,16 +6,13 @@
  */
 
 import type { ReactNode } from 'react'
-import { View, Platform } from 'react-native'
+import { View } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Text } from '@/components/ui/text'
 import { Card } from '@/components/ui/card'
 import { TrendingUp, TrendingDown, Minus } from 'lucide-react-native'
 import { formatMetricValue, inferTrendDirection, formatCellValue } from '../smart-format'
-
-const CARD_SHADOW_STYLE = Platform.OS === 'web'
-  ? { boxShadow: '0 1px 3px 0 rgba(0,0,0,0.1), 0 1px 2px -1px rgba(0,0,0,0.1)' } as any
-  : {}
+import { useCardDepth, useCardSurfaceStyle } from './layout'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -44,12 +41,14 @@ interface MetricProps {
 
 export function DynMetric({ label, value, unit, trend, trendValue, description, className }: MetricProps) {
   const { displayValue, displayUnit } = formatMetricValue(value, unit)
+  const depth = useCardDepth()
+  const { bgClass, borderClass, shadow } = useCardSurfaceStyle(depth)
 
   const resolvedTrend = trend || inferTrendDirection(trendValue)
   const TrendIcon = resolvedTrend === 'up' ? TrendingUp : resolvedTrend === 'down' ? TrendingDown : Minus
 
   return (
-    <Card variant="outline" className={cn('p-4 gap-2 rounded-xl bg-card border-border flex-1', className)} style={CARD_SHADOW_STYLE}>
+    <Card variant="outline" className={cn('p-4 gap-2 rounded-xl flex-1', bgClass, borderClass, className)} style={shadow}>
       <View className="flex flex-row items-center justify-between">
         <Text className="text-sm font-medium text-muted-foreground">{label}</Text>
         {resolvedTrend && (
@@ -156,8 +155,11 @@ export function DynTable({ columns = [], rows = [], striped, compact, className 
 }
 
 // ---------------------------------------------------------------------------
-// Chart — lightweight bars using Views
+// Chart
 // ---------------------------------------------------------------------------
+
+import { LineChart, PieChart } from 'react-native-gifted-charts'
+import type { lineDataItem, pieDataItem } from 'react-native-gifted-charts'
 
 interface ChartDataPoint {
   label: string
@@ -165,11 +167,18 @@ interface ChartDataPoint {
   color?: string
 }
 
+type ChartType = 'bar' | 'horizontalBar' | 'progress' | 'line' | 'area' | 'pie' | 'donut'
+
 interface ChartProps {
-  type?: 'bar' | 'horizontalBar' | 'progress'
+  type?: ChartType
   data?: ChartDataPoint[]
   title?: string
   height?: number
+  showLegend?: boolean
+  curved?: boolean
+  showDataPoints?: boolean
+  innerRadius?: number
+  colors?: string[]
   className?: string
 }
 
@@ -184,11 +193,36 @@ const DEFAULT_COLORS = [
   '#10b981',
 ]
 
-function getColor(d: ChartDataPoint, i: number): string {
-  return d.color || DEFAULT_COLORS[i % DEFAULT_COLORS.length]
+function getColor(d: ChartDataPoint, i: number, palette?: string[]): string {
+  const colors = palette ?? DEFAULT_COLORS
+  return d.color || colors[i % colors.length]
 }
 
-export function DynChart({ type = 'bar', data = [], title, height = 200, className }: ChartProps) {
+function ChartLegend({ data, palette }: { data: ChartDataPoint[]; palette?: string[] }) {
+  return (
+    <View className="flex-row flex-wrap gap-x-4 gap-y-1.5 mt-2">
+      {data.map((d, i) => (
+        <View key={i} className="flex-row items-center gap-1.5">
+          <View className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: getColor(d, i, palette) }} />
+          <Text className="text-[11px] text-muted-foreground">{d.label}</Text>
+        </View>
+      ))}
+    </View>
+  )
+}
+
+export function DynChart({
+  type = 'bar',
+  data = [],
+  title,
+  height = 200,
+  showLegend,
+  curved = false,
+  showDataPoints = true,
+  innerRadius = 60,
+  colors,
+  className,
+}: ChartProps) {
   if (data.length === 0) {
     return (
       <View className={cn('flex items-center justify-center', className)} style={{ height }}>
@@ -199,6 +233,72 @@ export function DynChart({ type = 'bar', data = [], title, height = 200, classNa
 
   const max = Math.max(...data.map((d) => d.value), 1)
 
+  // --- Line / Area ---
+  if (type === 'line' || type === 'area') {
+    const lineData: lineDataItem[] = data.map((d, i) => ({
+      value: d.value,
+      label: d.label,
+      dataPointColor: getColor(d, i, colors),
+    }))
+    const lineColor = colors?.[0] ?? DEFAULT_COLORS[0]
+    const areaGradientStart = lineColor + '40'
+    const areaGradientEnd = lineColor + '05'
+
+    return (
+      <View className={cn('flex flex-col gap-2', className)}>
+        {title && <Text className="text-sm font-medium">{title}</Text>}
+        <LineChart
+          data={lineData}
+          height={height - 40}
+          curved={curved}
+          areaChart={type === 'area'}
+          color={lineColor}
+          startFillColor={type === 'area' ? areaGradientStart : undefined}
+          endFillColor={type === 'area' ? areaGradientEnd : undefined}
+          startOpacity={type === 'area' ? 0.3 : undefined}
+          endOpacity={type === 'area' ? 0.01 : undefined}
+          dataPointsColor={lineColor}
+          hideDataPoints={!showDataPoints}
+          thickness={2}
+          xAxisLabelTextStyle={{ fontSize: 10, color: '#888' }}
+          yAxisTextStyle={{ fontSize: 10, color: '#888' }}
+          noOfSections={4}
+          hideRules={false}
+          rulesColor="#e5e5e5"
+          spacing={Math.max(40, (300 / Math.max(data.length - 1, 1)))}
+          isAnimated
+        />
+        {showLegend && <ChartLegend data={data} palette={colors} />}
+      </View>
+    )
+  }
+
+  // --- Pie / Donut ---
+  if (type === 'pie' || type === 'donut') {
+    const radius = Math.min((height - 20) / 2, 100)
+    const pieData: pieDataItem[] = data.map((d, i) => ({
+      value: d.value,
+      color: getColor(d, i, colors),
+      text: d.label,
+    }))
+    const legendVisible = showLegend !== false
+
+    return (
+      <View className={cn('flex flex-col items-center gap-2', className)}>
+        {title && <Text className="text-sm font-medium self-start">{title}</Text>}
+        <PieChart
+          data={pieData}
+          radius={radius}
+          donut={type === 'donut'}
+          innerRadius={type === 'donut' ? Math.min(innerRadius, radius - 10) : undefined}
+          isAnimated
+        />
+        {legendVisible && <ChartLegend data={data} palette={colors} />}
+      </View>
+    )
+  }
+
+  // --- Horizontal Bar (View-based) ---
   if (type === 'horizontalBar') {
     return (
       <View className={cn('flex flex-col gap-3', className)}>
@@ -209,7 +309,7 @@ export function DynChart({ type = 'bar', data = [], title, height = 200, classNa
             <View className="flex-1 bg-muted/50 rounded-md h-6 overflow-hidden">
               <View
                 className="h-full rounded-md"
-                style={{ width: `${(d.value / max) * 100}%`, backgroundColor: getColor(d, i) }}
+                style={{ width: `${(d.value / max) * 100}%`, backgroundColor: getColor(d, i, colors) }}
               />
             </View>
             <Text className="text-xs font-medium w-14 text-right">{formatCompactNumber(d.value)}</Text>
@@ -219,6 +319,7 @@ export function DynChart({ type = 'bar', data = [], title, height = 200, classNa
     )
   }
 
+  // --- Progress (View-based) ---
   if (type === 'progress') {
     return (
       <View className={cn('flex flex-col gap-3', className)}>
@@ -232,7 +333,7 @@ export function DynChart({ type = 'bar', data = [], title, height = 200, classNa
             <View className="bg-muted rounded-full h-2 overflow-hidden">
               <View
                 className="h-full rounded-full"
-                style={{ width: `${Math.min(d.value, 100)}%`, backgroundColor: getColor(d, i) }}
+                style={{ width: `${Math.min(d.value, 100)}%`, backgroundColor: getColor(d, i, colors) }}
               />
             </View>
           </View>
@@ -241,7 +342,7 @@ export function DynChart({ type = 'bar', data = [], title, height = 200, classNa
     )
   }
 
-  // Default: vertical bar chart
+  // --- Default: Vertical Bar (View-based) ---
   const barAreaH = height - 40
   return (
     <View className={cn('flex flex-col gap-2', className)}>
@@ -256,13 +357,14 @@ export function DynChart({ type = 'bar', data = [], title, height = 200, classNa
               </Text>
               <View
                 className="w-full rounded-md"
-                style={{ height: barH, backgroundColor: getColor(d, i) }}
+                style={{ height: barH, backgroundColor: getColor(d, i, colors) }}
               />
               <Text className="text-[10px] text-muted-foreground" numberOfLines={1}>{d.label}</Text>
             </View>
           )
         })}
       </View>
+      {showLegend && <ChartLegend data={data} palette={colors} />}
     </View>
   )
 }

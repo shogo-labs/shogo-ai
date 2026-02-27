@@ -8,6 +8,7 @@
 import { useState, useCallback, useMemo } from "react"
 import { View, Text, Image, Pressable, Linking } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
+import { FileText } from "lucide-react-native"
 import type { UIMessage } from "@ai-sdk/react"
 import { InlineToolWidget } from "./InlineToolWidget"
 import { AskUserQuestionWidget } from "./AskUserQuestionWidget"
@@ -93,17 +94,22 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
           timestamp: Date.now(),
         },
       })
-    } else if (
-      part.type === "file" &&
-      part.mediaType?.startsWith("image/") &&
-      part.url
-    ) {
-      result.push({
-        type: "image",
-        url: part.url,
-        mediaType: part.mediaType,
-        id: `img-${index}`,
-      })
+    } else if (part.type === "file" && part.url) {
+      if (part.mediaType?.startsWith("image/")) {
+        result.push({
+          type: "image",
+          url: part.url,
+          mediaType: part.mediaType,
+          id: `img-${index}`,
+        })
+      } else {
+        result.push({
+          type: "file",
+          url: part.url,
+          mediaType: part.mediaType || "application/octet-stream",
+          id: `file-${index}`,
+        })
+      }
     }
   }
 
@@ -196,6 +202,28 @@ function ImageThumbnail({
         onError={() => setHasError(true)}
       />
     </Pressable>
+  )
+}
+
+function FileThumbnail({
+  mediaType,
+  index,
+}: {
+  mediaType: string
+  index: number
+}) {
+  const label = mediaType.includes("pdf")
+    ? "PDF"
+    : mediaType.split("/").pop()?.toUpperCase() || "FILE"
+
+  return (
+    <View
+      className="flex-row items-center gap-2 rounded-md border border-border bg-muted px-3 py-2"
+      accessibilityLabel={`File attachment ${index + 1}: ${label}`}
+    >
+      <FileText size={16} className="text-muted-foreground" />
+      <Text className="text-xs text-muted-foreground">{label} attached</Text>
+    </View>
   )
 }
 
@@ -305,6 +333,16 @@ export function AssistantContent({
             <ImageThumbnail
               key={part.id}
               url={part.url}
+              mediaType={part.mediaType}
+              index={index}
+            />
+          )
+        }
+
+        if (part.type === "file") {
+          return (
+            <FileThumbnail
+              key={part.id}
               mediaType={part.mediaType}
               index={index}
             />

@@ -10,29 +10,17 @@
  */
 
 import type { AgentEval, EvalResult, ValidationPhase } from './types'
+import { usedTool, toolCallCount, responseContains } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Canvas-specific helpers
 // ---------------------------------------------------------------------------
-
-function usedTool(result: EvalResult, toolName: string): boolean {
-  return result.toolCalls.some(t => t.name === toolName)
-}
-
-function toolCallCount(result: EvalResult, toolName: string): number {
-  return result.toolCalls.filter(t => t.name === toolName).length
-}
 
 function canvasState(result: EvalResult): any {
   const stateCall = result.toolCalls.find(t =>
     t.name === 'canvas_create' || t.name === 'canvas_update' || t.name === 'canvas_data'
   )
   return stateCall?.output
-}
-
-function responseContains(result: EvalResult, ...terms: string[]): boolean {
-  const text = result.responseText.toLowerCase()
-  return terms.every(t => text.includes(t.toLowerCase()))
 }
 
 /**
@@ -145,6 +133,83 @@ function updateHasTestChecklist(result: EvalResult): boolean {
     const output = typeof t.output === 'string' ? t.output : JSON.stringify(t.output ?? '')
     return output.includes('testChecklist')
   })
+}
+
+// ---------------------------------------------------------------------------
+// Search & filter helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Check that at least one canvas_update call includes a TextField component.
+ */
+function hasTextField(result: EvalResult): boolean {
+  const json = JSON.stringify(result.toolCalls.filter(t => t.name === 'canvas_update').map(t => t.input))
+  return json.includes('"TextField"')
+}
+
+/**
+ * Check that at least one TextField in canvas_update calls has a dataPath prop.
+ */
+function textFieldHasDataPath(result: EvalResult): boolean {
+  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
+  const json = JSON.stringify(updateCalls.map(t => t.input))
+  const textFieldPattern = /"component"\s*:\s*"TextField"[^}]*"dataPath"\s*:/
+  return textFieldPattern.test(json)
+}
+
+/**
+ * Check that a DataList component in canvas_update calls includes filterPath
+ * and filterFields props (client-side search wiring).
+ */
+function hasDataListWithFilter(result: EvalResult): boolean {
+  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
+  const json = JSON.stringify(updateCalls.map(t => t.input))
+  return json.includes('"filterPath"') && json.includes('"filterFields"')
+}
+
+/**
+ * Check that a Select component is present in canvas_update calls.
+ */
+function hasSelectComponent(result: EvalResult): boolean {
+  const json = JSON.stringify(result.toolCalls.filter(t => t.name === 'canvas_update').map(t => t.input))
+  return json.includes('"Select"')
+}
+
+// ---------------------------------------------------------------------------
+// Chart-specific helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Check that at least one canvas_update call includes a Chart component
+ * with the given type prop value.
+ */
+function hasChartType(result: EvalResult, chartType: string): boolean {
+  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
+  const json = JSON.stringify(updateCalls.map(t => t.input))
+  const chartPattern = new RegExp(`"component"\\s*:\\s*"Chart"`)
+  const typePattern = new RegExp(`"type"\\s*:\\s*"${chartType}"`)
+  if (!chartPattern.test(json)) return false
+  return typePattern.test(json)
+}
+
+/**
+ * Check that Chart data arrays across canvas_update calls have at least
+ * `minPoints` entries total (across all Chart components).
+ */
+function chartHasMinDataPoints(result: EvalResult, minPoints: number): boolean {
+  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
+  const json = JSON.stringify(updateCalls.map(t => t.input))
+  const labelMatches = json.match(/"label"\s*:\s*"/g)
+  return (labelMatches?.length ?? 0) >= minPoints
+}
+
+/**
+ * Check that a Chart component includes specific label text (case-insensitive).
+ */
+function chartDataContainsLabel(result: EvalResult, label: string): boolean {
+  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
+  const json = JSON.stringify(updateCalls.map(t => t.input)).toLowerCase()
+  return json.includes(label.toLowerCase())
 }
 
 // ---------------------------------------------------------------------------
@@ -2154,5 +2219,826 @@ export const CANVAS_EVALS: AgentEval[] = [
       'No Metric summary row in a CRUD app',
       'Missing Card wrappers',
     ],
+  },
+
+  // ---- Chart Types: Line ----
+  {
+    id: 'canvas-chart-line-trend',
+    name: 'Chart: Line chart for revenue trend',
+    category: 'canvas',
+    level: 2,
+    input: 'Show me monthly revenue for the past 6 months as a line chart. Use these numbers: Jan $42K, Feb $38K, Mar $45K, Apr $51K, May $48K, Jun $55K.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Added components to the canvas',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'has-line-chart',
+        description: 'Included a Chart with type "line"',
+        points: 25,
+        phase: 'execution',
+        validate: (r) => hasChartType(r, 'line'),
+      },
+      {
+        id: 'has-6-data-points',
+        description: 'Chart data has at least 6 data points',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => chartHasMinDataPoints(r, 6),
+      },
+      {
+        id: 'has-title',
+        description: 'Chart has a title',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls.filter(t => t.name === 'canvas_update').map(t => t.input))
+          return json.includes('"title"') && json.includes('"Chart"')
+        },
+      },
+      {
+        id: 'has-jan-label',
+        description: 'Data includes month labels from the prompt',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => chartDataContainsLabel(r, 'Jan') || chartDataContainsLabel(r, 'January'),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 10 tool calls',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 10,
+      },
+    ],
+    antiPatterns: [
+      'Used bar chart instead of line for time series data',
+      'Used pie/donut for time series data',
+    ],
+  },
+
+  // ---- Chart Types: Pie ----
+  {
+    id: 'canvas-chart-pie-breakdown',
+    name: 'Chart: Pie chart for market share',
+    category: 'canvas',
+    level: 2,
+    input: 'Create a pie chart showing market share: Company A 35%, Company B 28%, Company C 22%, Others 15%.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Added components to the canvas',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'has-pie-chart',
+        description: 'Included a Chart with type "pie"',
+        points: 25,
+        phase: 'execution',
+        validate: (r) => hasChartType(r, 'pie'),
+      },
+      {
+        id: 'has-4-data-points',
+        description: 'Pie chart has 4 segments',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => chartHasMinDataPoints(r, 4),
+      },
+      {
+        id: 'has-company-labels',
+        description: 'Data includes company labels from the prompt',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => chartDataContainsLabel(r, 'Company A') || chartDataContainsLabel(r, 'company a'),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 10 tool calls',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 10,
+      },
+    ],
+    antiPatterns: [
+      'Used bar chart for proportional/market share data',
+      'Used line chart for non-time-series proportional data',
+    ],
+  },
+
+  // ---- Chart Types: Donut ----
+  {
+    id: 'canvas-chart-donut-budget',
+    name: 'Chart: Donut chart for budget allocation',
+    category: 'canvas',
+    level: 2,
+    input: 'Show my budget allocation as a donut chart: Rent $1500, Food $600, Transport $300, Entertainment $200, Savings $400.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Added components to the canvas',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'has-donut-chart',
+        description: 'Included a Chart with type "donut"',
+        points: 25,
+        phase: 'execution',
+        validate: (r) => hasChartType(r, 'donut'),
+      },
+      {
+        id: 'has-5-segments',
+        description: 'Donut chart has 5 segments',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => chartHasMinDataPoints(r, 5),
+      },
+      {
+        id: 'has-rent-label',
+        description: 'Data includes budget category labels from the prompt',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => chartDataContainsLabel(r, 'Rent'),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 10 tool calls',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 10,
+      },
+    ],
+    antiPatterns: [
+      'Used bar chart for budget allocation/proportional data',
+      'Used line chart for non-time-series data',
+    ],
+  },
+
+  // ---- Chart Types: Area ----
+  {
+    id: 'canvas-chart-area-growth',
+    name: 'Chart: Area chart for user growth',
+    category: 'canvas',
+    level: 2,
+    input: 'Display user growth over the last 8 weeks as an area chart. Week 1: 120, Week 2: 145, Week 3: 168, Week 4: 192, Week 5: 235, Week 6: 278, Week 7: 312, Week 8: 367.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Added components to the canvas',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'has-area-chart',
+        description: 'Included a Chart with type "area"',
+        points: 25,
+        phase: 'execution',
+        validate: (r) => hasChartType(r, 'area'),
+      },
+      {
+        id: 'has-8-data-points',
+        description: 'Area chart has at least 8 data points',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => chartHasMinDataPoints(r, 8),
+      },
+      {
+        id: 'has-week-labels',
+        description: 'Data includes week labels',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => chartDataContainsLabel(r, 'Week') || chartDataContainsLabel(r, 'W1') || chartDataContainsLabel(r, 'Wk'),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 10 tool calls',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 10,
+      },
+      {
+        id: 'response-mentions-growth',
+        description: 'Agent response references growth or the chart',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => responseContains(r, 'growth') || responseContains(r, 'area') || responseContains(r, 'chart'),
+      },
+    ],
+    antiPatterns: [
+      'Used bar chart for time series growth data',
+      'Used pie/donut for sequential growth data',
+    ],
+  },
+
+  // ---- Chart Types: Mixed dashboard ----
+  {
+    id: 'canvas-chart-dashboard-mixed',
+    name: 'Chart: Analytics dashboard with mixed chart types',
+    category: 'canvas',
+    level: 3,
+    input: 'Build an analytics dashboard for our SaaS product. Include: KPI metrics at the top (MRR $48K +8%, Active Users 1,240 +12%, Churn Rate 2.1% -0.3%), a line chart showing weekly signups over 6 weeks (45, 52, 61, 58, 73, 82), and a donut chart showing traffic sources (Organic 42%, Paid 28%, Referral 18%, Direct 12%).',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Added components to the canvas',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'has-metrics',
+        description: 'Includes Metric components for KPIs',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => hasMetricGrid(r),
+      },
+      {
+        id: 'has-line-chart',
+        description: 'Includes a line chart for weekly signups',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => hasChartType(r, 'line') || hasChartType(r, 'area'),
+      },
+      {
+        id: 'has-donut-chart',
+        description: 'Includes a donut chart for traffic sources',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => hasChartType(r, 'donut') || hasChartType(r, 'pie'),
+      },
+      {
+        id: 'has-card-sections',
+        description: 'Charts are wrapped in Cards',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => hasCardWrappedSections(r),
+      },
+      {
+        id: 'minimum-component-count',
+        description: 'Has at least 15 components for a complete dashboard',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => hasMinimumComponents(r, 15),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 15 tool calls',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 15,
+      },
+    ],
+    antiPatterns: [
+      'No Metric components in an analytics dashboard',
+      'Only one chart type when two were requested',
+      'Fewer than 12 components for a dashboard',
+      'Missing Card wrappers on chart sections',
+    ],
+  },
+
+  // ---- Chart Types: Type selection intelligence ----
+  {
+    id: 'canvas-chart-type-selection',
+    name: 'Chart: Agent selects pie/donut for distribution data',
+    category: 'canvas',
+    level: 2,
+    input: 'Show me the distribution of support tickets by category: Bug 45, Feature Request 32, Question 18, Other 8. Visualize this nicely.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Added components to the canvas',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'chose-pie-or-donut',
+        description: 'Selected pie or donut chart for proportional distribution data',
+        points: 30,
+        phase: 'execution',
+        validate: (r) => hasChartType(r, 'pie') || hasChartType(r, 'donut'),
+      },
+      {
+        id: 'has-4-segments',
+        description: 'Chart has 4 data segments',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => chartHasMinDataPoints(r, 4),
+      },
+      {
+        id: 'has-bug-label',
+        description: 'Data includes category labels from the prompt',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => chartDataContainsLabel(r, 'Bug'),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 10 tool calls',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 10,
+      },
+    ],
+    antiPatterns: [
+      'Used bar chart for proportional distribution data when pie/donut is more appropriate',
+      'Used line chart for non-sequential category data',
+    ],
+  },
+
+  // ---- Search & Filter: Searchable Contact List ----
+  {
+    id: 'canvas-search-contacts',
+    name: 'Canvas: Searchable contact list',
+    category: 'canvas',
+    level: 2,
+    input: 'Build me a contact list with a search bar. I should be able to type a name and filter the list. Seed it with 6 sample contacts with name, email, and company fields.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-api-schema',
+        description: 'Used canvas_api_schema to define the Contact model',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_api_schema'),
+      },
+      {
+        id: 'used-api-seed',
+        description: 'Used canvas_api_seed to populate contacts',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_api_seed'),
+      },
+      {
+        id: 'has-textfield',
+        description: 'Includes a TextField component for search',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => hasTextField(r),
+      },
+      {
+        id: 'textfield-has-datapath',
+        description: 'TextField has a dataPath configured to write to data model',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => textFieldHasDataPath(r),
+      },
+      {
+        id: 'has-datalist',
+        description: 'Includes a DataList component for displaying contacts',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => JSON.stringify(r.toolCalls).includes('"DataList"'),
+      },
+      {
+        id: 'datalist-has-filter',
+        description: 'DataList has filterPath and filterFields for search wiring',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => hasDataListWithFilter(r),
+      },
+      {
+        id: 'minimum-components',
+        description: 'Has at least 8 components',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => hasMinimumComponents(r, 8),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 18 tool calls',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 18,
+      },
+    ],
+    antiPatterns: ['Search TextField not connected to DataList filtering', 'No TextField component for search'],
+  },
+
+  // ---- Search & Filter: Product Catalog with Search + CRUD ----
+  {
+    id: 'canvas-search-products',
+    name: 'Canvas: Product catalog with search and CRUD',
+    category: 'canvas',
+    level: 3,
+    input: 'I need a product catalog manager. Products have a name, category, price, and stock count. Include a search bar to filter products by name or category, and buttons to add new products and delete existing ones. Add 5 sample products.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-api-schema',
+        description: 'Used canvas_api_schema for Product model',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          return usedTool(r, 'canvas_api_schema') && json.includes('product') && json.includes('name') && json.includes('price')
+        },
+      },
+      {
+        id: 'used-api-seed',
+        description: 'Used canvas_api_seed to populate products',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_api_seed'),
+      },
+      {
+        id: 'has-textfield',
+        description: 'Includes a TextField for search',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => hasTextField(r),
+      },
+      {
+        id: 'textfield-has-datapath',
+        description: 'TextField has dataPath for search binding',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => textFieldHasDataPath(r),
+      },
+      {
+        id: 'has-datalist',
+        description: 'DataList or Table present for product display',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls)
+          return json.includes('"DataList"') || json.includes('"Table"')
+        },
+      },
+      {
+        id: 'datalist-has-filter',
+        description: 'DataList has filterPath + filterFields for search',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => hasDataListWithFilter(r),
+      },
+      {
+        id: 'all-buttons-have-mutations',
+        description: 'Every Button has a mutation in its action definition',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => allButtonsHaveMutations(r),
+      },
+      {
+        id: 'used-trigger-action',
+        description: 'Used canvas_trigger_action to test add/delete',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_trigger_action'),
+      },
+      {
+        id: 'trigger-action-succeeded',
+        description: 'canvas_trigger_action returned ok: true',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => triggerActionSucceeded(r),
+      },
+      {
+        id: 'used-inspect',
+        description: 'Used canvas_inspect after trigger',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => inspectAfterTrigger(r),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 25 tool calls',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 25,
+      },
+    ],
+    antiPatterns: ['Search not wired to DataList', 'Buttons missing mutation', 'Did not verify interactions'],
+  },
+
+  // ---- Search & Filter: Searchable FAQ Knowledge Base ----
+  {
+    id: 'canvas-search-faq',
+    name: 'Canvas: FAQ knowledge base with search and category filter',
+    category: 'canvas',
+    level: 3,
+    input: 'Create a FAQ knowledge base. Each entry has a question, answer, and category (General, Billing, Technical). Add a search bar that filters across both question and answer text, and a category dropdown to filter by category. Seed with 6 sample FAQs.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-api-schema',
+        description: 'Used canvas_api_schema for FAQ model',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_api_schema'),
+      },
+      {
+        id: 'used-api-seed',
+        description: 'Used canvas_api_seed to populate FAQs',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_api_seed'),
+      },
+      {
+        id: 'has-textfield',
+        description: 'Includes a TextField for text search',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => hasTextField(r),
+      },
+      {
+        id: 'has-select',
+        description: 'Includes a Select for category filter',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => hasSelectComponent(r),
+      },
+      {
+        id: 'datalist-has-filter',
+        description: 'DataList has filterPath connected to search input',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => hasDataListWithFilter(r),
+      },
+      {
+        id: 'has-faq-model',
+        description: 'FAQ model includes question, answer, category fields',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          return json.includes('question') && json.includes('answer') && json.includes('category')
+        },
+      },
+      {
+        id: 'minimum-components',
+        description: 'Has at least 10 components',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => hasMinimumComponents(r, 10),
+      },
+      {
+        id: 'has-card-sections',
+        description: 'Has Card-wrapped sections',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => hasCardWrappedSections(r),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 25 tool calls',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 25,
+      },
+      {
+        id: 'response-explains',
+        description: 'Agent response explains the search functionality',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => responseContains(r, 'search') || responseContains(r, 'filter'),
+      },
+    ],
+    antiPatterns: ['No search input', 'Search not connected to data list', 'Missing category filter'],
+  },
+
+  // ---- Search & Filter: Employee Directory with Server-Side Search ----
+  {
+    id: 'canvas-search-employees',
+    name: 'Canvas: Employee directory with server-side search',
+    category: 'canvas',
+    level: 4,
+    input: 'Build an employee directory for a large company. Employees have name, department, title, email, and phone. I need a search bar that searches across name and title — this should use the API to filter since there could be thousands of employees. Include department metrics at the top. Seed with 8 sample employees across 3 departments.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-api-schema',
+        description: 'Used canvas_api_schema for Employee model',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          return usedTool(r, 'canvas_api_schema') && json.includes('employee') && json.includes('department')
+        },
+      },
+      {
+        id: 'used-api-seed',
+        description: 'Used canvas_api_seed with employees across departments',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_api_seed'),
+      },
+      {
+        id: 'has-textfield',
+        description: 'Includes a TextField for search',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => hasTextField(r),
+      },
+      {
+        id: 'textfield-has-datapath',
+        description: 'TextField has dataPath configured',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => textFieldHasDataPath(r),
+      },
+      {
+        id: 'has-search-wiring',
+        description: 'DataList uses API binding with _search params or client-side filterPath',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls)
+          return json.includes('_search') || json.includes('filterPath')
+        },
+      },
+      {
+        id: 'has-metrics',
+        description: 'Has Metric components for department stats',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => JSON.stringify(r.toolCalls).includes('"Metric"'),
+      },
+      {
+        id: 'all-buttons-have-mutations',
+        description: 'All buttons have mutations',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => allButtonsHaveMutations(r),
+      },
+      {
+        id: 'used-trigger-action',
+        description: 'Used canvas_trigger_action',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_trigger_action'),
+      },
+      {
+        id: 'trigger-action-succeeded',
+        description: 'canvas_trigger_action returned ok: true',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => triggerActionSucceeded(r),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 22 tool calls',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 22,
+      },
+      {
+        id: 'minimum-components',
+        description: 'Has at least 12 components',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => hasMinimumComponents(r, 12),
+      },
+    ],
+    antiPatterns: ['No search input for employee lookup', 'Missing department metrics'],
+  },
+
+  // ---- Search & Filter: Recipe Finder (Simple) ----
+  {
+    id: 'canvas-search-recipes',
+    name: 'Canvas: Recipe finder with search',
+    category: 'canvas',
+    level: 2,
+    input: 'Make me a recipe browser. Show a list of recipes with name, cuisine type, and prep time. I want to be able to search by recipe name. Add 6 sample recipes.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Added components to the canvas',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'has-textfield',
+        description: 'Includes a TextField for search',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => hasTextField(r),
+      },
+      {
+        id: 'textfield-has-datapath',
+        description: 'TextField has dataPath for search binding',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => textFieldHasDataPath(r),
+      },
+      {
+        id: 'datalist-has-filter',
+        description: 'DataList present with filterPath for search',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => hasDataListWithFilter(r),
+      },
+      {
+        id: 'has-recipe-data',
+        description: 'Data includes recipe names and cuisine types',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          return (json.includes('recipe') || json.includes('cuisine')) && json.includes('name')
+        },
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 18 tool calls',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 18,
+      },
+    ],
+    antiPatterns: ['No search input', 'DataList missing filterPath'],
   },
 ]

@@ -4,7 +4,7 @@
  * Components that handle user input and dispatch actions back to the agent.
  */
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { View, Pressable, Linking } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Button, ButtonText } from '@/components/ui/button'
@@ -138,24 +138,50 @@ interface DynTextFieldProps {
   onAction?: (name: string, context?: Record<string, unknown>) => void
   onDataChange?: (path: string, value: unknown) => void
   dataPath?: string
+  debounceMs?: number
   className?: string
 }
 
-export function DynTextField({ label, placeholder, value = '', type = 'text', disabled, action, onAction, onDataChange, dataPath, className }: DynTextFieldProps) {
+export function DynTextField({ label, placeholder, value = '', type = 'text', disabled, action, onAction, onDataChange, dataPath, debounceMs = 0, className }: DynTextFieldProps) {
   const [localValue, setLocalValue] = useState(value)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const handleChangeText = useCallback((newVal: string) => {
-    setLocalValue(newVal)
+  useEffect(() => {
+    setLocalValue(value)
+  }, [value])
+
+  const emitDataChange = useCallback((newVal: string) => {
     if (dataPath && onDataChange) {
       onDataChange(dataPath, newVal)
     }
   }, [dataPath, onDataChange])
 
+  const handleChangeText = useCallback((newVal: string) => {
+    setLocalValue(newVal)
+    if (debounceMs > 0) {
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+      debounceRef.current = setTimeout(() => emitDataChange(newVal), debounceMs)
+    } else {
+      emitDataChange(newVal)
+    }
+  }, [debounceMs, emitDataChange])
+
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+    }
+  }, [])
+
   const handleSubmitEditing = useCallback(() => {
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current)
+      debounceRef.current = null
+    }
+    emitDataChange(localValue)
     if (action && onAction) {
       onAction(action.name, { ...action.context, value: localValue })
     }
-  }, [action, onAction, localValue])
+  }, [action, onAction, localValue, emitDataChange])
 
   return (
     <View className={cn('flex flex-col gap-1.5', className)}>
@@ -243,6 +269,10 @@ interface DynCheckboxProps {
 
 export function DynCheckbox({ label, checked = false, disabled, action, onAction, onDataChange, dataPath, className }: DynCheckboxProps) {
   const [localChecked, setLocalChecked] = useState(checked)
+
+  useEffect(() => {
+    setLocalChecked(checked)
+  }, [checked])
 
   const handleChange = useCallback((isChecked: boolean) => {
     setLocalChecked(isChecked)

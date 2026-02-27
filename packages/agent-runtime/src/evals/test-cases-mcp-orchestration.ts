@@ -24,30 +24,14 @@ import {
   TEAM_ONBOARDING_MOCKS,
   BUSINESS_DASHBOARD_MOCKS,
 } from './tool-mocks'
+import { usedTool, toolCallCount, responseContains, toolCallsJson } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Orchestration-specific helpers
 // ---------------------------------------------------------------------------
-
-function usedTool(result: EvalResult, toolName: string): boolean {
-  return result.toolCalls.some(t => t.name === toolName)
-}
 
 function usedAnyTool(result: EvalResult, ...toolNames: string[]): boolean {
   return toolNames.some(name => usedTool(result, name))
-}
-
-function toolCallCount(result: EvalResult, toolName: string): number {
-  return result.toolCalls.filter(t => t.name === toolName).length
-}
-
-function responseContains(result: EvalResult, ...terms: string[]): boolean {
-  const text = result.responseText.toLowerCase()
-  return terms.every(t => text.includes(t.toLowerCase()))
-}
-
-function toolCallsJson(result: EvalResult): string {
-  return JSON.stringify(result.toolCalls).toLowerCase()
 }
 
 function usedCanvasTools(result: EvalResult): boolean {

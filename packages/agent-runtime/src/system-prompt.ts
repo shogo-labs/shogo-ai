@@ -324,8 +324,11 @@ export const TOOL_USAGE = `## Tool Usage
 - **memory_write** — Write to MEMORY.md or daily logs
 - **memory_search** — Search across all memory files
 - **exec** — Run shell commands
-- **read_file** — Read a workspace file
+- **read_file** — Read a workspace file (use \`files/filename\` for uploaded files)
 - **write_file** — Write a workspace file
+- **list_files** — List files in the \`files/\` directory (uploaded by the user via the file browser)
+- **search_files** — RAG search across indexed files in \`files/\` using hybrid keyword + semantic search
+- **delete_file** — Delete a file from the \`files/\` directory
 - **web_fetch** — Fetch content from a URL
 - **cron** — Manage scheduled jobs
 

@@ -25,6 +25,7 @@ import type {
   CascadeDeleteAction,
   TransformAction,
   LogAction,
+  DeleteComponentsMessage,
 } from './dynamic-app-types'
 import { ManagedApiRuntime, type ModelDefinition, type ManagedModelHooks, type ManagedHookResult, type ManagedHookContext } from './managed-api-runtime'
 
@@ -255,6 +256,57 @@ export class DynamicAppManager {
       status: 'deleted',
       remainingSurfaces: this.listSurfaces(),
       message: `Surface "${surfaceId}" removed from the canvas.`,
+    }
+  }
+
+  deleteComponents(surfaceId: string, componentIds: string[]): Record<string, unknown> {
+    const surface = this.surfaces.get(surfaceId)
+    if (!surface) {
+      return { ok: false, error: `Surface "${surfaceId}" does not exist` }
+    }
+
+    const deleted: string[] = []
+    for (const id of componentIds) {
+      if (surface.components.has(id)) {
+        surface.components.delete(id)
+        deleted.push(id)
+      }
+    }
+
+    if (deleted.length === 0) {
+      return { ok: false, error: 'None of the specified component IDs were found' }
+    }
+
+    const deletedSet = new Set(deleted)
+    const updatedParents: ComponentDefinition[] = []
+    for (const [, comp] of surface.components) {
+      if (Array.isArray(comp.children)) {
+        const filtered = (comp.children as string[]).filter((id) => !deletedSet.has(id))
+        if (filtered.length !== (comp.children as string[]).length) {
+          comp.children = filtered
+          updatedParents.push(comp)
+        }
+      }
+      if (comp.child && deletedSet.has(comp.child)) {
+        delete comp.child
+        updatedParents.push(comp)
+      }
+    }
+
+    surface.updatedAt = new Date().toISOString()
+
+    if (updatedParents.length > 0) {
+      this.broadcast({ type: 'updateComponents', surfaceId, components: updatedParents })
+    }
+    this.broadcast({ type: 'deleteComponents', surfaceId, componentIds: deleted } as DeleteComponentsMessage)
+    this.scheduleSave()
+
+    return {
+      ok: true,
+      surfaceId,
+      deleted,
+      updatedParents: updatedParents.map((p) => p.id),
+      totalComponents: surface.components.size,
     }
   }
 
