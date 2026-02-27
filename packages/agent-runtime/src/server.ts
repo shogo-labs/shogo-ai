@@ -1294,6 +1294,170 @@ app.post('/agent/dynamic-app/edit', async (c) => {
   }
 })
 
+// Test setup endpoint: creates pre-configured test surfaces for E2E testing
+app.post('/agent/dynamic-app/test-setup', async (c) => {
+  const manager = getDynamicAppManager()
+  const body = await c.req.json() as { scenario: string }
+  const scenario = body.scenario
+
+  if (scenario === 'expense-form') {
+    const surfaceId = 'test_expense'
+    manager.createSurface(surfaceId, 'Expense Form Test')
+    manager.applyApiSchema(surfaceId, [
+      { name: 'Expense', fields: [
+        { name: 'description', type: 'String' },
+        { name: 'amount', type: 'Float' },
+        { name: 'category', type: 'String' },
+      ] },
+    ])
+    manager.seedApiData(surfaceId, 'Expense', [
+      { description: 'Lunch', amount: 12.50, category: 'Food' },
+      { description: 'Bus pass', amount: 45, category: 'Transport' },
+      { description: 'Movie ticket', amount: 18.99, category: 'Entertainment' },
+    ])
+    manager.queryApiData(surfaceId, 'Expense', {}, '/expenses')
+    manager.updateComponents(surfaceId, [
+      { id: 'root', component: 'Column', children: ['header', 'metrics', 'form_card', 'list_card'], gap: 'lg' },
+      { id: 'header', component: 'Row', children: ['title', 'badge'], align: 'center', justify: 'between' },
+      { id: 'title', component: 'Text', text: 'Expense Tracker', variant: 'h2' },
+      { id: 'badge', component: 'Badge', text: 'Test', variant: 'outline' },
+      { id: 'metrics', component: 'Grid', columns: 2, children: ['m_count', 'm_total'] },
+      { id: 'm_count', component: 'Metric', label: 'Count', value: { path: '/expenseCount' } },
+      { id: 'm_total', component: 'Metric', label: 'Total', value: { path: '/expenseTotal' }, unit: '$' },
+      { id: 'form_card', component: 'Card', title: 'Add Expense', child: 'form_row' },
+      { id: 'form_row', component: 'Row', children: ['desc_input', 'amt_input', 'cat_select', 'add_btn'], gap: 'sm', align: 'end' },
+      { id: 'desc_input', component: 'TextField', label: 'Description', placeholder: 'e.g. Coffee', dataPath: '/newDesc' },
+      { id: 'amt_input', component: 'TextField', label: 'Amount', placeholder: '0.00', type: 'number', dataPath: '/newAmt' },
+      { id: 'cat_select', component: 'Select', label: 'Category', placeholder: 'Select...', dataPath: '/newCat', options: [
+        { label: 'Food', value: 'Food' },
+        { label: 'Transport', value: 'Transport' },
+        { label: 'Entertainment', value: 'Entertainment' },
+      ] },
+      { id: 'add_btn', component: 'Button', label: 'Add Expense', action: { name: 'add_expense', mutation: {
+        endpoint: '/api/expenses', method: 'POST',
+        body: { description: { path: '/newDesc' }, amount: { path: '/newAmt' }, category: { path: '/newCat' } },
+      } } },
+      { id: 'list_card', component: 'Card', title: 'Expenses', child: 'expense_list' },
+      { id: 'expense_list', component: 'DataList', children: { path: '/expenses', templateId: 'expense_row' }, emptyText: 'No expenses yet' },
+      { id: 'expense_row', component: 'Row', children: ['exp_desc', 'exp_amt', 'exp_cat', 'exp_del'], align: 'center', justify: 'between' },
+      { id: 'exp_desc', component: 'Text', text: { path: 'description' } },
+      { id: 'exp_amt', component: 'Text', text: { path: 'amount' }, variant: 'large' },
+      { id: 'exp_cat', component: 'Badge', text: { path: 'category' }, variant: 'secondary' },
+      { id: 'exp_del', component: 'Button', label: 'Delete', variant: 'destructive', size: 'sm', action: { name: 'delete_expense', mutation: {
+        endpoint: '/api/expenses/:id', method: 'DELETE', params: { id: { path: 'id' } },
+      } } },
+    ] as any)
+    manager.registerHooks(surfaceId, 'Expense', {
+      afterCreate: [{ action: 'recompute', source: 'Expense', operation: 'count', target: '/expenseCount' },
+                     { action: 'recompute', source: 'Expense', operation: 'sum', field: 'amount', target: '/expenseTotal' }],
+      afterDelete: [{ action: 'recompute', source: 'Expense', operation: 'count', target: '/expenseCount' },
+                     { action: 'recompute', source: 'Expense', operation: 'sum', field: 'amount', target: '/expenseTotal' }],
+    })
+    return c.json({ ok: true, surfaceId })
+
+  } else if (scenario === 'pipeline-where') {
+    const surfaceId = 'test_pipeline_where'
+    manager.createSurface(surfaceId, 'Pipeline (where prop)')
+    manager.applyApiSchema(surfaceId, [
+      { name: 'Lead', fields: [
+        { name: 'name', type: 'String' },
+        { name: 'company', type: 'String' },
+        { name: 'value', type: 'Float' },
+        { name: 'stage', type: 'String', default: 'new' },
+      ] },
+    ])
+    manager.seedApiData(surfaceId, 'Lead', [
+      { name: 'Alice Chen', company: 'Acme Corp', value: 25000, stage: 'new' },
+      { name: 'Bob Smith', company: 'Globex', value: 40000, stage: 'new' },
+      { name: 'Carol Davis', company: 'Initech', value: 55000, stage: 'qualified' },
+      { name: 'Dave Wilson', company: 'Umbrella', value: 32000, stage: 'qualified' },
+      { name: 'Eve Brown', company: 'Wayne Ent', value: 78000, stage: 'closed' },
+      { name: 'Frank Lee', company: 'Stark Ind', value: 95000, stage: 'closed' },
+    ])
+    manager.queryApiData(surfaceId, 'Lead', {}, '/leads')
+    manager.updateComponents(surfaceId, [
+      { id: 'root', component: 'Column', children: ['header', 'board'], gap: 'lg' },
+      { id: 'header', component: 'Row', children: ['title', 'badge'], align: 'center', justify: 'between' },
+      { id: 'title', component: 'Text', text: 'CRM Pipeline', variant: 'h2' },
+      { id: 'badge', component: 'Badge', text: 'where prop test', variant: 'outline' },
+      { id: 'board', component: 'Grid', columns: 3, gap: 'md', children: ['new_col', 'qual_col', 'closed_col'] },
+      { id: 'new_col', component: 'Card', title: 'New', child: 'new_list' },
+      { id: 'new_list', component: 'DataList', children: { path: '/leads', templateId: 'lead_card' }, where: { stage: 'new' }, emptyText: 'No new leads' },
+      { id: 'qual_col', component: 'Card', title: 'Qualified', child: 'qual_list' },
+      { id: 'qual_list', component: 'DataList', children: { path: '/leads', templateId: 'lead_card' }, where: { stage: 'qualified' }, emptyText: 'No qualified leads' },
+      { id: 'closed_col', component: 'Card', title: 'Closed', child: 'closed_list' },
+      { id: 'closed_list', component: 'DataList', children: { path: '/leads', templateId: 'lead_card' }, where: { stage: 'closed' }, emptyText: 'No closed leads' },
+      { id: 'lead_card', component: 'Card', title: { path: 'name' }, description: { path: 'company' }, children: ['lead_actions'] },
+      { id: 'lead_actions', component: 'Row', children: ['lead_value', 'lead_qualify_btn', 'lead_close_btn', 'lead_back_btn', 'lead_del_btn'], align: 'center', gap: 'sm' },
+      { id: 'lead_value', component: 'Text', text: { path: 'value' }, variant: 'muted' },
+      { id: 'lead_qualify_btn', component: 'Button', label: 'Qualify', size: 'sm', variant: 'outline', action: { name: 'qualify', mutation: {
+        endpoint: '/api/leads/:id', method: 'PATCH', body: { stage: 'qualified' }, params: { id: { path: 'id' } },
+      } } },
+      { id: 'lead_close_btn', component: 'Button', label: 'Close', size: 'sm', variant: 'default', action: { name: 'close', mutation: {
+        endpoint: '/api/leads/:id', method: 'PATCH', body: { stage: 'closed' }, params: { id: { path: 'id' } },
+      } } },
+      { id: 'lead_back_btn', component: 'Button', label: 'Back', size: 'sm', variant: 'outline', action: { name: 'back_to_new', mutation: {
+        endpoint: '/api/leads/:id', method: 'PATCH', body: { stage: 'new' }, params: { id: { path: 'id' } },
+      } } },
+      { id: 'lead_del_btn', component: 'Button', label: 'Delete', size: 'sm', variant: 'destructive', action: { name: 'delete', mutation: {
+        endpoint: '/api/leads/:id', method: 'DELETE', params: { id: { path: 'id' } },
+      } } },
+    ] as any)
+    return c.json({ ok: true, surfaceId })
+
+  } else if (scenario === 'pipeline-queries') {
+    const surfaceId = 'test_pipeline_queries'
+    manager.createSurface(surfaceId, 'Pipeline (server queries)')
+    manager.applyApiSchema(surfaceId, [
+      { name: 'Lead', fields: [
+        { name: 'name', type: 'String' },
+        { name: 'company', type: 'String' },
+        { name: 'value', type: 'Float' },
+        { name: 'stage', type: 'String', default: 'new' },
+      ] },
+    ])
+    manager.seedApiData(surfaceId, 'Lead', [
+      { name: 'Alice Chen', company: 'Acme Corp', value: 25000, stage: 'new' },
+      { name: 'Bob Smith', company: 'Globex', value: 40000, stage: 'new' },
+      { name: 'Carol Davis', company: 'Initech', value: 55000, stage: 'qualified' },
+      { name: 'Dave Wilson', company: 'Umbrella', value: 32000, stage: 'qualified' },
+      { name: 'Eve Brown', company: 'Wayne Ent', value: 78000, stage: 'closed' },
+      { name: 'Frank Lee', company: 'Stark Ind', value: 95000, stage: 'closed' },
+    ])
+    manager.queryApiData(surfaceId, 'Lead', { where: { stage: 'new' } }, '/newLeads')
+    manager.queryApiData(surfaceId, 'Lead', { where: { stage: 'qualified' } }, '/qualifiedLeads')
+    manager.queryApiData(surfaceId, 'Lead', { where: { stage: 'closed' } }, '/closedLeads')
+    manager.updateComponents(surfaceId, [
+      { id: 'root', component: 'Column', children: ['header', 'board'], gap: 'lg' },
+      { id: 'header', component: 'Row', children: ['title', 'badge'], align: 'center', justify: 'between' },
+      { id: 'title', component: 'Text', text: 'CRM Pipeline', variant: 'h2' },
+      { id: 'badge', component: 'Badge', text: 'server queries test', variant: 'outline' },
+      { id: 'board', component: 'Grid', columns: 3, gap: 'md', children: ['new_col', 'qual_col', 'closed_col'] },
+      { id: 'new_col', component: 'Card', title: 'New', child: 'new_list' },
+      { id: 'new_list', component: 'DataList', children: { path: '/newLeads', templateId: 'lead_card' }, emptyText: 'No new leads' },
+      { id: 'qual_col', component: 'Card', title: 'Qualified', child: 'qual_list' },
+      { id: 'qual_list', component: 'DataList', children: { path: '/qualifiedLeads', templateId: 'lead_card' }, emptyText: 'No qualified leads' },
+      { id: 'closed_col', component: 'Card', title: 'Closed', child: 'closed_list' },
+      { id: 'closed_list', component: 'DataList', children: { path: '/closedLeads', templateId: 'lead_card' }, emptyText: 'No closed leads' },
+      { id: 'lead_card', component: 'Card', title: { path: 'name' }, description: { path: 'company' }, children: ['lead_actions'] },
+      { id: 'lead_actions', component: 'Row', children: ['lead_value', 'lead_qualify_btn', 'lead_close_btn', 'lead_del_btn'], align: 'center', gap: 'sm' },
+      { id: 'lead_value', component: 'Text', text: { path: 'value' }, variant: 'muted' },
+      { id: 'lead_qualify_btn', component: 'Button', label: 'Qualify', size: 'sm', variant: 'outline', action: { name: 'qualify', mutation: {
+        endpoint: '/api/leads/:id', method: 'PATCH', body: { stage: 'qualified' }, params: { id: { path: 'id' } },
+      } } },
+      { id: 'lead_close_btn', component: 'Button', label: 'Close', size: 'sm', variant: 'default', action: { name: 'close', mutation: {
+        endpoint: '/api/leads/:id', method: 'PATCH', body: { stage: 'closed' }, params: { id: { path: 'id' } },
+      } } },
+      { id: 'lead_del_btn', component: 'Button', label: 'Delete', size: 'sm', variant: 'destructive', action: { name: 'delete', mutation: {
+        endpoint: '/api/leads/:id', method: 'DELETE', params: { id: { path: 'id' } },
+      } } },
+    ] as any)
+    return c.json({ ok: true, surfaceId })
+  }
+
+  return c.json({ error: `Unknown scenario "${scenario}". Available: expense-form, pipeline-where, pipeline-queries` }, 400)
+})
+
 // Proxy requests to managed API runtimes (per-surface data layer)
 app.all('/agent/dynamic-app/api/:surfaceId/*', async (c) => {
   const surfaceId = c.req.param('surfaceId')

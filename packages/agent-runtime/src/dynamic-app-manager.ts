@@ -51,8 +51,8 @@ export class DynamicAppManager {
   private persistPath: string | null = null
   private saveTimer: ReturnType<typeof setTimeout> | null = null
   private runtimes = new Map<string, ManagedApiRuntime>()
-  /** Tracks model → dataPath bindings per surface so seedApiData can auto-refresh */
-  private queryBindings = new Map<string, Map<string, { dataPath: string; params?: { where?: Record<string, unknown>; orderBy?: string; limit?: number } }>>()
+  /** Tracks model → dataPath bindings per surface so mutations can auto-refresh filtered views */
+  private queryBindings = new Map<string, Map<string, Array<{ dataPath: string; params?: { where?: Record<string, unknown>; orderBy?: string; limit?: number } }>>>()
 
   constructor(persistPath?: string) {
     if (persistPath) {
@@ -497,6 +497,26 @@ export class DynamicAppManager {
     const dataPath = collectionEndpoint.replace(/^\/api/, '')
     if (Array.isArray(listJson.items)) {
       this.updateData(surfaceId, dataPath, listJson.items)
+
+      // Refresh all filtered query bindings for the affected model
+      const surfaceBindings = this.queryBindings.get(surfaceId)
+      if (surfaceBindings) {
+        const endpointInfo = runtime.getModelEndpointInfo()
+        const matched = endpointInfo.find(e => e.endpoint === collectionEndpoint)
+        if (matched) {
+          const bindings = surfaceBindings.get(matched.name)
+          if (bindings) {
+            for (const binding of bindings) {
+              if (binding.dataPath === dataPath) continue
+              const queryResult = runtime.query(matched.name, binding.params) as any
+              if (queryResult.ok && binding.dataPath) {
+                this.updateData(surfaceId, binding.dataPath, queryResult.items)
+              }
+            }
+          }
+        }
+      }
+
       return { ok: true, dataPath, itemCount: listJson.items.length }
     }
     return { ok: true, dataPath }
@@ -946,11 +966,13 @@ export class DynamicAppManager {
 
     if ((result as any).ok) {
       const surfaceBindings = this.queryBindings.get(surfaceId)
-      const binding = surfaceBindings?.get(model)
-      if (binding) {
-        const queryResult = runtime.query(model, binding.params) as any
-        if (queryResult.ok && binding.dataPath) {
-          this.updateData(surfaceId, binding.dataPath, queryResult.items)
+      const bindings = surfaceBindings?.get(model)
+      if (bindings) {
+        for (const binding of bindings) {
+          const queryResult = runtime.query(model, binding.params) as any
+          if (queryResult.ok && binding.dataPath) {
+            this.updateData(surfaceId, binding.dataPath, queryResult.items)
+          }
         }
       }
     }
@@ -979,11 +1001,21 @@ export class DynamicAppManager {
       if (dataPath) {
         this.updateData(surfaceId, dataPath, result.items)
 
-        // Register binding so seedApiData can auto-refresh this data path
+        // Register binding so mutations can auto-refresh this data path
         if (!this.queryBindings.has(surfaceId)) {
           this.queryBindings.set(surfaceId, new Map())
         }
-        this.queryBindings.get(surfaceId)!.set(model, { dataPath, params })
+        const surfaceBindings = this.queryBindings.get(surfaceId)!
+        if (!surfaceBindings.has(model)) {
+          surfaceBindings.set(model, [])
+        }
+        const modelBindings = surfaceBindings.get(model)!
+        const existingIdx = modelBindings.findIndex(b => b.dataPath === dataPath)
+        if (existingIdx >= 0) {
+          modelBindings[existingIdx] = { dataPath, params }
+        } else {
+          modelBindings.push({ dataPath, params })
+        }
       }
     }
 

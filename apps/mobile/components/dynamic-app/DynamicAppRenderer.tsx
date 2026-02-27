@@ -277,6 +277,17 @@ function useRenderedChildren(
         const templateDef = components.get(tmpl.templateId)
         if (!templateDef) return null
 
+        // Exact-value filtering: show only items matching all where conditions
+        const where = definition.where as Record<string, unknown> | undefined
+        if (where && typeof where === 'object') {
+          items = items.filter((item: unknown) => {
+            if (typeof item !== 'object' || item === null) return false
+            const rec = item as Record<string, unknown>
+            return Object.entries(where).every(([k, v]) => rec[k] === v)
+          })
+        }
+
+        // Text search filtering: substring match across specified fields
         const filterPath = definition.filterPath as string | undefined
         const filterFields = definition.filterFields as string[] | undefined
         if (filterPath && filterFields?.length) {

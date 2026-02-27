@@ -4,16 +4,19 @@
  * Standalone dev preview for the Dynamic App renderer.
  * Renders all demo surfaces with a sidebar selector for switching between them.
  * Includes visual editing mode for testing the canvas editor.
+ *
+ * Live mode: pass agentUrl prop to connect to a running agent runtime via SSE.
+ * Surfaces come from the runtime instead of static demos, and actions dispatch real mutations.
  */
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useMemo } from 'react'
 import { View, Pressable, ScrollView } from 'react-native'
 import { useColorScheme } from 'nativewind'
 import { Text } from '@/components/ui/text'
 import { DynamicAppRenderer } from './DynamicAppRenderer'
 import { DEMO_SURFACES, getAllDemoSurfaces } from './demo-surfaces'
 import type { SurfaceState, ComponentDefinition } from './types'
-import { Moon, Sun } from 'lucide-react-native'
+import { Moon, Sun, Wifi, WifiOff } from 'lucide-react-native'
 import { useTheme } from '../../contexts/theme'
 import { EditModeProvider, useEditModeOptional, type EditAction, type EditActionResult } from './edit/EditModeContext'
 import { EditToolbar } from './edit/EditToolbar'
@@ -21,8 +24,12 @@ import { InspectorPanel } from './edit/InspectorPanel'
 import { ComponentTreePanel } from './edit/ComponentTreePanel'
 import { CanvasThemeProvider, CanvasThemedContainer } from './CanvasThemeContext'
 import { CanvasThemePicker } from './CanvasThemePicker'
+import { useDynamicAppStream } from './use-dynamic-app-stream'
 
-export function DynamicAppDevPreview() {
+export function DynamicAppDevPreview({ agentUrl }: { agentUrl?: string | null } = {}) {
+  const isLive = Boolean(agentUrl)
+  const stream = useDynamicAppStream(agentUrl ?? null)
+
   const [activeSurface, setActiveSurface] = useState<SurfaceState>(
     () => {
       const first = Object.values(DEMO_SURFACES)[0]
@@ -30,9 +37,26 @@ export function DynamicAppDevPreview() {
     }
   )
   const [activeKey, setActiveKey] = useState<string>(Object.keys(DEMO_SURFACES)[0])
+  const [activeLiveSurfaceId, setActiveLiveSurfaceId] = useState<string | null>(null)
   const { colorScheme } = useColorScheme()
   const { theme, setTheme } = useTheme()
   const isDark = theme === 'system' ? colorScheme === 'dark' : theme === 'dark'
+
+  const liveSurfaces = useMemo(() => {
+    if (!isLive) return []
+    return Array.from(stream.surfaces.entries()).map(([id, s]) => ({ id, surface: s }))
+  }, [isLive, stream.surfaces])
+
+  const currentLiveSurface = useMemo(() => {
+    if (!activeLiveSurfaceId) return liveSurfaces[0]?.surface ?? null
+    return stream.surfaces.get(activeLiveSurfaceId) ?? null
+  }, [activeLiveSurfaceId, stream.surfaces, liveSurfaces])
+
+  useEffect(() => {
+    if (isLive && liveSurfaces.length > 0 && !activeLiveSurfaceId) {
+      setActiveLiveSurfaceId(liveSurfaces[0].id)
+    }
+  }, [isLive, liveSurfaces, activeLiveSurfaceId])
 
   const toggleTheme = useCallback(() => {
     setTheme(isDark ? 'light' : 'dark')
@@ -43,14 +67,24 @@ export function DynamicAppDevPreview() {
     if (entry) {
       setActiveSurface(entry.surface)
       setActiveKey(key)
+      setActiveLiveSurfaceId(null)
     }
+  }, [])
+
+  const selectLiveSurface = useCallback((surfaceId: string) => {
+    setActiveLiveSurfaceId(surfaceId)
+    setActiveKey('')
   }, [])
 
   const handleAction = useCallback((surfaceId: string, name: string, context?: Record<string, unknown>) => {
     const logEntry = { surfaceId, action: name, context, timestamp: new Date().toISOString() }
     console.log('[DynamicApp Action]', logEntry)
     setActionLog((prev) => [logEntry, ...prev].slice(0, 20))
-  }, [])
+
+    if (isLive) {
+      stream.dispatchAction(surfaceId, name, context)
+    }
+  }, [isLive, stream])
 
   const [actionLog, setActionLog] = useState<any[]>([])
 
@@ -136,6 +170,9 @@ export function DynamicAppDevPreview() {
     return { ok: true, newComponentId: (action as any)._newComponentId }
   }, [])
 
+  const displaySurface = (isLive && currentLiveSurface) ? currentLiveSurface : activeSurface
+  const displayAgentUrl = isLive ? agentUrl : null
+
   return (
     <CanvasThemeProvider>
     <EditModeProvider onEditAction={handleEditAction}>
@@ -145,31 +182,71 @@ export function DynamicAppDevPreview() {
           <View className="p-3 border-b border-border flex-row items-center justify-between">
             <View className="flex-1 mr-2">
               <Text className="text-sm font-semibold">Dev Preview</Text>
-              <Text className="text-xs text-muted-foreground mt-0.5">Canvas Editor</Text>
+              <Text className="text-xs text-muted-foreground mt-0.5">
+                {isLive ? 'Live Mode' : 'Canvas Editor'}
+              </Text>
             </View>
-            <Pressable
-              onPress={toggleTheme}
-              className="w-8 h-8 items-center justify-center rounded-md shrink-0"
-            >
-              {isDark
-                ? <Sun size={16} className="text-foreground" />
-                : <Moon size={16} className="text-foreground" />
-              }
-            </Pressable>
+            <View className="flex-row items-center gap-1">
+              {isLive && (
+                <View className="w-8 h-8 items-center justify-center">
+                  {stream.connected
+                    ? <Wifi size={14} className="text-emerald-500" />
+                    : <WifiOff size={14} className="text-destructive" />
+                  }
+                </View>
+              )}
+              <Pressable
+                onPress={toggleTheme}
+                className="w-8 h-8 items-center justify-center rounded-md shrink-0"
+              >
+                {isDark
+                  ? <Sun size={16} className="text-foreground" />
+                  : <Moon size={16} className="text-foreground" />
+                }
+              </Pressable>
+            </View>
           </View>
           <ScrollView className="flex-1">
+            {/* Live surfaces */}
+            {isLive && liveSurfaces.length > 0 && (
+              <View className="p-2 gap-0.5">
+                <Text className="text-xs font-medium text-muted-foreground px-3 pb-1">Live Surfaces</Text>
+                {liveSurfaces.map(({ id, surface }) => (
+                  <Pressable
+                    key={id}
+                    onPress={() => selectLiveSurface(id)}
+                    className={`px-3 py-2 rounded-md ${
+                      activeLiveSurfaceId === id ? 'bg-primary' : ''
+                    }`}
+                  >
+                    <Text
+                      className={`text-sm ${
+                        activeLiveSurfaceId === id
+                          ? 'text-primary-foreground font-medium'
+                          : 'text-foreground'
+                      }`}
+                    >
+                      {surface.title || id}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+
+            {/* Demo surfaces */}
             <View className="p-2 gap-0.5">
+              {isLive && <Text className="text-xs font-medium text-muted-foreground px-3 pb-1">Demo Surfaces</Text>}
               {Object.entries(DEMO_SURFACES).map(([key, { label }]) => (
                 <Pressable
                   key={key}
                   onPress={() => selectDemo(key)}
                   className={`px-3 py-2 rounded-md ${
-                    activeKey === key ? 'bg-primary' : ''
+                    activeKey === key && !activeLiveSurfaceId ? 'bg-primary' : ''
                   }`}
                 >
                   <Text
                     className={`text-sm ${
-                      activeKey === key
+                      activeKey === key && !activeLiveSurfaceId
                         ? 'text-primary-foreground font-medium'
                         : 'text-foreground'
                     }`}
@@ -196,14 +273,14 @@ export function DynamicAppDevPreview() {
         </View>
 
         {/* Main Content with Edit UI */}
-        <CanvasArea surface={activeSurface} onAction={handleAction} />
+        <CanvasArea surface={displaySurface} agentUrl={displayAgentUrl} onAction={handleAction} />
       </View>
     </EditModeProvider>
     </CanvasThemeProvider>
   )
 }
 
-function CanvasArea({ surface, onAction }: { surface: SurfaceState; onAction: (surfaceId: string, name: string, context?: Record<string, unknown>) => void }) {
+function CanvasArea({ surface, agentUrl, onAction }: { surface: SurfaceState; agentUrl?: string | null; onAction: (surfaceId: string, name: string, context?: Record<string, unknown>) => void }) {
   const editMode = useEditModeOptional()
   const isEditMode = editMode?.isEditMode ?? false
   const showTreePanel = editMode?.showTreePanel ?? false
@@ -220,7 +297,7 @@ function CanvasArea({ surface, onAction }: { surface: SurfaceState; onAction: (s
             <ScrollView className="flex-1" contentContainerStyle={{ padding: 16 }}>
               <DynamicAppRenderer
                 surface={surface}
-                agentUrl={null}
+                agentUrl={agentUrl ?? null}
                 onAction={onAction}
               />
             </ScrollView>

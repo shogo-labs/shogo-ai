@@ -264,10 +264,29 @@ For server-side search, use \`canvas_api_query\` with the collection's data path
 - Set \`debounceMs: 300\` on the TextField to avoid excessive API calls
 - The API performs case-insensitive LIKE matching across the specified fields
 
+**Pattern 3 — Exact-value filter with \`where\` (best for Kanban boards, pipeline columns, status-based views):**
+Use the \`where\` prop on DataList to show only items matching specific field values. Multiple DataLists can share the same data path but display different subsets. When mutations update the shared array, all columns re-render automatically.
+\`\`\`json
+{ "id": "new_col", "component": "DataList",
+  "children": { "path": "/leads", "templateId": "lead_card" },
+  "where": { "stage": "new" } }
+{ "id": "qualified_col", "component": "DataList",
+  "children": { "path": "/leads", "templateId": "lead_card" },
+  "where": { "stage": "qualified" } }
+{ "id": "closed_col", "component": "DataList",
+  "children": { "path": "/leads", "templateId": "lead_card" },
+  "where": { "stage": "closed" } }
+\`\`\`
+- \`where\`: object with field-value pairs. Only items where ALL fields match are shown.
+- Load ALL items into one array with a single \`canvas_api_query\` (no per-column queries needed).
+- After a PATCH mutation changes an item's stage, the base array auto-refreshes and each column re-filters.
+- ALWAYS prefer this pattern for Kanban/pipeline/status boards over creating separate filtered queries.
+
 **When to use which:**
-- Small list (seeded data, < ~50 items) → Pattern 1 (client-side \`filterPath\`)
+- Kanban board / pipeline columns / status-based views → Pattern 3 (\`where\` prop)
+- Small list with search box (seeded data, < ~50 items) → Pattern 1 (client-side \`filterPath\`)
 - Large dataset or user asks for "search" specifically → Pattern 2 (API \`_search\`)
-- When in doubt, use Pattern 1 — it's simpler and works for most canvas use cases
+- When in doubt for search, use Pattern 1 — it's simpler and works for most canvas use cases
 
 ### Component Types
 
@@ -337,7 +356,7 @@ The renderer auto-formats numbers (commas, compact notation), currency ($ prefix
 **Mandatory Patterns:**
 - **Dashboard/analytics request**: Grid of 3-4 Metric components with \`trendValue\` (e.g. "+12%"), at least one Chart, Card-wrapped data sections
 - **CRUD app request**: Metric summary row, Card-wrapped form section with title, DataList
-- **Kanban/board request**: Metric summary row (counts per column), Card-wrapped columns in a Grid, inner Cards for each item
+- **Kanban/board request**: Metric summary row (counts per column), Card-wrapped columns in a Grid, each with a DataList using \`where\` prop to filter by status/stage — load ALL items into one array, use \`where: { "stage": "value" }\` per column
 - **Any request with data**: Header Row with title (variant "h2") + context Badge (justify: "between")
 
 **Chart Type Selection:**
