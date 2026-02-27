@@ -123,7 +123,7 @@ function TabBar({
       horizontal
       showsHorizontalScrollIndicator={false}
       className="border-b border-border"
-      contentContainerStyle={{ paddingHorizontal: 16 }}
+      contentContainerClassName="px-4"
     >
       {MOBILE_NAV_ITEMS.map((item) => {
         const Icon = item.icon
@@ -215,7 +215,7 @@ function SettingsSidebar({
   ]
 
   return (
-    <View style={{ width: 210 }} className="pt-4 pb-3 px-3">
+    <View className="w-[210px] pt-4 pb-3 px-3">
       <Pressable
         onPress={() => router.canGoBack() ? router.back() : router.replace('/(app)/projects')}
         className="flex-row items-center gap-1 px-2 py-1.5 mb-4"
@@ -382,7 +382,7 @@ function WorkspaceSettingsTab() {
 
           {/* Name */}
           <View className="px-6 py-5 flex-row items-start justify-between">
-            <View style={{ flex: 0.45 }} className="mr-4 pt-1">
+            <View className="flex-[0.45] mr-4 pt-1">
               <Text className="text-base font-semibold text-foreground">
                 Name
               </Text>
@@ -390,7 +390,7 @@ function WorkspaceSettingsTab() {
                 Your full workspace name, as visible to others.
               </Text>
             </View>
-            <View style={{ flex: 0.55 }}>
+            <View className="flex-[0.55]">
               <View className="flex-row gap-2 items-start">
                 <View className="flex-1">
                   <Input
@@ -446,7 +446,7 @@ function WorkspaceSettingsTab() {
 
           {/* Default monthly member credit limit */}
           <View className="px-6 py-5 flex-row items-start justify-between">
-            <View style={{ flex: 0.45 }} className="mr-4 pt-1">
+            <View className="flex-[0.45] mr-4 pt-1">
               <Text className="text-base font-semibold text-foreground">
                 Default monthly member credit limit
               </Text>
@@ -454,7 +454,7 @@ function WorkspaceSettingsTab() {
                 The default monthly credit limit for members of this workspace. Leave empty to use no limit.
               </Text>
             </View>
-            <View style={{ flex: 0.55 }}>
+            <View className="flex-[0.55]">
               <Input
                 placeholder="Enter default monthly member credit limit (optional)"
               />
@@ -1536,42 +1536,53 @@ function PeopleTab() {
   const [sortDir, setSortDir] = useState<SortDir>('asc')
   const [isLoading, setIsLoading] = useState(true)
 
-  useEffect(() => {
-    if (!currentWorkspace?.id) return
-    let cancelled = false
-    const load = async () => {
-      setIsLoading(true)
-      try {
-        await members.loadAll({ workspaceId: currentWorkspace.id })
-        await invitations.loadAll({ workspaceId: currentWorkspace.id })
-      } catch {}
-      if (!cancelled) setIsLoading(false)
-    }
-    load()
-    return () => { cancelled = true }
-  }, [currentWorkspace?.id])
+  const [resolvedWs, setResolvedWs] = useState<{ id: string; name: string } | null>(null)
 
-  const workspaceMembers = useMemo(() => {
-    if (!currentWorkspace?.id) return []
-    return members.all.filter(
-      (m: any) => m.workspaceId === currentWorkspace.id && !m.projectId
-    )
-  }, [members.all, currentWorkspace?.id])
+  const loadPeopleData = useCallback(async () => {
+    setIsLoading(true)
+    try {
+      if (workspaces.all.length === 0) {
+        await workspaces.loadAll({})
+      }
+      if (workspaces.all.length === 0) {
+        await new Promise(r => setTimeout(r, 1500))
+        await workspaces.loadAll({})
+      }
 
-  const pendingInvitations = useMemo(() => {
-    if (!currentWorkspace?.id) return []
-    return invitations.all.filter(
-      (i: any) => i.workspaceId === currentWorkspace.id && i.status === 'pending'
-    )
-  }, [invitations.all, currentWorkspace?.id])
+      const ws = workspaces.all[0]
+      if (!ws?.id) { setIsLoading(false); return }
+      setResolvedWs({ id: ws.id, name: ws.name || 'Workspace' })
+
+      await members.loadAll({ workspaceId: ws.id })
+      await invitations.loadAll({ workspaceId: ws.id })
+
+      if (user?.email) {
+        await invitations.loadAll({ email: user.email })
+      }
+    } catch {}
+    setIsLoading(false)
+  }, [workspaces, members, invitations, currentWorkspace?.id, user?.email])
+
+  useEffect(() => { loadPeopleData() }, [loadPeopleData])
+
+  const workspaceMembers = currentWorkspace?.id
+    ? members.all.filter((m: any) => m.workspaceId === currentWorkspace.id && !m.projectId)
+    : []
+  const pendingInvitations = currentWorkspace?.id
+    ? invitations.all.filter((i: any) => i.workspaceId === currentWorkspace.id && i.status === 'pending')
+    : []
+  const receivedInvitations = user?.email
+    ? invitations.all.filter((i: any) => i.email === user.email && i.status === 'pending')
+    : []
 
   const filteredMembers = useMemo(() => {
     let result = [...workspaceMembers]
     if (search.trim()) {
       const q = search.toLowerCase()
       result = result.filter((m: any) =>
-        (m.userId || '').toLowerCase().includes(q) ||
-        (m.email || '').toLowerCase().includes(q)
+        (m.user?.name || '').toLowerCase().includes(q) ||
+        (m.user?.email || '').toLowerCase().includes(q) ||
+        (m.userId || '').toLowerCase().includes(q)
       )
     }
     if (roleFilter !== 'all') {
@@ -1599,7 +1610,6 @@ function PeopleTab() {
   const handleCancelInvitation = async (invitationId: string) => {
     try {
       await actions.cancelInvitation(invitationId)
-      await invitations.loadAll({ workspaceId: currentWorkspace!.id })
     } catch {}
   }
 
@@ -1626,7 +1636,7 @@ function PeopleTab() {
         <Text className="text-sm text-muted-foreground mt-1">
           Inviting people to{' '}
           <Text className="font-semibold text-foreground">
-            {currentWorkspace?.name || 'your workspace'}
+            {resolvedWs?.name || currentWorkspace?.name || 'your workspace'}
           </Text>{' '}
           gives access to workspace shared projects and credits.{' '}
           You have {builderCount} builder{builderCount !== 1 ? 's' : ''} in this workspace.
@@ -1668,8 +1678,7 @@ function PeopleTab() {
             value={search}
             onChangeText={setSearch}
             placeholder="Search..."
-            placeholderTextColor="#9ca3af"
-            className="flex-1 text-sm text-foreground web:outline-none"
+            className="flex-1 text-sm text-foreground placeholder:text-muted-foreground web:outline-none"
             autoCapitalize="none"
             autoCorrect={false}
           />
@@ -1766,7 +1775,9 @@ function PeopleTab() {
                 {filteredMembers.map((member: any) => {
                   const isCurrentUser = member.userId === user?.id
                   const avatarColor = ROLE_COLORS[member.role] || 'bg-primary'
-                  const initial = (member.name || member.userId || 'M')[0]?.toUpperCase()
+                  const mName = isCurrentUser ? (user?.name || user?.email) : (member.user?.name || member.user?.email || member.userId)
+                  const mEmail = isCurrentUser ? user?.email : (member.user?.email || member.userId)
+                  const initial = (mName || 'M')[0]?.toUpperCase()
                   return (
                     <View
                       key={member.id}
@@ -1779,14 +1790,14 @@ function PeopleTab() {
                         <View>
                           <View className="flex-row items-center gap-1">
                             <Text className="text-sm font-medium text-foreground">
-                              {member.name || member.userId?.slice(0, 20) || 'Unknown'}
+                              {mName}
                             </Text>
                             {isCurrentUser && (
                               <Text className="text-sm text-muted-foreground">(you)</Text>
                             )}
                           </View>
                           <Text className="text-xs text-muted-foreground">
-                            {member.email || `${member.userId?.slice(0, 12)}...`}
+                            {mEmail}
                           </Text>
                         </View>
                       </View>
@@ -1840,6 +1851,54 @@ function PeopleTab() {
       )}
 
       {subTab === 'invitations' && (
+        <View className="gap-4">
+          {/* Received invitations */}
+          <View>
+            <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 px-1">Received</Text>
+            {receivedInvitations.length === 0 ? (
+              <Card><CardContent className="py-6 items-center"><Text className="text-sm text-muted-foreground">No pending invitations</Text></CardContent></Card>
+            ) : (
+              <Card>
+                <CardContent className="p-0">
+                  {receivedInvitations.map((inv: any) => (
+                    <View key={inv.id} className="p-4 border-b border-border">
+                      <View className="flex-row items-center justify-between mb-1">
+                        <Text className="text-base font-semibold text-foreground">{inv.workspace?.name || 'Workspace'}</Text>
+                        <View className="px-2 py-0.5 rounded bg-muted"><Text className="text-xs text-muted-foreground capitalize">{ROLE_DISPLAY[inv.role] || inv.role}</Text></View>
+                      </View>
+                      <Text className="text-sm text-muted-foreground mb-3">You've been invited to join this workspace</Text>
+                      <View className="flex-row gap-2">
+                        <Pressable
+                          onPress={async () => {
+                            try {
+                              await actions.acceptInvitation(inv.id, user?.id || '')
+                            } catch {}
+                          }}
+                          className="flex-1 h-10 bg-primary rounded-lg items-center justify-center"
+                        >
+                          <Text className="text-sm font-medium text-primary-foreground">Accept</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={async () => {
+                            try {
+                              await actions.declineInvitation(inv.id)
+                            } catch {}
+                          }}
+                          className="flex-1 h-10 border border-border rounded-lg items-center justify-center"
+                        >
+                          <Text className="text-sm font-medium text-foreground">Decline</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  ))}
+                </CardContent>
+              </Card>
+            )}
+          </View>
+
+          {/* Sent invitations */}
+          <View>
+            <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 px-1">Sent</Text>
         <Card>
           <CardContent className="p-0">
             {isLoading ? (
@@ -1927,16 +1986,20 @@ function PeopleTab() {
             )}
           </CardContent>
         </Card>
+          </View>
+        </View>
       )}
 
       {/* Invite Members Modal */}
       <InviteMembersModal
         visible={showInviteModal}
-        onClose={() => setShowInviteModal(false)}
-        workspaceId={currentWorkspace?.id || ''}
-        workspaceName={currentWorkspace?.name || ''}
+        onClose={() => {
+          setShowInviteModal(false)
+          loadPeopleData()
+        }}
+        workspaceId={resolvedWs?.id || currentWorkspace?.id || ''}
+        workspaceName={resolvedWs?.name || currentWorkspace?.name || ''}
         actions={actions}
-        invitationCollection={invitations}
       />
     </View>
   )
@@ -1948,15 +2011,14 @@ function InviteMembersModal({
   workspaceId,
   workspaceName,
   actions,
-  invitationCollection,
 }: {
   visible: boolean
   onClose: () => void
   workspaceId: string
   workspaceName: string
   actions: ReturnType<typeof useDomainActions>
-  invitationCollection: any
 }) {
+  const workspaces = useWorkspaceCollection()
   const [emailInput, setEmailInput] = useState('')
   const [role, setRole] = useState<string>('member')
   const [showRolePicker, setShowRolePicker] = useState(false)
@@ -1983,11 +2045,20 @@ function InviteMembersModal({
 
   const handleSubmit = async () => {
     if (!canSubmit) return
+    let resolvedWsId = workspaceId
+    if (!resolvedWsId) {
+      const ws = workspaces.all[0]
+      resolvedWsId = ws?.id || ''
+    }
+    if (!resolvedWsId) {
+      setError('Workspace not loaded yet. Please close and try again.')
+      return
+    }
     setIsSubmitting(true)
     setError(null)
     try {
       for (const email of validEmails) {
-        await actions.sendInvitation({ email, role: role as any, workspaceId })
+        await actions.sendInvitation({ email, role: role as any, workspaceId: resolvedWsId })
       }
       setEmailInput('')
       setRole('member')
@@ -2040,11 +2111,10 @@ function InviteMembersModal({
               value={emailInput}
               onChangeText={(t) => { setEmailInput(t); setError(null) }}
               placeholder="example1@example.com, example2@example.com"
-              placeholderTextColor="#9ca3af"
               autoCapitalize="none"
               autoCorrect={false}
               editable={!isSubmitting}
-              className="px-3 py-2.5 text-sm text-foreground web:outline-none"
+              className="px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground web:outline-none"
             />
           </View>
 
@@ -2150,7 +2220,7 @@ export default observer(function SettingsPage() {
         />
         <ScrollView
           className="flex-1"
-          contentContainerStyle={{ paddingHorizontal: 48, paddingTop: 24, paddingBottom: 60 }}
+          contentContainerClassName="px-12 pt-6 pb-[60px]"
           showsVerticalScrollIndicator={false}
         >
           <View>
@@ -2183,7 +2253,7 @@ export default observer(function SettingsPage() {
 
       <ScrollView
         className="flex-1"
-        contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
+        contentContainerClassName="p-4 pb-10"
         showsVerticalScrollIndicator={false}
       >
         <SettingsContent activeTab={activeTab} />
