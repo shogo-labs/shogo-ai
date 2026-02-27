@@ -59,6 +59,7 @@ import {
   useWorkspaceCollection,
   useMemberCollection,
   useInvitationCollection,
+  useDomainHttp,
   type IDomainStore,
 } from '../../contexts/domain'
 import { useDomainActions } from '@shogo/shared-app/domain'
@@ -573,20 +574,20 @@ function WorkspaceSettingsTab() {
 // ACCOUNT TAB
 // ============================================================================
 
+const CHAT_SUGGESTIONS_KEY = 'shogo:chat-suggestions'
+
 function AccountTab() {
-  const { user, signOut } = useAuth()
+  const { user, signOut, updateUser } = useAuth()
+  const http = useDomainHttp()
   const router = useRouter()
 
-  const PROFILE_KEY = 'shogo:account-profile'
-  const PREFS_KEY = 'shogo:account-prefs'
-
   const [name, setName] = useState(user?.name || '')
-  const [description, setDescription] = useState('')
-  const [location, setLocation] = useState('')
-  const [link, setLink] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
   const [chatSuggestions, setChatSuggestions] = useState(true)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [deleteConfirmText, setDeleteConfirmText] = useState('')
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
 
   const originalName = user?.name || ''
   const hasNameChanges = name !== originalName
@@ -596,12 +597,27 @@ function AccountTab() {
     setName(user?.name || '')
   }, [user?.name])
 
+  useEffect(() => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      const stored = window.localStorage.getItem(CHAT_SUGGESTIONS_KEY)
+      if (stored !== null) setChatSuggestions(stored !== 'false')
+    }
+  }, [])
+
+  const handleToggleChatSuggestions = useCallback((value: boolean) => {
+    setChatSuggestions(value)
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      window.localStorage.setItem(CHAT_SUGGESTIONS_KEY, String(value))
+    }
+  }, [])
+
   const handleSave = async () => {
     if (!hasChanges || isSaving || !user?.id) return
     if (hasNameChanges && !name.trim()) return
     setIsSaving(true)
     setSaveStatus('idle')
     try {
+      await updateUser({ name: name.trim() })
       setSaveStatus('saved')
       setTimeout(() => setSaveStatus('idle'), 2000)
     } catch (error) {
@@ -615,6 +631,43 @@ function AccountTab() {
   const handleSignOut = async () => {
     await signOut()
     router.replace('/(auth)/sign-in')
+  }
+
+  const handleDeleteAccount = async () => {
+    if (deleteConfirmText !== 'DELETE' || !user?.id || !http) return
+    setIsDeleting(true)
+    try {
+      await http.delete(`/api/users/${user.id}`)
+      await signOut()
+      router.replace('/(auth)/sign-in')
+    } catch (error) {
+      console.error('Failed to delete account:', error)
+      if (Platform.OS === 'web') {
+        window.alert('Failed to delete account. Please try again.')
+      } else {
+        RNAlert.alert('Error', 'Failed to delete account. Please try again.')
+      }
+    } finally {
+      setIsDeleting(false)
+      setIsDeleteDialogOpen(false)
+      setDeleteConfirmText('')
+    }
+  }
+
+  const handleLinkCompany = () => {
+    if (Platform.OS === 'web') {
+      window.alert('SSO linking is coming soon.')
+    } else {
+      RNAlert.alert('Coming Soon', 'SSO linking is coming soon.')
+    }
+  }
+
+  const handleVerify2FA = () => {
+    if (Platform.OS === 'web') {
+      window.alert('Two-factor authentication is coming soon.')
+    } else {
+      RNAlert.alert('Coming Soon', 'Two-factor authentication is coming soon.')
+    }
   }
 
   return (
@@ -768,7 +821,7 @@ function AccountTab() {
             </View>
             <Switch
               checked={chatSuggestions}
-              onCheckedChange={setChatSuggestions}
+              onCheckedChange={handleToggleChatSuggestions}
             />
           </View>
         </CardContent>
@@ -815,7 +868,7 @@ function AccountTab() {
                     Use your organization's single sign-on
                   </Text>
                 </View>
-                <Button variant="outline" size="sm">
+                <Button variant="outline" size="sm" onPress={handleLinkCompany}>
                   Link
                 </Button>
               </View>
@@ -844,7 +897,7 @@ function AccountTab() {
                   settings.
                 </Text>
               </View>
-              <Button variant="outline" size="sm">
+              <Button variant="outline" size="sm" onPress={handleVerify2FA}>
                 Verify
               </Button>
             </View>
@@ -853,18 +906,61 @@ function AccountTab() {
           <Separator />
 
           {/* Delete account */}
-          <View className="px-6 py-5 flex-row items-center justify-between">
-            <View className="flex-1 mr-4">
-              <Text className="text-sm font-semibold text-foreground">
-                Delete account
-              </Text>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                Permanently delete your Shogo account. This cannot be undone.
-              </Text>
+          <View className="px-6 py-5">
+            <View className="flex-row items-center justify-between">
+              <View className="flex-1 mr-4">
+                <Text className="text-sm font-semibold text-foreground">
+                  Delete account
+                </Text>
+                <Text className="text-sm text-muted-foreground mt-0.5">
+                  Permanently delete your Shogo account. This cannot be undone.
+                </Text>
+              </View>
+              <Button
+                variant="destructive"
+                size="sm"
+                onPress={() => setIsDeleteDialogOpen(true)}
+              >
+                Delete
+              </Button>
             </View>
-            <Button variant="destructive" size="sm">
-              Delete
-            </Button>
+            {isDeleteDialogOpen && (
+              <View className="mt-4 p-4 border border-destructive/30 rounded-lg bg-destructive/5">
+                <Text className="text-sm text-foreground font-medium">
+                  Are you sure? This action is irreversible.
+                </Text>
+                <Text className="text-sm text-muted-foreground mt-1">
+                  Type "DELETE" to confirm.
+                </Text>
+                <Input
+                  className="mt-2"
+                  value={deleteConfirmText}
+                  onChangeText={setDeleteConfirmText}
+                  placeholder='Type "DELETE"'
+                />
+                <View className="flex-row gap-2 mt-3">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onPress={() => {
+                      setIsDeleteDialogOpen(false)
+                      setDeleteConfirmText('')
+                    }}
+                    disabled={isDeleting}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onPress={handleDeleteAccount}
+                    disabled={deleteConfirmText !== 'DELETE' || isDeleting}
+                  >
+                    {isDeleting ? 'Deleting...' : 'Permanently delete'}
+                  </Button>
+                </View>
+              </View>
+            )}
           </View>
         </CardContent>
       </Card>
@@ -1289,8 +1385,24 @@ function PrivacyTab() {
 // LABS TAB
 // ============================================================================
 
+const LABS_BRANCH_SWITCHING_KEY = 'shogo:labs-github-branch-switching'
+
 function LabsTab() {
   const [githubBranchSwitching, setGithubBranchSwitching] = useState(false)
+
+  useEffect(() => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      const stored = window.localStorage.getItem(LABS_BRANCH_SWITCHING_KEY)
+      if (stored !== null) setGithubBranchSwitching(stored === 'true')
+    }
+  }, [])
+
+  const handleToggle = useCallback((value: boolean) => {
+    setGithubBranchSwitching(value)
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      window.localStorage.setItem(LABS_BRANCH_SWITCHING_KEY, String(value))
+    }
+  }, [])
 
   return (
     <View className="gap-8">
@@ -1314,7 +1426,7 @@ function LabsTab() {
             </View>
             <Switch
               checked={githubBranchSwitching}
-              onCheckedChange={setGithubBranchSwitching}
+              onCheckedChange={handleToggle}
             />
           </View>
         </CardContent>
@@ -1328,6 +1440,13 @@ function LabsTab() {
 // ============================================================================
 
 function GitHubTab() {
+  const [showComingSoon, setShowComingSoon] = useState(false)
+
+  const handleConnect = useCallback(() => {
+    setShowComingSoon(true)
+    setTimeout(() => setShowComingSoon(false), 3000)
+  }, [])
+
   return (
     <View className="gap-8">
       <View>
@@ -1355,10 +1474,22 @@ function GitHubTab() {
                 Add your GitHub account to manage connected organizations.
               </Text>
             </View>
-            <Button variant="outline" size="sm">
-              Connect
-            </Button>
+            <Pressable
+              onPress={handleConnect}
+              className="border border-input bg-background rounded-md h-9 px-3 flex-row items-center justify-center"
+            >
+              <Text className="text-sm font-medium text-foreground">
+                Connect
+              </Text>
+            </Pressable>
           </View>
+          {showComingSoon && (
+            <View className="px-6 pb-4">
+              <Text className="text-sm text-amber-500">
+                GitHub integration is coming soon.
+              </Text>
+            </View>
+          )}
         </CardContent>
       </Card>
     </View>
