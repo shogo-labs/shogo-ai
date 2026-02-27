@@ -414,6 +414,13 @@ export function publishRoutes() {
         console.warn('[Publish] Auto-checkpoint failed (non-blocking):', err.message)
       })
 
+      // Auto-capture thumbnail after publish (fire-and-forget, delayed to let CDN propagate)
+      setTimeout(() => {
+        captureThumbnail(projectId, `https://${subdomain}.${PUBLISH_DOMAIN}`).catch((err) => {
+          console.warn('[Publish] Auto-thumbnail failed (non-blocking):', err.message)
+        })
+      }, 5000)
+
       return c.json(
         {
           url: `https://${subdomain}.${PUBLISH_DOMAIN}`,
@@ -605,6 +612,22 @@ export function publishRoutes() {
   })
 
   return router
+}
+
+/**
+ * Capture a thumbnail by calling the thumbnail capture endpoint internally.
+ */
+async function captureThumbnail(projectId: string, url: string): Promise<void> {
+  try {
+    const port = process.env.API_PORT || '8002'
+    await fetch(`http://localhost:${port}/api/projects/${projectId}/thumbnail/capture`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    })
+  } catch (err: any) {
+    console.warn(`[Thumbnail] Capture failed for ${projectId}:`, err.message)
+  }
 }
 
 export default publishRoutes

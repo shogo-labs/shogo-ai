@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   View,
   Text,
@@ -11,7 +11,9 @@ import {
 } from 'react-native'
 import { Server, RefreshCw, ChevronDown, ChevronRight, Key, Link2, CheckCircle2 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { API_URL } from '../../../lib/api'
+import { Switch } from '@/components/ui/switch'
+import { API_URL, api } from '../../../lib/api'
+import { useDomainHttp } from '../../../contexts/domain'
 
 interface MCPCatalogEntry {
   id: string
@@ -40,6 +42,7 @@ interface MCPServersPanelProps {
 }
 
 export function MCPServersPanel({ projectId, agentUrl, visible }: MCPServersPanelProps) {
+  const http = useDomainHttp()
   const [catalog, setCatalog] = useState<MCPCatalogEntry[]>([])
   const [categories, setCategories] = useState<Record<string, CategoryMeta>>({})
   const [enabledServers, setEnabledServers] = useState<Record<string, any>>({})
@@ -79,20 +82,13 @@ export function MCPServersPanel({ projectId, agentUrl, visible }: MCPServersPane
         }
       }
 
-      // Load Composio connection status for entries with authType: 'composio'
       try {
-        const connectionsRes = await fetch(
-          `${API_URL}/api/integrations/connections?projectId=${projectId}`,
-          { credentials: 'include' },
-        )
-        if (connectionsRes.ok) {
-          const connectionsData = await connectionsRes.json()
-          const connMap: Record<string, boolean> = {}
-          for (const conn of connectionsData.data || []) {
-            connMap[conn.toolkit?.toLowerCase()] = conn.status === 'active'
-          }
-          setComposioConnections(connMap)
+        const connections = await api.getIntegrationConnections(http, projectId)
+        const connMap: Record<string, boolean> = {}
+        for (const conn of connections) {
+          connMap[conn.toolkit?.toLowerCase() ?? ''] = conn.status === 'active'
         }
+        setComposioConnections(connMap)
       } catch {
         // Composio status check is non-critical
       }
@@ -101,7 +97,7 @@ export function MCPServersPanel({ projectId, agentUrl, visible }: MCPServersPane
     } finally {
       setIsLoading(false)
     }
-  }, [agentUrl, projectId])
+  }, [agentUrl, http, projectId])
 
   useEffect(() => {
     if (visible) loadData()
@@ -157,21 +153,7 @@ export function MCPServersPanel({ projectId, agentUrl, visible }: MCPServersPane
       setError(null)
       try {
         const callbackUrl = `${API_URL}/api/integrations/callback`
-        const res = await fetch(`${API_URL}/api/integrations/connect`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({
-            toolkit: entry.composioToolkit,
-            projectId,
-            callbackUrl,
-          }),
-        })
-        if (!res.ok) {
-          const data = await res.json()
-          throw new Error(data.error || 'Failed to initiate connection')
-        }
-        const data = await res.json()
+        const data = await api.connectIntegration(http, entry.composioToolkit, projectId, callbackUrl)
         const redirectUrl = data.data?.redirectUrl
         if (redirectUrl) {
           if (Platform.OS === 'web') {
@@ -201,7 +183,7 @@ export function MCPServersPanel({ projectId, agentUrl, visible }: MCPServersPane
         setConnecting(null)
       }
     },
-    [projectId, loadData],
+    [http, projectId, loadData],
   )
 
   const handleComposioDisconnect = useCallback(
@@ -209,19 +191,10 @@ export function MCPServersPanel({ projectId, agentUrl, visible }: MCPServersPane
       if (!entry.composioToolkit) return
       setConnecting(entry.id)
       try {
-        const statusRes = await fetch(
-          `${API_URL}/api/integrations/status/${entry.composioToolkit}?projectId=${projectId}`,
-          { credentials: 'include' },
-        )
-        if (statusRes.ok) {
-          const statusData = await statusRes.json()
-          const connectionId = statusData.data?.connectionId
-          if (connectionId) {
-            await fetch(`${API_URL}/api/integrations/connections/${connectionId}`, {
-              method: 'DELETE',
-              credentials: 'include',
-            })
-          }
+        const statusData = await api.getIntegrationStatus(http, entry.composioToolkit, projectId)
+        const connectionId = statusData.data?.connectionId
+        if (connectionId) {
+          await api.disconnectIntegration(http, connectionId)
         }
         setComposioConnections((prev) => {
           const next = { ...prev }
@@ -234,7 +207,7 @@ export function MCPServersPanel({ projectId, agentUrl, visible }: MCPServersPane
         setConnecting(null)
       }
     },
-    [projectId],
+    [http, projectId],
   )
 
   const grouped = useMemo(() => {
@@ -251,7 +224,7 @@ export function MCPServersPanel({ projectId, agentUrl, visible }: MCPServersPane
   const enabledCount = Object.keys(enabledServers).length
 
   return (
-    <View className="absolute inset-0 flex-col" style={{ display: visible ? 'flex' : 'none' }}>
+    <View className="absolute inset-0 flex-col">
       <View className="px-4 py-3 border-b border-border flex-row items-center gap-2">
         <Server size={16} className="text-muted-foreground" />
         <Text className="text-sm font-medium text-foreground">MCP Servers</Text>
@@ -388,12 +361,13 @@ export function MCPServersPanel({ projectId, agentUrl, visible }: MCPServersPane
                                       : handleComposioConnect(entry)
                                   }
                                   disabled={isConnecting}
-                                  className={`mt-1 px-3 py-1.5 rounded-md ${
+                                  className={cn(
+                                    'mt-1 px-3 py-1.5 rounded-md',
                                     isComposioConnected
                                       ? 'border border-border active:bg-muted'
-                                      : 'bg-primary active:bg-primary/80'
-                                  }`}
-                                  style={{ opacity: isConnecting ? 0.5 : 1 }}
+                                      : 'bg-primary active:bg-primary/80',
+                                    isConnecting && 'opacity-50',
+                                  )}
                                 >
                                   {isConnecting ? (
                                     <ActivityIndicator size="small" color={isComposioConnected ? '#666' : '#fff'} />
@@ -401,9 +375,10 @@ export function MCPServersPanel({ projectId, agentUrl, visible }: MCPServersPane
                                     <View className="flex-row items-center gap-1.5">
                                       <Link2 size={12} color={isComposioConnected ? '#666' : '#fff'} />
                                       <Text
-                                        className={`text-xs font-medium ${
-                                          isComposioConnected ? 'text-foreground' : 'text-primary-foreground'
-                                        }`}
+                                        className={cn(
+                                          'text-xs font-medium',
+                                          isComposioConnected ? 'text-foreground' : 'text-primary-foreground',
+                                        )}
                                       >
                                         {isComposioConnected ? 'Disconnect' : 'Connect'}
                                       </Text>
@@ -411,36 +386,13 @@ export function MCPServersPanel({ projectId, agentUrl, visible }: MCPServersPane
                                   )}
                                 </Pressable>
                               ) : (
-                                /* Standard toggle switch for non-Composio entries */
-                                <Pressable
-                                  onPress={() => handleToggle(entry)}
+                                <Switch
+                                  value={isEnabled}
+                                  onValueChange={() => handleToggle(entry)}
                                   disabled={isToggling}
-                                  style={{
-                                    marginTop: 4,
-                                    width: 44,
-                                    height: 24,
-                                    borderRadius: 12,
-                                    backgroundColor: isEnabled ? '#3b82f6' : '#d1d5db',
-                                    justifyContent: 'center',
-                                    paddingHorizontal: 2,
-                                    opacity: isToggling ? 0.5 : 1,
-                                  }}
-                                >
-                                  <View
-                                    style={{
-                                      width: 20,
-                                      height: 20,
-                                      borderRadius: 10,
-                                      backgroundColor: '#ffffff',
-                                      shadowColor: '#000',
-                                      shadowOffset: { width: 0, height: 1 },
-                                      shadowOpacity: 0.2,
-                                      shadowRadius: 2,
-                                      elevation: 2,
-                                      transform: [{ translateX: isEnabled ? 20 : 0 }],
-                                    }}
-                                  />
-                                </Pressable>
+                                  trackColor={{ false: '#d1d5db', true: '#3b82f6' }}
+                                  className={cn('mt-1', isToggling && 'opacity-50')}
+                                />
                               )}
                             </View>
 

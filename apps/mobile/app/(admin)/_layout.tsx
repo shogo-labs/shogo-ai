@@ -8,14 +8,15 @@ import { useState, useEffect } from 'react'
 import { View, Text, ActivityIndicator } from 'react-native'
 import { Stack, useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import { Shield } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
-import { API_URL } from '../../lib/api'
+import { useDomainHttp } from '../../contexts/domain'
+import { api } from '../../lib/api'
 
 type UserRole = 'user' | 'super_admin'
 
 function useAdminCheck() {
   const { user, isAuthenticated, isLoading: authLoading } = useAuth()
+  const http = useDomainHttp()
   const [role, setRole] = useState<UserRole | null>(null)
   const [checking, setChecking] = useState(true)
 
@@ -25,9 +26,8 @@ function useAdminCheck() {
       return
     }
     let cancelled = false
-    fetch(`${API_URL}/api/me`, { credentials: 'include' })
-      .then((res) => res.json())
-      .then((data: any) => {
+    api.getMe(http)
+      .then((data) => {
         if (!cancelled && data.ok && data.data?.role) {
           setRole(data.data.role as UserRole)
         }
@@ -37,7 +37,7 @@ function useAdminCheck() {
         if (!cancelled) setChecking(false)
       })
     return () => { cancelled = true }
-  }, [isAuthenticated, authLoading, user?.id])
+  }, [http, isAuthenticated, authLoading, user?.id])
 
   return {
     isSuperAdmin: role === 'super_admin',

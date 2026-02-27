@@ -9,6 +9,7 @@
 import { useState, useCallback } from "react"
 import { View, Text, Image, Pressable, Linking } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
+import { FileText } from "lucide-react-native"
 import type { UIMessage } from "@ai-sdk/react"
 import { extractTextContent } from "@shogo/shared-app/chat"
 import { MarkdownText } from "../MarkdownText"
@@ -20,6 +21,11 @@ export interface MessageContentProps {
 }
 
 interface ImagePart {
+  url: string
+  mediaType: string
+}
+
+interface FilePart {
   url: string
   mediaType: string
 }
@@ -41,6 +47,24 @@ function extractImageParts(message: UIMessage): ImagePart[] {
     .map((part) => ({
       url: part.url,
       mediaType: part.mediaType,
+    }))
+}
+
+function extractFileParts(message: UIMessage): FilePart[] {
+  if (!("parts" in message) || !Array.isArray((message as any).parts)) {
+    return []
+  }
+
+  return ((message as any).parts as any[])
+    .filter(
+      (part) =>
+        part.type === "file" &&
+        !part.mediaType?.startsWith("image/") &&
+        part.url
+    )
+    .map((part) => ({
+      url: part.url,
+      mediaType: part.mediaType || "application/octet-stream",
     }))
 }
 
@@ -81,6 +105,28 @@ function ImageThumbnail({
   )
 }
 
+function DocumentThumbnail({
+  mediaType,
+  index,
+}: {
+  mediaType: string
+  index: number
+}) {
+  const label = mediaType.includes("pdf")
+    ? "PDF"
+    : mediaType.split("/").pop()?.toUpperCase() || "FILE"
+
+  return (
+    <View
+      className="flex-row items-center gap-2 rounded-md border border-border bg-muted/50 px-3 py-2"
+      accessibilityLabel={`File attachment ${index + 1}: ${label}`}
+    >
+      <FileText size={16} className="text-muted-foreground" />
+      <Text className="text-xs text-muted-foreground">{label} attached</Text>
+    </View>
+  )
+}
+
 export function MessageContent({
   message,
   isStreaming = false,
@@ -88,6 +134,7 @@ export function MessageContent({
 }: MessageContentProps) {
   const content = extractTextContent(message)
   const images = extractImageParts(message)
+  const files = extractFileParts(message)
   const isUser = message.role === "user"
 
   const baseClasses = cn(
@@ -118,6 +165,17 @@ export function MessageContent({
             ))}
           </View>
         )}
+        {files.length > 0 && (
+          <View className="flex-row flex-wrap gap-2">
+            {files.map((file, i) => (
+              <DocumentThumbnail
+                key={`${message.id}-file-${i}`}
+                mediaType={file.mediaType}
+                index={i}
+              />
+            ))}
+          </View>
+        )}
       </View>
     )
   }
@@ -139,6 +197,17 @@ export function MessageContent({
               key={`${message.id}-img-${i}`}
               url={img.url}
               mediaType={img.mediaType}
+              index={i}
+            />
+          ))}
+        </View>
+      )}
+      {files.length > 0 && (
+        <View className="flex-row flex-wrap gap-2">
+          {files.map((file, i) => (
+            <DocumentThumbnail
+              key={`${message.id}-file-${i}`}
+              mediaType={file.mediaType}
               index={i}
             />
           ))}

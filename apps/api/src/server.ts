@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { EventEmitter } from 'events'
 import type { SubagentProgressEvent, VirtualToolEvent } from './types/progress'
 // isVirtualTool kept in types/progress.ts for client-side use (ChatPanel handler)
-import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput, PreToolUseHookInput, CanUseTool, SDKSession, SDKMessage, SDKSessionOptions } from '@anthropic-ai/claude-agent-sdk'
+import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput, PreToolUseHookInput, CanUseTool, SDKSession, SDKMessage, SDKSessionOptions, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import { createSdkMcpServer, tool as sdkTool, unstable_v2_createSession, unstable_v2_resumeSession } from '@anthropic-ai/claude-agent-sdk'
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { resolve, join, isAbsolute } from 'path'
@@ -17,6 +17,7 @@ import { auth } from './auth'
 import { getPriceId } from './config/stripe-prices'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
 import * as billingService from './services/billing.service'
+import * as workspaceService from './services/workspace.service'
 import { publishRoutes } from './routes/publish'
 import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
@@ -27,6 +28,7 @@ import { testsRoutes } from './routes/tests'
 import { securityRoutes } from './routes/security'
 import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
 import { checkpointRoutes } from './routes/checkpoints'
+import { thumbnailRoutes } from './routes/thumbnail'
 import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
 import { calculateCreditCost } from './lib/credit-cost'
@@ -191,25 +193,33 @@ function convertUIMessagesToModelMessages(messages: any[]): ModelMessage[] {
 
     // If message has parts array (UIMessage format), process all part types
     if (Array.isArray(msg.parts)) {
-      const contentParts: Array<{ type: 'text'; text: string } | { type: 'image'; image: string; mimeType: string }> = []
+      const contentParts: Array<
+        | { type: 'text'; text: string }
+        | { type: 'image'; image: string; mimeType: string }
+        | { type: 'file'; data: string; mimeType: string }
+      > = []
 
       for (const part of msg.parts) {
         if (part.type === 'text' && part.text) {
-          // Text parts: extract text content
           contentParts.push({ type: 'text', text: part.text })
-        } else if (part.type === 'file' && part.mediaType?.startsWith('image/')) {
-          // File parts with image mediaType: convert to ImagePart
-          // The url field contains the data URL (data:image/png;base64,...)
-          const parsed = parseDataUrl(part.url || '')
-          if (parsed) {
+        } else if (part.type === 'file' && part.url) {
+          const parsed = parseDataUrl(part.url)
+          if (!parsed) continue
+
+          if (part.mediaType?.startsWith('image/')) {
             contentParts.push({
               type: 'image',
               image: parsed.base64Data,
               mimeType: parsed.mimeType,
             })
+          } else {
+            contentParts.push({
+              type: 'file',
+              data: parsed.base64Data,
+              mimeType: parsed.mimeType,
+            })
           }
         }
-        // Non-image file parts are gracefully ignored
       }
 
       // If we only have text parts, return as simple string (backward compatible)
@@ -217,7 +227,7 @@ function convertUIMessagesToModelMessages(messages: any[]): ModelMessage[] {
         return { role: msg.role, content: contentParts[0].text }
       }
 
-      // If we have mixed content or only images, return as array
+      // If we have mixed content (text + images/files), return as array
       if (contentParts.length > 0) {
         return { role: msg.role, content: contentParts }
       }
@@ -991,6 +1001,45 @@ app.post('/api/projects/:projectId/unpublish', async (c) => {
 })
 
 // =============================================================================
+// Thumbnail routes
+// =============================================================================
+
+app.post('/api/projects/:projectId/thumbnail', async (c) => {
+  const router = thumbnailRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/thumbnail`
+  const newReq = new Request(url.toString(), {
+    method: c.req.method,
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+app.post('/api/projects/:projectId/thumbnail/capture', async (c) => {
+  const router = thumbnailRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/thumbnail/capture`
+  const newReq = new Request(url.toString(), {
+    method: c.req.method,
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+app.get('/api/projects/:projectId/thumbnail', async (c) => {
+  const router = thumbnailRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/thumbnail`
+  const newReq = new Request(url.toString(), {
+    method: c.req.method,
+    headers: c.req.raw.headers,
+  })
+  return router.fetch(newReq)
+})
+
+// =============================================================================
 // Runtime routes - Project Vite runtime management
 // =============================================================================
 
@@ -1269,6 +1318,23 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
     // If pod is already running, return immediately
     if (status.exists && status.ready) {
       console.log(`[sandbox/url] Returning ready response with url=${previewUrl}`)
+
+      // Auto-capture thumbnail if missing (fire-and-forget)
+      prisma.project.findUnique({ where: { id: projectId }, select: { thumbnailUrl: true } })
+        .then((proj) => {
+          if (proj && !proj.thumbnailUrl) {
+            const captureUrl = agentUrl || previewUrl
+            setTimeout(() => {
+              fetch(`${protocol}://${host}/api/projects/${projectId}/thumbnail/capture`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: captureUrl }),
+              }).catch(() => {})
+            }, 3000)
+          }
+        })
+        .catch(() => {})
+
       return c.json({
         url: previewUrl,
         proxyUrl: legacyProxyUrl, // Backwards compat - legacy proxy URL
@@ -3109,17 +3175,67 @@ app.post('/api/chat', async (c) => {
     if (!lastUserMessage) {
       return c.json({ error: { message: 'No user message found', code: 'NO_USER_MESSAGE' } }, 400)
     }
-    // Convert UIMessage parts to plain text for V2 session.send()
-    let userText: string
+
+    // Build message for V2 session.send() — supports text, images, and documents (PDFs)
+    let userText = ''
+    const fileParts: Array<{ mimeType: string; base64Data: string }> = []
+
     if (typeof lastUserMessage.content === 'string') {
       userText = lastUserMessage.content
     } else if (Array.isArray(lastUserMessage.parts)) {
-      userText = lastUserMessage.parts
-        .filter((p: any) => p.type === 'text')
-        .map((p: any) => p.text)
-        .join('\n')
+      const textParts: string[] = []
+      for (const part of lastUserMessage.parts) {
+        if (part.type === 'text' && part.text) {
+          textParts.push(part.text)
+        } else if (part.type === 'file' && part.url) {
+          const parsed = parseDataUrl(part.url)
+          if (parsed) fileParts.push(parsed)
+        }
+      }
+      userText = textParts.join('\n')
     } else {
       userText = String(lastUserMessage.content ?? '')
+    }
+
+    // Build the session message — multimodal when files are attached
+    let sessionMessage: string | SDKUserMessage = userText
+    if (fileParts.length > 0) {
+      const contentBlocks: any[] = []
+      if (userText) {
+        contentBlocks.push({ type: 'text', text: userText })
+      }
+      for (const file of fileParts) {
+        if (file.mimeType.startsWith('image/')) {
+          contentBlocks.push({
+            type: 'image',
+            source: { type: 'base64', media_type: file.mimeType, data: file.base64Data },
+          })
+        } else if (file.mimeType === 'application/pdf') {
+          contentBlocks.push({
+            type: 'document',
+            source: { type: 'base64', media_type: file.mimeType, data: file.base64Data },
+          })
+        } else {
+          try {
+            const decoded = Buffer.from(file.base64Data, 'base64').toString('utf-8')
+            contentBlocks.push({ type: 'text', text: `[File content (${file.mimeType})]\n${decoded}` })
+          } catch {
+            contentBlocks.push({ type: 'text', text: `[Attached file: ${file.mimeType}]` })
+          }
+        }
+      }
+      try {
+        sessionMessage = {
+          type: 'user',
+          message: { role: 'user', content: contentBlocks },
+          parent_tool_use_id: null,
+          session_id: session.sessionId,
+        } as SDKUserMessage
+      } catch {
+        // sessionId unavailable on fresh sessions — fall back to text only
+        console.warn('[/api/chat] session.sessionId not ready, sending text-only for file message')
+        sessionMessage = userText
+      }
     }
 
     // Event buffering for progress/virtual-tool events (same pattern as before)
@@ -3147,7 +3263,7 @@ app.post('/api/chat', async (c) => {
     virtualToolEvents.on('virtual-tool', onVirtualTool)
 
     // Send the user message to the persistent V2 session
-    await session.send(userText)
+    await session.send(sessionMessage)
 
     // Create UIMessageStream that converts V2 SDK messages to UIMessageChunks
     console.log(`${LOG_PREFIX} 📡 V2 session streaming for: ${scopeKey}`)
@@ -3639,6 +3755,155 @@ app.post('/api/billing/checkout', async (c) => {
   }
 })
 
+app.get('/api/billing/workspace-plan', async (c) => {
+  try {
+    const url = new URL(c.req.url)
+    const workspaceId = url.searchParams.get('workspaceId')
+    const workspaceIds = url.searchParams.get('workspaceIds')
+
+    if (workspaceIds) {
+      const ids = workspaceIds.split(',').filter(Boolean)
+      const plans: Record<string, { planId: string; status: string | null }> = {}
+      await Promise.all(ids.map(async (id) => {
+        const sub = await billingService.getSubscription(id)
+        plans[id] = { planId: sub?.planId ?? 'free', status: sub?.status ?? null }
+      }))
+      return c.json({ ok: true, plans })
+    }
+
+    if (!workspaceId) return c.json({ error: 'missing workspaceId or workspaceIds' }, 400)
+    const sub = await billingService.getSubscription(workspaceId)
+    const ledger = await billingService.getCreditLedger(workspaceId)
+    return c.json({
+      ok: true,
+      planId: sub?.planId ?? 'free',
+      status: sub?.status ?? null,
+      billingInterval: sub?.billingInterval ?? null,
+      monthlyCredits: ledger?.monthlyCredits ?? 0,
+      dailyCredits: ledger?.dailyCredits ?? 0,
+    })
+  } catch (error: any) {
+    return c.json({ error: { code: 'plan_query_failed', message: error.message } }, 500)
+  }
+})
+
+app.post('/api/billing/workspace-checkout', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+
+    const body = await c.req.json()
+    const { workspaceName, planId, billingInterval, userEmail, userId } = body
+
+    if (!workspaceName || !planId || !billingInterval || !userId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing required fields: workspaceName, planId, billingInterval, userId' } }, 400)
+    }
+
+    const priceId = getPriceId(planId, billingInterval as 'monthly' | 'annual')
+    if (!priceId) {
+      return c.json({ error: { code: 'invalid_plan', message: `No price found for ${planId} ${billingInterval}` } }, 400)
+    }
+
+    // Create workspace + owner membership immediately (bypasses hook limit)
+    const wsResult = await workspaceService.createPaidWorkspace(userId, workspaceName)
+    const newWorkspaceId = wsResult.workspace.id
+    console.log('[Billing] Created paid workspace:', newWorkspaceId, 'for user:', userId)
+
+    // Allocate free credits so the workspace is usable while subscription provisions
+    await billingService.allocateFreeCredits(newWorkspaceId)
+
+    const metadata: Record<string, string> = {
+      workspaceId: newWorkspaceId,
+      planId,
+      billingInterval,
+    }
+
+    const frontendUrl = getFrontendUrl()
+    const successUrl = `${frontendUrl}/?workspace=${newWorkspaceId}&checkout=workspace_created&session_id={CHECKOUT_SESSION_ID}`
+    const cancelUrl = `${frontendUrl}/?workspace=${newWorkspaceId}&checkout=canceled`
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      payment_method_types: ['card'],
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+      metadata,
+      ...(userEmail && { customer_email: userEmail }),
+    })
+
+    return c.json({ sessionId: session.id, url: session.url, workspaceId: newWorkspaceId }, 200)
+  } catch (error: any) {
+    console.error('[Billing] Workspace checkout error:', error)
+    return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
+  }
+})
+
+app.post('/api/billing/verify-checkout', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+
+    const body = await c.req.json()
+    const { sessionId } = body
+    if (!sessionId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing sessionId' } }, 400)
+    }
+
+    const session = await stripe.checkout.sessions.retrieve(sessionId)
+    if (session.payment_status !== 'paid') {
+      return c.json({ error: { code: 'not_paid', message: 'Checkout session not paid' } }, 400)
+    }
+
+    const { workspaceId, planId, billingInterval } = session.metadata || {}
+    if (!workspaceId || !planId || !billingInterval || !session.subscription || !session.customer) {
+      return c.json({ error: { code: 'invalid_session', message: 'Missing metadata in session' } }, 400)
+    }
+
+    const existing = await billingService.getSubscription(workspaceId)
+    if (existing) {
+      return c.json({ ok: true, workspaceId, planId, alreadyProvisioned: true }, 200)
+    }
+
+    const stripeSubscription = await stripe.subscriptions.retrieve(session.subscription as string) as Stripe.Subscription & {
+      current_period_start?: number
+      current_period_end?: number
+    }
+
+    const now = Date.now()
+    const currentPeriodStart = stripeSubscription.current_period_start
+      ? stripeSubscription.current_period_start * 1000
+      : (stripeSubscription.billing_cycle_anchor || stripeSubscription.start_date) * 1000 || now
+    const currentPeriodEnd = stripeSubscription.current_period_end
+      ? stripeSubscription.current_period_end * 1000
+      : now + (30 * 24 * 60 * 60 * 1000)
+
+    const basePlanId = planId.split('_')[0] as 'pro' | 'business' | 'enterprise'
+
+    await billingService.syncFromStripe({
+      stripeSubscriptionId: stripeSubscription.id,
+      stripeCustomerId: session.customer as string,
+      workspaceId,
+      planId: basePlanId,
+      status: stripeSubscription.status as 'active' | 'past_due' | 'canceled' | 'trialing' | 'paused',
+      billingInterval: billingInterval as 'monthly' | 'annual',
+      currentPeriodStart: new Date(currentPeriodStart),
+      currentPeriodEnd: new Date(currentPeriodEnd),
+      cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end ?? false,
+    })
+
+    await billingService.allocateMonthlyCredits(workspaceId, planId)
+    console.log('[Billing] Verify-checkout: subscription provisioned for workspace:', workspaceId, 'plan:', planId)
+
+    return c.json({ ok: true, workspaceId, planId }, 200)
+  } catch (error: any) {
+    console.error('[Billing] Verify-checkout error:', error)
+    return c.json({ error: { code: 'verify_error', message: error.message } }, 500)
+  }
+})
+
 app.post('/api/billing/portal', async (c) => {
   try {
     if (!stripe) {
@@ -3735,28 +4000,23 @@ app.post('/api/webhooks/stripe', async (c) => {
           metadata: session.metadata,
         })
 
-        // Create subscription in billing domain
+        // Workspace is already created by the checkout endpoint; webhook only provisions the subscription
         const { workspaceId, planId, billingInterval } = session.metadata || {}
         if (workspaceId && planId && billingInterval && session.subscription && session.customer) {
           try {
-            // Fetch the full subscription details from Stripe
-            // Note: current_period_start/end are returned by the API but not in the TypeScript types for Stripe v20+
             const stripeSubscription = await stripe!.subscriptions.retrieve(session.subscription as string) as Stripe.Subscription & {
               current_period_start?: number
               current_period_end?: number
             }
 
-            // Convert Stripe timestamps (seconds) to milliseconds, with fallbacks
-            // Use billing_cycle_anchor or start_date as fallback if current_period fields are missing
             const now = Date.now()
             const currentPeriodStart = stripeSubscription.current_period_start
               ? stripeSubscription.current_period_start * 1000
               : (stripeSubscription.billing_cycle_anchor || stripeSubscription.start_date) * 1000 || now
             const currentPeriodEnd = stripeSubscription.current_period_end
               ? stripeSubscription.current_period_end * 1000
-              : now + (30 * 24 * 60 * 60 * 1000) // Default to 30 days from now
+              : now + (30 * 24 * 60 * 60 * 1000)
 
-            // Extract base plan type for DB enum (e.g. "pro_200" → "pro")
             const basePlanId = planId.split('_')[0] as 'pro' | 'business' | 'enterprise'
 
             await billingService.syncFromStripe({
@@ -3771,7 +4031,6 @@ app.post('/api/webhooks/stripe', async (c) => {
               cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end ?? false,
             })
 
-            // Allocate monthly credits using full tiered planId (e.g. "pro_200" → 200 credits)
             await billingService.allocateMonthlyCredits(workspaceId, planId)
             console.log('[Webhook] Subscription created + credits allocated for workspace:', workspaceId, 'plan:', planId)
           } catch (err: any) {

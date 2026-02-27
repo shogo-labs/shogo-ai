@@ -146,6 +146,7 @@ model Project {
   type               ProjectType        @default(APP)
   siteTitle          String?
   siteDescription    String?
+  thumbnailUrl       String?
 
   // Relations
   workspace        Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)

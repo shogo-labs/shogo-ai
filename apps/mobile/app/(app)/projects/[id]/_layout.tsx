@@ -13,7 +13,7 @@
  * - AsyncStorage for chat session persistence instead of localStorage
  */
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   View,
   Text,
@@ -21,6 +21,7 @@ import {
   ActivityIndicator,
   useWindowDimensions,
   ScrollView,
+  Platform,
 } from 'react-native'
 import { useLocalSearchParams, Stack } from 'expo-router'
 import { observer } from 'mobx-react-lite'
@@ -39,7 +40,7 @@ import type { IDomainStore } from '@shogo/domain-stores'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { useAuth } from '../../../../contexts/auth'
-import { API_URL } from '../../../../lib/api'
+import { API_URL, api } from '../../../../lib/api'
 import { consumePendingImageData } from '../../../../lib/pending-image-store'
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
 import { ChatSessionPicker, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
@@ -65,7 +66,6 @@ import {
 type ActiveTab = 'chat' | 'canvas'
 
 const WIDE_BREAKPOINT = 1024
-const CHAT_PANEL_WIDTH = 480
 
 export default observer(function ProjectLayout() {
   const params = useLocalSearchParams<{
@@ -128,6 +128,47 @@ export default observer(function ProjectLayout() {
     },
     [dispatchAction],
   )
+
+  // Auto-capture thumbnail when the agent finishes building the canvas UI (web only).
+  const thumbnailCapturedRef = useRef(false)
+  const hasCanvasUI = activeSurface && activeSurface.components.size > 0 && activeSurface.components.has('root')
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return
+    if (!projectId || !hasCanvasUI || thumbnailCapturedRef.current) return
+
+    let currentProject: any
+    try {
+      currentProject = store?.projectCollection?.all?.find((p: any) => p.id === projectId)
+    } catch { return }
+    if (currentProject?.thumbnailUrl) return
+
+    thumbnailCapturedRef.current = true
+
+    const timer = setTimeout(async () => {
+      try {
+        const { default: html2canvas } = await import('html2canvas')
+        const canvasEl = document.querySelector('[data-thumbnail-target]') as HTMLElement
+          ?? document.querySelector('[class*="flex-1"] [class*="p-4"]') as HTMLElement
+        if (!canvasEl) return
+
+        const canvas = await html2canvas(canvasEl, {
+          scale: 0.5,
+          useCORS: true,
+          logging: false,
+          backgroundColor: null,
+          width: canvasEl.scrollWidth,
+          height: Math.min(canvasEl.scrollHeight, 800),
+        })
+
+        canvas.toBlob(async (blob: Blob | null) => {
+          if (!blob) return
+          await api.uploadThumbnail(blob, projectId)
+        }, 'image/png')
+      } catch {}
+    }, 1500)
+    return () => clearTimeout(timer)
+  }, [projectId, hasCanvasUI, store])
 
   // Load project data
   const domainsReady = sdkReady && !!store?.projectCollection
@@ -377,7 +418,7 @@ export default observer(function ProjectLayout() {
           />
           <View className="flex-1 flex-row">
             {!chatCollapsed && (
-              <View style={{ width: CHAT_PANEL_WIDTH }} className="border-r border-border">
+              <View className="w-[480px] border-r border-border">
                 {showChatSessions && (
                   <View className="border-b border-border">
                     <ChatSessionPicker
@@ -549,7 +590,11 @@ function CanvasPanel({
         )}
         <View className="flex-1 p-3">
           <CanvasThemedContainer>
-            <ScrollView className="flex-1" contentContainerStyle={{ padding: 16 }}>
+            <ScrollView
+      className="flex-1"
+      contentContainerStyle={{ padding: 16 }}
+      {...(Platform.OS === 'web' ? { dataSet: { thumbnailTarget: '' } } as any : {})}
+    >
               <DynamicAppRenderer
                 surface={surface}
                 agentUrl={agentUrl}
