@@ -513,8 +513,8 @@ function WorkspaceSwitcher({
     >
       <PopoverBackdrop />
       <PopoverContent className="max-w-[280px] p-0">
-        <PopoverBody>
-          {/* Current workspace header */}
+        <View className="flex-col overflow-hidden max-h-[480px]">
+          {/* ── Pinned top: workspace header + actions ── */}
           {currentWorkspace && (
             <View className="px-4 py-3">
               <View className="flex-row items-start gap-3">
@@ -533,7 +533,6 @@ function WorkspaceSwitcher({
             </View>
           )}
 
-          {/* Quick actions */}
           {currentWorkspace && (
             <View className="px-3 pb-2 flex-row gap-2">
               <Pressable
@@ -555,102 +554,110 @@ function WorkspaceSwitcher({
 
           <View className="h-px bg-border" />
 
-          {/* Credits */}
-          {currentWorkspace && (
-            <>
-              <View className="px-4 py-3 gap-2">
-                <View className="flex-row items-center justify-between">
-                  <Text className="text-sm text-muted-foreground">Credits</Text>
-                  <Text className="text-sm font-medium text-foreground">
-                    {formatCredits(creditsRemaining)} left
-                  </Text>
-                </View>
-                <View className="h-1.5 rounded-full bg-muted overflow-hidden">
-                  <View
-                    className="h-full rounded-full bg-primary"
-                    style={{ width: `${Math.min(100, (creditsRemaining / creditsTotal) * 100)}%` }}
-                  />
-                </View>
-                {effectiveBalance && (
-                  <Text className="text-xs text-muted-foreground">
-                    Daily: {formatCredits(effectiveBalance.dailyCredits)} {'\u00B7'} Monthly: {formatCredits(effectiveBalance.monthlyCredits)}
-                  </Text>
-                )}
-              </View>
-
-              <View className="h-px bg-border" />
-            </>
-          )}
-
-          {/* Upgrade CTA */}
-          {currentWorkspace && planType === 'Free' && (
-            <>
-              <View className="px-3 py-2">
-                <Pressable
-                  onPress={() => { onNavigate('/(app)/billing'); setIsOpen(false) }}
-                  className="flex-row items-center justify-center gap-2 h-9 rounded-md"
-                  style={Platform.OS === 'web'
-                    ? { backgroundImage: 'linear-gradient(to right, #3b82f6, #9333ea)' } as any
-                    : { backgroundColor: '#7c3aed' }}
-                >
-                  <Zap size={16} className="text-white" />
-                  <Text className="text-sm font-medium text-white">Upgrade to Pro</Text>
-                </Pressable>
-              </View>
-
-              <View className="h-px bg-border" />
-            </>
-          )}
-
-          {/* All workspaces */}
-          <View className="py-1">
-            <Text className="px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              All workspaces
-            </Text>
-            {workspaces.map((ws: any) => {
-              const isCurrent = ws.id === currentWorkspace?.id
-              return (
-                <Pressable
-                  key={ws.id}
-                  onPress={() => {
-                    if (!isCurrent) {
-                      onSwitchWorkspace(ws.id)
-                    }
-                    setIsOpen(false)
-                  }}
-                  className="flex-row items-center gap-2 px-4 py-2 active:bg-muted"
-                >
-                  <View className="h-6 w-6 rounded bg-primary/10 items-center justify-center">
-                    <Text className="text-[10px] font-medium text-primary">
-                      {ws.name?.[0]?.toUpperCase() ?? 'W'}
+          {/* ── Scrollable middle ── */}
+          <ScrollView
+            className="shrink"
+            showsVerticalScrollIndicator={false}
+            bounces={false}
+            overScrollMode="never"
+          >
+            {/* Credits */}
+            {currentWorkspace && (
+              <>
+                <View className="px-4 py-3 gap-2">
+                  <View className="flex-row items-center justify-between">
+                    <Text className="text-sm text-muted-foreground">Credits</Text>
+                    <Text className="text-sm font-medium text-foreground">
+                      {formatCredits(creditsRemaining)} left
                     </Text>
                   </View>
-                  <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
-                    {ws.name}
-                  </Text>
-                  {(() => {
-                    const wsPlanId = allPlans[ws.id]?.planId ?? 'free'
-                    const isPaid = wsPlanId !== 'free'
-                    const label = isPaid
-                      ? wsPlanId.charAt(0).toUpperCase() + wsPlanId.slice(1)
-                      : 'Free'
-                    return (
-                      <View className={cn('rounded px-1.5 py-0.5', isPaid ? 'bg-primary/10' : 'bg-muted')}>
-                        <Text className={cn('text-[10px]', isPaid ? 'text-primary font-medium' : 'text-muted-foreground')}>{label}</Text>
-                      </View>
-                    )
-                  })()}
-                  {isCurrent && (
-                    <Check size={16} className="text-primary" />
+                  <View className="h-1.5 rounded-full bg-muted overflow-hidden">
+                    <View
+                      className="h-full rounded-full bg-primary"
+                      style={{ width: `${Math.min(100, (creditsRemaining / creditsTotal) * 100)}%` }}
+                    />
+                  </View>
+                  {effectiveBalance && (
+                    <Text className="text-xs text-muted-foreground">
+                      Daily: {formatCredits(effectiveBalance.dailyCredits)} {'\u00B7'} Monthly: {formatCredits(effectiveBalance.monthlyCredits)}
+                    </Text>
                   )}
-                </Pressable>
-              )
-            })}
-          </View>
+                </View>
+
+                <View className="h-px bg-border" />
+              </>
+            )}
+
+            {/* Upgrade CTA */}
+            {currentWorkspace && planType === 'Free' && (
+              <>
+                <View className="px-3 py-2">
+                  <Pressable
+                    onPress={() => { onNavigate('/(app)/billing'); setIsOpen(false) }}
+                    className="flex-row items-center justify-center gap-2 h-9 rounded-md"
+                    style={Platform.OS === 'web'
+                      ? { backgroundImage: 'linear-gradient(to right, #3b82f6, #9333ea)' } as any
+                      : { backgroundColor: '#7c3aed' }}
+                  >
+                    <Zap size={16} className="text-white" />
+                    <Text className="text-sm font-medium text-white">Upgrade to Pro</Text>
+                  </Pressable>
+                </View>
+
+                <View className="h-px bg-border" />
+              </>
+            )}
+
+            {/* All workspaces */}
+            <View className="py-1">
+              <Text className="px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                All workspaces
+              </Text>
+              {workspaces.map((ws: any) => {
+                const isCurrent = ws.id === currentWorkspace?.id
+                return (
+                  <Pressable
+                    key={ws.id}
+                    onPress={() => {
+                      if (!isCurrent) {
+                        onSwitchWorkspace(ws.id)
+                      }
+                      setIsOpen(false)
+                    }}
+                    className="flex-row items-center gap-2 px-4 py-2 active:bg-muted"
+                  >
+                    <View className="h-6 w-6 rounded bg-primary/10 items-center justify-center">
+                      <Text className="text-[10px] font-medium text-primary">
+                        {ws.name?.[0]?.toUpperCase() ?? 'W'}
+                      </Text>
+                    </View>
+                    <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
+                      {ws.name}
+                    </Text>
+                    {(() => {
+                      const wsPlanId = allPlans[ws.id]?.planId ?? 'free'
+                      const isPaid = wsPlanId !== 'free'
+                      const label = isPaid
+                        ? wsPlanId.charAt(0).toUpperCase() + wsPlanId.slice(1)
+                        : 'Free'
+                      return (
+                        <View className={cn('rounded px-1.5 py-0.5', isPaid ? 'bg-primary/10' : 'bg-muted')}>
+                          <Text className={cn('text-[10px]', isPaid ? 'text-primary font-medium' : 'text-muted-foreground')}>{label}</Text>
+                        </View>
+                      )
+                    })()}
+                    {isCurrent && (
+                      <Check size={16} className="text-primary" />
+                    )}
+                  </Pressable>
+                )
+              })}
+            </View>
+          </ScrollView>
 
           <View className="h-px bg-border" />
 
-          {/* Create new workspace */}
+          {/* ── Pinned bottom: create workspace ── */}
           <View className="p-1">
             <Pressable
               onPress={() => {
@@ -663,7 +670,7 @@ function WorkspaceSwitcher({
               <Text className="text-sm text-foreground">Create new workspace</Text>
             </Pressable>
           </View>
-        </PopoverBody>
+        </View>
       </PopoverContent>
     </Popover>
   )
