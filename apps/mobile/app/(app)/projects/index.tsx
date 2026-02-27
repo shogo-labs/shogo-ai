@@ -16,12 +16,12 @@
  * - Pressable instead of button/a
  * - expo-router instead of react-router-dom
  * - lucide-react-native instead of lucide-react
- * - No drag-and-drop (not practical on mobile)
+ * - HTML5 drag-and-drop on web (projects onto folders); disabled on native
  * - No multi-select mode (simplify for touch UX)
  * - Modal sheets instead of dropdown menus for actions
  */
 
-import { useState, useMemo, useCallback, useEffect } from 'react'
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import {
   View,
   Text,
@@ -32,6 +32,7 @@ import {
   Modal,
   useWindowDimensions,
   Alert,
+  Platform,
 } from 'react-native'
 import { observer } from 'mobx-react-lite'
 import { useRouter } from 'expo-router'
@@ -48,9 +49,13 @@ import {
   ArrowLeft,
   FolderOpen,
   FolderPlus,
+  FolderInput,
   CheckSquare,
   Check,
   X,
+  Trash2,
+  ArrowRightLeft,
+  Pencil,
 } from 'lucide-react-native'
 import {
   useSDKDomain,
@@ -95,6 +100,113 @@ function getTimeAgo(timestamp: number): string {
   return formatDistanceToNow(new Date(timestamp), { addSuffix: true })
 }
 
+// ─── DraggableView (web HTML5 drag source) ────────────────
+
+function DraggableView({
+  children,
+  dragId,
+  disabled,
+}: {
+  children: React.ReactNode
+  dragId: string
+  disabled?: boolean
+}) {
+  const ref = useRef<View>(null)
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return
+    const el = ref.current as unknown as HTMLDivElement
+    if (!el) return
+
+    if (disabled) {
+      el.draggable = false
+      el.style.cursor = ''
+      return
+    }
+
+    el.draggable = true
+    el.style.cursor = 'grab'
+
+    const handleDragStart = (e: DragEvent) => {
+      e.dataTransfer!.setData('text/plain', dragId)
+      e.dataTransfer!.effectAllowed = 'move'
+      requestAnimationFrame(() => {
+        el.style.opacity = '0.4'
+        el.style.cursor = 'grabbing'
+      })
+    }
+    const handleDragEnd = () => {
+      el.style.opacity = '1'
+      el.style.cursor = 'grab'
+    }
+
+    el.addEventListener('dragstart', handleDragStart)
+    el.addEventListener('dragend', handleDragEnd)
+    return () => {
+      el.draggable = false
+      el.style.cursor = ''
+      el.removeEventListener('dragstart', handleDragStart)
+      el.removeEventListener('dragend', handleDragEnd)
+    }
+  }, [dragId, disabled])
+
+  return (
+    <View ref={ref} className="flex-1">
+      {children}
+    </View>
+  )
+}
+
+// ─── DroppableView (web HTML5 drop target) ─────────────────
+
+function DroppableView({
+  children,
+  onDrop,
+}: {
+  children: React.ReactNode | ((isDragOver: boolean) => React.ReactNode)
+  onDrop: (dragId: string) => void
+}) {
+  const ref = useRef<View>(null)
+  const [isDragOver, setIsDragOver] = useState(false)
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return
+    const el = ref.current as unknown as HTMLDivElement
+    if (!el) return
+
+    const handleDragOver = (e: DragEvent) => {
+      e.preventDefault()
+      e.dataTransfer!.dropEffect = 'move'
+      setIsDragOver(true)
+    }
+    const handleDragLeave = (e: DragEvent) => {
+      if (el.contains(e.relatedTarget as Node)) return
+      setIsDragOver(false)
+    }
+    const handleDrop = (e: DragEvent) => {
+      e.preventDefault()
+      setIsDragOver(false)
+      const id = e.dataTransfer!.getData('text/plain')
+      if (id) onDrop(id)
+    }
+
+    el.addEventListener('dragover', handleDragOver)
+    el.addEventListener('dragleave', handleDragLeave)
+    el.addEventListener('drop', handleDrop)
+    return () => {
+      el.removeEventListener('dragover', handleDragOver)
+      el.removeEventListener('dragleave', handleDragLeave)
+      el.removeEventListener('drop', handleDrop)
+    }
+  }, [onDrop])
+
+  return (
+    <View ref={ref} className="flex-1">
+      {typeof children === 'function' ? children(isDragOver) : children}
+    </View>
+  )
+}
+
 export default observer(function AllProjectsPage() {
   const router = useRouter()
   const { user } = useAuth()
@@ -119,9 +231,11 @@ export default observer(function AllProjectsPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [newFolderModalVisible, setNewFolderModalVisible] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
+  const [moveToFolderModalVisible, setMoveToFolderModalVisible] = useState(false)
   const [sortOpen, setSortOpen] = useState(false)
   const [visibilityOpen, setVisibilityOpen] = useState(false)
   const [statusOpen, setStatusOpen] = useState(false)
+  const [actionMenuProjectId, setActionMenuProjectId] = useState<string | null>(null)
 
   // Determine grid columns based on screen width
   const numColumns = viewMode === 'grid' ? (width >= 768 ? 3 : 2) : 1
@@ -152,20 +266,20 @@ export default observer(function AllProjectsPage() {
 
   // Load starred projects
   useEffect(() => {
-    if (!currentWorkspace?.id || !store?.starredProjectCollection) return
+    if (!currentWorkspace?.id || !user?.id || !store?.starredProjectCollection) return
 
     store.starredProjectCollection
-      .loadAll({ workspaceId: currentWorkspace.id })
+      .loadAll({ userId: user.id, workspaceId: currentWorkspace.id })
       .then(() => {
         const ids = new Set(
           store.starredProjectCollection.all
-            .filter((s: any) => s.workspaceId === currentWorkspace.id)
+            .filter((s: any) => s.userId === user.id && s.workspaceId === currentWorkspace.id)
             .map((s: any) => s.projectId),
         )
         setStarredIds(ids)
       })
       .catch(() => {})
-  }, [currentWorkspace?.id, store])
+  }, [currentWorkspace?.id, user?.id, store])
 
   const allProjects = (store?.projectCollection?.all ?? []) as Project[]
   const allFolders = (store?.folderCollection?.all ?? []) as Folder[]
@@ -243,12 +357,12 @@ export default observer(function AllProjectsPage() {
 
   const handleToggleStar = useCallback(
     async (projectId: string) => {
-      if (!currentWorkspace?.id) return
+      if (!currentWorkspace?.id || !user?.id) return
       try {
         const isStarred = starredIds.has(projectId)
         if (isStarred) {
           const starRecord = store?.starredProjectCollection?.all.find(
-            (s: any) => s.projectId === projectId && s.workspaceId === currentWorkspace.id,
+            (s: any) => s.projectId === projectId && s.userId === user.id,
           )
           if (starRecord) {
             await store.starredProjectCollection.delete(starRecord.id)
@@ -261,6 +375,7 @@ export default observer(function AllProjectsPage() {
         } else {
           await store?.starredProjectCollection?.create({
             projectId,
+            userId: user.id,
             workspaceId: currentWorkspace.id,
           })
           setStarredIds((prev) => new Set(prev).add(projectId))
@@ -269,7 +384,7 @@ export default observer(function AllProjectsPage() {
         console.error('[AllProjectsPage] Failed to toggle star:', err)
       }
     },
-    [currentWorkspace?.id, starredIds, store],
+    [currentWorkspace?.id, user?.id, starredIds, store],
   )
 
   const handleRenameProject = useCallback(
@@ -301,44 +416,49 @@ export default observer(function AllProjectsPage() {
     [actions, store, currentWorkspace?.id],
   )
 
+  const [singleDeleteProject, setSingleDeleteProject] = useState<Project | null>(null)
+
   const handleDeleteProject = useCallback(
     (project: Project) => {
-      Alert.alert('Delete project', `Are you sure you want to delete "${project.name}"?`, [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await actions.deleteProject(project.id)
-              store?.projectCollection
-                ?.loadAll({ workspaceId: currentWorkspace?.id })
-                .catch(() => {})
-            } catch (err) {
-              console.error('[AllProjectsPage] Delete failed:', err)
-            }
-          },
-        },
-      ])
+      setSingleDeleteProject(project)
     },
-    [actions, store, currentWorkspace?.id],
+    [],
   )
+
+  const confirmSingleDelete = useCallback(async () => {
+    if (!singleDeleteProject) return
+    const projectId = singleDeleteProject.id
+    setSingleDeleteProject(null)
+    try {
+      await actions.deleteProject(projectId)
+      await store?.projectCollection?.loadAll({ workspaceId: currentWorkspace?.id })
+    } catch (err) {
+      console.error('[AllProjectsPage] Delete failed:', err)
+    }
+  }, [singleDeleteProject, actions, store, currentWorkspace?.id])
 
   const handleProjectActions = useCallback(
     (project: Project) => {
-      const options = ['Rename', 'Delete', 'Cancel']
-      Alert.alert(project.name, undefined, [
-        { text: 'Rename', onPress: () => handleRenameProject(project) },
-        { text: 'Delete', style: 'destructive', onPress: () => handleDeleteProject(project) },
-        { text: 'Cancel', style: 'cancel' },
-      ])
+      setActionMenuProjectId((prev) => (prev === project.id ? null : project.id))
     },
-    [handleRenameProject, handleDeleteProject],
+    [],
   )
 
   const handleFolderPress = useCallback((folder: Folder) => {
     setCurrentFolderId(folder.id)
   }, [])
+
+  const handleDragToFolder = useCallback(
+    async (projectId: string, folderId: string) => {
+      try {
+        await actions.moveProjectToFolder(projectId, folderId)
+        await store?.projectCollection?.loadAll({ workspaceId: currentWorkspace?.id })
+      } catch (err) {
+        console.error('[AllProjectsPage] Drag to folder failed:', err)
+      }
+    },
+    [actions, store, currentWorkspace?.id],
+  )
 
   const handleBackToRoot = useCallback(() => {
     setCurrentFolderId(null)
@@ -391,6 +511,96 @@ export default observer(function AllProjectsPage() {
     setSelectedIds(new Set())
   }, [])
 
+  const handleSelectAll = useCallback(() => {
+    if (selectedIds.size === filteredProjects.length) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(filteredProjects.map((p) => p.id)))
+    }
+  }, [filteredProjects, selectedIds.size])
+
+  const handleClearSelection = useCallback(() => {
+    setSelectedIds(new Set())
+  }, [])
+
+  const handleCancelSelectMode = useCallback(() => {
+    setSelectMode(false)
+    setSelectedIds(new Set())
+  }, [])
+
+  const [deleteConfirmVisible, setDeleteConfirmVisible] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
+
+  const handleBulkDelete = useCallback(() => {
+    if (selectedIds.size === 0) return
+    setDeleteConfirmVisible(true)
+  }, [selectedIds])
+
+  const confirmBulkDelete = useCallback(async () => {
+    setDeleteConfirmVisible(false)
+    setIsDeleting(true)
+    const idsArray = Array.from(selectedIds)
+    try {
+      for (let i = 0; i < idsArray.length; i++) {
+        await actions.deleteProject(idsArray[i])
+      }
+    } catch (err) {
+      console.error('[AllProjectsPage] Bulk delete failed:', err)
+    }
+    try {
+      await store?.projectCollection?.loadAll({ workspaceId: currentWorkspace?.id })
+    } catch (_) {}
+    setIsDeleting(false)
+    setSelectedIds(new Set())
+    setSelectMode(false)
+  }, [selectedIds, actions, store, currentWorkspace?.id])
+
+  const handleBulkMoveToFolder = useCallback(
+    async (folderId: string | null) => {
+      if (selectedIds.size === 0) return
+      const idsArray = Array.from(selectedIds)
+      try {
+        for (let i = 0; i < idsArray.length; i++) {
+          await actions.moveProjectToFolder(idsArray[i], folderId)
+        }
+      } catch (err) {
+        console.error('[AllProjectsPage] Bulk move failed:', err)
+      }
+      try {
+        await store?.projectCollection?.loadAll({ workspaceId: currentWorkspace?.id })
+      } catch (_) {}
+      setMoveToFolderModalVisible(false)
+      setSelectedIds(new Set())
+      setSelectMode(false)
+    },
+    [selectedIds, actions, store, currentWorkspace?.id],
+  )
+
+  const [transferModalVisible, setTransferModalVisible] = useState(false)
+
+  const handleBulkTransfer = useCallback(() => {
+    if (selectedIds.size === 0) return
+    setTransferModalVisible(true)
+  }, [selectedIds])
+
+  const executeTransfer = useCallback(async (targetWorkspaceId: string) => {
+    if (selectedIds.size === 0) return
+    const idsArray = Array.from(selectedIds)
+    try {
+      for (let i = 0; i < idsArray.length; i++) {
+        await store?.projectCollection?.update(idsArray[i], { workspaceId: targetWorkspaceId })
+      }
+    } catch (err) {
+      console.error('[AllProjectsPage] Transfer failed:', err)
+    }
+    try {
+      await store?.projectCollection?.loadAll({ workspaceId: currentWorkspace?.id })
+    } catch (_) {}
+    setTransferModalVisible(false)
+    setSelectedIds(new Set())
+    setSelectMode(false)
+  }, [selectedIds, store, currentWorkspace?.id])
+
   const handleMoreOptions = useCallback(() => {
     Alert.alert('More options', undefined, [
       { text: 'New folder', onPress: () => setNewFolderModalVisible(true) },
@@ -434,128 +644,198 @@ export default observer(function AllProjectsPage() {
         const folder = item.data
         const projectCount = allProjects.filter((p) => p.folderId === folder.id).length
         return (
-          <Pressable
-            onPress={() => handleFolderPress(folder)}
-            className="flex-1 m-1.5 rounded-xl border border-border bg-card overflow-hidden"
-          >
-            <View className="aspect-[16/10] bg-muted/40 items-center justify-center">
-              <FolderOpen size={36} className="text-muted-foreground/30" />
-            </View>
-            <View className="px-3 py-2.5">
-              <Text className="font-medium text-sm text-foreground" numberOfLines={1}>
-                {folder.name}
-              </Text>
-              <Text className="text-xs text-muted-foreground mt-0.5">
-                {projectCount} project{projectCount !== 1 ? 's' : ''}
-              </Text>
-            </View>
-          </Pressable>
+          <DroppableView onDrop={(projectId) => handleDragToFolder(projectId, folder.id)}>
+            {(isDragOver) => (
+              <Pressable
+                onPress={() => handleFolderPress(folder)}
+                className={cn(
+                  'flex-1 m-1.5 rounded-xl border bg-card overflow-hidden',
+                  isDragOver ? 'border-2 border-primary bg-primary/5' : 'border-border',
+                )}
+              >
+                <View className="aspect-[16/10] bg-muted/40 items-center justify-center">
+                  <FolderOpen size={36} className={isDragOver ? 'text-primary/50' : 'text-muted-foreground/30'} />
+                </View>
+                <View className="px-3 py-2.5">
+                  <Text className="font-medium text-sm text-foreground" numberOfLines={1}>
+                    {folder.name}
+                  </Text>
+                  <Text className="text-xs text-muted-foreground mt-0.5">
+                    {projectCount} project{projectCount !== 1 ? 's' : ''}
+                  </Text>
+                </View>
+              </Pressable>
+            )}
+          </DroppableView>
         )
       }
 
-      // Project card — Lovable-style clean design
+      // Project card — draggable on web, checkbox non-overlapping
       const project = item.data
       const isStarred = starredIds.has(project.id)
       const isSelected = selectedIds.has(project.id)
       return (
-        <Pressable
-          onPress={() => {
-            if (selectMode) {
-              setSelectedIds((prev) => {
-                const next = new Set(prev)
-                if (next.has(project.id)) {
-                  next.delete(project.id)
-                } else {
-                  next.add(project.id)
-                }
-                return next
-              })
-            } else {
-              handleProjectPress(project)
-            }
-          }}
-          onLongPress={() => handleProjectActions(project)}
-          className={cn(
-            'flex-1 m-1.5 rounded-xl border border-border bg-card overflow-hidden',
-            isSelected && 'border-2 border-primary',
-          )}
-        >
-          {/* Thumbnail */}
-          <View className="aspect-[16/10] bg-muted/40 items-center justify-center overflow-hidden">
-            {(project as any).thumbnailUrl ? (
-              <Image
-                source={{ uri: (project as any).thumbnailUrl }}
-                className="absolute inset-0 w-full h-full"
-                resizeMode="cover"
-              />
-            ) : (
-              <Text className="text-2xl font-bold text-muted-foreground/30">
-                {project.name?.charAt(0)?.toUpperCase() || 'P'}
-              </Text>
+        <DraggableView dragId={project.id} disabled={selectMode}>
+          <Pressable
+            onPress={() => {
+              if (selectMode) {
+                setSelectedIds((prev) => {
+                  const next = new Set(prev)
+                  if (next.has(project.id)) {
+                    next.delete(project.id)
+                  } else {
+                    next.add(project.id)
+                  }
+                  return next
+                })
+              } else {
+                handleProjectPress(project)
+              }
+            }}
+            onLongPress={() => handleProjectActions(project)}
+            className={cn(
+              'flex-1 m-1.5 rounded-xl border border-border bg-card overflow-hidden',
+              isSelected && 'border-2 border-primary',
             )}
-
-            {/* Select checkbox */}
-            {selectMode && (
-              <View className={cn(
-                'absolute top-2 left-2 w-5 h-5 rounded border-2 items-center justify-center',
-                isSelected ? 'bg-primary border-primary' : 'border-muted-foreground/40 bg-background/60',
-              )}>
-                {isSelected && <Check size={12} color="#fff" />}
-              </View>
-            )}
-
-            {/* Star button */}
-            <Pressable
-              onPress={() => handleToggleStar(project.id)}
-              className={cn(
-                'absolute top-2 right-2 p-1.5 rounded-md',
-                isStarred ? 'bg-yellow-500/20' : 'bg-background/60',
+          >
+            {/* Thumbnail */}
+            <View className="aspect-[16/10] bg-muted/40 items-center justify-center overflow-hidden">
+              {(project as any).thumbnailUrl ? (
+                <Image
+                  source={{ uri: (project as any).thumbnailUrl }}
+                  className="absolute inset-0 w-full h-full"
+                  resizeMode="cover"
+                />
+              ) : (
+                <Text className="text-2xl font-bold text-muted-foreground/30">
+                  {project.name?.charAt(0)?.toUpperCase() || 'P'}
+                </Text>
               )}
-            >
-              <Star
-                size={14}
-                className={isStarred ? 'text-yellow-500' : 'text-muted-foreground/50'}
-                fill={isStarred ? '#eab308' : 'transparent'}
-              />
-            </Pressable>
-          </View>
 
-          {/* Info */}
-          <View className="flex-row items-center gap-2.5 px-3 py-2.5">
-            <View className="w-6 h-6 rounded-full bg-muted items-center justify-center">
-              <Text className="text-[10px] font-medium text-muted-foreground">
-                {user?.name?.charAt(0) || 'U'}
-              </Text>
+              {/* Select checkbox — larger hit area, no overlap with drag */}
+              {selectMode && (
+                <Pressable
+                  onPress={(e) => {
+                    e.stopPropagation()
+                    setSelectedIds((prev) => {
+                      const next = new Set(prev)
+                      if (next.has(project.id)) {
+                        next.delete(project.id)
+                      } else {
+                        next.add(project.id)
+                      }
+                      return next
+                    })
+                  }}
+                  className="absolute top-1.5 left-1.5 p-1 z-10"
+                >
+                  <View className={cn(
+                    'w-6 h-6 rounded border-2 items-center justify-center',
+                    isSelected ? 'bg-primary border-primary' : 'border-muted-foreground/40 bg-background/80',
+                  )}>
+                    {isSelected && <Check size={14} color="#fff" />}
+                  </View>
+                </Pressable>
+              )}
+
+              {/* Star button */}
+              <Pressable
+                onPress={(e) => {
+                  e.stopPropagation()
+                  handleToggleStar(project.id)
+                }}
+                className={cn(
+                  'absolute top-2 right-2 p-1.5 rounded-md',
+                  isStarred ? 'bg-yellow-500/20' : 'bg-background/60',
+                )}
+              >
+                <Star
+                  size={14}
+                  className={isStarred ? 'text-yellow-500' : 'text-muted-foreground/50'}
+                  fill={isStarred ? '#eab308' : 'transparent'}
+                />
+              </Pressable>
             </View>
-            <View className="flex-1 min-w-0">
-              <Text className="font-medium text-sm text-foreground" numberOfLines={1}>
-                {project.name}
-              </Text>
-              <Text className="text-xs text-muted-foreground mt-0.5">
-                Edited {getTimeAgo(project.updatedAt || project.createdAt)}
-              </Text>
+
+            {/* Info */}
+            <View className="flex-row items-center gap-2.5 px-3 py-2.5">
+              <View className="w-6 h-6 rounded-full bg-muted items-center justify-center">
+                <Text className="text-[10px] font-medium text-muted-foreground">
+                  {user?.name?.charAt(0) || 'U'}
+                </Text>
+              </View>
+              <View className="flex-1 min-w-0">
+                <Text className="font-medium text-sm text-foreground" numberOfLines={1}>
+                  {project.name}
+                </Text>
+                <Text className="text-xs text-muted-foreground mt-0.5">
+                  Edited {getTimeAgo(project.updatedAt || project.createdAt)}
+                </Text>
+              </View>
+              <Popover
+                placement="bottom right"
+                isOpen={actionMenuProjectId === project.id}
+                onOpen={() => setActionMenuProjectId(project.id)}
+                onClose={() => setActionMenuProjectId(null)}
+                trigger={(triggerProps) => (
+                  <Pressable
+                    {...triggerProps}
+                    onPress={(e) => {
+                      e.stopPropagation()
+                      setActionMenuProjectId((prev) => (prev === project.id ? null : project.id))
+                    }}
+                    className="w-6 h-6 items-center justify-center"
+                  >
+                    <MoreHorizontal size={16} className="text-muted-foreground" />
+                  </Pressable>
+                )}
+              >
+                <PopoverBackdrop />
+                <PopoverContent className="p-0 min-w-[150px]">
+                  <PopoverBody>
+                    <Pressable
+                      onPress={() => {
+                        setActionMenuProjectId(null)
+                        handleRenameProject(project)
+                      }}
+                      className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
+                    >
+                      <Pencil size={14} className="text-muted-foreground" />
+                      <Text className="text-sm text-foreground">Rename</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        setActionMenuProjectId(null)
+                        handleDeleteProject(project)
+                      }}
+                      className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
+                    >
+                      <Trash2 size={14} className="text-destructive" />
+                      <Text className="text-sm text-destructive">Delete</Text>
+                    </Pressable>
+                  </PopoverBody>
+                </PopoverContent>
+              </Popover>
             </View>
-            <Pressable
-              onPress={() => handleProjectActions(project)}
-              className="w-6 h-6 items-center justify-center"
-            >
-              <MoreHorizontal size={16} className="text-muted-foreground" />
-            </Pressable>
-          </View>
-        </Pressable>
+          </Pressable>
+        </DraggableView>
       )
     },
     [
       allProjects,
       handleCreateProject,
       handleFolderPress,
+      handleDragToFolder,
       handleProjectPress,
       handleProjectActions,
       handleToggleStar,
+      handleRenameProject,
+      handleDeleteProject,
       starredIds,
       selectedIds,
       selectMode,
       user?.name,
+      actionMenuProjectId,
     ],
   )
 
@@ -579,82 +859,188 @@ export default observer(function AllProjectsPage() {
         const folder = item.data
         const projectCount = allProjects.filter((p) => p.folderId === folder.id).length
         return (
-          <Pressable
-            onPress={() => handleFolderPress(folder)}
-            className="flex-row items-center gap-3 px-4 py-3 border-b border-border/50"
-          >
-            <View className="w-12 h-8 rounded-md bg-muted items-center justify-center">
-              <FolderOpen size={16} className="text-muted-foreground" />
-            </View>
-            <View className="flex-1 min-w-0">
-              <Text className="font-medium text-sm text-foreground" numberOfLines={1}>
-                {folder.name}
-              </Text>
-              <Text className="text-xs text-muted-foreground">
-                {projectCount} project{projectCount !== 1 ? 's' : ''}
-              </Text>
-            </View>
-          </Pressable>
+          <DroppableView onDrop={(projectId) => handleDragToFolder(projectId, folder.id)}>
+            {(isDragOver) => (
+              <Pressable
+                onPress={() => handleFolderPress(folder)}
+                className={cn(
+                  'flex-row items-center gap-3 px-4 py-3 border-b',
+                  isDragOver ? 'border-primary bg-primary/5 border-b-2' : 'border-border/50',
+                )}
+              >
+                <View className="w-12 h-8 rounded-md bg-muted items-center justify-center">
+                  <FolderOpen size={16} className={isDragOver ? 'text-primary' : 'text-muted-foreground'} />
+                </View>
+                <View className="flex-1 min-w-0">
+                  <Text className="font-medium text-sm text-foreground" numberOfLines={1}>
+                    {folder.name}
+                  </Text>
+                  <Text className="text-xs text-muted-foreground">
+                    {projectCount} project{projectCount !== 1 ? 's' : ''}
+                  </Text>
+                </View>
+              </Pressable>
+            )}
+          </DroppableView>
         )
       }
 
       const project = item.data
       const isStarred = starredIds.has(project.id)
+      const isSelected = selectedIds.has(project.id)
       return (
-        <Pressable
-          onPress={() => handleProjectPress(project)}
-          onLongPress={() => handleProjectActions(project)}
-          className="flex-row items-center gap-3 px-4 py-3 border-b border-border/50"
-        >
-          {/* Thumbnail */}
-          <View className="w-12 h-8 rounded-md items-center justify-center bg-muted/40 overflow-hidden">
-            {(project as any).thumbnailUrl ? (
-              <Image
-                source={{ uri: (project as any).thumbnailUrl }}
-                className="absolute inset-0 w-full h-full"
-                resizeMode="cover"
-              />
-            ) : (
-              <Text className="text-xs font-bold text-muted-foreground/30">
-                {project.name?.charAt(0)?.toUpperCase() || 'P'}
-              </Text>
+        <DraggableView dragId={project.id} disabled={selectMode}>
+          <Pressable
+            onPress={() => {
+              if (selectMode) {
+                setSelectedIds((prev) => {
+                  const next = new Set(prev)
+                  if (next.has(project.id)) {
+                    next.delete(project.id)
+                  } else {
+                    next.add(project.id)
+                  }
+                  return next
+                })
+              } else {
+                handleProjectPress(project)
+              }
+            }}
+            onLongPress={() => handleProjectActions(project)}
+            className={cn(
+              'flex-row items-center gap-3 px-4 py-3 border-b border-border/50',
+              isSelected && 'bg-primary/5',
             )}
-          </View>
+          >
+            {selectMode && (
+              <Pressable
+                onPress={(e) => {
+                  e.stopPropagation()
+                  setSelectedIds((prev) => {
+                    const next = new Set(prev)
+                    if (next.has(project.id)) {
+                      next.delete(project.id)
+                    } else {
+                      next.add(project.id)
+                    }
+                    return next
+                  })
+                }}
+              >
+                <View className={cn(
+                  'w-6 h-6 rounded border-2 items-center justify-center',
+                  isSelected ? 'bg-primary border-primary' : 'border-muted-foreground/40',
+                )}>
+                  {isSelected && <Check size={14} color="#fff" />}
+                </View>
+              </Pressable>
+            )}
 
-          {/* Details */}
-          <View className="flex-1 min-w-0">
-            <Text className="font-medium text-sm text-foreground" numberOfLines={1}>
-              {project.name}
-            </Text>
-            <Text className="text-xs text-muted-foreground">
-              Edited {getTimeAgo(project.updatedAt || project.createdAt)}
-            </Text>
-          </View>
+            {/* Thumbnail */}
+            <View className="w-12 h-8 rounded-md items-center justify-center bg-muted/40 overflow-hidden">
+              {(project as any).thumbnailUrl ? (
+                <Image
+                  source={{ uri: (project as any).thumbnailUrl }}
+                  className="absolute inset-0 w-full h-full"
+                  resizeMode="cover"
+                />
+              ) : (
+                <Text className="text-xs font-bold text-muted-foreground/30">
+                  {project.name?.charAt(0)?.toUpperCase() || 'P'}
+                </Text>
+              )}
+            </View>
 
-          {/* Star */}
-          <Pressable onPress={() => handleToggleStar(project.id)} className="p-2">
-            <Star
-              size={16}
-              className={isStarred ? 'text-yellow-500' : 'text-muted-foreground'}
-              fill={isStarred ? '#eab308' : 'transparent'}
-            />
+            {/* Details */}
+            <View className="flex-1 min-w-0">
+              <Text className="font-medium text-sm text-foreground" numberOfLines={1}>
+                {project.name}
+              </Text>
+              <Text className="text-xs text-muted-foreground">
+                Edited {getTimeAgo(project.updatedAt || project.createdAt)}
+              </Text>
+            </View>
+
+            {!selectMode && (
+              <Pressable
+                onPress={(e) => {
+                  e.stopPropagation()
+                  handleToggleStar(project.id)
+                }}
+                className="p-2"
+              >
+                <Star
+                  size={16}
+                  className={isStarred ? 'text-yellow-500' : 'text-muted-foreground'}
+                  fill={isStarred ? '#eab308' : 'transparent'}
+                />
+              </Pressable>
+            )}
+
+            {!selectMode && (
+              <Popover
+                placement="bottom right"
+                isOpen={actionMenuProjectId === project.id}
+                onOpen={() => setActionMenuProjectId(project.id)}
+                onClose={() => setActionMenuProjectId(null)}
+                trigger={(triggerProps) => (
+                  <Pressable
+                    {...triggerProps}
+                    onPress={(e) => {
+                      e.stopPropagation()
+                      setActionMenuProjectId((prev) => (prev === project.id ? null : project.id))
+                    }}
+                    className="p-2"
+                  >
+                    <MoreHorizontal size={16} className="text-muted-foreground" />
+                  </Pressable>
+                )}
+              >
+                <PopoverBackdrop />
+                <PopoverContent className="p-0 min-w-[150px]">
+                  <PopoverBody>
+                    <Pressable
+                      onPress={() => {
+                        setActionMenuProjectId(null)
+                        handleRenameProject(project)
+                      }}
+                      className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
+                    >
+                      <Pencil size={14} className="text-muted-foreground" />
+                      <Text className="text-sm text-foreground">Rename</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        setActionMenuProjectId(null)
+                        handleDeleteProject(project)
+                      }}
+                      className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
+                    >
+                      <Trash2 size={14} className="text-destructive" />
+                      <Text className="text-sm text-destructive">Delete</Text>
+                    </Pressable>
+                  </PopoverBody>
+                </PopoverContent>
+              </Popover>
+            )}
           </Pressable>
-
-          {/* Menu */}
-          <Pressable onPress={() => handleProjectActions(project)} className="p-2">
-            <MoreHorizontal size={16} className="text-muted-foreground" />
-          </Pressable>
-        </Pressable>
+        </DraggableView>
       )
     },
     [
       allProjects,
       handleCreateProject,
       handleFolderPress,
+      handleDragToFolder,
       handleProjectPress,
       handleProjectActions,
       handleToggleStar,
+      handleRenameProject,
+      handleDeleteProject,
       starredIds,
+      selectedIds,
+      selectMode,
+      actionMenuProjectId,
     ],
   )
 
@@ -920,7 +1306,7 @@ export default observer(function AllProjectsPage() {
           }
           renderItem={renderGridItem}
           numColumns={numColumns}
-          contentContainerStyle={{ padding: 4 }}
+          contentContainerClassName="p-1"
           onRefresh={handleRefresh}
           refreshing={isRefreshing}
           ListEmptyComponent={
@@ -1010,6 +1396,281 @@ export default observer(function AllProjectsPage() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      {/* Move to Folder Modal */}
+      <Modal
+        visible={moveToFolderModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMoveToFolderModalVisible(false)}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 items-center justify-center"
+          onPress={() => setMoveToFolderModalVisible(false)}
+        >
+          <Pressable
+            className="bg-card rounded-xl p-5 w-80 border border-border max-h-[400px]"
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View className="flex-row items-center justify-between mb-4">
+              <Text className="text-base font-semibold text-foreground">Move to folder</Text>
+              <Pressable onPress={() => setMoveToFolderModalVisible(false)} className="p-1">
+                <X size={20} className="text-muted-foreground" />
+              </Pressable>
+            </View>
+
+            <Pressable
+              onPress={() => handleBulkMoveToFolder(null)}
+              className="flex-row items-center gap-3 px-3 py-2.5 rounded-lg active:bg-muted mb-1"
+            >
+              <FolderOpen size={18} className="text-muted-foreground" />
+              <Text className="text-sm text-foreground flex-1">Root (no folder)</Text>
+            </Pressable>
+
+            {allFolders.map((folder) => (
+              <Pressable
+                key={folder.id}
+                onPress={() => handleBulkMoveToFolder(folder.id)}
+                className={cn(
+                  'flex-row items-center gap-3 px-3 py-2.5 rounded-lg active:bg-muted mb-1',
+                  folder.id === currentFolderId && 'bg-accent',
+                )}
+              >
+                <FolderOpen size={18} className="text-muted-foreground" />
+                <Text className="text-sm text-foreground flex-1">{folder.name}</Text>
+                {folder.id === currentFolderId && (
+                  <Text className="text-xs text-muted-foreground">Current</Text>
+                )}
+              </Pressable>
+            ))}
+
+            {allFolders.length === 0 && (
+              <View className="py-4 items-center">
+                <Text className="text-sm text-muted-foreground">No folders available</Text>
+              </View>
+            )}
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Transfer to Workspace Modal */}
+      <Modal
+        visible={transferModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setTransferModalVisible(false)}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 items-center justify-center"
+          onPress={() => setTransferModalVisible(false)}
+        >
+          <Pressable
+            className="bg-card rounded-xl p-5 w-80 border border-border max-h-[400px]"
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View className="flex-row items-center justify-between mb-1">
+              <Text className="text-base font-semibold text-foreground">Transfer to workspace</Text>
+              <Pressable onPress={() => setTransferModalVisible(false)} className="p-1">
+                <X size={20} className="text-muted-foreground" />
+              </Pressable>
+            </View>
+            <Text className="text-sm text-muted-foreground mb-4">
+              Move {selectedIds.size} project{selectedIds.size !== 1 ? 's' : ''} to another workspace
+            </Text>
+
+            {workspaces.filter((w: any) => w.id !== currentWorkspace?.id).length === 0 ? (
+              <View className="py-6 items-center">
+                <Text className="text-sm text-muted-foreground text-center">
+                  You only have one workspace.{'\n'}Create another workspace to transfer projects.
+                </Text>
+              </View>
+            ) : (
+              workspaces
+                .filter((w: any) => w.id !== currentWorkspace?.id)
+                .map((workspace: any) => (
+                  <Pressable
+                    key={workspace.id}
+                    onPress={() => executeTransfer(workspace.id)}
+                    className="flex-row items-center gap-3 px-3 py-2.5 rounded-lg active:bg-muted mb-1"
+                  >
+                    <View className="w-8 h-8 rounded-full bg-primary/10 items-center justify-center">
+                      <Text className="text-xs font-medium text-primary">
+                        {workspace.name?.charAt(0)?.toUpperCase() || 'W'}
+                      </Text>
+                    </View>
+                    <Text className="text-sm text-foreground flex-1">{workspace.name}</Text>
+                  </Pressable>
+                ))
+            )}
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Single Delete Confirmation Modal */}
+      <Modal
+        visible={!!singleDeleteProject}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSingleDeleteProject(null)}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 items-center justify-center"
+          onPress={() => setSingleDeleteProject(null)}
+        >
+          <Pressable
+            className="bg-card rounded-xl p-6 w-80 border border-border"
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View className="flex-row items-center gap-3 mb-3">
+              <View className="w-10 h-10 rounded-full bg-destructive/10 items-center justify-center">
+                <Trash2 size={20} className="text-destructive" />
+              </View>
+              <Text className="text-base font-semibold text-foreground">Delete project</Text>
+            </View>
+            <Text className="text-sm text-muted-foreground mb-5">
+              Are you sure you want to delete &quot;{singleDeleteProject?.name}&quot;? This action cannot be undone.
+            </Text>
+            <View className="flex-row gap-2 justify-end">
+              <Pressable
+                onPress={() => setSingleDeleteProject(null)}
+                className="px-4 py-2 rounded-md border border-border active:bg-muted"
+              >
+                <Text className="text-sm text-foreground">Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={confirmSingleDelete}
+                className="px-4 py-2 rounded-md bg-destructive active:bg-destructive/80"
+              >
+                <Text className="text-sm text-white font-medium">Delete</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Bulk Delete Confirmation Modal */}
+      <Modal
+        visible={deleteConfirmVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setDeleteConfirmVisible(false)}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 items-center justify-center"
+          onPress={() => setDeleteConfirmVisible(false)}
+        >
+          <Pressable
+            className="bg-card rounded-xl p-6 w-80 border border-border"
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View className="flex-row items-center gap-3 mb-3">
+              <View className="w-10 h-10 rounded-full bg-destructive/10 items-center justify-center">
+                <Trash2 size={20} className="text-destructive" />
+              </View>
+              <Text className="text-base font-semibold text-foreground">Delete projects</Text>
+            </View>
+            <Text className="text-sm text-muted-foreground mb-5">
+              Are you sure you want to delete {selectedIds.size} project{selectedIds.size !== 1 ? 's' : ''}? This action cannot be undone.
+            </Text>
+            <View className="flex-row gap-2 justify-end">
+              <Pressable
+                onPress={() => setDeleteConfirmVisible(false)}
+                className="px-4 py-2 rounded-md border border-border active:bg-muted"
+              >
+                <Text className="text-sm text-foreground">Cancel</Text>
+              </Pressable>
+              <Pressable
+                testID="confirm-bulk-delete-btn"
+                onPress={confirmBulkDelete}
+                className="px-4 py-2 rounded-md bg-destructive active:bg-destructive/80"
+              >
+                <Text className="text-sm text-white font-medium">Delete</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Multi-select Bottom Action Bar */}
+      {selectMode && (
+        <View className="border-t border-border bg-card px-4 py-3">
+          {selectedIds.size === 0 ? (
+            <View className="flex-row items-center justify-center gap-4">
+              <Pressable
+                testID="select-all-btn"
+                onPress={handleSelectAll}
+                className="flex-row items-center gap-2"
+              >
+                <View className="w-5 h-5 rounded border-2 border-muted-foreground/40 items-center justify-center" />
+                <Text className="text-sm text-foreground">
+                  Select all ({filteredProjects.length})
+                </Text>
+              </Pressable>
+              <Pressable testID="cancel-select-btn" onPress={handleCancelSelectMode}>
+                <Text className="text-sm text-muted-foreground">Cancel</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <View className="flex-row items-center justify-center gap-3 flex-wrap">
+              <Pressable
+                onPress={handleSelectAll}
+                className="flex-row items-center gap-2"
+              >
+                <View className={cn(
+                  'w-5 h-5 rounded border-2 items-center justify-center',
+                  selectedIds.size === filteredProjects.length
+                    ? 'bg-primary border-primary'
+                    : 'bg-primary/60 border-primary/60',
+                )}>
+                  <Check size={12} color="#fff" />
+                </View>
+                <Text className="text-sm font-medium text-foreground">
+                  {selectedIds.size} selected
+                </Text>
+              </Pressable>
+
+              <View className="w-px h-5 bg-border" />
+
+              <Pressable
+                testID="move-to-folder-btn"
+                onPress={() => setMoveToFolderModalVisible(true)}
+                className="flex-row items-center gap-1.5 px-2 py-1 rounded-md active:bg-muted"
+              >
+                <FolderInput size={15} className="text-muted-foreground" />
+                <Text className="text-sm text-foreground">Move to folder</Text>
+              </Pressable>
+
+              <Pressable
+                testID="transfer-btn"
+                onPress={handleBulkTransfer}
+                className="flex-row items-center gap-1.5 px-2 py-1 rounded-md active:bg-muted"
+              >
+                <ArrowRightLeft size={15} className="text-muted-foreground" />
+                <Text className="text-sm text-foreground">Transfer</Text>
+              </Pressable>
+
+              <Pressable
+                testID="bulk-delete-btn"
+                onPress={handleBulkDelete}
+                className="flex-row items-center gap-1.5 px-2 py-1 rounded-md active:bg-muted"
+              >
+                <Trash2 size={15} className="text-destructive" />
+                <Text className="text-sm text-destructive">Delete</Text>
+              </Pressable>
+
+              <View className="w-px h-5 bg-border" />
+
+              <Pressable testID="clear-selection-btn" onPress={handleClearSelection}>
+                <Text className="text-sm text-muted-foreground">Clear</Text>
+              </Pressable>
+
+              <Pressable testID="cancel-select-mode-btn" onPress={handleCancelSelectMode}>
+                <Text className="text-sm text-muted-foreground">Cancel</Text>
+              </Pressable>
+            </View>
+          )}
+        </View>
+      )}
     </View>
   )
 })
