@@ -244,6 +244,7 @@ export const CANVAS_COMPONENT_SCHEMA: ComponentSchema[] = [
       unit: str('Unit suffix (e.g. "USD", "%")'),
       trend: str('Trend direction', { enum: ['up', 'down', 'neutral'] }),
       trendValue: str('Trend amount (e.g. "+12%")'),
+      trendSentiment: str('Override the color: "positive" = green, "negative" = red, "neutral" = gray. By default up=green, down=red. Use this when up is bad (e.g. traffic delay, error count).', { enum: ['positive', 'negative', 'neutral'] }),
       description: str('Small description below the value'),
       className: CLASS_PROP,
     },

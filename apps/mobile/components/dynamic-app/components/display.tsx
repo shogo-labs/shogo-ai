@@ -229,21 +229,34 @@ export function DynSkeleton({ width, height = 20, rounded, className }: Skeleton
 }
 
 const ALERT_ACTION_MAP: Record<string, 'error' | 'warning' | 'success' | 'info' | 'muted'> = {
-  default: 'info',
+  default: 'muted',
+  info: 'info',
+  warning: 'warning',
+  success: 'success',
   destructive: 'error',
+  error: 'error',
+}
+
+const ALERT_ICON_MAP: Record<string, LucideIcon> = {
+  default: Info,
+  info: Info,
+  warning: AlertTriangle,
+  success: CheckCircle,
+  destructive: AlertCircle,
+  error: AlertCircle,
 }
 
 interface AlertProps {
   title?: string
   description?: string
-  variant?: 'default' | 'destructive'
+  variant?: string
   icon?: string
   className?: string
 }
 
 export function DynAlert({ title, description, variant = 'default', icon, className }: AlertProps) {
-  const action = ALERT_ACTION_MAP[variant] || 'info'
-  const IconComp = icon ? ICON_MAP[icon.toLowerCase()] : (variant === 'destructive' ? AlertCircle : Info)
+  const action = ALERT_ACTION_MAP[variant] || 'muted'
+  const IconComp = icon ? ICON_MAP[icon.toLowerCase()] : (ALERT_ICON_MAP[variant] || Info)
 
   return (
     <Alert action={action} className={className}>
