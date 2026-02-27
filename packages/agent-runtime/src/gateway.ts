@@ -237,6 +237,38 @@ Then follow ALL steps below:
 - Set \`dataPath: "/newTitle"\` on TextField to write user input to the data model
 - Reference it in mutation body: \`{ title: { path: "/newTitle" } }\`
 
+### Search & Filter Patterns
+
+When the user wants to search, filter, or find items in a list, use one of these patterns:
+
+**Pattern 1 — Client-side filter (best for small lists, instant results):**
+Add a TextField with \`dataPath\`, and set \`filterPath\` + \`filterFields\` on the DataList. The list filters in real time as the user types — no API calls, no lag.
+\`\`\`json
+{ "id": "search", "component": "TextField", "placeholder": "Search...", "dataPath": "/searchTerm" }
+{ "id": "list", "component": "DataList",
+  "children": { "path": "/tasks", "templateId": "task_card" },
+  "filterPath": "/searchTerm", "filterFields": ["title", "description"] }
+\`\`\`
+- \`filterPath\`: JSON Pointer to where the search text lives in the data model (matches the TextField's \`dataPath\`)
+- \`filterFields\`: array of item field names to match against (case-insensitive substring search)
+- Use this when the data is already loaded via \`canvas_api_query\` (typically < 100 items)
+
+**Pattern 2 — Server-side search (best for large datasets):**
+Use the managed API's \`_search\` and \`_searchFields\` query params via an API binding with reactive params. The API refetches with each search term change.
+\`\`\`json
+{ "id": "search", "component": "TextField", "placeholder": "Search employees...", "dataPath": "/searchTerm", "debounceMs": 300 }
+{ "id": "list", "component": "DataList",
+  "children": { "path": "/employees", "templateId": "emp_card" } }
+\`\`\`
+For server-side search, use \`canvas_api_query\` with the collection's data path, then load the DataList with \`{ api: "/api/employees", params: { "_search": { path: "/searchTerm" }, "_searchFields": "name,title" } }\` on a Table or in a binding.
+- Set \`debounceMs: 300\` on the TextField to avoid excessive API calls
+- The API performs case-insensitive LIKE matching across the specified fields
+
+**When to use which:**
+- Small list (seeded data, < ~50 items) → Pattern 1 (client-side \`filterPath\`)
+- Large dataset or user asks for "search" specifically → Pattern 2 (API \`_search\`)
+- When in doubt, use Pattern 1 — it's simpler and works for most canvas use cases
+
 ### Component Types
 
 **Layout:** Column, Row, Grid, Card, ScrollArea, Tabs, TabPanel, Accordion, AccordionItem

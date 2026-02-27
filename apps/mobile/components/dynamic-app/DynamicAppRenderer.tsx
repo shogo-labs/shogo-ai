@@ -187,9 +187,20 @@ function useResolvedProps(
 
   const registeredRef = useRef<Set<string>>(new Set())
 
+  const resolvedApiBindings = useMemo(() => {
+    return apiBindings.map((binding) => {
+      if (!binding.params || Object.keys(binding.params).length === 0) return binding
+      const resolvedParams: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(binding.params)) {
+        resolvedParams[k] = resolveValue(v, dataModel, null, scopeData, scopePath)
+      }
+      return { ...binding, params: resolvedParams }
+    })
+  }, [apiBindings, dataModel, scopeData, scopePath])
+
   useEffect(() => {
     const currentKeys = new Set<string>()
-    for (const binding of apiBindings) {
+    for (const binding of resolvedApiBindings) {
       currentKeys.add(binding.key)
       apiDataSource.registerBinding(binding.key, {
         api: binding.api,
@@ -208,7 +219,7 @@ function useResolvedProps(
         apiDataSource.unregisterBinding(key)
       }
     }
-  }, [apiBindings, apiDataSource])
+  }, [resolvedApiBindings, apiDataSource])
 
   return useMemo(() => {
     const resolved: Record<string, unknown> = {}
@@ -260,11 +271,28 @@ function useRenderedChildren(
     if (definition.children) {
       if (typeof definition.children === 'object' && !Array.isArray(definition.children)) {
         const tmpl = definition.children as { path: string; templateId: string }
-        const items = getByPointer(dataModel, tmpl.path)
+        let items = getByPointer(dataModel, tmpl.path)
         if (!Array.isArray(items)) return null
 
         const templateDef = components.get(tmpl.templateId)
         if (!templateDef) return null
+
+        const filterPath = definition.filterPath as string | undefined
+        const filterFields = definition.filterFields as string[] | undefined
+        if (filterPath && filterFields?.length) {
+          const term = getByPointer(dataModel, filterPath)
+          if (typeof term === 'string' && term.length > 0) {
+            const lower = term.toLowerCase()
+            items = items.filter((item: unknown) => {
+              if (typeof item !== 'object' || item === null) return false
+              const rec = item as Record<string, unknown>
+              return filterFields.some((field) => {
+                const val = rec[field]
+                return typeof val === 'string' && val.toLowerCase().includes(lower)
+              })
+            })
+          }
+        }
 
         return items.map((item, index) => (
           <ComponentNode
