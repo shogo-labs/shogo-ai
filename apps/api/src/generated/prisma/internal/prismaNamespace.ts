@@ -3532,7 +3532,8 @@ export const ProjectScalarFieldEnum = {
   category: 'category',
   type: 'type',
   siteTitle: 'siteTitle',
-  siteDescription: 'siteDescription'
+  siteDescription: 'siteDescription',
+  thumbnailUrl: 'thumbnailUrl'
 } as const
 
 export type ProjectScalarFieldEnum = (typeof ProjectScalarFieldEnum)[keyof typeof ProjectScalarFieldEnum]

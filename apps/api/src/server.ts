@@ -27,6 +27,7 @@ import { testsRoutes } from './routes/tests'
 import { securityRoutes } from './routes/security'
 import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
 import { checkpointRoutes } from './routes/checkpoints'
+import { thumbnailRoutes } from './routes/thumbnail'
 import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
 import { calculateCreditCost } from './lib/credit-cost'
@@ -999,6 +1000,45 @@ app.post('/api/projects/:projectId/unpublish', async (c) => {
 })
 
 // =============================================================================
+// Thumbnail routes
+// =============================================================================
+
+app.post('/api/projects/:projectId/thumbnail', async (c) => {
+  const router = thumbnailRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/thumbnail`
+  const newReq = new Request(url.toString(), {
+    method: c.req.method,
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+app.post('/api/projects/:projectId/thumbnail/capture', async (c) => {
+  const router = thumbnailRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/thumbnail/capture`
+  const newReq = new Request(url.toString(), {
+    method: c.req.method,
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+app.get('/api/projects/:projectId/thumbnail', async (c) => {
+  const router = thumbnailRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/thumbnail`
+  const newReq = new Request(url.toString(), {
+    method: c.req.method,
+    headers: c.req.raw.headers,
+  })
+  return router.fetch(newReq)
+})
+
+// =============================================================================
 // Runtime routes - Project Vite runtime management
 // =============================================================================
 
@@ -1277,6 +1317,23 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
     // If pod is already running, return immediately
     if (status.exists && status.ready) {
       console.log(`[sandbox/url] Returning ready response with url=${previewUrl}`)
+
+      // Auto-capture thumbnail if missing (fire-and-forget)
+      prisma.project.findUnique({ where: { id: projectId }, select: { thumbnailUrl: true } })
+        .then((proj) => {
+          if (proj && !proj.thumbnailUrl) {
+            const captureUrl = agentUrl || previewUrl
+            setTimeout(() => {
+              fetch(`${protocol}://${host}/api/projects/${projectId}/thumbnail/capture`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: captureUrl }),
+              }).catch(() => {})
+            }, 3000)
+          }
+        })
+        .catch(() => {})
+
       return c.json({
         url: previewUrl,
         proxyUrl: legacyProxyUrl, // Backwards compat - legacy proxy URL

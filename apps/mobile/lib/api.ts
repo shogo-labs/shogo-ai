@@ -116,6 +116,35 @@ export const api = {
     await http.delete(`/api/integrations/connections/${connectionId}`)
   },
 
+  // ─── Thumbnails ──────────────────────────────────────────
+
+  // Uses fetch directly because the SDK HttpClient JSON-serializes all bodies;
+  // binary blob uploads require raw fetch.
+  async uploadThumbnail(blob: Blob, projectId: string) {
+    const res = await fetch(`${API_URL}/api/projects/${projectId}/thumbnail`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'image/png' },
+      credentials: 'include',
+      body: blob,
+    })
+    return res.json() as Promise<{ ok: boolean; thumbnailUrl?: string }>
+  },
+
+  async captureThumbnail(http: HttpClient, projectId: string, url?: string) {
+    const res = await http.post<{ ok: boolean; thumbnailUrl?: string }>(
+      `/api/projects/${projectId}/thumbnail/capture`,
+      url ? { url } : undefined,
+    )
+    return res.data
+  },
+
+  async getThumbnail(http: HttpClient, projectId: string) {
+    const res = await http.get<{ ok: boolean; thumbnailUrl?: string }>(
+      `/api/projects/${projectId}/thumbnail`,
+    )
+    return res.data
+  },
+
   // ─── Admin ───────────────────────────────────────────────
 
   async getMe(http: HttpClient) {

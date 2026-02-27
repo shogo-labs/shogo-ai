@@ -28,6 +28,7 @@ import {
   Pressable,
   FlatList,
   TextInput,
+  Image,
   Modal,
   useWindowDimensions,
   Alert,
@@ -79,6 +80,7 @@ interface Project {
   status?: string
   starred?: boolean
   folderId?: string | null
+  thumbnailUrl?: string
 }
 
 interface Folder {
@@ -91,23 +93,6 @@ interface Folder {
 
 function getTimeAgo(timestamp: number): string {
   return formatDistanceToNow(new Date(timestamp), { addSuffix: true })
-}
-
-const GRADIENT_CLASSES = [
-  'bg-purple-500',
-  'bg-pink-500',
-  'bg-orange-500',
-  'bg-green-500',
-  'bg-cyan-500',
-  'bg-violet-500',
-  'bg-fuchsia-500',
-  'bg-teal-500',
-]
-
-function getPlaceholderColor(name: string): string {
-  const index =
-    name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) % GRADIENT_CLASSES.length
-  return GRADIENT_CLASSES[index]
 }
 
 export default observer(function AllProjectsPage() {
@@ -433,14 +418,12 @@ export default observer(function AllProjectsPage() {
         return (
           <Pressable
             onPress={handleCreateProject}
-            className="flex-1 m-1.5 rounded-xl border-2 border-dashed border-muted-foreground/20 overflow-hidden"
+            className="flex-1 m-1.5 rounded-xl border-2 border-dashed border-border overflow-hidden"
           >
-            <View className="aspect-[16/10] items-center justify-center bg-muted/30">
-              <View className="w-10 h-10 rounded-full bg-muted items-center justify-center">
-                <Plus size={20} className="text-muted-foreground" />
+            <View className="aspect-[16/10] items-center justify-center">
+              <View className="w-12 h-12 rounded-full bg-muted items-center justify-center mb-2">
+                <Plus size={24} className="text-muted-foreground" />
               </View>
-            </View>
-            <View className="p-3 items-center">
               <Text className="text-sm text-muted-foreground">Create new project</Text>
             </View>
           </Pressable>
@@ -453,12 +436,12 @@ export default observer(function AllProjectsPage() {
         return (
           <Pressable
             onPress={() => handleFolderPress(folder)}
-            className="flex-1 m-1.5 rounded-xl bg-card overflow-hidden"
+            className="flex-1 m-1.5 rounded-xl border border-border bg-card overflow-hidden"
           >
-            <View className="aspect-[16/10] bg-muted items-center justify-center">
-              <FolderOpen size={48} className="text-muted-foreground/40" />
+            <View className="aspect-[16/10] bg-muted/40 items-center justify-center">
+              <FolderOpen size={36} className="text-muted-foreground/30" />
             </View>
-            <View className="p-3">
+            <View className="px-3 py-2.5">
               <Text className="font-medium text-sm text-foreground" numberOfLines={1}>
                 {folder.name}
               </Text>
@@ -470,7 +453,7 @@ export default observer(function AllProjectsPage() {
         )
       }
 
-      // Project card
+      // Project card — Lovable-style clean design
       const project = item.data
       const isStarred = starredIds.has(project.id)
       const isSelected = selectedIds.has(project.id)
@@ -492,24 +475,30 @@ export default observer(function AllProjectsPage() {
             }
           }}
           onLongPress={() => handleProjectActions(project)}
-          className={cn('flex-1 m-1.5 rounded-xl bg-card overflow-hidden', isSelected && 'border-2 border-primary')}
+          className={cn(
+            'flex-1 m-1.5 rounded-xl border border-border bg-card overflow-hidden',
+            isSelected && 'border-2 border-primary',
+          )}
         >
-          {/* Color banner / thumbnail placeholder */}
-          <View className={cn('aspect-[16/10] items-center justify-center', getPlaceholderColor(project.name))}>
-            <View className="items-center">
-              <Text style={{ fontSize: 28, fontWeight: '700', color: 'rgba(255,255,255,0.6)' }}>
+          {/* Thumbnail */}
+          <View className="aspect-[16/10] bg-muted/40 items-center justify-center overflow-hidden">
+            {(project as any).thumbnailUrl ? (
+              <Image
+                source={{ uri: (project as any).thumbnailUrl }}
+                className="absolute inset-0 w-full h-full"
+                resizeMode="cover"
+              />
+            ) : (
+              <Text className="text-2xl font-bold text-muted-foreground/30">
                 {project.name?.charAt(0)?.toUpperCase() || 'P'}
               </Text>
-              <Text style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)', marginTop: 2 }}>
-                {(project as any).type === 'AGENT' ? 'Agent' : 'Project'}
-              </Text>
-            </View>
+            )}
 
             {/* Select checkbox */}
             {selectMode && (
               <View className={cn(
                 'absolute top-2 left-2 w-5 h-5 rounded border-2 items-center justify-center',
-                isSelected ? 'bg-primary border-primary' : 'border-white/70 bg-black/20'
+                isSelected ? 'bg-primary border-primary' : 'border-muted-foreground/40 bg-background/60',
               )}>
                 {isSelected && <Check size={12} color="#fff" />}
               </View>
@@ -520,21 +509,21 @@ export default observer(function AllProjectsPage() {
               onPress={() => handleToggleStar(project.id)}
               className={cn(
                 'absolute top-2 right-2 p-1.5 rounded-md',
-                isStarred ? 'bg-yellow-500/90' : 'bg-black/30',
+                isStarred ? 'bg-yellow-500/20' : 'bg-background/60',
               )}
             >
               <Star
                 size={14}
-                color="#fff"
-                fill={isStarred ? '#fff' : 'transparent'}
+                className={isStarred ? 'text-yellow-500' : 'text-muted-foreground/50'}
+                fill={isStarred ? '#eab308' : 'transparent'}
               />
             </Pressable>
           </View>
 
           {/* Info */}
-          <View className="flex-row items-start gap-2.5 p-3">
-            <View className="w-6 h-6 rounded-full bg-primary/10 items-center justify-center">
-              <Text className="text-[10px] font-medium text-foreground">
+          <View className="flex-row items-center gap-2.5 px-3 py-2.5">
+            <View className="w-6 h-6 rounded-full bg-muted items-center justify-center">
+              <Text className="text-[10px] font-medium text-muted-foreground">
                 {user?.name?.charAt(0) || 'U'}
               </Text>
             </View>
@@ -618,13 +607,18 @@ export default observer(function AllProjectsPage() {
           className="flex-row items-center gap-3 px-4 py-3 border-b border-border/50"
         >
           {/* Thumbnail */}
-          <View
-            className={cn(
-              'w-12 h-8 rounded-md items-center justify-center',
-              getPlaceholderColor(project.name),
+          <View className="w-12 h-8 rounded-md items-center justify-center bg-muted/40 overflow-hidden">
+            {(project as any).thumbnailUrl ? (
+              <Image
+                source={{ uri: (project as any).thumbnailUrl }}
+                className="absolute inset-0 w-full h-full"
+                resizeMode="cover"
+              />
+            ) : (
+              <Text className="text-xs font-bold text-muted-foreground/30">
+                {project.name?.charAt(0)?.toUpperCase() || 'P'}
+              </Text>
             )}
-          >
-            <FolderOpen size={16} color="rgba(255,255,255,0.5)" />
           </View>
 
           {/* Details */}
@@ -727,24 +721,22 @@ export default observer(function AllProjectsPage() {
         </View>
       )}
 
-      {/* Filters bar */}
+      {/* Filters bar — single row on wide, stacked on narrow */}
       <View className="px-4 py-2 gap-2">
-        {/* Search */}
-        <View className="flex-row items-center bg-card border border-input rounded-lg px-3">
-          <Search size={16} className="text-muted-foreground" />
-          <TextInput
-            className="flex-1 h-9 ml-2 text-sm text-foreground"
-            placeholder="Search projects..."
-            placeholderTextColor="#71717a"
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-        </View>
-
-        {/* Sort + Filters + View toggle row */}
-        <View className="flex-row items-center gap-1.5 flex-wrap">
+        <View className="flex-row items-center gap-2 flex-wrap">
+          {/* Search */}
+          <View className="flex-row items-center bg-card border border-input rounded-lg px-3 min-w-[180px] flex-1">
+            <Search size={16} className="text-muted-foreground" />
+            <TextInput
+              className="flex-1 h-9 ml-2 text-sm text-foreground web:outline-none"
+              placeholder="Search projects..."
+              placeholderTextColor="#71717a"
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+          </View>
           {/* Sort */}
           <Popover
             placement="bottom left"
@@ -914,6 +906,7 @@ export default observer(function AllProjectsPage() {
       </View>
 
       {/* Content */}
+
       {viewMode === 'grid' ? (
         <FlatList
           key={`grid-${numColumns}`}
