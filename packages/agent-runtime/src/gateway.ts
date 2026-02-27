@@ -597,6 +597,9 @@ export class AgentGateway {
   private hiddenMockTools = new Set<string>()
   /** Hidden mocks promoted to visible after mcp_install is called during a turn */
   private promotedMockTools: AgentTool[] = []
+  /** User's IANA timezone, set from chat requests. Falls back to server timezone. */
+  private userTimezone: string | null = null
+
   /** Usage from the most recent agentTurn (consumed by server.ts for the finish event) */
   private _lastTurnUsage: {
     inputTokens: number
@@ -630,6 +633,10 @@ export class AgentGateway {
   /** Set a log callback for forwarding gateway events to the UI Logs tab */
   setLogCallback(fn: (line: string) => void): void {
     this._onLog = fn
+  }
+
+  setUserTimezone(tz: string): void {
+    this.userTimezone = tz
   }
 
   /** Install tool-level execute overrides (for eval mocking). Preserves tool schema. */
@@ -1616,7 +1623,7 @@ export class AgentGateway {
       '## Current Context',
       `- Today: ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
       `- Year: ${now.getFullYear()}`,
-      `- Timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}`,
+      `- Timezone: ${this.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone}`,
       '',
       'When users mention dates without a year, default to the current or next occurrence (never a past date).',
     ].join('\n'))

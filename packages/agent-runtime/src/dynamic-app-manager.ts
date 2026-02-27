@@ -1129,7 +1129,8 @@ export class DynamicAppManager {
 
   /**
    * Reload state from disk. Used after S3 sync downloads updated files.
-   * Clears existing state and re-loads everything.
+   * Clears existing state and re-loads everything, then broadcasts
+   * the new state to all connected SSE clients.
    */
   reloadFromDisk(): void {
     for (const runtime of this.runtimes.values()) {
@@ -1138,6 +1139,41 @@ export class DynamicAppManager {
     this.runtimes.clear()
     this.surfaces.clear()
     this.loadFromDisk()
+    this.broadcastFullState()
+  }
+
+  /**
+   * Broadcast the full current state to all connected SSE clients.
+   * Sends a clearAll first so clients reset, then replays all surfaces.
+   */
+  private broadcastFullState(): void {
+    if (this.sseClients.size === 0) return
+
+    this.broadcast({ type: 'clearAll' } as any)
+
+    for (const surface of this.surfaces.values()) {
+      this.broadcast({
+        type: 'createSurface',
+        surfaceId: surface.surfaceId,
+        title: surface.title,
+        theme: (surface as any).theme,
+      })
+
+      const components = Object.values(surface.components) as ComponentDefinition[]
+      if (components.length > 0) {
+        this.broadcast({ type: 'updateComponents', surfaceId: surface.surfaceId, components })
+      }
+
+      if (Object.keys(surface.dataModel).length > 0) {
+        this.broadcast({ type: 'updateData', surfaceId: surface.surfaceId, path: '/', value: surface.dataModel })
+      }
+
+      const runtime = this.runtimes.get(surface.surfaceId)
+      if (runtime) {
+        const modelInfo = runtime.getModelEndpointInfo()
+        this.broadcast({ type: 'configureApi', surfaceId: surface.surfaceId, models: modelInfo })
+      }
+    }
   }
 }
 

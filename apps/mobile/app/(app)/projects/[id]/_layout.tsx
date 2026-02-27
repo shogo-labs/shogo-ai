@@ -62,6 +62,7 @@ import {
   FilesBrowserPanel,
   AnalyticsPanel,
 } from '../../../../components/project/panels'
+import { RefreshCw } from 'lucide-react-native'
 
 type ActiveTab = 'chat' | 'canvas'
 
@@ -118,7 +119,7 @@ export default observer(function ProjectLayout() {
 
   // Dynamic app canvas (agent projects)
   const { agentUrl } = useAgentUrl(API_URL!, projectId, { credentials: 'include' })
-  const { surfaces, connected, dispatchAction, updateLocalData } = useDynamicAppStream(agentUrl)
+  const { surfaces, connected, dispatchAction, updateLocalData, reconnect } = useDynamicAppStream(agentUrl)
   const activeSurface = surfaces.size > 0 ? Array.from(surfaces.values())[0] : null
 
   // Canvas action handler
@@ -392,6 +393,7 @@ export default observer(function ProjectLayout() {
           agentUrl={agentUrl}
           onAction={handleCanvasAction}
           onDataChange={updateLocalData}
+          onRefresh={reconnect}
         />
       </EditModeProvider>
     </CanvasThemeProvider>
@@ -525,12 +527,14 @@ function CanvasPanel({
   agentUrl,
   onAction,
   onDataChange,
+  onRefresh,
 }: {
   surface: any | null
   connected: boolean
   agentUrl: string | null
   onAction: (surfaceId: string, name: string, context?: Record<string, unknown>) => void
   onDataChange?: (surfaceId: string, path: string, value: unknown) => void
+  onRefresh?: () => void
 }) {
   const editMode = useEditModeOptional()
   const isEditMode = editMode?.isEditMode ?? false
@@ -574,6 +578,15 @@ function CanvasPanel({
                   ? 'The canvas will appear once the agent creates a UI. Ask it to build something!'
                   : 'Connecting to the agent runtime...'}
               </Text>
+              {connected && onRefresh && (
+                <Pressable
+                  onPress={onRefresh}
+                  className="mt-4 flex-row items-center gap-2 rounded-md border border-border px-4 py-2 active:opacity-70"
+                >
+                  <RefreshCw size={14} className="text-muted-foreground" />
+                  <Text className="text-muted-foreground text-sm">Refresh</Text>
+                </Pressable>
+              )}
             </View>
           </CanvasThemedContainer>
         </View>

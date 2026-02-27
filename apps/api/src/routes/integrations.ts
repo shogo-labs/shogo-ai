@@ -131,6 +131,11 @@ export function integrationRoutes() {
     const html = `<!DOCTYPE html><html><body>
       <script>
         window.opener?.postMessage({ type: 'composio-callback', status: 'success' }, '*');
+        try {
+          var ch = new BroadcastChannel('composio-connect');
+          ch.postMessage({ type: 'composio-callback', status: 'success' });
+          ch.close();
+        } catch(e) {}
         window.close();
       </script>
       <p>Connection successful! You can close this window.</p>

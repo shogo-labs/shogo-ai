@@ -8,12 +8,15 @@ export interface MarkdownTextProps {
   isStreaming?: boolean
 }
 
+const linkSafetyOff = { enabled: false as const }
+
 export const MarkdownText = memo(
   function MarkdownText({ children, className, isStreaming }: MarkdownTextProps) {
     return (
       <Streamdown
         className={className}
         isAnimating={isStreaming}
+        linkSafety={linkSafetyOff}
       >
         {children || ""}
       </Streamdown>

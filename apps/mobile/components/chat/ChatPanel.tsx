@@ -26,7 +26,8 @@
  */
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react"
-import { View, Text, Pressable, ScrollView } from "react-native"
+import { View, Text, Pressable, ScrollView, Platform } from "react-native"
+import * as SecureStore from "expo-secure-store"
 import { observer } from "mobx-react-lite"
 import { useChat, type UIMessage } from "@ai-sdk/react"
 import { useRouter } from "expo-router"
@@ -62,6 +63,41 @@ import {
   getToolCategory as getToolCategoryFromTools,
 } from "./tools/types"
 import { AlertCircle } from "lucide-react-native"
+
+// ============================================================
+// Agent Mode Persistence
+// ============================================================
+
+const AGENT_MODE_KEY = "agent-mode-preference"
+
+async function loadAgentMode(): Promise<AgentMode | null> {
+  try {
+    if (Platform.OS === "web") {
+      const stored = typeof localStorage !== "undefined" ? localStorage.getItem(AGENT_MODE_KEY) : null
+      if (stored === "basic" || stored === "advanced") return stored
+      return null
+    }
+    const stored = await SecureStore.getItemAsync(AGENT_MODE_KEY)
+    if (stored === "basic" || stored === "advanced") return stored
+    return null
+  } catch {
+    return null
+  }
+}
+
+async function saveAgentMode(value: AgentMode): Promise<void> {
+  try {
+    if (Platform.OS === "web") {
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem(AGENT_MODE_KEY, value)
+      }
+      return
+    }
+    await SecureStore.setItemAsync(AGENT_MODE_KEY, value)
+  } catch {
+    // Silently fail
+  }
+}
 
 // ============================================================
 // Types
@@ -510,10 +546,19 @@ export const ChatPanel = observer(function ChatPanel({
   const [agentMode, setAgentMode] = useState<AgentMode>("basic")
 
   useEffect(() => {
-    if (hasActiveSubscription) {
-      setAgentMode("advanced")
-    }
+    loadAgentMode().then((stored) => {
+      if (stored) {
+        setAgentMode(stored)
+      } else if (hasActiveSubscription) {
+        setAgentMode("advanced")
+      }
+    })
   }, [hasActiveSubscription])
+
+  const handleAgentModeChange = useCallback((mode: AgentMode) => {
+    setAgentMode(mode)
+    saveAgentMode(mode)
+  }, [])
 
   const [ccSessionId, setCcSessionId] = useState<string | undefined>(undefined)
   const ccSessionIdRef = useRef<string | undefined>(undefined)
@@ -1654,6 +1699,7 @@ export const ChatPanel = observer(function ChatPanel({
             userId,
             projectId,
             agentMode: selectedAgentMode || agentMode,
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           },
         })
       } catch (err) {
@@ -1791,6 +1837,25 @@ export const ChatPanel = observer(function ChatPanel({
     },
     [handleSendMessage]
   )
+
+  // Listen for Composio OAuth completion via BroadcastChannel and auto-send confirmation
+  useEffect(() => {
+    if (Platform.OS !== "web") return
+    let channel: BroadcastChannel | null = null
+    try {
+      channel = new BroadcastChannel("composio-connect")
+      channel.onmessage = (event: MessageEvent) => {
+        if (event.data?.type === "composio-callback" && event.data?.status === "success") {
+          sendMessageInternal("I have successfully connected the integration. You can continue.")
+        }
+      }
+    } catch {
+      // BroadcastChannel not supported
+    }
+    return () => {
+      try { channel?.close() } catch {}
+    }
+  }, [sendMessageInternal])
 
   // Homepage transition warm-start: Inject initial message on mount (only for fresh sessions)
   useEffect(() => {
@@ -2002,7 +2067,7 @@ export const ChatPanel = observer(function ChatPanel({
               isStreaming={isStreaming}
               onStop={handleStop}
               agentMode={agentMode}
-              onAgentModeChange={setAgentMode}
+              onAgentModeChange={handleAgentModeChange}
               isPro={hasActiveSubscription}
               onUpgradeClick={handleUpgradeClick}
               queuedMessages={messageQueue}

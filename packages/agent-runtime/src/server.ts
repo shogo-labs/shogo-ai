@@ -439,6 +439,10 @@ app.post('/agent/chat', async (c) => {
     : agentMode === 'advanced' ? 'claude-sonnet-4-5'
     : undefined
 
+  if (body.timezone && typeof body.timezone === 'string') {
+    agentGateway!.setUserTimezone(body.timezone)
+  }
+
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
       try {
