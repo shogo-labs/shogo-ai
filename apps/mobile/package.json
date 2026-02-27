@@ -37,6 +37,7 @@
     "expo-clipboard": "~8.0.8",
     "expo-constants": "~18.0.0",
     "expo-haptics": "~15.0.0",
+    "expo-linear-gradient": "^55.0.8",
     "expo-linking": "~8.0.0",
     "expo-router": "~6.0.0",
     "expo-secure-store": "~15.0.8",
