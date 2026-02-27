@@ -269,10 +269,17 @@ export const CANVAS_COMPONENT_SCHEMA: ComponentSchema[] = [
   {
     type: 'Chart',
     category: 'data',
-    description: 'Simple chart (bar, horizontal bar, or progress). No external library needed.',
+    description: `Chart component supporting multiple visualization types.
+
+Use \`bar\` for comparisons across categories, \`horizontalBar\` for long labels, \`progress\` for percentage-based bars.
+Use \`line\` for trends over time, \`area\` for filled trend lines.
+Use \`pie\` for proportional breakdowns, \`donut\` for proportional breakdowns with a center label area.
+
+All types accept the same \`data\` array format: [{ label, value, color? }].
+For pie/donut, each item becomes a slice. For line/area, items are plotted left-to-right in order.`,
     hasChildren: false,
     props: {
-      type: str('Chart type', { enum: ['bar', 'horizontalBar', 'progress'], default: 'bar' }),
+      type: str('Chart type', { enum: ['bar', 'horizontalBar', 'progress', 'line', 'area', 'pie', 'donut'], default: 'bar' }),
       data: arr('Data points array, or use { path: "/metrics" } to bind to data model. Populate via canvas_api_query with dataPath.', {
         label: str('Point label', { required: true }),
         value: num('Point value', { required: true }),
@@ -280,6 +287,11 @@ export const CANVAS_COMPONENT_SCHEMA: ComponentSchema[] = [
       }),
       title: str('Chart title'),
       height: num('Chart height in px (default 200)'),
+      showLegend: bool('Show a legend below the chart (default true for pie/donut, false for others)'),
+      curved: bool('Use smooth curved lines instead of straight segments (line/area only, default false)'),
+      showDataPoints: bool('Show dots at each data point (line/area only, default true)'),
+      innerRadius: num('Inner radius for donut charts in px (donut only, default 60)'),
+      colors: arr('Custom color palette as hex strings. Overrides the default palette.'),
       className: CLASS_PROP,
     },
   },

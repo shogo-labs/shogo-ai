@@ -136,6 +136,43 @@ function updateHasTestChecklist(result: EvalResult): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Chart-specific helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Check that at least one canvas_update call includes a Chart component
+ * with the given type prop value.
+ */
+function hasChartType(result: EvalResult, chartType: string): boolean {
+  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
+  const json = JSON.stringify(updateCalls.map(t => t.input))
+  const chartPattern = new RegExp(`"component"\\s*:\\s*"Chart"`)
+  const typePattern = new RegExp(`"type"\\s*:\\s*"${chartType}"`)
+  if (!chartPattern.test(json)) return false
+  return typePattern.test(json)
+}
+
+/**
+ * Check that Chart data arrays across canvas_update calls have at least
+ * `minPoints` entries total (across all Chart components).
+ */
+function chartHasMinDataPoints(result: EvalResult, minPoints: number): boolean {
+  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
+  const json = JSON.stringify(updateCalls.map(t => t.input))
+  const labelMatches = json.match(/"label"\s*:\s*"/g)
+  return (labelMatches?.length ?? 0) >= minPoints
+}
+
+/**
+ * Check that a Chart component includes specific label text (case-insensitive).
+ */
+function chartDataContainsLabel(result: EvalResult, label: string): boolean {
+  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
+  const json = JSON.stringify(updateCalls.map(t => t.input)).toLowerCase()
+  return json.includes(label.toLowerCase())
+}
+
+// ---------------------------------------------------------------------------
 // Visual Quality Helpers
 // ---------------------------------------------------------------------------
 
@@ -2141,6 +2178,387 @@ export const CANVAS_EVALS: AgentEval[] = [
       'Fewer than 8 components (sparse layout)',
       'No Metric summary row in a CRUD app',
       'Missing Card wrappers',
+    ],
+  },
+
+  // ---- Chart Types: Line ----
+  {
+    id: 'canvas-chart-line-trend',
+    name: 'Chart: Line chart for revenue trend',
+    category: 'canvas',
+    level: 2,
+    input: 'Show me monthly revenue for the past 6 months as a line chart. Use these numbers: Jan $42K, Feb $38K, Mar $45K, Apr $51K, May $48K, Jun $55K.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Added components to the canvas',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'has-line-chart',
+        description: 'Included a Chart with type "line"',
+        points: 25,
+        phase: 'execution',
+        validate: (r) => hasChartType(r, 'line'),
+      },
+      {
+        id: 'has-6-data-points',
+        description: 'Chart data has at least 6 data points',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => chartHasMinDataPoints(r, 6),
+      },
+      {
+        id: 'has-title',
+        description: 'Chart has a title',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls.filter(t => t.name === 'canvas_update').map(t => t.input))
+          return json.includes('"title"') && json.includes('"Chart"')
+        },
+      },
+      {
+        id: 'has-jan-label',
+        description: 'Data includes month labels from the prompt',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => chartDataContainsLabel(r, 'Jan') || chartDataContainsLabel(r, 'January'),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 10 tool calls',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 10,
+      },
+    ],
+    antiPatterns: [
+      'Used bar chart instead of line for time series data',
+      'Used pie/donut for time series data',
+    ],
+  },
+
+  // ---- Chart Types: Pie ----
+  {
+    id: 'canvas-chart-pie-breakdown',
+    name: 'Chart: Pie chart for market share',
+    category: 'canvas',
+    level: 2,
+    input: 'Create a pie chart showing market share: Company A 35%, Company B 28%, Company C 22%, Others 15%.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Added components to the canvas',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'has-pie-chart',
+        description: 'Included a Chart with type "pie"',
+        points: 25,
+        phase: 'execution',
+        validate: (r) => hasChartType(r, 'pie'),
+      },
+      {
+        id: 'has-4-data-points',
+        description: 'Pie chart has 4 segments',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => chartHasMinDataPoints(r, 4),
+      },
+      {
+        id: 'has-company-labels',
+        description: 'Data includes company labels from the prompt',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => chartDataContainsLabel(r, 'Company A') || chartDataContainsLabel(r, 'company a'),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 10 tool calls',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 10,
+      },
+    ],
+    antiPatterns: [
+      'Used bar chart for proportional/market share data',
+      'Used line chart for non-time-series proportional data',
+    ],
+  },
+
+  // ---- Chart Types: Donut ----
+  {
+    id: 'canvas-chart-donut-budget',
+    name: 'Chart: Donut chart for budget allocation',
+    category: 'canvas',
+    level: 2,
+    input: 'Show my budget allocation as a donut chart: Rent $1500, Food $600, Transport $300, Entertainment $200, Savings $400.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Added components to the canvas',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'has-donut-chart',
+        description: 'Included a Chart with type "donut"',
+        points: 25,
+        phase: 'execution',
+        validate: (r) => hasChartType(r, 'donut'),
+      },
+      {
+        id: 'has-5-segments',
+        description: 'Donut chart has 5 segments',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => chartHasMinDataPoints(r, 5),
+      },
+      {
+        id: 'has-rent-label',
+        description: 'Data includes budget category labels from the prompt',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => chartDataContainsLabel(r, 'Rent'),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 10 tool calls',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 10,
+      },
+    ],
+    antiPatterns: [
+      'Used bar chart for budget allocation/proportional data',
+      'Used line chart for non-time-series data',
+    ],
+  },
+
+  // ---- Chart Types: Area ----
+  {
+    id: 'canvas-chart-area-growth',
+    name: 'Chart: Area chart for user growth',
+    category: 'canvas',
+    level: 2,
+    input: 'Display user growth over the last 8 weeks as an area chart. Week 1: 120, Week 2: 145, Week 3: 168, Week 4: 192, Week 5: 235, Week 6: 278, Week 7: 312, Week 8: 367.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Added components to the canvas',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'has-area-chart',
+        description: 'Included a Chart with type "area"',
+        points: 25,
+        phase: 'execution',
+        validate: (r) => hasChartType(r, 'area'),
+      },
+      {
+        id: 'has-8-data-points',
+        description: 'Area chart has at least 8 data points',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => chartHasMinDataPoints(r, 8),
+      },
+      {
+        id: 'has-week-labels',
+        description: 'Data includes week labels',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => chartDataContainsLabel(r, 'Week') || chartDataContainsLabel(r, 'W1') || chartDataContainsLabel(r, 'Wk'),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 10 tool calls',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 10,
+      },
+      {
+        id: 'response-mentions-growth',
+        description: 'Agent response references growth or the chart',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => responseContains(r, 'growth') || responseContains(r, 'area') || responseContains(r, 'chart'),
+      },
+    ],
+    antiPatterns: [
+      'Used bar chart for time series growth data',
+      'Used pie/donut for sequential growth data',
+    ],
+  },
+
+  // ---- Chart Types: Mixed dashboard ----
+  {
+    id: 'canvas-chart-dashboard-mixed',
+    name: 'Chart: Analytics dashboard with mixed chart types',
+    category: 'canvas',
+    level: 3,
+    input: 'Build an analytics dashboard for our SaaS product. Include: KPI metrics at the top (MRR $48K +8%, Active Users 1,240 +12%, Churn Rate 2.1% -0.3%), a line chart showing weekly signups over 6 weeks (45, 52, 61, 58, 73, 82), and a donut chart showing traffic sources (Organic 42%, Paid 28%, Referral 18%, Direct 12%).',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Added components to the canvas',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'has-metrics',
+        description: 'Includes Metric components for KPIs',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => hasMetricGrid(r),
+      },
+      {
+        id: 'has-line-chart',
+        description: 'Includes a line chart for weekly signups',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => hasChartType(r, 'line') || hasChartType(r, 'area'),
+      },
+      {
+        id: 'has-donut-chart',
+        description: 'Includes a donut chart for traffic sources',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => hasChartType(r, 'donut') || hasChartType(r, 'pie'),
+      },
+      {
+        id: 'has-card-sections',
+        description: 'Charts are wrapped in Cards',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => hasCardWrappedSections(r),
+      },
+      {
+        id: 'minimum-component-count',
+        description: 'Has at least 15 components for a complete dashboard',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => hasMinimumComponents(r, 15),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 15 tool calls',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 15,
+      },
+    ],
+    antiPatterns: [
+      'No Metric components in an analytics dashboard',
+      'Only one chart type when two were requested',
+      'Fewer than 12 components for a dashboard',
+      'Missing Card wrappers on chart sections',
+    ],
+  },
+
+  // ---- Chart Types: Type selection intelligence ----
+  {
+    id: 'canvas-chart-type-selection',
+    name: 'Chart: Agent selects pie/donut for distribution data',
+    category: 'canvas',
+    level: 2,
+    input: 'Show me the distribution of support tickets by category: Bug 45, Feature Request 32, Question 18, Other 8. Visualize this nicely.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Added components to the canvas',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'chose-pie-or-donut',
+        description: 'Selected pie or donut chart for proportional distribution data',
+        points: 30,
+        phase: 'execution',
+        validate: (r) => hasChartType(r, 'pie') || hasChartType(r, 'donut'),
+      },
+      {
+        id: 'has-4-segments',
+        description: 'Chart has 4 data segments',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => chartHasMinDataPoints(r, 4),
+      },
+      {
+        id: 'has-bug-label',
+        description: 'Data includes category labels from the prompt',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => chartDataContainsLabel(r, 'Bug'),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 10 tool calls',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 10,
+      },
+    ],
+    antiPatterns: [
+      'Used bar chart for proportional distribution data when pie/donut is more appropriate',
+      'Used line chart for non-sequential category data',
     ],
   },
 ]

@@ -241,7 +241,7 @@ Then follow ALL steps below:
 
 **Layout:** Column, Row, Grid, Card, ScrollArea, Tabs, TabPanel, Accordion, AccordionItem
 **Display:** Text, Badge, Image, Icon, Separator, Progress, Skeleton, Alert
-**Data:** Table (read-only), Metric, Chart, DataList (repeating with actions)
+**Data:** Table (read-only), Metric, Chart (bar/line/area/pie/donut), DataList (repeating with actions)
 **Interactive:** Button, TextField, Select, Checkbox, ChoicePicker
 
 Use \`canvas_components({ action: "detail", type: "Card" })\` to look up props for any component.
@@ -308,12 +308,23 @@ The renderer auto-formats numbers (commas, compact notation), currency ($ prefix
 - **Kanban/board request**: Metric summary row (counts per column), Card-wrapped columns in a Grid, inner Cards for each item
 - **Any request with data**: Header Row with title (variant "h2") + context Badge (justify: "between")
 
+**Chart Type Selection:**
+- \`bar\` — Compare values across categories (e.g. sales by region)
+- \`horizontalBar\` — Same as bar but better for long category labels
+- \`line\` — Show trends over time (e.g. monthly revenue, user growth)
+- \`area\` — Like line but with filled area under the curve (good for volume/growth)
+- \`pie\` — Show proportional breakdown of a whole (e.g. market share, budget)
+- \`donut\` — Same as pie but with a center hole (cleaner look, good for dashboards)
+- \`progress\` — Percentage bars (e.g. completion rates, goal progress)
+Use \`line\`/\`area\` for time series, \`pie\`/\`donut\` for proportional data, \`bar\` for comparisons. For pie/donut, provide 3-7 labeled segments.
+
 **Metric trendValue format:** Use strings starting with "+" or "-" (e.g. "+12%", "-$48", "+3 this week"). The renderer auto-infers trend direction from the sign — no need to set \`trend: "up"\` manually.
 
 **Data Richness:**
 - Seed 4-6 realistic records with plausible names, amounts, and dates
 - Raw numbers and ISO dates are fine — the renderer formats them automatically
-- Charts need at least 5-6 data points with descriptive labels
+- Bar/line/area charts need at least 5-6 data points with descriptive labels
+- Pie/donut charts need 3-7 labeled segments with values summing to a meaningful total
 
 **Reference Layout — CRUD App:**
 \`\`\`
@@ -329,7 +340,7 @@ Root Column
 Root Column
   → Row: title (h2) + Badge (justify: between)
   → Grid (columns: 3-4): Metric cards with trendValues
-  → Grid (columns: 2): Card(Chart) + Card(Chart or Table)
+  → Grid (columns: 2): Card(Chart type=line/area) + Card(Chart type=pie/donut or Table)
   → Card (title: "Details"): Table
 \`\`\`
 
