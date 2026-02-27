@@ -18,7 +18,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'fs'
 import { join } from 'path'
-import type { Message } from '@mariozechner/pi-ai'
+import type { Message, ImageContent } from '@mariozechner/pi-ai'
 import type { StreamFn, AgentTool } from '@mariozechner/pi-agent-core'
 import { Type } from '@sinclair/typebox'
 import type { ChannelAdapter, IncomingMessage, AgentStatus, ChannelStatus, StreamChunkConfig, SandboxConfig } from './types'
@@ -33,6 +33,8 @@ import { CronManager, type CronJob } from './cron-manager'
 import { BlockChunker } from './block-chunker'
 import { MCPClientManager, type MCPServerConfig } from './mcp-client'
 import { connectComposioMCP, disconnectComposioMCP, isComposioEnabled } from './composio'
+import type { FilePart } from './file-attachment-utils'
+import { parseFileAttachments } from './file-attachment-utils'
 import {
   OPTIMIZED_CANVAS_EXAMPLES,
   OPTIMIZED_MEMORY_GUIDE,
@@ -1063,7 +1065,7 @@ export class AgentGateway {
   async processChatMessageStream(
     text: string,
     writer: { write(chunk: Record<string, any>): void },
-    options?: { modelOverride?: string },
+    options?: { modelOverride?: string; fileParts?: FilePart[] },
   ): Promise<void> {
     if (options?.modelOverride) {
       const session = this.sessionManager.getOrCreate('chat')
@@ -1071,18 +1073,33 @@ export class AgentGateway {
     }
     this.emitLog(`Chat message received (stream): "${text.substring(0, 100)}"`)
 
+    let images: ImageContent[] | undefined
+    let effectiveText = text
+    if (options?.fileParts && options.fileParts.length > 0) {
+      const parsed = parseFileAttachments(options.fileParts)
+      if (parsed.images.length > 0) {
+        images = parsed.images
+        this.emitLog(`Attached ${parsed.images.length} image(s) for vision`)
+      }
+      if (parsed.textContext) {
+        effectiveText = text
+          ? `${text}\n\n${parsed.textContext}`
+          : parsed.textContext
+      }
+    }
+
     let prompt: string
     let activeSkill: { name: string } | undefined
     if (this.isUnconfigured()) {
-      prompt = this.buildSetupPrompt(text)
+      prompt = this.buildSetupPrompt(effectiveText)
       this.emitLog('Agent is not configured — running setup from user message')
     } else {
-      const result = this.buildChatPrompt(text)
+      const result = this.buildChatPrompt(effectiveText)
       prompt = result.prompt
       activeSkill = result.activeSkill
     }
 
-    const response = await this.agentTurn(prompt, 'chat', false, undefined, writer, activeSkill)
+    const response = await this.agentTurn(prompt, 'chat', false, undefined, writer, activeSkill, images)
     this.emitLog(`Chat response (stream): "${response.substring(0, 100)}"`)
 
     this.appendDailyMemory(`chat: "${text.substring(0, 100)}" -> "${response.substring(0, 100)}"`)
@@ -1120,6 +1137,7 @@ export class AgentGateway {
     streamTarget?: { adapter: ChannelAdapter; channelId: string },
     uiWriter?: { write(chunk: Record<string, any>): void },
     activeSkill?: { name: string },
+    images?: ImageContent[],
   ): Promise<string> {
     if (activeSkill) {
       const skillOverride = [
@@ -1290,6 +1308,7 @@ export class AgentGateway {
         system: systemPrompt,
         history,
         prompt,
+        images,
         tools,
         maxIterations: 50,
         loopDetection: this.config.loopDetection,

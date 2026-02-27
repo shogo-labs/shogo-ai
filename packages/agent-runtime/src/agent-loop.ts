@@ -19,7 +19,7 @@
 
 import type { AgentTool, AgentEvent, StreamFn } from '@mariozechner/pi-agent-core'
 import { Agent } from '@mariozechner/pi-agent-core'
-import type { Message, Model, Api } from '@mariozechner/pi-ai'
+import type { Message, Model, Api, ImageContent } from '@mariozechner/pi-ai'
 import { LoopDetector, type LoopDetectorConfig, type LoopDetectorResult } from './loop-detector'
 import type { ToolContext } from './gateway-tools'
 import {
@@ -46,6 +46,8 @@ export interface AgentLoopOptions {
   history: Message[]
   /** The new user prompt text to send */
   prompt: string
+  /** Optional images to include with the prompt (native vision support) */
+  images?: ImageContent[]
   /** Pi AgentTool array */
   tools: AgentTool[]
   /** Max tool-call iterations (default: 10) */
@@ -98,6 +100,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     system,
     history,
     prompt,
+    images,
     tools,
     maxIterations = 10,
     maxTokens = 4096,
@@ -189,7 +192,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   })
 
   try {
-    await agent.prompt(prompt)
+    await agent.prompt(prompt, images && images.length > 0 ? images : undefined)
   } catch (err: any) {
     if (!abortTriggered) {
       throw err

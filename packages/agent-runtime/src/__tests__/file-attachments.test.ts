@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test'
-import { extractFilePartsAsText } from '../file-attachment-utils'
+import { extractFilePartsAsText, parseFileAttachments } from '../file-attachment-utils'
 
 function toBase64DataUrl(content: string, mediaType: string): string {
   const base64 = Buffer.from(content).toString('base64')
@@ -58,14 +58,18 @@ describe('extractFilePartsAsText', () => {
     expect(result).toContain('Some **bold** text.')
   })
 
-  test('handles image attachments with descriptive message', () => {
+  test('images are routed to native vision, not text output', () => {
     const parts = [
       { type: 'file', mediaType: 'image/png', url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==' },
     ]
 
     const result = extractFilePartsAsText(parts)
-    expect(result).toContain('[Attached Image (image/png)]')
-    expect(result).toContain('cannot be displayed as text')
+    expect(result).toBe('')
+
+    const parsed = parseFileAttachments(parts)
+    expect(parsed.images).toHaveLength(1)
+    expect(parsed.images[0].mimeType).toBe('image/png')
+    expect(parsed.images[0].data).toBe('iVBORw0KGgoAAAANSUhEUg==')
   })
 
   test('handles multiple file attachments', () => {
@@ -88,9 +92,14 @@ describe('extractFilePartsAsText', () => {
       { type: 'file', mediaType: 'image/jpeg', url: 'data:image/jpeg;base64,/9j/4AAQ==' },
     ]
 
-    const result = extractFilePartsAsText(parts)
-    expect(result).toContain('readme content')
-    expect(result).toContain('[Attached Image (image/jpeg)]')
+    const parsed = parseFileAttachments(parts)
+    expect(parsed.textContext).toContain('readme content')
+    expect(parsed.images).toHaveLength(1)
+    expect(parsed.images[0].mimeType).toBe('image/jpeg')
+
+    const textOnly = extractFilePartsAsText(parts)
+    expect(textOnly).toContain('readme content')
+    expect(textOnly).not.toContain('image/jpeg')
   })
 
   test('attempts to decode unknown media types as text if printable', () => {
