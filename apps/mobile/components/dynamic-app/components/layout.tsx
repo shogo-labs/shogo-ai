@@ -5,15 +5,22 @@
  * resolved props from the renderer engine.
  */
 
-import React, { type ReactNode } from 'react'
+import React, { createContext, useContext, type ReactNode } from 'react'
 import { View, ScrollView, Platform } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Text } from '@/components/ui/text'
 import { Card } from '@/components/ui/card'
 
-const CARD_SHADOW_STYLE = Platform.OS === 'web'
+export const CARD_SHADOW_STYLE = Platform.OS === 'web'
   ? { boxShadow: '0 1px 3px 0 rgba(0,0,0,0.1), 0 1px 2px -1px rgba(0,0,0,0.1)' } as any
   : {}
+
+// ---------------------------------------------------------------------------
+// Card Depth Context — tracks nesting level for visual hierarchy
+// ---------------------------------------------------------------------------
+
+const CardDepthContext = createContext(0)
+export const useCardDepth = () => useContext(CardDepthContext)
 
 const GAP_MAP: Record<string, string> = {
   none: 'gap-0',
@@ -127,21 +134,36 @@ interface CardProps {
 }
 
 export function DynCard({ children, title, description, footer, className }: CardProps) {
+  const depth = useCardDepth()
+  const isNested = depth > 0
+  const isEvenDepth = depth % 2 === 0
+
+  // Alternating bg: even depths (0, 2, 4…) = card surface, odd (1, 3, 5…) = muted surface
+  const bgClass = isEvenDepth ? 'bg-card' : 'bg-muted'
+  const borderClass = isNested ? 'border-border/40' : 'border-border'
+  const shadowStyle = isNested ? undefined : CARD_SHADOW_STYLE
+
   return (
-    <Card variant="outline" className={cn('p-0 rounded-xl bg-card border-border flex-1', className)} style={CARD_SHADOW_STYLE}>
-      {(title || description) && (
-        <View className="px-6 pt-6 pb-2">
-          {title && <Text className="text-lg font-semibold">{title}</Text>}
-          {description && <Text className="text-sm text-muted-foreground">{description}</Text>}
-        </View>
-      )}
-      <View className="px-6 pb-6">{children}</View>
-      {footer && (
-        <View className="px-6 pb-6 pt-0 border-t border-border">
-          <Text className="text-sm text-muted-foreground pt-3">{footer}</Text>
-        </View>
-      )}
-    </Card>
+    <CardDepthContext.Provider value={depth + 1}>
+      <Card
+        variant="outline"
+        className={cn('p-0 rounded-xl flex-1', bgClass, borderClass, className)}
+        style={shadowStyle}
+      >
+        {(title || description) && (
+          <View className="px-6 pt-6 pb-2">
+            {title && <Text className="text-lg font-semibold">{title}</Text>}
+            {description && <Text className="text-sm text-muted-foreground">{description}</Text>}
+          </View>
+        )}
+        <View className="px-6 pb-6">{children}</View>
+        {footer && (
+          <View className="px-6 pb-6 pt-0 border-t border-border/40">
+            <Text className="text-sm text-muted-foreground pt-3">{footer}</Text>
+          </View>
+        )}
+      </Card>
+    </CardDepthContext.Provider>
   )
 }
 

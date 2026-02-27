@@ -44,6 +44,10 @@ import { consumePendingImageData } from '../../../../lib/pending-image-store'
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
 import { ChatSessionPicker, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
 import { DynamicAppRenderer } from '../../../../components/dynamic-app/DynamicAppRenderer'
+import { EditModeProvider, useEditModeOptional } from '../../../../components/dynamic-app/edit/EditModeContext'
+import { EditToolbar } from '../../../../components/dynamic-app/edit/EditToolbar'
+import { InspectorPanel } from '../../../../components/dynamic-app/edit/InspectorPanel'
+import { ComponentTreePanel } from '../../../../components/dynamic-app/edit/ComponentTreePanel'
 import { ProjectTopBar } from '../../../../components/project/ProjectTopBar'
 import {
   LogsPanel,
@@ -337,13 +341,15 @@ export default observer(function ProjectLayout() {
   )
 
   const canvasPanel = (
-    <CanvasPanel
-      surface={activeSurface}
-      connected={connected}
-      agentUrl={agentUrl}
-      onAction={handleCanvasAction}
-      onDataChange={updateLocalData}
-    />
+    <EditModeProvider agentUrl={agentUrl}>
+      <CanvasPanel
+        surface={activeSurface}
+        connected={connected}
+        agentUrl={agentUrl}
+        onAction={handleCanvasAction}
+        onDataChange={updateLocalData}
+      />
+    </EditModeProvider>
   )
 
   return (
@@ -481,6 +487,11 @@ function CanvasPanel({
   onAction: (surfaceId: string, name: string, context?: Record<string, unknown>) => void
   onDataChange?: (surfaceId: string, path: string, value: unknown) => void
 }) {
+  const editMode = useEditModeOptional()
+  const isEditMode = editMode?.isEditMode ?? false
+  const showTreePanel = editMode?.showTreePanel ?? false
+  const surfaceId = surface?.surfaceId ?? null
+
   if (!agentUrl) {
     return (
       <View className="flex-1 items-center justify-center px-6">
@@ -497,33 +508,47 @@ function CanvasPanel({
 
   if (!surface) {
     return (
-      <View className="flex-1 items-center justify-center px-6">
-        <View
-          className={cn(
-            'w-3 h-3 rounded-full mb-3',
-            connected ? 'bg-emerald-500' : 'bg-muted',
-          )}
-        />
-        <Text className="text-foreground font-semibold mb-1">
-          {connected ? 'Connected' : 'Waiting for connection...'}
-        </Text>
-        <Text className="text-muted-foreground text-center text-sm">
-          {connected
-            ? 'The canvas will appear once the agent creates a UI. Ask it to build something!'
-            : 'Connecting to the agent runtime...'}
-        </Text>
+      <View className="flex-1">
+        <EditToolbar surfaceId={null} />
+        <View className="flex-1 items-center justify-center px-6">
+          <View
+            className={cn(
+              'w-3 h-3 rounded-full mb-3',
+              connected ? 'bg-emerald-500' : 'bg-muted',
+            )}
+          />
+          <Text className="text-foreground font-semibold mb-1">
+            {connected ? 'Connected' : 'Waiting for connection...'}
+          </Text>
+          <Text className="text-muted-foreground text-center text-sm">
+            {connected
+              ? 'The canvas will appear once the agent creates a UI. Ask it to build something!'
+              : 'Connecting to the agent runtime...'}
+          </Text>
+        </View>
       </View>
     )
   }
 
   return (
-    <ScrollView className="flex-1" contentContainerStyle={{ padding: 16 }}>
-      <DynamicAppRenderer
-        surface={surface}
-        agentUrl={agentUrl}
-        onAction={onAction}
-        onDataChange={onDataChange}
-      />
-    </ScrollView>
+    <View className="flex-1">
+      <EditToolbar surfaceId={surfaceId} components={surface.components} />
+      <View className="flex-1 flex-row">
+        {isEditMode && showTreePanel && (
+          <ComponentTreePanel surfaceId={surfaceId} components={surface.components} />
+        )}
+        <ScrollView className="flex-1" contentContainerStyle={{ padding: 16 }}>
+          <DynamicAppRenderer
+            surface={surface}
+            agentUrl={agentUrl}
+            onAction={onAction}
+            onDataChange={onDataChange}
+          />
+        </ScrollView>
+        {isEditMode && (
+          <InspectorPanel surfaceId={surfaceId} components={surface.components} />
+        )}
+      </View>
+    </View>
   )
 }

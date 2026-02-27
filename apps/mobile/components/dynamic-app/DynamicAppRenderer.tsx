@@ -23,6 +23,8 @@ import { useApiDataSource, type ApiDataSourceResult } from '@shogo/shared-app/dy
 import { resolveValue, sanitizeForRender, RESERVED_KEYS } from '@shogo/shared-app/dynamic-app'
 import { COMPONENT_CATALOG } from './catalog'
 import { applySmartDefaults, type SmartDefaultsContext } from './smart-defaults'
+import { EditableWrapper } from './edit/EditableWrapper'
+import { useEditModeOptional } from './edit/EditModeContext'
 
 interface RendererProps {
   surface: SurfaceState
@@ -94,6 +96,7 @@ interface ComponentNodeProps {
 }
 
 function ComponentNode({ definition, components, dataModel, onAction, onDataChange, apiDataSource, scopeData, scopePath, isRoot, parentComponent }: ComponentNodeProps) {
+  const editMode = useEditModeOptional()
   const catalogEntry = COMPONENT_CATALOG[definition.component]
   if (!catalogEntry) {
     return (
@@ -121,18 +124,29 @@ function ComponentNode({ definition, components, dataModel, onAction, onDataChan
     }
   }
 
-  const children = useRenderedChildren(enhancedDefinition, components, dataModel, onAction, onDataChange, apiDataSource, scopeData, scopePath, definition.component)
+  const suppressActions = editMode?.isEditMode
+  const noopAction = useCallback(() => {}, [])
+  const effectiveOnAction = suppressActions ? noopAction : onAction
+  const effectiveOnDataChange = suppressActions ? undefined : onDataChange
+
+  const children = useRenderedChildren(enhancedDefinition, components, dataModel, effectiveOnAction, effectiveOnDataChange, apiDataSource, scopeData, scopePath, definition.component)
 
   const Component = catalogEntry.component
 
-  return (
+  const rendered = (
     <Component
       {...resolvedProps}
-      onAction={onAction}
-      onDataChange={onDataChange}
+      onAction={effectiveOnAction}
+      onDataChange={effectiveOnDataChange}
     >
       {children}
     </Component>
+  )
+
+  return (
+    <EditableWrapper componentId={definition.id} componentType={definition.component}>
+      {rendered}
+    </EditableWrapper>
   )
 }
 
