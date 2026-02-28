@@ -3,7 +3,6 @@ import {
   View,
   Text,
   Pressable,
-  FlatList,
   ActivityIndicator,
   Alert,
   Platform,
@@ -36,60 +35,128 @@ interface AgentTemplate {
   skills: string[]
 }
 
-const CATEGORY_ORDER = ['research', 'development', 'business', 'operations', 'personal']
+/**
+ * Reads the dark class directly from the DOM and observes mutations.
+ * Avoids relying on React context which MobX observer() can swallow.
+ */
+function useDarkMode() {
+  const [isDark, setIsDark] = useState(() => {
+    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+      return document.documentElement.classList.contains('dark')
+    }
+    return false
+  })
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return
+    setIsDark(document.documentElement.classList.contains('dark'))
+    const obs = new MutationObserver(() => {
+      setIsDark(document.documentElement.classList.contains('dark'))
+    })
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+    return () => obs.disconnect()
+  }, [])
+  return isDark
+}
+
+const TEMPLATE_COLORS: Record<string, string> = {
+  'research-assistant': '#3b82f6',
+  'github-ops': '#f97316',
+  'support-desk': '#8b5cf6',
+  'meeting-prep': '#10b981',
+  'revenue-tracker': '#ec4899',
+  'project-board': '#06b6d4',
+  'incident-commander': '#ef4444',
+  'personal-assistant': '#f59e0b',
+}
+
+const FILTER_TABS = [
+  { key: 'all', label: 'All Templates', icon: '⊞' },
+  { key: 'research', label: 'Research', icon: '📚' },
+  { key: 'development', label: 'Development', icon: '🐙' },
+  { key: 'business', label: 'Business', icon: '💼' },
+  { key: 'operations', label: 'DevOps', icon: '🚨' },
+  { key: 'personal', label: 'Personal', icon: '⚡' },
+]
 
 function TemplateCard({
   template,
   isLoading,
   onPress,
+  isDark,
 }: {
   template: AgentTemplate
   isLoading: boolean
   onPress: () => void
+  isDark: boolean
 }) {
+  const color = TEMPLATE_COLORS[template.id] || '#6366f1'
+
   return (
     <Pressable
       onPress={onPress}
       disabled={isLoading}
       className={cn(
-        'flex-1 mx-1.5 mb-3 rounded-xl p-4 border border-border/50 bg-card/60',
-        isLoading && 'opacity-50'
+        'rounded-2xl overflow-hidden border border-border bg-card',
+        isLoading && 'opacity-50',
       )}
+      style={Platform.OS === 'web' ? {
+        boxShadow: isDark
+          ? '0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2)'
+          : '0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)',
+        transition: 'box-shadow 0.2s ease, transform 0.15s ease',
+        cursor: 'pointer',
+      } as any : {}}
     >
-      <View className="flex-row items-start gap-3">
-        <Text className="text-2xl mt-0.5">{template.icon}</Text>
-        <View className="flex-1">
-          <Text className="text-foreground font-semibold text-[15px] leading-tight">
-            {template.name}
-          </Text>
-          <Text className="text-muted-foreground text-sm mt-1" numberOfLines={2}>
-            {template.description}
-          </Text>
+      <View
+        style={{
+          height: 240,
+          backgroundColor: isDark ? `${color}15` : `${color}06`,
+          borderBottomWidth: 1,
+          borderBottomColor: isDark ? 'rgba(255,255,255,0.06)' : '#f3f4f6',
+        }}
+        className="items-center justify-center"
+      >
+        <Text style={{ fontSize: 56 }}>{template.icon}</Text>
+        <Text
+          className="text-muted-foreground"
+          style={{
+            fontSize: 11,
+            fontWeight: '500',
+            marginTop: 12,
+            letterSpacing: 0.5,
+          }}
+        >
+          Preview coming soon
+        </Text>
+      </View>
+
+      <View className="px-5 py-4">
+        <View className="flex-row items-start justify-between gap-2">
+          <View className="flex-1">
+            <Text className="text-base font-semibold text-card-foreground" style={{ lineHeight: 22 }}>
+              {template.name}
+            </Text>
+            <Text
+              className="text-[13px] mt-1.5 leading-[19px] text-muted-foreground"
+              numberOfLines={2}
+            >
+              {template.description}
+            </Text>
+          </View>
+          <View className="rounded-full px-2.5 py-1 mt-0.5 bg-muted">
+            <Text className="text-[11px] font-medium text-muted-foreground">
+              {template.tags[0] ? template.tags[0].charAt(0).toUpperCase() + template.tags[0].slice(1) : template.category}
+            </Text>
+          </View>
         </View>
       </View>
 
-      <View className="flex-row items-center gap-2 mt-3 flex-wrap">
-        {template.skills.slice(0, 2).map((skill) => (
-          <View
-            key={skill}
-            className="bg-blue-500/10 border border-blue-500/20 rounded-full px-2 py-0.5"
-          >
-            <Text className="text-blue-400 text-[11px] font-medium">{skill}</Text>
-          </View>
-        ))}
-        {template.tags.slice(0, 2).map((tag) => (
-          <View
-            key={tag}
-            className="bg-muted/50 border border-border/50 rounded-full px-2 py-0.5"
-          >
-            <Text className="text-muted-foreground text-[11px]">{tag}</Text>
-          </View>
-        ))}
-      </View>
-
       {isLoading && (
-        <View className="absolute inset-0 bg-background/60 items-center justify-center rounded-xl">
-          <ActivityIndicator size="small" />
+        <View
+          className="absolute inset-0 items-center justify-center rounded-2xl"
+          style={{ backgroundColor: isDark ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.85)' }}
+        >
+          <ActivityIndicator size="small" color={color} />
         </View>
       )}
     </Pressable>
@@ -102,10 +169,11 @@ export default observer(function TemplatesPage() {
   const actions = useDomainActions()
   const workspaces = useWorkspaceCollection()
   const projects = useProjectCollection()
+  const isDark = useDarkMode()
   const [templates, setTemplates] = useState<AgentTemplate[]>([])
-  const [categories, setCategories] = useState<Record<string, { label: string; icon: string; description: string }>>({})
   const [loading, setLoading] = useState(true)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
+  const [activeFilter, setActiveFilter] = useState('all')
 
   const currentWorkspace = workspaces.all.length > 0 ? workspaces.all[0] : null
 
@@ -116,7 +184,6 @@ export default observer(function TemplatesPage() {
         if (!res.ok) throw new Error('Failed to fetch templates')
         const data = await res.json()
         setTemplates(data.templates || [])
-        setCategories(data.categories || {})
       } catch (err) {
         console.error('[TemplatesPage] Failed to fetch templates:', err)
       } finally {
@@ -163,75 +230,116 @@ export default observer(function TemplatesPage() {
     [user?.id, currentWorkspace?.id, actions, projects, router]
   )
 
-  const groupedTemplates = CATEGORY_ORDER
-    .filter((cat) => templates.some((t) => t.category === cat))
-    .map((cat) => ({
-      category: cat,
-      label: categories[cat]?.label || cat,
-      templates: templates.filter((t) => t.category === cat),
-    }))
+  const filteredTemplates =
+    activeFilter === 'all'
+      ? templates
+      : templates.filter((t) => t.category === activeFilter)
 
   if (loading) {
     return (
-      <View className="flex-1 bg-background items-center justify-center">
-        <ActivityIndicator size="large" />
+      <View className="flex-1 items-center justify-center bg-background">
+        <ActivityIndicator size="large" className="text-muted-foreground" />
       </View>
     )
   }
 
   return (
     <View className="flex-1 bg-background">
-      <View className="px-6 pt-6 pb-2">
-        <Text className="text-foreground text-2xl font-semibold">Agent Templates</Text>
-        <Text className="text-muted-foreground mt-1">
-          Pre-built agents with skills, settings, and canvas dashboards
-        </Text>
-      </View>
-
       <ScrollView
         className="flex-1"
-        contentContainerStyle={{ padding: 24, paddingTop: 12 }}
+        contentContainerStyle={{ paddingBottom: 60 }}
       >
-        {groupedTemplates.map((group) => (
-          <View key={group.category} className="mb-6">
-            <Text className="text-foreground font-semibold text-base mb-3">
-              {group.label}
-            </Text>
-            {Platform.OS === 'web' ? (
-              <View
-                style={{
-                  display: 'grid' as any,
-                  gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-                  gap: 12,
-                  maxWidth: 1200,
-                } as any}
-              >
-                {group.templates.map((template) => (
-                  <TemplateCard
-                    key={template.id}
-                    template={template}
-                    isLoading={loadingTemplate === template.id}
-                    onPress={() => handleTemplatePress(template)}
-                  />
-                ))}
-              </View>
-            ) : (
-              <FlatList
-                data={group.templates}
-                keyExtractor={(item) => item.id}
-                numColumns={2}
-                scrollEnabled={false}
-                renderItem={({ item }) => (
-                  <TemplateCard
-                    template={item}
-                    isLoading={loadingTemplate === item.id}
-                    onPress={() => handleTemplatePress(item)}
-                  />
-                )}
-              />
-            )}
-          </View>
-        ))}
+        {/* Header */}
+        <View className="items-center pt-10 pb-6 px-6">
+          <Text
+            className="text-center font-bold text-foreground"
+            style={{ fontSize: 32, lineHeight: 40, letterSpacing: -0.3 }}
+          >
+            Agent Templates{'\n'}Built With AI
+          </Text>
+          <Text
+            className="text-center mt-3 text-muted-foreground"
+            style={{ fontSize: 15, lineHeight: 22 }}
+          >
+            Production-ready agents from the Shogo team
+          </Text>
+        </View>
+
+        {/* Filter tabs */}
+        <View className="px-6 mb-8">
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{
+              paddingHorizontal: 0,
+              gap: 4,
+              justifyContent: 'center',
+              flexGrow: 1,
+            }}
+          >
+            {FILTER_TABS.map((tab) => {
+              const isActive = activeFilter === tab.key
+              return (
+                <Pressable
+                  key={tab.key}
+                  onPress={() => setActiveFilter(tab.key)}
+                  className="items-center px-4 py-2.5 rounded-lg"
+                  style={{
+                    borderBottomWidth: isActive ? 2 : 0,
+                    borderBottomColor: isActive
+                      ? (isDark ? 'rgba(255,255,255,0.87)' : '#111827')
+                      : 'transparent',
+                    marginBottom: isActive ? -2 : 0,
+                  }}
+                >
+                  <Text style={{ fontSize: 18, marginBottom: 4 }}>{tab.icon}</Text>
+                  <Text
+                    className={cn(
+                      'text-[12px]',
+                      isActive ? 'text-foreground font-semibold' : 'text-muted-foreground',
+                    )}
+                  >
+                    {tab.label}
+                  </Text>
+                </Pressable>
+              )
+            })}
+          </ScrollView>
+          <View className="border-b border-border" style={{ marginTop: 2 }} />
+        </View>
+
+        {/* Template grid */}
+        <View className="px-6">
+          {filteredTemplates.length > 0 ? (
+            <View
+              style={Platform.OS === 'web' ? {
+                display: 'grid' as any,
+                gridTemplateColumns: 'repeat(3, 1fr)',
+                gap: 20,
+                maxWidth: 1100,
+                marginHorizontal: 'auto',
+              } as any : {
+                gap: 16,
+              }}
+            >
+              {filteredTemplates.map((template) => (
+                <TemplateCard
+                  key={template.id}
+                  template={template}
+                  isLoading={loadingTemplate === template.id}
+                  onPress={() => handleTemplatePress(template)}
+                  isDark={isDark}
+                />
+              ))}
+            </View>
+          ) : (
+            <View className="items-center py-16">
+              <Text className="text-muted-foreground text-sm">
+                No templates in this category yet
+              </Text>
+            </View>
+          )}
+        </View>
       </ScrollView>
     </View>
   )

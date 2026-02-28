@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, writeFileSync, copyFileSync, readdirSync } from 
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getAgentTemplateById } from './agent-templates'
+import { TEMPLATE_CANVAS_STATES } from './template-canvas-states'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -141,6 +142,14 @@ export function seedWorkspaceFromTemplate(dir: string, templateId: string, agent
       if (existsSync(src) && !existsSync(dest)) {
         copyFileSync(src, dest)
       }
+    }
+  }
+
+  const canvasState = TEMPLATE_CANVAS_STATES[templateId]
+  if (canvasState) {
+    const canvasPath = join(dir, '.canvas-state.json')
+    if (!existsSync(canvasPath)) {
+      writeFileSync(canvasPath, JSON.stringify(canvasState, null, 2), 'utf-8')
     }
   }
 
