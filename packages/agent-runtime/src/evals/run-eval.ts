@@ -45,7 +45,9 @@ import { MCP_DISCOVERY_EVALS } from './test-cases-mcp-discovery'
 import { MCP_ORCHESTRATION_EVALS } from './test-cases-mcp-orchestration'
 import { MCP_VACATION_PLANNER_EVALS } from './test-cases-mcp-vacation-planner'
 import { COMPOSIO_EVALS } from './test-cases-composio'
+import { TOOL_SYSTEM_EVALS } from './test-cases-tool-system'
 import { FILE_UPLOAD_EVALS } from './test-cases-file-upload'
+import { REAL_DATA_EVALS } from './test-cases-real-data'
 import { buildMockPayload } from './tool-mocks'
 import type { AgentEval, EvalResult, EvalSuiteResult, CategorySummary } from './types'
 
@@ -95,10 +97,12 @@ function getEvals(track: string): AgentEval[] {
     case 'mcp-orchestration': return MCP_ORCHESTRATION_EVALS
     case 'vacation-planner': return MCP_VACATION_PLANNER_EVALS
     case 'composio': return COMPOSIO_EVALS
+    case 'tool-system': return TOOL_SYSTEM_EVALS
     case 'file-upload': return FILE_UPLOAD_EVALS
-    case 'all': return [...CANVAS_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...FILE_UPLOAD_EVALS]
+    case 'real-data': return REAL_DATA_EVALS
+    case 'all': return [...CANVAS_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS]
     default:
-      console.error(`Unknown track: ${track}. Valid: canvas, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, file-upload, all`)
+      console.error(`Unknown track: ${track}. Valid: canvas, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, all`)
       process.exit(1)
   }
 }

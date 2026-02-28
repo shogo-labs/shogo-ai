@@ -8,10 +8,21 @@
  * Optional auth config env vars enable white-labeling.
  */
 
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { Composio } from '@composio/core'
+import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import type { MCPClientManager } from './mcp-client'
+import { fetchComposioToolSchemas, type ComposioToolSchema } from './composio-auto-bind'
 
-const COMPOSIO_MCP_SERVER_NAME = 'composio'
+/**
+ * Private MCP Client connected to Composio's endpoint.
+ * Used internally by proxy tools and auth checks. Never exposed to the agent.
+ */
+let composioMcpClient: Client | null = null
+
+/** Track registered proxy tool names for dedup across multiple toolkit installs */
+const registeredProxyToolNames = new Set<string>()
 
 interface ComposioAuthConfigs {
   [toolkit: string]: string
@@ -178,15 +189,19 @@ function getComposioClient(): Composio | null {
 // MCP connection
 // ---------------------------------------------------------------------------
 
+const MCP_CONNECT_TIMEOUT_MS = 90_000
+
 /**
  * Connect to Composio's MCP endpoint for a given user/project.
- * Creates a Composio session and registers it as a remote MCP server.
+ * Establishes a private internal MCP connection — no tools are exposed to the agent.
+ * Proxy tools are registered separately via registerToolkitProxyTools().
  */
 export async function connectComposioMCP(
-  mcpClientManager: MCPClientManager,
   userId: string,
   projectId: string,
 ): Promise<boolean> {
+  if (composioMcpClient) return true
+
   const client = getComposioClient()
   if (!client) return false
 
@@ -204,17 +219,24 @@ export async function connectComposioMCP(
       return false
     }
 
-    await mcpClientManager.startRemoteServer(COMPOSIO_MCP_SERVER_NAME, {
-      url: session.mcp.url,
-      headers: session.mcp.headers,
-      excludeTools: [
-        'COMPOSIO_REMOTE_WORKBENCH',
-        'COMPOSIO_REMOTE_BASH_TOOL',
-        'COMPOSIO_GET_TOOL_SCHEMAS',
-      ],
-      maxResultChars: 12000,
-    })
+    const transport = new StreamableHTTPClientTransport(
+      new URL(session.mcp.url),
+      { requestInit: session.mcp.headers ? { headers: session.mcp.headers } : undefined },
+    )
 
+    const mcpClient = new Client(
+      { name: 'shogo-composio-internal', version: '1.0.0' },
+      { capabilities: {} },
+    )
+
+    await Promise.race([
+      mcpClient.connect(transport),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Composio MCP connection timed out')), MCP_CONNECT_TIMEOUT_MS),
+      ),
+    ])
+
+    composioMcpClient = mcpClient
     console.log(`[Composio] Connected to MCP endpoint for user "${composioUserId}"`)
     return true
   } catch (err: any) {
@@ -226,15 +248,23 @@ export async function connectComposioMCP(
 /**
  * Disconnect from Composio's MCP endpoint.
  */
-export async function disconnectComposioMCP(
-  mcpClientManager: MCPClientManager,
-): Promise<void> {
+export async function disconnectComposioMCP(): Promise<void> {
+  if (!composioMcpClient) return
   try {
-    await mcpClientManager.stopRemoteServer(COMPOSIO_MCP_SERVER_NAME)
+    await composioMcpClient.close()
+    composioMcpClient = null
+    registeredProxyToolNames.clear()
     console.log('[Composio] Disconnected from MCP endpoint')
   } catch (err: any) {
     console.error(`[Composio] Error disconnecting: ${err.message}`)
   }
+}
+
+/**
+ * Check if the private Composio MCP connection is active.
+ */
+export function isComposioConnected(): boolean {
+  return composioMcpClient !== null
 }
 
 /**
@@ -257,4 +287,177 @@ export function getComposio(): Composio | null {
  */
 export function buildComposioUserId(userId: string, projectId: string): string {
   return `shogo_${userId}_${projectId}`
+}
+
+// ---------------------------------------------------------------------------
+// Proxy tool registration
+// ---------------------------------------------------------------------------
+
+function textResult(data: any): AgentToolResult<any> {
+  return {
+    content: [{ type: 'text', text: typeof data === 'string' ? data : JSON.stringify(data) }],
+    details: data,
+  }
+}
+
+/**
+ * Dynamically register proxy AgentTools for each action in a Composio toolkit.
+ * Each proxy tool calls COMPOSIO_MULTI_EXECUTE_TOOL internally via the private connection.
+ * Tool names are the raw Composio slugs (e.g. GOOGLECALENDAR_CREATE_EVENT).
+ */
+export async function registerToolkitProxyTools(
+  mcpClientManager: MCPClientManager,
+  toolkitSlug: string,
+): Promise<{ toolNames: string[]; toolCount: number }> {
+  const prefix = `${toolkitSlug.toUpperCase()}_`
+  const alreadyRegistered = [...registeredProxyToolNames].filter(n => n.startsWith(prefix))
+  if (alreadyRegistered.length > 0) {
+    console.log(`[Composio] Toolkit "${toolkitSlug}" already has ${alreadyRegistered.length} proxy tools registered`)
+    return { toolNames: alreadyRegistered, toolCount: alreadyRegistered.length }
+  }
+
+  const schemas = await fetchComposioToolSchemas(toolkitSlug)
+  const nonDeprecated = schemas.filter(s => !s.is_deprecated)
+
+  if (nonDeprecated.length === 0) {
+    console.warn(`[Composio] No tools found for toolkit "${toolkitSlug}"`)
+    return { toolNames: [], toolCount: 0 }
+  }
+
+  const proxyTools: AgentTool[] = nonDeprecated.map(schema => createProxyTool(schema))
+  mcpClientManager.addProxyTools(proxyTools)
+
+  const toolNames = proxyTools.map(t => t.name)
+  for (const n of toolNames) registeredProxyToolNames.add(n)
+  console.log(`[Composio] Registered ${toolNames.length} proxy tools for "${toolkitSlug}"`)
+  return { toolNames, toolCount: toolNames.length }
+}
+
+function createProxyTool(schema: ComposioToolSchema): AgentTool {
+  const { Type } = require('@sinclair/typebox')
+
+  let parameters: any = Type.Object({})
+  if (schema.input_parameters?.properties) {
+    const props: Record<string, any> = {}
+    const required = new Set(schema.input_parameters.required || [])
+    for (const [key, prop] of Object.entries(schema.input_parameters.properties)) {
+      const tb = jsonSchemaPropertyToTypebox(prop)
+      props[key] = required.has(key) ? tb : Type.Optional(tb)
+    }
+    parameters = Type.Object(props)
+  }
+
+  return {
+    name: schema.slug,
+    description: schema.description || `Composio tool: ${schema.slug}`,
+    label: `composio: ${schema.slug}`,
+    parameters,
+    execute: async (_toolCallId: string, params: unknown) => {
+      if (!composioMcpClient) {
+        return textResult({ error: 'Composio MCP not connected. Call tool_install first.' })
+      }
+      const args = (params && typeof params === 'object') ? params as Record<string, any> : {}
+      try {
+        const result = await composioMcpClient.callTool({
+          name: 'COMPOSIO_MULTI_EXECUTE_TOOL',
+          arguments: { tools: [{ tool_slug: schema.slug, arguments: args }] },
+        })
+
+        const texts = (result.content as any[])
+          ?.filter((c: any) => c.type === 'text')
+          .map((c: any) => c.text)
+          .join('\n') || ''
+
+        if (result.isError) {
+          return textResult({ error: texts || `Tool ${schema.slug} returned an error` })
+        }
+
+        let raw = texts || JSON.stringify(result.content)
+        const MAX_CHARS = 12000
+        if (raw.length > MAX_CHARS) {
+          const headSize = Math.floor(MAX_CHARS * 0.75)
+          const tailSize = Math.max(0, MAX_CHARS - headSize - 100)
+          const omitted = raw.length - headSize - tailSize
+          raw = raw.substring(0, headSize)
+            + `\n\n[... ${omitted} chars truncated ...]\n\n`
+            + (tailSize > 0 ? raw.substring(raw.length - tailSize) : '')
+        }
+
+        return textResult(raw)
+      } catch (err: any) {
+        return textResult({ error: `Tool "${schema.slug}" failed: ${err.message}` })
+      }
+    },
+  } as AgentTool
+}
+
+function jsonSchemaPropertyToTypebox(p: Record<string, any>): any {
+  const { Type } = require('@sinclair/typebox')
+  switch (p.type) {
+    case 'string':
+      return Type.String({ description: p.description })
+    case 'number':
+    case 'integer':
+      return Type.Number({ description: p.description })
+    case 'boolean':
+      return Type.Boolean({ description: p.description })
+    case 'array': {
+      const itemSchema = p.items
+        ? jsonSchemaPropertyToTypebox(p.items as Record<string, any>)
+        : Type.Any()
+      return Type.Array(itemSchema, { description: p.description })
+    }
+    case 'object': {
+      if (p.properties) {
+        const props: Record<string, any> = {}
+        const required = new Set(p.required || [])
+        for (const [key, prop] of Object.entries(p.properties as Record<string, any>)) {
+          const tb = jsonSchemaPropertyToTypebox(prop)
+          props[key] = required.has(key) ? tb : Type.Optional(tb)
+        }
+        return Type.Object(props, { description: p.description })
+      }
+      return Type.Any({ description: p.description })
+    }
+    default:
+      return Type.Any({ description: p.description })
+  }
+}
+
+/**
+ * Check auth status for a Composio toolkit by calling MANAGE_CONNECTIONS internally.
+ */
+export async function checkComposioAuth(
+  toolkitSlug: string,
+): Promise<{ status: 'active' | 'needs_auth'; authUrl?: string }> {
+  if (!composioMcpClient) {
+    return { status: 'needs_auth' }
+  }
+  try {
+    const result = await composioMcpClient.callTool({
+      name: 'COMPOSIO_MANAGE_CONNECTIONS',
+      arguments: { toolkits: [toolkitSlug] },
+    })
+
+    const texts = (result.content as any[])
+      ?.filter((c: any) => c.type === 'text')
+      .map((c: any) => c.text)
+      .join('\n') || ''
+
+    let parsed: any
+    try { parsed = JSON.parse(texts) } catch { parsed = {} }
+
+    if (parsed?.status === 'active' || texts.includes('"active"')) {
+      return { status: 'active' }
+    }
+
+    const urlMatch = texts.match(/https:\/\/[^\s"]+connect[^\s"]*/i)
+    return {
+      status: 'needs_auth',
+      authUrl: urlMatch?.[0] || parsed?.authUrl || parsed?.redirect_url,
+    }
+  } catch (err: any) {
+    console.error(`[Composio] Auth check failed for "${toolkitSlug}": ${err.message}`)
+    return { status: 'needs_auth' }
+  }
 }

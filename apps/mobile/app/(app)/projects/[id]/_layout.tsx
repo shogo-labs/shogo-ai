@@ -57,7 +57,7 @@ import {
   StatusPanel,
   ChannelsPanel,
   SkillsPanel,
-  MCPServersPanel,
+  ToolsPanel,
   WorkspacePanel,
   FilesBrowserPanel,
   AnalyticsPanel,
@@ -448,7 +448,7 @@ export default observer(function ProjectLayout() {
               <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
               <WorkspacePanel visible={previewTab === 'workspace'} projectId={projectId!} agentUrl={agentUrl} />
               <SkillsPanel visible={previewTab === 'skills'} projectId={projectId!} agentUrl={agentUrl} />
-              <MCPServersPanel visible={previewTab === 'mcp-servers'} projectId={projectId!} agentUrl={agentUrl} />
+              <ToolsPanel visible={previewTab === 'tools'} projectId={projectId!} agentUrl={agentUrl} />
               <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} />
               <AnalyticsPanel visible={previewTab === 'analytics'} projectId={projectId!} agentUrl={agentUrl} />
               <LogsPanel visible={previewTab === 'logs'} projectId={projectId!} agentUrl={agentUrl} />
@@ -505,7 +505,7 @@ export default observer(function ProjectLayout() {
               <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
               <WorkspacePanel visible={previewTab === 'workspace'} projectId={projectId!} agentUrl={agentUrl} />
               <SkillsPanel visible={previewTab === 'skills'} projectId={projectId!} agentUrl={agentUrl} />
-              <MCPServersPanel visible={previewTab === 'mcp-servers'} projectId={projectId!} agentUrl={agentUrl} />
+              <ToolsPanel visible={previewTab === 'tools'} projectId={projectId!} agentUrl={agentUrl} />
               <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} />
               <AnalyticsPanel visible={previewTab === 'analytics'} projectId={projectId!} agentUrl={agentUrl} />
               <LogsPanel visible={previewTab === 'logs'} projectId={projectId!} agentUrl={agentUrl} />

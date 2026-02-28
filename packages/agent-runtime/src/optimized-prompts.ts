@@ -215,22 +215,22 @@ Consider the skill's description and purpose, not only trigger phrases.
 **No match:**
 - "what's the weather like today" → no skill matches (confidence: 0.05)`
 
-export const OPTIMIZED_MCP_DISCOVERY_GUIDE = `## MCP Server Discovery & Self-Extension
+export const OPTIMIZED_MCP_DISCOVERY_GUIDE = `## Tool Discovery & Self-Extension
 
-You can discover and install MCP servers at runtime to gain new capabilities.
-MCP servers provide specialized tools for databases, APIs, browser automation,
+You can discover and install tools at runtime to gain new capabilities.
+Tools provide specialized capabilities for databases, APIs, browser automation,
 file processing, messaging platforms, travel services, and more.
 
-### Composio Managed Integrations (Preferred)
+### Managed Integrations (Preferred)
 
 Hundreds of integrations (Google, Slack, GitHub, Linear, Notion, Jira, and many
-more) are available via **Composio managed OAuth**. These require NO manual
+more) are available as **managed OAuth integrations**. These require NO manual
 credentials or API keys — authentication is handled automatically.
 
-**Always prefer Composio integrations** when available. To use them:
-- Call \`mcp_search\` — Composio results appear with source "composio"
-- Call \`mcp_install({ name: "<toolkit-slug>" })\` — no command or args needed
-- Tools become available immediately with prefix "mcp_composio_"
+**Always prefer managed integrations** when available. To use them:
+- Call \`tool_search\` — managed results appear with source "managed"
+- Call \`tool_install({ name: "<integration-slug>" })\` — no command or args needed
+- Tools become available immediately
 
 ### Skill Shortcut
 
@@ -238,16 +238,15 @@ When the user message starts with \`[Skill: ...]\`, a saved skill provides
 setup instructions, tool slugs, and execution steps. Follow the skill
 instructions directly for that integration:
 
-- **DO** call \`mcp_install\` if the skill says to (ensures the server is connected)
-- **DO** call \`COMPOSIO_MANAGE_CONNECTIONS\` if the skill says to (ensures auth)
-- **GO STRAIGHT** to execution using the tool slugs listed in the skill
+- **DO** call \`tool_install\` if the skill says to (ensures the integration is connected and auth is checked automatically)
+- **GO STRAIGHT** to execution using the tool names listed in the skill
 
-You can still use \`mcp_search\` if the user also needs integrations not covered
+You can still use \`tool_search\` if the user also needs integrations not covered
 by the loaded skill (e.g. the skill handles Gmail but the user also asks about Calendar).
 
 ### When to Search
 
-Search for MCP servers (mcp_search) when any of these situations apply:
+Search for tools (tool_search) when any of these situations apply:
 
 1. **Explicit service mention**: The user mentions a specific platform or service
    (e.g. Airbnb, GitHub, Slack, Google Calendar) — search for it BEFORE building.
@@ -257,44 +256,67 @@ Search for MCP servers (mcp_search) when any of these situations apply:
    they want actual results — not mock data.
 3. **Missing capability**: The task requires tools you don't currently have
    (e.g. database queries, browser automation, file access).
+4. **Data population**: Before seeding any canvas with fabricated data, consider
+   whether a real data source could provide the information. If the user asks to
+   "show my tasks", "list my emails", "track expenses", "show my calendar",
+   etc., search for an integration first — do NOT invent sample data.
 
-**IMPORTANT**: When no skill is loaded (no \`[Skill: ...]\` prefix) and a user
-references an external service by name, search for a relevant MCP server first
-and install it to fetch real data. Do NOT substitute with placeholder/seeded
-data when a real integration exists.
+**DEFAULT BEHAVIOR**: Always prefer real data. Only use fabricated/sample data
+when the user explicitly requests demo data (e.g. "use fake data", "show sample
+data", "use placeholder content") or the request is for a generic app with no
+natural real data source (e.g. "build me a todo app"). When in doubt, ask the
+user whether they want real data from a connected service or sample data.
+
+Do NOT substitute with placeholder/seeded data when a real integration exists.
 
 ### Decision Flow
 
 1. **Scan the request** for service names, data sources, or API references
-2. **Check what you have**: mcp_list_installed — you may already have the tools
-3. **Search**: mcp_search with the service name — results include Composio and npm
-4. **Prefer Composio**: if search returns a Composio result (source: "composio"),
-   use it — just call mcp_install with the name, no command/args needed
-5. **Install**: mcp_install the best match — tools become available immediately
+2. **Check what you have**: tool_list — you may already have the tools
+3. **Search**: tool_search with the service name — results include managed integrations and npm
+4. **Prefer managed**: if search returns a managed result (source: "managed"),
+   use it — just call tool_install with the name, no command/args needed
+5. **Install**: tool_install the best match — tools become available immediately
 6. **Use**: call the new tools to fetch real data, then build the UI around it
+7. **Bind to canvas**: if building a canvas with this data, bind the tool's CRUD
+   operations directly to the canvas for live data updates (instead of
+   canvas_api_schema which stores a static snapshot). Three options:
+
+   **a) autoBind (preferred for managed integrations)** — pass autoBind on tool_install:
+   \`tool_install({ name: "googlecalendar", autoBind: { surfaceId: "my-app", dataPath: "/events" } })\`
+   This auto-discovers the toolkit's CRUD operations, generates field schemas, and
+   binds them to canvas API routes — no prior knowledge of the response shape needed.
+   If the surface doesn't exist yet, the binding is deferred until canvas_create.
+
+   **b) bind (when you know the shape)** — pass explicit bind config on tool_install:
+   \`tool_install({ name: "googlecalendar", bind: { surfaceId: "my-app", model: "CalendarEvent", fields: [...], bindings: {...}, dataPath: "/events" } })\`
+   Use when a saved skill provides the exact tool names, fields, and resultPath.
+
+   **c) canvas_api_bind (after exploring tools)** — call separately after install:
+   Use when you need to manually explore tool responses first to understand the shape.
 
 ### Safety
 
-- Only install well-known servers from npm with clear descriptions and known publishers
-- Never install servers that require secrets you don't have unless the user provides them
-- If a server fails to start, report the error and suggest alternatives
+- Only install well-known tools from npm with clear descriptions and known publishers
+- Never install tools that require secrets you don't have unless the user provides them
+- If a tool fails to start, report the error and suggest alternatives
 
 ### Examples
 
-- User: "Show my Google Calendar events" → mcp_search("google calendar"), install the Composio result, use tools
-- User: "Find me an Airbnb in Bali" → mcp_search("airbnb"), mcp_install, use airbnb_search
-- User: "Query my Postgres database" → mcp_search("postgres"), mcp_install, use mcp_postgres_query
-- User: "Check my GitHub PRs" → mcp_search("github"), install the Composio result, use tools
-- User: "Send a Slack message" → mcp_search("slack"), install the Composio result, use tools
+- User: "Show my Google Calendar events" → tool_search("google calendar"), install the managed result, use tools
+- User: "Find me an Airbnb in Bali" → tool_search("airbnb"), tool_install, use airbnb_search
+- User: "Query my Postgres database" → tool_search("postgres"), tool_install, use postgres_query
+- User: "Check my GitHub PRs" → tool_search("github"), install the managed result, use tools
+- User: "Send a Slack message" → tool_search("slack"), install the managed result, use tools
 
 ### IMPORTANT: Always Save Skills After Successful Integrations
 
-**You MUST save a skill file after every successful MCP or Composio integration.**
+**You MUST save a skill file after every successful tool integration.**
 This is a critical part of your workflow — do not skip it. After you use tools from
-an MCP server or Composio to fulfill the user's request, you MUST save the tool
+an installed integration to fulfill the user's request, you MUST save the tool
 flow as a skill before finishing your response. Do this in the same turn — do not
-wait for the user to ask. This applies to BOTH Composio integrations AND local
-MCP servers (like Airbnb, Postgres, etc.).
+wait for the user to ask. This applies to BOTH managed integrations AND custom
+tool servers (like Airbnb, Postgres, etc.).
 
 Use \`write_file\` to save the skill. Do NOT save skills for failed or errored flows.
 
@@ -313,19 +335,18 @@ name: {descriptive-name}
 version: 1.0.0
 description: {what this skill does}
 trigger: "{broad keyword1}|{broad keyword2}|{broad keyword3}|{broad keyword4}"
-tools: [{tools used — e.g. mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL, mcp_install, etc.}]
+tools: [{tools used — list tool names from tool_list}]
 ---
 # {Descriptive Name}
 
 ## Setup
-{For Composio: mcp_install({ name: "{toolkit}" }) then COMPOSIO_MANAGE_CONNECTIONS}
-{For local MCP: mcp_install({ name: "{server}", command: "{cmd}", args: [...] })}
+{For managed: tool_install({ name: "{integration}" }) — auth is checked automatically}
+{For custom: tool_install({ name: "{server}", command: "{cmd}", args: [...] })}
 
 ## Available Tools
-{For Composio: list ALL discovered tool slugs with descriptions, e.g.:
+{List ALL discovered tool slugs with descriptions, e.g.:
 - GOOGLECALENDAR_LIST_EVENTS — list events from a calendar
 - GOOGLECALENDAR_CREATE_EVENT — create a new event}
-{For local MCP: list mcp_{server}_{tool} names with descriptions}
 
 ## Execution
 {How to use the tools — include example calls}

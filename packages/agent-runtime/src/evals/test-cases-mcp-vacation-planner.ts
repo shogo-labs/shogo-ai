@@ -4,8 +4,8 @@
  * End-to-end scenario: user asks for a vacation planning dashboard with real
  * Airbnb listings. The agent must:
  *
- * 1. Proactively discover the Airbnb MCP via mcp_search
- * 2. Install it via mcp_install
+ * 1. Proactively discover the Airbnb MCP via tool_search
+ * 2. Install it via tool_install
  * 3. Use the Airbnb search tool to find real listings
  * 4. Build a Canvas dashboard displaying the listings
  * 5. Use mutation method "OPEN" for external Airbnb links (not href)
@@ -85,10 +85,10 @@ export const MCP_VACATION_PLANNER_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'discovered-airbnb-mcp',
-        description: 'Used mcp_search to find the Airbnb MCP server',
+        description: 'Used tool_search to find the Airbnb MCP server',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_search'),
+        validate: (r) => usedTool(r, 'tool_search'),
       },
       {
         id: 'search-mentions-airbnb',
@@ -102,10 +102,10 @@ export const MCP_VACATION_PLANNER_EVALS: AgentEval[] = [
       },
       {
         id: 'installed-airbnb-mcp',
-        description: 'Used mcp_install to add the Airbnb MCP server',
+        description: 'Used tool_install to add the Airbnb MCP server',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_install'),
+        validate: (r) => usedTool(r, 'tool_install'),
       },
       {
         id: 'correct-discovery-sequence',
@@ -113,8 +113,8 @@ export const MCP_VACATION_PLANNER_EVALS: AgentEval[] = [
         points: 5,
         phase: 'execution',
         validate: (r) => {
-          const searchIdx = r.toolCalls.findIndex(t => t.name === 'mcp_search')
-          const installIdx = r.toolCalls.findIndex(t => t.name === 'mcp_install')
+          const searchIdx = r.toolCalls.findIndex(t => t.name === 'tool_search')
+          const installIdx = r.toolCalls.findIndex(t => t.name === 'tool_install')
           const useIdx = r.toolCalls.findIndex(t => t.name === 'mcp_airbnb_airbnb_search')
           return searchIdx >= 0 && installIdx > searchIdx && useIdx > installIdx
         },
@@ -269,14 +269,14 @@ export const MCP_VACATION_PLANNER_EVALS: AgentEval[] = [
         description: 'Proactively searched for an Airbnb MCP without being told',
         points: 30,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_search'),
+        validate: (r) => usedTool(r, 'tool_search'),
       },
       {
         id: 'installed-airbnb',
         description: 'Installed the Airbnb MCP server',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_install'),
+        validate: (r) => usedTool(r, 'tool_install'),
       },
       {
         id: 'used-airbnb-search',
@@ -291,8 +291,8 @@ export const MCP_VACATION_PLANNER_EVALS: AgentEval[] = [
         points: 10,
         phase: 'execution',
         validate: (r) => {
-          const searchIdx = r.toolCalls.findIndex(t => t.name === 'mcp_search')
-          const installIdx = r.toolCalls.findIndex(t => t.name === 'mcp_install')
+          const searchIdx = r.toolCalls.findIndex(t => t.name === 'tool_search')
+          const installIdx = r.toolCalls.findIndex(t => t.name === 'tool_install')
           const useIdx = r.toolCalls.findIndex(t => t.name === 'mcp_airbnb_airbnb_search')
           return searchIdx >= 0 && installIdx > searchIdx && useIdx > installIdx
         },

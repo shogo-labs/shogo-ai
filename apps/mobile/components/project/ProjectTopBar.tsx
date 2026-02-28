@@ -5,7 +5,7 @@
  *
  * Layout:
  *  - Left: Back button, project name + "Agent project" subtitle, chat history toggle, chat collapse toggle
- *  - Center: Tab buttons (Canvas, Status, Workspace, Skills, MCP Servers, Channels, Analytics, Logs)
+ *  - Center: Tab buttons (Canvas, Status, Workspace, Skills, Tools, Channels, Analytics, Logs)
  *  - Right: GitHub icon (app only), Upgrade button, Publish button (app only)
  */
 
@@ -49,7 +49,7 @@ const AGENT_TABS = [
   { id: 'files', label: 'Files' },
   { id: 'workspace', label: 'Workspace' },
   { id: 'skills', label: 'Skills' },
-  { id: 'mcp-servers', label: 'MCP Servers' },
+  { id: 'tools', label: 'Tools' },
   { id: 'channels', label: 'Channels' },
   { id: 'analytics', label: 'Analytics' },
   { id: 'logs', label: 'Logs' },

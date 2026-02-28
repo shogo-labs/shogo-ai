@@ -17,7 +17,8 @@ import { sandboxExec } from './sandbox-exec'
 import { MemorySearchEngine } from './memory-search'
 import { FileIndexEngine } from './file-index-engine'
 import { MCP_CATALOG } from './mcp-catalog'
-import { connectComposioMCP, isComposioEnabled, searchComposioToolkits, findComposioToolkit } from './composio'
+import { connectComposioMCP, isComposioEnabled, isComposioConnected, searchComposioToolkits, findComposioToolkit, registerToolkitProxyTools, checkComposioAuth } from './composio'
+import { autoBindPrimaryEntity } from './composio-auto-bind'
 import { getDynamicAppManager, getByPointer } from './dynamic-app-manager'
 import {
   CANVAS_COMPONENT_SCHEMA,
@@ -1224,7 +1225,10 @@ STEP 1: canvas_api_schema — define your model
   }]})
   → Creates endpoints: GET/POST /api/tasks, GET/PATCH/DELETE /api/tasks/:id
 
-STEP 2: canvas_api_seed — add sample data
+STEP 2: Populate data — PREFER real data from MCP/Composio tools or uploaded files.
+  Use mcp_search to find integrations, then canvas_api_seed with the real results.
+  Only use fabricated sample data if the user explicitly requests it or no real source is available.
+  Fallback example (sample data only):
   canvas_api_seed({ surfaceId: "my_app", model: "Task", records: [
     { title: "Buy groceries" }, { title: "Walk the dog", status: "done" }
   ]})
@@ -1316,7 +1320,7 @@ function createCanvasApiSeedTool(): AgentTool {
   return {
     name: 'canvas_api_seed',
     description:
-      'Bulk insert records into a model\'s table. Use after canvas_api_schema to populate initial data. Records can omit the id field (auto-generated). Use upsert=true to update existing records by id.',
+      'Bulk insert records into a model\'s table. Use after canvas_api_schema to populate data. PREFER inserting real data fetched from MCP/Composio tools or uploaded files. Only use fabricated sample data if the user explicitly asks for demo/fake data or no real data source exists. Records can omit the id field (auto-generated). Use upsert=true to update existing records by id.',
     label: 'Seed API Data',
     parameters: Type.Object({
       surfaceId: Type.String({ description: 'Surface ID' }),
@@ -1483,6 +1487,139 @@ RULES:
         if (!defs[key]) delete defs[key]
       }
       const result = manager.registerHooks(surfaceId, model, defs)
+      return textResult(result)
+    },
+  }
+}
+
+function createCanvasApiBindTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'canvas_api_bind',
+    description: `Bind CRUD API routes to installed tools so the canvas can display live data from integrations.
+
+Instead of seeding local data, this creates REST endpoints that proxy directly to tool calls.
+The canvas binds to these endpoints identically to SQLite-backed models.
+
+EXAMPLE — Bind Google Calendar events to the canvas:
+
+1. Install the integration:
+   tool_install({ name: "googlecalendar" })
+
+2. Bind tool operations to CRUD routes:
+   canvas_api_bind({
+     surfaceId: "app",
+     model: "CalendarEvent",
+     fields: [
+       { name: "summary", type: "String" },
+       { name: "start", type: "DateTime" },
+       { name: "end", type: "DateTime" }
+     ],
+     bindings: {
+       list: {
+         tool: "GOOGLECALENDAR_LIST_EVENTS",
+         params: { calendar_id: "primary" },
+         resultPath: "items"
+       },
+       create: {
+         tool: "GOOGLECALENDAR_CREATE_EVENT",
+         paramMap: { summary: "summary", start: "start", end: "end" }
+       }
+     },
+     cache: { enabled: true, ttlSeconds: 60 },
+     dataPath: "/events"
+   })
+   → Creates: GET /api/calendar-events (calls list tool), POST /api/calendar-events (calls create tool)
+   → Data auto-loaded at "/events" for { path: "/events" } bindings
+
+3. Build UI with data binding:
+   { component: "DataList", children: { path: "/events", templateId: "event_card" } }
+
+Use dataPath to auto-load list data into the surface data model (replaces separate canvas_api_query call):
+   canvas_api_bind({ surfaceId: "app", model: "CalendarEvent", ..., dataPath: "/events" })
+   → Data auto-loaded at "/events", ready for { path: "/events" } bindings
+
+BINDING OPERATIONS:
+- list: Fetches all items. Use resultPath to extract the array from the tool response.
+- get: Fetches a single item by ID.
+- create: Creates an item. paramMap maps model field names to tool parameter names.
+- update: Updates an item. Use ":id" in paramMap values to interpolate the route ID.
+- delete: Deletes an item.
+
+Only bind operations the tool actually supports. Read-only tools can use just "list".`,
+    label: 'Bind Tools to API',
+    parameters: Type.Object({
+      surfaceId: Type.String({ description: 'Surface ID (must exist via canvas_create)' }),
+      model: Type.String({ description: 'Model name in PascalCase (e.g. "CalendarEvent", "GitHubIssue")' }),
+      fields: Type.Array(
+        Type.Object({
+          name: Type.String({ description: 'Field name' }),
+          type: Type.Union([
+            Type.Literal('String'), Type.Literal('Int'), Type.Literal('Float'),
+            Type.Literal('Boolean'), Type.Literal('DateTime'), Type.Literal('Json'),
+          ], { description: 'Field type' }),
+        }),
+        { description: 'Field definitions describing the shape of items from the tool' },
+      ),
+      bindings: Type.Object({
+        list: Type.Optional(Type.Object({
+          tool: Type.String({ description: 'Full tool name for listing items' }),
+          params: Type.Optional(Type.Any({ description: 'Static params to pass to the tool' })),
+          resultPath: Type.Optional(Type.String({ description: 'Dot-path to extract items array from result (e.g. "items", "data.events")' })),
+        })),
+        get: Type.Optional(Type.Object({
+          tool: Type.String({ description: 'Full tool name for getting a single item' }),
+          params: Type.Optional(Type.Any()),
+          paramMap: Type.Optional(Type.Any({ description: 'Maps tool params to model fields. Use ":id" for the route ID.' })),
+        })),
+        create: Type.Optional(Type.Object({
+          tool: Type.String({ description: 'Full tool name for creating an item' }),
+          params: Type.Optional(Type.Any()),
+          paramMap: Type.Optional(Type.Any({ description: 'Maps tool params to model field names' })),
+        })),
+        update: Type.Optional(Type.Object({
+          tool: Type.String({ description: 'Full tool name for updating an item' }),
+          params: Type.Optional(Type.Any()),
+          paramMap: Type.Optional(Type.Any({ description: 'Maps tool params to model fields. Use ":id" for the route ID.' })),
+        })),
+        delete: Type.Optional(Type.Object({
+          tool: Type.String({ description: 'Full tool name for deleting an item' }),
+          params: Type.Optional(Type.Any()),
+          paramMap: Type.Optional(Type.Any({ description: 'Maps tool params. Use ":id" for the route ID.' })),
+        })),
+      }, { description: 'Map CRUD operations to tool calls' }),
+      cache: Type.Optional(Type.Object({
+        enabled: Type.Boolean({ description: 'Enable caching for list results (default: false)' }),
+        ttlSeconds: Type.Optional(Type.Number({ description: 'Cache TTL in seconds (default: 60)' })),
+      })),
+      dataPath: Type.Optional(Type.String({ description: 'JSON Pointer path to auto-load list data into the surface data model (e.g. "/events"). Eliminates the need for a separate canvas_api_query call.' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { surfaceId, model, fields, bindings, cache, dataPath } = params as any
+
+      if (!ctx.mcpClientManager) {
+        return textResult({ error: 'Tool manager not available' })
+      }
+
+      const availableTools = ctx.mcpClientManager.getTools().map(t => t.name)
+      const boundTools = [
+        bindings.list?.tool, bindings.get?.tool, bindings.create?.tool,
+        bindings.update?.tool, bindings.delete?.tool,
+      ].filter(Boolean)
+
+      const missing = boundTools.filter((t: string) => !availableTools.includes(t))
+      if (missing.length > 0) {
+        return textResult({ error: `Tool(s) not found: ${missing.join(', ')}. Use tool_list to see available tools.` })
+      }
+
+      const manager = getDynamicAppManager()
+      const result = manager.bindToolApi(surfaceId, {
+        model,
+        fields,
+        bindings,
+        cache,
+        dataPath,
+      }, ctx.mcpClientManager)
+
       return textResult(result)
     },
   }
@@ -2033,11 +2170,11 @@ function isMcpCommandBlocked(command: string, args: string[]): boolean {
   })
 }
 
-function createMcpSearchTool(): AgentTool {
+function createToolSearchTool(): AgentTool {
   return {
-    name: 'mcp_search',
-    description: 'Search for MCP servers and integrations by capability or keyword. Searches the built-in catalog, Composio managed integrations (hundreds of OAuth-based services — no credentials needed), and npm. Composio integrations are preferred when available.',
-    label: 'MCP: Search Registry',
+    name: 'tool_search',
+    description: 'Search for tools and integrations by capability or keyword. Searches the built-in catalog, managed OAuth integrations (hundreds of services — no credentials needed), and npm. Managed integrations are preferred when available.',
+    label: 'Search Tools',
     parameters: Type.Object({
       query: Type.String({ description: 'Search query describing the capability you need (e.g. "google calendar", "slack messaging", "postgres database")' }),
       limit: Type.Optional(Type.Number({ description: 'Max results to return (default: 5)' })),
@@ -2059,8 +2196,8 @@ function createMcpSearchTool(): AgentTool {
               name: tk.name,
               id: tk.slug,
               description: `${tk.name} — managed OAuth integration via Composio. No API keys or credentials needed.`,
-              installCommand: `mcp_install({ name: "${tk.slug}" })`,
-              source: 'composio',
+              installCommand: `tool_install({ name: "${tk.slug}" })`,
+              source: 'managed',
               logo: tk.logo,
             })
           }
@@ -2123,13 +2260,13 @@ function createMcpSearchTool(): AgentTool {
       } catch { /* npm unavailable */ }
 
       if (results.length === 0) {
-        return textResult({ query, results: [], message: 'No MCP servers found. Try a different search term.' })
+        return textResult({ query, results: [], message: 'No tools found. Try a different search term.' })
       }
 
-      const composioCount = results.filter(r => r.source === 'composio').length
-      let message = `Found ${results.length} result(s). Use mcp_install to add one.`
-      if (composioCount > 0) {
-        message = `Found ${results.length} result(s). ${composioCount} are Composio managed integrations (no credentials needed) — prefer these. Just call mcp_install with the name.`
+      const managedCount = results.filter(r => r.source === 'managed').length
+      let message = `Found ${results.length} result(s). Use tool_install to add one.`
+      if (managedCount > 0) {
+        message = `Found ${results.length} result(s). ${managedCount} are managed integrations (no credentials needed) — prefer these. Just call tool_install with the name.`
       }
 
       return textResult({ query, results, message })
@@ -2137,37 +2274,120 @@ function createMcpSearchTool(): AgentTool {
   }
 }
 
-function createMcpInstallTool(ctx: ToolContext): AgentTool {
+function createToolInstallTool(ctx: ToolContext): AgentTool {
   return {
-    name: 'mcp_install',
-    description: 'Install and start an MCP server or Composio integration, making its tools available immediately. For Composio integrations (Google Calendar, Slack, GitHub, and hundreds more), just provide the name — no command or args needed. For local MCP servers, provide command and args.',
-    label: 'MCP: Install Server',
+    name: 'tool_install',
+    description: `Install and start a tool integration, making its tools available immediately. For managed integrations (Google Calendar, Slack, GitHub, and hundreds more), just provide the name — no command or args needed. For custom tool servers, provide command and args.
+
+Pass "autoBind" with a surfaceId and dataPath to automatically discover the toolkit's CRUD operations, generate field schemas, and bind them to canvas API routes — no prior knowledge of the tool's response shape needed. Works with any managed Composio integration.
+
+Alternatively, pass "bind" with explicit config if you already know the tool's response shape (e.g. from a saved skill). If the surface doesn't exist yet, the binding is deferred until canvas_create.`,
+    label: 'Install Tool',
     parameters: Type.Object({
-      name: Type.String({ description: 'Server or integration name (e.g. "googlecalendar", "slack", "postgres"). For Composio integrations, this is all you need.' }),
-      command: Type.Optional(Type.String({ description: 'Command to run a local MCP server (e.g. "npx"). Not needed for Composio integrations.' })),
-      args: Type.Optional(Type.Array(Type.String(), { description: 'Command arguments. Not needed for Composio integrations.' })),
+      name: Type.String({ description: 'Tool or integration name (e.g. "googlecalendar", "slack", "postgres"). For managed integrations, this is all you need.' }),
+      command: Type.Optional(Type.String({ description: 'Command to run a custom tool server (e.g. "npx"). Not needed for managed integrations.' })),
+      args: Type.Optional(Type.Array(Type.String(), { description: 'Command arguments. Not needed for managed integrations.' })),
       env: Type.Optional(Type.Any({ description: 'Environment variables for the server process' })),
+      autoBind: Type.Optional(Type.Object({
+        surfaceId: Type.String({ description: 'Surface ID to bind to (deferred if surface does not exist yet)' }),
+        dataPath: Type.Optional(Type.String({ description: 'JSON Pointer path to auto-load list data (e.g. "/events")' })),
+      }, { description: 'Auto-discover the toolkit\'s CRUD operations and bind to canvas API routes. No prior knowledge needed — schemas are introspected from the Composio API.' })),
+      bind: Type.Optional(Type.Object({
+        surfaceId: Type.String({ description: 'Surface ID to bind to (deferred if surface does not exist yet)' }),
+        model: Type.String({ description: 'Model name in PascalCase (e.g. "CalendarEvent")' }),
+        fields: Type.Array(Type.Object({
+          name: Type.String(),
+          type: Type.Union([
+            Type.Literal('String'), Type.Literal('Int'), Type.Literal('Float'),
+            Type.Literal('Boolean'), Type.Literal('DateTime'), Type.Literal('Json'),
+          ]),
+        })),
+        bindings: Type.Object({
+          list: Type.Optional(Type.Object({
+            tool: Type.String(),
+            params: Type.Optional(Type.Any()),
+            resultPath: Type.Optional(Type.String()),
+          })),
+          get: Type.Optional(Type.Object({ tool: Type.String(), params: Type.Optional(Type.Any()), paramMap: Type.Optional(Type.Any()) })),
+          create: Type.Optional(Type.Object({ tool: Type.String(), params: Type.Optional(Type.Any()), paramMap: Type.Optional(Type.Any()) })),
+          update: Type.Optional(Type.Object({ tool: Type.String(), params: Type.Optional(Type.Any()), paramMap: Type.Optional(Type.Any()) })),
+          delete: Type.Optional(Type.Object({ tool: Type.String(), params: Type.Optional(Type.Any()), paramMap: Type.Optional(Type.Any()) })),
+        }),
+        cache: Type.Optional(Type.Object({
+          enabled: Type.Boolean(),
+          ttlSeconds: Type.Optional(Type.Number()),
+        })),
+        dataPath: Type.Optional(Type.String({ description: 'JSON Pointer path to auto-load list data (e.g. "/events")' })),
+      }, { description: 'Optional: bind installed tools to canvas CRUD API routes. Combines tool_install + canvas_api_bind in one call.' })),
     }),
     execute: async (_id: string, params: any) => {
-      const { name, command, args, env } = params as { name: string; command?: string; args?: string[]; env?: Record<string, string> }
+      const { name, command, args, env, bind, autoBind } = params as {
+        name: string; command?: string; args?: string[]; env?: Record<string, string>
+        bind?: any; autoBind?: { surfaceId: string; dataPath?: string }
+      }
 
       if (!ctx.mcpClientManager) {
         return textResult({ error: 'MCP client manager not available' })
       }
 
-      // Check if Composio remote server is already connected
-      if (ctx.mcpClientManager.isRunning('composio') && isComposioEnabled()) {
+      const applyBind = (installResult: Record<string, unknown>) => {
+        if (!bind || !ctx.mcpClientManager) return installResult
+        const manager = getDynamicAppManager()
+        const bindConfig = {
+          model: bind.model,
+          fields: bind.fields,
+          bindings: bind.bindings,
+          cache: bind.cache,
+          dataPath: bind.dataPath,
+        }
+        if (manager.getSurface(bind.surfaceId)) {
+          const bindResult = manager.bindToolApi(bind.surfaceId, bindConfig, ctx.mcpClientManager)
+          return { ...installResult, bind: bindResult }
+        }
+        manager.deferToolBinding(bind.surfaceId, bindConfig, ctx.mcpClientManager)
+        return { ...installResult, bind: { ok: true, deferred: true, surfaceId: bind.surfaceId, message: `Binding deferred — will apply when surface "${bind.surfaceId}" is created.` } }
+      }
+
+      const applyAutoBind = async (installResult: Record<string, unknown>, toolkitSlug: string) => {
+        if (!autoBind || !ctx.mcpClientManager) return installResult
+        try {
+          const result = await autoBindPrimaryEntity(toolkitSlug, {
+            dataPath: autoBind.dataPath,
+            mcpClient: ctx.mcpClientManager,
+          })
+          if (!result) {
+            return { ...installResult, autoBind: { ok: false, message: `Auto-bind: no bindable entities found for "${toolkitSlug}". Use canvas_api_bind manually after exploring the tools.` } }
+          }
+          const manager = getDynamicAppManager()
+          if (manager.getSurface(autoBind.surfaceId)) {
+            const bindResult = manager.bindToolApi(autoBind.surfaceId, result.config, ctx.mcpClientManager)
+            return { ...installResult, autoBind: { ok: true, entity: result.entity, config: result.config, discoveredFrom: result.discoveredFrom, tools: result.tools, ...bindResult } }
+          }
+          manager.deferToolBinding(autoBind.surfaceId, result.config, ctx.mcpClientManager)
+          return { ...installResult, autoBind: { ok: true, deferred: true, surfaceId: autoBind.surfaceId, entity: result.entity, config: result.config, discoveredFrom: result.discoveredFrom, tools: result.tools, message: `Auto-bind deferred — "${result.entity}" binding will apply when surface "${autoBind.surfaceId}" is created.` } }
+        } catch (err: any) {
+          return { ...installResult, autoBind: { ok: false, error: err.message, message: `Auto-bind failed: ${err.message}. Use canvas_api_bind manually.` } }
+        }
+      }
+
+      // Check if Composio is already connected
+      if (isComposioConnected() && isComposioEnabled()) {
         const composioToolkit = await findComposioToolkit(name)
         if (composioToolkit) {
-          const info = ctx.mcpClientManager.getServerInfo().find(s => s.name === 'composio')
-          return textResult({
+          const proxy = await registerToolkitProxyTools(ctx.mcpClientManager, composioToolkit.slug)
+          const auth = await checkComposioAuth(composioToolkit.slug)
+          let result = applyBind({
             ok: true,
             server: 'composio',
             integration: composioToolkit.slug,
-            toolCount: info?.toolCount || 0,
-            tools: info?.toolNames || [],
-            message: `"${composioToolkit.name}" is available via Composio managed integration (already connected with ${info?.toolCount || 0} tools). Tools are prefixed with "mcp_composio_". Use them now.`,
+            toolCount: proxy.toolCount,
+            tools: proxy.toolNames,
+            authStatus: auth.status,
+            ...(auth.authUrl ? { authUrl: auth.authUrl } : {}),
+            message: `"${composioToolkit.name}" installed with ${proxy.toolCount} tool(s).${auth.status === 'needs_auth' ? ` User needs to authorize: ${auth.authUrl}` : ' Auth is active.'}`,
           })
+          result = await applyAutoBind(result, composioToolkit.slug)
+          return textResult(result)
         }
       }
 
@@ -2182,17 +2402,22 @@ function createMcpInstallTool(ctx: ToolContext): AgentTool {
         if (composioToolkit) {
           try {
             const userId = process.env.USER_ID || 'default'
-            const connected = await connectComposioMCP(ctx.mcpClientManager, userId, ctx.projectId)
+            const connected = await connectComposioMCP(userId, ctx.projectId)
             if (connected) {
-              const info = ctx.mcpClientManager.getServerInfo().find(s => s.name === 'composio')
-              return textResult({
+              const proxy = await registerToolkitProxyTools(ctx.mcpClientManager, composioToolkit.slug)
+              const auth = await checkComposioAuth(composioToolkit.slug)
+              let result = applyBind({
                 ok: true,
                 server: 'composio',
                 integration: composioToolkit.slug,
-                toolCount: info?.toolCount || 0,
-                tools: info?.toolNames?.map(t => ({ name: t })) || [],
-                message: `Connected "${composioToolkit.name}" via Composio managed OAuth with ${info?.toolCount || 0} tool(s). No manual credentials needed. Tools are prefixed with "mcp_composio_".`,
+                toolCount: proxy.toolCount,
+                tools: proxy.toolNames,
+                authStatus: auth.status,
+                ...(auth.authUrl ? { authUrl: auth.authUrl } : {}),
+                message: `Connected "${composioToolkit.name}" via Composio managed OAuth with ${proxy.toolCount} tool(s).${auth.status === 'needs_auth' ? ` User needs to authorize: ${auth.authUrl}` : ' Auth is active. No manual credentials needed.'}`,
               })
+              result = await applyAutoBind(result, composioToolkit.slug)
+              return textResult(result)
             }
             return textResult({ error: `Failed to connect "${composioToolkit.name}" via Composio. The integration may not be available.` })
           } catch (err: any) {
@@ -2212,13 +2437,13 @@ function createMcpInstallTool(ctx: ToolContext): AgentTool {
 
       try {
         const tools = await ctx.mcpClientManager.hotAddServer(name, { command, args, env })
-        return textResult({
+        return textResult(applyBind({
           ok: true,
           server: name,
           toolCount: tools.length,
           tools: tools.map(t => ({ name: t.name, description: t.description })),
           message: `Installed "${name}" with ${tools.length} tool(s). They are now available for use.`,
-        })
+        }))
       } catch (err: any) {
         return textResult({ error: `Failed to install "${name}": ${err.message}` })
       }
@@ -2226,13 +2451,13 @@ function createMcpInstallTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createMcpUninstallTool(ctx: ToolContext): AgentTool {
+function createToolUninstallTool(ctx: ToolContext): AgentTool {
   return {
-    name: 'mcp_uninstall',
-    description: 'Stop and remove an installed MCP server. Its tools will no longer be available.',
-    label: 'MCP: Uninstall Server',
+    name: 'tool_uninstall',
+    description: 'Stop and remove an installed tool. Its tools will no longer be available.',
+    label: 'Uninstall Tool',
     parameters: Type.Object({
-      name: Type.String({ description: 'Server name to remove (use mcp_list_installed to see names)' }),
+      name: Type.String({ description: 'Tool name to remove (use tool_list to see names)' }),
     }),
     execute: async (_id: string, params: any) => {
       const name = params.name as string
@@ -2255,20 +2480,20 @@ function createMcpUninstallTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createMcpListInstalledTool(ctx: ToolContext): AgentTool {
+function createToolListTool(ctx: ToolContext): AgentTool {
   return {
-    name: 'mcp_list_installed',
-    description: 'List all currently installed MCP servers and their available tools.',
-    label: 'MCP: List Installed',
+    name: 'tool_list',
+    description: 'List all currently installed tools and their available capabilities.',
+    label: 'List Tools',
     parameters: Type.Object({}),
     execute: async () => {
       if (!ctx.mcpClientManager) {
-        return textResult({ error: 'MCP client manager not available' })
+        return textResult({ error: 'Tool manager not available' })
       }
 
       const servers = ctx.mcpClientManager.getServerInfo()
       if (servers.length === 0) {
-        return textResult({ servers: [], message: 'No MCP servers installed. Use mcp_search to find servers to install.' })
+        return textResult({ servers: [], message: 'No tools installed. Use tool_search to find tools to install.' })
       }
 
       return textResult({
@@ -2304,9 +2529,10 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   messaging: ['send_message'],
   cron: ['cron'],
   canvas: ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_action_wait', 'canvas_components', 'canvas_trigger_action', 'canvas_inspect'],
-  api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks'],
+  api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind'],
   personality: ['personality_update'],
-  mcp_discovery: ['mcp_search', 'mcp_install', 'mcp_uninstall', 'mcp_list_installed'],
+  tool_discovery: ['tool_search', 'tool_install', 'tool_uninstall', 'tool_list'],
+  mcp_discovery: ['tool_search', 'tool_install', 'tool_uninstall', 'tool_list'],
 }
 
 export const ALL_TOOL_NAMES = [
@@ -2315,9 +2541,9 @@ export const ALL_TOOL_NAMES = [
   'memory_read', 'memory_write', 'memory_search', 'send_message', 'channel_connect', 'cron',
   'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_action_wait', 'canvas_components',
   'canvas_trigger_action', 'canvas_inspect',
-  'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks',
+  'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind',
   'personality_update',
-  'mcp_search', 'mcp_install', 'mcp_uninstall', 'mcp_list_installed',
+  'tool_search', 'tool_install', 'tool_uninstall', 'tool_list',
 ] as const
 
 /**
@@ -2587,13 +2813,14 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createCanvasApiSeedTool(),
     createCanvasApiQueryTool(),
     createCanvasApiHooksTool(),
+    createCanvasApiBindTool(ctx),
     createCanvasTriggerActionTool(),
     createCanvasInspectTool(),
     createPersonalityUpdateTool(ctx),
-    createMcpSearchTool(),
-    createMcpInstallTool(ctx),
-    createMcpUninstallTool(ctx),
-    createMcpListInstalledTool(ctx),
+    createToolSearchTool(),
+    createToolInstallTool(ctx),
+    createToolUninstallTool(ctx),
+    createToolListTool(ctx),
   ]
 }
 
@@ -2623,12 +2850,13 @@ export function createBasicTools(ctx: ToolContext): AgentTool[] {
     createCanvasApiSchemaTool(),
     createCanvasApiSeedTool(),
     createCanvasApiQueryTool(),
+    createCanvasApiBindTool(ctx),
     createCanvasInspectTool(),
     createPersonalityUpdateTool(ctx),
-    createMcpSearchTool(),
-    createMcpInstallTool(ctx),
-    createMcpUninstallTool(ctx),
-    createMcpListInstalledTool(ctx),
+    createToolSearchTool(),
+    createToolInstallTool(ctx),
+    createToolUninstallTool(ctx),
+    createToolListTool(ctx),
   ]
 }
 

@@ -159,6 +159,7 @@ export interface MCPServerInfo {
 export class MCPClientManager {
   private servers: Map<string, ManagedServer> = new Map()
   private remoteServers: Map<string, ManagedRemoteServer> = new Map()
+  private standaloneProxyTools: AgentTool[] = []
   private workspaceDir: string | null = null
   private onConfigPersisted: (() => void) | null = null
 
@@ -496,6 +497,7 @@ export class MCPClientManager {
     for (const server of this.remoteServers.values()) {
       tools.push(...server.tools)
     }
+    tools.push(...this.standaloneProxyTools)
     return tools
   }
 
@@ -526,6 +528,41 @@ export class MCPClientManager {
       })
     }
     return info
+  }
+
+  /**
+   * Programmatically invoke a tool by its full name (e.g. "GOOGLECALENDAR_LIST_EVENTS").
+   * Looks up the tool across all servers and executes it, returning the parsed text result.
+   */
+  async callTool(toolName: string, params: Record<string, unknown> = {}): Promise<{ ok: boolean; data?: string; error?: string }> {
+    const allTools = this.getTools()
+    const tool = allTools.find(t => t.name === toolName)
+    if (!tool) {
+      return { ok: false, error: `Tool "${toolName}" not found. Available: ${allTools.map(t => t.name).join(', ')}` }
+    }
+    try {
+      const result = await tool.execute(`callTool-${Date.now()}`, params)
+      const text = (result as any)?.content
+        ?.filter((c: any) => c.type === 'text')
+        .map((c: any) => c.text)
+        .join('\n') || JSON.stringify((result as any)?.details ?? result)
+      return { ok: true, data: text }
+    } catch (err: any) {
+      return { ok: false, error: `Tool "${toolName}" failed: ${err.message}` }
+    }
+  }
+
+  /**
+   * Register standalone proxy tools (not tied to any MCP server).
+   * Used for Composio proxy tools that route through a private internal connection.
+   * Deduplicates by name.
+   */
+  addProxyTools(tools: AgentTool[]): void {
+    const existingNames = new Set(this.standaloneProxyTools.map(t => t.name))
+    const newTools = tools.filter(t => !existingNames.has(t.name))
+    if (newTools.length === 0) return
+    this.standaloneProxyTools.push(...newTools)
+    console.log(`[MCPClient] Added ${newTools.length} standalone proxy tool(s) (total: ${this.standaloneProxyTools.length})`)
   }
 
   async hotAddServer(name: string, config: MCPServerConfig): Promise<AgentTool[]> {

@@ -2,13 +2,16 @@
  * Composio Integration Eval Test Cases
  *
  * Tests the agent's ability to discover, install, and use Composio-backed
- * integrations (Google Calendar, Gmail, GitHub, etc.) via the mcp_search →
- * mcp_install → COMPOSIO_SEARCH_TOOLS → COMPOSIO_MULTI_EXECUTE_TOOL flow.
+ * integrations (Google Calendar, Gmail, GitHub, etc.) via the tool_search →
+ * tool_install → direct toolkit tool calls flow.
+ *
+ * tool_install now registers individual proxy tools (e.g. GOOGLECALENDAR_LIST_EVENTS)
+ * and handles auth automatically. The agent calls tools directly, not via meta-tools.
  *
  * Also tests:
  * - Composio preference over local/npm MCP servers
  * - Skill-based shortcutting (skip discovery when skill exists)
- * - Auth flow handling (presenting OAuth URLs to users)
+ * - Auth flow handling (tool_install returns authUrl)
  * - Write operations (sending emails)
  */
 
@@ -41,7 +44,7 @@ export const COMPOSIO_EVALS: AgentEval[] = [
 
   // =========================================================================
   // Case 1: Google Calendar via Composio
-  // Level 2 | Full discovery flow: search → install → search_tools → execute
+  // Level 2 | Full discovery flow: search → install → call tool directly
   // =========================================================================
   {
     id: 'composio-google-calendar',
@@ -54,52 +57,45 @@ export const COMPOSIO_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'searched-for-calendar',
-        description: 'Used mcp_search to find Google Calendar',
+        description: 'Used tool_search to find Google Calendar',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_search'),
+        validate: (r) => usedTool(r, 'tool_search'),
       },
       {
         id: 'installed-composio',
-        description: 'Used mcp_install to connect Composio integration',
+        description: 'Used tool_install to connect Composio integration',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_install'),
+        validate: (r) => usedTool(r, 'tool_install'),
       },
       {
         id: 'install-no-command',
-        description: 'mcp_install called without command/args (Composio needs only name)',
+        description: 'tool_install called without command/args (Composio needs only name)',
         points: 10,
         phase: 'execution',
         validate: (r) => installCalledWithoutCommand(r),
       },
       {
-        id: 'used-search-tools',
-        description: 'Used COMPOSIO_SEARCH_TOOLS to discover tool slugs',
-        points: 15,
+        id: 'used-calendar-tool',
+        description: 'Called a Google Calendar tool directly to fetch events',
+        points: 25,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'mcp_composio_COMPOSIO_SEARCH_TOOLS'),
-      },
-      {
-        id: 'used-multi-execute',
-        description: 'Used COMPOSIO_MULTI_EXECUTE_TOOL to fetch events',
-        points: 20,
-        phase: 'execution',
-        validate: (r) => usedTool(r, 'mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL'),
+        validate: (r) => usedTool(r, 'GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS') || usedTool(r, 'GOOGLECALENDAR_EVENTS_LIST'),
       },
       {
         id: 'response-has-events',
         description: 'Response mentions calendar events/meetings',
-        points: 15,
+        points: 25,
         phase: 'execution',
         validate: (r) => responseContains(r, 'standup') || responseContains(r, 'meeting') || responseContains(r, 'product review'),
       },
       {
         id: 'reasonable-tool-count',
-        description: 'Completed in <= 8 tool calls',
+        description: 'Completed in <= 6 tool calls',
         points: 10,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 8,
+        validate: (r) => r.toolCalls.length <= 6,
       },
     ],
     antiPatterns: [
@@ -123,38 +119,38 @@ export const COMPOSIO_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'searched-for-github',
-        description: 'Used mcp_search to find GitHub',
+        description: 'Used tool_search to find GitHub',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_search'),
+        validate: (r) => usedTool(r, 'tool_search'),
       },
       {
         id: 'installed-composio',
-        description: 'Used mcp_install (for Composio, not npm)',
+        description: 'Used tool_install (for Composio, not npm)',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_install'),
+        validate: (r) => usedTool(r, 'tool_install'),
       },
       {
         id: 'install-composio-name',
-        description: 'mcp_install used Composio toolkit name (no command/args)',
+        description: 'tool_install used Composio toolkit name (no command/args)',
         points: 15,
         phase: 'execution',
         validate: (r) => installCalledWithoutCommand(r),
       },
       {
         id: 'used-composio-tools',
-        description: 'Used Composio meta tools (not local MCP tools)',
+        description: 'Used Composio proxy tools (not local MCP tools)',
         points: 20,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'mcp_composio_COMPOSIO_SEARCH_TOOLS') || usedTool(r, 'mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL'),
+        validate: (r) => r.toolCalls.some(t => t.name.startsWith('GITHUB_')),
       },
       {
         id: 'executed-github-query',
-        description: 'Used COMPOSIO_MULTI_EXECUTE_TOOL to fetch issues',
+        description: 'Called GitHub list issues tool directly',
         points: 20,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL'),
+        validate: (r) => usedTool(r, 'GITHUB_LIST_ISSUES'),
       },
       {
         id: 'response-has-issues',
@@ -166,7 +162,7 @@ export const COMPOSIO_EVALS: AgentEval[] = [
     ],
     antiPatterns: [
       'Agent installed the npm @modelcontextprotocol/server-github instead of using Composio',
-      'Agent passed command or args to mcp_install for a Composio integration',
+      'Agent passed command or args to tool_install for a Composio integration',
     ],
   },
 
@@ -183,14 +179,14 @@ export const COMPOSIO_EVALS: AgentEval[] = [
     maxScore: 100,
     toolMocks: {
       ...COMPOSIO_GOOGLE_CALENDAR_MOCKS,
-      mcp_list_installed: {
+      tool_list: {
         type: 'static',
         paramKeys: [],
         response: {
           servers: [
-            { name: 'composio', toolCount: 3, tools: ['mcp_composio_COMPOSIO_SEARCH_TOOLS', 'mcp_composio_COMPOSIO_MANAGE_CONNECTIONS', 'mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL'] },
+            { name: 'composio', toolCount: 4, tools: ['GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS', 'GOOGLECALENDAR_LIST_CALENDARS', 'GOOGLECALENDAR_EVENTS_LIST', 'GOOGLECALENDAR_CREATE_EVENT'] },
           ],
-          totalServers: 1, totalTools: 3,
+          totalServers: 1, totalTools: 4,
         },
       },
     },
@@ -200,39 +196,40 @@ name: google-calendar
 version: 1.0.0
 description: List Google Calendar events for a specified time range.
 trigger: "google calendar|calendar events|my meetings|my schedule|upcoming events|weekly calendar|show my calendar|list meetings|meetings|calendar"
-tools: [mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL, mcp_composio_COMPOSIO_MANAGE_CONNECTIONS, mcp_install]
+tools: [GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS, GOOGLECALENDAR_CREATE_EVENT, tool_install]
 ---
 # Google Calendar
 
-This skill provides everything needed — do NOT call mcp_search.
+This skill provides everything needed — do NOT call tool_search.
 
 ## Setup
-1. Ensure Composio is connected: mcp_install({ name: "googlecalendar" })
-2. Check user auth: COMPOSIO_MANAGE_CONNECTIONS({ toolkits: ["googlecalendar"] })
+1. Ensure Composio is connected: tool_install({ name: "googlecalendar" })
+   (Auth is checked automatically by tool_install)
 
-## Key Tool Slugs
+## Available Tools
 - GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS — List events across all calendars
 - GOOGLECALENDAR_LIST_CALENDARS — List all calendars
+- GOOGLECALENDAR_CREATE_EVENT — Create a new event
 
 ## Execution
-Use COMPOSIO_MULTI_EXECUTE_TOOL with tool slugs above. Example:
-COMPOSIO_MULTI_EXECUTE_TOOL({ tools: [{ tool_slug: "GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS", arguments: { time_min: "...", time_max: "..." } }] })
+Call the tools directly. Example:
+GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS({ time_min: "...", time_max: "..." })
 `,
     },
     validationCriteria: [
       {
-        id: 'used-multi-execute',
-        description: 'Used COMPOSIO_MULTI_EXECUTE_TOOL to fetch events',
+        id: 'used-calendar-tool',
+        description: 'Called Google Calendar tool directly to fetch events',
         points: 30,
         phase: 'execution',
-        validate: (r) => usedToolInFinalTurn(r, 'mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL'),
+        validate: (r) => usedToolInFinalTurn(r, 'GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS'),
       },
       {
         id: 'skipped-search',
-        description: 'Did NOT use mcp_search at all (skill provides the info)',
+        description: 'Did NOT use tool_search at all (skill provides the info)',
         points: 25,
         phase: 'execution',
-        validate: (r) => neverUsedTool(r, 'mcp_search'),
+        validate: (r) => neverUsedTool(r, 'tool_search'),
       },
       {
         id: 'fewer-tool-calls',
@@ -250,10 +247,10 @@ COMPOSIO_MULTI_EXECUTE_TOOL({ tools: [{ tool_slug: "GOOGLECALENDAR_EVENTS_LIST_A
       },
       {
         id: 'used-install',
-        description: 'Still called mcp_install to ensure Composio is connected',
+        description: 'Still called tool_install to ensure Composio is connected',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'mcp_install'),
+        validate: (r) => usedTool(r, 'tool_install'),
       },
     ],
     antiPatterns: [
@@ -263,7 +260,7 @@ COMPOSIO_MULTI_EXECUTE_TOOL({ tools: [{ tool_slug: "GOOGLECALENDAR_EVENTS_LIST_A
 
   // =========================================================================
   // Case 4: Auth flow — not yet connected
-  // Level 2 | MANAGE_CONNECTIONS returns needs_auth → agent shows URL
+  // Level 2 | tool_install returns authStatus: 'needs_auth' + authUrl → agent shows URL
   // =========================================================================
   {
     id: 'composio-auth-flow',
@@ -276,45 +273,38 @@ COMPOSIO_MULTI_EXECUTE_TOOL({ tools: [{ tool_slug: "GOOGLECALENDAR_EVENTS_LIST_A
     validationCriteria: [
       {
         id: 'searched-for-gmail',
-        description: 'Used mcp_search to find Gmail',
+        description: 'Used tool_search to find Gmail',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_search'),
+        validate: (r) => usedTool(r, 'tool_search'),
       },
       {
         id: 'installed-composio',
-        description: 'Used mcp_install for Gmail',
-        points: 10,
+        description: 'Used tool_install for Gmail (returns authUrl)',
+        points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_install'),
-      },
-      {
-        id: 'checked-connections',
-        description: 'Used COMPOSIO_MANAGE_CONNECTIONS to check auth',
-        points: 20,
-        phase: 'execution',
-        validate: (r) => usedTool(r, 'mcp_composio_COMPOSIO_MANAGE_CONNECTIONS'),
+        validate: (r) => usedTool(r, 'tool_install'),
       },
       {
         id: 'showed-auth-url',
-        description: 'Response includes the auth/connect URL',
-        points: 30,
+        description: 'Response includes the auth/connect URL from tool_install',
+        points: 35,
         phase: 'execution',
-        validate: (r) => responseContains(r, 'connect.composio.dev') || responseContains(r, 'authenticate') || responseContains(r, 'connect'),
+        validate: (r) => responseContains(r, 'connect.composio.dev') || responseContains(r, 'authenticate') || responseContains(r, 'authorize') || responseContains(r, 'connect'),
       },
       {
         id: 'did-not-execute-without-auth',
-        description: 'Did NOT call MULTI_EXECUTE_TOOL (user needs to auth first)',
+        description: 'Did NOT call Gmail tools (user needs to auth first)',
         points: 20,
         phase: 'execution',
-        validate: (r) => neverUsedTool(r, 'mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL'),
+        validate: (r) => neverUsedTool(r, 'GMAIL_FETCH_EMAILS') && neverUsedTool(r, 'GMAIL_SEND_EMAIL'),
       },
       {
         id: 'reasonable-tool-count',
-        description: 'Completed in <= 8 tool calls',
-        points: 10,
+        description: 'Completed in <= 6 tool calls',
+        points: 20,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 8,
+        validate: (r) => r.toolCalls.length <= 6,
       },
     ],
     antiPatterns: [
@@ -338,38 +328,31 @@ COMPOSIO_MULTI_EXECUTE_TOOL({ tools: [{ tool_slug: "GOOGLECALENDAR_EVENTS_LIST_A
     validationCriteria: [
       {
         id: 'searched-for-gmail',
-        description: 'Used mcp_search to find Gmail',
+        description: 'Used tool_search to find Gmail',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_search'),
+        validate: (r) => usedTool(r, 'tool_search'),
       },
       {
         id: 'installed-composio',
-        description: 'Used mcp_install for Gmail via Composio',
+        description: 'Used tool_install for Gmail via Composio',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_install'),
+        validate: (r) => usedTool(r, 'tool_install'),
       },
       {
-        id: 'used-search-tools',
-        description: 'Used COMPOSIO_SEARCH_TOOLS to discover Gmail tools',
+        id: 'used-gmail-send',
+        description: 'Called GMAIL_SEND_EMAIL directly to send the email',
+        points: 30,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'GMAIL_SEND_EMAIL'),
+      },
+      {
+        id: 'send-has-recipient',
+        description: 'GMAIL_SEND_EMAIL call includes the recipient',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'mcp_composio_COMPOSIO_SEARCH_TOOLS'),
-      },
-      {
-        id: 'used-multi-execute',
-        description: 'Used COMPOSIO_MULTI_EXECUTE_TOOL to send the email',
-        points: 25,
-        phase: 'execution',
-        validate: (r) => usedTool(r, 'mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL'),
-      },
-      {
-        id: 'execute-has-send-slug',
-        description: 'MULTI_EXECUTE call includes GMAIL_SEND_EMAIL slug',
-        points: 15,
-        phase: 'execution',
-        validate: (r) => toolCallArgsContain(r, 'mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL', 'GMAIL_SEND_EMAIL'),
+        validate: (r) => toolCallArgsContain(r, 'GMAIL_SEND_EMAIL', 'john@example.com') || toolCallArgsContain(r, 'GMAIL_SEND_EMAIL', 'john'),
       },
       {
         id: 'response-confirms-sent',
@@ -410,14 +393,14 @@ COMPOSIO_MULTI_EXECUTE_TOOL({ tools: [{ tool_slug: "GOOGLECALENDAR_EVENTS_LIST_A
         description: 'Completed the full Composio discovery flow',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'mcp_search') && usedTool(r, 'mcp_install'),
+        validate: (r) => usedTool(r, 'tool_search') && usedTool(r, 'tool_install'),
       },
       {
         id: 'fetched-prs',
-        description: 'Used COMPOSIO_MULTI_EXECUTE_TOOL to fetch PRs',
+        description: 'Called GitHub list pull requests tool directly',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL'),
+        validate: (r) => usedTool(r, 'GITHUB_LIST_PULL_REQUESTS'),
       },
       {
         id: 'response-mentions-prs',
@@ -514,7 +497,7 @@ COMPOSIO_MULTI_EXECUTE_TOOL({ tools: [{ tool_slug: "GOOGLECALENDAR_EVENTS_LIST_A
         description: 'Searched and installed the Airbnb MCP server',
         points: 15,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'mcp_search') && usedTool(r, 'mcp_install'),
+        validate: (r) => usedTool(r, 'tool_search') && usedTool(r, 'tool_install'),
       },
       {
         id: 'used-airbnb-search',
@@ -574,7 +557,7 @@ COMPOSIO_MULTI_EXECUTE_TOOL({ tools: [{ tool_slug: "GOOGLECALENDAR_EVENTS_LIST_A
           })
           if (!writeCall) return false
           const content = ((writeCall.input as Record<string, any>).content || '') as string
-          return content.includes('airbnb') && content.includes('mcp_install')
+          return content.includes('airbnb') && content.includes('tool_install')
         },
       },
       {
@@ -625,24 +608,24 @@ COMPOSIO_MULTI_EXECUTE_TOOL({ tools: [{ tool_slug: "GOOGLECALENDAR_EVENTS_LIST_A
     validationCriteria: [
       {
         id: 'did-not-search',
-        description: 'Did NOT use mcp_search (tools already available from context)',
+        description: 'Did NOT use tool_search (tools already available from context)',
         points: 20,
         phase: 'execution',
-        validate: (r) => neverUsedTool(r, 'mcp_search'),
+        validate: (r) => neverUsedTool(r, 'tool_search'),
       },
       {
-        id: 'used-multi-execute',
-        description: 'Used COMPOSIO_MULTI_EXECUTE_TOOL to create the event',
+        id: 'used-create-event',
+        description: 'Called GOOGLECALENDAR_CREATE_EVENT tool directly',
         points: 30,
         phase: 'execution',
-        validate: (r) => usedToolInFinalTurn(r, 'mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL'),
+        validate: (r) => usedToolInFinalTurn(r, 'GOOGLECALENDAR_CREATE_EVENT'),
       },
       {
-        id: 'used-create-event-slug',
-        description: 'MULTI_EXECUTE call includes CREATE_EVENT slug',
+        id: 'create-event-has-details',
+        description: 'CREATE_EVENT call includes event details',
         points: 20,
         phase: 'execution',
-        validate: (r) => toolCallArgsContain(r, 'mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL', 'CREATE_EVENT'),
+        validate: (r) => toolCallArgsContain(r, 'GOOGLECALENDAR_CREATE_EVENT', 'Team Sync') || toolCallArgsContain(r, 'GOOGLECALENDAR_CREATE_EVENT', 'team sync') || toolCallArgsContain(r, 'GOOGLECALENDAR_CREATE_EVENT', 'sync'),
       },
       {
         id: 'response-confirms-created',
@@ -680,38 +663,42 @@ COMPOSIO_MULTI_EXECUTE_TOOL({ tools: [{ tool_slug: "GOOGLECALENDAR_EVENTS_LIST_A
     validationCriteria: [
       {
         id: 'discovered-integrations',
-        description: 'Used mcp_search to find integrations',
+        description: 'Used tool_search to find integrations',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_search'),
+        validate: (r) => usedTool(r, 'tool_search'),
       },
       {
         id: 'installed-composio',
-        description: 'Installed Composio via mcp_install',
+        description: 'Installed Composio via tool_install',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_install'),
+        validate: (r) => usedTool(r, 'tool_install'),
       },
       {
         id: 'fetched-emails',
-        description: 'Used MULTI_EXECUTE with a Gmail fetch slug',
+        description: 'Called GMAIL_FETCH_EMAILS tool directly',
         points: 20,
         phase: 'execution',
-        validate: (r) => toolCallArgsContain(r, 'mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL', 'GMAIL_FETCH_EMAILS'),
+        validate: (r) => usedTool(r, 'GMAIL_FETCH_EMAILS'),
       },
       {
         id: 'created-event',
-        description: 'Used MULTI_EXECUTE with a Calendar create slug',
+        description: 'Called GOOGLECALENDAR_CREATE_EVENT tool directly',
         points: 20,
         phase: 'execution',
-        validate: (r) => toolCallArgsContain(r, 'mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL', 'GOOGLECALENDAR_CREATE_EVENT') || toolCallArgsContain(r, 'mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL', 'CREATE_EVENT'),
+        validate: (r) => usedTool(r, 'GOOGLECALENDAR_CREATE_EVENT'),
       },
       {
-        id: 'at-least-two-executions',
-        description: 'Made at least 2 MULTI_EXECUTE calls (one per integration)',
+        id: 'at-least-two-tool-types',
+        description: 'Used at least one Gmail and one Calendar tool',
         points: 15,
         phase: 'execution',
-        validate: (r) => toolCallCount(r, 'mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL') >= 2,
+        validate: (r) => {
+          const hasGmail = r.toolCalls.some(t => t.name.startsWith('GMAIL_'))
+          const hasCalendar = r.toolCalls.some(t => t.name.startsWith('GOOGLECALENDAR_'))
+          return hasGmail && hasCalendar
+        },
       },
       {
         id: 'response-mentions-emails',
@@ -759,47 +746,46 @@ name: google-calendar
 version: 1.0.0
 description: List and manage Google Calendar events.
 trigger: "google calendar|calendar events|my meetings|my schedule|upcoming events"
-tools: [mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL, mcp_composio_COMPOSIO_MANAGE_CONNECTIONS, mcp_install]
+tools: [GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS, GOOGLECALENDAR_CREATE_EVENT, tool_install]
 ---
 # Google Calendar
 
 ## Setup
-1. mcp_install({ name: "googlecalendar" })
-2. COMPOSIO_MANAGE_CONNECTIONS({ toolkits: ["googlecalendar"] })
+1. tool_install({ name: "googlecalendar" })
 
-## Tool Slugs
-- GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS
-- GOOGLECALENDAR_CREATE_EVENT
+## Available Tools
+- GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS — List events
+- GOOGLECALENDAR_CREATE_EVENT — Create event
 `,
     },
     validationCriteria: [
       {
         id: 'did-search',
-        description: 'Used mcp_search since no email skill was loaded',
+        description: 'Used tool_search since no email skill was loaded',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_search'),
+        validate: (r) => usedTool(r, 'tool_search'),
       },
       {
         id: 'installed-composio',
         description: 'Installed Composio for Gmail',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_install'),
+        validate: (r) => usedTool(r, 'tool_install'),
       },
       {
-        id: 'used-multi-execute',
-        description: 'Used COMPOSIO_MULTI_EXECUTE_TOOL to send the email',
+        id: 'used-gmail-send',
+        description: 'Called GMAIL_SEND_EMAIL tool directly',
         points: 25,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL'),
+        validate: (r) => usedTool(r, 'GMAIL_SEND_EMAIL'),
       },
       {
-        id: 'send-slug-used',
-        description: 'MULTI_EXECUTE includes GMAIL_SEND_EMAIL slug',
+        id: 'send-has-content',
+        description: 'GMAIL_SEND_EMAIL call includes relevant content',
         points: 15,
         phase: 'execution',
-        validate: (r) => toolCallArgsContain(r, 'mcp_composio_COMPOSIO_MULTI_EXECUTE_TOOL', 'GMAIL_SEND_EMAIL'),
+        validate: (r) => toolCallArgsContain(r, 'GMAIL_SEND_EMAIL', 'alice') || toolCallArgsContain(r, 'GMAIL_SEND_EMAIL', 'deadline') || toolCallArgsContain(r, 'GMAIL_SEND_EMAIL', 'Friday'),
       },
       {
         id: 'response-confirms-sent',

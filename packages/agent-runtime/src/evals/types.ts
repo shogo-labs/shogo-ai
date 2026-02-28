@@ -21,6 +21,7 @@ export type EvalCategory =
   | 'edge-cases'
   | 'mcp-discovery'
   | 'mcp-orchestration'
+  | 'tool-system'
 
 export type ValidationPhase = 'intention' | 'execution' | 'interaction'
 

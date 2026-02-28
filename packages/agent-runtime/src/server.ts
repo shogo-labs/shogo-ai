@@ -941,8 +941,10 @@ app.post('/agent/workspace/reindex', async (c) => {
   }
 })
 
-// MCP Catalog endpoints — powers the "MCP Servers" tab in the web UI
+// Tool catalog and search — powers the "Tools" tab in the web UI
 import { MCP_CATALOG, MCP_CATEGORIES } from './mcp-catalog'
+import { isComposioEnabled, searchComposioToolkits, findComposioToolkit, connectComposioMCP } from './composio'
+
 // Agent Templates API — powers the templates gallery
 import { getTemplateSummaries, TEMPLATE_CATEGORIES } from './agent-templates'
 // Agent Recipes API — powers the recipes wizard
@@ -1043,6 +1045,180 @@ app.post('/agent/mcp-servers/toggle', async (c) => {
 
   writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
   return c.json({ ok: true, serverId, enabled, servers: config.mcpServers })
+})
+
+// ---------------------------------------------------------------------------
+// Unified Tools API — powers the "Tools" tab
+// ---------------------------------------------------------------------------
+
+app.get('/agent/tools/status', (c) => {
+  if (!agentGateway) {
+    return c.json({ tools: [] })
+  }
+  const mcpMgr = agentGateway.getMcpClientManager()
+  const serverInfo = mcpMgr.getServerInfo()
+
+  const tools = serverInfo.map((s) => {
+    const catalogEntry = MCP_CATALOG.find((e) => e.id === s.name)
+    const isComposio = s.name === 'composio'
+    return {
+      id: s.name,
+      name: catalogEntry?.name || s.name,
+      source: isComposio ? 'managed' as const : (catalogEntry ? 'catalog' as const : 'custom' as const),
+      status: 'running' as const,
+      toolCount: s.toolCount,
+      tools: s.toolNames,
+      composioToolkit: isComposio ? 'composio' : catalogEntry?.composioToolkit,
+    }
+  })
+
+  return c.json({ tools })
+})
+
+app.get('/agent/tools/search', async (c) => {
+  const query = c.req.query('q') || ''
+  if (!query.trim()) {
+    return c.json({ results: [] })
+  }
+
+  const installedNames = new Set<string>()
+  if (agentGateway) {
+    for (const s of agentGateway.getMcpClientManager().getServerInfo()) {
+      installedNames.add(s.name)
+    }
+  }
+
+  const results: Array<Record<string, any>> = []
+  const seenSlugs = new Set<string>()
+
+  if (isComposioEnabled()) {
+    try {
+      const composioToolkits = await searchComposioToolkits(query)
+      for (const tk of composioToolkits.slice(0, 5)) {
+        seenSlugs.add(tk.slug.toLowerCase().replace(/[-_\s]/g, ''))
+        results.push({
+          id: tk.slug,
+          name: tk.name,
+          description: `${tk.name} — managed OAuth integration. No credentials needed.`,
+          source: 'managed',
+          installed: installedNames.has('composio'),
+          authType: 'oauth',
+          composioToolkit: tk.slug,
+          icon: tk.logo,
+        })
+      }
+    } catch { /* Composio unavailable */ }
+  }
+
+  const queryLower = query.toLowerCase()
+  const queryWords = queryLower.split(/\s+/).filter((w) => w.length > 2)
+  const scored: Array<{ entry: typeof MCP_CATALOG[0]; score: number }> = []
+  for (const entry of MCP_CATALOG) {
+    const haystack = `${entry.id} ${entry.name} ${entry.description} ${entry.category} ${entry.providedTools.join(' ')}`.toLowerCase()
+    const idName = `${entry.id} ${entry.name}`.toLowerCase()
+    let score = 0
+    if (haystack.includes(queryLower)) score += 10
+    if (idName.includes(queryLower)) score += 20
+    for (const w of queryWords) {
+      if (idName.includes(w)) score += 5
+      else if (haystack.includes(w)) score += 1
+    }
+    if (score > 0) scored.push({ entry, score })
+  }
+  scored.sort((a, b) => b.score - a.score)
+  for (const { entry } of scored.slice(0, 5)) {
+    const entryNorm = entry.id.toLowerCase().replace(/[-_\s]/g, '')
+    if (seenSlugs.has(entryNorm)) continue
+    seenSlugs.add(entryNorm)
+    results.push({
+      id: entry.id,
+      name: entry.name,
+      description: entry.description,
+      source: 'catalog',
+      installed: installedNames.has(entry.id),
+      authType: entry.authType === 'composio' ? 'oauth' : (Object.keys(entry.requiredEnv).length > 0 ? 'api_key' : 'none'),
+      requiredEnv: Object.keys(entry.requiredEnv).length > 0 ? entry.requiredEnv : undefined,
+      composioToolkit: entry.composioToolkit,
+      icon: entry.icon,
+    })
+  }
+
+  return c.json({ results })
+})
+
+app.post('/agent/tools/install', async (c) => {
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+
+  const { id, env, command, args } = await c.req.json() as {
+    id: string
+    env?: Record<string, string>
+    command?: string
+    args?: string[]
+  }
+
+  const mcpMgr = agentGateway.getMcpClientManager()
+
+  if (isComposioEnabled()) {
+    const composioToolkit = await findComposioToolkit(id)
+    if (composioToolkit) {
+      try {
+        const userId = process.env.USER_ID || 'default'
+        const projectId = process.env.PROJECT_ID || 'default'
+        await connectComposioMCP(userId, projectId)
+        return c.json({ ok: true, id, source: 'managed' })
+      } catch (err: any) {
+        return c.json({ error: `Failed to connect: ${err.message}` }, 500)
+      }
+    }
+  }
+
+  const catalogEntry = MCP_CATALOG.find((e) => e.id === id)
+  if (catalogEntry) {
+    try {
+      const serverEnv = env || {}
+      await mcpMgr.hotAddServer(id, {
+        command: command || 'npx',
+        args: args || [catalogEntry.package, ...catalogEntry.defaultArgs],
+        env: Object.keys(serverEnv).length > 0 ? serverEnv : undefined,
+      })
+      return c.json({ ok: true, id, source: 'catalog' })
+    } catch (err: any) {
+      return c.json({ error: `Failed to install: ${err.message}` }, 500)
+    }
+  }
+
+  if (command) {
+    try {
+      await mcpMgr.hotAddServer(id, { command, args, env })
+      return c.json({ ok: true, id, source: 'custom' })
+    } catch (err: any) {
+      return c.json({ error: `Failed to install: ${err.message}` }, 500)
+    }
+  }
+
+  return c.json({ error: `Unknown tool "${id}". Provide command and args for custom tools.` }, 400)
+})
+
+app.delete('/agent/tools/:id', async (c) => {
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+
+  const id = c.req.param('id')
+  const mcpMgr = agentGateway.getMcpClientManager()
+
+  if (!mcpMgr.isRunning(id)) {
+    return c.json({ error: `Tool "${id}" is not running` }, 404)
+  }
+
+  try {
+    await mcpMgr.hotRemoveServer(id)
+    return c.json({ ok: true, removed: id })
+  } catch (err: any) {
+    return c.json({ error: `Failed to uninstall: ${err.message}` }, 500)
+  }
 })
 
 // Agent export/import — bundle workspace into a shareable .shogo config
@@ -1466,11 +1642,6 @@ app.post('/agent/dynamic-app/test-setup', async (c) => {
 app.all('/agent/dynamic-app/api/:surfaceId/*', async (c) => {
   const surfaceId = c.req.param('surfaceId')
   const manager = getDynamicAppManager()
-  const runtime = manager.getRuntime(surfaceId)
-
-  if (!runtime || !runtime.isReady()) {
-    return c.json({ error: `No API runtime for surface "${surfaceId}"` }, 404)
-  }
 
   const prefix = `/agent/dynamic-app/api/${surfaceId}`
   const subPath = c.req.path.replace(prefix, '') || '/'
@@ -1483,6 +1654,21 @@ app.all('/agent/dynamic-app/api/:surfaceId/*', async (c) => {
     headers: c.req.raw.headers,
     body: c.req.method !== 'GET' && c.req.method !== 'HEAD' ? c.req.raw.body : undefined,
   })
+
+  // Try tool-backed runtime first, then SQLite-backed runtime
+  const toolRuntime = manager.getToolRuntime(surfaceId)
+  if (toolRuntime) {
+    const toolResponse = await toolRuntime.getApp().fetch(subRequest.clone())
+    if (toolResponse.status !== 404) return toolResponse
+  }
+
+  const runtime = manager.getRuntime(surfaceId)
+  if (!runtime || !runtime.isReady()) {
+    if (!toolRuntime) {
+      return c.json({ error: `No API runtime for surface "${surfaceId}"` }, 404)
+    }
+    return c.json({ error: `Route not found` }, 404)
+  }
 
   return runtime.getApp().fetch(subRequest)
 })

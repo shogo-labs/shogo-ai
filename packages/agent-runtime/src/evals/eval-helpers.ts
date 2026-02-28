@@ -50,10 +50,10 @@ export function toolCallArgsContain(result: EvalResult, toolName: string, value:
     .some(t => JSON.stringify(t.input).toLowerCase().includes(value.toLowerCase()))
 }
 
-/** True if any mcp_install call was made without `command` or `args` (i.e. Composio-style name-only install). */
+/** True if any tool_install call was made without `command` or `args` (i.e. managed-style name-only install). */
 export function installCalledWithoutCommand(result: EvalResult): boolean {
   return result.toolCalls
-    .filter(t => t.name === 'mcp_install')
+    .filter(t => t.name === 'tool_install')
     .some(t => {
       const input = t.input as Record<string, any>
       return !input.command && !input.args

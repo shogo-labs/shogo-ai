@@ -28,6 +28,8 @@ import type {
   DeleteComponentsMessage,
 } from './dynamic-app-types'
 import { ManagedApiRuntime, type ModelDefinition, type ManagedModelHooks, type ManagedHookResult, type ManagedHookContext } from './managed-api-runtime'
+import { ToolBackedApiRuntime, type ToolBindingConfig } from './tool-backed-api-runtime'
+import type { MCPClientManager } from './mcp-client'
 
 type SSEWriter = (message: DynamicAppMessage) => void
 
@@ -51,8 +53,15 @@ export class DynamicAppManager {
   private persistPath: string | null = null
   private saveTimer: ReturnType<typeof setTimeout> | null = null
   private runtimes = new Map<string, ManagedApiRuntime>()
+  private toolRuntimes = new Map<string, ToolBackedApiRuntime>()
   /** Tracks model → dataPath bindings per surface so mutations can auto-refresh filtered views */
   private queryBindings = new Map<string, Map<string, Array<{ dataPath: string; params?: { where?: Record<string, unknown>; orderBy?: string; limit?: number } }>>>()
+  /** Stored MCPClientManager reference for deferred bindings and reactive invalidation */
+  private mcpClientRef: MCPClientManager | null = null
+  /** Deferred tool bindings queued before the target surface exists */
+  private deferredToolBindings = new Map<string, Array<{
+    config: Omit<ToolBindingConfig, 'cache'> & { cache?: { enabled: boolean; ttlSeconds?: number }; dataPath?: string }
+  }>>()
 
   constructor(persistPath?: string) {
     if (persistPath) {
@@ -103,6 +112,15 @@ export class DynamicAppManager {
 
     this.broadcast({ type: 'createSurface', surfaceId, title, theme })
     this.scheduleSave()
+
+    const deferred = this.deferredToolBindings.get(surfaceId)
+    if (deferred && deferred.length > 0 && this.mcpClientRef) {
+      this.deferredToolBindings.delete(surfaceId)
+      for (const { config } of deferred) {
+        this.bindToolApi(surfaceId, config, this.mcpClientRef)
+      }
+    }
+
     return {
       ok: true,
       surfaceId,
@@ -955,6 +973,115 @@ export class DynamicAppManager {
     }
 
     return result
+  }
+
+  bindToolApi(
+    surfaceId: string,
+    config: Omit<ToolBindingConfig, 'cache'> & { cache?: { enabled: boolean; ttlSeconds?: number }; dataPath?: string },
+    mcpClient: MCPClientManager,
+  ): Record<string, unknown> {
+    const surface = this.surfaces.get(surfaceId)
+    if (!surface) {
+      return { ok: false, error: `Surface "${surfaceId}" does not exist. Create it with canvas_create first.` }
+    }
+
+    if (!this.mcpClientRef) {
+      this.mcpClientRef = mcpClient
+    }
+
+    let toolRuntime = this.toolRuntimes.get(surfaceId)
+    if (!toolRuntime) {
+      toolRuntime = new ToolBackedApiRuntime(mcpClient)
+      this.toolRuntimes.set(surfaceId, toolRuntime)
+    }
+
+    const bindingConfig: ToolBindingConfig = {
+      ...config,
+      dataPath: config.dataPath,
+    } as ToolBindingConfig
+    const result = toolRuntime.addBinding(bindingConfig)
+
+    const endpointInfo = toolRuntime.getEndpointInfo()
+    this.broadcast({
+      type: 'configureApi',
+      surfaceId,
+      models: endpointInfo,
+    })
+
+    if (config.dataPath && config.bindings.list) {
+      this.autoQueryToolBinding(surfaceId, config.model, config.dataPath, toolRuntime)
+    }
+
+    return {
+      ok: true,
+      model: result.model,
+      endpoint: result.endpoint,
+      methods: result.methods,
+      dataPath: config.dataPath,
+      message: `Bound "${result.model}" to tool-backed CRUD routes at ${result.endpoint}. Methods: ${result.methods.join(', ')}` +
+        (config.dataPath ? `. Data auto-loaded at "${config.dataPath}".` : ''),
+    }
+  }
+
+  /**
+   * Fetch list data from a tool binding and push it into the surface data model.
+   * Runs asynchronously — does not block the bindToolApi return.
+   */
+  private autoQueryToolBinding(
+    surfaceId: string,
+    model: string,
+    dataPath: string,
+    toolRuntime: ToolBackedApiRuntime,
+  ): void {
+    toolRuntime.fetchListData(model).then(result => {
+      if (result.ok && result.items) {
+        this.updateData(surfaceId, dataPath, result.items)
+      }
+    }).catch(err => {
+      console.error(`[DynamicAppManager] Auto-query for ${model} failed:`, err)
+    })
+  }
+
+  getToolRuntime(surfaceId: string): ToolBackedApiRuntime | undefined {
+    return this.toolRuntimes.get(surfaceId)
+  }
+
+  /**
+   * Queue a tool binding to be applied when the target surface is created.
+   * Used by tool_install's `bind` option when the canvas doesn't exist yet.
+   */
+  deferToolBinding(
+    surfaceId: string,
+    config: Omit<ToolBindingConfig, 'cache'> & { cache?: { enabled: boolean; ttlSeconds?: number }; dataPath?: string },
+    mcpClient: MCPClientManager,
+  ): void {
+    if (!this.mcpClientRef) {
+      this.mcpClientRef = mcpClient
+    }
+    if (!this.deferredToolBindings.has(surfaceId)) {
+      this.deferredToolBindings.set(surfaceId, [])
+    }
+    this.deferredToolBindings.get(surfaceId)!.push({ config })
+  }
+
+  /**
+   * Check if a tool call matches any bound tool across all surfaces.
+   * If so, invalidate the cache and re-push fresh data to the data model.
+   * Called from the gateway's onAfterToolCall hook for reactive UI updates.
+   */
+  handleToolCallInvalidation(toolName: string): void {
+    for (const [surfaceId, toolRuntime] of this.toolRuntimes) {
+      const boundTools = toolRuntime.getBoundToolNames()
+      const model = boundTools.get(toolName)
+      if (!model) continue
+
+      toolRuntime.invalidateCache(model)
+
+      const binding = toolRuntime.getBindings().find(b => b.model === model)
+      if (binding?.dataPath && binding.bindings.list) {
+        this.autoQueryToolBinding(surfaceId, model, binding.dataPath, toolRuntime)
+      }
+    }
   }
 
   seedApiData(surfaceId: string, model: string, records: Record<string, unknown>[], upsert = false): Record<string, unknown> {

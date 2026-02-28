@@ -25,6 +25,7 @@ import type { ChannelAdapter, IncomingMessage, AgentStatus, ChannelStatus, Strea
 import { loadSkills, matchSkill, type Skill } from './skills'
 import { runAgentLoop, type LoopDetectorConfig, type ToolContext } from './agent-loop'
 import { createAllTools, createBasicTools, createHeartbeatTools, textResult } from './gateway-tools'
+import { getDynamicAppManager } from './dynamic-app-manager'
 import { HookEmitter, loadAllHooks } from './hooks'
 import { parseSlashCommand, type SlashCommandContext } from './slash-commands'
 import { SessionManager, type SessionManagerConfig } from './session-manager'
@@ -32,7 +33,7 @@ import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { CronManager, type CronJob } from './cron-manager'
 import { BlockChunker } from './block-chunker'
 import { MCPClientManager, type MCPServerConfig } from './mcp-client'
-import { connectComposioMCP, disconnectComposioMCP, isComposioEnabled } from './composio'
+import { connectComposioMCP, disconnectComposioMCP, isComposioEnabled, isComposioConnected } from './composio'
 import {
   OPTIMIZED_CANVAS_EXAMPLES,
   OPTIMIZED_MEMORY_GUIDE,
@@ -101,7 +102,10 @@ Then follow ALL steps below:
 **Step 1: canvas_create** — Create a surface
   canvas_create({ surfaceId: "my_app", title: "My App" })
 
-**Step 2: canvas_api_schema** — Define data model + auto-generate CRUD API
+**Step 2: Choose your data backend — local schema OR tool-backed binding**
+
+  **Option A: canvas_api_schema** — Local SQLite-backed CRUD (default for most apps)
+  Use this when data lives in the canvas itself (user-entered data, sample data, file uploads).
   canvas_api_schema({ surfaceId: "my_app", models: [{
     name: "Task", fields: [
       { name: "title", type: "String" },
@@ -111,11 +115,59 @@ Then follow ALL steps below:
   }]})
   → Creates REST endpoints: GET/POST /api/tasks, GET/PATCH/DELETE /api/tasks/:id
 
-**Step 3: canvas_api_seed + canvas_api_query** — Populate and load data
+  **Option B: Tool-backed live data** (for installed integrations)
+  Use this when the data comes from an installed tool (Google Calendar, GitHub, Slack, etc.).
+  Instead of storing data locally, this routes CRUD operations directly through the
+  installed tool so the canvas always shows live, real-time data from the external service.
+
+  **Preferred: autoBind on tool_install** — auto-discovers CRUD operations from the toolkit schema:
+  tool_install({ name: "googlecalendar", autoBind: { surfaceId: "my_app", dataPath: "/events" } })
+  → Introspects the toolkit, finds list/create/update/delete tools, infers fields and resultPath,
+    creates REST endpoints, and auto-loads data. No prior knowledge of the tool's response needed.
+    If the surface doesn't exist yet, the binding is deferred until canvas_create.
+
+  **Manual: canvas_api_bind** — when you need fine-grained control over bindings:
+  canvas_api_bind({ surfaceId: "my_app", model: "CalendarEvent",
+    fields: [
+      { name: "summary", type: "String" },
+      { name: "start", type: "String" },
+      { name: "end", type: "String" }
+    ],
+    bindings: {
+      list: { tool: "GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS", resultPath: "items" },
+      create: { tool: "GOOGLECALENDAR_CREATE_EVENT", paramMap: { summary: "summary", start: "start", end: "end" } }
+    },
+    cache: { enabled: true, ttlSeconds: 60 },
+    dataPath: "/events"
+  })
+  → Creates REST endpoints backed by live tool calls AND auto-loads data at "/events".
+  → When the agent calls any bound tool directly, the canvas auto-refreshes with fresh data.
+
+  **Skill shortcut: bind at install time** — If a saved skill provides the exact config:
+  tool_install({ name: "googlecalendar", bind: { surfaceId: "my_app", model: "CalendarEvent", ... } })
+
+  **When to use which:**
+  - User asks to "show my calendar events", "list my GitHub issues" → **autoBind** on tool_install (auto-discovers everything)
+  - User asks to "build me a todo app", "create a CRM" with no external source → **canvas_api_schema** (data lives locally)
+  - User uploads a CSV or provides data inline → **canvas_api_schema + canvas_api_seed**
+
+**Step 3: Populate Data** — REAL data first, sample data only as fallback
+  If you used autoBind or canvas_api_bind with dataPath (Option B), skip this step — data is auto-loaded from the tool.
+
+  If you used canvas_api_schema (Option A):
+  BEFORE seeding sample data, check if real data is available:
+  - If the user mentions a service/platform (GitHub, Google, Slack, etc.) → use tool_search + tool_install to fetch real data, then canvas_api_seed with those real results
+  - If the user uploaded files → use read_file/search_files to extract real data, then canvas_api_seed with it
+  - If the user asks for real/live data (e.g. "show my tasks", "list my emails") → search for a tool integration first
+  - ONLY seed fabricated sample data if: (a) the user explicitly asks for fake/demo/sample data, OR (b) no real data source exists for a generic CRUD app (e.g. "build me a todo app")
+
+  Fallback — sample data (only when no real source applies):
   canvas_api_seed({ surfaceId: "my_app", model: "Task", records: [
     { title: "First task", priority: "high" },
     { title: "Second task", status: "done" }
   ]})
+
+  Then load data into the data model:
   canvas_api_query({ surfaceId: "my_app", model: "Task", dataPath: "/tasks" })
   → Now { path: "/tasks" } is available for component data binding
 
@@ -340,6 +392,7 @@ Tabs require EITHER explicit tab definitions OR TabPanel children with \`title\`
 - You MUST test every distinct action button (add, update/mark-complete, delete) — not just one.
 
 ### Other Tools
+- **canvas_api_bind** — Bind installed tool operations to canvas CRUD routes for live data. Use this instead of canvas_api_schema when data comes from an external service. Include dataPath to auto-load data (replaces canvas_api_query). Prefer using autoBind on tool_install instead — it auto-discovers bindings from the toolkit schema.
 - **canvas_api_hooks** — Register declarative hooks (recompute, validate, cascade-delete, transform, log) on model CRUD operations. Hooks fire automatically when data changes.
 - **canvas_data** — Manually push data: \`canvas_data({ surfaceId: "app", path: "/key", value: data })\`
 - **canvas_data_patch** — Atomic operations (increment, decrement, toggle, append, set) without reading first. Use for counters and toggles instead of the full API pipeline.
@@ -377,7 +430,8 @@ Use \`line\`/\`area\` for time series, \`pie\`/\`donut\` for proportional data, 
 **Metric trendValue format:** Use strings starting with "+" or "-" (e.g. "+12%", "-$48", "+3 this week"). The renderer auto-infers trend direction from the sign — no need to set \`trend: "up"\` manually.
 
 **Data Richness:**
-- Seed 4-6 realistic records with plausible names, amounts, and dates
+- Use real data from MCP/Composio tools or uploaded files whenever possible
+- Only seed 4-6 sample records if the user explicitly requests demo/fake data or no real data source is available
 - Raw numbers and ISO dates are fine — the renderer formats them automatically
 - Bar/line/area charts need at least 5-6 data points with descriptive labels
 - Pie/donut charts need 3-7 labeled segments with values summing to a meaningful total
@@ -412,6 +466,7 @@ Root Column
 - When canvas tools return status: "rendered" or "data_updated", the UI is already live.
 - **NEVER delete and recreate a surface to fix issues.** Use \`canvas_update({ merge: true })\` to patch individual components. Deleting loses all data bindings and causes UI flicker.
 - **Simple state (counters, toggles, single values):** Use canvas_data or canvas_data_patch ONLY. Do NOT use canvas_api_schema/canvas_api_seed/canvas_api_query — those are for persistent CRUD data with multiple records.
+- **External service data (Calendar, GitHub, Slack, etc.):** Use autoBind on tool_install to auto-discover and bind CRUD operations, or canvas_api_bind with dataPath for manual control. Do NOT use canvas_api_schema + canvas_api_seed for data that belongs to an external service — that creates a stale snapshot instead of live data.
 - Table is read-only. For lists needing edit/delete buttons, always use DataList.
 
 `
@@ -441,7 +496,8 @@ Then follow ALL steps below:
 **Step 1: canvas_create** — Create a surface
   canvas_create({ surfaceId: "my_app", title: "My App" })
 
-**Step 2 (option A): canvas_api_schema + canvas_api_seed + canvas_api_query** — For structured data with multiple records
+**Step 2 (option A): canvas_api_schema + populate data + canvas_api_query** — For structured data with multiple records
+  First, define the schema:
   canvas_api_schema({ surfaceId: "my_app", models: [{
     name: "Product", fields: [
       { name: "name", type: "String" },
@@ -450,10 +506,20 @@ Then follow ALL steps below:
       { name: "url", type: "String" }
     ]
   }]})
+
+  Then populate with REAL data first — check these sources before using sample data:
+  - User mentions a service/platform → tool_search + tool_install to fetch real data, then canvas_api_seed with real results
+  - User uploaded files → read_file/search_files to extract real data, then canvas_api_seed
+  - User asks for real/live data → search for a tool integration first
+  - ONLY use fabricated sample data if: (a) user explicitly asks for fake/demo data, OR (b) no real data source exists
+
+  Fallback — sample data (only when no real source applies):
   canvas_api_seed({ surfaceId: "my_app", model: "Product", records: [
     { name: "Widget Pro", category: "Hardware", revenue: 45200, url: "https://example.com/widget-pro" },
     { name: "Cloud Suite", category: "Software", revenue: 128900, url: "https://example.com/cloud-suite" }
   ]})
+
+  Then load into the data model:
   canvas_api_query({ surfaceId: "my_app", model: "Product", dataPath: "/products" })
   → Now { path: "/products" } is available for component data binding
 
@@ -644,7 +710,8 @@ Use \`line\`/\`area\` for time series, \`pie\`/\`donut\` for proportional data, 
 **Metric trendValue format:** Use strings starting with "+" or "-" (e.g. "+12%", "-$48", "+3 this week"). The renderer auto-infers trend direction from the sign — no need to set \`trend: "up"\` manually.
 
 **Data Richness:**
-- Seed 4-6 realistic records with plausible names, amounts, and dates
+- Use real data from MCP/Composio tools or uploaded files whenever possible
+- Only seed 4-6 sample records if the user explicitly requests demo/fake data or no real data source is available
 - Raw numbers and ISO dates are fine — the renderer formats them automatically
 - Bar/line/area charts need at least 5-6 data points with descriptive labels
 - Pie/donut charts need 3-7 labeled segments with values summing to a meaningful total
@@ -779,9 +846,9 @@ export class AgentGateway {
   private toolMocks = new Map<string, (params: Record<string, any>) => any>()
   /** Synthetic tool definitions for mocked MCP tools that don't exist in the base tool set */
   private syntheticTools = new Map<string, { description: string; paramKeys: string[] }>()
-  /** Tools that have mock responses but should not appear until promoted via mcp_install */
+  /** Tools that have mock responses but should not appear until promoted via tool_install */
   private hiddenMockTools = new Set<string>()
-  /** Hidden mocks promoted to visible after mcp_install is called during a turn */
+  /** Hidden mocks promoted to visible after tool_install is called during a turn */
   private promotedMockTools: AgentTool[] = []
   /** User's IANA timezone, set from chat requests. Falls back to server timezone. */
   private userTimezone: string | null = null
@@ -857,7 +924,7 @@ export class AgentGateway {
     this.promotedMockTools = []
   }
 
-  /** After mock mcp_install returns, promote hidden mock tools listed in the response */
+  /** After mock tool_install returns, promote hidden mock tools listed in the response */
   _promoteHiddenMocksFromInstall(result: any): void {
     const tools = result?.tools
     if (!Array.isArray(tools)) return
@@ -995,7 +1062,7 @@ export class AgentGateway {
     if (isComposioEnabled()) {
       try {
         const userId = process.env.USER_ID || 'default'
-        await connectComposioMCP(this.mcpClientManager, userId, this.projectId)
+        await connectComposioMCP(userId, this.projectId)
       } catch (error: any) {
         console.error('[AgentGateway] Composio MCP connection error:', error.message)
       }
@@ -1471,9 +1538,8 @@ export class AgentGateway {
         ``,
         `The skill "${activeSkill.name}" has been loaded for this request.`,
         `Follow the skill's instructions directly for this integration:`,
-        `- Call mcp_install if the skill says to (ensures server connection)`,
-        `- Call COMPOSIO_MANAGE_CONNECTIONS if needed (ensures auth)`,
-        `- Proceed to execution with the tool slugs from the skill`,
+        `- Call tool_install if the skill says to (ensures server connection + auth is checked automatically)`,
+        `- Proceed to execution with the tools listed in the skill`,
         ``,
         `You can still use mcp_search if you need additional integrations beyond what the skill provides.`,
       ].join('\n')
@@ -1517,8 +1583,8 @@ export class AgentGateway {
         const mockFn = this.toolMocks.get(tool.name)
         if (!mockFn) return tool
 
-        // Special handling for mcp_install: promote hidden mocks listed in the response
-        if (tool.name === 'mcp_install') {
+        // Special handling for tool_install: promote hidden mocks listed in the response
+        if (tool.name === 'tool_install') {
           return {
             ...tool,
             execute: async (_id: string, params: any) => {
@@ -1539,7 +1605,7 @@ export class AgentGateway {
       })
 
       // Inject synthetic tool definitions for mocked tools not in the base set
-      // Skip hidden tools — they become available only after mcp_install promotes them
+      // Skip hidden tools — they become available only after tool_install promotes them
       for (const [name, mockFn] of this.toolMocks) {
         if (existingNames.has(name)) continue
         if (this.hiddenMockTools.has(name)) continue
@@ -1566,9 +1632,9 @@ export class AgentGateway {
     }
 
     // Dynamic tools proxy: pi-agent-core uses tools.find() and iterates tools.
-    // When mcp_install hot-adds servers mid-turn, their tools must be visible
+    // When tool_install hot-adds servers mid-turn, their tools must be visible
     // immediately. This proxy merges staticTools with live MCP tools on access.
-    // Also includes promotedMockTools (hidden mocks promoted via mock mcp_install).
+    // Also includes promotedMockTools (hidden mocks promoted via mock tool_install).
     const mcpMgr = this.mcpClientManager
     const promoted = this.promotedMockTools
     const staticNames = new Set(staticTools.map(t => t.name))
@@ -1697,6 +1763,11 @@ export class AgentGateway {
               toolName, args, result, isError, toolCallId, workspaceDir: this.workspaceDir,
             })
           )
+          if (!isError && toolName.startsWith('mcp_')) {
+            try {
+              getDynamicAppManager().handleToolCallInvalidation(toolName)
+            } catch { /* non-critical */ }
+          }
         },
         onAgentEnd: async (loopResult) => {
           await hookEmitter.emit(
@@ -1961,6 +2032,10 @@ export class AgentGateway {
 
   getChannel(type: string): ChannelAdapter | undefined {
     return this.channels.get(type)
+  }
+
+  getMcpClientManager(): MCPClientManager {
+    return this.mcpClientManager
   }
 
   async disconnectChannel(type: string): Promise<void> {
