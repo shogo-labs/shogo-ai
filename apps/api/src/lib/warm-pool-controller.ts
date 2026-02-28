@@ -182,6 +182,21 @@ export class WarmPoolController {
   /** Pending warm pod creations to avoid duplicate reconciliation */
   private pendingCreations = new Set<string>()
 
+  /**
+   * Active connection count per projectId. While > 0, the warm pod for that
+   * project must not be deleted (ongoing streaming responses would be severed).
+   */
+  private activeConnections = new Map<string, number>()
+
+  /**
+   * Tracks when the real Knative service first became ready for a project that
+   * still has active connections. Used to force cleanup after a staleness window
+   * in case the connection counter leaks.
+   */
+  private realServiceReadySince = new Map<string, number>()
+
+  private static readonly CONNECTION_DRAIN_TIMEOUT_MS = 15 * 60 * 1000
+
   private started = false
 
   /** Burst detection: timer for rapid replenishment after multiple claims */
@@ -338,21 +353,44 @@ export class WarmPoolController {
       }
     }
 
-    // Clean up assigned pods whose real Knative Service is now running
+    // Clean up assigned pods whose real Knative Service is now running,
+    // but only after active connections have drained.
     for (const [projectId, pod] of this.assigned) {
       const realServiceReady = await this.isRealServiceReady(projectId)
-      if (realServiceReady) {
-        console.log(
-          `[WarmPool] Real service for ${projectId} is ready, cleaning up warm pod ${pod.serviceName}`
-        )
-        this.assigned.delete(projectId)
-        this.deleteWarmPodService(pod.serviceName).catch((err) => {
-          console.error(
-            `[WarmPool] Failed to delete assigned pod ${pod.serviceName}:`,
-            err.message
-          )
-        })
+      if (!realServiceReady) {
+        this.realServiceReadySince.delete(projectId)
+        continue
       }
+
+      const connCount = this.activeConnections.get(projectId) || 0
+      if (connCount > 0) {
+        if (!this.realServiceReadySince.has(projectId)) {
+          this.realServiceReadySince.set(projectId, Date.now())
+        }
+        const waitingMs = Date.now() - this.realServiceReadySince.get(projectId)!
+        if (waitingMs < WarmPoolController.CONNECTION_DRAIN_TIMEOUT_MS) {
+          console.log(
+            `[WarmPool] Real service for ${projectId} is ready, but ${connCount} active connection(s) — deferring cleanup (waiting ${Math.round(waitingMs / 1000)}s)`
+          )
+          continue
+        }
+        console.warn(
+          `[WarmPool] Force-cleaning warm pod ${pod.serviceName} for ${projectId} — ${connCount} connection(s) still active after ${Math.round(waitingMs / 1000)}s`
+        )
+        this.activeConnections.delete(projectId)
+      }
+
+      console.log(
+        `[WarmPool] Real service for ${projectId} is ready, cleaning up warm pod ${pod.serviceName}`
+      )
+      this.realServiceReadySince.delete(projectId)
+      this.assigned.delete(projectId)
+      this.deleteWarmPodService(pod.serviceName).catch((err) => {
+        console.error(
+          `[WarmPool] Failed to delete assigned pod ${pod.serviceName}:`,
+          err.message
+        )
+      })
     }
 
     // Trim excess pods when pool shrinks (e.g., nodes scaled down).
@@ -576,6 +614,27 @@ export class WarmPoolController {
    */
   isAssigned(projectId: string): boolean {
     return this.assigned.has(projectId)
+  }
+
+  /**
+   * Increment active connection count for a project served by a warm pod.
+   * Must be paired with a `trackConnectionEnd` call when the stream finishes.
+   */
+  trackConnectionStart(projectId: string): void {
+    this.activeConnections.set(projectId, (this.activeConnections.get(projectId) || 0) + 1)
+  }
+
+  /**
+   * Decrement active connection count. When it reaches 0, the warm pod
+   * becomes eligible for cleanup on the next reconcile cycle.
+   */
+  trackConnectionEnd(projectId: string): void {
+    const count = (this.activeConnections.get(projectId) || 1) - 1
+    if (count <= 0) {
+      this.activeConnections.delete(projectId)
+    } else {
+      this.activeConnections.set(projectId, count)
+    }
   }
 
   /**
