@@ -2392,7 +2392,7 @@ function formatToolInstallMessage(
     return `${base} Auth is active. No manual credentials needed.`
   }
   if (auth.authUrl) {
-    return `${base} User needs to authorize — present them this link to connect their account: ${auth.authUrl}`
+    return `${base} User needs to authorize — a Connect button is displayed in the chat for them to click. Do NOT include the auth URL in your response; the UI button handles the OAuth popup flow automatically. Tell the user to click the Connect button below.`
   }
   return `${base} Auth status: needs_auth. The user may need to authorize via the Tools panel.`
 }

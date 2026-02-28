@@ -1838,25 +1838,6 @@ export const ChatPanel = observer(function ChatPanel({
     [handleSendMessage]
   )
 
-  // Listen for Composio OAuth completion via BroadcastChannel and auto-send confirmation
-  useEffect(() => {
-    if (Platform.OS !== "web") return
-    let channel: BroadcastChannel | null = null
-    try {
-      channel = new BroadcastChannel("composio-connect")
-      channel.onmessage = (event: MessageEvent) => {
-        if (event.data?.type === "composio-callback" && event.data?.status === "success") {
-          sendMessageInternal("I have successfully connected the integration. You can continue.")
-        }
-      }
-    } catch {
-      // BroadcastChannel not supported
-    }
-    return () => {
-      try { channel?.close() } catch {}
-    }
-  }, [sendMessageInternal])
-
   // Homepage transition warm-start: Inject initial message on mount (only for fresh sessions)
   useEffect(() => {
     if (!initialMessage || !currentSessionId || !isInitialLoadComplete) return

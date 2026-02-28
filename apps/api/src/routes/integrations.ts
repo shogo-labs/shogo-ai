@@ -128,18 +128,22 @@ export function integrationRoutes() {
   })
 
   router.get('/integrations/callback', (c) => {
-    const html = `<!DOCTYPE html><html><body>
-      <script>
-        window.opener?.postMessage({ type: 'composio-callback', status: 'success' }, '*');
-        try {
-          var ch = new BroadcastChannel('composio-connect');
-          ch.postMessage({ type: 'composio-callback', status: 'success' });
-          ch.close();
-        } catch(e) {}
-        window.close();
-      </script>
-      <p>Connection successful! You can close this window.</p>
-    </body></html>`
+    const callbackStatus = c.req.query('status') || 'success'
+    const ok = callbackStatus === 'success'
+    const html = `<!DOCTYPE html>
+<html><head><style>
+  body { font-family: -apple-system, system-ui, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #fafafa; color: #333; }
+  .card { text-align: center; padding: 2rem; }
+  .icon { font-size: 3rem; margin-bottom: 0.5rem; }
+  p { font-size: 0.9rem; color: #666; }
+</style></head><body>
+  <div class="card">
+    <div class="icon">${ok ? '✅' : '❌'}</div>
+    <h3>${ok ? 'Connected!' : 'Connection failed'}</h3>
+    <p>${ok ? 'This window will close automatically...' : 'Please close this window and try again.'}</p>
+  </div>
+  <script>${ok ? 'setTimeout(function(){ window.close(); }, 1500);' : ''}</script>
+</body></html>`
     return c.html(html)
   })
 
@@ -168,7 +172,7 @@ export function integrationRoutes() {
 
       const connections = ((accounts as any)?.items || (accounts as any)?.data || []).map((acc: any) => ({
         id: acc.id,
-        toolkit: acc.appName || acc.toolkit || acc.app_name,
+        toolkit: acc.toolkit?.slug ?? acc.appName ?? acc.app_name ?? 'unknown',
         status: acc.status,
         createdAt: acc.createdAt || acc.created_at,
       }))
@@ -219,23 +223,33 @@ export function integrationRoutes() {
       return c.json({ error: 'projectId query parameter required' }, 400)
     }
 
-    const composioUserId = buildComposioUserId(auth.userId, projectId)
+    // Check both the authenticated user's entity and the 'default' entity.
+    // The agent runtime uses process.env.USER_ID which may not be set (falls
+    // back to 'default'), while the API has the real auth userId.
+    const candidateIds = [
+      buildComposioUserId(auth.userId, projectId),
+      buildComposioUserId('default', projectId),
+    ]
+    const uniqueIds = [...new Set(candidateIds)]
 
     try {
       const accounts = await composio.connectedAccounts.list({
-        userIds: [composioUserId],
+        userIds: uniqueIds,
       })
 
       const items = (accounts as any)?.items || (accounts as any)?.data || []
       const match = items.find((acc: any) => {
-        const accToolkit = acc.appName || acc.toolkit || acc.app_name || ''
+        const raw = acc.toolkit?.slug ?? acc.appName ?? acc.app_name ?? ''
+        const accToolkit = typeof raw === 'string' ? raw : String(raw)
         return accToolkit.toLowerCase() === toolkit.toLowerCase()
       })
+
+      const isActive = match?.status === 'ACTIVE' || match?.status === 'active'
 
       return c.json({
         ok: true,
         data: {
-          connected: !!match,
+          connected: !!match && isActive,
           status: match?.status || null,
           connectionId: match?.id || null,
           enabled: true,
