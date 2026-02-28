@@ -13,6 +13,7 @@
  */
 
 import { betterAuth } from "better-auth"
+import { expo } from "@better-auth/expo"
 import { Pool } from "pg"
 import { createPersonalWorkspace } from "./services/workspace.service"
 import { sendWelcomeEmail } from "./services/email.service"
@@ -138,20 +139,27 @@ export const auth = betterAuth({
   },
 
   trustedOrigins: (request) => {
-    const origins = [...getAllowedOrigins()]
+    const origins = [...getAllowedOrigins(), 'shogo://']
     if (process.env.NODE_ENV !== 'production') {
       const reqOrigin = request?.headers?.get?.('origin')
       if (reqOrigin?.startsWith('http://localhost:') && !origins.includes(reqOrigin)) {
         origins.push(reqOrigin)
       }
+      // Allow local network origins (React Native on physical Android/iOS devices)
+      if (reqOrigin && /^http:\/\/192\.168\.\d+\.\d+/.test(reqOrigin) && !origins.includes(reqOrigin)) {
+        origins.push(reqOrigin)
+      }
+      // Expo Go deep links (used by @better-auth/expo for OAuth redirects)
+      origins.push('exp://')
     }
     return origins
   },
 
+  plugins: [expo()],
+
   // Advanced configuration
   advanced: {
     database: {
-      // Generate UUIDs for all BetterAuth tables to match our frontend schema
       generateId: (options) => crypto.randomUUID(),
     },
   },

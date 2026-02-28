@@ -13,7 +13,7 @@ export const API_URL = (() => {
   return Platform.select({
     web: 'http://localhost:8002',
     ios: 'http://localhost:8002',
-    android: 'http://10.0.2.2:8002',
+    android: 'http://192.168.1.132:8002',
     default: 'http://localhost:8002',
   })!
 })()

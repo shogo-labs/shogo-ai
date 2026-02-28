@@ -42,8 +42,10 @@ import {
 } from "@shogo/shared-app/chat"
 import { useChatTransportConfig } from "@shogo/shared-app/chat"
 import { useSDKDomains, useDomainActions } from "@shogo/shared-app/domain"
+import { Platform } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { API_URL } from "../../lib/api"
+import { authClient } from "../../lib/auth-client"
 import { ChatHeader } from "./ChatHeader"
 import { MessageList } from "./MessageList"
 import { ChatInput, type AgentMode } from "./ChatInput"
@@ -684,7 +686,27 @@ export const ChatPanel = observer(function ChatPanel({
 
   const isAgent = projectType === "AGENT"
 
-  const transportConfig = useChatTransportConfig({ apiBaseUrl: API_URL!, projectId, localAgentUrl })
+  const nativeHeaders = useMemo(() => {
+    if (Platform.OS === 'web') return undefined
+    return (): Record<string, string> => {
+      const cookie = authClient.getCookie()
+      return cookie ? { Cookie: cookie } : {}
+    }
+  }, [])
+
+  const expoFetch = useMemo(() => {
+    if (Platform.OS === 'web') return undefined
+    return require('expo/fetch').fetch as typeof globalThis.fetch
+  }, [])
+
+  const transportConfig = useChatTransportConfig({
+    apiBaseUrl: API_URL!,
+    projectId,
+    localAgentUrl,
+    credentials: Platform.OS === 'web' ? 'include' : 'omit',
+    headers: nativeHeaders,
+    fetch: expoFetch,
+  })
   const chatTransport = useMemo(
     () => (transportConfig ? new DefaultChatTransport(transportConfig) : undefined),
     [transportConfig]

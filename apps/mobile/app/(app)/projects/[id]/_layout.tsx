@@ -175,7 +175,7 @@ export default observer(function ProjectLayout() {
   }, [projects?.all])
 
   // Dynamic app canvas (agent projects)
-  const { agentUrl } = useAgentUrl(API_URL!, projectId, { credentials: 'include' })
+  const { agentUrl } = useAgentUrl(API_URL!, projectId, { credentials: Platform.OS === 'web' ? 'include' : 'omit' })
   const { surfaces, connected, dispatchAction, updateLocalData, reconnect } = useDynamicAppStream(agentUrl)
   const activeSurface = surfaces.size > 0 ? Array.from(surfaces.values())[0] : null
 

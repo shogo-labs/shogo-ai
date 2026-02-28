@@ -3,12 +3,18 @@
  *
  * Thin wrapper around the shared SDKDomainProvider from @shogo/shared-app.
  * Provides platform-specific API URL and credentials config.
+ *
+ * On native (Android/iOS), retrieves auth cookies from SecureStore via
+ * Better Auth's expoClient plugin and passes them as headers (instead of
+ * relying on browser-style credential cookies).
  */
 
-import type { ReactNode } from 'react'
+import { useCallback, type ReactNode } from 'react'
+import { Platform } from 'react-native'
 import { SDKDomainProvider } from '@shogo/shared-app/domain'
 import { useAuth } from './auth'
 import { API_URL } from '../lib/api'
+import { authClient } from '../lib/auth-client'
 
 export {
   useSDKDomain as useDomain,
@@ -29,14 +35,21 @@ export type { IDomainStore } from '@shogo/domain-stores'
 export type { IProject } from '@shogo/domain-stores'
 export type { IWorkspace } from '@shogo/domain-stores'
 
+const isNative = Platform.OS !== 'web'
+
 export function DomainProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth()
+
+  const getAuthCookie = useCallback(() => {
+    return authClient.getCookie() || null
+  }, [])
 
   return (
     <SDKDomainProvider
       apiBaseUrl={API_URL!}
       userId={user?.id ?? null}
-      credentials="include"
+      credentials={isNative ? 'omit' : 'include'}
+      getAuthCookie={isNative ? getAuthCookie : undefined}
     >
       {children}
     </SDKDomainProvider>

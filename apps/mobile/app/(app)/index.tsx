@@ -210,14 +210,21 @@ const HomeScreen = observer(function HomeScreen() {
   const [isCreating, setIsCreating] = useState(false)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
 
+  const [workspaceError, setWorkspaceError] = useState(false)
+
   useEffect(() => {
     if (!isAuthenticated) return
-    projects.loadAll()
-    workspaces.loadAll()
+    setWorkspaceError(false)
+    projects.loadAll().catch(() => {})
+    workspaces.loadAll().catch((err: any) => {
+      console.error('[Home] Failed to load workspaces:', err)
+      setWorkspaceError(true)
+    })
   }, [isAuthenticated])
 
   let currentWorkspace: any
   try { currentWorkspace = workspaces.all[0] } catch { currentWorkspace = undefined }
+  const workspacesLoading = workspaces.isLoading
 
   const firstName = useMemo(() => {
     const name = user?.name || 'there'
@@ -267,7 +274,7 @@ const HomeScreen = observer(function HomeScreen() {
 
   const handleTemplatePress = useCallback(async (template: CanvasTemplate) => {
     if (!user?.id || !currentWorkspace?.id) {
-      Alert.alert('Error', 'No workspace available')
+      Alert.alert('Not ready', 'Still loading your workspace. Please try again in a moment.')
       return
     }
     setLoadingTemplate(template.id)

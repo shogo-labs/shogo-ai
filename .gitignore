@@ -96,13 +96,21 @@ workspaces/
 # Vite/TanStack generated timestamp files (bust Docker cache)
 app.config.timestamp*.js
 
+apps/mobile/.expo/
 # Chat export logs (auto-generated agent outputs)
 shogo-chats/
 packages/mcp/src/evals/dspy/__pycache__/
 packages/agent-runtime/src/evals/dspy/__pycache__/
 packages/agent-runtime/src/evals/dspy/results/
 
+
+
+apps/mobile/.env
+apps/mobile/android/
+apps/mobile/ios/
+
 *.png
+!apps/mobile/assets/*.png
 tests/
 
 .dynamic-app-runtimes/
