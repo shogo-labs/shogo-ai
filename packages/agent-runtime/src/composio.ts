@@ -21,6 +21,9 @@ import { fetchComposioToolSchemas, type ComposioToolSchema } from './composio-au
  */
 let composioMcpClient: Client | null = null
 
+/** Stored composio user ID for SDK fallback auth checks */
+let storedComposioUserId: string | null = null
+
 /** Track registered proxy tool names for dedup across multiple toolkit installs */
 const registeredProxyToolNames = new Set<string>()
 
@@ -237,6 +240,7 @@ export async function connectComposioMCP(
     ])
 
     composioMcpClient = mcpClient
+    storedComposioUserId = composioUserId
     console.log(`[Composio] Connected to MCP endpoint for user "${composioUserId}"`)
     return true
   } catch (err: any) {
@@ -426,12 +430,14 @@ function jsonSchemaPropertyToTypebox(p: Record<string, any>): any {
 
 /**
  * Check auth status for a Composio toolkit by calling MANAGE_CONNECTIONS internally.
+ * Falls back to the Composio SDK to initiate auth and get a redirect URL if the
+ * MCP response doesn't contain one.
  */
 export async function checkComposioAuth(
   toolkitSlug: string,
 ): Promise<{ status: 'active' | 'needs_auth'; authUrl?: string }> {
   if (!composioMcpClient) {
-    return { status: 'needs_auth' }
+    return await checkComposioAuthViaSdk(toolkitSlug)
   }
   try {
     const result = await composioMcpClient.callTool({
@@ -451,13 +457,55 @@ export async function checkComposioAuth(
       return { status: 'active' }
     }
 
-    const urlMatch = texts.match(/https:\/\/[^\s"]+connect[^\s"]*/i)
-    return {
-      status: 'needs_auth',
-      authUrl: urlMatch?.[0] || parsed?.authUrl || parsed?.redirect_url,
+    const urlMatch = texts.match(/https?:\/\/[^\s"')\]>]+/i)
+    const mcpUrl = urlMatch?.[0] || parsed?.authUrl || parsed?.redirect_url || parsed?.redirectUrl
+    if (mcpUrl) {
+      return { status: 'needs_auth', authUrl: mcpUrl }
     }
+
+    return await checkComposioAuthViaSdk(toolkitSlug)
   } catch (err: any) {
     console.error(`[Composio] Auth check failed for "${toolkitSlug}": ${err.message}`)
+    return await checkComposioAuthViaSdk(toolkitSlug)
+  }
+}
+
+/**
+ * Fallback: use the Composio SDK directly to initiate auth and get a redirect URL.
+ */
+async function checkComposioAuthViaSdk(
+  toolkitSlug: string,
+): Promise<{ status: 'active' | 'needs_auth'; authUrl?: string }> {
+  const client = getComposioClient()
+  if (!client || !storedComposioUserId) {
+    return { status: 'needs_auth' }
+  }
+
+  try {
+    const authConfigs = getAuthConfigs()
+    const hasCustomAuth = Object.keys(authConfigs).length > 0
+    const sessionOpts = hasCustomAuth ? { authConfigs } : undefined
+    const session = await client.create(storedComposioUserId, sessionOpts)
+
+    const callbackBase = process.env.BETTER_AUTH_URL || process.env.API_URL || 'http://localhost:8002'
+    const connection = await session.authorize(toolkitSlug, {
+      callbackUrl: `${callbackBase}/api/integrations/callback`,
+    })
+
+    const redirectUrl = (connection as any)?.redirectUrl || (connection as any)?.redirect_url
+    if (redirectUrl) {
+      console.log(`[Composio] Got auth URL via SDK for "${toolkitSlug}"`)
+      return { status: 'needs_auth', authUrl: redirectUrl }
+    }
+
+    const status = (connection as any)?.status
+    if (status === 'active' || status === 'ACTIVE') {
+      return { status: 'active' }
+    }
+
+    return { status: 'needs_auth' }
+  } catch (err: any) {
+    console.error(`[Composio] SDK auth fallback failed for "${toolkitSlug}": ${err.message}`)
     return { status: 'needs_auth' }
   }
 }

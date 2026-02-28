@@ -20,7 +20,7 @@
 #   Native bun (app services with HMR):
 #     - MCP Server               - localhost:3100
 #     - API Server               - localhost:8002
-#     - Web Frontend (Vite)      - localhost:5173
+#     - Web Frontend (Expo Web)  - localhost:8081
 #
 # Prerequisites:
 #   - Docker and Docker Compose
@@ -136,8 +136,8 @@ SCHEMAS_PATH=.schemas
 WORKSPACE_ID=workspace
 TENANT_ID=tenant-a
 
-# CORS
-ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
+# CORS (Expo web runs on :8081, any localhost is allowed in dev mode)
+ALLOWED_ORIGINS=http://localhost:8081,http://localhost:5173,http://localhost:3000
 
 # Runtime (for project previews)
 WORKSPACES_DIR=./workspaces
@@ -274,8 +274,8 @@ tell application "Terminal"
     -- API Server  
     do script "cd '$PROJECT_ROOT' && echo '🚀 Starting API Server on port 8002...' && sleep 2 && bun run api:dev"
     
-    -- Web Frontend
-    do script "cd '$PROJECT_ROOT' && echo '🌐 Starting Web Frontend on port 5173...' && sleep 3 && bun run web:dev"
+    -- Web Frontend (Expo Web)
+    do script "cd '$PROJECT_ROOT' && echo '🌐 Starting Expo Web on port 8081...' && sleep 3 && bun run web:dev"
 end tell
 EOF
     
@@ -301,7 +301,7 @@ echo -e "${GREEN}  Development environment starting!${NC}"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 echo -e "  ${CYAN}App Services (with HMR):${NC}"
-echo -e "    Web UI:      ${BLUE}http://localhost:5173${NC}"
+echo -e "    Web UI:      ${BLUE}http://localhost:8081${NC}"
 echo -e "    API Server:  http://localhost:8002"
 echo -e "    MCP Server:  http://localhost:3100"
 echo ""

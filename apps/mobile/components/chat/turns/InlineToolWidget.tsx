@@ -52,6 +52,13 @@ export function InlineToolWidget({
   }[tool.state]
 
   const formatJson = (data: unknown): string => {
+    if (typeof data === 'string') {
+      try {
+        return JSON.stringify(JSON.parse(data), null, 2)
+      } catch {
+        return data
+      }
+    }
     try {
       return JSON.stringify(data, null, 2)
     } catch {

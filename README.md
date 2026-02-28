@@ -18,25 +18,70 @@ The system captures your intent, generates schemas, creates implementation specs
 
 → See the [App Builder Guide](docs/SKILL_USER_GUIDE.md)
 
-### For Developers
+### Local Development
 
 **Prerequisites:**
 - [Bun](https://bun.sh) — JavaScript runtime
-- [Node.js](https://nodejs.org) — Required for npx
-- [Google Chrome](https://www.google.com/chrome/) — Required for browser-based E2E testing
+- [Node.js](https://nodejs.org) — Required for npx/Expo CLI
+- [Docker](https://www.docker.com/) — For infrastructure (Postgres, Redis, MinIO)
+
+**1. Install dependencies and start infrastructure:**
 
 ```bash
-# Install dependencies
 bun install
 
-# Build all packages
-bun run build
+# Start Docker infrastructure (Postgres, Redis, MinIO)
+bun run docker:infra
+```
 
-# Run tests
-bun run test
+**2. Run database migrations (first time only):**
 
-# Start development mode
-bun run dev
+```bash
+bun run db:migrate:deploy
+```
+
+**3. Start all services:**
+
+```bash
+bun run dev:all
+```
+
+This starts three services concurrently:
+
+| Service | Port | Description |
+|---------|------|-------------|
+| MCP Server | `localhost:3100` | Schema management, persistence |
+| API Server | `localhost:8002` | Hono API, auth, chat proxy, agent runtimes |
+| Web Frontend | `localhost:8081` | Expo web app (React Native for Web) |
+
+Open **http://localhost:8081** in your browser.
+
+Logs are written to `logs/api.log`, `logs/mcp.log`, and `logs/web.log` so you can `tail -f logs/api.log` to debug issues.
+
+**Environment:** Copy `.env.local.template` to `.env.local` and fill in your API keys (at minimum `ANTHROPIC_API_KEY`). The dev server script will create a minimal `.env.local` for you if one doesn't exist.
+
+#### Running Services Individually
+
+If you prefer separate terminals:
+
+```bash
+bun run mcp:http       # Terminal 1 — MCP server on :3100
+bun run api:dev        # Terminal 2 — API server on :8002 (with --watch)
+bun run web:dev        # Terminal 3 — Expo web on :8081
+```
+
+Or run just the backend (no frontend):
+
+```bash
+bun run dev:backend    # MCP + API only
+```
+
+#### Full Setup with Infrastructure
+
+For a one-command start that also handles Docker and migrations:
+
+```bash
+bun run dev:start      # Starts Docker infra + app services
 ```
 
 → See [Getting Started](docs/GETTING_STARTED.md) and [Architecture](docs/ARCHITECTURE.md)
@@ -77,17 +122,44 @@ Each phase has a dedicated AI skill that captures structured output, enabling tr
 | Package | Description |
 |---------|-------------|
 | [@shogo/state-api](packages/state-api) | Schema-to-MST transformation engine |
-| [@shogo/mcp](packages/mcp) | MCP server with 16 tools for AI integration |
-| [@shogo/web](apps/web) | React demo app showing integration patterns |
+| [@shogo/mcp](packages/mcp) | MCP server for AI integration |
+| [@shogo/agent-runtime](packages/agent-runtime) | Agent gateway, tools, Composio integrations |
+| [@shogo/api](apps/api) | Hono API server, auth, chat proxy |
+| [@shogo/mobile](apps/mobile) | Expo app (React Native for Web + iOS + Android) |
+| [@shogo-ai/sdk](packages/sdk) | Published SDK for Shogo apps |
 
 ## Commands
+
+### Development
+
+| Command | Description |
+|---------|-------------|
+| `bun run dev:all` | Start MCP + API + Web concurrently |
+| `bun run dev:backend` | Start MCP + API only (no frontend) |
+| `bun run dev:start` | Full setup: Docker infra + app services |
+| `bun run api:dev` | API server with hot reload (`:8002`) |
+| `bun run web:dev` | Expo web frontend (`:8081`) |
+| `bun run mcp:http` | MCP HTTP server (`:3100`) |
+| `bun run mcp:stdio` | MCP stdio transport (for Claude Code) |
+
+### Infrastructure
+
+| Command | Description |
+|---------|-------------|
+| `bun run docker:infra` | Start Postgres, Redis, MinIO containers |
+| `bun run docker:infra:down` | Stop infrastructure containers |
+| `bun run docker:infra:clean` | Stop and remove all volumes |
+| `bun run db:migrate` | Run Prisma migrations (dev) |
+| `bun run db:migrate:deploy` | Run Prisma migrations (deploy) |
+| `bun run db:studio` | Open Prisma Studio |
+
+### Build & Test
 
 | Command | Description |
 |---------|-------------|
 | `bun install` | Install all dependencies |
-| `bun run build` | Build all packages |
+| `bun run build` | Build all packages (Turbo) |
 | `bun run test` | Run all tests |
-| `bun run dev` | Start development mode |
 | `bun run typecheck` | Type check all packages |
 | `bun run lint` | Lint all packages |
 
@@ -131,13 +203,18 @@ Schemas define entities, relationships, and constraints. The system generates Mo
 
 ```
 shogo-ai/
-├── packages/
-│   ├── state-api/     # Schema transformation engine
-│   └── mcp/           # MCP server for AI integration
 ├── apps/
-│   └── web/           # React demo application
-├── .claude/
-│   └── skills/        # AI skill definitions
-├── .schemas/          # Persisted schema storage
-└── docs/              # Documentation
+│   ├── api/               # Hono API server (auth, chat, runtime management)
+│   └── mobile/            # Expo app (web + iOS + Android)
+├── packages/
+│   ├── state-api/         # Schema-to-MST transformation engine
+│   ├── mcp/               # MCP server (schema/store/view tools)
+│   ├── agent-runtime/     # Agent gateway, tool system, Composio
+│   ├── sdk/               # Published SDK (@shogo-ai/sdk)
+│   ├── shared-app/        # Shared app logic (auth, chat, domain)
+│   └── domain-store/      # Domain CRUD stores
+├── prisma/                # Database schema & migrations
+├── scripts/               # Dev scripts (docker, codegen)
+├── workspaces/            # Agent runtime workspaces (gitignored)
+└── docs/                  # Documentation
 ```

@@ -2382,6 +2382,21 @@ function createToolSearchTool(): AgentTool {
   }
 }
 
+function formatToolInstallMessage(
+  toolkitName: string,
+  toolCount: number,
+  auth: { status: string; authUrl?: string },
+): string {
+  const base = `"${toolkitName}" installed with ${toolCount} tool(s).`
+  if (auth.status !== 'needs_auth') {
+    return `${base} Auth is active. No manual credentials needed.`
+  }
+  if (auth.authUrl) {
+    return `${base} User needs to authorize — present them this link to connect their account: ${auth.authUrl}`
+  }
+  return `${base} Auth status: needs_auth. The user may need to authorize via the Tools panel.`
+}
+
 function createToolInstallTool(ctx: ToolContext): AgentTool {
   return {
     name: 'tool_install',
@@ -2492,7 +2507,7 @@ Alternatively, pass "bind" with explicit config if you already know the tool's r
             tools: proxy.toolNames,
             authStatus: auth.status,
             ...(auth.authUrl ? { authUrl: auth.authUrl } : {}),
-            message: `"${composioToolkit.name}" installed with ${proxy.toolCount} tool(s).${auth.status === 'needs_auth' ? ` User needs to authorize: ${auth.authUrl}` : ' Auth is active.'}`,
+            message: formatToolInstallMessage(composioToolkit.name, proxy.toolCount, auth),
           })
           result = await applyAutoBind(result, composioToolkit.slug)
           return textResult(result)
@@ -2522,7 +2537,7 @@ Alternatively, pass "bind" with explicit config if you already know the tool's r
                 tools: proxy.toolNames,
                 authStatus: auth.status,
                 ...(auth.authUrl ? { authUrl: auth.authUrl } : {}),
-                message: `Connected "${composioToolkit.name}" via Composio managed OAuth with ${proxy.toolCount} tool(s).${auth.status === 'needs_auth' ? ` User needs to authorize: ${auth.authUrl}` : ' Auth is active. No manual credentials needed.'}`,
+                message: formatToolInstallMessage(composioToolkit.name, proxy.toolCount, auth),
               })
               result = await applyAutoBind(result, composioToolkit.slug)
               return textResult(result)
