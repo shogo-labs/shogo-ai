@@ -2400,11 +2400,11 @@ function formatToolInstallMessage(
 function createToolInstallTool(ctx: ToolContext): AgentTool {
   return {
     name: 'tool_install',
-    description: `Install and start a tool integration, making its tools available immediately. For managed integrations (Google Calendar, Slack, GitHub, and hundreds more), just provide the name — no command or args needed. For custom tool servers, provide command and args.
+    description: `Install and start a tool integration, making its tools available immediately. For managed integrations (Google Calendar, Slack, GitHub, and hundreds more), just provide the name — no command or args needed. For custom MCP tool servers, provide command and args.
 
-Pass "autoBind" with a surfaceId and dataPath to automatically discover the toolkit's CRUD operations, generate field schemas, and bind them to canvas API routes — no prior knowledge of the tool's response shape needed. Works with any managed Composio integration.
+Managed integrations auto-bind by default: the toolkit's CRUD operations are automatically discovered and deferred to bind to the next canvas you create. No extra parameters needed — just call tool_install({ name: "googlecalendar" }) and then canvas_create.
 
-Alternatively, pass "bind" with explicit config if you already know the tool's response shape (e.g. from a saved skill). If the surface doesn't exist yet, the binding is deferred until canvas_create.`,
+Pass "autoBind" with surfaceId/dataPath to target a specific canvas. Pass "bind" with explicit config if you already know the tool's response shape (e.g. from a saved skill).`,
     label: 'Install Tool',
     parameters: Type.Object({
       name: Type.String({ description: 'Tool or integration name (e.g. "googlecalendar", "slack", "postgres"). For managed integrations, this is all you need.' }),
@@ -2471,23 +2471,37 @@ Alternatively, pass "bind" with explicit config if you already know the tool's r
         return { ...installResult, bind: { ok: true, deferred: true, surfaceId: bind.surfaceId, message: `Binding deferred — will apply when surface "${bind.surfaceId}" is created.` } }
       }
 
-      const applyAutoBind = async (installResult: Record<string, unknown>, toolkitSlug: string) => {
-        if (!autoBind || !ctx.mcpClientManager) return installResult
+      const applyAutoBind = async (installResult: Record<string, unknown>, toolkitSlug: string, isComposio: boolean) => {
+        if (!ctx.mcpClientManager) return installResult
+        // For Composio integrations, auto-bind by default unless explicitly skipped
+        if (!autoBind && !isComposio) return installResult
         try {
           const result = await autoBindPrimaryEntity(toolkitSlug, {
-            dataPath: autoBind.dataPath,
+            dataPath: autoBind?.dataPath,
             mcpClient: ctx.mcpClientManager,
           })
           if (!result) {
             return { ...installResult, autoBind: { ok: false, message: `Auto-bind: no bindable entities found for "${toolkitSlug}". Use canvas_api_bind manually after exploring the tools.` } }
           }
           const manager = getDynamicAppManager()
-          if (manager.getSurface(autoBind.surfaceId)) {
-            const bindResult = manager.bindToolApi(autoBind.surfaceId, result.config, ctx.mcpClientManager)
+          const surfaceId = autoBind?.surfaceId
+          if (surfaceId && manager.getSurface(surfaceId)) {
+            const bindResult = manager.bindToolApi(surfaceId, result.config, ctx.mcpClientManager)
             return { ...installResult, autoBind: { ok: true, entity: result.entity, config: result.config, discoveredFrom: result.discoveredFrom, tools: result.tools, ...bindResult } }
           }
-          manager.deferToolBinding(autoBind.surfaceId, result.config, ctx.mcpClientManager)
-          return { ...installResult, autoBind: { ok: true, deferred: true, surfaceId: autoBind.surfaceId, entity: result.entity, config: result.config, discoveredFrom: result.discoveredFrom, tools: result.tools, message: `Auto-bind deferred — "${result.entity}" binding will apply when surface "${autoBind.surfaceId}" is created.` } }
+          // Defer to specific surface or wildcard (next canvas created)
+          manager.deferToolBinding(surfaceId || '*', result.config, ctx.mcpClientManager)
+          return {
+            ...installResult,
+            autoBind: {
+              ok: true, deferred: true,
+              surfaceId: surfaceId || '(next canvas)',
+              entity: result.entity, config: result.config, discoveredFrom: result.discoveredFrom, tools: result.tools,
+              message: surfaceId
+                ? `Auto-bind deferred — "${result.entity}" will bind when surface "${surfaceId}" is created.`
+                : `Auto-bind ready — "${result.entity}" CRUD binding will apply automatically to the next canvas you create.`,
+            },
+          }
         } catch (err: any) {
           return { ...installResult, autoBind: { ok: false, error: err.message, message: `Auto-bind failed: ${err.message}. Use canvas_api_bind manually.` } }
         }
@@ -2509,7 +2523,7 @@ Alternatively, pass "bind" with explicit config if you already know the tool's r
             ...(auth.authUrl ? { authUrl: auth.authUrl } : {}),
             message: formatToolInstallMessage(composioToolkit.name, proxy.toolCount, auth),
           })
-          result = await applyAutoBind(result, composioToolkit.slug)
+          result = await applyAutoBind(result, composioToolkit.slug, true)
           return textResult(result)
         }
       }
@@ -2539,7 +2553,7 @@ Alternatively, pass "bind" with explicit config if you already know the tool's r
                 ...(auth.authUrl ? { authUrl: auth.authUrl } : {}),
                 message: formatToolInstallMessage(composioToolkit.name, proxy.toolCount, auth),
               })
-              result = await applyAutoBind(result, composioToolkit.slug)
+              result = await applyAutoBind(result, composioToolkit.slug, true)
               return textResult(result)
             }
             return textResult({ error: `Failed to connect "${composioToolkit.name}" via Composio. The integration may not be available.` })

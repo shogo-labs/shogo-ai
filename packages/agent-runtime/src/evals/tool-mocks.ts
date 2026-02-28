@@ -168,30 +168,27 @@ export const GITHUB_TRIAGE_MOCKS: ToolMockMap = {
     response: {
       query: 'github',
       results: [
-        { name: 'GitHub', qualifiedName: '@modelcontextprotocol/server-github', description: 'Access GitHub repos, issues, PRs, and actions. List, create, and update issues and pull requests.', installCommand: 'npx -y @modelcontextprotocol/server-github', source: 'catalog' },
+        { name: 'GitHub', qualifiedName: 'github', description: 'GitHub — managed OAuth integration. Access repos, issues, PRs.', source: 'managed', authType: 'oauth', composioToolkit: 'github' },
       ],
-      message: 'Found 1 MCP server(s). Use tool_install to add one.',
+      message: 'Found 1 tool(s). Use tool_install to add one.',
     },
   },
   tool_install: {
     type: 'static',
-    description: 'Install and start an MCP server, making its tools available immediately.',
-    paramKeys: ['name', 'command', 'args', 'env'],
+    description: 'Install a tool, making its capabilities available immediately.',
+    paramKeys: ['name'],
     response: {
       ok: true,
-      server: 'github',
+      server: 'composio',
+      integration: 'github',
       toolCount: 5,
-      tools: [
-        { name: 'mcp__github__list_issues', description: 'List issues in a GitHub repository' },
-        { name: 'mcp__github__create_issue', description: 'Create a new issue' },
-        { name: 'mcp__github__update_issue', description: 'Update an existing issue' },
-        { name: 'mcp__github__search_issues', description: 'Search issues across repositories' },
-        { name: 'mcp__github__get_issue', description: 'Get details of a specific issue' },
-      ],
-      message: 'Installed "github" with 5 tool(s). They are now available for use.',
+      connected: true,
+      authStatus: 'active',
+      tools: ['GITHUB_LIST_ISSUES', 'GITHUB_CREATE_ISSUE', 'GITHUB_UPDATE_ISSUE', 'GITHUB_SEARCH_ISSUES', 'GITHUB_GET_ISSUE'],
+      message: 'Installed github with 5 tool(s). Auth is active — connected and ready.',
     },
   },
-  mcp__github__list_issues: {
+  GITHUB_LIST_ISSUES: {
     type: 'static',
     description: 'List issues in a GitHub repository. Returns an array of issues with title, labels, assignee, and state.',
     paramKeys: ['owner', 'repo', 'state', 'labels', 'per_page'],
@@ -341,7 +338,7 @@ export const API_HEALTH_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const SENTRY_TRIAGE_MOCKS: ToolMockMap = {
-  mcp__sentry__list_issues: {
+  SENTRY_LIST_ISSUES: {
     type: 'static',
     description: 'List error issues from Sentry. Returns an array of issues with title, count, level, firstSeen, lastSeen, and status.',
     paramKeys: ['project', 'query', 'sort'],
@@ -361,7 +358,42 @@ export const SENTRY_TRIAGE_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const MEETING_PREP_MOCKS: ToolMockMap = {
-  mcp__google_calendar__list_events: {
+  tool_search: {
+    type: 'pattern',
+    description: 'Search for tools by capability or keyword.',
+    paramKeys: ['query', 'limit'],
+    patterns: [
+      {
+        match: { query: 'calendar' },
+        response: { query: 'google calendar', results: [{ name: 'googlecalendar', description: 'Google Calendar — managed OAuth integration.', source: 'managed', authType: 'oauth' }], message: 'Found 1 tool(s).' },
+      },
+      {
+        match: { query: 'google' },
+        response: { query: 'google calendar', results: [{ name: 'googlecalendar', description: 'Google Calendar — managed OAuth integration.', source: 'managed', authType: 'oauth' }], message: 'Found 1 tool(s).' },
+      },
+    ],
+    default: { query: 'calendar', results: [{ name: 'googlecalendar', description: 'Google Calendar — managed OAuth integration.', source: 'managed', authType: 'oauth' }], message: 'Found 1 tool(s).' },
+  },
+  tool_install: {
+    type: 'static',
+    description: 'Install a tool, making its capabilities available immediately.',
+    paramKeys: ['name'],
+    response: {
+      ok: true, server: 'composio', integration: 'googlecalendar', toolCount: 1, connected: true, authStatus: 'active',
+      tools: ['GOOGLECALENDAR_FIND_EVENT'],
+      message: 'Installed googlecalendar with 1 tool(s). Auth is active — connected and ready.',
+    },
+  },
+  tool_list: {
+    type: 'static',
+    description: 'List installed MCP servers.',
+    paramKeys: [],
+    response: {
+      servers: [{ name: 'composio', toolCount: 1, tools: ['GOOGLECALENDAR_FIND_EVENT'] }],
+      totalServers: 1, totalTools: 1,
+    },
+  },
+  GOOGLECALENDAR_FIND_EVENT: {
     type: 'static',
     description: 'List events from Google Calendar. Returns an array of calendar events with summary, start/end times, attendees, location, and description.',
     paramKeys: ['calendarId', 'timeMin', 'timeMax', 'maxResults'],
@@ -447,7 +479,7 @@ export const MEETING_PREP_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const STRIPE_REVENUE_MOCKS: ToolMockMap = {
-  mcp__stripe__get_balance: {
+  STRIPE_GET_BALANCE: {
     type: 'static',
     description: 'Get the current Stripe account balance. Returns available and pending amounts by currency.',
     paramKeys: [],
@@ -456,7 +488,7 @@ export const STRIPE_REVENUE_MOCKS: ToolMockMap = {
       pending: [{ amount: 35000, currency: 'usd' }],
     },
   },
-  mcp__stripe__list_payments: {
+  STRIPE_LIST_PAYMENTS: {
     type: 'static',
     description: 'List recent Stripe payments/charges. Returns an array of payment objects with amount, currency, status, customer_email, and created timestamp.',
     paramKeys: ['limit', 'starting_after', 'status'],
@@ -511,44 +543,40 @@ const PR_PATTERN_SPEC: ToolMockSpec = {
 export const PR_REVIEW_MOCKS: ToolMockMap = {
   tool_list: {
     type: 'static',
-    description: 'List all currently installed MCP servers and their available tools.',
+    description: 'List installed tools.',
     paramKeys: [],
     response: { servers: [], totalServers: 0, totalTools: 0 },
   },
   tool_search: {
     type: 'static',
-    description: 'Search for MCP servers by capability or keyword.',
+    description: 'Search for tools by capability or keyword.',
     paramKeys: ['query', 'limit'],
     response: {
       query: 'github',
       results: [
-        { name: 'GitHub', qualifiedName: '@modelcontextprotocol/server-github', description: 'Access GitHub repos, issues, PRs, and actions. List, create, and update issues and pull requests.', installCommand: 'npx -y @modelcontextprotocol/server-github', source: 'catalog' },
+        { name: 'GitHub', qualifiedName: 'github', description: 'GitHub — managed OAuth integration. Access repos, issues, PRs.', source: 'managed', authType: 'oauth', composioToolkit: 'github' },
       ],
-      message: 'Found 1 MCP server(s). Use tool_install to add one.',
+      message: 'Found 1 tool(s). Use tool_install to add one.',
     },
   },
   tool_install: {
     type: 'static',
-    description: 'Install and start an MCP server, making its tools available immediately.',
-    paramKeys: ['name', 'command', 'args', 'env'],
+    description: 'Install a tool, making its capabilities available immediately.',
+    paramKeys: ['name'],
     response: {
       ok: true,
-      server: 'github',
+      server: 'composio',
+      integration: 'github',
       toolCount: 6,
-      tools: [
-        { name: 'mcp__github__list_issues', description: 'List issues in a GitHub repository' },
-        { name: 'mcp__github__list_pull_requests', description: 'List pull requests in a GitHub repository' },
-        { name: 'mcp__github__create_issue', description: 'Create a new issue' },
-        { name: 'mcp__github__update_issue', description: 'Update an existing issue' },
-        { name: 'mcp__github__create_pull_request_review', description: 'Create a review on a pull request (approve, request changes)' },
-        { name: 'mcp__github__get_pull_request', description: 'Get details of a specific pull request' },
-      ],
-      message: 'Installed "github" with 6 tool(s). They are now available for use.',
+      connected: true,
+      authStatus: 'active',
+      tools: ['GITHUB_LIST_ISSUES', 'GITHUB_LIST_PULL_REQUESTS', 'GITHUB_CREATE_ISSUE', 'GITHUB_UPDATE_ISSUE', 'GITHUB_CREATE_PULL_REQUEST_REVIEW', 'GITHUB_GET_PULL_REQUEST'],
+      message: 'Installed github with 6 tool(s). Auth is active — connected and ready.',
     },
   },
-  mcp__github__list_issues: PR_PATTERN_SPEC,
-  mcp__github__list_pull_requests: PR_PATTERN_SPEC,
-  mcp__github__create_pull_request_review: {
+  GITHUB_LIST_ISSUES: PR_PATTERN_SPEC,
+  GITHUB_LIST_PULL_REQUESTS: PR_PATTERN_SPEC,
+  GITHUB_CREATE_PULL_REQUEST_REVIEW: {
     type: 'static',
     description: 'Create a review on a pull request (approve, request changes).',
     paramKeys: ['owner', 'repo', 'pull_number', 'event', 'body'],
@@ -923,7 +951,7 @@ export const MCP_DISCOVERY_PERSONALITY_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const INVESTOR_MEETING_PREP_MOCKS: ToolMockMap = {
-  mcp_google_calendar_list_events: {
+  GOOGLECALENDAR_FIND_EVENT: {
     type: 'static',
     description: 'List events from Google Calendar.',
     paramKeys: ['calendarId', 'timeMin', 'timeMax', 'maxResults'],
@@ -1014,7 +1042,7 @@ export const INVESTOR_MEETING_PREP_MOCKS: ToolMockMap = {
     paramKeys: [],
     response: {
       servers: [
-        { name: 'google-calendar', toolCount: 2, tools: ['mcp_google_calendar_list_events', 'mcp_google_calendar_get_event'] },
+        { name: 'composio', toolCount: 2, tools: ['GOOGLECALENDAR_FIND_EVENT', 'GOOGLECALENDAR_GET_EVENT'] },
         { name: 'postgres', toolCount: 3, tools: ['mcp_postgres_query', 'mcp_postgres_list_tables', 'mcp_postgres_describe_table'] },
       ],
       totalServers: 2, totalTools: 5,
@@ -1028,7 +1056,7 @@ export const INVESTOR_MEETING_PREP_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const PRODUCTION_INCIDENT_MOCKS: ToolMockMap = {
-  mcp_sentry_list_issues: {
+  SENTRY_LIST_ISSUES: {
     type: 'static',
     description: 'List error issues from Sentry.',
     paramKeys: ['project', 'query', 'sort'],
@@ -1038,7 +1066,7 @@ export const PRODUCTION_INCIDENT_MOCKS: ToolMockMap = {
       { id: 'SENTRY-2003', title: 'TimeoutError: Redis connection timed out', count: 234, userCount: 98, level: 'warning', firstSeen: '2026-02-22T14:40:00Z', lastSeen: '2026-02-22T14:58:00Z', status: 'unresolved', tags: { service: 'session-store' } },
     ],
   },
-  mcp_github_list_recent_deploys: {
+  GITHUB_LIST_RECENT_DEPLOYS: {
     type: 'static',
     description: 'List recent deployments/merged PRs.',
     paramKeys: ['owner', 'repo', 'limit'],
@@ -1048,7 +1076,7 @@ export const PRODUCTION_INCIDENT_MOCKS: ToolMockMap = {
       { sha: 'i7j8k9l', message: 'Add billing webhook endpoint', author: 'carol', mergedAt: '2026-02-22T11:00:00Z', pr: '#185', labels: ['feature'] },
     ],
   },
-  mcp_datadog_query_metrics: {
+  DATADOG_QUERY_METRICS: {
     type: 'pattern',
     description: 'Query infrastructure metrics from Datadog.',
     paramKeys: ['query', 'from', 'to'],
@@ -1081,7 +1109,7 @@ export const PRODUCTION_INCIDENT_MOCKS: ToolMockMap = {
       message: 'Anomaly detected: error rate and latency spiked at 14:33 UTC, correlates with deploy a1b2c3d',
     },
   },
-  mcp_slack_send_message: {
+  SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL: {
     type: 'static',
     description: 'Send a message to a Slack channel.',
     paramKeys: ['channel', 'text'],
@@ -1093,10 +1121,10 @@ export const PRODUCTION_INCIDENT_MOCKS: ToolMockMap = {
     paramKeys: [],
     response: {
       servers: [
-        { name: 'sentry', toolCount: 2, tools: ['mcp_sentry_list_issues', 'mcp_sentry_get_issue'] },
-        { name: 'github', toolCount: 3, tools: ['mcp_github_list_recent_deploys', 'mcp_github_list_pull_requests', 'mcp_github_get_commit'] },
-        { name: 'datadog', toolCount: 2, tools: ['mcp_datadog_query_metrics', 'mcp_datadog_list_monitors'] },
-        { name: 'slack', toolCount: 2, tools: ['mcp_slack_send_message', 'mcp_slack_list_channels'] },
+        { name: 'composio', toolCount: 2, tools: ['SENTRY_LIST_ISSUES', 'SENTRY_GET_ISSUE'] },
+        { name: 'composio', toolCount: 3, tools: ['GITHUB_LIST_RECENT_DEPLOYS', 'GITHUB_LIST_PULL_REQUESTS', 'GITHUB_GET_COMMIT'] },
+        { name: 'composio', toolCount: 2, tools: ['DATADOG_QUERY_METRICS', 'DATADOG_LIST_MONITORS'] },
+        { name: 'composio', toolCount: 2, tools: ['SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL', 'SLACK_LIST_CHANNELS'] },
       ],
       totalServers: 4, totalTools: 9,
     },
@@ -1109,7 +1137,79 @@ export const PRODUCTION_INCIDENT_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const SUPPORT_TICKET_TRIAGE_MOCKS: ToolMockMap = {
-  mcp_zendesk_list_tickets: {
+  tool_search: {
+    type: 'pattern',
+    description: 'Search for tools by capability or keyword.',
+    paramKeys: ['query', 'limit'],
+    patterns: [
+      {
+        match: { query: 'zendesk' },
+        response: {
+          query: 'zendesk',
+          results: [{ name: 'zendesk', description: 'Zendesk — managed OAuth integration. List tickets, manage support.', source: 'managed', authType: 'oauth', composioToolkit: 'zendesk' }],
+          message: 'Found 1 tool(s). Use tool_install to add one.',
+        },
+      },
+      {
+        match: { query: 'linear' },
+        response: {
+          query: 'linear',
+          results: [{ name: 'linear', description: 'Linear — managed OAuth integration. Create and manage issues.', source: 'managed', authType: 'oauth', composioToolkit: 'linear' }],
+          message: 'Found 1 tool(s). Use tool_install to add one.',
+        },
+      },
+      {
+        match: { query: 'slack' },
+        response: {
+          query: 'slack',
+          results: [{ name: 'slack', description: 'Slack — managed OAuth integration. Send messages, manage channels.', source: 'managed', authType: 'oauth', composioToolkit: 'slack' }],
+          message: 'Found 1 tool(s). Use tool_install to add one.',
+        },
+      },
+    ],
+    default: {
+      query: 'support',
+      results: [
+        { name: 'zendesk', description: 'Zendesk — managed OAuth integration.', source: 'managed', authType: 'oauth' },
+        { name: 'linear', description: 'Linear — managed OAuth integration.', source: 'managed', authType: 'oauth' },
+        { name: 'slack', description: 'Slack — managed OAuth integration.', source: 'managed', authType: 'oauth' },
+      ],
+      message: 'Found 3 tool(s). Use tool_install to add one.',
+    },
+  },
+  tool_install: {
+    type: 'pattern',
+    description: 'Install a tool, making its capabilities available immediately.',
+    paramKeys: ['name'],
+    patterns: [
+      {
+        match: { name: 'zendesk' },
+        response: {
+          ok: true, server: 'composio', integration: 'zendesk', toolCount: 2, connected: true, authStatus: 'active',
+          tools: ['ZENDESK_LIST_TICKETS', 'ZENDESK_GET_TICKET'],
+          message: 'Installed zendesk with 2 tool(s). Auth is active — connected and ready.',
+        },
+      },
+      {
+        match: { name: 'linear' },
+        response: {
+          ok: true, server: 'composio', integration: 'linear', toolCount: 3, connected: true, authStatus: 'active',
+          tools: ['LINEAR_CREATE_ISSUE', 'LINEAR_LIST_ISSUES', 'LINEAR_UPDATE_ISSUE'],
+          message: 'Installed linear with 3 tool(s). Auth is active — connected and ready.',
+        },
+      },
+      {
+        match: { name: 'slack' },
+        response: {
+          ok: true, server: 'composio', integration: 'slack', toolCount: 2, connected: true, authStatus: 'active',
+          tools: ['SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL', 'SLACK_LIST_CHANNELS'],
+          message: 'Installed slack with 2 tool(s). Auth is active — connected and ready.',
+        },
+      },
+    ],
+    default: { ok: true, connected: true, authStatus: 'active', tools: [], message: 'Installed. Auth is active — connected and ready.' },
+  },
+  ZENDESK_LIST_TICKETS: {
     type: 'static',
     description: 'List recent support tickets from Zendesk.',
     paramKeys: ['status', 'created_after', 'sort_by', 'limit'],
@@ -1132,13 +1232,13 @@ export const SUPPORT_TICKET_TRIAGE_MOCKS: ToolMockMap = {
       next_page: null,
     },
   },
-  mcp_linear_create_issue: {
+  LINEAR_CREATE_ISSUE: {
     type: 'static',
     description: 'Create a new issue in Linear.',
     paramKeys: ['title', 'description', 'priority', 'labels', 'teamId'],
     response: { id: 'ENG-301', url: 'https://linear.app/acme/issue/ENG-301', status: 'Triage', created: true },
   },
-  mcp_slack_send_message: {
+  SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL: {
     type: 'static',
     description: 'Send a message to a Slack channel.',
     paramKeys: ['channel', 'text'],
@@ -1150,9 +1250,9 @@ export const SUPPORT_TICKET_TRIAGE_MOCKS: ToolMockMap = {
     paramKeys: [],
     response: {
       servers: [
-        { name: 'zendesk', toolCount: 2, tools: ['mcp_zendesk_list_tickets', 'mcp_zendesk_get_ticket'] },
-        { name: 'linear', toolCount: 3, tools: ['mcp_linear_create_issue', 'mcp_linear_list_issues', 'mcp_linear_update_issue'] },
-        { name: 'slack', toolCount: 2, tools: ['mcp_slack_send_message', 'mcp_slack_list_channels'] },
+        { name: 'composio', toolCount: 2, tools: ['ZENDESK_LIST_TICKETS', 'ZENDESK_GET_TICKET'] },
+        { name: 'composio', toolCount: 3, tools: ['LINEAR_CREATE_ISSUE', 'LINEAR_LIST_ISSUES', 'LINEAR_UPDATE_ISSUE'] },
+        { name: 'composio', toolCount: 2, tools: ['SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL', 'SLACK_LIST_CHANNELS'] },
       ],
       totalServers: 3, totalTools: 7,
     },
@@ -1165,25 +1265,85 @@ export const SUPPORT_TICKET_TRIAGE_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const TEAM_ONBOARDING_MOCKS: ToolMockMap = {
-  mcp_github_add_to_org: {
+  tool_search: {
+    type: 'pattern',
+    description: 'Search for tools by capability or keyword.',
+    paramKeys: ['query', 'limit'],
+    patterns: [
+      {
+        match: { query: 'github' },
+        response: { query: 'github', results: [{ name: 'github', description: 'GitHub — managed OAuth integration.', source: 'managed', authType: 'oauth' }], message: 'Found 1 tool(s).' },
+      },
+      {
+        match: { query: 'slack' },
+        response: { query: 'slack', results: [{ name: 'slack', description: 'Slack — managed OAuth integration.', source: 'managed', authType: 'oauth' }], message: 'Found 1 tool(s).' },
+      },
+      {
+        match: { query: 'linear' },
+        response: { query: 'linear', results: [{ name: 'linear', description: 'Linear — managed OAuth integration.', source: 'managed', authType: 'oauth' }], message: 'Found 1 tool(s).' },
+      },
+    ],
+    default: {
+      query: 'onboarding',
+      results: [
+        { name: 'github', description: 'GitHub — managed OAuth integration.', source: 'managed', authType: 'oauth' },
+        { name: 'slack', description: 'Slack — managed OAuth integration.', source: 'managed', authType: 'oauth' },
+        { name: 'linear', description: 'Linear — managed OAuth integration.', source: 'managed', authType: 'oauth' },
+      ],
+      message: 'Found 3 tool(s).',
+    },
+  },
+  tool_install: {
+    type: 'pattern',
+    description: 'Install a tool, making its capabilities available immediately.',
+    paramKeys: ['name'],
+    patterns: [
+      {
+        match: { name: 'github' },
+        response: {
+          ok: true, server: 'composio', integration: 'github', toolCount: 3, connected: true, authStatus: 'active',
+          tools: ['GITHUB_ADD_MEMBER_TO_ORG', 'GITHUB_LIST_REPOS', 'GITHUB_CREATE_ISSUE'],
+          message: 'Installed github with 3 tool(s). Auth is active — connected and ready.',
+        },
+      },
+      {
+        match: { name: 'slack' },
+        response: {
+          ok: true, server: 'composio', integration: 'slack', toolCount: 3, connected: true, authStatus: 'active',
+          tools: ['SLACK_INVITE_USER_TO_WORKSPACE', 'SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL', 'SLACK_LIST_CHANNELS'],
+          message: 'Installed slack with 3 tool(s). Auth is active — connected and ready.',
+        },
+      },
+      {
+        match: { name: 'linear' },
+        response: {
+          ok: true, server: 'composio', integration: 'linear', toolCount: 3, connected: true, authStatus: 'active',
+          tools: ['LINEAR_CREATE_ISSUE', 'LINEAR_LIST_ISSUES', 'LINEAR_UPDATE_ISSUE'],
+          message: 'Installed linear with 3 tool(s). Auth is active — connected and ready.',
+        },
+      },
+    ],
+    default: { ok: true, connected: true, authStatus: 'active', tools: [], message: 'Installed. Auth is active — connected and ready.' },
+  },
+  GITHUB_ADD_MEMBER_TO_ORG: {
     type: 'static',
     description: 'Add a user to a GitHub organization and grant repo access.',
     paramKeys: ['org', 'username', 'role', 'repos'],
     response: { ok: true, user: 'sarahchen', org: 'acme-corp', role: 'member', repos_granted: ['acme-corp/backend', 'acme-corp/frontend', 'acme-corp/platform-infra', 'acme-corp/shared-libs'], invitation_sent: true },
   },
-  mcp_slack_invite_user: {
+  SLACK_INVITE_USER_TO_WORKSPACE: {
     type: 'static',
     description: 'Invite a user to Slack workspace and add to channels.',
     paramKeys: ['email', 'channels'],
     response: { ok: true, user_id: 'U08SARAH', channels_added: ['#platform', '#engineering', '#general', '#new-hires', '#random'], invitation_sent: true },
   },
-  mcp_slack_send_message: {
+  SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL: {
     type: 'static',
     description: 'Send a message to a Slack channel.',
     paramKeys: ['channel', 'text'],
     response: { ok: true, channel: '#platform', ts: '1740300000.000100' },
   },
-  mcp_linear_create_issue: {
+  LINEAR_CREATE_ISSUE: {
     type: 'pattern',
     description: 'Create a new issue in Linear.',
     paramKeys: ['title', 'description', 'priority', 'labels', 'teamId', 'assigneeId'],
@@ -1201,9 +1361,9 @@ export const TEAM_ONBOARDING_MOCKS: ToolMockMap = {
     paramKeys: [],
     response: {
       servers: [
-        { name: 'github', toolCount: 3, tools: ['mcp_github_add_to_org', 'mcp_github_list_repos', 'mcp_github_create_issue'] },
-        { name: 'slack', toolCount: 3, tools: ['mcp_slack_invite_user', 'mcp_slack_send_message', 'mcp_slack_list_channels'] },
-        { name: 'linear', toolCount: 3, tools: ['mcp_linear_create_issue', 'mcp_linear_list_issues', 'mcp_linear_update_issue'] },
+        { name: 'composio', toolCount: 3, tools: ['GITHUB_ADD_MEMBER_TO_ORG', 'GITHUB_LIST_REPOS', 'GITHUB_CREATE_ISSUE'] },
+        { name: 'composio', toolCount: 3, tools: ['SLACK_INVITE_USER_TO_WORKSPACE', 'SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL', 'SLACK_LIST_CHANNELS'] },
+        { name: 'composio', toolCount: 3, tools: ['LINEAR_CREATE_ISSUE', 'LINEAR_LIST_ISSUES', 'LINEAR_UPDATE_ISSUE'] },
       ],
       totalServers: 3, totalTools: 9,
     },
@@ -1216,13 +1376,73 @@ export const TEAM_ONBOARDING_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const BUSINESS_DASHBOARD_MOCKS: ToolMockMap = {
-  mcp_stripe_get_balance: {
+  tool_search: {
+    type: 'pattern',
+    description: 'Search for tools by capability or keyword.',
+    paramKeys: ['query', 'limit'],
+    patterns: [
+      {
+        match: { query: 'stripe' },
+        response: { query: 'stripe', results: [{ name: 'stripe', description: 'Stripe — managed OAuth integration. Payments, subscriptions, invoices.', source: 'managed', authType: 'oauth' }], message: 'Found 1 tool(s).' },
+      },
+      {
+        match: { query: 'postgres' },
+        response: { query: 'postgres', results: [{ name: 'Postgres MCP Server', qualifiedName: '@modelcontextprotocol/server-postgres', description: 'Query PostgreSQL databases.', source: 'catalog', installCommand: 'npx -y @modelcontextprotocol/server-postgres' }], message: 'Found 1 tool(s).' },
+      },
+      {
+        match: { query: 'github' },
+        response: { query: 'github', results: [{ name: 'github', description: 'GitHub — managed OAuth integration.', source: 'managed', authType: 'oauth' }], message: 'Found 1 tool(s).' },
+      },
+    ],
+    default: {
+      query: 'business',
+      results: [
+        { name: 'stripe', description: 'Stripe — managed OAuth integration.', source: 'managed', authType: 'oauth' },
+        { name: 'Postgres MCP Server', qualifiedName: '@modelcontextprotocol/server-postgres', description: 'Query PostgreSQL databases.', source: 'catalog' },
+        { name: 'github', description: 'GitHub — managed OAuth integration.', source: 'managed', authType: 'oauth' },
+      ],
+      message: 'Found 3 tool(s).',
+    },
+  },
+  tool_install: {
+    type: 'pattern',
+    description: 'Install a tool, making its capabilities available immediately.',
+    paramKeys: ['name', 'command', 'args', 'env'],
+    patterns: [
+      {
+        match: { name: 'stripe' },
+        response: {
+          ok: true, server: 'composio', integration: 'stripe', toolCount: 2, connected: true, authStatus: 'active',
+          tools: ['STRIPE_GET_BALANCE', 'STRIPE_LIST_PAYMENTS'],
+          message: 'Installed stripe with 2 tool(s). Auth is active — connected and ready.',
+        },
+      },
+      {
+        match: { name: 'postgres' },
+        response: {
+          ok: true, server: 'postgres', toolCount: 1, connected: true, authStatus: 'active',
+          tools: [{ name: 'mcp_postgres_query', description: 'Execute a read-only SQL query' }],
+          message: 'Installed postgres with 1 tool(s). Connected and ready.',
+        },
+      },
+      {
+        match: { name: 'github' },
+        response: {
+          ok: true, server: 'composio', integration: 'github', toolCount: 1, connected: true, authStatus: 'active',
+          tools: ['GITHUB_LIST_PULL_REQUESTS'],
+          message: 'Installed github with 1 tool(s). Auth is active — connected and ready.',
+        },
+      },
+    ],
+    default: { ok: true, connected: true, authStatus: 'active', tools: [], message: 'Installed. Auth is active — connected and ready.' },
+  },
+  STRIPE_GET_BALANCE: {
     type: 'static',
     description: 'Get Stripe account balance.',
     paramKeys: [],
     response: { available: [{ amount: 1250000, currency: 'usd' }], pending: [{ amount: 35000, currency: 'usd' }] },
   },
-  mcp_stripe_list_payments: {
+  STRIPE_LIST_PAYMENTS: {
     type: 'static',
     description: 'List recent Stripe payments.',
     paramKeys: ['limit', 'starting_after', 'status'],
@@ -1278,7 +1498,7 @@ export const BUSINESS_DASHBOARD_MOCKS: ToolMockMap = {
       rowCount: 4,
     },
   },
-  mcp_github_list_pull_requests: {
+  GITHUB_LIST_PULL_REQUESTS: {
     type: 'static',
     description: 'List recent pull requests.',
     paramKeys: ['owner', 'repo', 'state'],
@@ -1298,11 +1518,11 @@ export const BUSINESS_DASHBOARD_MOCKS: ToolMockMap = {
     paramKeys: [],
     response: {
       servers: [
-        { name: 'stripe', toolCount: 2, tools: ['mcp_stripe_get_balance', 'mcp_stripe_list_payments'] },
-        { name: 'postgres', toolCount: 3, tools: ['mcp_postgres_query', 'mcp_postgres_list_tables', 'mcp_postgres_describe_table'] },
-        { name: 'github', toolCount: 3, tools: ['mcp_github_list_pull_requests', 'mcp_github_list_recent_deploys', 'mcp_github_get_commit'] },
+        { name: 'composio', toolCount: 2, tools: ['STRIPE_GET_BALANCE', 'STRIPE_LIST_PAYMENTS'] },
+        { name: 'postgres', toolCount: 1, tools: ['mcp_postgres_query'] },
+        { name: 'composio', toolCount: 1, tools: ['GITHUB_LIST_PULL_REQUESTS'] },
       ],
-      totalServers: 3, totalTools: 8,
+      totalServers: 3, totalTools: 4,
     },
   },
 }
@@ -1349,7 +1569,7 @@ export const AIRBNB_VACATION_PLANNER_MOCKS: ToolMockMap = {
         { name: 'mcp_airbnb_airbnb_search', description: 'Search for Airbnb listings by location, dates, guests, and filters' },
         { name: 'mcp_airbnb_airbnb_listing_details', description: 'Get detailed information about a specific Airbnb listing' },
       ],
-      message: 'Installed "airbnb" with 2 tool(s). They are now available for use.',
+      message: 'Installed "airbnb" with 2 tool(s). Auth is active — connected and ready. Call mcp_airbnb_airbnb_search now to find listings.',
     },
   },
   mcp_airbnb_airbnb_search: {
@@ -1725,7 +1945,7 @@ export const AIRBNB_SKILL_SAVE_MOCKS: ToolMockMap = {
         { name: 'mcp_airbnb_airbnb_search', description: 'Search for Airbnb listings by location, dates, guests' },
         { name: 'mcp_airbnb_airbnb_listing_details', description: 'Get details about a specific listing' },
       ],
-      message: 'Installed "airbnb" with 2 tool(s). They are now available for use.',
+      message: 'Installed "airbnb" with 2 tool(s). Auth is active — connected and ready. Call mcp_airbnb_airbnb_search now to find listings.',
     },
   },
   mcp_airbnb_airbnb_search: {
@@ -2111,10 +2331,11 @@ export const REAL_DATA_GOOGLE_SHEETS_MOCKS: ToolMockMap = {
       toolCount: 3,
       tools: ['GOOGLESHEETS_GET_SPREADSHEET_DATA', 'GOOGLESHEETS_LIST_SPREADSHEETS', 'GOOGLESHEETS_BATCH_UPDATE'],
       authStatus: 'active',
-      message: 'Installed googlesheets with 3 tool(s). Auth is active.',
+      connected: true,
+      message: 'Installed googlesheets with 3 tool(s). Auth is active — connected and ready. Call GOOGLESHEETS_GET_SPREADSHEET_DATA to fetch data.',
     },
   },
-GOOGLESHEETS_GET_SPREADSHEET_DATA: {
+  GOOGLESHEETS_GET_SPREADSHEET_DATA: {
     type: 'static',
     description: 'Read data from a spreadsheet.',
     paramKeys: ['spreadsheet_id', 'range'],
@@ -2496,26 +2717,43 @@ GITHUB_LIST_ISSUES: {
 }
 
 // ---------------------------------------------------------------------------
-// Fixture: Bind-at-install — skill-based shortcut
-// Tests tool_install with bind config (agent has prior knowledge from a skill).
+// Fixture: Composio auto-bind — install triggers auto-bind deferred
+// Tests that agent trusts auto-bind and creates canvas efficiently.
 // ---------------------------------------------------------------------------
 
 export const TOOL_BIND_AT_INSTALL_MOCKS: ToolMockMap = {
   tool_install: {
     type: 'static',
-    description: 'Install a tool with optional bind config.',
-    paramKeys: ['name', 'bind'],
+    description: 'Install a tool. Auto-bind discovers CRUD operations automatically.',
+    paramKeys: ['name'],
     response: {
       ok: true, server: 'composio', source: 'managed', integration: 'googlecalendar', toolCount: 4,
+      connected: true,
       tools: ['GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS', 'GOOGLECALENDAR_CREATE_EVENT', 'GOOGLECALENDAR_LIST_CALENDARS', 'GOOGLECALENDAR_DELETE_EVENT'],
       authStatus: 'active',
       message: 'Installed googlecalendar with 4 tool(s). Auth is active.',
-      bind: {
-        ok: true,
-        deferred: true,
-        surfaceId: 'app',
-        message: 'Binding deferred — will apply when surface "app" is created.',
+      autoBind: {
+        ok: true, deferred: true,
+        surfaceId: '(next canvas)',
+        entity: 'CalendarEvent',
+        message: 'Auto-bind ready — "CalendarEvent" CRUD binding will apply automatically to the next canvas you create.',
       },
+    },
+  },
+  GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS: {
+    type: 'static',
+    description: 'List events across all calendars.',
+    paramKeys: ['time_min', 'time_max'],
+    hidden: true,
+    response: {
+      data: {
+        items: [
+          { id: 'evt-1', summary: 'Team Standup', start: { dateTime: '2026-02-27T09:00:00-08:00' }, end: { dateTime: '2026-02-27T09:15:00-08:00' } },
+          { id: 'evt-2', summary: 'Product Review', start: { dateTime: '2026-02-27T11:00:00-08:00' }, end: { dateTime: '2026-02-27T12:00:00-08:00' } },
+          { id: 'evt-3', summary: '1:1 with Manager', start: { dateTime: '2026-02-27T14:00:00-08:00' }, end: { dateTime: '2026-02-27T14:30:00-08:00' } },
+        ],
+      },
+      successful: true,
     },
   },
   canvas_create: {
@@ -2530,23 +2768,231 @@ export const TOOL_BIND_AT_INSTALL_MOCKS: ToolMockMap = {
     paramKeys: ['surfaceId', 'components'],
     response: { ok: true, surfaceId: 'app', status: 'rendered', componentsUpdated: 5 },
   },
-  canvas_api_bind: {
-    type: 'static',
-    description: 'Bind CRUD API routes to installed tools.',
-    paramKeys: ['surfaceId', 'model', 'fields', 'bindings', 'cache', 'dataPath'],
-    response: {
-      ok: true,
-      surfaceId: 'app',
-      model: 'CalendarEvent',
-      endpoint: '/api/calendar-events',
-      methods: ['GET /api/calendar-events'],
-      dataPath: '/events',
-      message: 'Bound CalendarEvent. Data auto-loaded at "/events".',
-    },
-  },
   tool_list: {
     type: 'static',
     description: 'List all currently installed tools.',
+    paramKeys: [],
+    response: { servers: [], totalServers: 0, totalTools: 0 },
+  },
+}
+
+// ---------------------------------------------------------------------------
+// Fixture: Luxury Bali Trip Planner (Trip Planner Eval)
+// Agent uses web tool for flight search + discovers Airbnb MCP for accommodations
+// ---------------------------------------------------------------------------
+
+export const LUXURY_BALI_TRIP_PLANNER_MOCKS: ToolMockMap = {
+  web: {
+    type: 'pattern',
+    paramKeys: ['url', 'query'],
+    patterns: [
+      {
+        match: { query: 'flight' },
+        response: {
+          content: `<html><body>
+<h1>Flights to Bali (Ngurah Rai International Airport — DPS)</h1>
+<div class="flight-result">
+  <h3>Singapore Airlines SQ946</h3>
+  <p>Departs: LAX 11:30 PM → Arrives: DPS 6:45 AM +2 (via SIN)</p>
+  <p>Duration: 19h 15m | Price: $1,250 round trip | Class: Economy</p>
+  <p>Business class: $3,400 round trip</p>
+</div>
+<div class="flight-result">
+  <h3>Qatar Airways QR365</h3>
+  <p>Departs: LAX 4:15 PM → Arrives: DPS 11:30 PM +1 (via DOH)</p>
+  <p>Duration: 23h 15m | Price: $980 round trip | Class: Economy</p>
+  <p>Business class: $2,900 round trip</p>
+</div>
+<div class="flight-result">
+  <h3>Cathay Pacific CX873</h3>
+  <p>Departs: LAX 1:00 AM → Arrives: DPS 3:45 PM +1 (via HKG)</p>
+  <p>Duration: 20h 45m | Price: $1,100 round trip | Class: Economy</p>
+  <p>Business class: $3,150 round trip</p>
+</div>
+</body></html>`,
+          status: 200,
+          bytes: 820,
+          url: 'https://www.google.com/travel/flights',
+        },
+      },
+      {
+        match: { query: 'bali' },
+        response: {
+          content: `<html><body>
+<h1>Flights to Bali (DPS)</h1>
+<div class="flight-result">
+  <h3>Singapore Airlines SQ946 — LAX to DPS</h3>
+  <p>Round trip from $980. Business class from $2,900.</p>
+  <p>Multiple daily flights via Singapore.</p>
+</div>
+<div class="flight-result">
+  <h3>Qatar Airways — LAX to DPS via Doha</h3>
+  <p>Round trip from $1,100. Business class from $3,150.</p>
+</div>
+</body></html>`,
+          status: 200,
+          bytes: 480,
+          url: 'https://www.google.com/travel/flights?q=bali',
+        },
+      },
+      {
+        match: { url: 'flight' },
+        response: {
+          content: `<html><body>
+<h1>Flight Search Results — Bali</h1>
+<div class="result">
+  <h3>Singapore Airlines — $980 round trip (economy) / $2,900 (business)</h3>
+  <p>LAX → DPS via SIN, 19h 15m</p>
+</div>
+<div class="result">
+  <h3>Qatar Airways — $1,100 round trip (economy) / $3,150 (business)</h3>
+  <p>LAX → DPS via DOH, 23h 15m</p>
+</div>
+<div class="result">
+  <h3>Cathay Pacific — $1,250 round trip (economy) / $3,400 (business)</h3>
+  <p>LAX → DPS via HKG, 20h 45m</p>
+</div>
+</body></html>`,
+          status: 200,
+          bytes: 520,
+          url: 'https://www.google.com/travel/flights',
+        },
+      },
+      {
+        match: { url: 'restaurant' },
+        response: {
+          content: `<html><body>
+<h1>Top Luxury Restaurants in Bali</h1>
+<ol>
+  <li><strong>Locavore</strong> — Ubud. Tasting menu $150/person. Award-winning farm-to-table.</li>
+  <li><strong>Mozaic</strong> — Ubud. French-Indonesian fusion. Degustation $120/person.</li>
+  <li><strong>Swept Away at The Samaya</strong> — Ubud. Riverside fine dining, $80-120/person.</li>
+  <li><strong>Sundara</strong> — Jimbaran. Beachfront, $90-150/person.</li>
+  <li><strong>Kubu at Mandapa</strong> — Ubud. Bamboo cocoon fine dining, $130/person.</li>
+</ol>
+</body></html>`,
+          status: 200,
+          bytes: 480,
+          url: 'https://www.google.com/search?q=luxury+restaurants+bali',
+        },
+      },
+      {
+        match: { url: 'activit' },
+        response: {
+          content: `<html><body>
+<h1>Luxury Activities in Bali</h1>
+<ul>
+  <li><strong>Private Sunrise Trek — Mount Batur</strong> — $120/person with luxury breakfast at summit.</li>
+  <li><strong>Private Surf Lesson</strong> — Seminyak Beach, $85/person, 2 hours.</li>
+  <li><strong>Balinese Spa Day — COMO Shambhala</strong> — $200, full day wellness retreat.</li>
+  <li><strong>Private Temple Tour</strong> — Tirta Empul, Uluwatu, Tanah Lot. $95/person, full day with guide.</li>
+  <li><strong>White Water Rafting — Ayung River</strong> — $65/person, includes lunch.</li>
+  <li><strong>Cooking Class at Bali Farm</strong> — $75/person, half day with organic ingredients.</li>
+</ul>
+</body></html>`,
+          status: 200,
+          bytes: 520,
+          url: 'https://www.google.com/search?q=luxury+activities+bali',
+        },
+      },
+      {
+        match: { url: 'transport' },
+        response: {
+          content: `<html><body>
+<h1>Transportation in Bali</h1>
+<ul>
+  <li><strong>Private Driver (full day)</strong> — $40-60/day, air-conditioned car.</li>
+  <li><strong>Airport Transfer</strong> — $25-35 one way to Ubud (1.5 hours).</li>
+  <li><strong>Scooter Rental</strong> — $5-8/day.</li>
+  <li><strong>Luxury Car Rental</strong> — $80-120/day with driver.</li>
+</ul>
+</body></html>`,
+          status: 200,
+          bytes: 340,
+          url: 'https://www.google.com/search?q=transportation+bali',
+        },
+      },
+    ],
+    default: {
+      content: '<html><body><h1>Travel Search</h1><p>Bali is a top luxury destination in Indonesia. Flights from the US range $900-$1,300 economy, $2,500-$3,500 business class. Private villas from $80/night, luxury resorts from $200/night.</p></body></html>',
+      status: 200,
+      bytes: 200,
+      url: 'https://www.google.com/search',
+    },
+  },
+  tool_search: {
+    type: 'pattern',
+    paramKeys: ['query', 'limit'],
+    patterns: [
+      {
+        match: { query: 'airbnb' },
+        response: {
+          query: 'airbnb',
+          results: [
+            { name: 'Airbnb MCP Server', qualifiedName: '@openbnb/mcp-server-airbnb', description: 'Search Airbnb listings, get pricing, availability, and property details. Access real Airbnb data for travel planning.', installCommand: 'npx -y @openbnb/mcp-server-airbnb', source: 'catalog', category: 'travel', relevanceScore: 95 },
+          ],
+          message: 'Found 1 MCP server(s). Use tool_install to add one.',
+        },
+      },
+    ],
+    default: {
+      query: 'accommodation',
+      results: [
+        { name: 'Airbnb MCP Server', qualifiedName: '@openbnb/mcp-server-airbnb', description: 'Search Airbnb listings, get pricing, availability, and property details.', installCommand: 'npx -y @openbnb/mcp-server-airbnb', source: 'catalog', category: 'travel', relevanceScore: 80 },
+      ],
+      message: 'Found 1 MCP server(s). Use tool_install to add one.',
+    },
+  },
+  tool_install: {
+    type: 'static',
+    paramKeys: ['name', 'command', 'args', 'env'],
+    response: {
+      ok: true,
+      server: 'airbnb',
+      toolCount: 2,
+      tools: [
+        { name: 'mcp_airbnb_airbnb_search', description: 'Search for Airbnb listings by location, dates, guests, and filters' },
+        { name: 'mcp_airbnb_airbnb_listing_details', description: 'Get detailed information about a specific Airbnb listing' },
+      ],
+      message: 'Installed "airbnb" with 2 tool(s). Auth is active — connected and ready. Call mcp_airbnb_airbnb_search now to find listings.',
+    },
+  },
+  mcp_airbnb_airbnb_search: {
+    type: 'static',
+    description: 'Search for Airbnb listings by location, dates, guests, and filters.',
+    paramKeys: ['location', 'checkin', 'checkout', 'adults', 'ignoreRobotstxt'],
+    hidden: true,
+    response: {
+      listings: [
+        { id: '2001', name: 'Royal Ubud Luxury Villa — Infinity Pool & Butler', url: 'https://www.airbnb.com/rooms/2001', price: { amount: 220, currency: 'USD', period: 'night' }, rating: 4.98, reviewCount: 156, beds: '2 king', bathrooms: 2, amenities: ['Private Pool', 'Butler Service', 'WiFi', 'Spa', 'Gym', 'Ocean View'], superhost: true, location: 'Ubud, Bali' },
+        { id: '2002', name: 'Seminyak Beachfront Boutique Villa', url: 'https://www.airbnb.com/rooms/2002', price: { amount: 185, currency: 'USD', period: 'night' }, rating: 4.95, reviewCount: 203, beds: '1 king, 1 queen', bathrooms: 2, amenities: ['Beach Access', 'Pool', 'WiFi', 'Kitchen', 'BBQ'], superhost: true, location: 'Seminyak, Bali' },
+        { id: '2003', name: 'Cliffside Retreat — Uluwatu Panoramic Views', url: 'https://www.airbnb.com/rooms/2003', price: { amount: 310, currency: 'USD', period: 'night' }, rating: 4.99, reviewCount: 87, beds: '1 king', bathrooms: 1, amenities: ['Infinity Pool', 'WiFi', 'Chef Service', 'Cliff View', 'Hot Tub'], superhost: true, location: 'Uluwatu, Bali' },
+        { id: '2004', name: 'Tropical Garden Estate — Private Chef Included', url: 'https://www.airbnb.com/rooms/2004', price: { amount: 165, currency: 'USD', period: 'night' }, rating: 4.93, reviewCount: 278, beds: '3 king', bathrooms: 3, amenities: ['Pool', 'Private Chef', 'WiFi', 'Garden', 'Yoga Pavilion'], superhost: true, location: 'Canggu, Bali' },
+        { id: '2005', name: 'Jungle Treehouse Villa — Ayung River', url: 'https://www.airbnb.com/rooms/2005', price: { amount: 145, currency: 'USD', period: 'night' }, rating: 4.97, reviewCount: 134, beds: '1 king', bathrooms: 1, amenities: ['River View', 'Pool', 'WiFi', 'Breakfast', 'Spa Access'], superhost: true, location: 'Ubud, Bali' },
+      ],
+      totalResults: 5,
+      location: 'Bali, Indonesia',
+    },
+  },
+  mcp_airbnb_airbnb_listing_details: {
+    type: 'pattern',
+    description: 'Get detailed information about a specific Airbnb listing.',
+    paramKeys: ['listingId'],
+    hidden: true,
+    patterns: [
+      {
+        match: { listingId: '2001' },
+        response: { id: '2001', name: 'Royal Ubud Luxury Villa — Infinity Pool & Butler', description: 'A stunning 2-bedroom villa set among rice paddies in Ubud. Features a private infinity pool, personal butler, in-villa spa treatments, and gourmet breakfast daily. 10 min from Ubud center.', host: 'Wayan Artika', url: 'https://www.airbnb.com/rooms/2001', price: { amount: 220, currency: 'USD', period: 'night', total: 2200 } },
+      },
+      {
+        match: { listingId: '2003' },
+        response: { id: '2003', name: 'Cliffside Retreat — Uluwatu Panoramic Views', description: 'Perched on the cliffs of Uluwatu with 180-degree ocean views. Features an infinity edge pool, private chef, nightly sunset sessions, and direct access to hidden beach.', host: 'Komang Sari', url: 'https://www.airbnb.com/rooms/2003', price: { amount: 310, currency: 'USD', period: 'night', total: 3100 } },
+      },
+    ],
+    default: { id: 'unknown', name: 'Luxury Villa', description: 'A luxury villa in Bali.', url: 'https://www.airbnb.com/rooms/unknown' },
+  },
+  tool_list: {
+    type: 'static',
     paramKeys: [],
     response: { servers: [], totalServers: 0, totalTools: 0 },
   },

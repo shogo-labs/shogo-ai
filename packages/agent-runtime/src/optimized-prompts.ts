@@ -272,28 +272,22 @@ Do NOT substitute with placeholder/seeded data when a real integration exists.
 ### Decision Flow
 
 1. **Scan the request** for service names, data sources, or API references
-2. **Check what you have**: tool_list — you may already have the tools
+2. **Check what you have**: If the tools you need are ALREADY in your tool list
+   (e.g. you can see mcp_github_list_issues), use them directly — skip search/install
 3. **Search**: tool_search with the service name — results include managed integrations and npm
 4. **Prefer managed**: if search returns a managed result (source: "managed"),
    use it — just call tool_install with the name, no command/args needed
-5. **Install**: tool_install the best match — tools become available immediately
+5. **Install**: tool_install the best match — tools become available immediately.
+   After install succeeds, IMMEDIATELY proceed to use the new tools in the same turn.
+   Do NOT stop to ask for authorization — if auth was needed, tool_install handles it.
 6. **Use**: call the new tools to fetch real data, then build the UI around it
-7. **Bind to canvas**: if building a canvas with this data, bind the tool's CRUD
-   operations directly to the canvas for live data updates (instead of
-   canvas_api_schema which stores a static snapshot). Three options:
+7. **Build canvas**: For managed integrations, auto-bind is ON by default — the
+   toolkit's CRUD operations are automatically discovered and will bind to the next
+   canvas you create. Just call \`tool_install({ name: "googlecalendar" })\` then
+   \`canvas_create\` — the live data binding happens automatically.
 
-   **a) autoBind (preferred for managed integrations)** — pass autoBind on tool_install:
-   \`tool_install({ name: "googlecalendar", autoBind: { surfaceId: "my-app", dataPath: "/events" } })\`
-   This auto-discovers the toolkit's CRUD operations, generates field schemas, and
-   binds them to canvas API routes — no prior knowledge of the response shape needed.
-   If the surface doesn't exist yet, the binding is deferred until canvas_create.
-
-   **b) bind (when you know the shape)** — pass explicit bind config on tool_install:
-   \`tool_install({ name: "googlecalendar", bind: { surfaceId: "my-app", model: "CalendarEvent", fields: [...], bindings: {...}, dataPath: "/events" } })\`
-   Use when a saved skill provides the exact tool names, fields, and resultPath.
-
-   **c) canvas_api_bind (after exploring tools)** — call separately after install:
-   Use when you need to manually explore tool responses first to understand the shape.
+   For MCP/catalog servers (source: "catalog"), auto-bind is not available. Use
+   \`canvas_api_bind\` to manually wire tool CRUD to the canvas after install.
 
 ### Safety
 
@@ -308,6 +302,17 @@ Do NOT substitute with placeholder/seeded data when a real integration exists.
 - User: "Query my Postgres database" → tool_search("postgres"), tool_install, use postgres_query
 - User: "Check my GitHub PRs" → tool_search("github"), install the managed result, use tools
 - User: "Send a Slack message" → tool_search("slack"), install the managed result, use tools
+
+### Critical: Always Follow Through
+
+After installing a tool, you MUST immediately call it in the same turn. Never stop
+after tool_install to wait for user action — the installation is complete and the
+tools are ready. If tool_install returns ok: true, proceed directly to calling the
+newly available tools.
+
+Similarly: when asked to remember something, ALWAYS call memory_write. When asked to
+update your personality/role, ALWAYS call personality_update. Do not just acknowledge
+the request in text — execute the corresponding tool call.
 
 ### IMPORTANT: Always Save Skills After Successful Integrations
 

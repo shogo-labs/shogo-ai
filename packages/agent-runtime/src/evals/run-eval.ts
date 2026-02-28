@@ -48,6 +48,7 @@ import { COMPOSIO_EVALS } from './test-cases-composio'
 import { TOOL_SYSTEM_EVALS } from './test-cases-tool-system'
 import { FILE_UPLOAD_EVALS } from './test-cases-file-upload'
 import { REAL_DATA_EVALS } from './test-cases-real-data'
+import { TRIP_PLANNER_EVALS } from './test-cases-trip-planner'
 import { buildMockPayload } from './tool-mocks'
 import type { AgentEval, EvalResult, EvalSuiteResult, CategorySummary } from './types'
 
@@ -69,6 +70,7 @@ const trackArg = getArg('track', 'all')!
 const modelArg = getArg('model', 'haiku')!
 const workersArg = parseInt(getArg('workers', '1')!)
 const filterArg = getArg('filter')
+const agentArg = getArg('agent') as 'basic' | 'advanced' | undefined
 const verboseFlag = args.includes('--verbose') || args.includes('-v')
 
 const MODEL_MAP: Record<string, string> = {
@@ -100,9 +102,10 @@ function getEvals(track: string): AgentEval[] {
     case 'tool-system': return TOOL_SYSTEM_EVALS
     case 'file-upload': return FILE_UPLOAD_EVALS
     case 'real-data': return REAL_DATA_EVALS
-    case 'all': return [...CANVAS_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS]
+    case 'trip-planner': return TRIP_PLANNER_EVALS
+    case 'all': return [...CANVAS_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS]
     default:
-      console.error(`Unknown track: ${track}. Valid: canvas, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, all`)
+      console.error(`Unknown track: ${track}. Valid: canvas, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, all`)
       process.exit(1)
   }
 }
@@ -142,6 +145,7 @@ async function startWorker(id: number): Promise<Worker> {
       PROJECT_DIR: dir,
       PROJECT_ID: `eval-worker-${id}`,
       AGENT_MODEL: modelArg,
+      ...(agentArg ? { AGENT_VARIANT: agentArg } : {}),
       NODE_OPTIONS: '--max-old-space-size=512',
     },
     stdout: 'ignore',
@@ -293,6 +297,7 @@ async function main() {
   console.log('='.repeat(60))
   console.log(`  Track:   ${trackArg}`)
   console.log(`  Model:   ${MODEL_MAP[modelArg] || modelArg}`)
+  console.log(`  Agent:   ${agentArg || 'all'}`)
   console.log(`  Workers: ${workersArg}`)
   console.log('')
 
@@ -300,6 +305,15 @@ async function main() {
   if (filterArg) {
     const f = filterArg.toLowerCase()
     evals = evals.filter(e => e.id.toLowerCase().includes(f) || e.name.toLowerCase().includes(f))
+  }
+  if (agentArg === 'basic') {
+    const before = evals.length
+    evals = evals.filter(e => !e.requiredAgent || e.requiredAgent === 'basic')
+    console.log(`  Filtered to basic-agent evals: ${evals.length} (skipped ${before - evals.length} advanced-only)`)
+  } else if (agentArg === 'advanced') {
+    const before = evals.length
+    evals = evals.filter(e => e.requiredAgent === 'advanced')
+    console.log(`  Filtered to advanced-agent evals: ${evals.length} (skipped ${before - evals.length} basic)`)
   }
 
   console.log(`  Evals: ${evals.length}`)
@@ -468,9 +482,10 @@ async function main() {
 
   // Save results
   const timestamp = Date.now()
-  const outputPath = `/tmp/agent-eval-results-${modelArg}-${trackArg}-${timestamp}.json`
+  const agentLabel = agentArg || 'all'
+  const outputPath = `/tmp/agent-eval-results-${modelArg}-${agentLabel}-${trackArg}-${timestamp}.json`
   const exportData: EvalSuiteResult = {
-    name: `agent-runtime-${trackArg}`,
+    name: `agent-runtime-${agentLabel}-${trackArg}`,
     timestamp: new Date().toISOString(),
     model: MODEL_MAP[modelArg] || modelArg,
     results,

@@ -264,6 +264,7 @@ export const REAL_DATA_EVALS: AgentEval[] = [
     name: 'Real Data: Generic CRUD app correctly uses sample data',
     category: 'canvas',
     level: 1,
+    requiredAgent: 'advanced' as const,
     input: 'Build me a simple todo app where I can add, complete, and delete tasks.',
     maxScore: 100,
     toolMocks: GENERIC_CRUD_NO_REAL_DATA_MOCKS,

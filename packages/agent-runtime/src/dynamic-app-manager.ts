@@ -121,6 +121,15 @@ export class DynamicAppManager {
       }
     }
 
+    // Apply wildcard deferred bindings (auto-bind from Composio installs)
+    const wildcardDeferred = this.deferredToolBindings.get('*')
+    if (wildcardDeferred && wildcardDeferred.length > 0 && this.mcpClientRef) {
+      this.deferredToolBindings.delete('*')
+      for (const { config } of wildcardDeferred) {
+        this.bindToolApi(surfaceId, config, this.mcpClientRef)
+      }
+    }
+
     return {
       ok: true,
       surfaceId,

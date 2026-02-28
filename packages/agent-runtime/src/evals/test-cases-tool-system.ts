@@ -182,12 +182,13 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
   },
 
   // =========================================================================
-  // Case 3: canvas_api_bind — bind tool data to canvas
-  // Level 4 | Pre-installed Composio + skill → agent binds to canvas
+  // Case 3: Composio auto-bind — install managed integration, create canvas
+  // Level 4 | Pre-installed Composio → agent fetches data + builds canvas
+  // Auto-bind handles CRUD binding automatically for managed integrations.
   // =========================================================================
   {
     id: 'tool-canvas-api-bind',
-    name: 'Tool System: Bind Google Calendar to canvas via canvas_api_bind',
+    name: 'Tool System: Auto-bind Composio integration to canvas',
     category: 'tool-system',
     level: 4,
     conversationHistory: [
@@ -201,49 +202,30 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
       {
         id: 'created-canvas',
         description: 'Created a canvas surface',
-        points: 15,
+        points: 20,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_create'),
       },
       {
         id: 'fetched-real-data',
         description: 'Used Composio calendar tools to fetch real data',
-        points: 20,
+        points: 25,
         phase: 'intention',
         validate: (r) => usedTool(r, 'GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS') || r.toolCalls.some(t => t.name.startsWith('GOOGLECALENDAR_')),
       },
       {
-        id: 'used-canvas-api-bind',
-        description: 'Used canvas_api_bind to wire live tool data to canvas (best practice)',
-        points: 25,
+        id: 'populated-canvas-data',
+        description: 'Pushed fetched data to canvas via canvas_data',
+        points: 20,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'canvas_api_bind'),
+        validate: (r) => usedTool(r, 'canvas_data'),
       },
       {
-        id: 'bind-has-model-or-data-pushed',
-        description: 'canvas_api_bind has model name, OR canvas_data was used to populate data',
+        id: 'built-ui',
+        description: 'Built canvas UI with canvas_update',
         points: 10,
         phase: 'execution',
-        validate: (r) => {
-          const bindCall = r.toolCalls.find(t => t.name === 'canvas_api_bind')
-          if (bindCall) {
-            const input = bindCall.input as Record<string, any>
-            return typeof input.model === 'string' && input.model.length > 0
-          }
-          return usedTool(r, 'canvas_data') || usedTool(r, 'canvas_api_seed')
-        },
-      },
-      {
-        id: 'bind-has-datapath',
-        description: 'canvas_api_bind includes dataPath for auto-query (eliminates separate canvas_api_query call)',
-        points: 5,
-        phase: 'execution',
-        validate: (r) => {
-          const bindCall = r.toolCalls.find(t => t.name === 'canvas_api_bind')
-          if (!bindCall) return false
-          const input = bindCall.input as Record<string, any>
-          return typeof input.dataPath === 'string' && input.dataPath.startsWith('/')
-        },
+        validate: (r) => usedTool(r, 'canvas_update'),
       },
       {
         id: 'response-confirms-dashboard',
@@ -439,7 +421,7 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
         patterns: [
           {
             match: { name: 'slack' },
-            response: { ok: true, server: 'composio', source: 'managed', toolCount: 2, tools: [{ name: 'mcp_slack_send_message', description: 'Send Slack message' }, { name: 'mcp_slack_list_channels', description: 'List channels' }], message: 'Connected Slack.' },
+            response: { ok: true, server: 'composio', source: 'managed', toolCount: 2, connected: true, authStatus: 'active', tools: ['SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL', 'SLACK_LIST_CHANNELS'], message: 'Connected Slack. Auth is active — connected and ready.' },
           },
           {
             match: { name: 'playwright' },
@@ -530,14 +512,13 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
   },
 
   // =========================================================================
-  // Case 6: Bind-at-install — skill-based shortcut
-  // Level 3 | Agent has a skill with prior knowledge and uses tool_install
-  //           with bind config, or canvas_api_bind with dataPath, to skip
-  //           the separate canvas_api_query step.
+  // Case 6: Composio auto-bind — install with auto-bind deferred, create canvas
+  // Level 3 | Agent installs managed integration, auto-bind handles CRUD.
+  //           Agent should trust the auto-bind and create canvas efficiently.
   // =========================================================================
   {
     id: 'tool-bind-at-install',
-    name: 'Tool System: Bind-at-install or dataPath shortcut for skill-based flow',
+    name: 'Tool System: Composio auto-bind install flow',
     category: 'tool-system',
     level: 3,
     conversationHistory: [
@@ -554,50 +535,23 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
       {
         id: 'installed-calendar',
         description: 'Used tool_install to connect Google Calendar',
-        points: 20,
+        points: 25,
         phase: 'intention',
         validate: (r) => usedTool(r, 'tool_install'),
       },
       {
         id: 'created-canvas',
         description: 'Created a canvas surface',
-        points: 15,
+        points: 20,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_create'),
       },
       {
-        id: 'used-bind-shortcut',
-        description: 'Used bind-at-install (tool_install with bind param) or canvas_api_bind with dataPath',
-        points: 25,
-        phase: 'execution',
-        validate: (r) => {
-          const installCall = r.toolCalls.find(t => t.name === 'tool_install')
-          if (installCall) {
-            const input = installCall.input as Record<string, any>
-            if (input.bind) return true
-          }
-          const bindCall = r.toolCalls.find(t => t.name === 'canvas_api_bind')
-          if (bindCall) {
-            const input = bindCall.input as Record<string, any>
-            return typeof input.dataPath === 'string'
-          }
-          return false
-        },
-      },
-      {
-        id: 'no-separate-api-query',
-        description: 'Did not need a separate canvas_api_query call (dataPath handles it)',
-        points: 15,
-        phase: 'execution',
-        validate: (r) => {
-          const usedBind = r.toolCalls.some(t => {
-            if (t.name === 'tool_install') return !!(t.input as any)?.bind
-            if (t.name === 'canvas_api_bind') return typeof (t.input as any)?.dataPath === 'string'
-            return false
-          })
-          if (!usedBind) return true
-          return !usedTool(r, 'canvas_api_query')
-        },
+        id: 'fetched-events',
+        description: 'Called a calendar tool to fetch events',
+        points: 20,
+        phase: 'intention',
+        validate: (r) => r.toolCalls.some(t => t.name.startsWith('GOOGLECALENDAR_')),
       },
       {
         id: 'built-ui',
@@ -608,14 +562,14 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
       },
       {
         id: 'reasonable-tool-count',
-        description: 'Completed in <= 10 tool calls (fewer steps due to shortcut)',
-        points: 10,
+        description: 'Completed in <= 12 tool calls',
+        points: 20,
         phase: 'execution',
-        validate: (r) => r.finalTurnToolCalls.length <= 10,
+        validate: (r) => r.finalTurnToolCalls.length <= 12,
       },
     ],
     antiPatterns: [
-      'Agent used canvas_api_query as a separate step when dataPath was available',
+      'Agent used fabricated sample data instead of fetching from Google Calendar',
     ],
   },
 ]
