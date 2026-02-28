@@ -17,7 +17,7 @@ import { sandboxExec } from './sandbox-exec'
 import { MemorySearchEngine } from './memory-search'
 import { FileIndexEngine } from './file-index-engine'
 import { MCP_CATALOG } from './mcp-catalog'
-import { connectComposioMCP, isComposioEnabled, isComposioConnected, searchComposioToolkits, findComposioToolkit, registerToolkitProxyTools, checkComposioAuth } from './composio'
+import { initComposioSession, isComposioEnabled, isComposioInitialized, searchComposioToolkits, findComposioToolkit, registerToolkitProxyTools, checkComposioAuth } from './composio'
 import { autoBindPrimaryEntity } from './composio-auto-bind'
 import { getDynamicAppManager, getByPointer } from './dynamic-app-manager'
 import {
@@ -2493,8 +2493,8 @@ Alternatively, pass "bind" with explicit config if you already know the tool's r
         }
       }
 
-      // Check if Composio is already connected
-      if (isComposioConnected() && isComposioEnabled()) {
+      // Check if Composio session is already initialized
+      if (isComposioInitialized() && isComposioEnabled()) {
         const composioToolkit = await findComposioToolkit(name)
         if (composioToolkit) {
           const proxy = await registerToolkitProxyTools(ctx.mcpClientManager, composioToolkit.slug)
@@ -2525,8 +2525,8 @@ Alternatively, pass "bind" with explicit config if you already know the tool's r
         if (composioToolkit) {
           try {
             const userId = process.env.USER_ID || 'default'
-            const connected = await connectComposioMCP(userId, ctx.projectId)
-            if (connected) {
+            const initialized = await initComposioSession(userId, ctx.projectId)
+            if (initialized) {
               const proxy = await registerToolkitProxyTools(ctx.mcpClientManager, composioToolkit.slug)
               const auth = await checkComposioAuth(composioToolkit.slug)
               let result = applyBind({

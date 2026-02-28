@@ -2,26 +2,18 @@
  * Composio Integration Service
  *
  * Manages Composio sessions for per-user OAuth-based tool integrations.
- * Discovers available toolkits dynamically via the Composio API rather
- * than hardcoding them. Only COMPOSIO_API_KEY is required -- Composio
+ * Uses the Composio SDK directly for tool execution and auth management
+ * (no MCP intermediary). Only COMPOSIO_API_KEY is required -- Composio
  * provides managed OAuth credentials for all toolkits by default.
  * Optional auth config env vars enable white-labeling.
  */
 
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { Composio } from '@composio/core'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import type { MCPClientManager } from './mcp-client'
 import { fetchComposioToolSchemas, type ComposioToolSchema } from './composio-auto-bind'
 
-/**
- * Private MCP Client connected to Composio's endpoint.
- * Used internally by proxy tools and auth checks. Never exposed to the agent.
- */
-let composioMcpClient: Client | null = null
-
-/** Stored composio user ID for SDK fallback auth checks */
+/** Stored composio user ID for SDK auth and tool execution scoping */
 let storedComposioUserId: string | null = null
 
 /** Track registered proxy tool names for dedup across multiple toolkit installs */
@@ -35,6 +27,31 @@ export interface ComposioToolkitInfo {
   slug: string
   name: string
   logo?: string
+}
+
+// ---------------------------------------------------------------------------
+// Timing infrastructure
+// ---------------------------------------------------------------------------
+
+export interface ComposioTiming {
+  operation: string
+  durationMs: number
+  timestamp: number
+}
+
+const timings: ComposioTiming[] = []
+
+export function getComposioTimings(): ComposioTiming[] {
+  return [...timings]
+}
+
+export function clearComposioTimings(): void {
+  timings.length = 0
+}
+
+function recordTiming(operation: string, durationMs: number) {
+  timings.push({ operation, durationMs, timestamp: Date.now() })
+  console.log(`[Composio] [Timing] ${operation}: ${durationMs.toFixed(0)}ms`)
 }
 
 // ---------------------------------------------------------------------------
@@ -113,15 +130,12 @@ export async function findComposioToolkit(name: string): Promise<ComposioToolkit
 
   const normalized = name.toLowerCase().replace(/[-_\s]/g, '')
 
-  // Exact slug match
   const exact = all.find(t => t.slug.toLowerCase() === name.toLowerCase())
   if (exact) return exact
 
-  // Normalized match (strip hyphens/underscores/spaces)
   const norm = all.find(t => t.slug.toLowerCase().replace(/[-_\s]/g, '') === normalized)
   if (norm) return norm
 
-  // Containment match
   const contained = all.find(t => {
     const tNorm = t.slug.toLowerCase().replace(/[-_\s]/g, '')
     return tNorm.includes(normalized) || normalized.includes(tNorm)
@@ -149,7 +163,6 @@ function getAuthConfigs(): ComposioAuthConfigs {
     }
   }
 
-  // Legacy env var support
   const legacyMap: Record<string, string[]> = {
     COMPOSIO_GOOGLE_AUTH_CONFIG: ['googlecalendar', 'gmail', 'googledrive'],
     COMPOSIO_SLACK_AUTH_CONFIG: ['slack'],
@@ -189,21 +202,19 @@ function getComposioClient(): Composio | null {
 }
 
 // ---------------------------------------------------------------------------
-// MCP connection
+// SDK-based session init (replaces MCP connection)
 // ---------------------------------------------------------------------------
 
-const MCP_CONNECT_TIMEOUT_MS = 90_000
-
 /**
- * Connect to Composio's MCP endpoint for a given user/project.
- * Establishes a private internal MCP connection — no tools are exposed to the agent.
- * Proxy tools are registered separately via registerToolkitProxyTools().
+ * Initialize a Composio session for a given user/project.
+ * Creates the session via SDK (registers user with Composio) and stores the
+ * user ID for tool execution scoping. No MCP transport is used.
  */
-export async function connectComposioMCP(
+export async function initComposioSession(
   userId: string,
   projectId: string,
 ): Promise<boolean> {
-  if (composioMcpClient) return true
+  if (storedComposioUserId) return true
 
   const client = getComposioClient()
   if (!client) return false
@@ -213,62 +224,36 @@ export async function connectComposioMCP(
   const hasCustomAuth = Object.keys(authConfigs).length > 0
 
   try {
+    const t0 = performance.now()
     console.log(`[Composio] Creating session for user "${composioUserId}"${hasCustomAuth ? ' (with custom auth configs)' : ' (using Composio managed auth)'}...`)
     const sessionOpts = hasCustomAuth ? { authConfigs } : undefined
-    const session = await client.create(composioUserId, sessionOpts)
+    await client.create(composioUserId, sessionOpts)
 
-    if (!session.mcp?.url) {
-      console.error('[Composio] Session created but no MCP URL returned')
-      return false
-    }
-
-    const transport = new StreamableHTTPClientTransport(
-      new URL(session.mcp.url),
-      { requestInit: session.mcp.headers ? { headers: session.mcp.headers } : undefined },
-    )
-
-    const mcpClient = new Client(
-      { name: 'shogo-composio-internal', version: '1.0.0' },
-      { capabilities: {} },
-    )
-
-    await Promise.race([
-      mcpClient.connect(transport),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Composio MCP connection timed out')), MCP_CONNECT_TIMEOUT_MS),
-      ),
-    ])
-
-    composioMcpClient = mcpClient
     storedComposioUserId = composioUserId
-    console.log(`[Composio] Connected to MCP endpoint for user "${composioUserId}"`)
+    const elapsed = performance.now() - t0
+    recordTiming('session init', elapsed)
+    console.log(`[Composio] Session initialized for user "${composioUserId}"`)
     return true
   } catch (err: any) {
-    console.error(`[Composio] Failed to connect MCP: ${err.message}`)
+    console.error(`[Composio] Failed to init session: ${err.message}`)
     return false
   }
 }
 
 /**
- * Disconnect from Composio's MCP endpoint.
+ * Reset the Composio session state. Clears stored user ID and proxy tools.
  */
-export async function disconnectComposioMCP(): Promise<void> {
-  if (!composioMcpClient) return
-  try {
-    await composioMcpClient.close()
-    composioMcpClient = null
-    registeredProxyToolNames.clear()
-    console.log('[Composio] Disconnected from MCP endpoint')
-  } catch (err: any) {
-    console.error(`[Composio] Error disconnecting: ${err.message}`)
-  }
+export function resetComposioSession(): void {
+  storedComposioUserId = null
+  registeredProxyToolNames.clear()
+  console.log('[Composio] Session reset')
 }
 
 /**
- * Check if the private Composio MCP connection is active.
+ * Check if a Composio session has been initialized.
  */
-export function isComposioConnected(): boolean {
-  return composioMcpClient !== null
+export function isComposioInitialized(): boolean {
+  return storedComposioUserId !== null
 }
 
 /**
@@ -306,7 +291,7 @@ function textResult(data: any): AgentToolResult<any> {
 
 /**
  * Dynamically register proxy AgentTools for each action in a Composio toolkit.
- * Each proxy tool calls COMPOSIO_MULTI_EXECUTE_TOOL internally via the private connection.
+ * Each proxy tool executes via the Composio SDK directly.
  * Tool names are the raw Composio slugs (e.g. GOOGLECALENDAR_CREATE_EVENT).
  */
 export async function registerToolkitProxyTools(
@@ -357,26 +342,26 @@ function createProxyTool(schema: ComposioToolSchema): AgentTool {
     label: `composio: ${schema.slug}`,
     parameters,
     execute: async (_toolCallId: string, params: unknown) => {
-      if (!composioMcpClient) {
-        return textResult({ error: 'Composio MCP not connected. Call tool_install first.' })
+      const client = getComposioClient()
+      if (!client || !storedComposioUserId) {
+        return textResult({ error: 'Composio not initialized. Call tool_install first.' })
       }
       const args = (params && typeof params === 'object') ? params as Record<string, any> : {}
       try {
-        const result = await composioMcpClient.callTool({
-          name: 'COMPOSIO_MULTI_EXECUTE_TOOL',
-          arguments: { tools: [{ tool_slug: schema.slug, arguments: args }] },
+        const t0 = performance.now()
+        const result = await client.tools.execute(schema.slug, {
+          userId: storedComposioUserId,
+          arguments: args,
+          dangerouslySkipVersionCheck: true,
         })
+        const elapsed = performance.now() - t0
+        recordTiming(schema.slug, elapsed)
 
-        const texts = (result.content as any[])
-          ?.filter((c: any) => c.type === 'text')
-          .map((c: any) => c.text)
-          .join('\n') || ''
-
-        if (result.isError) {
-          return textResult({ error: texts || `Tool ${schema.slug} returned an error` })
+        if (!result.successful) {
+          return textResult({ error: result.error || `Tool ${schema.slug} returned an error` })
         }
 
-        let raw = texts || JSON.stringify(result.content)
+        let raw = JSON.stringify(result.data)
         const MAX_CHARS = 12000
         if (raw.length > MAX_CHARS) {
           const headSize = Math.floor(MAX_CHARS * 0.75)
@@ -429,51 +414,48 @@ function jsonSchemaPropertyToTypebox(p: Record<string, any>): any {
 }
 
 /**
- * Check auth status for a Composio toolkit by calling MANAGE_CONNECTIONS internally.
- * Falls back to the Composio SDK to initiate auth and get a redirect URL if the
- * MCP response doesn't contain one.
+ * Check auth status for a Composio toolkit via the SDK.
+ * Lists connected accounts to determine if the user has an active connection,
+ * then falls back to initiating a new auth flow if needed.
  */
 export async function checkComposioAuth(
   toolkitSlug: string,
 ): Promise<{ status: 'active' | 'needs_auth'; authUrl?: string }> {
-  if (!composioMcpClient) {
-    return await checkComposioAuthViaSdk(toolkitSlug)
+  const client = getComposioClient()
+  if (!client || !storedComposioUserId) {
+    return { status: 'needs_auth' }
   }
+
   try {
-    const result = await composioMcpClient.callTool({
-      name: 'COMPOSIO_MANAGE_CONNECTIONS',
-      arguments: { toolkits: [toolkitSlug] },
+    const t0 = performance.now()
+    const accounts = await client.connectedAccounts.list({
+      userIds: [storedComposioUserId],
+      toolkitSlugs: [toolkitSlug],
+    })
+    const elapsed = performance.now() - t0
+    recordTiming(`auth check (${toolkitSlug})`, elapsed)
+
+    const items: any[] = (accounts as any)?.items || (accounts as any)?.data || []
+    const active = items.find((acc: any) => {
+      const status = acc.status?.toLowerCase()
+      return status === 'active'
     })
 
-    const texts = (result.content as any[])
-      ?.filter((c: any) => c.type === 'text')
-      .map((c: any) => c.text)
-      .join('\n') || ''
-
-    let parsed: any
-    try { parsed = JSON.parse(texts) } catch { parsed = {} }
-
-    if (parsed?.status === 'active' || texts.includes('"active"')) {
+    if (active) {
       return { status: 'active' }
     }
 
-    const urlMatch = texts.match(/https?:\/\/[^\s"')\]>]+/i)
-    const mcpUrl = urlMatch?.[0] || parsed?.authUrl || parsed?.redirect_url || parsed?.redirectUrl
-    if (mcpUrl) {
-      return { status: 'needs_auth', authUrl: mcpUrl }
-    }
-
-    return await checkComposioAuthViaSdk(toolkitSlug)
+    return await initiateComposioAuth(toolkitSlug)
   } catch (err: any) {
     console.error(`[Composio] Auth check failed for "${toolkitSlug}": ${err.message}`)
-    return await checkComposioAuthViaSdk(toolkitSlug)
+    return await initiateComposioAuth(toolkitSlug)
   }
 }
 
 /**
- * Fallback: use the Composio SDK directly to initiate auth and get a redirect URL.
+ * Use the Composio SDK to initiate auth and get a redirect URL.
  */
-async function checkComposioAuthViaSdk(
+async function initiateComposioAuth(
   toolkitSlug: string,
 ): Promise<{ status: 'active' | 'needs_auth'; authUrl?: string }> {
   const client = getComposioClient()
@@ -505,7 +487,7 @@ async function checkComposioAuthViaSdk(
 
     return { status: 'needs_auth' }
   } catch (err: any) {
-    console.error(`[Composio] SDK auth fallback failed for "${toolkitSlug}": ${err.message}`)
+    console.error(`[Composio] SDK auth initiation failed for "${toolkitSlug}": ${err.message}`)
     return { status: 'needs_auth' }
   }
 }

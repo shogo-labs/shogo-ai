@@ -960,7 +960,7 @@ app.post('/agent/workspace/reindex', async (c) => {
 
 // Tool catalog and search — powers the "Tools" tab in the web UI
 import { MCP_CATALOG, MCP_CATEGORIES } from './mcp-catalog'
-import { isComposioEnabled, searchComposioToolkits, findComposioToolkit, connectComposioMCP } from './composio'
+import { isComposioEnabled, searchComposioToolkits, findComposioToolkit, initComposioSession } from './composio'
 
 // Agent Templates API — powers the templates gallery
 import { getTemplateSummaries, TEMPLATE_CATEGORIES } from './agent-templates'
@@ -1183,7 +1183,7 @@ app.post('/agent/tools/install', async (c) => {
       try {
         const userId = process.env.USER_ID || 'default'
         const projectId = process.env.PROJECT_ID || 'default'
-        await connectComposioMCP(userId, projectId)
+        await initComposioSession(userId, projectId)
         return c.json({ ok: true, id, source: 'managed' })
       } catch (err: any) {
         return c.json({ error: `Failed to connect: ${err.message}` }, 500)

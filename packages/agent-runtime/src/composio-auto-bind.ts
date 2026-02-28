@@ -313,7 +313,7 @@ interface ComposioToolsResponse {
 
 /**
  * Fetch tools from the Composio REST API with full schema information.
- * This bypasses the MCP layer to get output_parameters that MCP doesn't expose.
+ * Uses the REST API directly to get output_parameters for auto-bind.
  */
 export async function fetchComposioToolSchemas(
   toolkitSlug: string,
@@ -328,6 +328,7 @@ export async function fetchComposioToolSchemas(
   })
   if (options?.important) params.set('important', 'true')
 
+  const t0 = performance.now()
   const res = await fetch(`https://backend.composio.dev/api/v3/tools?${params}`, {
     headers: { 'x-api-key': apiKey },
     signal: AbortSignal.timeout(15_000),
@@ -338,7 +339,10 @@ export async function fetchComposioToolSchemas(
   }
 
   const data = await res.json() as ComposioToolsResponse
-  return data.items || []
+  const items = data.items || []
+  const elapsed = performance.now() - t0
+  console.log(`[Composio] [Timing] fetchSchemas(${toolkitSlug}): ${elapsed.toFixed(0)}ms (${items.length} tools)`)
+  return items
 }
 
 // ---------------------------------------------------------------------------

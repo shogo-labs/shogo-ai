@@ -33,7 +33,7 @@ import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { CronManager, type CronJob } from './cron-manager'
 import { BlockChunker } from './block-chunker'
 import { MCPClientManager, type MCPServerConfig } from './mcp-client'
-import { connectComposioMCP, disconnectComposioMCP, isComposioEnabled, isComposioConnected } from './composio'
+import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import type { FilePart } from './file-attachment-utils'
 import { parseFileAttachments } from './file-attachment-utils'
 import {
@@ -1060,13 +1060,13 @@ export class AgentGateway {
       }
     }
 
-    // Connect to Composio MCP endpoint for managed OAuth integrations
+    // Initialize Composio session for managed OAuth integrations
     if (isComposioEnabled()) {
       try {
         const userId = process.env.USER_ID || 'default'
-        await connectComposioMCP(userId, this.projectId)
+        await initComposioSession(userId, this.projectId)
       } catch (error: any) {
-        console.error('[AgentGateway] Composio MCP connection error:', error.message)
+        console.error('[AgentGateway] Composio session init error:', error.message)
       }
     }
 
