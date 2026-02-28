@@ -209,7 +209,7 @@ export function ConnectToolWidget({
         disabled={status === "connecting"}
         className={cn(
           "flex-row items-center justify-center gap-1.5 px-4 py-2 rounded-md",
-          status === "connecting" ? "bg-primary/60" : "bg-primary"
+          status === "connecting" ? "bg-primary opacity-80" : "bg-primary"
         )}
       >
         {status === "connecting" ? (
