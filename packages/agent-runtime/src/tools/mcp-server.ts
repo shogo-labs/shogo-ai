@@ -683,7 +683,7 @@ defineTool({
 
 defineTool({
   name: 'agent_template_list',
-  description: 'List available agent starter templates. Returns templates grouped by category with descriptions and recommended MCP servers.',
+  description: 'List available agent starter templates. Returns templates grouped by category with descriptions, settings, and skills.',
   inputSchema: { type: 'object', properties: {} },
   handler: async () => {
     return {

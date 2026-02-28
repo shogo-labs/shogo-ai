@@ -22,6 +22,7 @@ import {
 } from '../../contexts/domain'
 import { CompactChatInput } from '../../components/chat/CompactChatInput'
 import { setPendingImageData } from '../../lib/pending-image-store'
+import { API_URL } from '../../lib/api'
 
 const SUGGESTION_CHIPS = [
   'Build a customer support agent',
@@ -30,22 +31,16 @@ const SUGGESTION_CHIPS = [
   'Design a data analysis agent',
 ]
 
-interface CanvasTemplate {
+interface AgentTemplate {
   id: string
   name: string
   description: string
-  user_request: string
+  category: string
   icon: string
+  tags: string[]
+  settings: any
+  skills: string[]
 }
-
-const HOME_TEMPLATES: CanvasTemplate[] = [
-  { id: 'analytics-dashboard', name: 'Analytics Dashboard', description: 'Revenue charts & top products', user_request: 'Create a sales analytics dashboard with revenue chart and top products', icon: '\u{1F4CA}' },
-  { id: 'task-tracker-crud', name: 'Task Tracker', description: 'Add, complete & delete tasks', user_request: 'Build a task tracker where I can add, complete, and delete tasks', icon: '\u{2705}' },
-  { id: 'crm-pipeline', name: 'CRM Pipeline', description: 'Leads across pipeline stages', user_request: 'Build a CRM pipeline canvas showing leads in 3 stages', icon: '\u{1F91D}' },
-  { id: 'expense-dashboard', name: 'Expense Dashboard', description: 'Spend, budgets & recent expenses', user_request: 'Create an expense tracker dashboard with total spend, budget remaining, and a table of recent expenses', icon: '\u{1F4B0}' },
-  { id: 'support-tickets-crud', name: 'Support Tickets', description: 'Priority levels & status tracking', user_request: 'Build a support ticket management app with CRUD API, priority levels, and status tracking', icon: '\u{1F3AB}' },
-  { id: 'email-dashboard', name: 'Email Dashboard', description: 'Metrics, tabs & email tables', user_request: 'Build an email dashboard with metrics, tabs, and email tables', icon: '\u{1F4E7}' },
-]
 
 const GRADIENT_KEYFRAMES = `
 @keyframes gradient-float {
@@ -166,7 +161,7 @@ function TemplateCard({
   isLoading,
   onPress,
 }: {
-  template: CanvasTemplate
+  template: AgentTemplate
   isLoading: boolean
   onPress: () => void
 }) {
@@ -209,6 +204,7 @@ const HomeScreen = observer(function HomeScreen() {
   const [prompt, setPrompt] = useState('')
   const [isCreating, setIsCreating] = useState(false)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
+  const [homeTemplates, setHomeTemplates] = useState<AgentTemplate[]>([])
 
   const [workspaceError, setWorkspaceError] = useState(false)
 
@@ -220,6 +216,18 @@ const HomeScreen = observer(function HomeScreen() {
       console.error('[Home] Failed to load workspaces:', err)
       setWorkspaceError(true)
     })
+
+    async function fetchTemplates() {
+      try {
+        const res = await fetch(`${API_URL}/api/agent-templates`)
+        if (!res.ok) return
+        const data = await res.json()
+        setHomeTemplates((data.templates || []).slice(0, 6))
+      } catch (err) {
+        console.error('[Home] Failed to fetch templates:', err)
+      }
+    }
+    fetchTemplates()
   }, [isAuthenticated])
 
   let currentWorkspace: any
@@ -272,28 +280,29 @@ const HomeScreen = observer(function HomeScreen() {
     }
   }, [actions, user?.id, currentWorkspace?.id, projects, router])
 
-  const handleTemplatePress = useCallback(async (template: CanvasTemplate) => {
+  const handleTemplatePress = useCallback(async (template: AgentTemplate) => {
     if (!user?.id || !currentWorkspace?.id) {
       Alert.alert('Not ready', 'Still loading your workspace. Please try again in a moment.')
       return
     }
     setLoadingTemplate(template.id)
     try {
-      const projectName = template.name
-
       const newProject = await actions.createProject(
-        projectName,
+        template.name,
         currentWorkspace.id,
-        `Created from ${projectName} canvas template`,
+        template.description,
         user.id,
         'AGENT',
+        template.id,
       )
 
       const chatSession = await actions.createChatSession({
-        inferredName: `Chat - ${projectName}`,
+        inferredName: `Chat - ${template.name}`,
         contextType: 'project',
         contextId: newProject.id,
       })
+
+      const onboardingMessage = `The "${template.name}" template has been installed. Can you describe what's been set up and walk me through how to customize it or connect my own tools?`
 
       projects.loadAll()
       router.push({
@@ -301,7 +310,7 @@ const HomeScreen = observer(function HomeScreen() {
         params: {
           id: newProject.id,
           chatSessionId: chatSession.id,
-          initialMessage: template.user_request,
+          initialMessage: onboardingMessage,
         },
       } as any)
     } catch (error) {
@@ -369,40 +378,42 @@ const HomeScreen = observer(function HomeScreen() {
           </View>
         </View>
 
-        {/* Canvas Templates section */}
-        <View className="border-t border-border py-6 bg-card/30">
-          <View className="flex-row items-center justify-between mb-4 px-6">
-            <Text className="text-sm font-medium text-foreground">Canvas Templates</Text>
-            <Pressable
-              onPress={() => router.push('/(app)/templates' as any)}
-              className="flex-row items-center gap-1 active:opacity-70"
-            >
-              <Text className="text-sm text-muted-foreground">Browse all</Text>
-              <ChevronRight size={16} className="text-muted-foreground" />
-            </Pressable>
-          </View>
+        {/* Agent Templates section */}
+        {homeTemplates.length > 0 && (
+          <View className="border-t border-border py-6 bg-card/30">
+            <View className="flex-row items-center justify-between mb-4 px-6">
+              <Text className="text-sm font-medium text-foreground">Agent Templates</Text>
+              <Pressable
+                onPress={() => router.push('/(app)/templates' as any)}
+                className="flex-row items-center gap-1 active:opacity-70"
+              >
+                <Text className="text-sm text-muted-foreground">Browse all</Text>
+                <ChevronRight size={16} className="text-muted-foreground" />
+              </Pressable>
+            </View>
 
-          <View className="px-6 pb-6">
-            <View
-              className="gap-3"
-              style={Platform.OS === 'web' ? {
-                display: 'grid' as any,
-                gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-                maxWidth: 1024,
-                marginHorizontal: 'auto',
-              } as any : {}}
-            >
-              {HOME_TEMPLATES.map((template) => (
-                <TemplateCard
-                  key={template.id}
-                  template={template}
-                  isLoading={loadingTemplate === template.id}
-                  onPress={() => handleTemplatePress(template)}
-                />
-              ))}
+            <View className="px-6 pb-6">
+              <View
+                className="gap-3"
+                style={Platform.OS === 'web' ? {
+                  display: 'grid' as any,
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+                  maxWidth: 1024,
+                  marginHorizontal: 'auto',
+                } as any : {}}
+              >
+                {homeTemplates.map((template) => (
+                  <TemplateCard
+                    key={template.id}
+                    template={template}
+                    isLoading={loadingTemplate === template.id}
+                    onPress={() => handleTemplatePress(template)}
+                  />
+                ))}
+              </View>
             </View>
           </View>
-        </View>
+        )}
       </ScrollView>
     </View>
   )

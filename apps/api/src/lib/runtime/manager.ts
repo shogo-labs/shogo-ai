@@ -386,16 +386,20 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     return projectDir
   }
 
-  private async getProjectType(projectId: string): Promise<'APP' | 'AGENT'> {
+  private async getProjectInfo(projectId: string): Promise<{ type: 'APP' | 'AGENT'; templateId?: string; name?: string }> {
     try {
       const { prisma } = await import('../prisma')
       const project = await prisma.project.findUnique({
         where: { id: projectId },
-        select: { type: true },
+        select: { type: true, templateId: true, name: true },
       })
-      return (project?.type as 'APP' | 'AGENT') || 'APP'
+      return {
+        type: (project?.type as 'APP' | 'AGENT') || 'APP',
+        templateId: project?.templateId ?? undefined,
+        name: project?.name ?? undefined,
+      }
     } catch {
-      return 'APP'
+      return { type: 'APP' }
     }
   }
 
@@ -419,8 +423,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       throw new Error(`Runtime for project ${projectId} is already running`)
     }
 
-    const projectType = await this.getProjectType(projectId)
-    const isAgentProject = projectType === 'AGENT'
+    const projectInfo = await this.getProjectInfo(projectId)
+    const isAgentProject = projectInfo.type === 'AGENT'
 
     // Ensure project directory exists with dependencies
     const projectDir = await this.ensureProjectDirectory(projectId)
@@ -622,6 +626,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           PROJECT_ID: projectId,
           PROJECT_DIR: projectDir,
           ...(isAgentProject ? { AGENT_DIR: projectDir } : {}),
+          ...(projectInfo.templateId ? { TEMPLATE_ID: projectInfo.templateId } : {}),
+          ...(projectInfo.name ? { AGENT_NAME: projectInfo.name } : {}),
           PORT: String(agentPort),
           SCHEMAS_PATH: join(this.config.workspacesDir || process.cwd(), '..', '.schemas'),
           MCP_SERVER_PATH: MCP_SERVER_PATH,

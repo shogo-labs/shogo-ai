@@ -57,7 +57,7 @@ import {
   configureAIProxy,
 } from '@shogo/shared-runtime'
 import { buildAgentSystemPrompt } from './system-prompt'
-import { seedWorkspaceDefaults } from './workspace-defaults'
+import { seedWorkspaceDefaults, seedWorkspaceFromTemplate } from './workspace-defaults'
 import { AgentGateway } from './gateway'
 import { userMessage } from './pi-adapter'
 import { getDynamicAppManager, initDynamicAppManager } from './dynamic-app-manager'
@@ -105,6 +105,20 @@ console.log(`[agent-runtime] Agent directory: ${AGENT_DIR}`)
 // =============================================================================
 
 function ensureWorkspaceFiles(): void {
+  const templateMarker = join(AGENT_DIR, '.template')
+  const templateIdFromEnv = process.env.TEMPLATE_ID
+  const templateIdFromFile = existsSync(templateMarker) ? readFileSync(templateMarker, 'utf-8').trim() : undefined
+  const templateId = templateIdFromEnv || templateIdFromFile
+
+  if (templateId) {
+    const seeded = seedWorkspaceFromTemplate(AGENT_DIR, templateId, process.env.AGENT_NAME)
+    if (seeded) {
+      logTiming(`Workspace seeded from template: ${templateId}`)
+      return
+    }
+    logTiming(`Template "${templateId}" not found, falling back to defaults`)
+  }
+
   seedWorkspaceDefaults(AGENT_DIR)
   logTiming('Workspace defaults seeded')
 }
@@ -1046,9 +1060,7 @@ import { MCP_CATALOG, MCP_CATEGORIES } from './mcp-catalog'
 import { isComposioEnabled, searchComposioToolkits, findComposioToolkit, initComposioSession } from './composio'
 
 // Agent Templates API — powers the templates gallery
-import { getTemplateSummaries, TEMPLATE_CATEGORIES } from './agent-templates'
-// Agent Recipes API — powers the recipes wizard
-import { AGENT_RECIPES, RECIPE_CATEGORIES } from './agent-recipes'
+import { getTemplateSummaries, getAgentTemplateById, TEMPLATE_CATEGORIES } from './agent-templates'
 
 app.get('/agent/mcp-catalog', (c) => {
   return c.json({ catalog: MCP_CATALOG, categories: MCP_CATEGORIES })
@@ -1109,8 +1121,10 @@ app.get('/agent/templates', (c) => {
   return c.json({ templates: getTemplateSummaries(), categories: TEMPLATE_CATEGORIES })
 })
 
-app.get('/agent/recipes', (c) => {
-  return c.json({ recipes: AGENT_RECIPES, categories: RECIPE_CATEGORIES })
+app.get('/agent/templates/:id', (c) => {
+  const template = getAgentTemplateById(c.req.param('id'))
+  if (!template) return c.json({ error: 'Template not found' }, 404)
+  return c.json({ template })
 })
 
 app.post('/agent/mcp-servers/toggle', async (c) => {

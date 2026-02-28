@@ -33,6 +33,7 @@
     "@prisma/adapter-pg": "^7.3.0",
     "@prisma/client": "^7.3.0",
     "@prisma/instrumentation": "^7.4.1",
+    "@shogo/agent-runtime": "workspace:*",
     "@shogo-ai/sdk": "workspace:*",
     "ai": "^6.0.73",
     "better-auth": "^1.2.8",

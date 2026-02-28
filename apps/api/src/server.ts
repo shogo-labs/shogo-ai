@@ -36,6 +36,7 @@ import { openSession as openBillingSession, closeSession as closeBillingSession 
 import { adminRoutes } from './routes/admin'
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
 import { integrationRoutes } from './routes/integrations'
+import { agentTemplateRoutes } from './routes/agent-templates'
 import { requireSuperAdmin } from './middleware/super-admin'
 // Generated admin CRUD routes (unrestricted, middleware-protected)
 import { createAdminRoutes } from './generated/admin-routes'
@@ -806,6 +807,9 @@ app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
 
 // Health check
 app.get('/api/health', (c) => c.json({ ok: true }))
+
+// Agent template catalog — public, no auth required
+app.route('/api', agentTemplateRoutes())
 
 // Warm pool + cluster capacity status (for operational dashboards and load testing)
 app.get('/api/warm-pool/status', async (c) => {
@@ -4128,6 +4132,7 @@ app.use('/api/*', authMiddleware)
 // Require authentication for all routes
 // Unauthenticated requests get 401 Unauthorized
 app.use('/api/*', requireAuth)
+
 
 // =============================================================================
 // Invite Link Routes (custom, not auto-generated)

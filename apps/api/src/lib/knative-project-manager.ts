@@ -726,7 +726,7 @@ export class KnativeProjectManager {
     const { prisma } = await import('./prisma')
     const projectRecord = await prisma.project.findUnique({
       where: { id: projectId },
-      select: { type: true },
+      select: { type: true, templateId: true, name: true },
     })
     const isAgentProject = projectRecord?.type === 'AGENT'
     const runtimeImage = isAgentProject ? AGENT_RUNTIME_IMAGE : this.image
@@ -738,6 +738,8 @@ export class KnativeProjectManager {
       { name: "PROJECT_ID", value: projectId },
       { name: "PROJECT_DIR", value: workDir },
       ...(isAgentProject ? [{ name: "AGENT_DIR", value: workDir }] : []),
+      ...(projectRecord?.templateId ? [{ name: "TEMPLATE_ID", value: projectRecord.templateId }] : []),
+      ...(projectRecord?.name ? [{ name: "AGENT_NAME", value: projectRecord.name }] : []),
       { name: "SCHEMAS_PATH", value: "/app/.schemas" },
       // Auth secret for validating preview JWT tokens
       {

@@ -700,10 +700,12 @@ export class WarmPoolController {
       const { prisma } = await import('./prisma')
       const project = await prisma.project.findUnique({
         where: { id: projectId },
-        select: { workspaceId: true, type: true },
+        select: { workspaceId: true, type: true, templateId: true, name: true },
       })
       if (project) {
         projectType = project.type
+        if (project.templateId) env.TEMPLATE_ID = project.templateId
+        if (project.name) env.AGENT_NAME = project.name
         env.AI_PROXY_TOKEN = await generateProxyToken(
           projectId,
           project.workspaceId,

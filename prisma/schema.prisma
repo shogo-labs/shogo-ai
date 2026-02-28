@@ -147,6 +147,7 @@ model Project {
   siteTitle          String?
   siteDescription    String?
   thumbnailUrl       String?
+  templateId         String?
 
   // Relations
   workspace        Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)

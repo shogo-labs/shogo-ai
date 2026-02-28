@@ -4,6 +4,7 @@
  * Customize business logic for CRUD operations.
  * This file is safe to edit - it will not be overwritten.
  */
+import { getAgentTemplateById } from '../../../../packages/agent-runtime/src/agent-templates'
 
 /**
  * Result from a hook that can modify or reject the operation
@@ -226,6 +227,33 @@ export const projectHooks: ProjectHooks = {
     if (!input.createdBy && userId) input.createdBy = userId
 
     return { ok: true, data: input }
+  },
+
+  /**
+   * When an AGENT project is created with a templateId, auto-create an AgentConfig
+   * row populated from the template's settings.
+   */
+  afterCreate: async (record, ctx) => {
+    if (record.type !== 'AGENT' || !record.templateId) return
+
+    const template = getAgentTemplateById(record.templateId)
+    if (!template) return
+
+    const existing = await ctx.prisma.agentConfig.findUnique({
+      where: { projectId: record.id },
+    })
+    if (existing) return
+
+    await ctx.prisma.agentConfig.create({
+      data: {
+        projectId: record.id,
+        heartbeatInterval: template.settings.heartbeatInterval,
+        heartbeatEnabled: template.settings.heartbeatEnabled,
+        modelProvider: template.settings.modelProvider,
+        modelName: template.settings.modelName,
+        channels: [],
+      },
+    })
   },
 
   /**

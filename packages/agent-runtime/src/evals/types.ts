@@ -22,6 +22,7 @@ export type EvalCategory =
   | 'mcp-discovery'
   | 'mcp-orchestration'
   | 'tool-system'
+  | 'template'
 
 export type ValidationPhase = 'intention' | 'execution' | 'interaction'
 
