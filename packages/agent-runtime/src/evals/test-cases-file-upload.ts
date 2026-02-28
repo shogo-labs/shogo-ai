@@ -924,7 +924,7 @@ export const FILE_UPLOAD_EVALS: AgentEval[] = [
         description: 'Does not make up file content',
         points: 20,
         phase: 'execution',
-        validate: (r) => neverUsedTool(r, 'web_fetch'),
+        validate: (r) => neverUsedTool(r, 'web'),
       },
     ],
   },

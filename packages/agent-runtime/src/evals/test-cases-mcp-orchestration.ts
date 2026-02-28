@@ -73,7 +73,7 @@ export const MCP_ORCHESTRATION_EVALS: AgentEval[] = [
         description: 'Researched David Kim / VC Firm Capital online',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'web_fetch'),
+        validate: (r) => usedTool(r, 'web'),
       },
       {
         id: 'queried-metrics',

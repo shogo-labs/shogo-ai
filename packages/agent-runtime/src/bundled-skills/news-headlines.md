@@ -3,7 +3,7 @@ name: news-headlines
 version: 1.0.0
 description: Fetch the latest news headlines on a topic or from general news sources
 trigger: "headlines|news|trending|what's happening|latest news"
-tools: [web_fetch]
+tools: [web]
 ---
 
 # News Headlines
@@ -11,7 +11,7 @@ tools: [web_fetch]
 When asked for news:
 
 1. Determine the topic (general news if none specified)
-2. Search Hacker News, TechCrunch, or general news via web_fetch
+2. Search Hacker News, TechCrunch, or general news via web
 3. Extract top 5-10 headlines with brief summaries
 4. Present in a scannable format
 

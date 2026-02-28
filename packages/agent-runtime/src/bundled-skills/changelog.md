@@ -3,7 +3,7 @@ name: changelog
 version: 1.0.0
 description: Check what changed in a project, repo, or codebase recently
 trigger: "changelog|what changed|recent changes|git log|commit history"
-tools: [exec, web_fetch]
+tools: [exec, web]
 ---
 
 # Changelog
@@ -15,7 +15,7 @@ When the user asks about recent changes:
    - Changed files: `exec("git diff --stat HEAD~5")`
    - Tags/releases: `exec("git tag --sort=-creatordate | head -5")`
 2. **Remote repo** (if URL provided):
-   - Fetch releases page or changelog via web_fetch
+   - Fetch releases page or changelog via web
 3. **Summarize** changes by category
 
 ## Output Format

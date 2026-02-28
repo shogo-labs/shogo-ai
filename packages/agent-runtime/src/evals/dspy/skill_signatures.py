@@ -50,6 +50,6 @@ class SkillCreation(dspy.Signature):
 
     skill_name: str = dspy.OutputField(desc="Kebab-case skill name, e.g. 'github-pr-check'")
     trigger_pattern: str = dspy.OutputField(desc="Pipe-separated trigger phrases, e.g. 'github prs|pull requests|pr review|check prs'")
-    required_tools: str = dspy.OutputField(desc="Comma-separated tool names, e.g. 'web_fetch, memory_write'")
+    required_tools: str = dspy.OutputField(desc="Comma-separated tool names, e.g. 'web, memory_write'")
     skill_body: str = dspy.OutputField(desc="Markdown instructions for executing the skill")
     reasoning: str = dspy.OutputField()

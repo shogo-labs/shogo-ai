@@ -10,7 +10,7 @@
     ]
   },
   "constants": {
-    "available_tools": "exec, read_file, write_file, web_fetch, browser, memory_read, memory_write, memory_search, send_message, cron, canvas_create, canvas_update, canvas_data, canvas_delete, canvas_action_wait, canvas_components, canvas_trigger_action, canvas_inspect, canvas_api_schema, canvas_api_seed, canvas_api_query, personality_update"
+    "available_tools": "exec, read_file, write_file, web, browser, memory_read, memory_write, memory_search, send_message, cron, canvas_create, canvas_update, canvas_data, canvas_delete, canvas_action_wait, canvas_components, canvas_trigger_action, canvas_inspect, canvas_api_schema, canvas_api_seed, canvas_api_query, personality_update"
   },
   "examples": [
     {
@@ -141,7 +141,7 @@
       "user_message": "Research the latest AI model benchmarks and save a summary",
       "conversation_history_summary": "",
       "expected_tool_sequence": [
-        "web_fetch",
+        "web",
         "memory_write"
       ],
       "expected_iterations": 1,
@@ -152,7 +152,7 @@
     {
       "id": "summary-github-session",
       "type": "summarize",
-      "messages_text": "user: My name is Alice, I'm in PST timezone.\nassistant: Nice to meet you, Alice! I'll keep your timezone in mind.\nuser: Can you check my GitHub for new PRs?\nassistant: [tool: web_fetch] Found 3 open PRs needing review.\nuser: Great, summarize them.\nassistant: 1. Fix auth bug (#142) - 2 approvals. 2. Add dark mode (#143) - needs review. 3. Refactor DB (#144) - 1 comment.",
+      "messages_text": "user: My name is Alice, I'm in PST timezone.\nassistant: Nice to meet you, Alice! I'll keep your timezone in mind.\nuser: Can you check my GitHub for new PRs?\nassistant: [tool: web] Found 3 open PRs needing review.\nuser: Great, summarize them.\nassistant: 1. Fix auth bug (#142) - 2 approvals. 2. Add dark mode (#143) - needs review. 3. Refactor DB (#144) - 1 comment.",
       "expected_key_facts": [
         "User: Alice",
         "PST timezone",

@@ -3,7 +3,7 @@ name: daily-digest
 version: 1.0.0
 description: Compile a daily digest of news and updates on configured topics
 trigger: "daily digest|morning briefing|daily briefing|what's new"
-tools: [web_fetch, memory_read, memory_write]
+tools: [web, memory_read, memory_write]
 ---
 
 # Daily Digest

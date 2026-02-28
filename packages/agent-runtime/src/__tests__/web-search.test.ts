@@ -21,21 +21,21 @@ function createCtx(): ToolContext {
   }
 }
 
-function getWebSearchTool(ctx: ToolContext) {
+function getWebTool(ctx: ToolContext) {
   const tools = createAllTools(ctx)
-  const tool = tools.find(t => t.name === 'web_search')
-  if (!tool) throw new Error('web_search tool not found in createAllTools()')
+  const tool = tools.find(t => t.name === 'web')
+  if (!tool) throw new Error('web tool not found in createAllTools()')
   return tool
 }
 
 async function search(params: Record<string, any>) {
   const ctx = createCtx()
-  const tool = getWebSearchTool(ctx)
+  const tool = getWebTool(ctx)
   const result = await tool.execute('test-call', params)
   return result.details
 }
 
-describe('web_search tool', () => {
+describe('web tool', () => {
   beforeEach(() => {
     mkdirSync(TEST_DIR, { recursive: true })
   })
@@ -48,21 +48,28 @@ describe('web_search tool', () => {
     const ctx = createCtx()
     const tools = createAllTools(ctx)
     const names = tools.map(t => t.name)
-    expect(names).toContain('web_search')
+    expect(names).toContain('web')
   })
 
   test('tool has correct parameter schema', () => {
     const ctx = createCtx()
-    const tool = getWebSearchTool(ctx)
+    const tool = getWebTool(ctx)
     expect(tool.parameters).toBeDefined()
+    expect(tool.parameters.properties.url).toBeDefined()
     expect(tool.parameters.properties.query).toBeDefined()
     expect(tool.parameters.properties.searchType).toBeDefined()
     expect(tool.parameters.properties.num).toBeDefined()
     expect(tool.parameters.properties.gl).toBeDefined()
     expect(tool.parameters.properties.hl).toBeDefined()
+    expect(tool.parameters.properties.maxChars).toBeDefined()
   })
 
-  test('returns error when SERPER_API_KEY is not set', async () => {
+  test('returns error when neither url nor query provided', async () => {
+    const result = await search({})
+    expect(result.error).toContain('Provide either')
+  })
+
+  test('returns error when SERPER_API_KEY is not set (query mode)', async () => {
     const originalKey = process.env.SERPER_API_KEY
     delete process.env.SERPER_API_KEY
 
@@ -73,12 +80,19 @@ describe('web_search tool', () => {
       if (originalKey) process.env.SERPER_API_KEY = originalKey
     }
   })
+
+  test('fetches a URL directly when no Google routing needed', async () => {
+    const result = await search({ url: 'https://httpbin.org/json' })
+    expect(result.error).toBeUndefined()
+    expect(result.content).toBeDefined()
+    expect(result.status).toBe(200)
+  }, 15000)
 })
 
 // Live API tests — only run when SERPER_API_KEY is available
 const describeLive = SERPER_API_KEY ? describe : describe.skip
 
-describeLive('web_search live API tests', () => {
+describeLive('web tool live API tests', () => {
   beforeAll(() => {
     if (!SERPER_API_KEY) throw new Error('SERPER_API_KEY required for live tests')
     process.env.SERPER_API_KEY = SERPER_API_KEY
@@ -111,17 +125,25 @@ describeLive('web_search live API tests', () => {
     expect(firstResult.link.startsWith('http')).toBe(true)
   }, 15000)
 
-  test('search returns knowledge graph for well-known entities', async () => {
-    const result = await search({ query: 'Google', num: 5 })
+  test('Google Maps directions URL auto-routes to Serper search', async () => {
+    const result = await search({
+      url: 'https://www.google.com/maps/dir/2220+Bella+Vista+Drive,+Montecito,+CA/Los+Angeles+International+Airport,+World+Way,+Los+Angeles,+CA',
+    })
 
     expect(result.error).toBeUndefined()
-    expect(result.raw).toBeDefined()
-    // Google should have a knowledge graph entry
-    if (result.raw.knowledgeGraph) {
-      expect(result.raw.knowledgeGraph.title).toBeDefined()
-    }
-    // Should always have organic results
-    expect(result.raw.organic?.length).toBeGreaterThan(0)
+    expect(result.results).toBeDefined()
+    expect(result.query).toContain('directions from')
+    expect(result.searchType).toBe('search')
+  }, 15000)
+
+  test('Google Maps place URL auto-routes to Serper places', async () => {
+    const result = await search({
+      url: 'https://www.google.com/maps/place/Eiffel+Tower',
+    })
+
+    expect(result.error).toBeUndefined()
+    expect(result.results).toBeDefined()
+    expect(result.searchType).toBe('places')
   }, 15000)
 
   test('flight search returns relevant results', async () => {
@@ -133,11 +155,8 @@ describeLive('web_search live API tests', () => {
     expect(result.error).toBeUndefined()
     expect(result.results).toBeDefined()
     expect(result.raw).toBeDefined()
-
-    // Should have organic results about flights
     expect(result.raw.organic?.length).toBeGreaterThan(0)
 
-    // Verify the results mention relevant flight-related content
     const allText = result.results.toLowerCase()
     const hasFlightContent =
       allText.includes('flight') ||
@@ -146,16 +165,6 @@ describeLive('web_search live API tests', () => {
       allText.includes('bali') ||
       allText.includes('denpasar')
     expect(hasFlightContent).toBe(true)
-  }, 15000)
-
-  test('flight search with return date', async () => {
-    const result = await search({
-      query: 'round trip flights LAX to DPS April 20 to April 30 2026 economy',
-      num: 10,
-    })
-
-    expect(result.error).toBeUndefined()
-    expect(result.raw?.organic?.length).toBeGreaterThan(0)
   }, 15000)
 
   test('news search type works', async () => {
@@ -168,7 +177,6 @@ describeLive('web_search live API tests', () => {
     expect(result.error).toBeUndefined()
     expect(result.raw).toBeDefined()
     expect(result.searchType).toBe('news')
-    // News results should be in the news field
     if (result.raw.news) {
       expect(Array.isArray(result.raw.news)).toBe(true)
       expect(result.raw.news.length).toBeGreaterThan(0)
@@ -205,7 +213,6 @@ describeLive('web_search live API tests', () => {
 
     expect(result.error).toBeUndefined()
     expect(result.results).toBeDefined()
-    // Should contain markdown formatting
     const hasFormatting =
       result.results.includes('**') ||
       result.results.includes('Search Results') ||

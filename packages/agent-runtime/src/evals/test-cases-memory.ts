@@ -228,7 +228,7 @@ export const MEMORY_EVALS: AgentEval[] = [
   // ---- Use Tool But Don't Persist (n8n one-off data processing) ----
   {
     id: 'memory-ephemeral-web-fetch',
-    name: 'Memory: Use web_fetch for ephemeral query, don\'t persist',
+    name: 'Memory: Use web for ephemeral query, don\'t persist',
     category: 'memory',
     level: 2,
     input: 'Convert 1,500 USD to EUR at today\'s exchange rate.',
@@ -236,10 +236,10 @@ export const MEMORY_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-web-fetch',
-        description: 'Used web_fetch to look up the exchange rate',
+        description: 'Used web to look up the exchange rate',
         points: 40,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'web_fetch'),
+        validate: (r) => usedTool(r, 'web'),
       },
       {
         id: 'did-not-write-memory',

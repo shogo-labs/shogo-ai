@@ -155,8 +155,8 @@ Shogo wins decisively on **speed and accessibility** -- natural language -> conf
 | **Cron scheduling** | Cron expressions, intervals, one-shot, webhook delivery | Interval-only (seconds), max 20 jobs | Medium |
 | **Heartbeat** | Configurable interval, quiet hours, active hours | Configurable interval, quiet hours | Parity |
 | **Shell execution** | Sandboxed (Docker), configurable per-agent | Sandboxed (Docker), blocked commands list | Parity |
-| **Web fetching** | `web_fetch` (similar to Shogo) | `web_fetch` (50k chars, 15s timeout) | Parity |
-| **Browser automation** | **Playwright-based headless browser** | **None (HTTP-only web_fetch)** | **High** |
+| **Web fetching** | `web` (similar to Shogo) | `web` (50k chars, 15s timeout) | Parity |
+| **Browser automation** | **Playwright-based headless browser** | **None (HTTP-only web)** | **High** |
 | **Multi-agent** | Full isolation (workspace, sessions, routing) | One agent per project (managed isolation via K8s) | Medium |
 | **Agent routing** | Channel/account/peer/guild/role routing rules | N/A (one agent per project) | Medium |
 | **Hook system** | 12 event types, bundled + custom hooks | Hook system (similar events) | Parity |
@@ -263,9 +263,9 @@ OpenClaw supports semantic memory search with SQLite-vec embeddings, hybrid BM25
 
 #### 5.3 Browser Automation
 
-OpenClaw agents can control a headless browser via Playwright for web scraping, form filling, and UI testing. Shogo agents are limited to `web_fetch` (plain HTTP GET).
+OpenClaw agents can control a headless browser via Playwright for web scraping, form filling, and UI testing. Shogo agents are limited to `web` (plain HTTP GET).
 
-**Recommendation:** Add a `browser` tool to the gateway tools that launches a Playwright browser for structured web interactions. This unblocks web scraping use cases where `web_fetch` gets raw HTML.
+**Recommendation:** Add a `browser` tool to the gateway tools that launches a Playwright browser for structured web interactions. This unblocks web scraping use cases where `web` gets raw HTML.
 
 **File to extend:** `packages/agent-runtime/src/gateway-tools.ts`
 
@@ -415,20 +415,20 @@ All three Shogo agents were tested via the Test Chat panel in Shogo Studio. Two 
 **Result:** Agent demonstrated intelligent fallback behavior:
 1. First tried `exec` with `gh repo view openclaw/openclaw` (GitHub CLI)
 2. Detected `gh` wasn't authenticated, tried `gh auth status` to confirm
-3. Fell back to `web_fetch` on GitHub's web pages (3 sequential fetches)
+3. Fell back to `web` on GitHub's web pages (3 sequential fetches)
 4. Extracted real data: 210k+ stars, 38.8k+ forks, 12,648 commits
 5. Listed 8 real open issues from today with issue numbers (#20827, #20826, etc.)
 6. Listed 5 real open PRs from today with numbers (#20833, #20832, etc.)
 7. Reported totals: 4,039 open issues, 3,925 open PRs
 
-**Tool usage:** `exec` -> `exec` -> `web_fetch` x3 (all correct). Displayed as "Bash" and "WebFetch" in UI.
+**Tool usage:** `exec` -> `exec` -> `web` x3 (all correct). Displayed as "Bash" and "WebFetch" in UI.
 
 ### Test 3: Research & Daily Digest (PARTIAL -- interrupted by UI issues)
 
 **Prompt:** "Research what's trending on Hacker News today related to AI agents and MCP protocol"
 
 **Result:** Agent started correctly:
-1. Used `web_fetch` (displayed as "WebSearch") to search for HN + AI agents + MCP
+1. Used `web` (displayed as "WebSearch") to search for HN + AI agents + MCP
 2. Ran a second search with `site:news.ycombinator.com` scoping
 3. Ran a third search with date-specific query
 

@@ -488,7 +488,7 @@ Do NOT use POST, PATCH, or DELETE mutations. Do NOT add form inputs that feed in
 When the user asks for any visual app, dashboard, or display UI, **ALWAYS start by writing a brief plan** before calling any tools. Output your plan as a message to the user covering:
 
 1. **What you're building** — one sentence summary (e.g. "A sales dashboard with revenue metrics and top products")
-2. **Data sources** — what data is needed and how you'll get it (API schema + seed, manual canvas_data, or web_fetch)
+2. **Data sources** — what data is needed and how you'll get it (API schema + seed, manual canvas_data, or web)
 3. **Component layout** — the component tree structure (e.g. "Column > Grid of Metrics + Card with Chart + Card with Table")
 
 This plan helps you build the right thing the first time and avoids costly delete-and-rebuild cycles. Keep it concise — 3-4 lines, not a full essay.

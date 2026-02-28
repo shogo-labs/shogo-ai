@@ -3,10 +3,10 @@
  *
  * These test cases exercise advanced agentic patterns:
  * - Multi-canvas (multiple surfaces for different views)
- * - web_fetch -> canvas (pull live data and render it)
+ * - web -> canvas (pull live data and render it)
  * - MCP integration -> canvas (external services populate dashboards)
  * - Memory persistence (store findings for later recall)
- * - Cross-tool orchestration (combining exec, web_fetch, MCP, canvas, messaging)
+ * - Cross-tool orchestration (combining exec, web, MCP, canvas, messaging)
  * - CRUD + verification (every case includes trigger+inspect)
  *
  * All external tools are mocked via the tool-mocks infrastructure so these
@@ -34,7 +34,7 @@ export const COMPLEX_EVALS: AgentEval[] = [
 
   // =========================================================================
   // Case 1: Competitive Intelligence Dashboard
-  // Level 4 | web_fetch + multi-canvas + memory | Multi-turn
+  // Level 4 | web + multi-canvas + memory | Multi-turn
   // =========================================================================
   {
     id: 'complex-competitive-intel',
@@ -50,10 +50,10 @@ export const COMPLEX_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-web-fetch',
-        description: 'Used web_fetch at least 3 times (one per competitor)',
+        description: 'Used web at least 3 times (one per competitor)',
         points: 10,
         phase: 'intention',
-        validate: (r) => toolCallCount(r, 'web_fetch') >= 3,
+        validate: (r) => toolCallCount(r, 'web') >= 3,
       },
       {
         id: 'used-canvas-create-multi',
@@ -212,7 +212,7 @@ export const COMPLEX_EVALS: AgentEval[] = [
 
   // =========================================================================
   // Case 3: Daily News Research Brief
-  // Level 4 | web_fetch + canvas + memory + write_file | Multi-turn
+  // Level 4 | web + canvas + memory + write_file | Multi-turn
   // =========================================================================
   {
     id: 'complex-news-brief',
@@ -228,10 +228,10 @@ export const COMPLEX_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-web-fetch',
-        description: 'Used web_fetch at least 3 times (one per source)',
+        description: 'Used web at least 3 times (one per source)',
         points: 10,
         phase: 'intention',
-        validate: (r) => toolCallCount(r, 'web_fetch') >= 3,
+        validate: (r) => toolCallCount(r, 'web') >= 3,
       },
       {
         id: 'used-memory-write',
@@ -309,7 +309,7 @@ export const COMPLEX_EVALS: AgentEval[] = [
 
   // =========================================================================
   // Case 4: API Health Monitor
-  // Level 4 | web_fetch + multi-canvas + exec
+  // Level 4 | web + multi-canvas + exec
   // =========================================================================
   {
     id: 'complex-api-health',
@@ -322,10 +322,10 @@ export const COMPLEX_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-web-fetch',
-        description: 'Used web_fetch at least 3 times (one per endpoint)',
+        description: 'Used web at least 3 times (one per endpoint)',
         points: 10,
         phase: 'intention',
-        validate: (r) => toolCallCount(r, 'web_fetch') >= 3,
+        validate: (r) => toolCallCount(r, 'web') >= 3,
       },
       {
         id: 'used-canvas-create-multi',
@@ -485,7 +485,7 @@ export const COMPLEX_EVALS: AgentEval[] = [
 
   // =========================================================================
   // Case 6: Meeting Prep Command Center
-  // Level 5 | MCP Google Calendar + web_fetch + multi-canvas
+  // Level 5 | MCP Google Calendar + web + multi-canvas
   // =========================================================================
   {
     id: 'complex-meeting-prep',
@@ -505,10 +505,10 @@ export const COMPLEX_EVALS: AgentEval[] = [
       },
       {
         id: 'used-web-fetch',
-        description: 'Used web_fetch at least 2 times for company research',
+        description: 'Used web at least 2 times for company research',
         points: 10,
         phase: 'intention',
-        validate: (r) => toolCallCount(r, 'web_fetch') >= 2,
+        validate: (r) => toolCallCount(r, 'web') >= 2,
       },
       {
         id: 'used-canvas-create-multi',
@@ -666,7 +666,7 @@ export const COMPLEX_EVALS: AgentEval[] = [
 
   // =========================================================================
   // Case 8: Multi-Repo PR Review Queue
-  // Level 5 | MCP GitHub + web_fetch + canvas + send_message
+  // Level 5 | MCP GitHub + web + canvas + send_message
   // =========================================================================
   {
     id: 'complex-pr-review-queue',

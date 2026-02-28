@@ -800,7 +800,7 @@ export class KnativeProjectManager {
       console.warn(`[KnativeProjectManager] AI proxy token not generated for ${projectId} — AI features will be unavailable in this pod`)
     }
 
-    // Inject web search API keys for agent runtime tools (web_search, MCP servers).
+    // Inject web search API keys for agent runtime tools (web tool, MCP servers).
     // Keys are stored in the "agent-tool-secrets" K8s Secret in the workspaces namespace.
     if (isAgentProject) {
       env.push(

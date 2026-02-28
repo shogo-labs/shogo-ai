@@ -3,7 +3,7 @@ name: system-health
 version: 1.0.0
 description: Check system health, server status, and endpoint availability
 trigger: "system health|check server|server status|is it up|uptime"
-tools: [exec, web_fetch]
+tools: [exec, web]
 ---
 
 # System Health Check
@@ -15,7 +15,7 @@ When the user asks about system or server health:
    - Memory: `exec("free -h")` or `exec("vm_stat")` on macOS
    - CPU load: `exec("uptime")`
 2. **Remote endpoints** (if URLs provided):
-   - HTTP health check via web_fetch
+   - HTTP health check via web
    - Record response time and status code
 3. **Report** findings with severity levels
 

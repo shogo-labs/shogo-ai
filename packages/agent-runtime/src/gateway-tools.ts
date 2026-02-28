@@ -203,76 +203,6 @@ function stripHtmlToText(html: string): string {
   return text
 }
 
-function createWebFetchTool(): AgentTool {
-  return {
-    name: 'web_fetch',
-    description: 'Fetch content from a URL and return it as text. Useful for checking APIs, web pages, or downloading data. Automatically extracts readable text from HTML pages.',
-    label: 'Web Fetch',
-    parameters: Type.Object({
-      url: Type.String({ description: 'URL to fetch' }),
-      maxChars: Type.Optional(Type.Number({ description: 'Maximum characters to return (default: 50000)' })),
-    }),
-    execute: async (_toolCallId, params) => {
-      const { url, maxChars = 50000 } = params as { url: string; maxChars?: number }
-
-      const headers: Record<string, string> = {
-        'User-Agent': BROWSER_USER_AGENT,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,application/json,text/plain;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-      }
-
-      const MAX_ATTEMPTS = 2
-
-      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-        try {
-          const response = await fetch(url, {
-            headers,
-            signal: AbortSignal.timeout(WEB_FETCH_TIMEOUT_MS),
-            redirect: 'follow',
-          })
-
-          if (response.status === 403 || response.status === 429) {
-            if (attempt < MAX_ATTEMPTS) {
-              await new Promise(r => setTimeout(r, 1000))
-              continue
-            }
-            return textResult({
-              error: `HTTP ${response.status}: Access denied or rate limited. The site may block automated requests.`,
-              url,
-              suggestion: 'Try web_search instead to find the information, or try a different source.',
-            })
-          }
-
-          if (!response.ok) {
-            return textResult({ error: `HTTP ${response.status}: ${response.statusText}`, url })
-          }
-
-          const contentType = response.headers.get('content-type') || ''
-          let text = await response.text()
-
-          if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
-            text = stripHtmlToText(text)
-          }
-
-          if (text.length > maxChars) {
-            text = text.substring(0, maxChars) + `\n\n[Truncated at ${maxChars} chars]`
-          }
-
-          return textResult({ content: text, status: response.status, bytes: text.length, url })
-        } catch (err: any) {
-          if (attempt < MAX_ATTEMPTS && (err.name === 'TimeoutError' || err.code === 'ECONNRESET')) {
-            await new Promise(r => setTimeout(r, 500))
-            continue
-          }
-          return textResult({ error: err.message, url })
-        }
-      }
-
-      return textResult({ error: 'All fetch attempts failed', url })
-    },
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Serper.dev Web Search
 // ---------------------------------------------------------------------------
@@ -282,6 +212,7 @@ const SERPER_ENDPOINTS: Record<string, string> = {
   news: 'https://google.serper.dev/news',
   images: 'https://google.serper.dev/images',
   places: 'https://google.serper.dev/places',
+  maps: 'https://google.serper.dev/maps',
   shopping: 'https://google.serper.dev/shopping',
 }
 
@@ -331,7 +262,7 @@ function formatSerperResults(raw: SerperResponse, searchType: string): string {
     parts.push(kgParts.join('\n'))
   }
 
-  if (searchType === 'search' && raw.organic?.length) {
+  if ((searchType === 'search' || searchType === 'maps') && raw.organic?.length) {
     parts.push('**Search Results:**')
     for (const r of raw.organic.slice(0, 10)) {
       const entry = [`${r.position ?? ''}. **${r.title}**`, r.link, r.snippet].filter(Boolean).join('\n   ')
@@ -346,7 +277,7 @@ function formatSerperResults(raw: SerperResponse, searchType: string): string {
     }
   }
 
-  if (searchType === 'places' && raw.places?.length) {
+  if ((searchType === 'places' || searchType === 'maps') && raw.places?.length) {
     parts.push('**Places:**')
     for (const p of raw.places.slice(0, 10)) {
       parts.push(`- **${p.title}** — ${p.address || 'N/A'} (${p.rating ?? '?'}/5, ${p.ratingCount ?? 0} reviews)`)
@@ -374,69 +305,246 @@ function formatSerperResults(raw: SerperResponse, searchType: string): string {
   return parts.join('\n\n') || 'No results found.'
 }
 
-function createWebSearchTool(): AgentTool {
+// ---------------------------------------------------------------------------
+// Google URL → Serper routing
+// ---------------------------------------------------------------------------
+
+interface GoogleUrlRoute {
+  query: string
+  searchType: string
+}
+
+/**
+ * Detects Google property URLs that won't return useful content via raw HTTP
+ * fetch (Maps, Flights, Shopping) and converts them into Serper API queries.
+ */
+function detectGoogleUrl(url: string): GoogleUrlRoute | null {
+  let u: URL
+  try { u = new URL(url) } catch { return null }
+
+  const host = u.hostname.replace('www.', '')
+  if (host !== 'google.com' && !host.endsWith('.google.com')) return null
+
+  const path = u.pathname
+
+  // Maps directions: /maps/dir/ORIGIN/DESTINATION
+  const dirMatch = path.match(/^\/maps\/dir\/([^/]+)\/([^/]+)/)
+  if (dirMatch) {
+    const origin = decodeURIComponent(dirMatch[1]).replace(/\+/g, ' ')
+    const dest = decodeURIComponent(dirMatch[2]).replace(/\+/g, ' ')
+    return { query: `directions from ${origin} to ${dest}`, searchType: 'search' }
+  }
+
+  // Maps place: /maps/place/PLACE
+  const placeMatch = path.match(/^\/maps\/place\/([^/@]+)/)
+  if (placeMatch) {
+    return { query: decodeURIComponent(placeMatch[1]).replace(/\+/g, ' '), searchType: 'places' }
+  }
+
+  // Maps search: /maps/search/QUERY
+  const mapSearchMatch = path.match(/^\/maps\/search\/([^/@]+)/)
+  if (mapSearchMatch) {
+    return { query: decodeURIComponent(mapSearchMatch[1]).replace(/\+/g, ' '), searchType: 'places' }
+  }
+
+  // Maps with ?q= parameter
+  if (path.startsWith('/maps') && u.searchParams.get('q')) {
+    return { query: u.searchParams.get('q')!, searchType: 'places' }
+  }
+
+  // Flights: /travel/flights
+  if (path.startsWith('/travel/flights')) {
+    const q = u.searchParams.get('q')
+    if (q) return { query: q, searchType: 'search' }
+    const tfs = u.searchParams.get('tfs')
+    return { query: tfs ? `flights ${tfs}` : 'flights', searchType: 'search' }
+  }
+
+  // Shopping: /shopping
+  if (path.startsWith('/shopping')) {
+    const q = u.searchParams.get('q') || 'shopping'
+    return { query: q, searchType: 'shopping' }
+  }
+
+  return null
+}
+
+const MIN_USEFUL_CONTENT_LENGTH = 200
+
+// ---------------------------------------------------------------------------
+// Unified Web Tool (fetch + search + smart Google routing)
+// ---------------------------------------------------------------------------
+
+async function serperSearch(
+  query: string,
+  searchType: string,
+  opts: { num?: number; gl?: string; hl?: string } = {},
+): Promise<AgentToolResult<any>> {
+  const apiKey = process.env.SERPER_API_KEY
+  if (!apiKey) {
+    return textResult({
+      error: 'SERPER_API_KEY not configured. Web search is unavailable.',
+      suggestion: 'Set the SERPER_API_KEY environment variable to enable Google search.',
+    })
+  }
+
+  const { num = 10, gl = 'us', hl = 'en' } = opts
+  const endpoint = SERPER_ENDPOINTS[searchType] || SERPER_ENDPOINTS.search
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'X-API-KEY': apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ q: query, num, gl, hl }),
+      signal: AbortSignal.timeout(15000),
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return textResult({ error: `Serper API error: HTTP ${response.status}`, details: errorText, query })
+    }
+
+    const data = (await response.json()) as SerperResponse
+    const formatted = formatSerperResults(data, searchType)
+
+    return textResult({
+      results: formatted,
+      raw: data,
+      query,
+      searchType,
+      creditsUsed: data.credits,
+    })
+  } catch (err: any) {
+    return textResult({ error: `Web search failed: ${err.message}`, query })
+  }
+}
+
+async function rawFetch(url: string, maxChars: number): Promise<AgentToolResult<any>> {
+  const headers: Record<string, string> = {
+    'User-Agent': BROWSER_USER_AGENT,
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,application/json,text/plain;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+  }
+
+  const MAX_ATTEMPTS = 2
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const response = await fetch(url, {
+        headers,
+        signal: AbortSignal.timeout(WEB_FETCH_TIMEOUT_MS),
+        redirect: 'follow',
+      })
+
+      if (response.status === 403 || response.status === 429) {
+        if (attempt < MAX_ATTEMPTS) {
+          await new Promise(r => setTimeout(r, 1000))
+          continue
+        }
+        return textResult({
+          error: `HTTP ${response.status}: Access denied or rate limited. The site may block automated requests.`,
+          url,
+          suggestion: 'Try again with a query instead of a URL, or try a different source.',
+        })
+      }
+
+      if (!response.ok) {
+        return textResult({ error: `HTTP ${response.status}: ${response.statusText}`, url })
+      }
+
+      const contentType = response.headers.get('content-type') || ''
+      let text = await response.text()
+
+      if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
+        text = stripHtmlToText(text)
+      }
+
+      if (text.length > maxChars) {
+        text = text.substring(0, maxChars) + `\n\n[Truncated at ${maxChars} chars]`
+      }
+
+      return textResult({ content: text, status: response.status, bytes: text.length, url })
+    } catch (err: any) {
+      if (attempt < MAX_ATTEMPTS && (err.name === 'TimeoutError' || err.code === 'ECONNRESET')) {
+        await new Promise(r => setTimeout(r, 500))
+        continue
+      }
+      return textResult({ error: err.message, url })
+    }
+  }
+
+  return textResult({ error: 'All fetch attempts failed', url })
+}
+
+function createWebTool(): AgentTool {
   return {
-    name: 'web_search',
+    name: 'web',
     description:
-      'Search the web using Google via Serper API. Returns structured search results with titles, links, snippets, and rich data (knowledge graph, answer boxes). ' +
-      'Supports search types: "search" (default), "news", "images", "places", "shopping". ' +
-      'For flights, search normally with a query like "flights from LAX to DPS April 20 2026".',
-    label: 'Web Search',
+      'Unified web tool: fetch a URL or search the web via Google (Serper API). ' +
+      'Provide `url` to fetch a page, or `query` to search. Google property URLs (Maps, Flights, Shopping) ' +
+      'are automatically routed through the search API for rich results. ' +
+      'Search types: "search" (default), "news", "images", "places", "maps", "shopping".',
+    label: 'Web',
     parameters: Type.Object({
-      query: Type.String({ description: 'Search query (e.g., "best restaurants in Bali", "flights from LAX to DPS April 2026")' }),
-      searchType: Type.Optional(Type.String({ description: 'Type of search: "search" (default), "news", "images", "places", "shopping"' })),
-      num: Type.Optional(Type.Number({ description: 'Number of results (default: 10, max: 100)' })),
+      url: Type.Optional(Type.String({ description: 'URL to fetch. Google URLs (Maps, Flights, Shopping) are auto-routed to search API.' })),
+      query: Type.Optional(Type.String({ description: 'Search query (e.g., "best restaurants in Bali", "directions from LAX to SFO")' })),
+      searchType: Type.Optional(Type.String({ description: 'Type of search: "search" (default), "news", "images", "places", "maps", "shopping"' })),
+      num: Type.Optional(Type.Number({ description: 'Number of search results (default: 10, max: 100)' })),
       gl: Type.Optional(Type.String({ description: 'Country code for localized results (e.g., "us", "uk", "id")' })),
       hl: Type.Optional(Type.String({ description: 'Language code (e.g., "en", "id", "fr")' })),
+      maxChars: Type.Optional(Type.Number({ description: 'Maximum characters for URL fetch (default: 50000)' })),
     }),
     execute: async (_toolCallId, params) => {
       const {
+        url,
         query,
         searchType = 'search',
         num = 10,
         gl = 'us',
         hl = 'en',
-      } = params as { query: string; searchType?: string; num?: number; gl?: string; hl?: string }
-
-      const apiKey = process.env.SERPER_API_KEY
-      if (!apiKey) {
-        return textResult({
-          error: 'SERPER_API_KEY not configured. Web search is unavailable.',
-          suggestion: 'Set the SERPER_API_KEY environment variable to enable Google search.',
-        })
+        maxChars = 50000,
+      } = params as {
+        url?: string; query?: string; searchType?: string
+        num?: number; gl?: string; hl?: string; maxChars?: number
       }
 
-      const endpoint = SERPER_ENDPOINTS[searchType] || SERPER_ENDPOINTS.search
+      if (!url && !query) {
+        return textResult({ error: 'Provide either `url` (to fetch a page) or `query` (to search the web).' })
+      }
 
-      try {
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'X-API-KEY': apiKey,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ q: query, num, gl, hl }),
-          signal: AbortSignal.timeout(15000),
-        })
-
-        if (!response.ok) {
-          const errorText = await response.text().catch(() => '')
-          return textResult({ error: `Serper API error: HTTP ${response.status}`, details: errorText, query })
+      // If a URL is provided, check for Google property routing first
+      if (url) {
+        const googleRoute = detectGoogleUrl(url)
+        if (googleRoute) {
+          return serperSearch(googleRoute.query, googleRoute.searchType, { num, gl, hl })
         }
 
-        const data = (await response.json()) as SerperResponse
-        const formatted = formatSerperResults(data, searchType)
+        // Raw fetch for non-Google URLs
+        const result = await rawFetch(url, maxChars)
+        const details = result.details
 
-        return textResult({
-          results: formatted,
-          raw: data,
-          query,
-          searchType,
-          creditsUsed: data.credits,
-        })
-      } catch (err: any) {
-        return textResult({ error: `Web search failed: ${err.message}`, query })
+        // If the page returned very little useful content, fallback to Serper
+        if (
+          !details?.error &&
+          typeof details?.content === 'string' &&
+          details.content.trim().length < MIN_USEFUL_CONTENT_LENGTH &&
+          process.env.SERPER_API_KEY
+        ) {
+          const fallbackQuery = query || url
+          const fallback = await serperSearch(fallbackQuery, searchType, { num, gl, hl })
+          fallback.details._note = `Raw fetch returned minimal content (${details.content.trim().length} chars); fell back to search.`
+          fallback.details._originalUrl = url
+          return fallback
+        }
+
+        return result
       }
+
+      // Pure search path
+      return serperSearch(query!, searchType, { num, gl, hl })
     },
   }
 }
@@ -2517,10 +2625,11 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   shell: ['exec'],
   filesystem: ['read_file', 'write_file'],
   files: ['list_files', 'delete_file', 'search_files', 'read_file', 'write_file'],
-  web_fetch: ['web_fetch'],
-  web_search: ['web_search', 'web_fetch'],
+  web: ['web'],
+  web_fetch: ['web'],
+  web_search: ['web'],
   browser: [
-    'browser',
+    'browser', 'web',
     'mcp_playwright_browser_navigate', 'mcp_playwright_browser_snapshot',
     'mcp_playwright_browser_click', 'mcp_playwright_browser_type',
     'mcp_playwright_browser_screenshot', 'mcp_playwright_browser_close',
@@ -2536,7 +2645,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
 }
 
 export const ALL_TOOL_NAMES = [
-  'exec', 'read_file', 'write_file', 'web_fetch', 'web_search', 'browser',
+  'exec', 'read_file', 'write_file', 'web', 'browser',
   'list_files', 'delete_file', 'search_files',
   'memory_read', 'memory_write', 'memory_search', 'send_message', 'channel_connect', 'cron',
   'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_action_wait', 'canvas_components',
@@ -2793,8 +2902,7 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createListFilesTool(ctx),
     createDeleteFileTool(ctx),
     createSearchFilesTool(ctx),
-    createWebFetchTool(),
-    createWebSearchTool(),
+    createWebTool(),
     createBrowserTool(ctx),
     createMemoryReadTool(ctx),
     createMemoryWriteTool(ctx),
@@ -2833,8 +2941,7 @@ export function createBasicTools(ctx: ToolContext): AgentTool[] {
     createListFilesTool(ctx),
     createDeleteFileTool(ctx),
     createSearchFilesTool(ctx),
-    createWebFetchTool(),
-    createWebSearchTool(),
+    createWebTool(),
     createBrowserTool(ctx),
     createMemoryReadTool(ctx),
     createMemoryWriteTool(ctx),
@@ -2865,8 +2972,7 @@ export function createHeartbeatTools(ctx: ToolContext): AgentTool[] {
   return [
     createReadFileTool(ctx),
     createWriteFileTool(ctx),
-    createWebFetchTool(),
-    createWebSearchTool(),
+    createWebTool(),
     createBrowserTool(ctx),
     createMemoryReadTool(ctx),
     createMemoryWriteTool(ctx),

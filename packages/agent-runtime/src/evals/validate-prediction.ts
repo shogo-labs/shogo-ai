@@ -408,7 +408,7 @@ function validateSkill(input: Record<string, unknown>): ValidationResult {
 
   // Tools are valid
   const VALID_TOOLS = new Set([
-    'exec', 'read_file', 'write_file', 'web_fetch',
+    'exec', 'read_file', 'write_file', 'web',
     'memory_read', 'memory_write', 'memory_search',
     'browser', 'send_message', 'cron',
     'canvas_create', 'canvas_update', 'canvas_data',
@@ -443,7 +443,7 @@ function validateMultiturnPlan(input: Record<string, unknown>): ValidationResult
   const canBatch = Boolean(input.can_batch)
 
   const VALID_TOOLS = new Set([
-    'exec', 'read_file', 'write_file', 'web_fetch',
+    'exec', 'read_file', 'write_file', 'web',
     'memory_read', 'memory_write', 'memory_search',
     'browser', 'send_message', 'cron',
     'canvas_create', 'canvas_update', 'canvas_data',

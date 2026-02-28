@@ -3,7 +3,7 @@ name: meeting-prep
 version: 1.0.0
 description: Prepare for meetings with agenda, attendee context, and background research
 trigger: "prep for meeting|meeting prep|prepare for|brief me on"
-tools: [read_file, web_fetch, memory_search]
+tools: [read_file, web, memory_search]
 ---
 
 # Meeting Prep

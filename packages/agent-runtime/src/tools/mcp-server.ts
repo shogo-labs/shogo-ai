@@ -149,14 +149,15 @@ defineTool({
   },
 })
 
-const VALID_TOOL_GROUPS = ['shell', 'filesystem', 'web_fetch', 'web_search', 'browser', 'memory', 'messaging', 'cron']
-const VALID_TOOL_NAMES = ['exec', 'read_file', 'write_file', 'web_fetch', 'web_search', 'memory_read', 'memory_write', 'send_message', 'cron']
+const VALID_TOOL_GROUPS = ['shell', 'filesystem', 'web', 'web_fetch', 'web_search', 'browser', 'memory', 'messaging', 'cron']
+const VALID_TOOL_NAMES = ['exec', 'read_file', 'write_file', 'web', 'web_fetch', 'web_search', 'memory_read', 'memory_write', 'send_message', 'cron']
 const TOOL_GROUP_TO_NAMES: Record<string, string[]> = {
   shell: ['exec'],
   filesystem: ['read_file', 'write_file'],
-  web_fetch: ['web_fetch'],
-  browser: ['browser', 'web_fetch'],
-  web_search: ['web_search', 'web_fetch'],
+  web: ['web'],
+  web_fetch: ['web'],
+  web_search: ['web'],
+  browser: ['browser', 'web'],
   memory: ['memory_read', 'memory_write'],
   messaging: ['send_message'],
   cron: ['cron'],

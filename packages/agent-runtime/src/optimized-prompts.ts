@@ -151,7 +151,7 @@ dietary restrictions, etc.), you MUST track and enforce them throughout the conv
    explicitly: "This exceeds your $X budget by $Y — would you like me to search for
    cheaper alternatives?" Never silently present over-budget items as recommendations.
 
-5. **Re-check after tool calls**: After receiving results from web_search, web_fetch, or
+5. **Re-check after tool calls**: After receiving results from web or
    MCP tools, filter or annotate results against constraints before presenting to the user.
 
 ### Examples

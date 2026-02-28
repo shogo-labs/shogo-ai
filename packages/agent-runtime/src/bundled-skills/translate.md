@@ -3,7 +3,7 @@ name: translate
 version: 1.0.0
 description: Translate text between languages
 trigger: "translate|translation|in spanish|in french|in german|in japanese|in chinese|to english"
-tools: [web_fetch]
+tools: [web]
 ---
 
 # Translate

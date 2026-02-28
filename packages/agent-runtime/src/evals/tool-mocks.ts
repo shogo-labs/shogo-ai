@@ -56,7 +56,7 @@ const DEFAULT_MCP_FALLBACK: ToolMockSpec = {
 // ---------------------------------------------------------------------------
 
 export const COMPETITIVE_INTEL_MOCKS: ToolMockMap = {
-  web_fetch: {
+  web: {
     type: 'pattern',
     patterns: [
       {
@@ -213,7 +213,7 @@ export const GITHUB_TRIAGE_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const NEWS_BRIEF_MOCKS: ToolMockMap = {
-  web_fetch: {
+  web: {
     type: 'pattern',
     patterns: [
       {
@@ -288,7 +288,7 @@ export const NEWS_BRIEF_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const API_HEALTH_MOCKS: ToolMockMap = {
-  web_fetch: {
+  web: {
     type: 'pattern',
     patterns: [
       {
@@ -402,7 +402,7 @@ export const MEETING_PREP_MOCKS: ToolMockMap = {
       },
     ],
   },
-  web_fetch: {
+  web: {
     type: 'pattern',
     patterns: [
       {
@@ -988,7 +988,7 @@ export const INVESTOR_MEETING_PREP_MOCKS: ToolMockMap = {
       rowCount: 8,
     },
   },
-  web_fetch: {
+  web: {
     type: 'pattern',
     patterns: [
       {
@@ -2559,7 +2559,7 @@ export const TOOL_BIND_AT_INSTALL_MOCKS: ToolMockMap = {
  * MCP tool mocks come from each eval's `toolMocks` field.
  */
 const BUILTIN_MOCKS: ToolMockMap = {
-  web_fetch: DEFAULT_WEB_FETCH,
+  web: DEFAULT_WEB_FETCH,
   exec: DEFAULT_EXEC,
   send_message: DEFAULT_SEND_MESSAGE,
   browser: { type: 'static', response: { ok: true, snapshot: '<html>Mock browser snapshot</html>' } },

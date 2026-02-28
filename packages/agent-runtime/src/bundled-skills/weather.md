@@ -3,7 +3,7 @@ name: weather
 version: 1.0.0
 description: Get current weather and forecast for a location
 trigger: "weather|forecast|temperature|how hot|how cold|rain today"
-tools: [web_fetch]
+tools: [web]
 ---
 
 # Weather
@@ -12,8 +12,8 @@ When the user asks about weather:
 
 1. **Identify location** from the message (city, zip code, or region)
 2. **Fetch weather data** using wttr.in (no API key needed):
-   - Current: `web_fetch("https://wttr.in/LOCATION?format=j1")`
-   - Simple: `web_fetch("https://wttr.in/LOCATION?format=3")`
+   - Current: `web("https://wttr.in/LOCATION?format=j1")`
+   - Simple: `web("https://wttr.in/LOCATION?format=3")`
 3. **Present** current conditions and forecast
 
 ## Output Format
