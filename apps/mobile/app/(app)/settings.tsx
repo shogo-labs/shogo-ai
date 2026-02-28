@@ -22,6 +22,7 @@ import {
   ActivityIndicator,
   Alert as RNAlert,
   Linking,
+  Platform,
   useWindowDimensions,
 } from 'react-native'
 import { useRouter, useLocalSearchParams } from 'expo-router'
@@ -58,10 +59,23 @@ import {
   useWorkspaceCollection,
   useMemberCollection,
   useInvitationCollection,
+  useDomainHttp,
   type IDomainStore,
 } from '../../contexts/domain'
 import { useDomainActions } from '@shogo/shared-app/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
+import {
+  PRO_TIERS,
+  BUSINESS_TIERS,
+  PRO_FEATURES,
+  BUSINESS_FEATURES,
+  ENTERPRISE_FEATURES,
+  BASE_TIER_CREDITS,
+  getTotalCreditsForPlan as getBillingCreditsTotal,
+  formatCredits,
+} from '../../lib/billing-config'
+import { TierSelector } from '../../components/billing/TierSelector'
+import { FeatureList } from '../../components/billing/FeatureList'
 import {
   Card,
   CardContent,
@@ -109,7 +123,7 @@ function TabBar({
       horizontal
       showsHorizontalScrollIndicator={false}
       className="border-b border-border"
-      contentContainerStyle={{ paddingHorizontal: 16 }}
+      contentContainerClassName="px-4"
     >
       {MOBILE_NAV_ITEMS.map((item) => {
         const Icon = item.icon
@@ -201,9 +215,9 @@ function SettingsSidebar({
   ]
 
   return (
-    <View style={{ width: 210 }} className="pt-4 pb-3 px-3">
+    <View className="w-[210px] pt-4 pb-3 px-3">
       <Pressable
-        onPress={() => router.back()}
+        onPress={() => router.canGoBack() ? router.back() : router.replace('/(app)/projects')}
         className="flex-row items-center gap-1 px-2 py-1.5 mb-4"
       >
         <ArrowLeft size={14} className="text-muted-foreground" />
@@ -368,7 +382,7 @@ function WorkspaceSettingsTab() {
 
           {/* Name */}
           <View className="px-6 py-5 flex-row items-start justify-between">
-            <View style={{ flex: 0.45 }} className="mr-4 pt-1">
+            <View className="flex-[0.45] mr-4 pt-1">
               <Text className="text-base font-semibold text-foreground">
                 Name
               </Text>
@@ -376,7 +390,7 @@ function WorkspaceSettingsTab() {
                 Your full workspace name, as visible to others.
               </Text>
             </View>
-            <View style={{ flex: 0.55 }}>
+            <View className="flex-[0.55]">
               <View className="flex-row gap-2 items-start">
                 <View className="flex-1">
                   <Input
@@ -432,7 +446,7 @@ function WorkspaceSettingsTab() {
 
           {/* Default monthly member credit limit */}
           <View className="px-6 py-5 flex-row items-start justify-between">
-            <View style={{ flex: 0.45 }} className="mr-4 pt-1">
+            <View className="flex-[0.45] mr-4 pt-1">
               <Text className="text-base font-semibold text-foreground">
                 Default monthly member credit limit
               </Text>
@@ -440,7 +454,7 @@ function WorkspaceSettingsTab() {
                 The default monthly credit limit for members of this workspace. Leave empty to use no limit.
               </Text>
             </View>
-            <View style={{ flex: 0.55 }}>
+            <View className="flex-[0.55]">
               <Input
                 placeholder="Enter default monthly member credit limit (optional)"
               />
@@ -560,20 +574,20 @@ function WorkspaceSettingsTab() {
 // ACCOUNT TAB
 // ============================================================================
 
+const CHAT_SUGGESTIONS_KEY = 'shogo:chat-suggestions'
+
 function AccountTab() {
-  const { user, signOut } = useAuth()
+  const { user, signOut, updateUser } = useAuth()
+  const http = useDomainHttp()
   const router = useRouter()
 
-  const PROFILE_KEY = 'shogo:account-profile'
-  const PREFS_KEY = 'shogo:account-prefs'
-
   const [name, setName] = useState(user?.name || '')
-  const [description, setDescription] = useState('')
-  const [location, setLocation] = useState('')
-  const [link, setLink] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
   const [chatSuggestions, setChatSuggestions] = useState(true)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [deleteConfirmText, setDeleteConfirmText] = useState('')
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
 
   const originalName = user?.name || ''
   const hasNameChanges = name !== originalName
@@ -583,12 +597,27 @@ function AccountTab() {
     setName(user?.name || '')
   }, [user?.name])
 
+  useEffect(() => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      const stored = window.localStorage.getItem(CHAT_SUGGESTIONS_KEY)
+      if (stored !== null) setChatSuggestions(stored !== 'false')
+    }
+  }, [])
+
+  const handleToggleChatSuggestions = useCallback((value: boolean) => {
+    setChatSuggestions(value)
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      window.localStorage.setItem(CHAT_SUGGESTIONS_KEY, String(value))
+    }
+  }, [])
+
   const handleSave = async () => {
     if (!hasChanges || isSaving || !user?.id) return
     if (hasNameChanges && !name.trim()) return
     setIsSaving(true)
     setSaveStatus('idle')
     try {
+      await updateUser({ name: name.trim() })
       setSaveStatus('saved')
       setTimeout(() => setSaveStatus('idle'), 2000)
     } catch (error) {
@@ -602,6 +631,43 @@ function AccountTab() {
   const handleSignOut = async () => {
     await signOut()
     router.replace('/(auth)/sign-in')
+  }
+
+  const handleDeleteAccount = async () => {
+    if (deleteConfirmText !== 'DELETE' || !user?.id || !http) return
+    setIsDeleting(true)
+    try {
+      await http.delete(`/api/users/${user.id}`)
+      await signOut()
+      router.replace('/(auth)/sign-in')
+    } catch (error) {
+      console.error('Failed to delete account:', error)
+      if (Platform.OS === 'web') {
+        window.alert('Failed to delete account. Please try again.')
+      } else {
+        RNAlert.alert('Error', 'Failed to delete account. Please try again.')
+      }
+    } finally {
+      setIsDeleting(false)
+      setIsDeleteDialogOpen(false)
+      setDeleteConfirmText('')
+    }
+  }
+
+  const handleLinkCompany = () => {
+    if (Platform.OS === 'web') {
+      window.alert('SSO linking is coming soon.')
+    } else {
+      RNAlert.alert('Coming Soon', 'SSO linking is coming soon.')
+    }
+  }
+
+  const handleVerify2FA = () => {
+    if (Platform.OS === 'web') {
+      window.alert('Two-factor authentication is coming soon.')
+    } else {
+      RNAlert.alert('Coming Soon', 'Two-factor authentication is coming soon.')
+    }
   }
 
   return (
@@ -755,7 +821,7 @@ function AccountTab() {
             </View>
             <Switch
               checked={chatSuggestions}
-              onCheckedChange={setChatSuggestions}
+              onCheckedChange={handleToggleChatSuggestions}
             />
           </View>
         </CardContent>
@@ -802,7 +868,7 @@ function AccountTab() {
                     Use your organization's single sign-on
                   </Text>
                 </View>
-                <Button variant="outline" size="sm">
+                <Button variant="outline" size="sm" onPress={handleLinkCompany}>
                   Link
                 </Button>
               </View>
@@ -831,7 +897,7 @@ function AccountTab() {
                   settings.
                 </Text>
               </View>
-              <Button variant="outline" size="sm">
+              <Button variant="outline" size="sm" onPress={handleVerify2FA}>
                 Verify
               </Button>
             </View>
@@ -840,18 +906,61 @@ function AccountTab() {
           <Separator />
 
           {/* Delete account */}
-          <View className="px-6 py-5 flex-row items-center justify-between">
-            <View className="flex-1 mr-4">
-              <Text className="text-sm font-semibold text-foreground">
-                Delete account
-              </Text>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                Permanently delete your Shogo account. This cannot be undone.
-              </Text>
+          <View className="px-6 py-5">
+            <View className="flex-row items-center justify-between">
+              <View className="flex-1 mr-4">
+                <Text className="text-sm font-semibold text-foreground">
+                  Delete account
+                </Text>
+                <Text className="text-sm text-muted-foreground mt-0.5">
+                  Permanently delete your Shogo account. This cannot be undone.
+                </Text>
+              </View>
+              <Button
+                variant="destructive"
+                size="sm"
+                onPress={() => setIsDeleteDialogOpen(true)}
+              >
+                Delete
+              </Button>
             </View>
-            <Button variant="destructive" size="sm">
-              Delete
-            </Button>
+            {isDeleteDialogOpen && (
+              <View className="mt-4 p-4 border border-destructive/30 rounded-lg bg-destructive/5">
+                <Text className="text-sm text-foreground font-medium">
+                  Are you sure? This action is irreversible.
+                </Text>
+                <Text className="text-sm text-muted-foreground mt-1">
+                  Type "DELETE" to confirm.
+                </Text>
+                <Input
+                  className="mt-2"
+                  value={deleteConfirmText}
+                  onChangeText={setDeleteConfirmText}
+                  placeholder='Type "DELETE"'
+                />
+                <View className="flex-row gap-2 mt-3">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onPress={() => {
+                      setIsDeleteDialogOpen(false)
+                      setDeleteConfirmText('')
+                    }}
+                    disabled={isDeleting}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onPress={handleDeleteAccount}
+                    disabled={deleteConfirmText !== 'DELETE' || isDeleting}
+                  >
+                    {isDeleting ? 'Deleting...' : 'Permanently delete'}
+                  </Button>
+                </View>
+              </View>
+            )}
           </View>
         </CardContent>
       </Card>
@@ -891,175 +1000,296 @@ function AccountTab() {
 }
 
 // ============================================================================
-// BILLING TAB
+// BILLING TAB — Lovable-style layout
 // ============================================================================
 
-const PLAN_CREDITS: Record<string, number> = {
-  free: 0,
-  starter: 50,
-  pro: 200,
-  team: 500,
-  enterprise: 2000,
-}
-
-const DAILY_CREDITS: Record<string, number> = {
-  free: 5,
-  starter: 10,
-  pro: 25,
-  team: 50,
-  enterprise: 100,
-}
-
-function getTotalCreditsForPlan(
-  planId: string | undefined,
-  planCredits: Record<string, number>,
-  dailyCredits: Record<string, number>
-): number {
-  if (!planId) return (planCredits['free'] || 0) + (dailyCredits['free'] || 0)
-  return (planCredits[planId] || 0) + (dailyCredits[planId] || 0)
-}
-
-function formatCredits(n: number): string {
-  return n % 1 === 0 ? n.toString() : n.toFixed(1)
-}
-
 function BillingTab() {
+  const { user } = useAuth()
+  const actions = useDomainActions()
   const workspaces = useWorkspaceCollection()
   const currentWorkspace = workspaces.all.length > 0 ? workspaces.all[0] : null
 
   const {
     subscription,
     effectiveBalance,
-    hasActiveSubscription,
     isLoading: isBillingLoading,
   } = useBillingData(currentWorkspace?.id)
 
-  const planType = subscription
+  const [selectedProTier, setSelectedProTier] = useState(0)
+  const [selectedBusinessTier, setSelectedBusinessTier] = useState(0)
+  const [proAnnual, setProAnnual] = useState(false)
+  const [businessAnnual, setBusinessAnnual] = useState(false)
+  const [isCheckoutLoading, setIsCheckoutLoading] = useState<string | null>(null)
+  const [isPortalLoading, setIsPortalLoading] = useState(false)
+
+  const planLabel = subscription
     ? subscription.planId.charAt(0).toUpperCase() + subscription.planId.slice(1)
     : 'Free'
 
-  const creditsTotal = getTotalCreditsForPlan(
-    subscription?.planId,
-    PLAN_CREDITS,
-    DAILY_CREDITS
-  )
+  const creditsTotal = getBillingCreditsTotal(subscription?.planId)
   const creditsRemaining = effectiveBalance?.total ?? creditsTotal
+
+  const proTier = PRO_TIERS[selectedProTier]
+  const businessTier = BUSINESS_TIERS[selectedBusinessTier]
+
+  const handleCheckout = useCallback(
+    async (planType: 'pro' | 'business', credits: number, annual: boolean) => {
+      if (!currentWorkspace?.id) return
+      setIsCheckoutLoading(planType)
+      try {
+        const planId = credits === BASE_TIER_CREDITS ? planType : `${planType}_${credits}`
+        const data = await actions.createCheckoutSession({
+          workspaceId: currentWorkspace.id,
+          planId,
+          billingInterval: annual ? 'annual' : 'monthly',
+          userEmail: user?.email,
+        })
+        if (data.url) {
+          if (Platform.OS === 'web') {
+            window.location.href = data.url
+          } else {
+            Linking.openURL(data.url)
+          }
+        }
+      } catch (e) {
+        console.warn('Checkout failed:', e)
+      } finally {
+        setIsCheckoutLoading(null)
+      }
+    },
+    [actions, currentWorkspace?.id, user?.email],
+  )
+
+  const handleManageSubscription = useCallback(async () => {
+    if (!currentWorkspace?.id) return
+    setIsPortalLoading(true)
+    try {
+      const returnUrl = Platform.OS === 'web' ? window.location.href : undefined
+      const data = await actions.createPortalSession(currentWorkspace.id, returnUrl)
+      if (data.url) {
+        if (Platform.OS === 'web') {
+          window.location.href = data.url
+        } else {
+          Linking.openURL(data.url)
+        }
+      }
+    } catch (e) {
+      console.warn('Portal session failed:', e)
+    } finally {
+      setIsPortalLoading(false)
+    }
+  }, [actions, currentWorkspace?.id])
 
   if (isBillingLoading) {
     return (
       <View className="items-center justify-center py-20">
         <ActivityIndicator />
-        <Text className="mt-2 text-sm text-muted-foreground">
-          Loading billing...
-        </Text>
+        <Text className="mt-2 text-sm text-muted-foreground">Loading billing...</Text>
       </View>
     )
   }
 
   return (
     <View className="gap-8">
+      {/* Header */}
       <View>
-        <Text className="text-xl font-semibold text-foreground">
-          Plans & credits
-        </Text>
+        <Text className="text-xl font-semibold text-foreground">Plans & credits</Text>
         <Text className="text-sm text-muted-foreground mt-1">
           Manage your subscription plan and credit balance.
         </Text>
       </View>
 
-      {/* Current plan */}
-      <Card>
-        <CardContent className="p-5">
-          <View className="flex-row items-center gap-3">
-            <View className="h-10 w-10 rounded-lg bg-primary/10 items-center justify-center">
-              <Sparkles size={20} className="text-primary" />
+      {/* Current plan + Credits remaining — side-by-side on desktop */}
+      <View className="gap-4 md:flex-row">
+        <Card className="md:flex-1">
+          <CardContent className="p-5 gap-4">
+            <View className="flex-row items-center gap-3">
+              <View className="h-10 w-10 rounded-lg bg-primary/10 items-center justify-center">
+                <Sparkles size={20} className="text-primary" />
+              </View>
+              <View className="flex-1">
+                <Text className="text-sm font-semibold text-foreground">
+                  You're on {planLabel} Plan
+                </Text>
+                <Text className="text-sm text-muted-foreground">Upgrade anytime</Text>
+              </View>
             </View>
-            <View className="flex-1">
-              <Text className="text-sm font-semibold text-foreground">
-                You're on {planType} Plan
-              </Text>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                {subscription ? 'Manage your subscription' : 'Upgrade anytime'}
-              </Text>
-            </View>
-          </View>
-        </CardContent>
-      </Card>
+            <Button
+              variant="outline"
+              size="sm"
+              onPress={handleManageSubscription}
+              disabled={isPortalLoading}
+              className="self-start"
+            >
+              {isPortalLoading ? 'Loading...' : 'Manage'}
+            </Button>
+          </CardContent>
+        </Card>
 
-      {/* Credits */}
-      <Card>
-        <CardContent className="p-5 gap-3">
-          <View className="flex-row justify-between">
-            <Text className="text-sm text-muted-foreground">
-              Credits remaining
-            </Text>
-            <Text className="text-sm font-medium text-foreground">
-              {formatCredits(creditsRemaining)} of {creditsTotal}
-            </Text>
-          </View>
-          <Progress
-            value={(creditsRemaining / Math.max(creditsTotal, 1)) * 100}
-            className="h-2"
-          />
-          {effectiveBalance && (
-            <Text className="text-xs text-muted-foreground">
-              Daily: {formatCredits(effectiveBalance.dailyCredits)} · Monthly:{' '}
-              {formatCredits(effectiveBalance.monthlyCredits)}
-            </Text>
-          )}
-          <View className="gap-1">
-            <View className="flex-row items-center gap-2">
-              {subscription ? (
-                <>
-                  <Check size={12} className="text-foreground" />
-                  <Text className="text-xs text-muted-foreground">
-                    Credits rollover to next month
-                  </Text>
-                </>
-              ) : (
+        <Card className="md:flex-1">
+          <CardContent className="p-5 gap-3">
+            <View className="flex-row justify-between items-center">
+              <Text className="text-sm text-muted-foreground">Credits remaining</Text>
+              <Text className="text-sm font-medium text-foreground">
+                {formatCredits(creditsRemaining)} of {creditsTotal}
+              </Text>
+            </View>
+            <Progress
+              value={(creditsRemaining / Math.max(creditsTotal, 1)) * 100}
+              className="h-2"
+            />
+            <View className="gap-1.5">
+              <View className="flex-row items-center gap-2">
+                <View className="h-2 w-2 rounded-full bg-primary" />
+                <Text className="text-xs text-muted-foreground">Daily credits used first</Text>
+              </View>
+              <View className="flex-row items-center gap-2">
+                {subscription ? (
+                  <>
+                    <Check size={12} className="text-foreground" />
+                    <Text className="text-xs text-muted-foreground">Credits will rollover</Text>
+                  </>
+                ) : (
+                  <>
+                    <X size={12} className="text-muted-foreground" />
+                    <Text className="text-xs text-muted-foreground">No credits will rollover</Text>
+                  </>
+                )}
+              </View>
+              <View className="flex-row items-center gap-2">
+                <Check size={12} className="text-foreground" />
                 <Text className="text-xs text-muted-foreground">
-                  × No credits will rollover
+                  Daily credits reset at midnight UTC
                 </Text>
-              )}
+              </View>
             </View>
-            <View className="flex-row items-center gap-2">
-              <Check size={12} className="text-foreground" />
-              <Text className="text-xs text-muted-foreground">
-                Daily credits reset at midnight UTC
-              </Text>
-            </View>
-          </View>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      </View>
 
-      {/* Plan cards */}
-      {(['starter', 'pro', 'team'] as const).map((planId) => {
-        const isCurrentPlan = subscription?.planId === planId
-        return (
-          <Card
-            key={planId}
-            className={isCurrentPlan ? 'border-primary' : undefined}
-          >
-            <CardContent className="p-5 gap-2">
-              <View className="flex-row items-center justify-between">
-                <Text className="text-base font-semibold text-foreground capitalize">
-                  {planId}
+      {/* Plan cards — 3 columns on desktop, stacked on mobile */}
+      <View className="gap-6 md:flex-row md:items-start">
+        {/* Pro */}
+        <Card className="md:flex-1 md:w-0">
+          <CardContent className="p-5 gap-4">
+            <Text className="text-lg font-semibold text-foreground">Pro</Text>
+            <Text className="text-sm text-muted-foreground">
+              Designed for fast-moving teams building together in real time.
+            </Text>
+            <View>
+              <View className="flex-row items-baseline gap-1">
+                <Text className="text-3xl font-bold text-foreground">
+                  ${proAnnual ? Math.round(proTier.annual / 12) : proTier.monthly}
                 </Text>
-                {isCurrentPlan && <Badge>Current</Badge>}
+                <Text className="text-sm text-muted-foreground">per month</Text>
               </View>
               <Text className="text-sm text-muted-foreground">
-                {PLAN_CREDITS[planId]} monthly + {DAILY_CREDITS[planId]} daily
-                credits
+                shared across unlimited users
               </Text>
-              {!isCurrentPlan && (
-                <Button variant="outline" size="sm" className="mt-2">
-                  {subscription ? 'Switch Plan' : 'Upgrade'}
-                </Button>
-              )}
-            </CardContent>
-          </Card>
-        )
-      })}
+            </View>
+            <View className="flex-row items-center gap-2">
+              <Switch checked={proAnnual} onCheckedChange={setProAnnual} />
+              <Text className="text-sm text-foreground">Annual</Text>
+            </View>
+            <Button
+              onPress={() => handleCheckout('pro', proTier.credits, proAnnual)}
+              disabled={isCheckoutLoading !== null || subscription?.planId?.startsWith('pro')}
+            >
+              {isCheckoutLoading === 'pro'
+                ? 'Loading...'
+                : subscription?.planId?.startsWith('pro')
+                  ? 'Current Plan'
+                  : 'Upgrade'}
+            </Button>
+            <TierSelector
+              tiers={PRO_TIERS}
+              selectedIndex={selectedProTier}
+              onSelect={setSelectedProTier}
+              suffix=" / month"
+            />
+            <View className="gap-2">
+              <Text className="text-sm text-muted-foreground">
+                All features in Free, plus:
+              </Text>
+              <FeatureList features={PRO_FEATURES} />
+            </View>
+          </CardContent>
+        </Card>
+
+        {/* Business */}
+        <Card className="md:flex-1 md:w-0">
+          <CardContent className="p-5 gap-4">
+            <Text className="text-lg font-semibold text-foreground">Business</Text>
+            <Text className="text-sm text-muted-foreground">
+              Advanced controls and power features for growing departments
+            </Text>
+            <View>
+              <View className="flex-row items-baseline gap-1">
+                <Text className="text-3xl font-bold text-foreground">
+                  ${businessAnnual ? Math.round(businessTier.annual / 12) : businessTier.monthly}
+                </Text>
+                <Text className="text-sm text-muted-foreground">per month</Text>
+              </View>
+              <Text className="text-sm text-muted-foreground">
+                shared across unlimited users
+              </Text>
+            </View>
+            <View className="flex-row items-center gap-2">
+              <Switch checked={businessAnnual} onCheckedChange={setBusinessAnnual} />
+              <Text className="text-sm text-foreground">Annual</Text>
+            </View>
+            <Button
+              variant="outline"
+              onPress={() => handleCheckout('business', businessTier.credits, businessAnnual)}
+              disabled={isCheckoutLoading !== null || subscription?.planId?.startsWith('business')}
+            >
+              {isCheckoutLoading === 'business'
+                ? 'Loading...'
+                : subscription?.planId?.startsWith('business')
+                  ? 'Current Plan'
+                  : 'Upgrade'}
+            </Button>
+            <TierSelector
+              tiers={BUSINESS_TIERS}
+              selectedIndex={selectedBusinessTier}
+              onSelect={setSelectedBusinessTier}
+              suffix=" / month"
+            />
+            <View className="gap-2">
+              <Text className="text-sm text-muted-foreground">
+                All features in Pro, plus:
+              </Text>
+              <FeatureList features={BUSINESS_FEATURES} />
+            </View>
+          </CardContent>
+        </Card>
+
+        {/* Enterprise */}
+        <Card className="md:flex-1 md:w-0">
+          <CardContent className="p-5 gap-4">
+            <Text className="text-lg font-semibold text-foreground">Enterprise</Text>
+            <Text className="text-sm text-muted-foreground">
+              Built for large orgs needing flexibility, scale, and governance.
+            </Text>
+            <View>
+              <Text className="text-3xl font-bold text-foreground">Custom</Text>
+              <Text className="text-sm text-muted-foreground">Flexible plans</Text>
+            </View>
+            <Button
+              variant="outline"
+              onPress={() => Linking.openURL('mailto:sales@shogo.ai')}
+            >
+              Book a demo
+            </Button>
+            <View className="gap-2">
+              <Text className="text-sm text-muted-foreground">
+                All features in Business, plus:
+              </Text>
+              <FeatureList features={ENTERPRISE_FEATURES} />
+            </View>
+          </CardContent>
+        </Card>
+      </View>
     </View>
   )
 }
@@ -1155,8 +1385,24 @@ function PrivacyTab() {
 // LABS TAB
 // ============================================================================
 
+const LABS_BRANCH_SWITCHING_KEY = 'shogo:labs-github-branch-switching'
+
 function LabsTab() {
   const [githubBranchSwitching, setGithubBranchSwitching] = useState(false)
+
+  useEffect(() => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      const stored = window.localStorage.getItem(LABS_BRANCH_SWITCHING_KEY)
+      if (stored !== null) setGithubBranchSwitching(stored === 'true')
+    }
+  }, [])
+
+  const handleToggle = useCallback((value: boolean) => {
+    setGithubBranchSwitching(value)
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      window.localStorage.setItem(LABS_BRANCH_SWITCHING_KEY, String(value))
+    }
+  }, [])
 
   return (
     <View className="gap-8">
@@ -1180,7 +1426,7 @@ function LabsTab() {
             </View>
             <Switch
               checked={githubBranchSwitching}
-              onCheckedChange={setGithubBranchSwitching}
+              onCheckedChange={handleToggle}
             />
           </View>
         </CardContent>
@@ -1194,6 +1440,13 @@ function LabsTab() {
 // ============================================================================
 
 function GitHubTab() {
+  const [showComingSoon, setShowComingSoon] = useState(false)
+
+  const handleConnect = useCallback(() => {
+    setShowComingSoon(true)
+    setTimeout(() => setShowComingSoon(false), 3000)
+  }, [])
+
   return (
     <View className="gap-8">
       <View>
@@ -1221,10 +1474,22 @@ function GitHubTab() {
                 Add your GitHub account to manage connected organizations.
               </Text>
             </View>
-            <Button variant="outline" size="sm">
-              Connect
-            </Button>
+            <Pressable
+              onPress={handleConnect}
+              className="border border-input bg-background rounded-md h-9 px-3 flex-row items-center justify-center"
+            >
+              <Text className="text-sm font-medium text-foreground">
+                Connect
+              </Text>
+            </Pressable>
           </View>
+          {showComingSoon && (
+            <View className="px-6 pb-4">
+              <Text className="text-sm text-amber-500">
+                GitHub integration is coming soon.
+              </Text>
+            </View>
+          )}
         </CardContent>
       </Card>
     </View>
@@ -1271,42 +1536,53 @@ function PeopleTab() {
   const [sortDir, setSortDir] = useState<SortDir>('asc')
   const [isLoading, setIsLoading] = useState(true)
 
-  useEffect(() => {
-    if (!currentWorkspace?.id) return
-    let cancelled = false
-    const load = async () => {
-      setIsLoading(true)
-      try {
-        await members.loadAll({ workspaceId: currentWorkspace.id })
-        await invitations.loadAll({ workspaceId: currentWorkspace.id })
-      } catch {}
-      if (!cancelled) setIsLoading(false)
-    }
-    load()
-    return () => { cancelled = true }
-  }, [currentWorkspace?.id])
+  const [resolvedWs, setResolvedWs] = useState<{ id: string; name: string } | null>(null)
 
-  const workspaceMembers = useMemo(() => {
-    if (!currentWorkspace?.id) return []
-    return members.all.filter(
-      (m: any) => m.workspaceId === currentWorkspace.id && !m.projectId
-    )
-  }, [members.all, currentWorkspace?.id])
+  const loadPeopleData = useCallback(async () => {
+    setIsLoading(true)
+    try {
+      if (workspaces.all.length === 0) {
+        await workspaces.loadAll({})
+      }
+      if (workspaces.all.length === 0) {
+        await new Promise(r => setTimeout(r, 1500))
+        await workspaces.loadAll({})
+      }
 
-  const pendingInvitations = useMemo(() => {
-    if (!currentWorkspace?.id) return []
-    return invitations.all.filter(
-      (i: any) => i.workspaceId === currentWorkspace.id && i.status === 'pending'
-    )
-  }, [invitations.all, currentWorkspace?.id])
+      const ws = workspaces.all[0]
+      if (!ws?.id) { setIsLoading(false); return }
+      setResolvedWs({ id: ws.id, name: ws.name || 'Workspace' })
+
+      await members.loadAll({ workspaceId: ws.id })
+      await invitations.loadAll({ workspaceId: ws.id })
+
+      if (user?.email) {
+        await invitations.loadAll({ email: user.email })
+      }
+    } catch {}
+    setIsLoading(false)
+  }, [workspaces, members, invitations, currentWorkspace?.id, user?.email])
+
+  useEffect(() => { loadPeopleData() }, [loadPeopleData])
+
+  const workspaceMembers = currentWorkspace?.id
+    ? members.all.filter((m: any) => m.workspaceId === currentWorkspace.id && !m.projectId)
+    : []
+  const pendingInvitations = currentWorkspace?.id
+    ? invitations.all.filter((i: any) => i.workspaceId === currentWorkspace.id && i.status === 'pending')
+    : []
+  const receivedInvitations = user?.email
+    ? invitations.all.filter((i: any) => i.email === user.email && i.status === 'pending')
+    : []
 
   const filteredMembers = useMemo(() => {
     let result = [...workspaceMembers]
     if (search.trim()) {
       const q = search.toLowerCase()
       result = result.filter((m: any) =>
-        (m.userId || '').toLowerCase().includes(q) ||
-        (m.email || '').toLowerCase().includes(q)
+        (m.user?.name || '').toLowerCase().includes(q) ||
+        (m.user?.email || '').toLowerCase().includes(q) ||
+        (m.userId || '').toLowerCase().includes(q)
       )
     }
     if (roleFilter !== 'all') {
@@ -1334,7 +1610,6 @@ function PeopleTab() {
   const handleCancelInvitation = async (invitationId: string) => {
     try {
       await actions.cancelInvitation(invitationId)
-      await invitations.loadAll({ workspaceId: currentWorkspace!.id })
     } catch {}
   }
 
@@ -1361,7 +1636,7 @@ function PeopleTab() {
         <Text className="text-sm text-muted-foreground mt-1">
           Inviting people to{' '}
           <Text className="font-semibold text-foreground">
-            {currentWorkspace?.name || 'your workspace'}
+            {resolvedWs?.name || currentWorkspace?.name || 'your workspace'}
           </Text>{' '}
           gives access to workspace shared projects and credits.{' '}
           You have {builderCount} builder{builderCount !== 1 ? 's' : ''} in this workspace.
@@ -1403,8 +1678,7 @@ function PeopleTab() {
             value={search}
             onChangeText={setSearch}
             placeholder="Search..."
-            placeholderTextColor="#9ca3af"
-            className="flex-1 text-sm text-foreground web:outline-none"
+            className="flex-1 text-sm text-foreground placeholder:text-muted-foreground web:outline-none"
             autoCapitalize="none"
             autoCorrect={false}
           />
@@ -1501,7 +1775,9 @@ function PeopleTab() {
                 {filteredMembers.map((member: any) => {
                   const isCurrentUser = member.userId === user?.id
                   const avatarColor = ROLE_COLORS[member.role] || 'bg-primary'
-                  const initial = (member.name || member.userId || 'M')[0]?.toUpperCase()
+                  const mName = isCurrentUser ? (user?.name || user?.email) : (member.user?.name || member.user?.email || member.userId)
+                  const mEmail = isCurrentUser ? user?.email : (member.user?.email || member.userId)
+                  const initial = (mName || 'M')[0]?.toUpperCase()
                   return (
                     <View
                       key={member.id}
@@ -1514,14 +1790,14 @@ function PeopleTab() {
                         <View>
                           <View className="flex-row items-center gap-1">
                             <Text className="text-sm font-medium text-foreground">
-                              {member.name || member.userId?.slice(0, 20) || 'Unknown'}
+                              {mName}
                             </Text>
                             {isCurrentUser && (
                               <Text className="text-sm text-muted-foreground">(you)</Text>
                             )}
                           </View>
                           <Text className="text-xs text-muted-foreground">
-                            {member.email || `${member.userId?.slice(0, 12)}...`}
+                            {mEmail}
                           </Text>
                         </View>
                       </View>
@@ -1575,6 +1851,54 @@ function PeopleTab() {
       )}
 
       {subTab === 'invitations' && (
+        <View className="gap-4">
+          {/* Received invitations */}
+          <View>
+            <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 px-1">Received</Text>
+            {receivedInvitations.length === 0 ? (
+              <Card><CardContent className="py-6 items-center"><Text className="text-sm text-muted-foreground">No pending invitations</Text></CardContent></Card>
+            ) : (
+              <Card>
+                <CardContent className="p-0">
+                  {receivedInvitations.map((inv: any) => (
+                    <View key={inv.id} className="p-4 border-b border-border">
+                      <View className="flex-row items-center justify-between mb-1">
+                        <Text className="text-base font-semibold text-foreground">{inv.workspace?.name || 'Workspace'}</Text>
+                        <View className="px-2 py-0.5 rounded bg-muted"><Text className="text-xs text-muted-foreground capitalize">{ROLE_DISPLAY[inv.role] || inv.role}</Text></View>
+                      </View>
+                      <Text className="text-sm text-muted-foreground mb-3">You've been invited to join this workspace</Text>
+                      <View className="flex-row gap-2">
+                        <Pressable
+                          onPress={async () => {
+                            try {
+                              await actions.acceptInvitation(inv.id, user?.id || '')
+                            } catch {}
+                          }}
+                          className="flex-1 h-10 bg-primary rounded-lg items-center justify-center"
+                        >
+                          <Text className="text-sm font-medium text-primary-foreground">Accept</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={async () => {
+                            try {
+                              await actions.declineInvitation(inv.id)
+                            } catch {}
+                          }}
+                          className="flex-1 h-10 border border-border rounded-lg items-center justify-center"
+                        >
+                          <Text className="text-sm font-medium text-foreground">Decline</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  ))}
+                </CardContent>
+              </Card>
+            )}
+          </View>
+
+          {/* Sent invitations */}
+          <View>
+            <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 px-1">Sent</Text>
         <Card>
           <CardContent className="p-0">
             {isLoading ? (
@@ -1662,16 +1986,20 @@ function PeopleTab() {
             )}
           </CardContent>
         </Card>
+          </View>
+        </View>
       )}
 
       {/* Invite Members Modal */}
       <InviteMembersModal
         visible={showInviteModal}
-        onClose={() => setShowInviteModal(false)}
-        workspaceId={currentWorkspace?.id || ''}
-        workspaceName={currentWorkspace?.name || ''}
+        onClose={() => {
+          setShowInviteModal(false)
+          loadPeopleData()
+        }}
+        workspaceId={resolvedWs?.id || currentWorkspace?.id || ''}
+        workspaceName={resolvedWs?.name || currentWorkspace?.name || ''}
         actions={actions}
-        invitationCollection={invitations}
       />
     </View>
   )
@@ -1683,15 +2011,14 @@ function InviteMembersModal({
   workspaceId,
   workspaceName,
   actions,
-  invitationCollection,
 }: {
   visible: boolean
   onClose: () => void
   workspaceId: string
   workspaceName: string
   actions: ReturnType<typeof useDomainActions>
-  invitationCollection: any
 }) {
+  const workspaces = useWorkspaceCollection()
   const [emailInput, setEmailInput] = useState('')
   const [role, setRole] = useState<string>('member')
   const [showRolePicker, setShowRolePicker] = useState(false)
@@ -1718,11 +2045,20 @@ function InviteMembersModal({
 
   const handleSubmit = async () => {
     if (!canSubmit) return
+    let resolvedWsId = workspaceId
+    if (!resolvedWsId) {
+      const ws = workspaces.all[0]
+      resolvedWsId = ws?.id || ''
+    }
+    if (!resolvedWsId) {
+      setError('Workspace not loaded yet. Please close and try again.')
+      return
+    }
     setIsSubmitting(true)
     setError(null)
     try {
       for (const email of validEmails) {
-        await actions.sendInvitation({ email, role: role as any, workspaceId })
+        await actions.sendInvitation({ email, role: role as any, workspaceId: resolvedWsId })
       }
       setEmailInput('')
       setRole('member')
@@ -1775,11 +2111,10 @@ function InviteMembersModal({
               value={emailInput}
               onChangeText={(t) => { setEmailInput(t); setError(null) }}
               placeholder="example1@example.com, example2@example.com"
-              placeholderTextColor="#9ca3af"
               autoCapitalize="none"
               autoCorrect={false}
               editable={!isSubmitting}
-              className="px-3 py-2.5 text-sm text-foreground web:outline-none"
+              className="px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground web:outline-none"
             />
           </View>
 
@@ -1885,7 +2220,7 @@ export default observer(function SettingsPage() {
         />
         <ScrollView
           className="flex-1"
-          contentContainerStyle={{ paddingHorizontal: 48, paddingTop: 24, paddingBottom: 60 }}
+          contentContainerClassName="px-12 pt-6 pb-[60px]"
           showsVerticalScrollIndicator={false}
         >
           <View>
@@ -1908,7 +2243,7 @@ export default observer(function SettingsPage() {
   return (
     <View className="flex-1 bg-background">
       <View className="flex-row items-center gap-3 px-4 py-3 border-b border-border">
-        <Pressable onPress={() => router.back()}>
+        <Pressable onPress={() => router.canGoBack() ? router.back() : router.replace('/(app)/projects')}>
           <ArrowLeft size={20} className="text-foreground" />
         </Pressable>
         <Text className="text-xl font-bold text-foreground">Settings</Text>
@@ -1918,7 +2253,7 @@ export default observer(function SettingsPage() {
 
       <ScrollView
         className="flex-1"
-        contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
+        contentContainerClassName="p-4 pb-10"
         showsVerticalScrollIndicator={false}
       >
         <SettingsContent activeTab={activeTab} />

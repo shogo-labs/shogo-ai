@@ -39,6 +39,7 @@ import {
 import type { IDomainStore } from '@shogo/domain-stores'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useBillingData } from '@shogo/shared-app/hooks'
+import { getTotalCreditsForPlan } from '../../../../lib/billing-config'
 import { useAuth } from '../../../../contexts/auth'
 import { API_URL, api } from '../../../../lib/api'
 import { consumePendingImageData } from '../../../../lib/pending-image-store'
@@ -103,6 +104,62 @@ export default observer(function ProjectLayout() {
   const isAgentProject = project?.type === 'AGENT'
 
   const billingData = useBillingData(project?.workspaceId)
+
+  const workspaceName = useMemo(() => {
+    try {
+      const ws = store?.workspaceCollection?.all?.find(
+        (w: any) => w.id === project?.workspaceId,
+      )
+      return ws?.name || ''
+    } catch {
+      return ''
+    }
+  }, [store?.workspaceCollection?.all, project?.workspaceId])
+
+  const planLabel = billingData.subscription
+    ? billingData.subscription.planId.charAt(0).toUpperCase() +
+      billingData.subscription.planId.slice(1)
+    : 'Free'
+
+  const creditsTotal = getTotalCreditsForPlan(billingData.subscription?.planId)
+  const creditsRemaining = billingData.effectiveBalance?.total ?? creditsTotal
+
+  const isStarred = useMemo(() => {
+    try {
+      return store?.starredProjectCollection?.all?.some(
+        (s: any) => s.projectId === projectId && s.userId === user?.id,
+      ) ?? false
+    } catch {
+      return false
+    }
+  }, [store?.starredProjectCollection?.all, projectId, user?.id])
+
+  const folders = useMemo(() => {
+    try {
+      return (store?.folderCollection?.all ?? []).map((f: any) => ({
+        id: f.id,
+        name: f.name || 'Untitled',
+      }))
+    } catch {
+      return []
+    }
+  }, [store?.folderCollection?.all])
+
+  const handleRenameProject = useCallback(async (newName: string) => {
+    if (!projectId) return
+    await actions.updateProject(projectId, { name: newName })
+    setProject((prev: any) => prev ? { ...prev, name: newName } : prev)
+  }, [projectId, actions])
+
+  const handleToggleStar = useCallback(async () => {
+    if (!projectId || !user?.id) return
+    await actions.toggleStarProject(projectId, user.id, project?.workspaceId)
+  }, [projectId, user?.id, project?.workspaceId, actions])
+
+  const handleMoveToFolder = useCallback(async (folderId: string | null) => {
+    if (!projectId) return
+    await actions.moveProjectToFolder(projectId, folderId)
+  }, [projectId, actions])
 
   const allProjects = useMemo(() => {
     try {
@@ -417,6 +474,18 @@ export default observer(function ProjectLayout() {
             activeTab={previewTab}
             onTabChange={setPreviewTab}
             hasActiveSubscription={billingData.hasActiveSubscription}
+            workspaceName={workspaceName}
+            planLabel={planLabel}
+            creditsRemaining={creditsRemaining}
+            creditsTotal={creditsTotal}
+            ownerName={user?.name || ''}
+            projectCreatedAt={project.createdAt}
+            projectModifiedAt={project.updatedAt}
+            isStarred={isStarred}
+            onRenameProject={handleRenameProject}
+            onToggleStar={handleToggleStar}
+            onMoveToFolder={handleMoveToFolder}
+            folders={folders}
           />
           <View className="flex-1 flex-row">
             {!chatCollapsed && (
@@ -464,6 +533,18 @@ export default observer(function ProjectLayout() {
             projects={allProjects}
             activeTab={previewTab}
             hasActiveSubscription={billingData.hasActiveSubscription}
+            workspaceName={workspaceName}
+            planLabel={planLabel}
+            creditsRemaining={creditsRemaining}
+            creditsTotal={creditsTotal}
+            ownerName={user?.name || ''}
+            projectCreatedAt={project.createdAt}
+            projectModifiedAt={project.updatedAt}
+            isStarred={isStarred}
+            onRenameProject={handleRenameProject}
+            onToggleStar={handleToggleStar}
+            onMoveToFolder={handleMoveToFolder}
+            folders={folders}
             onTabChange={(tabId) => {
               setPreviewTab(tabId)
               if (tabId !== 'dynamic-app') setActiveTab('canvas')

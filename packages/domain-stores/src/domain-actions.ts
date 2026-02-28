@@ -233,7 +233,7 @@ export function createDomainActions(store: IDomainStore) {
     /**
      * Toggle star status for a project
      */
-    toggleStarProject: async (projectId: string, userId: string) => {
+    toggleStarProject: async (projectId: string, userId: string, workspaceId?: string) => {
       const existing = store.starredProjectCollection.all.find(
         (s: any) => s.projectId === projectId && s.userId === userId
       )
@@ -242,9 +242,13 @@ export function createDomainActions(store: IDomainStore) {
         await store.starredProjectCollection.delete(existing.id)
         return false // unstarred
       } else {
+        const wsId = workspaceId
+          ?? store.projectCollection.all.find((p: any) => p.id === projectId)?.workspaceId
+          ?? ''
         await store.starredProjectCollection.create({
           projectId,
           userId,
+          workspaceId: wsId,
         })
         return true // starred
       }
@@ -369,6 +373,36 @@ export function createDomainActions(store: IDomainStore) {
 
       // Then delete workspace
       return store.workspaceCollection.delete(workspaceId)
+    },
+
+    // =========================================================================
+    // Billing Actions
+    // =========================================================================
+
+    /**
+     * Create a Stripe checkout session and return the redirect URL
+     */
+    createCheckoutSession: async (params: {
+      workspaceId: string
+      planId: string
+      billingInterval: "monthly" | "annual"
+      userEmail?: string
+    }) => {
+      const env = getEnv<ISDKEnvironment>(store)
+      const res = await env.http.post<{ url?: string }>("/api/billing/checkout", params)
+      return res.data
+    },
+
+    /**
+     * Create a Stripe billing portal session and return the redirect URL
+     */
+    createPortalSession: async (workspaceId: string, returnUrl?: string) => {
+      const env = getEnv<ISDKEnvironment>(store)
+      const res = await env.http.post<{ url?: string }>(
+        `/api/billing/portal?workspaceId=${encodeURIComponent(workspaceId)}`,
+        returnUrl ? { returnUrl } : {},
+      )
+      return res.data
     },
   }
 }

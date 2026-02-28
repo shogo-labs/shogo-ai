@@ -62,7 +62,6 @@ import { AgentGateway } from './gateway'
 import { userMessage } from './pi-adapter'
 import { getDynamicAppManager, initDynamicAppManager } from './dynamic-app-manager'
 import type { ActionEvent } from './dynamic-app-types'
-import { extractFilePartsAsText } from './file-attachment-utils'
 import { fileURLToPath } from 'url'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -378,9 +377,10 @@ app.post('/agent/chat', async (c) => {
 
   const body = await c.req.json()
 
-  const allMessages = (body.messages || []) as Array<{ role: string; parts: Array<{ type: string; text?: string; mediaType?: string; url?: string }> }>
+  const allMessages = (body.messages || []) as Array<{ role: string; parts: Array<{ type: string; text?: string; mediaType?: string; url?: string; name?: string }> }>
 
   let userText: string | undefined
+  let userFileParts: Array<{ type: string; mediaType?: string; url?: string; name?: string }> = []
   if (allMessages.length > 0) {
     const last = [...allMessages].reverse().find((m: any) => m.role === 'user')
     if (last?.parts && Array.isArray(last.parts)) {
@@ -389,14 +389,13 @@ app.post('/agent/chat', async (c) => {
         .map((p: any) => p.text)
         .join('\n')
 
-      const fileContext = extractFilePartsAsText(last.parts)
-      if (fileContext) {
-        userText = (userText || '') + '\n\n' + fileContext
-      }
+      userFileParts = last.parts.filter(
+        (p: any) => p.type === 'file' && p.url,
+      )
     }
   }
 
-  if (!userText) {
+  if (!userText && userFileParts.length === 0) {
     return c.json({ error: 'message is required — send { messages: [{ role: "user", parts: [{ type: "text", text: "..." }] }] }' }, 400)
   }
 
@@ -414,11 +413,26 @@ app.post('/agent/chat', async (c) => {
           .filter((p: any) => p.type === 'text')
           .map((p: any) => p.text)
           .join('\n')
-        if (!text) continue
 
         if (msg.role === 'user') {
-          sessionMgr.addMessages('chat', userMessage(text))
+          const historyFileParts = (msg.parts || []).filter(
+            (p: any) => p.type === 'file' && p.url,
+          )
+          if (historyFileParts.length > 0) {
+            const imageCount = historyFileParts.filter((p: any) => p.mediaType?.startsWith('image/')).length
+            const fileCount = historyFileParts.length - imageCount
+            const notes: string[] = []
+            if (imageCount > 0) notes.push(`[${imageCount} image(s) were attached]`)
+            if (fileCount > 0) notes.push(`[${fileCount} file(s) were attached]`)
+            const effectiveText = [text, ...notes].filter(Boolean).join('\n')
+            if (!effectiveText) continue
+            sessionMgr.addMessages('chat', userMessage(effectiveText))
+          } else {
+            if (!text) continue
+            sessionMgr.addMessages('chat', userMessage(text))
+          }
         } else if (msg.role === 'assistant') {
+          if (!text) continue
           sessionMgr.addMessages('chat', {
             role: 'assistant',
             content: [{ type: 'text', text }],
@@ -447,7 +461,10 @@ app.post('/agent/chat', async (c) => {
     execute: async ({ writer }) => {
       try {
         writer.write({ type: 'start-step' })
-        await agentGateway!.processChatMessageStream(userText!, writer, { modelOverride })
+        await agentGateway!.processChatMessageStream(userText || '', writer, {
+          modelOverride,
+          fileParts: userFileParts.length > 0 ? userFileParts : undefined,
+        })
 
         const usage = agentGateway!.consumeLastTurnUsage()
         if (usage) {

@@ -24,6 +24,7 @@ export interface AuthContextValue {
   signIn: (email: string, password: string) => Promise<void>
   signUp: (name: string, email: string, password: string) => Promise<void>
   signOut: () => Promise<void>
+  updateUser: (fields: { name?: string; image?: string }) => Promise<void>
   clearError: () => void
 }
 
@@ -82,10 +83,21 @@ export function AuthProvider({ authClient, children }: AuthProviderProps) {
     try { await authClient.signOut() } finally { setUser(null) }
   }, [authClient])
 
+  const handleUpdateUser = useCallback(async (fields: { name?: string; image?: string }) => {
+    const { data, error: err } = await (authClient as any).updateUser(fields)
+    if (err) throw new Error(err.message || 'Failed to update profile')
+    if (data?.user) {
+      setUser(data.user as AuthUser)
+    } else {
+      setUser(prev => prev ? { ...prev, ...fields } : prev)
+    }
+  }, [authClient])
+
   return (
     <AuthContext.Provider value={{
       user, isLoading, isAuthenticated: !!user, error,
       signIn: handleSignIn, signUp: handleSignUp, signOut: handleSignOut,
+      updateUser: handleUpdateUser,
       clearError: () => setError(null),
     }}>
       {children}
