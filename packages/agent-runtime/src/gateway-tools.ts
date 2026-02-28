@@ -42,6 +42,7 @@ export interface ToolContext {
   mcpClientManager?: import('./mcp-client').MCPClientManager
   /** Hot-connect a channel at runtime (called by channel_connect tool) */
   connectChannel?: (type: string, config: Record<string, string>) => Promise<void>
+  disconnectChannel?: (type: string) => Promise<void>
   /** Lazily-initialized file index engine for RAG over workspace files */
   fileIndexEngine?: FileIndexEngine
 }
@@ -823,6 +824,70 @@ function createSendMessageTool(ctx: ToolContext): AgentTool {
       } catch (err: any) {
         return textResult({ error: `Failed to send: ${err.message}` })
       }
+    },
+  }
+}
+
+function createChannelDisconnectTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'channel_disconnect',
+    description: 'Disconnect a messaging channel and remove it from config.',
+    label: 'Disconnect Channel',
+    parameters: Type.Object({
+      type: Type.String({ description: 'Channel type to disconnect (e.g. "discord")' }),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { type } = params as { type: string }
+
+      if (!ctx.disconnectChannel) {
+        return textResult({ error: 'Channel disconnect not available in this context' })
+      }
+
+      try {
+        await ctx.disconnectChannel(type)
+
+        const configPath = join(ctx.workspaceDir, 'config.json')
+        if (existsSync(configPath)) {
+          try {
+            const fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'))
+            fileConfig.channels = (fileConfig.channels || []).filter((ch: any) => ch.type !== type)
+            writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8')
+          } catch { /* config corrupted, skip */ }
+        }
+
+        return textResult({ ok: true, type, message: `${type} channel disconnected` })
+      } catch (err: any) {
+        return textResult({ error: `Failed to disconnect ${type}: ${err.message}` })
+      }
+    },
+  }
+}
+
+function createChannelListTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'channel_list',
+    description: 'List all configured messaging channels and their connection status.',
+    label: 'List Channels',
+    parameters: Type.Object({}),
+    execute: async () => {
+      const statuses = []
+      for (const [type, adapter] of ctx.channels) {
+        statuses.push(adapter.getStatus())
+      }
+
+      const configPath = join(ctx.workspaceDir, 'config.json')
+      let configured: string[] = []
+      if (existsSync(configPath)) {
+        try {
+          const fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'))
+          configured = (fileConfig.channels || []).map((ch: any) => ch.type)
+        } catch { /* ignore */ }
+      }
+
+      return textResult({
+        connected: statuses,
+        configured,
+      })
     },
   }
 }
@@ -2664,7 +2729,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
     'mcp_playwright_browser_screenshot', 'mcp_playwright_browser_close',
   ],
   memory: ['memory_read', 'memory_write', 'memory_search'],
-  messaging: ['send_message'],
+  messaging: ['send_message', 'channel_connect', 'channel_disconnect', 'channel_list'],
   cron: ['cron'],
   canvas: ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_action_wait', 'canvas_components', 'canvas_trigger_action', 'canvas_inspect'],
   api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind'],
@@ -2676,7 +2741,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
 export const ALL_TOOL_NAMES = [
   'exec', 'read_file', 'write_file', 'web', 'browser',
   'list_files', 'delete_file', 'search_files',
-  'memory_read', 'memory_write', 'memory_search', 'send_message', 'channel_connect', 'cron',
+  'memory_read', 'memory_write', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list', 'cron',
   'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_action_wait', 'canvas_components',
   'canvas_trigger_action', 'canvas_inspect',
   'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind',
@@ -2938,6 +3003,8 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createMemorySearchTool(ctx),
     createSendMessageTool(ctx),
     createChannelConnectTool(ctx),
+    createChannelDisconnectTool(ctx),
+    createChannelListTool(ctx),
     createCronTool(ctx),
     createCanvasCreateTool(),
     createCanvasUpdateTool(),

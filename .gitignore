@@ -95,6 +95,7 @@ workspaces/
 
 # Vite/TanStack generated timestamp files (bust Docker cache)
 app.config.timestamp*.js
+electron.vite.config.*.mjs
 
 apps/mobile/.expo/
 # Chat export logs (auto-generated agent outputs)

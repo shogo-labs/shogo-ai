@@ -1386,13 +1386,13 @@ export class AgentGateway {
         const adapter = (message.channelId && this.channels.has(message.channelType || ''))
           ? this.channels.get(message.channelType!)
           : undefined
-        const streamTarget = adapter && message.channelId && this.config.streamChunk
+        const streamTarget = adapter && message.channelId
           ? { adapter, channelId: message.channelId }
           : undefined
 
         const response = await this.agentTurn(prompt, sessionId, false, streamTarget, undefined, activeSkill)
 
-        if (adapter && message.channelId && !streamTarget) {
+        if (adapter && message.channelId && !this.config.streamChunk) {
           await adapter.sendMessage(message.channelId, response)
         }
 
@@ -1582,6 +1582,7 @@ export class AgentGateway {
       mainSessionIds: this.config.mainSessionIds,
       mcpClientManager: this.mcpClientManager,
       connectChannel: (type, config) => this.connectChannel(type, config),
+      disconnectChannel: (type) => this.disconnectChannel(type),
     }
 
     const baseTools = isHeartbeat
@@ -1685,10 +1686,10 @@ export class AgentGateway {
       }, 4000)
     }
 
-    // Streaming: set up block chunker if a channel target is provided
+    // Streaming: set up block chunker only if streamChunk config is enabled
     let chunker: BlockChunker | undefined
     const streamedChunks: string[] = []
-    if (streamTarget) {
+    if (streamTarget && this.config.streamChunk) {
       chunker = new BlockChunker(
         (chunk) => {
           streamedChunks.push(chunk)
