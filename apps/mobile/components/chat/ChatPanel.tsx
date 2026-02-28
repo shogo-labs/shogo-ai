@@ -42,7 +42,6 @@ import {
 } from "@shogo/shared-app/chat"
 import { useChatTransportConfig } from "@shogo/shared-app/chat"
 import { useSDKDomains, useDomainActions } from "@shogo/shared-app/domain"
-import { Platform } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { API_URL } from "../../lib/api"
 import { authClient } from "../../lib/auth-client"

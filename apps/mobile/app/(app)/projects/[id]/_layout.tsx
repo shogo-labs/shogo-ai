@@ -54,14 +54,10 @@ import { CanvasThemeProvider, CanvasThemedContainer } from '../../../../componen
 import { CanvasThemePicker } from '../../../../components/dynamic-app/CanvasThemePicker'
 import { ProjectTopBar } from '../../../../components/project/ProjectTopBar'
 import {
-  LogsPanel,
-  StatusPanel,
   ChannelsPanel,
-  SkillsPanel,
-  ToolsPanel,
-  WorkspacePanel,
   FilesBrowserPanel,
-  AnalyticsPanel,
+  CapabilitiesPanel,
+  MonitorPanel,
 } from '../../../../components/project/panels'
 import { RefreshCw } from 'lucide-react-native'
 
@@ -513,14 +509,10 @@ export default observer(function ProjectLayout() {
               >
                 {canvasPanel}
               </View>
-              <StatusPanel visible={previewTab === 'status'} projectId={projectId!} agentUrl={agentUrl} />
               <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
-              <WorkspacePanel visible={previewTab === 'workspace'} projectId={projectId!} agentUrl={agentUrl} />
-              <SkillsPanel visible={previewTab === 'skills'} projectId={projectId!} agentUrl={agentUrl} />
-              <ToolsPanel visible={previewTab === 'tools'} projectId={projectId!} agentUrl={agentUrl} />
+              <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} />
               <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} />
-              <AnalyticsPanel visible={previewTab === 'analytics'} projectId={projectId!} agentUrl={agentUrl} />
-              <LogsPanel visible={previewTab === 'logs'} projectId={projectId!} agentUrl={agentUrl} />
+              <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} />
             </View>
           </View>
         </View>
@@ -582,14 +574,10 @@ export default observer(function ProjectLayout() {
             canvasPanel
           ) : (
             <View className="flex-1 relative">
-              <StatusPanel visible={previewTab === 'status'} projectId={projectId!} agentUrl={agentUrl} />
               <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
-              <WorkspacePanel visible={previewTab === 'workspace'} projectId={projectId!} agentUrl={agentUrl} />
-              <SkillsPanel visible={previewTab === 'skills'} projectId={projectId!} agentUrl={agentUrl} />
-              <ToolsPanel visible={previewTab === 'tools'} projectId={projectId!} agentUrl={agentUrl} />
+              <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} />
               <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} />
-              <AnalyticsPanel visible={previewTab === 'analytics'} projectId={projectId!} agentUrl={agentUrl} />
-              <LogsPanel visible={previewTab === 'logs'} projectId={projectId!} agentUrl={agentUrl} />
+              <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} />
             </View>
           )}
         </View>

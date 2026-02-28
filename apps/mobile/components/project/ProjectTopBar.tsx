@@ -58,14 +58,10 @@ import { PublishDropdown } from './PublishDropdown'
 
 const AGENT_TABS = [
   { id: 'dynamic-app', label: 'Canvas' },
-  { id: 'status', label: 'Status' },
   { id: 'files', label: 'Files' },
-  { id: 'workspace', label: 'Workspace' },
-  { id: 'skills', label: 'Skills' },
-  { id: 'tools', label: 'Tools' },
+  { id: 'capabilities', label: 'Capabilities' },
   { id: 'channels', label: 'Channels' },
-  { id: 'analytics', label: 'Analytics' },
-  { id: 'logs', label: 'Logs' },
+  { id: 'monitor', label: 'Monitor' },
 ]
 
 export interface ProjectSwitcherItem {
