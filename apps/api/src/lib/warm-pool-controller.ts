@@ -11,9 +11,13 @@
  * 2. POST /pool/assign to the warm pod with project-specific config
  * 3. The pod reconfigures itself in-place (loads S3 data, starts gateway, etc.)
  * 4. Return the warm pod URL immediately — user gets instant service
- * 5. In the background, create the real `project-{id}` Knative Service so
- *    future cold starts work correctly with the right env vars
- * 6. Once the real service has a pod running, delete the warm pool service
+ * 5. Patch the Knative Service annotations to mark the pod as promoted
+ *    (enables scale-to-zero and self-assign on future cold starts)
+ * 6. Save the service name mapping in the database for routing
+ *
+ * On cold start (scale-to-zero recovery), the runtime reads the ASSIGNED_PROJECT
+ * env var (from Kubernetes Downward API) and self-configures by fetching config
+ * from the API's /api/internal/pod-config endpoint.
  *
  * Pool pods run with PROJECT_ID=__POOL__, do generic init (start Hono,
  * pre-warm Claude Code session, load deps into memory), and wait for assignment.
@@ -182,21 +186,6 @@ export class WarmPoolController {
   /** Pending warm pod creations to avoid duplicate reconciliation */
   private pendingCreations = new Set<string>()
 
-  /**
-   * Active connection count per projectId. While > 0, the warm pod for that
-   * project must not be deleted (ongoing streaming responses would be severed).
-   */
-  private activeConnections = new Map<string, number>()
-
-  /**
-   * Tracks when the real Knative service first became ready for a project that
-   * still has active connections. Used to force cleanup after a staleness window
-   * in case the connection counter leaks.
-   */
-  private realServiceReadySince = new Map<string, number>()
-
-  private static readonly CONNECTION_DRAIN_TIMEOUT_MS = 15 * 60 * 1000
-
   private started = false
 
   /** Burst detection: timer for rapid replenishment after multiple claims */
@@ -353,45 +342,9 @@ export class WarmPoolController {
       }
     }
 
-    // Clean up assigned pods whose real Knative Service is now running,
-    // but only after active connections have drained.
-    for (const [projectId, pod] of this.assigned) {
-      const realServiceReady = await this.isRealServiceReady(projectId)
-      if (!realServiceReady) {
-        this.realServiceReadySince.delete(projectId)
-        continue
-      }
-
-      const connCount = this.activeConnections.get(projectId) || 0
-      if (connCount > 0) {
-        if (!this.realServiceReadySince.has(projectId)) {
-          this.realServiceReadySince.set(projectId, Date.now())
-        }
-        const waitingMs = Date.now() - this.realServiceReadySince.get(projectId)!
-        if (waitingMs < WarmPoolController.CONNECTION_DRAIN_TIMEOUT_MS) {
-          console.log(
-            `[WarmPool] Real service for ${projectId} is ready, but ${connCount} active connection(s) — deferring cleanup (waiting ${Math.round(waitingMs / 1000)}s)`
-          )
-          continue
-        }
-        console.warn(
-          `[WarmPool] Force-cleaning warm pod ${pod.serviceName} for ${projectId} — ${connCount} connection(s) still active after ${Math.round(waitingMs / 1000)}s`
-        )
-        this.activeConnections.delete(projectId)
-      }
-
-      console.log(
-        `[WarmPool] Real service for ${projectId} is ready, cleaning up warm pod ${pod.serviceName}`
-      )
-      this.realServiceReadySince.delete(projectId)
-      this.assigned.delete(projectId)
-      this.deleteWarmPodService(pod.serviceName).catch((err) => {
-        console.error(
-          `[WarmPool] Failed to delete assigned pod ${pod.serviceName}:`,
-          err.message
-        )
-      })
-    }
+    // Promoted pods (assigned) are no longer cleaned up by the reconciler.
+    // They remain as the project's permanent Knative Service with scale-to-zero.
+    // The runtime self-assigns on cold start via /api/internal/pod-config.
 
     // Trim excess pods when pool shrinks (e.g., nodes scaled down).
     // Delete oldest excess pods, 2 per type per cycle, to converge to target.
@@ -551,7 +504,8 @@ export class WarmPoolController {
 
   /**
    * Assign a claimed warm pod to a specific project.
-   * Sends the /pool/assign request and stores the mapping for routing.
+   * Sends the /pool/assign request, patches Knative annotations for promotion,
+   * and saves the service name mapping in the database.
    */
   async assign(
     pod: WarmPodInfo,
@@ -586,6 +540,15 @@ export class WarmPoolController {
         console.log(
           `[WarmPool] Assigned ${pod.serviceName} to project ${projectId} in ${duration}ms`
         )
+
+        // Promote the warm pod: patch annotations and save DB mapping.
+        // This is non-blocking — the pod is already serving the project.
+        this.promoteWarmPod(pod, projectId).catch((err) => {
+          console.error(
+            `[WarmPool] Failed to promote ${pod.serviceName} for ${projectId} (non-fatal):`,
+            err.message
+          )
+        })
       } catch (err: any) {
         span.setStatus({ code: SpanStatusCode.ERROR, message: err.message })
         span.recordException(err)
@@ -598,6 +561,75 @@ export class WarmPoolController {
         span.end()
       }
     })
+  }
+
+  /**
+   * Promote a warm pod to a permanent project pod.
+   * Patches Knative Service annotations (no new Revision) and saves
+   * the service name mapping in the database for routing.
+   */
+  private async promoteWarmPod(pod: WarmPodInfo, projectId: string): Promise<void> {
+    const t0 = Date.now()
+    const api = getCustomApi()
+
+    // Patch annotations only — this does NOT create a new Revision.
+    // The running pod continues serving without restart.
+    const patch = {
+      metadata: {
+        annotations: {
+          'shogo.io/assigned-project': projectId,
+        },
+        labels: {
+          [POOL_STATUS_LABEL_KEY]: 'promoted',
+          'shogo.io/project': projectId,
+        },
+      },
+      spec: {
+        template: {
+          metadata: {
+            annotations: {
+              'autoscaling.knative.dev/min-scale': '0',
+            },
+          },
+        },
+      },
+    }
+
+    try {
+      await api.patchNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: KNATIVE_VERSION,
+        namespace: this.namespace,
+        plural: 'services',
+        name: pod.serviceName,
+        body: patch,
+      })
+      console.log(
+        `[WarmPool] Patched annotations on ${pod.serviceName} for ${projectId} (${Date.now() - t0}ms)`
+      )
+    } catch (err: any) {
+      console.error(
+        `[WarmPool] Failed to patch annotations on ${pod.serviceName}:`,
+        err.message
+      )
+    }
+
+    // Save the mapping in the database so routing works across API restarts
+    try {
+      const { prisma } = await import('./prisma')
+      await prisma.project.update({
+        where: { id: projectId },
+        data: { knativeServiceName: pod.serviceName },
+      })
+      console.log(
+        `[WarmPool] Saved knativeServiceName=${pod.serviceName} for ${projectId} (${Date.now() - t0}ms)`
+      )
+    } catch (err: any) {
+      console.error(
+        `[WarmPool] Failed to save knativeServiceName for ${projectId}:`,
+        err.message
+      )
+    }
   }
 
   /**
@@ -616,26 +648,6 @@ export class WarmPoolController {
     return this.assigned.has(projectId)
   }
 
-  /**
-   * Increment active connection count for a project served by a warm pod.
-   * Must be paired with a `trackConnectionEnd` call when the stream finishes.
-   */
-  trackConnectionStart(projectId: string): void {
-    this.activeConnections.set(projectId, (this.activeConnections.get(projectId) || 0) + 1)
-  }
-
-  /**
-   * Decrement active connection count. When it reaches 0, the warm pod
-   * becomes eligible for cleanup on the next reconcile cycle.
-   */
-  trackConnectionEnd(projectId: string): void {
-    const count = (this.activeConnections.get(projectId) || 1) - 1
-    if (count <= 0) {
-      this.activeConnections.delete(projectId)
-    } else {
-      this.activeConnections.set(projectId, count)
-    }
-  }
 
   /**
    * Get pool status for monitoring/debugging.
@@ -777,8 +789,8 @@ export class WarmPoolController {
         if (!name || !type) continue
         discoveredIds.add(id)
 
-        // Skip if assigned to a project
-        if (status === 'assigned') continue
+        // Skip pods that are assigned or promoted to a project
+        if (status === 'assigned' || status === 'promoted') continue
 
         // Check readiness from Knative service conditions
         const conditions = service.status?.conditions || []
@@ -846,6 +858,14 @@ export class WarmPoolController {
       ...(type === 'agent' ? [{ name: 'AGENT_DIR', value: workDir }] : []),
       { name: 'SCHEMAS_PATH', value: '/app/.schemas' },
       { name: 'WARM_POOL_MODE', value: 'true' },
+      // Downward API: expose the assigned-project annotation as an env var.
+      // After promotion, this lets the runtime self-assign on cold start.
+      {
+        name: 'ASSIGNED_PROJECT',
+        valueFrom: {
+          fieldRef: { fieldPath: "metadata.annotations['shogo.io/assigned-project']" },
+        },
+      },
     ]
 
     // AI Proxy URL (no token yet — assigned later)
@@ -1032,36 +1052,6 @@ export class WarmPoolController {
     }
   }
 
-  /**
-   * Check if the real project Knative Service (project-{id}) is ready.
-   */
-  private async isRealServiceReady(projectId: string): Promise<boolean> {
-    try {
-      const api = getCustomApi()
-      const response = await api.getNamespacedCustomObject({
-        group: KNATIVE_GROUP,
-        version: KNATIVE_VERSION,
-        namespace: this.namespace,
-        plural: 'services',
-        name: `project-${projectId}`,
-      })
-
-      const service = response as any
-      const conditions = service.status?.conditions || []
-      const readyCondition = conditions.find((c: any) => c.type === 'Ready')
-      if (readyCondition?.status !== 'True') return false
-
-      // Double-check with health probe
-      const url = `http://project-${projectId}.${this.namespace}.svc.cluster.local`
-      const healthResp = await fetch(`${url}/ready`, {
-        method: 'GET',
-        signal: AbortSignal.timeout(3000),
-      })
-      return healthResp.ok
-    } catch {
-      return false
-    }
-  }
 }
 
 // =============================================================================

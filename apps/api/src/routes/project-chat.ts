@@ -13,7 +13,7 @@
 import { Hono } from "hono"
 import { trace, SpanStatusCode } from "@opentelemetry/api"
 import { getProjectPodUrl } from "../lib/knative-project-manager"
-import { getWarmPoolController } from "../lib/warm-pool-controller"
+
 import { prisma } from "../lib/prisma"
 import type { IRuntimeManager } from "../lib/runtime"
 import * as billingService from "../services/billing.service"
@@ -56,7 +56,6 @@ async function trackUsageFromStream(
   stream: ReadableStream<Uint8Array>,
   requestBody: any,
   project: { id: string; workspaceId: string },
-  onStreamEnd?: () => void
 ) {
   const decoder = new TextDecoder()
   const reader = stream.getReader()
@@ -281,8 +280,6 @@ async function trackUsageFromStream(
       console.error("[ProjectChat] Failed to persist assistant message:", err)
     }
   }
-
-  onStreamEnd?.()
 }
 
 // =============================================================================
@@ -448,17 +445,6 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
 
       const chatEndpoint = '/agent/chat'
 
-      // Track active connection on the warm pod so the reconciler won't
-      // delete it while this streaming response is still in flight.
-      const warmPool = isKubernetes() ? getWarmPoolController() : null
-      const isWarmPodRequest = warmPool?.isAssigned(projectId) ?? false
-      if (isWarmPodRequest) {
-        warmPool!.trackConnectionStart(projectId)
-      }
-      const onWarmPodStreamEnd = isWarmPodRequest
-        ? () => warmPool!.trackConnectionEnd(projectId)
-        : undefined
-
       console.log(`[ProjectChat] Proxying to: ${podUrl}${chatEndpoint}`)
 
       // Get the request body and parse for billing context
@@ -562,10 +548,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           // Tee the stream: one for the client, one for usage tracking
           const [clientStream, trackingStream] = response.body!.tee()
 
-          // Fire-and-forget: scan the tracking stream for usage data.
-          // onWarmPodStreamEnd is called when the stream finishes so the warm
-          // pool reconciler knows the connection has drained.
-          trackUsageFromStream(trackingStream, parsedBody, project, onWarmPodStreamEnd).catch((err) =>
+          trackUsageFromStream(trackingStream, parsedBody, project).catch((err) =>
             console.error("[ProjectChat] Usage tracking error:", err)
           )
 
@@ -607,7 +590,6 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
 
       // Should not reach here, but handle just in case
       console.error("[ProjectChat] Max retries exceeded:", lastError)
-      onWarmPodStreamEnd?.()
       chatSpan.setStatus({ code: SpanStatusCode.ERROR, message: "max_retries_exceeded" })
       chatSpan.end()
       return c.json(
@@ -616,7 +598,6 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       )
     } catch (error: any) {
       console.error("[ProjectChat] Proxy error:", error)
-      onWarmPodStreamEnd?.()
       chatSpan.setStatus({ code: SpanStatusCode.ERROR, message: error.message })
       chatSpan.recordException(error)
       chatSpan.end()
