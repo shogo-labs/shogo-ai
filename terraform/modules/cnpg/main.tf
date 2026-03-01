@@ -51,10 +51,10 @@ resource "helm_release" "cnpg" {
 
   depends_on = [kubernetes_namespace.cnpg]
 
-  # Operator configuration
+  # Disable PodMonitor unless Prometheus CRDs are installed
   set {
     name  = "monitoring.podMonitorEnabled"
-    value = "true"
+    value = "false"
   }
 
   # Wait for CRDs to be established before marking as complete

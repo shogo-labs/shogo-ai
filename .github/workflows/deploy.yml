@@ -33,6 +33,7 @@ on:
 
 env:
   AWS_REGION: us-east-1
+  AWS_REGION_EU: eu-west-1
   # ECR_REGISTRY is set per-environment in the setup job
 
 jobs:
@@ -45,12 +46,14 @@ jobs:
     outputs:
       environment: ${{ steps.set-env.outputs.environment }}
       eks_cluster: ${{ steps.set-env.outputs.eks_cluster }}
+      eks_cluster_eu: ${{ steps.set-env.outputs.eks_cluster_eu }}
       ecr_registry: ${{ steps.set-env.outputs.ecr_registry }}
       namespace_system: ${{ steps.set-env.outputs.namespace_system }}
       namespace_workspaces: ${{ steps.set-env.outputs.namespace_workspaces }}
       domain: ${{ steps.set-env.outputs.domain }}
       mcp_domain: ${{ steps.set-env.outputs.mcp_domain }}
       docs_domain: ${{ steps.set-env.outputs.docs_domain }}
+      multi_region: ${{ steps.set-env.outputs.multi_region }}
     steps:
       - name: Set environment variables
         id: set-env
@@ -77,18 +80,22 @@ jobs:
           
           if [[ "$ENV" == "production" ]]; then
             echo "eks_cluster=shogo-production" >> $GITHUB_OUTPUT
+            echo "eks_cluster_eu=shogo-production-eu" >> $GITHUB_OUTPUT
             echo "namespace_system=shogo-system" >> $GITHUB_OUTPUT
             echo "namespace_workspaces=shogo-workspaces" >> $GITHUB_OUTPUT
             echo "domain=studio.shogo.ai" >> $GITHUB_OUTPUT
             echo "mcp_domain=mcp.shogo.ai" >> $GITHUB_OUTPUT
             echo "docs_domain=docs.shogo.ai" >> $GITHUB_OUTPUT
+            echo "multi_region=true" >> $GITHUB_OUTPUT
           else
             echo "eks_cluster=shogo-staging" >> $GITHUB_OUTPUT
+            echo "eks_cluster_eu=" >> $GITHUB_OUTPUT
             echo "namespace_system=shogo-staging-system" >> $GITHUB_OUTPUT
             echo "namespace_workspaces=shogo-staging-workspaces" >> $GITHUB_OUTPUT
             echo "domain=studio-staging.shogo.ai" >> $GITHUB_OUTPUT
             echo "mcp_domain=mcp-staging.shogo.ai" >> $GITHUB_OUTPUT
             echo "docs_domain=docs-staging.shogo.ai" >> $GITHUB_OUTPUT
+            echo "multi_region=false" >> $GITHUB_OUTPUT
           fi
 
   # ===========================================================================
@@ -540,7 +547,7 @@ jobs:
             echo "::warning::$BROKEN Knative services are in failed state"
           fi
 
-      - name: Summary
+      - name: Summary (Primary Region)
         env:
           MCP_CHANGED: ${{ needs.detect-changes.outputs.mcp_changed }}
           API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
@@ -570,7 +577,141 @@ jobs:
           echo "- **MCP**: https://${{ env.MCP_DOMAIN }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Docs**: https://${{ env.DOCS_DOMAIN }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Cluster" >> $GITHUB_STEP_SUMMARY
+          echo "### Cluster (Primary - us-east-1)" >> $GITHUB_STEP_SUMMARY
           echo "- **EKS Cluster**: \`${{ env.EKS_CLUSTER }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **System Namespace**: \`${{ env.NS_SYSTEM }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Workspaces Namespace**: \`${{ env.NS_WORKSPACES }}\`" >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # Stage 4: Deploy to EU Region (production only, runs in parallel with primary)
+  # ===========================================================================
+  deploy-eu:
+    name: Deploy to EKS EU (${{ needs.setup.outputs.environment }})
+    runs-on: ubuntu-latest
+    needs: [setup, detect-changes, build-and-push]
+    if: |
+      always() &&
+      needs.setup.outputs.multi_region == 'true' &&
+      needs.setup.result == 'success' &&
+      needs.detect-changes.result == 'success' &&
+      (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped')
+    environment: ${{ needs.setup.outputs.environment }}
+
+    permissions:
+      id-token: write
+      contents: read
+
+    env:
+      ENVIRONMENT: ${{ needs.setup.outputs.environment }}
+      EKS_CLUSTER: ${{ needs.setup.outputs.eks_cluster_eu }}
+      NS_SYSTEM: ${{ needs.setup.outputs.namespace_system }}
+      NS_WORKSPACES: ${{ needs.setup.outputs.namespace_workspaces }}
+      IMAGE_TAG: ${{ needs.setup.outputs.environment }}-${{ github.sha }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: github-actions-deploy-eu
+          aws-region: eu-west-1
+
+      - name: Update kubeconfig (EU)
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region eu-west-1
+
+      - name: Create namespaces if not exist
+        run: |
+          kubectl create namespace ${{ env.NS_SYSTEM }} --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace ${{ env.NS_WORKSPACES }} --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Create or update API secrets (EU)
+        run: |
+          SECRET_ARGS=(
+            --from-literal=ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}"
+          )
+
+          if [ -n "${{ secrets.BETTER_AUTH_SECRET }}" ]; then
+            SECRET_ARGS+=(--from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}")
+          fi
+
+          if [ -n "${{ secrets.STRIPE_SECRET_KEY }}" ]; then
+            SECRET_ARGS+=(--from-literal=STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}")
+          fi
+          if [ -n "${{ secrets.STRIPE_WEBHOOK_SECRET }}" ]; then
+            SECRET_ARGS+=(--from-literal=STRIPE_WEBHOOK_SECRET="${{ secrets.STRIPE_WEBHOOK_SECRET }}")
+          fi
+
+          kubectl create secret generic api-secrets \
+            --namespace=${{ env.NS_SYSTEM }} \
+            "${SECRET_ARGS[@]}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          kubectl create secret generic anthropic-credentials \
+            --namespace=${{ env.NS_WORKSPACES }} \
+            --from-literal=api-key="${{ secrets.ANTHROPIC_API_KEY }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          echo "API secrets created/updated in EU cluster"
+
+      - name: Save current Knative service images (EU)
+        id: save-images-eu
+        run: |
+          get_image() {
+            kubectl get ksvc "$1" -n "$2" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo ""
+          }
+          echo "web_image=$(get_image studio ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
+          echo "api_image=$(get_image api ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
+          echo "mcp_image=$(get_image mcp-workspace-1 ${{ env.NS_WORKSPACES }})" >> $GITHUB_OUTPUT
+
+      - name: Deploy Knative services (EU)
+        env:
+          ECR_REGISTRY: ${{ needs.setup.outputs.ecr_registry }}
+          WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
+          API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
+          MCP_CHANGED: ${{ needs.detect-changes.outputs.mcp_changed }}
+          PREV_WEB_IMAGE: ${{ steps.save-images-eu.outputs.web_image }}
+          PREV_API_IMAGE: ${{ steps.save-images-eu.outputs.api_image }}
+          PREV_MCP_IMAGE: ${{ steps.save-images-eu.outputs.mcp_image }}
+        run: |
+          # ECR images are replicated to eu-west-1 automatically
+          # Use the eu-west-1 ECR registry for image references
+          EU_REGISTRY=$(echo "$ECR_REGISTRY" | sed 's/us-east-1/eu-west-1/')
+
+          patch_ksvc() {
+            local name=$1 ns=$2 ecr_name=$3 changed=$4 prev=$5
+            if [ "$changed" = "true" ]; then
+              echo "Deploying $name -> ${{ env.IMAGE_TAG }} (EU)"
+              kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
+                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${EU_REGISTRY}/shogo/${ecr_name}:${{ env.IMAGE_TAG }}\"}
+              ]" || echo "$name service not found in EU cluster"
+            elif [ -n "$prev" ]; then
+              echo "Restoring $name -> $prev (EU)"
+              kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
+                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${prev}\"}
+              ]" || true
+            fi
+          }
+
+          echo "Updating images in EU cluster"
+          patch_ksvc studio       "${{ env.NS_SYSTEM }}"     shogo-web  "$WEB_CHANGED"  "$PREV_WEB_IMAGE"
+          patch_ksvc api          "${{ env.NS_SYSTEM }}"     shogo-api  "$API_CHANGED"  "$PREV_API_IMAGE"
+          patch_ksvc mcp-workspace-1 "${{ env.NS_WORKSPACES }}" shogo-mcp  "$MCP_CHANGED"  "$PREV_MCP_IMAGE"
+
+      - name: Wait for rollout (EU)
+        run: |
+          echo "Waiting for EU service rollouts..."
+          kubectl wait --for=condition=ready ksvc/studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          kubectl wait --for=condition=ready ksvc/mcp-workspace-1 -n ${{ env.NS_WORKSPACES }} --timeout=300s || true
+
+      - name: Verify deployment (EU)
+        run: |
+          echo "=== Knative Services (EU - ${{ env.NS_SYSTEM }}) ==="
+          kubectl get ksvc -n ${{ env.NS_SYSTEM }}
+          echo ""
+          echo "=== Pods (EU - ${{ env.NS_SYSTEM }}) ==="
+          kubectl get pods -n ${{ env.NS_SYSTEM }}

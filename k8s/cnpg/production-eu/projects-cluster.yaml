@@ -1,0 +1,93 @@
+# =============================================================================
+# Projects PostgreSQL Cluster (Production EU - Replica)
+# =============================================================================
+# Read-only replica streaming from us-east-1 primary.
+# Each project's database is replicated for local reads.
+#
+# Initial setup: Standalone mode with initdb bootstrap.
+# Switch to replica mode once cross-region networking is established.
+# =============================================================================
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: projects-pg
+  namespace: shogo-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    environment: production
+    region: eu-west-1
+    role: replica
+spec:
+  instances: 2
+
+  postgresql:
+    parameters:
+      max_connections: "1000"
+      shared_buffers: "1GB"
+      effective_cache_size: "3GB"
+      work_mem: "8MB"
+      maintenance_work_mem: "256MB"
+      wal_buffers: "32MB"
+      idle_in_transaction_session_timeout: "30000"
+      statement_timeout: "60000"
+      log_min_duration_statement: "1000"
+      log_checkpoints: "on"
+    pg_hba:
+      - host all all 10.0.0.0/8 md5
+      - host all all 10.1.0.0/16 md5
+      - host all all 172.16.0.0/12 md5
+
+  # Standalone bootstrap for initial deployment
+  bootstrap:
+    initdb:
+      database: projects_admin
+      owner: projects_admin
+      postInitApplicationSQL:
+        - ALTER ROLE projects_admin CREATEROLE CREATEDB
+
+  managed:
+    roles:
+      - name: projects_admin
+        ensure: present
+        login: true
+        createdb: true
+        createrole: true
+        passwordSecret:
+          name: projects-pg-app
+
+  storage:
+    size: 200Gi
+    storageClass: ebs-sc
+
+  backup:
+    barmanObjectStore:
+      destinationPath: s3://shogo-pg-backups-production-eu/projects/
+      s3Credentials:
+        accessKeyId:
+          name: cnpg-s3-credentials
+          key: ACCESS_KEY_ID
+        secretAccessKey:
+          name: cnpg-s3-credentials
+          key: SECRET_ACCESS_KEY
+        region:
+          name: cnpg-s3-credentials
+          key: REGION
+      wal:
+        compression: gzip
+      data:
+        compression: gzip
+    retentionPolicy: "90d"
+
+  monitoring:
+    enablePodMonitor: true
+
+  resources:
+    requests:
+      memory: "1Gi"
+      cpu: "500m"
+    limits:
+      memory: "4Gi"
+      cpu: "2000m"
+
+  affinity:
+    topologyKey: kubernetes.io/hostname

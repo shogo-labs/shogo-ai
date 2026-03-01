@@ -1,6 +1,6 @@
 # =============================================================================
-# Variables - Production Environment
-# Updated: March 2026 - Full parity with staging
+# Variables - Production EU Environment (eu-west-1)
+# Multi-region secondary cluster
 # =============================================================================
 
 variable "bootstrap_mode" {
@@ -12,6 +12,12 @@ variable "bootstrap_mode" {
 variable "aws_region" {
   description = "AWS region for deployment"
   type        = string
+  default     = "eu-west-1"
+}
+
+variable "primary_region" {
+  description = "Primary region for cross-region resources (ECR replication source, DB primary)"
+  type        = string
   default     = "us-east-1"
 }
 
@@ -19,6 +25,12 @@ variable "environment" {
   description = "Environment name"
   type        = string
   default     = "production"
+}
+
+variable "environment_suffix" {
+  description = "Suffix to distinguish this region's resources"
+  type        = string
+  default     = "eu"
 }
 
 variable "project_name" {
@@ -31,16 +43,16 @@ variable "project_name" {
 # VPC Configuration
 # -----------------------------------------------------------------------------
 variable "vpc_cidr" {
-  description = "CIDR block for VPC"
+  description = "CIDR block for VPC (must not overlap with primary region)"
   type        = string
-  default     = "10.0.0.0/16"
+  default     = "10.1.0.0/16"
 }
 
 # -----------------------------------------------------------------------------
 # EKS Configuration
 # -----------------------------------------------------------------------------
 variable "eks_cluster_version" {
-  description = "Kubernetes version for EKS cluster (latest stable: 1.33)"
+  description = "Kubernetes version for EKS cluster"
   type        = string
   default     = "1.33"
 }
@@ -76,29 +88,35 @@ variable "enable_secondary_node_group" {
 }
 
 # -----------------------------------------------------------------------------
-# CloudNativePG Configuration (replaces RDS)
+# CloudNativePG Configuration
 # -----------------------------------------------------------------------------
 variable "cnpg_s3_access_key_id" {
-  description = "AWS Access Key ID for CloudNativePG S3 backups (leave empty to use node IAM role)"
+  description = "AWS Access Key ID for CloudNativePG S3 backups"
   type        = string
   default     = ""
   sensitive   = true
 }
 
 variable "cnpg_s3_secret_access_key" {
-  description = "AWS Secret Access Key for CloudNativePG S3 backups (leave empty to use node IAM role)"
+  description = "AWS Secret Access Key for CloudNativePG S3 backups"
   type        = string
   default     = ""
   sensitive   = true
+}
+
+variable "primary_pg_host" {
+  description = "Primary region PostgreSQL host for cross-region replication (NLB or public endpoint)"
+  type        = string
+  default     = ""
 }
 
 # -----------------------------------------------------------------------------
 # ElastiCache Configuration
 # -----------------------------------------------------------------------------
 variable "redis_node_type" {
-  description = "ElastiCache Redis node type"
+  description = "ElastiCache Redis node type (Global Datastore requires m5.large minimum)"
   type        = string
-  default     = "cache.t3.micro"
+  default     = "cache.m5.large"
 }
 
 # -----------------------------------------------------------------------------
@@ -150,9 +168,6 @@ variable "anthropic_api_key" {
   default     = ""
 }
 
-# -----------------------------------------------------------------------------
-# Project Runtime Configuration
-# -----------------------------------------------------------------------------
 variable "project_runtime_idle_timeout" {
   description = "Idle timeout in seconds before project pods scale to zero"
   type        = number
@@ -175,7 +190,7 @@ variable "github_repo" {
 }
 
 # -----------------------------------------------------------------------------
-# Observability Configuration (SigNoz)
+# Observability Configuration
 # -----------------------------------------------------------------------------
 variable "enable_signoz" {
   description = "Enable SigNoz K8s infrastructure monitoring"
@@ -194,28 +209,4 @@ variable "signoz_ingestion_key" {
   type        = string
   default     = ""
   sensitive   = true
-}
-
-variable "signoz_namespace" {
-  description = "Namespace for SigNoz K8s Infra components"
-  type        = string
-  default     = "signoz"
-}
-
-variable "signoz_enable_logs" {
-  description = "Enable log collection in SigNoz"
-  type        = bool
-  default     = false
-}
-
-variable "signoz_enable_events" {
-  description = "Enable Kubernetes event collection in SigNoz"
-  type        = bool
-  default     = true
-}
-
-variable "signoz_enable_metrics" {
-  description = "Enable metrics collection in SigNoz"
-  type        = bool
-  default     = true
 }
