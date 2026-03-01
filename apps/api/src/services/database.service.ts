@@ -42,7 +42,9 @@ if (!PROJECTS_DB_ADMIN_URL) {
 // Defaults to the standard CloudNativePG service name if not explicitly set
 const PROJECTS_DB_HOST =
   process.env.PROJECTS_DB_HOST ||
-  "projects-pg-rw.shogo-staging-system.svc.cluster.local"
+  (process.env.NODE_ENV === 'production'
+    ? "projects-pg-rw.shogo-system.svc.cluster.local"
+    : "projects-pg-rw.shogo-staging-system.svc.cluster.local")
 
 const PROJECTS_DB_PORT = process.env.PROJECTS_DB_PORT || "5432"
 

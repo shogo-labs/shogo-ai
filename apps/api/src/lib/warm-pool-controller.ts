@@ -869,7 +869,7 @@ export class WarmPoolController {
     ]
 
     // AI Proxy URL (no token yet — assigned later)
-    const systemNamespace = process.env.SYSTEM_NAMESPACE || 'shogo-staging-system'
+    const systemNamespace = process.env.SYSTEM_NAMESPACE || (process.env.NODE_ENV === 'production' ? 'shogo-system' : 'shogo-staging-system')
     const apiUrl =
       process.env.API_URL ||
       process.env.SHOGO_API_URL ||

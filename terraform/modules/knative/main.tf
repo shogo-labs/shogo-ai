@@ -145,6 +145,10 @@ resource "null_resource" "kourier_alb" {
         service.beta.kubernetes.io/aws-load-balancer-ssl-negotiation-policy="ELBSecurityPolicy-TLS13-1-2-2021-06" \
         service.beta.kubernetes.io/aws-load-balancer-backend-protocol="tcp"
 
+      # NLB terminates TLS, so backend must receive plain HTTP on 8080 (not 8443 which expects TLS)
+      kubectl patch service/kourier -n kourier-system --type='json' \
+        -p='[{"op":"replace","path":"/spec/ports/1/targetPort","value":8080}]'
+
       # Force service recreation to pick up new load balancer type
       kubectl patch service/kourier -n kourier-system -p '{"spec":{"type":"LoadBalancer"}}'
 
