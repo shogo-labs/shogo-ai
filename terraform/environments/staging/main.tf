@@ -1306,7 +1306,7 @@ resource "null_resource" "knative_services" {
                   - name: BETTER_AUTH_URL
                     value: "https://studio-staging.shogo.ai"
                   - name: ALLOWED_ORIGINS
-                    value: "https://studio-staging.shogo.ai,https://api-staging.shogo.ai"
+                    value: "https://studio-staging.shogo.ai"
                   - name: REDIS_URL
                     valueFrom:
                       secretKeyRef:
