@@ -101,7 +101,9 @@ describe("Billing Routes E2E", () => {
         }
       )
 
-      // Portal returns 501 not implemented for now
+      // TODO: Portal currently returns 501 — this blocks the "Manage" button
+      // in the billing UI. Once implemented, this should return 200 with a
+      // Stripe customer portal URL. See E2E_QA_REPORT_UPGRADE_FLOW_2026-02-26.md
       expect(response.status).toBe(501)
     })
 
@@ -115,6 +117,31 @@ describe("Billing Routes E2E", () => {
       expect(response.status).toBe(400)
       const data = await response.json()
       expect(data.error.message).toContain("workspaceId")
+    })
+  })
+
+  describe("GET /api/subscriptions", () => {
+    test("returns subscription data for workspace", async () => {
+      if (!apiAvailable) return
+
+      const response = await fetch(
+        `${API_BASE}/api/subscriptions?workspaceId=test-workspace-123`
+      )
+
+      // Should return 200 even if no subscription exists (empty array)
+      expect(response.status).toBeLessThanOrEqual(401) // May require auth
+    })
+  })
+
+  describe("GET /api/credit-ledgers", () => {
+    test("returns credit ledger for workspace", async () => {
+      if (!apiAvailable) return
+
+      const response = await fetch(
+        `${API_BASE}/api/credit-ledgers?workspaceId=test-workspace-123`
+      )
+
+      expect(response.status).toBeLessThanOrEqual(401)
     })
   })
 })

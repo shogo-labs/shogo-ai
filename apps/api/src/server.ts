@@ -1,22 +1,23 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import Stripe from 'stripe'
-import { streamText, generateText, createUIMessageStream, createUIMessageStreamResponse, type ModelMessage } from 'ai'
+import { generateText, createUIMessageStream, createUIMessageStreamResponse, type ModelMessage } from 'ai'
 import { z } from 'zod'
 import { EventEmitter } from 'events'
 import type { SubagentProgressEvent, VirtualToolEvent } from './types/progress'
 // isVirtualTool kept in types/progress.ts for client-side use (ChatPanel handler)
-import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk'
-import { createClaudeCode, createSdkMcpServer, tool as sdkTool } from 'ai-sdk-provider-claude-code'
+import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput, PreToolUseHookInput, CanUseTool, SDKSession, SDKMessage, SDKSessionOptions, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import { createSdkMcpServer, tool as sdkTool, unstable_v2_createSession, unstable_v2_resumeSession } from '@anthropic-ai/claude-agent-sdk'
 import { createAnthropic } from '@ai-sdk/anthropic'
-import { resolve, join, extname, relative, isAbsolute } from 'path'
+import { resolve, join, isAbsolute } from 'path'
 import { fileURLToPath } from 'url'
-import { readdir, stat } from 'fs/promises'
+import { readdir, stat, mkdir, appendFile } from 'fs/promises'
+import { existsSync, mkdirSync } from 'fs'
 import { auth } from './auth'
-import { PERSONA_PROMPTS, isAgentPersona, type AgentPersona } from './prompts/persona-prompts'
 import { getPriceId } from './config/stripe-prices'
-import { processInterleavedStream, finalizeCurrentText } from './lib/interleaved-stream'
+// processInterleavedStream no longer needed — V2 SDK handles streaming natively
 import * as billingService from './services/billing.service'
+import * as workspaceService from './services/workspace.service'
 import { publishRoutes } from './routes/publish'
 import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
@@ -24,7 +25,21 @@ import { projectChatRoutes } from './routes/project-chat'
 import { projectAdminRoutes } from './routes/project-admin'
 import { terminalRoutes } from './routes/terminal'
 import { testsRoutes } from './routes/tests'
+import { securityRoutes } from './routes/security'
 import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
+import { checkpointRoutes } from './routes/checkpoints'
+import { thumbnailRoutes } from './routes/thumbnail'
+import { githubRoutes } from './routes/github'
+import { aiProxyRoutes } from './routes/ai-proxy'
+import { calculateCreditCost } from './lib/credit-cost'
+import { openSession as openBillingSession, closeSession as closeBillingSession } from './lib/proxy-billing-session'
+import { adminRoutes } from './routes/admin'
+import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
+import { integrationRoutes } from './routes/integrations'
+import { agentTemplateRoutes } from './routes/agent-templates'
+import { requireSuperAdmin } from './middleware/super-admin'
+// Generated admin CRUD routes (unrestricted, middleware-protected)
+import { createAdminRoutes } from './generated/admin-routes'
 // Note: Manual routes (workspaces, projects, folders, starred) removed in favor of generated v2 routes
 import { createRuntimeManager, type IRuntimeManager } from './lib/runtime'
 // Generated routes (v2 API)
@@ -33,6 +48,7 @@ import { routeHooks } from './generated/hooks'
 import { prisma } from './lib/prisma'
 // Auth middleware for generated routes
 import { authMiddleware, requireAuth } from './middleware/auth'
+import { tracingMiddleware } from './middleware/tracing'
 
 // Runtime manager singleton for project Vite runtimes
 let runtimeManager: IRuntimeManager | null = null
@@ -46,6 +62,22 @@ const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 
 // Namespace for project runtime pods (configurable for staging/production)
 const PROJECT_NAMESPACE = process.env.PROJECT_NAMESPACE || 'shogo-workspaces'
+
+// Cache of project types to avoid repeated DB lookups on every proxy call.
+// Entries never change after creation so a simple in-memory map is sufficient.
+const projectTypeCache = new Map<string, string>()
+
+async function getProjectType(projectId: string): Promise<string> {
+  const cached = projectTypeCache.get(projectId)
+  if (cached) return cached
+  const row = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { type: true },
+  })
+  const type = row?.type ?? 'APP'
+  projectTypeCache.set(projectId, type)
+  return type
+}
 
 /**
  * Call an MCP tool with proper session handling
@@ -142,45 +174,53 @@ function parseDataUrl(dataUrl: string): { mimeType: string; base64Data: string }
 }
 
 /**
- * Convert UIMessage format (from @ai-sdk/react v3) to CoreMessage format (for streamText).
+ * Convert UIMessage format (from @ai-sdk/react v3) to ModelMessage format (for streamText).
  *
  * UIMessage uses `parts` array: { parts: [{ type: "text", text: "..." }], role, id }
- * CoreMessage uses `content` string or array: { role, content: "..." | Array<TextPart | ImagePart> }
+ * ModelMessage uses `content` string or array: { role, content: "..." | Array<TextPart | ImagePart> }
  *
  * chat-session-sync-fix: Required because v3 sendMessage() sends UIMessage format,
- * but streamText() expects CoreMessage format.
+ * but streamText() expects ModelMessage format.
  *
  * task-api-convert-images: Extended to handle file parts with image mediaTypes.
  * File parts with image/* mediaType are converted to ImagePart format for Claude API.
  */
-function convertUIMessagesToCoreMessages(messages: any[]): ModelMessage[] {
+function convertUIMessagesToModelMessages(messages: any[]): ModelMessage[] {
   return messages.map((msg) => {
-    // If message already has content string (CoreMessage format), pass through
+    // If message already has content string (ModelMessage format), pass through
     if (typeof msg.content === 'string') {
       return { role: msg.role, content: msg.content }
     }
 
     // If message has parts array (UIMessage format), process all part types
     if (Array.isArray(msg.parts)) {
-      const contentParts: Array<{ type: 'text'; text: string } | { type: 'image'; image: string; mimeType: string }> = []
+      const contentParts: Array<
+        | { type: 'text'; text: string }
+        | { type: 'image'; image: string; mimeType: string }
+        | { type: 'file'; data: string; mimeType: string }
+      > = []
 
       for (const part of msg.parts) {
         if (part.type === 'text' && part.text) {
-          // Text parts: extract text content
           contentParts.push({ type: 'text', text: part.text })
-        } else if (part.type === 'file' && part.mediaType?.startsWith('image/')) {
-          // File parts with image mediaType: convert to ImagePart
-          // The url field contains the data URL (data:image/png;base64,...)
-          const parsed = parseDataUrl(part.url || '')
-          if (parsed) {
+        } else if (part.type === 'file' && part.url) {
+          const parsed = parseDataUrl(part.url)
+          if (!parsed) continue
+
+          if (part.mediaType?.startsWith('image/')) {
             contentParts.push({
               type: 'image',
               image: parsed.base64Data,
               mimeType: parsed.mimeType,
             })
+          } else {
+            contentParts.push({
+              type: 'file',
+              data: parsed.base64Data,
+              mimeType: parsed.mimeType,
+            })
           }
         }
-        // Non-image file parts are gracefully ignored
       }
 
       // If we only have text parts, return as simple string (backward compatible)
@@ -188,7 +228,7 @@ function convertUIMessagesToCoreMessages(messages: any[]): ModelMessage[] {
         return { role: msg.role, content: contentParts[0].text }
       }
 
-      // If we have mixed content or only images, return as array
+      // If we have mixed content (text + images/files), return as array
       if (contentParts.length > 0) {
         return { role: msg.role, content: contentParts }
       }
@@ -235,9 +275,7 @@ const progressEvents = new EventEmitter()
 // (virtual-tools-domain Phase 0 PoC)
 const virtualToolEvents = new EventEmitter()
 
-// Stream completion event emitter - signals when parent agent finishes (fixes subagent hang)
-// This is separate from progressEvents to avoid confusion between progress updates and completion signals
-const streamCompletionEvents = new EventEmitter()
+// streamCompletionEvents removed — V2 SDK session.stream() naturally completes per turn
 
 // Debug logging prefix for subagent progress
 const LOG_PREFIX = '[SubagentProgress]'
@@ -302,7 +340,7 @@ const virtualToolsServer = createSdkMcpServer({
         // Process each operation
         for (const op of args.operations ?? []) {
           // Check if this is a schema operation that should go to MCP
-          const isSchemaOperation = op.model === 'Schema' || op.domain === 'schema' || (op.domain === 'wavesmith' && op.model === 'Schema')
+          const isSchemaOperation = op.model === 'Schema' || op.domain === 'schema' || (op.domain === 'shogo' && op.model === 'Schema')
           
           if (isSchemaOperation && op.action === 'create' && op.data) {
             // Call MCP schema.set directly and return real result
@@ -380,102 +418,7 @@ const virtualToolsServer = createSdkMcpServer({
 // Get workspaces directory for project-scoped operations
 const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
 
-/**
- * File extensions to include in the project file list.
- */
-const PROJECT_FILE_EXTENSIONS = new Set([
-  '.ts', '.tsx', '.js', '.jsx', '.json', '.css', '.html', '.md', '.svg'
-])
-
-/**
- * Directories to exclude from project file listing.
- */
-const EXCLUDED_DIRS = new Set([
-  'node_modules', '.git', 'dist', 'build', '.vite', '.cache', '.claude'
-])
-
-/**
- * Recursively list files in a project directory.
- * Returns a flat list of relative file paths.
- */
-async function listProjectFilesRecursive(
-  dir: string,
-  basePath: string,
-  files: string[] = []
-): Promise<string[]> {
-  try {
-    const entries = await readdir(dir, { withFileTypes: true })
-
-    for (const entry of entries) {
-      const entryPath = join(dir, entry.name)
-      const relativePath = relative(basePath, entryPath)
-
-      if (entry.isDirectory()) {
-        // Skip excluded directories
-        if (EXCLUDED_DIRS.has(entry.name)) {
-          continue
-        }
-        // Recurse into subdirectories
-        await listProjectFilesRecursive(entryPath, basePath, files)
-      } else {
-        const ext = extname(entry.name).toLowerCase()
-        // Only include files with allowed extensions
-        if (PROJECT_FILE_EXTENSIONS.has(ext)) {
-          files.push(relativePath)
-        }
-      }
-    }
-
-    return files
-  } catch (err) {
-    console.error('[getProjectFiles] Error listing directory:', dir, err)
-    return files
-  }
-}
-
-/**
- * Get a formatted list of project files for inclusion in the system prompt.
- * Returns null if the project directory doesn't exist.
- */
-async function getProjectFileList(projectId: string): Promise<string | null> {
-  const projectDir = resolve(WORKSPACES_DIR, projectId)
-
-  try {
-    await stat(projectDir)
-  } catch {
-    return null // Project directory doesn't exist
-  }
-
-  const files = await listProjectFilesRecursive(projectDir, projectDir)
-
-  if (files.length === 0) {
-    return null
-  }
-
-  // Sort files for consistent output
-  files.sort()
-
-  // Format as a simple list
-  return files.map(f => `  ${f}`).join('\n')
-}
-
-/**
- * Type for canUseTool permission result.
- * See: https://docs.anthropic.com/en/docs/claude-code/sdk
- */
-type PermissionResult =
-  | { behavior: 'allow' }
-  | { behavior: 'deny'; message?: string }
-
-/**
- * Type for canUseTool callback function.
- * Invoked before every tool execution to check permissions.
- */
-type CanUseTool = (
-  toolName: string,
-  input: Record<string, unknown>,
-  options: { signal: AbortSignal }
-) => Promise<PermissionResult>
+// CanUseTool type is imported from @anthropic-ai/claude-agent-sdk
 
 /**
  * Create a canUseTool callback that restricts file operations to projectDir.
@@ -547,334 +490,285 @@ function createProjectPathRestrictor(projectDir: string): CanUseTool {
  * workspace via canUseTool callback. This prevents the agent from accessing
  * files outside the project directory (e.g., the Shogo platform codebase).
  */
-function createProjectScopedClaudeCode(projectId?: string) {
-  // Determine working directory - project workspace if projectId provided, else project root
+// =============================================================================
+// V2 Agent SDK Session Management
+// =============================================================================
+// Uses the V2 session-based API from @anthropic-ai/claude-agent-sdk.
+// Sessions persist across HTTP requests, keeping the CLI subprocess alive.
+// This eliminates the 7-12s cold start overhead per message.
+//
+// Architecture:
+//   createSession() → session.send(msg) → session.stream() → convert to UIMessageStream
+//   Session persists between requests (no subprocess respawn)
+//
+// The V2 SDKSessionOptions type is incomplete (preview API), but the runtime
+// accepts all V1 QueryOptions properties. We extend the type to include them.
+
+/** V1 QueryOptions fields that V2 runtime accepts but aren't yet typed */
+interface ExtendedSessionOptions extends SDKSessionOptions {
+  cwd?: string
+  mcpServers?: Record<string, any>
+  settingSources?: string[]
+  allowDangerouslySkipPermissions?: boolean
+  includePartialMessages?: boolean
+  persistSession?: boolean
+}
+
+// Shared allowedTools list for all sessions
+const ALLOWED_TOOLS = [
+  // Virtual tools (SDK MCP server - uses mcp__servername__toolname format)
+  'mcp__virtual-tools__set_workspace',
+  'mcp__virtual-tools__execute',
+  // File operations
+  'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
+  // Skill and agent tools
+  'Skill', 'Task', 'Bash', 'TodoWrite',
+  // Shogo MCP tools - Schema
+  'mcp__shogo__schema_set',
+  'mcp__shogo__schema_get',
+  'mcp__shogo__schema_list',
+  'mcp__shogo__schema_load',
+  // Shogo MCP tools - Store
+  'mcp__shogo__store_create',
+  'mcp__shogo__store_list',
+  'mcp__shogo__store_get',
+  'mcp__shogo__store_update',
+  'mcp__shogo__store_query',
+  'mcp__shogo__store_models',
+  'mcp__shogo__store_delete',
+  // Shogo MCP tools - Views
+  'mcp__shogo__view_execute',
+  'mcp__shogo__view_define',
+  'mcp__shogo__view_project',
+  // Shogo MCP tools - Data & DDL
+  'mcp__shogo__data_load',
+  'mcp__shogo__data_loadAll',
+  'mcp__shogo__ddl_execute',
+  'mcp__shogo__ddl_migrate',
+]
+
+// Shared hooks for all sessions (emit to module-level EventEmitters)
+const SESSION_HOOKS = {
+  SubagentStart: [{
+    hooks: [async (rawInput: unknown) => {
+      const input = rawInput as SubagentStartHookInput
+      console.log(`${LOG_PREFIX} 🚀 HOOK SubagentStart fired:`, {
+        agentId: input.agent_id,
+        agentType: input.agent_type,
+      })
+      progressEvents.emit('progress', {
+        type: 'subagent-start',
+        agentId: input.agent_id,
+        agentType: input.agent_type,
+        timestamp: Date.now(),
+      } satisfies SubagentProgressEvent)
+      return { continue: true }
+    }]
+  }],
+  SubagentStop: [{
+    hooks: [async (rawInput: unknown) => {
+      const input = rawInput as SubagentStopHookInput
+      console.log(`${LOG_PREFIX} 🛑 HOOK SubagentStop fired:`, { agentId: input.agent_id })
+      progressEvents.emit('progress', {
+        type: 'subagent-stop',
+        agentId: input.agent_id,
+        timestamp: Date.now(),
+      } satisfies SubagentProgressEvent)
+      return { continue: true }
+    }]
+  }],
+  PostToolUse: [{
+    hooks: [async (rawInput: unknown) => {
+      const input = rawInput as PostToolUseHookInput
+      if (input.tool_name.includes('mcp__') || input.tool_name === 'Skill' || input.tool_name === 'Task') {
+        console.log(`${LOG_PREFIX} 🔧 HOOK PostToolUse:`, { toolName: input.tool_name })
+      }
+      progressEvents.emit('progress', {
+        type: 'tool-complete',
+        toolName: input.tool_name,
+        toolUseId: input.tool_use_id,
+        timestamp: Date.now(),
+      } satisfies SubagentProgressEvent)
+      return { continue: true }
+    }]
+  }],
+}
+
+/**
+ * Build V2 session options for a given scope.
+ * Includes all V1 QueryOptions needed for MCP servers, permissions, and hooks.
+ */
+function buildSessionOptions(projectId?: string): ExtendedSessionOptions {
   let cwd = PROJECT_ROOT
-  // Track project directory for path restriction (null means full access)
   let projectDir: string | null = null
 
   if (projectId) {
     const resolvedProjectDir = resolve(WORKSPACES_DIR, projectId)
-    // Check if project directory exists - if not, fall back to project root
-    // This handles the case where a project record exists but workspace hasn't been created yet
     try {
-      const fs = require('fs')
-      if (fs.existsSync(resolvedProjectDir)) {
-        cwd = resolvedProjectDir
-        projectDir = resolvedProjectDir // Enable path restriction
-      } else {
-        console.warn(`[ClaudeCode] Project workspace not found: ${resolvedProjectDir}, using project root (no path restriction)`)
+      if (!existsSync(resolvedProjectDir)) {
+        console.log(`[ClaudeCode] Creating workspace directory: ${resolvedProjectDir}`)
+        mkdirSync(resolvedProjectDir, { recursive: true })
       }
+      cwd = resolvedProjectDir
+      projectDir = resolvedProjectDir
+      console.log(`[ClaudeCode] Using project workspace: ${resolvedProjectDir}`)
     } catch (e) {
-      console.warn(`[ClaudeCode] Error checking project workspace: ${e}, using project root (no path restriction)`)
+      console.error(`[ClaudeCode] Error creating/checking project workspace: ${e}`)
+      console.warn(`[ClaudeCode] Falling back to project root (no path restriction)`)
     }
   }
 
   const pathRestrictor = projectDir ? createProjectPathRestrictor(projectDir) : undefined
-  console.log(`[ClaudeCode] Creating provider with cwd: ${cwd}${projectId ? ` (project: ${projectId})` : ' (platform)'}${projectDir ? ' [path-restricted]' : ''}`);
-  console.log(`[ClaudeCode] canUseTool callback: ${pathRestrictor ? 'SET' : 'NOT SET'}`);
+  console.log(`[ClaudeCode] Building session options: cwd=${cwd}, pathRestricted=${!!pathRestrictor}`)
 
-  return createClaudeCode({
-  defaultSettings: {
-    // Enable streaming input - REQUIRED for hooks to fire
-    // See: https://ai-sdk.dev/providers/claude-code (hooks require streaming input)
-    streamingInput: 'always',
-    // Enable verbose logging for debugging
-    verbose: true,
-    // Set working directory - project workspace or project root
+  return {
+    model: 'claude-opus-4-20250514',
     cwd,
-    // Path restriction for project-scoped sessions (prevents access outside workspace)
-    // undefined means no restriction (full filesystem access for platform-level operations)
     canUseTool: pathRestrictor,
-    // Load project settings (picks up .claude/skills, .mcp.json, etc.)
     settingSources: ['project', 'local'],
-    // MCP servers - Wavesmith for data + Virtual tools for client-side effects
+    // Include partial messages so we get streaming text deltas
+    includePartialMessages: true,
+    // MCP servers
     mcpServers: {
-      wavesmith: {
-        // Run MCP server as subprocess (packages/mcp included in Docker build)
-        // Use absolute path since cwd is set to project workspace, not app root
+      shogo: {
         command: 'bun',
-        args: ['run', '/app/packages/mcp/src/server.ts'],
+        args: ['run', resolve(PROJECT_ROOT, 'packages/mcp/src/server-templates.ts')],
+        env: {
+          ...(projectId && {
+            PROJECT_ID: projectId,
+            PROJECT_DIR: projectDir || resolve(WORKSPACES_DIR, projectId),
+          }),
+        },
       },
-      // SDK MCP server for virtual tools (in-process, defined above)
       'virtual-tools': virtualToolsServer,
     },
-    // Allow MCP tools, file operations, and skill invocation
-    allowedTools: [
-      // Virtual tools (SDK MCP server - uses mcp__servername__toolname format)
-      'mcp__virtual-tools__set_workspace',
-      'mcp__virtual-tools__execute',
-      // File operations
-      'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
-      // Skill and agent tools
-      'Skill', 'Task', 'Bash', 'TodoWrite',
-      // Wavesmith MCP tools - Schema
-      'mcp__wavesmith__schema_set',
-      'mcp__wavesmith__schema_get',
-      'mcp__wavesmith__schema_list',
-      'mcp__wavesmith__schema_load',
-      // Wavesmith MCP tools - Store
-      'mcp__wavesmith__store_create',
-      'mcp__wavesmith__store_list',
-      'mcp__wavesmith__store_get',
-      'mcp__wavesmith__store_update',
-      'mcp__wavesmith__store_query',
-      'mcp__wavesmith__store_models',
-      'mcp__wavesmith__store_delete',
-      // Wavesmith MCP tools - Views
-      'mcp__wavesmith__view_execute',
-      'mcp__wavesmith__view_define',
-      'mcp__wavesmith__view_project',
-      // Wavesmith MCP tools - Data & DDL
-      'mcp__wavesmith__data_load',
-      'mcp__wavesmith__data_loadAll',
-      'mcp__wavesmith__ddl_execute',
-      'mcp__wavesmith__ddl_migrate',
-      // Chrome DevTools MCP - Navigation & Pages
-      'mcp__chrome-devtools__navigate_page',
-      'mcp__chrome-devtools__new_page',
-      'mcp__chrome-devtools__close_page',
-      'mcp__chrome-devtools__select_page',
-      'mcp__chrome-devtools__list_pages',
-      'mcp__chrome-devtools__wait_for',
-      'mcp__chrome-devtools__resize_page',
-      // Chrome DevTools MCP - Input & Interaction
-      'mcp__chrome-devtools__click',
-      'mcp__chrome-devtools__fill',
-      'mcp__chrome-devtools__fill_form',
-      'mcp__chrome-devtools__hover',
-      'mcp__chrome-devtools__press_key',
-      'mcp__chrome-devtools__drag',
-      'mcp__chrome-devtools__upload_file',
-      'mcp__chrome-devtools__handle_dialog',
-      // Chrome DevTools MCP - Inspection & Debugging
-      'mcp__chrome-devtools__take_screenshot',
-      'mcp__chrome-devtools__take_snapshot',
-      'mcp__chrome-devtools__evaluate_script',
-      'mcp__chrome-devtools__list_console_messages',
-      'mcp__chrome-devtools__get_console_message',
-      // Chrome DevTools MCP - Network
-      'mcp__chrome-devtools__list_network_requests',
-      'mcp__chrome-devtools__get_network_request',
-      'mcp__chrome-devtools__emulate',
-      // Chrome DevTools MCP - Performance
-      'mcp__chrome-devtools__performance_start_trace',
-      'mcp__chrome-devtools__performance_stop_trace',
-      'mcp__chrome-devtools__performance_analyze_insight',
-    ],
-    // Permission mode:
-    // - When canUseTool callback is provided (project-scoped): use 'default' so CLI sends
-    //   permission requests to SDK, which invokes our callback for path restriction
-    // - When no canUseTool callback (platform-level): use 'bypassPermissions' for non-interactive use
+    // PERF: Keep this list minimal — each tool adds ~550-850 tokens of context
+    allowedTools: ALLOWED_TOOLS,
     permissionMode: pathRestrictor ? 'default' : 'bypassPermissions',
-    // Skip the dangerous bypass confirmation for non-project sessions
     allowDangerouslySkipPermissions: !pathRestrictor,
-    // Hooks for subagent progress streaming (task-subagent-progress-streaming)
-    // and virtual tool interception (virtual-tools-domain Phase 0 PoC)
-    hooks: {
-      // PreToolUse: Currently unused - virtual tools handled via sdkTool()
-      // SDK tools (virtualToolsServer) are the single execution path for virtual tools.
-      // See: sdkTool('set_workspace', ...), sdkTool('execute', ...)
-      // Keeping hook structure for future non-virtual-tool interceptors if needed.
-      SubagentStart: [{
-        hooks: [async (rawInput: unknown) => {
-          const input = rawInput as SubagentStartHookInput
-          console.log(`${LOG_PREFIX} 🚀 HOOK SubagentStart fired:`, {
-            agentId: input.agent_id,
-            agentType: input.agent_type,
-            rawInput: JSON.stringify(rawInput).slice(0, 200),
-          })
-          const event = {
-            type: 'subagent-start',
-            agentId: input.agent_id,
-            agentType: input.agent_type,
-            timestamp: Date.now(),
-          } satisfies SubagentProgressEvent
-          progressEvents.emit('progress', event)
-          console.log(`${LOG_PREFIX} 📤 Emitted subagent-start event`)
-          return { continue: true }
-        }]
-      }],
-      SubagentStop: [{
-        hooks: [async (rawInput: unknown) => {
-          const input = rawInput as SubagentStopHookInput
-          console.log(`${LOG_PREFIX} 🛑 HOOK SubagentStop fired:`, {
-            agentId: input.agent_id,
-            rawInput: JSON.stringify(rawInput).slice(0, 200),
-          })
-          const event = {
-            type: 'subagent-stop',
-            agentId: input.agent_id,
-            timestamp: Date.now(),
-          } satisfies SubagentProgressEvent
-          progressEvents.emit('progress', event)
-          console.log(`${LOG_PREFIX} 📤 Emitted subagent-stop event`)
-          return { continue: true }
-        }]
-      }],
-      PostToolUse: [{
-        hooks: [async (rawInput: unknown) => {
-          const input = rawInput as PostToolUseHookInput
-          // Only log MCP and Skill tools to reduce noise
-          if (input.tool_name.includes('mcp__') || input.tool_name === 'Skill' || input.tool_name === 'Task') {
-            console.log(`${LOG_PREFIX} 🔧 HOOK PostToolUse fired:`, {
-              toolName: input.tool_name,
-              toolUseId: input.tool_use_id,
-            })
-          }
-          const event = {
-            type: 'tool-complete',
-            toolName: input.tool_name,
-            toolUseId: input.tool_use_id,
-            timestamp: Date.now(),
-          } satisfies SubagentProgressEvent
-          progressEvents.emit('progress', event)
-          return { continue: true }
-        }]
-      }],
-      // Stop hook fires when PARENT agent finishes (not just subagents)
-      // This is the authoritative signal that the stream should complete
-      Stop: [{
-        hooks: [async (rawInput: unknown) => {
-          // Extract session_id from rawInput - SDK doesn't provide it in stream metadata
-          const sessionId = (rawInput as { session_id?: string }).session_id
-          console.log(`${LOG_PREFIX} 🏁 HOOK Stop (PARENT) fired:`, {
-            sessionId,
-            rawInput: JSON.stringify(rawInput).slice(0, 200),
-          })
-          // Signal stream completion with session ID - this will unblock the reader.read() loop
-          streamCompletionEvents.emit('complete', {
-            source: 'Stop',
-            timestamp: Date.now(),
-            sessionId,  // Pass session ID for client persistence
-          })
-          console.log(`${LOG_PREFIX} 📤 Emitted stream-complete signal from Stop hook (sessionId: ${sessionId})`)
-          return { continue: true }
-        }]
-      }],
-      // SessionEnd hook fires when the Claude Code session ends
-      // This is a fallback signal in case Stop doesn't fire
-      SessionEnd: [{
-        hooks: [async (rawInput: unknown) => {
-          // Extract session_id from rawInput - SDK doesn't provide it in stream metadata
-          const sessionId = (rawInput as { session_id?: string }).session_id
-          console.log(`${LOG_PREFIX} 🔚 HOOK SessionEnd fired:`, {
-            sessionId,
-            rawInput: JSON.stringify(rawInput).slice(0, 200),
-          })
-          // Signal stream completion with session ID
-          streamCompletionEvents.emit('complete', {
-            source: 'SessionEnd',
-            timestamp: Date.now(),
-            sessionId,  // Pass session ID for client persistence
-          })
-          console.log(`${LOG_PREFIX} 📤 Emitted stream-complete signal from SessionEnd hook (sessionId: ${sessionId})`)
-          return { continue: true }
-        }]
-      }],
-    },
-  },
-  })
+    hooks: SESSION_HOOKS,
+  } as ExtendedSessionOptions
 }
 
-// Default Claude Code instance for platform-level operations (skills, non-project chats)
-const claudeCode = createProjectScopedClaudeCode()
+// Session cache: persistent V2 sessions keyed by scope (projectId or '__platform__')
+const sessionCache = new Map<string, SDKSession>()
 
 /**
- * Base system prompt for the Wavesmith app builder assistant.
- * This prompt is always included and provides context about available MCP tools.
+ * Get or create a persistent V2 session for the given scope.
+ * Sessions persist across HTTP requests — the CLI subprocess stays alive,
+ * eliminating the 7-12s cold start per message.
  */
-export const BASE_SYSTEM_PROMPT = `You are a Wavesmith app builder assistant running in the shogo-ai project at ${PROJECT_ROOT}.
+// Track which sessions are actively handling a chat message
+const activeSessions = new Set<string>()
 
-You have access to the Wavesmith MCP server with these tools:
-- schema_set, schema_get, schema_list, schema_load - Manage JSON schemas
-- store_create, store_list, store_get, store_update, store_query - CRUD operations on entities
-- store_models - List available models in a schema
-- data_load, data_loadAll - Load data from persistence
-
-**CRITICAL: Schema Format for schema_set**
-When calling schema_set, your payload MUST use Enhanced JSON Schema format with "$defs":
-
-{
-  "$defs": {
-    "ModelName": {
-      "type": "object",
-      "x-original-name": "ModelName",
-      "properties": {
-        "id": { "type": "string", "x-mst-type": "identifier" },
-        "name": { "type": "string" }
-      },
-      "required": ["id", "name"]
+function getOrCreateSession(scopeKey: string, projectId?: string): SDKSession {
+  const existing = sessionCache.get(scopeKey)
+  if (existing) {
+    // Check if session is still alive (V2 session has a 'closed' property)
+    if (!(existing as any).closed) {
+      return existing
     }
+    console.log(`[ClaudeCode] Session ${scopeKey} was closed, creating new one`)
+    sessionCache.delete(scopeKey)
+    activeSessions.delete(scopeKey)
   }
+
+  const options = buildSessionOptions(projectId)
+  const session = unstable_v2_createSession(options as any)
+  sessionCache.set(scopeKey, session)
+  console.log(`[ClaudeCode] Created V2 session for: ${scopeKey}`)
+  return session
 }
 
-- Use "$defs" (NOT "models", "x-models", "definitions", or "schemas")
-- Each model needs: type="object", x-original-name, properties with id, required array
-- id property must have "x-mst-type": "identifier"
+// =============================================================================
+// Pre-warm: Create a V2 session and send a ping to initialize the CLI
+// =============================================================================
+// The first send() spawns the CLI subprocess, loads MCP servers, and establishes
+// a session. By sending a lightweight ping at startup, we shift that cost
+// from the user's first message to server boot time.
+async function prewarmClaudeCode() {
+  const scopeKey = '__platform__'
+  const startTime = performance.now()
 
-You also have access to virtual tools for UI control:
-- set_workspace: Declaratively set workspace state
-  Arguments: { layout?: "single"|"split-h"|"split-v", panels: [{ slot, section, config? }] }
-  Example: set_workspace({ panels: [{ slot: "main", section: "DesignContainerSection", config: { schemaName: "component-builder" } }] })
-  Use this to show schemas, change layouts, or display any combination of panels.
-  Available sections: DesignContainerSection, WorkspaceBlankStateSection, DynamicCompositionSection, DataGridSection
-
-- execute: Run domain operations on client state
-  Arguments: { operations: [{ domain, action, model, id?, data }] }
-  Example: execute({ operations: [{ domain: "component-builder", action: "create", model: "Composition", data: { name: "..." } }] })
-  Use for creating/updating/deleting entities. Domains: component-builder, studio-chat
-
-Available schemas:
-- component-builder: UI composition system - ComponentDefinition, Composition, LayoutTemplate, Registry, RendererBinding
-- studio-core: Organizations, projects, project membership
-- studio-chat: Chat sessions and messages
-
-You can help users:
-- Design and create data schemas for their applications
-- Create and manage entity instances
-- Query and update data
-- Inspect and modify UI compositions (use component-builder schema)
-- Explain data modeling concepts and best practices
-
-**Skill Invocation (CRITICAL):**
-When a user's message starts with a slash command like "/view-builder", you MUST immediately invoke the Skill tool before doing anything else.
-
-Example:
-- User: "/view-builder Create a todo app"
-- You: Call the Skill tool with skill="view-builder"
-- The skill will load and provide specific instructions to follow
-
-Available skills:
-- /view-builder - For displaying data, layouts, views, workspace panels
-
-When users ask to create schemas or data, use the appropriate MCP tools.
-When users ask about compositions, or UI sections, query the component-builder schema.
-Be concise and practical. Show tool results when relevant.`
-
-/**
- * Build a dynamic system prompt based on agent persona.
- *
- * @param agentPersona - The agent persona ('wavesmith' or 'code'), defaults to 'wavesmith'
- * @returns The complete system prompt with persona guidance and base prompt
- */
-export function buildSystemPrompt(
-  agentPersona?: AgentPersona | null
-): string {
-  // Validate and default persona
-  const persona: AgentPersona = agentPersona && isAgentPersona(agentPersona) ? agentPersona : 'wavesmith'
-
-  // Code agent gets a completely different prompt (no Wavesmith tools)
-  if (persona === 'code') {
-    return PERSONA_PROMPTS.code
+  // Skip prewarm if a chat is already using this session (race condition guard)
+  if (activeSessions.has(scopeKey)) {
+    console.log(`[ClaudeCode] ⏭️ Pre-warm skipped — session ${scopeKey} is already active`)
+    return
   }
 
-  // Wavesmith and Shogo agents get persona intro + base prompt
-  // Shogo has all the same tools as Wavesmith, plus code generation capabilities
-  return `${PERSONA_PROMPTS[persona]}\n\n${BASE_SYSTEM_PROMPT}`
+  console.log(`[ClaudeCode] 🔥 Pre-warming V2 session (platform)...`)
+  try {
+    const session = getOrCreateSession(scopeKey)
+
+    // Double-check after session creation — a chat request might have arrived
+    if (activeSessions.has(scopeKey)) {
+      console.log(`[ClaudeCode] ⏭️ Pre-warm aborted — session ${scopeKey} became active`)
+      return
+    }
+
+    activeSessions.add(scopeKey) // Mark as active during prewarm
+    await session.send('ping')
+
+    // Consume stream to completion (triggers CLI startup)
+    let firstToken = false
+    for await (const msg of session.stream()) {
+      if (!firstToken && (msg.type === 'stream_event' || msg.type === 'assistant')) {
+        const ttft = performance.now() - startTime
+        console.log(`[ClaudeCode] 🔥 Pre-warm first response in ${(ttft / 1000).toFixed(2)}s`)
+        firstToken = true
+      }
+      if (msg.type === 'result') break
+    }
+    activeSessions.delete(scopeKey) // Release after prewarm completes
+
+    const elapsed = performance.now() - startTime
+    console.log(`[ClaudeCode] ✅ Pre-warm complete in ${(elapsed / 1000).toFixed(2)}s — session is hot (id: ${session.sessionId})`)
+  } catch (error: any) {
+    activeSessions.delete(scopeKey) // Release on error too
+    const elapsed = performance.now() - startTime
+    console.error(`[ClaudeCode] ⚠️ Pre-warm failed after ${(elapsed / 1000).toFixed(2)}s:`, error.message)
+    // Non-fatal — first real request will cold-start as before
+  }
 }
 
 const app = new Hono()
+
+// OpenTelemetry tracing — must be first middleware so all requests get spans
+app.use('*', tracingMiddleware)
+
+// =============================================================================
+// Global Error Handling
+// =============================================================================
+// Hono-level error handler: catches unhandled errors in route handlers and
+// returns a structured JSON response instead of crashing the Bun process.
+app.onError((err, c) => {
+  console.error(`[API] Unhandled route error on ${c.req.method} ${c.req.path}:`, err.message)
+  // Don't expose internal error details in production
+  const isProduction = process.env.NODE_ENV === 'production'
+  return c.json({
+    error: {
+      code: 'internal_error',
+      message: isProduction ? 'An internal error occurred' : err.message,
+    },
+  }, 500)
+})
+
+// Process-level handlers: catch unhandled promise rejections and uncaught
+// exceptions that escape Hono's error boundary. Log them instead of crashing.
+process.on('unhandledRejection', (reason: any) => {
+  console.error('[API] Unhandled promise rejection:', reason?.message || reason)
+  if (reason?.stack) {
+    console.error('[API] Stack:', reason.stack)
+  }
+})
+
+process.on('uncaughtException', (err: Error) => {
+  console.error('[API] Uncaught exception:', err.message)
+  if (err.stack) {
+    console.error('[API] Stack:', err.stack)
+  }
+  // For truly fatal errors (OOM, etc.), still crash — but DB/network errors should not kill the process
+})
 
 // CORS origins from environment - supports comma-separated list
 // Defaults to localhost for development
@@ -891,10 +785,14 @@ const getAllowedOrigins = (): string[] => {
 const allowedOrigins = getAllowedOrigins()
 app.use('/*', cors({
   origin: (origin) => {
-    // Allow requests with no origin (like mobile apps or curl)
+    // Allow requests with no origin (mobile apps, curl, React Native on Android/iOS)
     if (!origin) return `http://localhost:${VITE_PORT}`
     // In dev mode, allow any localhost origin (for playwright, vite, etc.)
     if (process.env.NODE_ENV !== 'production' && origin?.startsWith('http://localhost:')) {
+      return origin
+    }
+    // Allow local network origins in dev (React Native on physical devices)
+    if (process.env.NODE_ENV !== 'production' && /^http:\/\/192\.168\.\d+\.\d+/.test(origin)) {
       return origin
     }
     // Check if origin is in allowed list
@@ -909,6 +807,21 @@ app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
 
 // Health check
 app.get('/api/health', (c) => c.json({ ok: true }))
+
+// Agent template catalog — public, no auth required
+app.route('/api', agentTemplateRoutes())
+
+// Warm pool + cluster capacity status (for operational dashboards and load testing)
+app.get('/api/warm-pool/status', async (c) => {
+  try {
+    const { getWarmPoolController } = await import('./lib/warm-pool-controller')
+    const controller = getWarmPoolController()
+    const status = await controller.getExtendedStatus()
+    return c.json(status)
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
 
 // =============================================================================
 // Templates API - Serve SDK example templates
@@ -936,6 +849,63 @@ interface TemplateMetadata {
 }
 
 /**
+ * Hardcoded fallback templates for environments where the SDK examples
+ * directory is not available (e.g., Kubernetes deployments).
+ */
+const FALLBACK_TEMPLATES: TemplateMetadata[] = [
+  {
+    name: 'todo-app',
+    description: 'Simple task management app with user authentication',
+    complexity: 'beginner',
+    features: ['prisma', 'user-auth', 'crud', 'one-to-many'],
+    models: ['User', 'Todo'],
+    tags: ['tasks', 'todo', 'checklist', 'productivity', 'simple', 'agent'],
+    useCases: ['task list', 'todo app', 'checklist', 'simple crud app', 'getting started'],
+    techStack: { database: 'postgresql', orm: 'prisma', frontend: 'react', router: 'hono', backend: 'hono', sdk: '@shogo-ai/sdk' },
+  },
+  {
+    name: 'crm',
+    description: 'Customer relationship management with contacts, companies, deals, tags, and activity notes',
+    complexity: 'advanced',
+    features: ['prisma', 'user-auth', 'crud', 'one-to-many', 'many-to-many', 'pipeline-stages'],
+    models: ['User', 'Contact', 'Company', 'Tag', 'ContactTag', 'Note', 'Deal'],
+    tags: ['crm', 'sales', 'contacts', 'customers', 'leads', 'deals', 'pipeline', 'agent'],
+    useCases: ['crm', 'customer management', 'sales pipeline', 'contact management', 'lead tracking'],
+    techStack: { database: 'postgresql', orm: 'prisma', frontend: 'react', router: 'hono', backend: 'hono', sdk: '@shogo-ai/sdk' },
+  },
+  {
+    name: 'kanban',
+    description: 'Kanban board with drag-and-drop task management',
+    complexity: 'intermediate',
+    features: ['prisma', 'user-auth', 'crud', 'one-to-many'],
+    models: ['User', 'Board', 'Column', 'Card'],
+    tags: ['kanban', 'project-management', 'board', 'tasks', 'agile', 'agent'],
+    useCases: ['kanban board', 'project management', 'task board', 'agile board'],
+    techStack: { database: 'postgresql', orm: 'prisma', frontend: 'react', router: 'hono', backend: 'hono', sdk: '@shogo-ai/sdk' },
+  },
+  {
+    name: 'expense-tracker',
+    description: 'Personal expense tracker with categories and budgets',
+    complexity: 'intermediate',
+    features: ['prisma', 'user-auth', 'crud', 'one-to-many', 'aggregations'],
+    models: ['User', 'Category', 'Expense', 'Budget'],
+    tags: ['finance', 'expenses', 'budget', 'money', 'tracker', 'agent'],
+    useCases: ['expense tracking', 'budget management', 'personal finance', 'money tracker'],
+    techStack: { database: 'postgresql', orm: 'prisma', frontend: 'react', router: 'hono', backend: 'hono', sdk: '@shogo-ai/sdk' },
+  },
+  {
+    name: 'booking-app',
+    description: 'Booking and reservation system with time slots and availability',
+    complexity: 'intermediate',
+    features: ['prisma', 'user-auth', 'crud', 'one-to-many'],
+    models: ['User', 'Service', 'TimeSlot', 'Booking'],
+    tags: ['booking', 'reservation', 'scheduling', 'appointments', 'agent'],
+    useCases: ['booking system', 'reservation app', 'appointment scheduler', 'scheduling tool'],
+    techStack: { database: 'postgresql', orm: 'prisma', frontend: 'react', router: 'hono', backend: 'hono', sdk: '@shogo-ai/sdk' },
+  },
+]
+
+/**
  * Load all available templates from SDK examples directory
  */
 async function loadTemplates(): Promise<TemplateMetadata[]> {
@@ -958,7 +928,12 @@ async function loadTemplates(): Promise<TemplateMetadata[]> {
       }
     }
   } catch (err) {
-    console.error('[Templates] Failed to load templates:', err)
+    console.warn('[Templates] Could not read templates directory:', (err as Error).message)
+  }
+
+  if (templates.length === 0) {
+    console.warn(`[Templates] No templates found at ${templatesDir}, using fallback list (${FALLBACK_TEMPLATES.length} templates)`)
+    return FALLBACK_TEMPLATES
   }
 
   return templates
@@ -970,7 +945,9 @@ async function loadTemplates(): Promise<TemplateMetadata[]> {
  */
 app.get('/api/templates', async (c) => {
   try {
-    const templates = await loadTemplates()
+    const allTemplates = await loadTemplates()
+    // [EXPO DISABLED] Filter out expo-app template
+    const templates = allTemplates.filter(t => t.name !== 'expo-app')
     return c.json({ templates }, 200)
   } catch (error: any) {
     console.error('[Templates] Error loading templates:', error)
@@ -1032,79 +1009,404 @@ app.post('/api/projects/:projectId/unpublish', async (c) => {
 })
 
 // =============================================================================
+// Thumbnail routes
+// =============================================================================
+
+app.post('/api/projects/:projectId/thumbnail', async (c) => {
+  const router = thumbnailRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/thumbnail`
+  const newReq = new Request(url.toString(), {
+    method: c.req.method,
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+app.post('/api/projects/:projectId/thumbnail/capture', async (c) => {
+  const router = thumbnailRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/thumbnail/capture`
+  const newReq = new Request(url.toString(), {
+    method: c.req.method,
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
+  return router.fetch(newReq)
+})
+
+app.get('/api/projects/:projectId/thumbnail', async (c) => {
+  const router = thumbnailRoutes()
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/thumbnail`
+  const newReq = new Request(url.toString(), {
+    method: c.req.method,
+    headers: c.req.raw.headers,
+  })
+  return router.fetch(newReq)
+})
+
+// =============================================================================
 // Runtime routes - Project Vite runtime management
 // =============================================================================
 
 // Start project runtime
 app.post('/api/projects/:projectId/runtime/start', async (c) => {
+  const projectId = c.req.param('projectId')
+
+  if (isKubernetes()) {
+    try {
+      const { getKnativeProjectManager } = await import('./lib/knative-project-manager')
+      const knativeManager = getKnativeProjectManager()
+      await knativeManager.createProject(projectId)
+      const podUrl = `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`
+      return c.json({
+        success: true,
+        projectId,
+        status: 'running',
+        url: podUrl,
+      })
+    } catch (err: any) {
+      console.error(`[Runtime] Failed to start project ${projectId} in K8s:`, err.message)
+      return c.json({ error: `Failed to start runtime: ${err.message}` }, 500)
+    }
+  }
+
   const manager = getRuntimeManager()
   const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
   const url = new URL(c.req.url)
-  url.pathname = `/projects/${c.req.param('projectId')}/runtime/start`
+  url.pathname = `/projects/${projectId}/runtime/start`
   const newReq = new Request(url.toString(), { method: 'POST' })
   return router.fetch(newReq)
 })
 
 // Stop project runtime
 app.post('/api/projects/:projectId/runtime/stop', async (c) => {
-  const manager = getRuntimeManager()
-  const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
-  const url = new URL(c.req.url)
-  url.pathname = `/projects/${c.req.param('projectId')}/runtime/stop`
-  const newReq = new Request(url.toString(), { method: 'POST' })
-  return router.fetch(newReq)
-})
-
-// Restart project runtime (useful after template copy)
-app.post('/api/projects/:projectId/runtime/restart', async (c) => {
-  const manager = getRuntimeManager()
-  const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
-  const url = new URL(c.req.url)
-  url.pathname = `/projects/${c.req.param('projectId')}/runtime/restart`
-  const newReq = new Request(url.toString(), { method: 'POST' })
-  return router.fetch(newReq)
-})
-
-// Get project runtime status
-app.get('/api/projects/:projectId/runtime/status', async (c) => {
-  const manager = getRuntimeManager()
-  const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
-  const url = new URL(c.req.url)
-  url.pathname = `/projects/${c.req.param('projectId')}/runtime/status`
-  const newReq = new Request(url.toString(), { method: 'GET' })
-  return router.fetch(newReq)
-})
-
-// Get project sandbox URL for iframe embedding
-app.get('/api/projects/:projectId/sandbox/url', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
-    // In Kubernetes: Return a proxy URL that goes through the API
-    // The preview proxy endpoint will forward requests to the project runtime pod
-    const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+    // In Kubernetes: Scale the project to 0 (or just return success since Knative auto-scales)
+    // Note: We don't actually stop the pod - Knative handles scaling to zero automatically
+    // This endpoint exists for compatibility with the frontend cleanup
+    try {
+      // Just return success - Knative will scale to zero automatically after idle timeout
+      return c.json({
+        success: true,
+        projectId,
+        status: 'scaling_down',
+        message: 'Project will scale to zero after idle timeout',
+      })
+    } catch (error: any) {
+      console.error('[Runtime] Stop error:', error)
+      return c.json(
+        { error: { code: 'stop_failed', message: error.message || 'Failed to stop runtime' } },
+        500
+      )
+    }
+  } else {
+    // Local development: Use RuntimeManager
+    const manager = getRuntimeManager()
+    const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
+    const url = new URL(c.req.url)
+    url.pathname = `/projects/${projectId}/runtime/stop`
+    const newReq = new Request(url.toString(), { method: 'POST' })
+    return router.fetch(newReq)
+  }
+})
+
+// Restart project runtime (useful after template copy or file changes)
+// In Kubernetes, this triggers a rebuild in the project-runtime pod
+app.post('/api/projects/:projectId/runtime/restart', async (c) => {
+  const projectId = c.req.param('projectId')
+  
+  if (isKubernetes()) {
+    // In Kubernetes: Proxy to project-runtime pod's /preview/restart endpoint
+    // This triggers a rebuild (vite build) and restarts the preview server
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      
+      console.log(`[Runtime Restart] Proxying to project-runtime pod: ${podUrl}/preview/restart`)
+      
+      const response = await fetch(`${podUrl}/preview/restart`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      })
+      
+      if (!response.ok) {
+        const errorText = await response.text()
+        console.error(`[Runtime Restart] Pod returned error:`, errorText)
+        return c.json({
+          success: false,
+          error: `Rebuild failed: ${response.status}`,
+          details: errorText,
+        }, response.status as any)
+      }
+      
+      const result = await response.json()
+      return c.json({
+        success: true,
+        projectId,
+        ...result,
+      })
+    } catch (err: any) {
+      console.error('[Runtime Restart] Error:', err)
+      return c.json({
+        success: false,
+        error: err.message || 'Failed to restart runtime',
+      }, 500)
+    }
+  }
+  
+  // Local development: use RuntimeManager
+  const manager = getRuntimeManager()
+  const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${projectId}/runtime/restart`
+  const newReq = new Request(url.toString(), { method: 'POST' })
+  return router.fetch(newReq)
+})
+
+/**
+ * Sanitize raw Knative/Kubernetes status messages for end-user display.
+ * Technical messages (e.g. "Configuration ... does not have any ready Revision")
+ * are replaced with friendly text. Raw messages are still logged server-side.
+ */
+function friendlyRuntimeMessage(raw: string | undefined, fallback: string): string {
+  if (!raw) return fallback
+  // Knative revision not ready yet — most common during cold start
+  if (raw.includes('does not have any ready Revision')) return 'Your project is starting up — this usually takes a few seconds...'
+  // Container still being created
+  if (raw.includes('ContainerCreating') || raw.includes('PodInitializing')) return 'Setting up your project environment...'
+  // Image pull in progress
+  if (raw.includes('ImagePull') || raw.includes('Pulling image')) return 'Preparing your project environment...'
+  // Catch-all for other Knative internals (Revision, Configuration, namespace references)
+  if (raw.includes('Revision') || raw.includes('Configuration "')) return fallback
+  // Message looks safe for users — pass it through
+  return raw
+}
+
+// Get project runtime status
+// This is a lightweight endpoint that doesn't create or wait for pods.
+// Frontend should poll this to check if the pod is ready before making other requests.
+app.get('/api/projects/:projectId/runtime/status', async (c) => {
+  const projectId = c.req.param('projectId')
+  
+  if (isKubernetes()) {
+    // In Kubernetes: Get Knative service status AND verify with active health check
+    try {
+      const { getKnativeProjectManager } = await import('./lib/knative-project-manager')
+      const manager = getKnativeProjectManager()
+      const status = await manager.getStatus(projectId)
+      
+      if (!status.exists) {
+        // Pod doesn't exist yet - return "not_found" (frontend should trigger creation)
+        return c.json({
+          projectId,
+          status: 'not_found',
+          message: 'Project runtime not created yet',
+          ready: false,
+        })
+      } else if (!status.ready) {
+        // Pod exists but Knative says it's not ready
+        // Log raw Knative message for debugging, send friendly message to user
+        if (status.message) {
+          console.log(`[Runtime] Raw Knative status for ${projectId}: ${status.message}`)
+        }
+        return c.json({
+          projectId,
+          status: 'starting',
+          message: friendlyRuntimeMessage(status.message, 'Project runtime is starting...'),
+          ready: false,
+          replicas: status.replicas,
+        })
+      } else {
+        // Knative says ready - but verify with active health check
+        // This ensures the pod is actually responding before we tell frontend to load iframe
+        const healthy = await manager.healthCheck(projectId)
+        
+        if (healthy) {
+          return c.json({
+            projectId,
+            status: 'running',
+            message: 'Project runtime is ready',
+            ready: true,
+            replicas: status.replicas,
+            url: status.url,
+          })
+        } else {
+          // Knative says ready but health check failed - pod is still warming up
+          return c.json({
+            projectId,
+            status: 'starting',
+            message: 'Project runtime is warming up...',
+            ready: false,
+            replicas: status.replicas,
+          })
+        }
+      }
+    } catch (error: any) {
+      console.error('[Runtime] Failed to get project status:', error)
+      return c.json({
+        projectId,
+        status: 'error',
+        message: friendlyRuntimeMessage(error.message, 'Failed to check project status'),
+        ready: false,
+      }, 500)
+    }
+  } else {
+    // Local development: Use RuntimeManager
+    const manager = getRuntimeManager()
+    const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
+    const url = new URL(c.req.url)
+    url.pathname = `/projects/${c.req.param('projectId')}/runtime/status`
+    const newReq = new Request(url.toString(), { method: 'GET' })
+    return router.fetch(newReq)
+  }
+})
+
+// Get project sandbox URL for iframe embedding
+// Query params:
+//   ?wait=true  - Wait for pod to be ready (default: true for backwards compatibility)
+//   ?wait=false - Return immediately with status, don't wait
+//   ?mode=subdomain - Return subdomain-based preview URL (new, recommended)
+//   ?mode=proxy - Return proxy-based preview URL (legacy, default for backwards compat)
+app.get('/api/projects/:projectId/sandbox/url', async (c) => {
+  const projectId = c.req.param('projectId')
+  const shouldWait = c.req.query('wait') !== 'false' // Default to waiting for backwards compat
+  const previewMode = c.req.query('mode') || 'subdomain' // Default to subdomain mode
+  
+  if (isKubernetes()) {
+    // In Kubernetes: Return preview URL based on mode
+    const { getProjectPodUrl, getKnativeProjectManager, getPreviewUrl } = await import('./lib/knative-project-manager')
+    const { generatePreviewToken } = await import('./lib/preview-token')
     
+    // First check current status
+    const manager = getKnativeProjectManager()
+    const status = await manager.getStatus(projectId)
+
+    // Check if this is an agent project (needed for agentUrl)
+    const projectRecord = await prisma.project.findUnique({ where: { id: projectId }, select: { type: true } })
+    const isAgent = projectRecord?.type === 'AGENT'
+    
+    // Build the preview URL based on mode
+    const host = c.req.header('x-original-host') || c.req.header('host') || 'localhost'
+    const protocol = 'https'
+    
+    // Generate preview token (valid for 1 hour)
+    const previewToken = await generatePreviewToken(projectId)
+    
+    let previewUrl: string
+    let legacyProxyUrl: string
+    
+    if (previewMode === 'subdomain') {
+      // New subdomain-based preview (recommended)
+      // Format: https://preview--{projectId}--{env}.{domain}/?__preview_token=...
+      const subdomainBaseUrl = getPreviewUrl(projectId)
+      console.log(`[sandbox/url] getPreviewUrl(${projectId}) = ${subdomainBaseUrl}`)
+      previewUrl = `${subdomainBaseUrl}/?__preview_token=${previewToken}`
+      legacyProxyUrl = `${protocol}://${host}/api/projects/${projectId}/preview/`
+    } else {
+      // Legacy proxy-based preview (fallback)
+      previewUrl = `${protocol}://${host}/api/projects/${projectId}/preview/`
+      legacyProxyUrl = previewUrl
+    }
+    
+    console.log(`[sandbox/url] projectId=${projectId} mode=${previewMode} host=${host}`)
+    console.log(`[sandbox/url] previewUrl=${previewUrl}`)
+    console.log(`[sandbox/url] legacyProxyUrl=${legacyProxyUrl}`)
+    console.log(`[sandbox/url] status: exists=${status.exists} ready=${status.ready}`)
+    
+    // Agent URL for test chat (proxied through API to avoid CORS issues)
+    const agentUrl = isAgent ? `${protocol}://${host}/api/projects/${projectId}/agent-proxy` : undefined
+
+    // If pod is already running, return immediately
+    if (status.exists && status.ready) {
+      console.log(`[sandbox/url] Returning ready response with url=${previewUrl}`)
+
+      // Auto-capture thumbnail if missing (fire-and-forget)
+      prisma.project.findUnique({ where: { id: projectId }, select: { thumbnailUrl: true } })
+        .then((proj) => {
+          if (proj && !proj.thumbnailUrl) {
+            const captureUrl = agentUrl || previewUrl
+            setTimeout(() => {
+              fetch(`${protocol}://${host}/api/projects/${projectId}/thumbnail/capture`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: captureUrl }),
+              }).catch(() => {})
+            }, 3000)
+          }
+        })
+        .catch(() => {})
+
+      return c.json({
+        url: previewUrl,
+        proxyUrl: legacyProxyUrl, // Backwards compat - legacy proxy URL
+        directUrl: `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`,
+        ...(agentUrl && { agentUrl }),
+        sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
+        status: 'running',
+        ready: true,
+        mode: previewMode,
+      }, 200)
+    }
+    
+    // Pod doesn't exist or isn't ready
+    if (!shouldWait) {
+      // Caller requested non-blocking - return current status
+      // This triggers pod creation in the background if needed
+      if (!status.exists) {
+        // Start creation in background (don't await)
+        getProjectPodUrl(projectId).catch(err => {
+          console.error(`[Runtime] Background pod creation failed for ${projectId}:`, err)
+        })
+      }
+      
+      console.log(`[sandbox/url] Returning non-blocking response (wait=false) with url=${previewUrl}`)
+      return c.json({
+        url: previewUrl,
+        proxyUrl: legacyProxyUrl,
+        directUrl: `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`,
+        ...(agentUrl && { agentUrl }),
+        sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
+        status: status.exists ? 'starting' : 'creating',
+        ready: false,
+        mode: previewMode,
+        message: status.exists 
+          ? 'Project runtime is starting, please poll /runtime/status until ready'
+          : 'Project runtime is being created, please poll /runtime/status until ready',
+      }, 202) // 202 Accepted - request accepted but processing not complete
+    }
+    
+    // Wait for pod to be ready (default behavior)
     try {
       // This will create the pod if it doesn't exist and wait for it to be ready
       await getProjectPodUrl(projectId)
       
-      // Return the proxy URL - all requests to this URL will be proxied to the project pod
-      // Use X-Original-Host (set by nginx) if available, otherwise fall back to Host header
-      const host = c.req.header('x-original-host') || c.req.header('host') || 'localhost'
-      // In Kubernetes, always use HTTPS (Knative/ALB terminates TLS)
-      // x-forwarded-proto may not be preserved through all proxy layers
-      const protocol = 'https'
-      const proxyUrl = `${protocol}://${host}/api/projects/${projectId}/preview/`
-      
+      console.log(`[sandbox/url] Returning waited response with url=${previewUrl}`)
       return c.json({
-        url: proxyUrl,
+        url: previewUrl,
+        proxyUrl: legacyProxyUrl,
         directUrl: `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`,
+        ...(agentUrl && { agentUrl }),
         sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
         status: 'running',
+        ready: true,
+        mode: previewMode,
       }, 200)
     } catch (error: any) {
       console.error('[Runtime] Failed to get project pod URL:', error)
+      console.log(`[sandbox/url] Returning error response with url=${previewUrl}`)
       return c.json({
+        url: previewUrl,
+        proxyUrl: legacyProxyUrl,
+        status: 'error',
+        ready: false,
+        mode: previewMode,
         error: { code: 'pod_unavailable', message: error.message || 'Failed to start project runtime' }
       }, 503)
     }
@@ -1223,6 +1525,52 @@ app.all('/api/projects/:projectId/preview', async (c) => {
   return c.redirect(`/api/projects/${projectId}/preview/`)
 })
 
+// Agent proxy - forwards requests directly to agent-runtime pod without /preview prefix
+app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
+  const projectId = c.req.param('projectId')
+
+  if (!isKubernetes()) {
+    return c.json({ error: { code: 'not_supported', message: 'Agent proxy only available in Kubernetes' } }, 501)
+  }
+
+  try {
+    const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+    const podUrl = await getProjectPodUrl(projectId)
+    const path = c.req.path.replace(`/api/projects/${projectId}/agent-proxy`, '') || '/'
+    const targetUrl = `${podUrl}${path}`
+
+    console.log(`[AgentProxy] Proxying ${c.req.method} ${path} to ${targetUrl}`)
+
+    const headers = new Headers()
+    const contentType = c.req.header('content-type')
+    if (contentType) headers.set('content-type', contentType)
+    const accept = c.req.header('accept')
+    if (accept) headers.set('accept', accept)
+
+    const requestInit: RequestInit = { method: c.req.method, headers }
+    if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+      requestInit.body = await c.req.arrayBuffer()
+    }
+
+    const response = await fetch(targetUrl, requestInit)
+
+    const responseHeaders = new Headers()
+    response.headers.forEach((value, key) => {
+      if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+        responseHeaders.set(key, value)
+      }
+    })
+    responseHeaders.set('access-control-allow-origin', '*')
+    responseHeaders.set('access-control-allow-methods', 'GET, POST, PUT, DELETE, OPTIONS')
+    responseHeaders.set('access-control-allow-headers', '*')
+
+    return new Response(response.body, { status: response.status, headers: responseHeaders })
+  } catch (error: any) {
+    console.error('[AgentProxy] Error:', error)
+    return c.json({ error: { code: 'proxy_error', message: error.message || 'Failed to proxy request' } }, 502)
+  }
+})
+
 // =============================================================================
 // Files routes - Project file listing and reading
 // In Kubernetes mode, proxies to project-runtime pod's /files endpoint
@@ -1233,6 +1581,9 @@ app.get('/api/projects/:projectId/files', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
+    if (await getProjectType(projectId) === 'AGENT') {
+      return c.json({ files: [] })
+    }
     // In Kubernetes: Proxy to project-runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
@@ -1315,10 +1666,51 @@ app.get('/api/projects/:projectId/files/*', async (c) => {
 
 // Write file content
 app.put('/api/projects/:projectId/files/*', async (c) => {
-  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
-  const router = filesRoutes({ workspacesDir })
   const projectId = c.req.param('projectId')
   const filePath = c.req.path.replace(`/api/projects/${projectId}/files/`, '')
+  
+  if (isKubernetes()) {
+    // In Kubernetes: Proxy to project-runtime pod
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/files/${filePath}`
+      
+      console.log(`[FilesProxy] Proxying file write to ${targetUrl}`)
+      
+      // Clone the body for proxying
+      const body = await c.req.text()
+      
+      const response = await fetch(targetUrl, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': c.req.header('Content-Type') || 'application/json',
+        },
+        body: body,
+      })
+      
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+      
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error('[FilesProxy] Error writing file:', error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to write file' }
+      }, 502)
+    }
+  }
+  
+  // Local development: Use local filesystem
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const router = filesRoutes({ workspacesDir })
   const url = new URL(c.req.url)
   url.pathname = `/projects/${projectId}/files/${filePath}`
   const newReq = new Request(url.toString(), {
@@ -1327,6 +1719,84 @@ app.put('/api/projects/:projectId/files/*', async (c) => {
     body: c.req.raw.body,
   })
   return router.fetch(newReq)
+})
+
+// Download project source code as tar.gz archive
+app.get('/api/projects/:projectId/download', async (c) => {
+  const projectId = c.req.param('projectId')
+  
+  if (isKubernetes()) {
+    // In Kubernetes: Proxy to project-runtime pod
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/download`
+      
+      console.log(`[FilesProxy] Proxying download to ${targetUrl}`)
+      
+      const response = await fetch(targetUrl)
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+      
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error('[FilesProxy] Download error:', error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to download project' }
+      }, 502)
+    }
+  }
+  
+  // Local development: Create tar.gz from workspace directory
+  const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+  const projectDir = resolve(workspacesDir, projectId)
+  
+  if (!existsSync(projectDir)) {
+    return c.json({
+      error: { code: 'not_found', message: 'Project directory not found' }
+    }, 404)
+  }
+  
+  try {
+    const excludes = [
+      'node_modules', '.git', '.next', 'dist', 'build', '.cache',
+      '.output', '.nuxt', '.turbo', '.bun', '.vite'
+    ]
+    const excludeArgs = excludes.flatMap((dir: string) => ['--exclude', dir])
+    
+    const result = Bun.spawnSync(
+      ['tar', '-czf', '-', ...excludeArgs, '-C', projectDir, '.'],
+      { stdout: 'pipe', stderr: 'pipe' }
+    )
+    
+    if (result.exitCode !== 0) {
+      return c.json({
+        error: { code: 'archive_error', message: 'Failed to create archive' }
+      }, 500)
+    }
+    
+    const archiveBuffer = result.stdout
+    return new Response(archiveBuffer, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/gzip',
+        'Content-Disposition': `attachment; filename="${projectId}.tar.gz"`,
+        'Content-Length': String(archiveBuffer.byteLength),
+      },
+    })
+  } catch (error: any) {
+    console.error('[FilesProxy] Download archive error:', error)
+    return c.json({
+      error: { code: 'download_error', message: error.message || 'Failed to create download' }
+    }, 500)
+  }
 })
 
 // =============================================================================
@@ -1366,6 +1836,9 @@ app.get('/api/projects/:projectId/terminal/commands', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
+    if (await getProjectType(projectId) === 'AGENT') {
+      return c.json({ commands: [] })
+    }
     // In Kubernetes: Proxy to project-runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
@@ -1375,6 +1848,41 @@ app.get('/api/projects/:projectId/terminal/commands', async (c) => {
       console.log(`[TerminalProxy] Proxying commands list to ${targetUrl}`)
       
       const response = await fetch(targetUrl)
+      
+      // Handle non-OK responses with proper JSON errors
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type') || ''
+        
+        // If response is JSON, pass it through
+        if (contentType.includes('application/json')) {
+          const responseHeaders = new Headers()
+          response.headers.forEach((value, key) => {
+            if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+              responseHeaders.set(key, value)
+            }
+          })
+          return new Response(response.body, { status: response.status, headers: responseHeaders })
+        }
+        
+        // Non-JSON error (like Knative 503) - return proper JSON
+        const errorCode = response.status === 503 ? 'service_starting' 
+          : response.status === 502 ? 'service_unavailable' : 'upstream_error'
+        
+        // Only log non-503 errors (503 is expected during pod startup)
+        if (response.status !== 503) {
+          console.error(`[TerminalProxy] Upstream error ${response.status}`)
+        }
+        
+        const headers = new Headers({ 'Content-Type': 'application/json' })
+        if (response.status === 503) {
+          headers.set('Retry-After', '5') // Tell clients to retry after 5 seconds
+        }
+        
+        return c.json({
+          error: { code: errorCode, message: `Terminal service unavailable (${response.status})` }
+        }, response.status as any)
+      }
+      
       const responseHeaders = new Headers()
       response.headers.forEach((value, key) => {
         if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
@@ -1387,6 +1895,17 @@ app.get('/api/projects/:projectId/terminal/commands', async (c) => {
         headers: responseHeaders,
       })
     } catch (error: any) {
+      // Check if error is pod not ready vs actual failure
+      const isPodNotReady = error.message?.includes('not ready') || 
+        error.message?.includes('not found') ||
+        error.message?.includes('starting')
+      
+      if (isPodNotReady) {
+        return c.json({
+          error: { code: 'service_starting', message: 'Project runtime is starting...' }
+        }, 503)
+      }
+      
       console.error('[TerminalProxy] Error:', error)
       return c.json({
         error: { code: 'proxy_error', message: error.message || 'Failed to get terminal commands' }
@@ -1462,6 +1981,68 @@ app.post('/api/projects/:projectId/terminal/exec', async (c) => {
 })
 
 // =============================================================================
+// TypeScript Types Proxy - Proxy type definitions for Monaco ATA (avoids CORS)
+// =============================================================================
+
+/**
+ * Proxy requests to external CDNs to avoid CORS issues.
+ * Monaco's Automatic Type Acquisition (ATA) needs to fetch @types packages.
+ * 
+ * Usage: GET /api/types-proxy?url=<encoded-url>
+ * Example: /api/types-proxy?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fnpm%2F%40types%2Freact%2Findex.d.ts
+ */
+app.get('/api/types-proxy', async (c) => {
+  const targetUrl = c.req.query('url')
+  
+  if (!targetUrl) {
+    return c.json({ error: { code: 'missing_url', message: 'URL query parameter is required' } }, 400)
+  }
+  
+  // Validate URL is from allowed CDNs
+  const allowedHosts = ['cdn.jsdelivr.net', 'unpkg.com', 'esm.sh']
+  let parsedUrl: URL
+  try {
+    parsedUrl = new URL(targetUrl)
+  } catch {
+    return c.json({ error: { code: 'invalid_url', message: 'Invalid URL format' } }, 400)
+  }
+  
+  if (!allowedHosts.includes(parsedUrl.hostname)) {
+    return c.json({ error: { code: 'forbidden_host', message: `Host ${parsedUrl.hostname} is not allowed` } }, 403)
+  }
+  
+  console.log(`[TypesProxy] Proxying: ${targetUrl}`)
+  
+  try {
+    const response = await fetch(targetUrl, {
+      headers: {
+        'User-Agent': 'Shogo-Studio-TypesProxy/1.0',
+      },
+      signal: AbortSignal.timeout(10000), // 10 second timeout
+    })
+    
+    if (response.ok) {
+      const content = await response.text()
+      const contentType = response.headers.get('content-type') || 'text/plain'
+      
+      return c.text(content, 200, {
+        'Content-Type': contentType,
+        'Cache-Control': 'public, max-age=86400', // Cache for 24 hours
+      })
+    }
+    
+    return c.json({ 
+      error: { code: 'upstream_error', message: `Upstream returned ${response.status}` } 
+    }, response.status as any)
+  } catch (err: any) {
+    console.error(`[TypesProxy] Error fetching ${targetUrl}:`, err.message)
+    return c.json({ 
+      error: { code: 'fetch_error', message: err.message || 'Failed to fetch from CDN' } 
+    }, 502)
+  }
+})
+
+// =============================================================================
 // Tests routes - E2E test management and execution
 // =============================================================================
 
@@ -1470,6 +2051,9 @@ app.get('/api/projects/:projectId/tests/list', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
+    if (await getProjectType(projectId) === 'AGENT') {
+      return c.json({ tests: [] })
+    }
     // In Kubernetes: Proxy to project-runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
@@ -1479,6 +2063,41 @@ app.get('/api/projects/:projectId/tests/list', async (c) => {
       console.log(`[TestsProxy] Proxying tests list to ${targetUrl}`)
       
       const response = await fetch(targetUrl)
+      
+      // Handle non-OK responses with proper JSON errors
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type') || ''
+        
+        // If response is JSON, pass it through
+        if (contentType.includes('application/json')) {
+          const responseHeaders = new Headers()
+          response.headers.forEach((value, key) => {
+            if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+              responseHeaders.set(key, value)
+            }
+          })
+          return new Response(response.body, { status: response.status, headers: responseHeaders })
+        }
+        
+        // Non-JSON error (like Knative 503) - return proper JSON
+        const errorCode = response.status === 503 ? 'service_starting' 
+          : response.status === 502 ? 'service_unavailable' : 'upstream_error'
+        
+        // Only log non-503 errors (503 is expected during pod startup)
+        if (response.status !== 503) {
+          console.error(`[TestsProxy] Upstream error ${response.status}`)
+        }
+        
+        const headers = new Headers({ 'Content-Type': 'application/json' })
+        if (response.status === 503) {
+          headers.set('Retry-After', '5') // Tell clients to retry after 5 seconds
+        }
+        
+        return c.json({
+          error: { code: errorCode, message: `Tests service unavailable (${response.status})` }
+        }, response.status as any)
+      }
+      
       const responseHeaders = new Headers()
       response.headers.forEach((value, key) => {
         if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
@@ -1490,6 +2109,17 @@ app.get('/api/projects/:projectId/tests/list', async (c) => {
         headers: responseHeaders,
       })
     } catch (error: any) {
+      // Check if error is pod not ready vs actual failure
+      const isPodNotReady = error.message?.includes('not ready') || 
+        error.message?.includes('not found') ||
+        error.message?.includes('starting')
+      
+      if (isPodNotReady) {
+        return c.json({
+          error: { code: 'service_starting', message: 'Project runtime is starting...' }
+        }, 503)
+      }
+      
       console.error(`[TestsProxy] Error proxying tests list:`, error)
       return c.json({
         error: { code: 'proxy_error', message: error.message || 'Failed to proxy to project runtime' }
@@ -1699,6 +2329,104 @@ app.delete('/api/projects/:projectId/tests/traces', async (c) => {
 })
 
 // =============================================================================
+// Security scanning routes - Automated security analysis
+// =============================================================================
+
+// Rate limiting: one scan at a time, 10s cooldown (protects LLM spend)
+let _scanInProgress = false
+let _lastScanTimestamp = 0
+const SCAN_COOLDOWN = 10_000
+
+app.post('/api/projects/:projectId/security/scan', async (c) => {
+  const projectId = c.req.param('projectId')
+
+  // In local mode: enforce rate limiting (K8s pods handle their own)
+  if (!isKubernetes()) {
+    if (_scanInProgress) {
+      return c.json({ ok: false, error: { code: 'scan_in_progress', message: 'A security scan is already running.' } }, 429)
+    }
+    const now = Date.now()
+    if (now - _lastScanTimestamp < SCAN_COOLDOWN) {
+      const wait = Math.ceil((SCAN_COOLDOWN - (now - _lastScanTimestamp)) / 1000)
+      return c.json({ ok: false, error: { code: 'rate_limited', message: `Please wait ${wait}s before re-scanning.` } }, 429)
+    }
+  }
+
+  if (isKubernetes()) {
+    // In Kubernetes: Proxy to project-runtime pod
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      const podUrl = await getProjectPodUrl(projectId)
+      const targetUrl = `${podUrl}/security/scan`
+      
+      console.log(`[SecurityProxy] Proxying security scan to ${targetUrl}`)
+      
+      const response = await fetch(targetUrl, { method: 'POST' })
+      
+      // Handle non-OK responses
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type') || ''
+        if (contentType.includes('application/json')) {
+          const responseHeaders = new Headers()
+          response.headers.forEach((value, key) => {
+            if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+              responseHeaders.set(key, value)
+            }
+          })
+          return new Response(response.body, { status: response.status, headers: responseHeaders })
+        }
+        
+        return c.json({
+          error: { code: 'upstream_error', message: `Security scan service unavailable (${response.status})` }
+        }, response.status as any)
+      }
+      
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      const isPodNotReady = error.message?.includes('not ready') || 
+        error.message?.includes('not found') ||
+        error.message?.includes('starting')
+      
+      if (isPodNotReady) {
+        return c.json({
+          error: { code: 'service_starting', message: 'Project runtime is starting...' }
+        }, 503)
+      }
+      
+      console.error(`[SecurityProxy] Error proxying security scan:`, error)
+      return c.json({
+        error: { code: 'proxy_error', message: error.message || 'Failed to proxy to project runtime' }
+      }, 502)
+    }
+  }
+  
+  // Local/development mode: use local filesystem
+  _scanInProgress = true
+  try {
+    const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+    const router = securityRoutes({ workspacesDir })
+    const url = new URL(c.req.url)
+    url.pathname = `/projects/${projectId}/security/scan`
+    const newReq = new Request(url.toString(), { method: 'POST' })
+    const result = await router.fetch(newReq)
+    _lastScanTimestamp = Date.now()
+    return result
+  } finally {
+    _scanInProgress = false
+  }
+})
+
+
+// =============================================================================
 // Database routes - Prisma Studio management for project workspaces
 // =============================================================================
 
@@ -1716,6 +2444,31 @@ app.post('/api/projects/:projectId/database/start', async (c) => {
       console.log(`[DatabaseProxy] Proxying start to ${targetUrl}`)
       
       const response = await fetch(targetUrl, { method: 'POST' })
+      
+      // Handle non-OK responses with proper JSON errors
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type') || ''
+        
+        // If response is JSON, pass it through
+        if (contentType.includes('application/json')) {
+          const responseHeaders = new Headers()
+          response.headers.forEach((value, key) => {
+            if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+              responseHeaders.set(key, value)
+            }
+          })
+          return new Response(response.body, { status: response.status, headers: responseHeaders })
+        }
+        
+        // Non-JSON error (like Knative 503) - return proper JSON
+        const errorCode = response.status === 503 ? 'pod_starting' 
+          : response.status === 502 ? 'pod_unavailable' : 'upstream_error'
+        
+        return c.json({
+          error: { code: errorCode, message: `Database service unavailable (${response.status})` }
+        }, response.status as any)
+      }
+      
       const responseHeaders = new Headers()
       response.headers.forEach((value, key) => {
         if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
@@ -1758,6 +2511,31 @@ app.post('/api/projects/:projectId/database/stop', async (c) => {
       console.log(`[DatabaseProxy] Proxying stop to ${targetUrl}`)
       
       const response = await fetch(targetUrl, { method: 'POST' })
+      
+      // Handle non-OK responses with proper JSON errors
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type') || ''
+        
+        // If response is JSON, pass it through
+        if (contentType.includes('application/json')) {
+          const responseHeaders = new Headers()
+          response.headers.forEach((value, key) => {
+            if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+              responseHeaders.set(key, value)
+            }
+          })
+          return new Response(response.body, { status: response.status, headers: responseHeaders })
+        }
+        
+        // Non-JSON error (like Knative 503) - return proper JSON
+        const errorCode = response.status === 503 ? 'pod_starting' 
+          : response.status === 502 ? 'pod_unavailable' : 'upstream_error'
+        
+        return c.json({
+          error: { code: errorCode, message: `Database service unavailable (${response.status})` }
+        }, response.status as any)
+      }
+      
       const responseHeaders = new Headers()
       response.headers.forEach((value, key) => {
         if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
@@ -1800,6 +2578,32 @@ app.get('/api/projects/:projectId/database/status', async (c) => {
       console.log(`[DatabaseProxy] Proxying status to ${targetUrl}`)
       
       const response = await fetch(targetUrl)
+      
+      // Handle non-OK responses with proper JSON errors
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type') || ''
+        
+        // If response is JSON, pass it through
+        if (contentType.includes('application/json')) {
+          const responseHeaders = new Headers()
+          response.headers.forEach((value, key) => {
+            if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+              responseHeaders.set(key, value)
+            }
+          })
+          return new Response(response.body, { status: response.status, headers: responseHeaders })
+        }
+        
+        // Non-JSON error (like Knative 503) - return proper JSON
+        const errorCode = response.status === 503 ? 'pod_starting' 
+          : response.status === 502 ? 'pod_unavailable' : 'upstream_error'
+        
+        return c.json({
+          status: 'error',
+          error: { code: errorCode, message: `Database service unavailable (${response.status})` }
+        }, response.status as any)
+      }
+      
       const responseHeaders = new Headers()
       response.headers.forEach((value, key) => {
         if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
@@ -1833,6 +2637,9 @@ app.get('/api/projects/:projectId/database/url', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
+    if (await getProjectType(projectId) === 'AGENT') {
+      return c.json({ url: null, status: 'error', error: { code: 'not_supported', message: 'Database not available for agent projects' } }, 400)
+    }
     // In Kubernetes: Proxy to project-runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
@@ -1842,6 +2649,61 @@ app.get('/api/projects/:projectId/database/url', async (c) => {
       console.log(`[DatabaseProxy] Proxying URL request to ${targetUrl}`)
       
       const response = await fetch(targetUrl)
+      
+      // Handle non-OK responses before trying to parse JSON
+      // Knative returns 503 with HTML/text when pod is starting
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type') || ''
+        
+        // Try to parse JSON error response from project-runtime
+        if (contentType.includes('application/json')) {
+          try {
+            const errorData = await response.json()
+            return c.json(errorData, response.status as any)
+          } catch {
+            // Fall through to text handling
+          }
+        }
+        
+        // Non-JSON error response (like Knative 503)
+        let errorMessage = `Upstream returned ${response.status}`
+        try {
+          const errorText = await response.text()
+          // Truncate long HTML error pages
+          errorMessage = errorText.slice(0, 200) || errorMessage
+        } catch {
+          // Ignore text read errors
+        }
+        
+        // Map common status codes to appropriate error codes
+        const errorCode = response.status === 503 ? 'pod_starting' 
+          : response.status === 502 ? 'pod_unavailable'
+          : response.status === 504 ? 'pod_timeout'
+          : 'upstream_error'
+        
+        // Only log non-503 errors (503 is expected during pod startup)
+        if (response.status !== 503) {
+          console.error(`[DatabaseProxy] Upstream error ${response.status}: ${errorMessage}`)
+        }
+        
+        return c.json({
+          status: 'error',
+          url: null,
+          error: { code: errorCode, message: errorMessage }
+        }, response.status as any)
+      }
+      
+      // Verify response is JSON before parsing
+      const contentType = response.headers.get('content-type') || ''
+      if (!contentType.includes('application/json')) {
+        console.error(`[DatabaseProxy] Unexpected content-type: ${contentType}`)
+        return c.json({
+          status: 'error',
+          url: null,
+          error: { code: 'invalid_response', message: `Unexpected content-type: ${contentType}` }
+        }, 502)
+      }
+      
       const data = await response.json()
       
       // Transform 'proxy' URL to actual proxy path through API
@@ -1853,6 +2715,8 @@ app.get('/api/projects/:projectId/database/url', async (c) => {
     } catch (error: any) {
       console.error('[DatabaseProxy] Error:', error)
       return c.json({
+        status: 'error',
+        url: null,
         error: { code: 'proxy_error', message: error.message || 'Failed to get database URL' }
       }, 502)
     }
@@ -1973,6 +2837,20 @@ app.all('/api/projects/:projectId/database/proxy/*', async (c) => {
 })
 
 // =============================================================================
+// Checkpoint Routes (version control for projects)
+// =============================================================================
+
+const workspacesDirResolved = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+
+// Mount checkpoint routes
+const checkpointRouter = checkpointRoutes({ workspacesDir: workspacesDirResolved })
+app.route('/api', checkpointRouter)
+
+// Mount GitHub routes
+const githubRouter = githubRoutes({ workspacesDir: workspacesDirResolved })
+app.route('/api', githubRouter)
+
+// =============================================================================
 // Project Chat Proxy Routes (pod-per-project architecture)
 // =============================================================================
 
@@ -1997,6 +2875,20 @@ app.get('/api/projects/:projectId/chat/status', async (c) => {
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/chat/status`
   const newReq = new Request(url.toString(), { method: 'GET' })
+  return router.fetch(newReq)
+})
+
+// POST /api/projects/:projectId/chat/stop - Stop/interrupt active generation
+app.post('/api/projects/:projectId/chat/stop', async (c) => {
+  const manager = getRuntimeManager()
+  const router = projectChatRoutes({ runtimeManager: manager })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/chat/stop`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
   return router.fetch(newReq)
 })
 
@@ -2063,6 +2955,17 @@ app.post('/api/admin/projects/:projectId/warmup', async (c) => {
   return router.fetch(newReq)
 })
 
+// GET /api/admin/warm-pool - Get warm pool status
+app.get('/api/admin/warm-pool', async (c) => {
+  try {
+    const { getWarmPoolController } = await import('./lib/warm-pool-controller')
+    const controller = getWarmPoolController()
+    return c.json(controller.getStatus())
+  } catch (err: any) {
+    return c.json({ enabled: false, error: err.message })
+  }
+})
+
 // DELETE /api/admin/projects/:projectId - Delete project pod
 app.delete('/api/admin/projects/:projectId', async (c) => {
   const router = projectAdminRoutes()
@@ -2089,10 +2992,20 @@ app.delete('/api/admin/projects/:projectId', async (c) => {
  */
 function fallbackGenerateProjectName(prompt: string): string {
   const fillerWords = new Set([
+    // articles & pronouns
     "a", "an", "the", "to", "for", "with", "that", "this", "is", "are",
-    "create", "build", "make", "design", "develop", "implement",
+    "my", "me", "its", "it", "our", "your", "their",
+    // verbs (action words from prompts)
+    "create", "build", "make", "design", "develop", "implement", "add", "include",
+    "show", "showing", "display", "have", "has", "using", "use",
+    // polite / conversational
     "please", "can", "you", "i", "want", "need", "would", "like",
-    "simple", "basic", "web", "app", "application", "website", "page"
+    // generic tech words
+    "simple", "basic", "web", "app", "application", "website", "page",
+    // conjunctions & prepositions that slip through
+    "where", "when", "how", "what", "which", "each", "every", "some",
+    "and", "but", "also", "then", "from", "into", "about", "just",
+    "nice", "good", "new", "should", "could",
   ])
 
   const words = prompt.toLowerCase()
@@ -2113,7 +3026,7 @@ function fallbackGenerateProjectName(prompt: string): string {
 
 app.post('/api/generate-project-name', async (c) => {
   try {
-    const { prompt } = await c.req.json()
+    const { prompt, workspaceId, userId, projectId } = await c.req.json()
 
     if (!prompt || typeof prompt !== 'string') {
       return c.json({ error: 'Prompt is required' }, 400)
@@ -2122,69 +3035,90 @@ app.post('/api/generate-project-name', async (c) => {
     // Check if ANTHROPIC_API_KEY is available
     if (!process.env.ANTHROPIC_API_KEY) {
       console.log('[/api/generate-project-name] ANTHROPIC_API_KEY not set, using fallback')
-      return c.json({ name: fallbackGenerateProjectName(prompt) })
+      const name = fallbackGenerateProjectName(prompt)
+      return c.json({ name, description: '' })
     }
 
-    // Use Claude Haiku - fastest and most cost-effective model for simple tasks
     const anthropic = createAnthropic()
 
     const result = await generateText({
-      model: anthropic('claude-3-5-haiku-latest'),
-      system: `You are a project naming assistant. Given a user's description of what they want to build, generate a short, memorable project name.
+      model: anthropic('claude-haiku-4-5-20251001'),
+      system: `You are a project naming assistant. Given a user's description of what they want to build, generate a short project name and a one-sentence description.
 
-Rules:
-- Return ONLY the project name, nothing else
+You MUST respond with valid JSON only, no other text. Use this exact format:
+{"title": "Project Name", "description": "A one-sentence description of the project."}
+
+Rules for the title:
 - Use 2-4 words maximum
 - Make it descriptive but concise
 - Use Title Case (capitalize each word)
 - Do NOT include words like "App", "Application", "Project", "System" unless essential
 - Focus on the core functionality or domain
 
+Rules for the description:
+- One sentence, under 100 characters
+- Describe what the project does, not how
+
 Examples:
-- "create a todo app" → "Task Tracker"
-- "build a recipe manager" → "Recipe Book"
-- "make a chat application with video calls" → "Video Chat"
-- "create an e-commerce site for selling plants" → "Plant Shop"
-- "build a dashboard for monitoring servers" → "Server Monitor"`,
+- "create a todo app" → {"title": "Task Tracker", "description": "Organize and track daily tasks and to-dos."}
+- "build a recipe manager" → {"title": "Recipe Book", "description": "Store and browse your favorite recipes."}
+- "make a chat application with video calls" → {"title": "Video Chat", "description": "Real-time messaging with video call support."}
+- "build a dashboard for monitoring servers" → {"title": "Server Monitor", "description": "Monitor server health and performance metrics."}`,
       prompt: prompt.trim(),
     })
 
-    // Extract and clean the name
-    const name = result.text.trim().replace(/['"]/g, '') || 'New Project'
+    let name = 'New Project'
+    let description = ''
+    try {
+      // Strip markdown code fences if present (e.g. ```json ... ```)
+      let jsonText = result.text.trim()
+      jsonText = jsonText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
+      const parsed = JSON.parse(jsonText)
+      name = (parsed.title || '').replace(/['"]/g, '').trim() || 'New Project'
+      description = (parsed.description || '').trim()
+    } catch {
+      name = result.text.trim().replace(/['"]/g, '').replace(/```(?:json)?/gi, '').trim() || 'New Project'
+    }
 
-    return c.json({ name })
+    // Track credit usage (fire-and-forget, small cost for Haiku)
+    if (workspaceId) {
+      const usage = result.usage as any
+      const totalTokens = (usage?.inputTokens || usage?.promptTokens || 0) + (usage?.outputTokens || usage?.completionTokens || 0)
+      if (totalTokens > 0) {
+        const creditCost = calculateCreditCost(totalTokens, 'haiku')
+        billingService.consumeCredits(workspaceId, null, userId || 'system', 'project_name_generation', creditCost, { totalTokens }).catch(() => {})
+      }
+    }
+
+    // When projectId is provided, persist the generated name and description
+    if (projectId) {
+      try {
+        await prisma.project.update({
+          where: { id: projectId },
+          data: { name, description },
+        })
+        console.log(`[/api/generate-project-name] Updated project ${projectId}: "${name}"`)
+      } catch (dbErr) {
+        console.error('[/api/generate-project-name] Failed to update project:', dbErr)
+      }
+    }
+
+    return c.json({ name, description })
   } catch (error: any) {
     console.error('[/api/generate-project-name] Error:', error)
-    // Fall back to simple extraction on any error - return 200 with fallback name
-    const { prompt } = await c.req.json().catch(() => ({ prompt: '' }))
-    return c.json({ name: fallbackGenerateProjectName(prompt || '') })
+    const body = await c.req.json().catch(() => ({ prompt: '' }))
+    const name = fallbackGenerateProjectName(body.prompt || '')
+    return c.json({ name, description: '' })
   }
 })
 
-/**
- * Calculate credit cost based on total tokens consumed.
- * 
- * Pricing: 0.1 credits per 5,000 tokens
- * - Round up to nearest 0.1 credits
- * - Minimum charge: 0.5 credits
- * 
- * @param totalTokens - Combined input + output tokens
- * @returns Credits to charge (minimum 0.5)
- */
-function calculateCreditCost(totalTokens: number): number {
-  // Rate: 0.1 credits per 5000 tokens
-  const rawCredits = (totalTokens / 5000) * 0.1
-  // Round up to nearest 0.1
-  const rounded = Math.ceil(rawCredits * 10) / 10
-  // Enforce minimum of 0.5 credits
-  return Math.max(rounded, 0.5)
-}
+// Credit cost calculation imported from ./lib/credit-cost
 
 /**
  * AI Chat endpoint using Vercel AI SDK with Claude Code provider
  * Streams Claude responses back to the client
  * Uses existing Claude Pro/Max subscription via Claude Code CLI
- * Scoped to project with access to local MCP server (wavesmith)
+ * Scoped to project with access to local MCP server (shogo)
  *
  * Session Resume (task-cc-api-endpoint):
  * - Accepts optional `ccSessionId` in request body
@@ -2198,367 +3132,561 @@ function calculateCreditCost(totalTokens: number): number {
  */
 app.post('/api/chat', async (c) => {
   try {
-    const { messages, ccSessionId, workspaceId, userId, projectId } = await c.req.json()
+    let { messages, ccSessionId, chatSessionId, workspaceId, userId, projectId, agentMode } = await c.req.json()
 
-    // Create project-scoped Claude Code instance if projectId is provided
-    // This sets the cwd to the project's workspace directory for file operations
-    const scopedClaudeCode = projectId
-      ? createProjectScopedClaudeCode(projectId)
-      : claudeCode
+    // Enforce basic agent mode for free-plan workspaces (server-side guard)
+    if (workspaceId && agentMode && agentMode !== 'basic') {
+      const isPaid = await billingService.hasPaidSubscription(workspaceId)
+      if (!isPaid) {
+        agentMode = 'basic'
+      }
+    }
 
     // credit-limit-enforcement: Pre-check credits BEFORE calling AI
-    // This prevents users from sending messages when they have no credits remaining
     if (workspaceId) {
-      // Get credit ledger via Prisma service
       let ledger = await billingService.getCreditLedger(workspaceId)
-
-      // If no ledger exists, allocate free tier credits
       if (!ledger) {
         ledger = await billingService.allocateFreeCredits(workspaceId)
       }
-
       if (ledger) {
-        // Calculate effective balance with lazy daily reset
         const now = Date.now()
         const lastResetDay = new Date(ledger.lastDailyReset).setUTCHours(0, 0, 0, 0)
         const todayStart = new Date(now).setUTCHours(0, 0, 0, 0)
         const needsReset = lastResetDay !== todayStart
-
         const dailyCredits = needsReset ? 5 : ledger.dailyCredits
         const total = dailyCredits + ledger.monthlyCredits + ledger.rolloverCredits
-
-        // Minimum credit cost is 0.5, so check if total >= 0.5
         if (total < 0.5) {
-          return c.json(
-            {
-              error: 'Insufficient credits',
-              message: 'You have run out of daily credits. Credits reset at midnight UTC.',
-              creditsRemaining: total,
-            },
-            402 // Payment Required
-          )
+          return c.json({
+            error: 'Insufficient credits',
+            message: 'You have run out of daily credits. Credits reset at midnight UTC.',
+            creditsRemaining: total,
+          }, 402)
         }
       }
     }
 
-    // Build dynamic system prompt based on agent persona (env var)
-    const agentPersona = process.env.SHOGO_AGENT as AgentPersona | undefined
-    let systemPrompt = buildSystemPrompt(agentPersona)
+    // Open a billing session so the AI proxy accumulates tokens across
+    // all API calls in the agentic loop instead of charging per-call.
+    if (projectId && workspaceId) {
+      openBillingSession(projectId, workspaceId, userId || 'system')
+    }
 
-    // Include project file list in the prompt so agent knows what files exist
-    if (projectId) {
-      const projectFileList = await getProjectFileList(projectId)
-      if (projectFileList) {
-        systemPrompt = `${systemPrompt}
+    // Get or create a persistent V2 session for this scope.
+    // The session keeps the CLI subprocess alive across requests — no more cold starts.
+    const scopeKey = projectId || '__platform__'
+    const session = getOrCreateSession(scopeKey, projectId)
+    activeSessions.add(scopeKey) // Mark session as active to prevent prewarm interference
 
-**Project Files:**
-You are working in a project workspace. Here are the files in the project:
-${projectFileList}
+    // Extract the last user message from the full message array.
+    // V2 sessions maintain conversation history internally, so we only need the latest turn.
+    const lastUserMessage = [...messages].reverse().find((m: any) => m.role === 'user')
+    if (!lastUserMessage) {
+      return c.json({ error: { message: 'No user message found', code: 'NO_USER_MESSAGE' } }, 400)
+    }
 
-Use the Read, Write, and Edit tools to view and modify these files. All file paths are relative to the project root.`
+    // Build message for V2 session.send() — supports text, images, and documents (PDFs)
+    let userText = ''
+    const fileParts: Array<{ mimeType: string; base64Data: string }> = []
+
+    if (typeof lastUserMessage.content === 'string') {
+      userText = lastUserMessage.content
+    } else if (Array.isArray(lastUserMessage.parts)) {
+      const textParts: string[] = []
+      for (const part of lastUserMessage.parts) {
+        if (part.type === 'text' && part.text) {
+          textParts.push(part.text)
+        } else if (part.type === 'file' && part.url) {
+          const parsed = parseDataUrl(part.url)
+          if (parsed) fileParts.push(parsed)
+        }
+      }
+      userText = textParts.join('\n')
+    } else {
+      userText = String(lastUserMessage.content ?? '')
+    }
+
+    // Build the session message — multimodal when files are attached
+    let sessionMessage: string | SDKUserMessage = userText
+    if (fileParts.length > 0) {
+      const contentBlocks: any[] = []
+      if (userText) {
+        contentBlocks.push({ type: 'text', text: userText })
+      }
+      for (const file of fileParts) {
+        if (file.mimeType.startsWith('image/')) {
+          contentBlocks.push({
+            type: 'image',
+            source: { type: 'base64', media_type: file.mimeType, data: file.base64Data },
+          })
+        } else if (file.mimeType === 'application/pdf') {
+          contentBlocks.push({
+            type: 'document',
+            source: { type: 'base64', media_type: file.mimeType, data: file.base64Data },
+          })
+        } else {
+          try {
+            const decoded = Buffer.from(file.base64Data, 'base64').toString('utf-8')
+            contentBlocks.push({ type: 'text', text: `[File content (${file.mimeType})]\n${decoded}` })
+          } catch {
+            contentBlocks.push({ type: 'text', text: `[Attached file: ${file.mimeType}]` })
+          }
+        }
+      }
+      try {
+        sessionMessage = {
+          type: 'user',
+          message: { role: 'user', content: contentBlocks },
+          parent_tool_use_id: null,
+          session_id: session.sessionId,
+        } as SDKUserMessage
+      } catch {
+        // sessionId unavailable on fresh sessions — fall back to text only
+        console.warn('[/api/chat] session.sessionId not ready, sending text-only for file message')
+        sessionMessage = userText
       }
     }
 
-    // Pass resume parameter if ccSessionId provided (task-cc-api-endpoint)
-    // This enables session continuity in Claude Code
-    const modelSettings = ccSessionId ? { resume: ccSessionId } : {}
-
-    // chat-session-sync-fix: Convert UIMessage format to CoreMessage format
-    // v3 @ai-sdk/react sends UIMessage with parts array, but streamText expects CoreMessage with content string
-    const coreMessages = convertUIMessagesToCoreMessages(messages)
-
-    // task-subagent-progress-streaming: Buffer events BEFORE starting streamText
-    // This fixes the race condition where SubagentStart fires before the stream listener is attached
+    // Event buffering for progress/virtual-tool events (same pattern as before)
     const eventBuffer: SubagentProgressEvent[] = []
-    // virtual-tools-domain: Buffer for virtual tool events
     const virtualToolBuffer: VirtualToolEvent[] = []
     let streamWriter: { write: (data: any) => void } | null = null
 
-    // Stream completion signal - resolves when Stop or SessionEnd hook fires
-    // This fixes the hang when subagents complete but the stream doesn't close
-    let streamCompleteResolver: (() => void) | null = null
-    const streamCompletePromise = new Promise<void>((resolve) => {
-      streamCompleteResolver = resolve
-    })
-
-    // Session ID captured from Stop/SessionEnd hooks (SDK workaround)
-    // The Claude Code SDK doesn't include sessionId in stream metadata,
-    // so we extract it from hook rawInput and emit it as a final stream event
-    let capturedSessionId: string | undefined
-
-    // Listen for completion signal from Stop/SessionEnd hooks
-    const onStreamComplete = (info: { source: string; timestamp: number; sessionId?: string }) => {
-      console.log(`${LOG_PREFIX} 🎯 Received stream-complete signal:`, info)
-      capturedSessionId = info.sessionId
-      // Write final session event to stream before closing (if we have streamWriter)
-      if (streamWriter && info.sessionId) {
-        console.log(`${LOG_PREFIX} 📨 Writing final session event to stream:`, info.sessionId)
-        // Use message-metadata chunk type for session ID (AI SDK 6.x format)
-        streamWriter.write({
-          type: 'message-metadata',
-          messageMetadata: { ccSessionId: info.sessionId },
-        })
-      }
-      streamCompleteResolver?.()
-    }
-    streamCompletionEvents.on('complete', onStreamComplete)
-
     const onProgress = (event: SubagentProgressEvent) => {
-      console.log(`${LOG_PREFIX} 📥 Received progress event:`, event)
       if (streamWriter) {
-        // Stream is ready, write directly using AI SDK 6.x data-{name} format
-        // The `data-progress` type allows custom data to flow through the stream
-        streamWriter.write({
-          type: 'data-progress',
-          id: `progress-${Date.now()}`,
-          data: event,
-        })
-        console.log(`${LOG_PREFIX} ✅ Wrote data-progress part to stream (live)`)
+        streamWriter.write({ type: 'data-progress', id: `progress-${Date.now()}`, data: event })
       } else {
-        // Stream not ready yet, buffer the event
         eventBuffer.push(event)
-        console.log(`${LOG_PREFIX} 📦 Buffered event (stream not ready), buffer size:`, eventBuffer.length)
       }
     }
-
-    // virtual-tools-domain: Handle virtual tool events for client-side execution
     const onVirtualTool = (event: VirtualToolEvent) => {
-      console.log(`${VT_LOG_PREFIX} 📥 Received virtual tool event:`, event)
       if (streamWriter) {
-        // Stream is ready, write directly using AI SDK 6.x data-{name} format
-        streamWriter.write({
-          type: 'data-virtual-tool',
-          id: `vt-${Date.now()}`,
-          data: event,
-        })
-        console.log(`${VT_LOG_PREFIX} ✅ Wrote data-virtual-tool part to stream (live)`)
+        streamWriter.write({ type: 'data-virtual-tool', id: `vt-${Date.now()}`, data: event })
       } else {
-        // Stream not ready yet, buffer the event
         virtualToolBuffer.push(event)
-        console.log(`${VT_LOG_PREFIX} 📦 Buffered event (stream not ready), buffer size:`, virtualToolBuffer.length)
       }
     }
 
-    // Attach listeners BEFORE calling streamText
-    console.log(`${LOG_PREFIX} 👂 Attaching progress listener BEFORE streamText`)
+    // Attach listeners BEFORE sending message
     progressEvents.on('progress', onProgress)
-    console.log(`${VT_LOG_PREFIX} 👂 Attaching virtual tool listener BEFORE streamText`)
     virtualToolEvents.on('virtual-tool', onVirtualTool)
 
-    // chat-session-sync-fix: Send FULL message history every time
-    // Claude Code handles deduplication internally via its session files
-    // Old message-filtering logic was removed in favor of passing full array
-    const result = streamText({
-      // Type assertion for ai-sdk-provider-claude-code compatibility with ai@6
-      // task-api-convert-images: streamingInput required for image support
-      model: scopedClaudeCode('opus', {
-        ...modelSettings,
-        streamingInput: 'always',  // Required for image parts to be sent to Claude
-      }) as Parameters<typeof streamText>[0]['model'],
-      system: systemPrompt,
-      messages: coreMessages,
-    })
+    // Send the user message to the persistent V2 session
+    await session.send(sessionMessage)
 
-    // task-subagent-progress-streaming: Create merged stream with progress events
-    // Uses createUIMessageStream to interleave hook events with LLM stream
-    console.log(`${LOG_PREFIX} 📡 Creating UIMessageStream for request`)
+    // Create UIMessageStream that converts V2 SDK messages to UIMessageChunks
+    console.log(`${LOG_PREFIX} 📡 V2 session streaming for: ${scopeKey}`)
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
-        // Connect the writer so new events go directly to stream
         streamWriter = writer
-        console.log(`${LOG_PREFIX} 🔗 Stream writer connected`)
 
-        // Flush any buffered events that arrived before stream was ready
-        if (eventBuffer.length > 0) {
-          console.log(`${LOG_PREFIX} 📤 Flushing ${eventBuffer.length} buffered events`)
-          for (const bufferedEvent of eventBuffer) {
-            writer.write({
-              type: 'data-progress',
-              id: `progress-${Date.now()}`,
-              data: bufferedEvent,
-            })
-          }
-          eventBuffer.length = 0 // Clear buffer
+        // Flush buffered events
+        for (const ev of eventBuffer) {
+          writer.write({ type: 'data-progress', id: `progress-${Date.now()}`, data: ev })
         }
-
-        // virtual-tools-domain: Flush buffered virtual tool events
-        if (virtualToolBuffer.length > 0) {
-          console.log(`${VT_LOG_PREFIX} 📤 Flushing ${virtualToolBuffer.length} buffered virtual tool events`)
-          for (const bufferedEvent of virtualToolBuffer) {
-            writer.write({
-              type: 'data-virtual-tool',
-              id: `vt-${Date.now()}`,
-              data: bufferedEvent,
-            })
-          }
-          virtualToolBuffer.length = 0 // Clear buffer
+        eventBuffer.length = 0
+        for (const ev of virtualToolBuffer) {
+          writer.write({ type: 'data-virtual-tool', id: `vt-${Date.now()}`, data: ev })
         }
+        virtualToolBuffer.length = 0
 
-        // Feature flag for interleaved stream processing
-        // Set to true to use new processInterleavedStream that preserves text/tool boundaries
-        // Set to false to restore original toUIMessageStream behavior
-        const USE_INTERLEAVED_STREAM = true
+        // State for converting raw stream events to UIMessageChunks
+        let currentTextId: string | null = null
+        let currentToolId: string | null = null
+        let currentToolName: string | null = null
+        let currentToolInput = ''
+        // Track tool IDs already emitted via stream_event to avoid duplicates
+        const streamedToolIds = new Set<string>()
+        let resultUsage: any = null
+        let resultSessionId: string | undefined
+
+        // server-side-persistence: Accumulate content for DB persistence.
+        // orderedParts preserves the natural interleaving of text and tool calls
+        // so that on page refresh the parts array faithfully reproduces the original order.
+        let accumulatedText = ''
+        const toolCallDetails: { toolCallId: string; toolName: string; input: any }[] = []
+        const orderedParts: any[] = []
+        let currentTextPart: { type: 'text'; text: string } | null = null
+        // Track whether we're receiving incremental stream_events.
+        // When streaming, the 'assistant' message is redundant (it's the complete
+        // version of what was already streamed incrementally).
+        let receivedStreamEvents = false
+        // Track tool calls that are pending execution by the SDK.
+        // When the next turn starts, we know all pending tools completed.
+        const pendingToolResults = new Map<string, string>() // toolCallId → toolName
 
         try {
-          if (USE_INTERLEAVED_STREAM) {
-            // =====================================================================
-            // NEW: Interleaved stream processing (chat-tool-interleaving-stream-processor)
-            // task-server-integration: Use processInterleavedStream to preserve text/tool boundaries
-            // =====================================================================
-            console.log(`${LOG_PREFIX} 📖 Starting interleaved stream processing`)
+          writer.write({ type: 'start' })
+          writer.write({ type: 'start-step' })
 
-            // Create the complete signal ONCE outside the loop to avoid repeated logging
-            let streamCompleteWon = false
-            const completeSignal = streamCompletePromise.then(() => {
-              if (!streamCompleteWon) {
-                streamCompleteWon = true
-                console.log(`${LOG_PREFIX} 🏁 Stream complete signal won the race - closing stream`)
-              }
-              return { type: 'completion-signal' as const }
-            })
+          for await (const msg of session.stream()) {
+            const msgAny = msg as any
 
-            // Options for processInterleavedStream including metadata extraction
-            const interleavedOptions = {
-              getMessageMetadata: (providerMetadata: Record<string, Record<string, unknown>> | undefined) => {
-                // Extract ccSessionId from providerMetadata (same logic as original)
-                const claudeCodeMeta = providerMetadata?.['claude-code']
-                const sessionId = claudeCodeMeta?.sessionId as string | undefined
-                if (sessionId) {
-                  console.log('[messageMetadata]', {
-                    hasProviderMetadata: !!providerMetadata,
-                    hasClaudeCodeMeta: !!claudeCodeMeta,
-                    sessionId,
-                    source: 'interleaved-stream',
-                  })
+            // -----------------------------------------------------------------
+            // SDKPartialAssistantMessage — incremental streaming (preferred)
+            // These arrive before the complete 'assistant' message and provide
+            // real-time text and tool call deltas for the UI.
+            // -----------------------------------------------------------------
+            if (msg.type === 'stream_event') {
+              receivedStreamEvents = true
+              const event = msgAny.event as any
+              resultSessionId = msg.session_id
+
+              switch (event.type) {
+                case 'message_start': {
+                  // New turn beginning — all previously pending tools have completed
+                  for (const [tcId, tcName] of pendingToolResults) {
+                    writer.write({
+                      type: 'tool-output-available',
+                      toolCallId: tcId,
+                      output: { success: true },
+                    })
+                  }
+                  pendingToolResults.clear()
+                  break
                 }
-                return sessionId ? { ccSessionId: sessionId } : undefined
+                case 'content_block_start': {
+                  const block = event.content_block
+                  if (block?.type === 'text') {
+                    currentTextId = `text-${Date.now()}-${event.index}`
+                    writer.write({ type: 'text-start', id: currentTextId })
+                  } else if (block?.type === 'tool_use') {
+                    if (currentTextId) {
+                      writer.write({ type: 'text-end', id: currentTextId })
+                      currentTextId = null
+                    }
+                    currentToolId = block.id
+                    currentToolName = block.name
+                    currentToolInput = ''
+                    // Mark as streamed immediately so the assistant handler skips it
+                    streamedToolIds.add(block.id)
+                    writer.write({
+                      type: 'tool-input-start',
+                      toolCallId: block.id,
+                      toolName: block.name,
+                      dynamic: true,
+                    })
+                  }
+                  break
+                }
+                case 'content_block_delta': {
+                  const delta = event.delta
+                  if (delta?.type === 'text_delta' && delta.text) {
+                    if (!currentTextId) {
+                      currentTextId = `text-${Date.now()}-${event.index}`
+                      writer.write({ type: 'text-start', id: currentTextId })
+                    }
+                    writer.write({ type: 'text-delta', id: currentTextId, delta: delta.text })
+                    // server-side-persistence: accumulate text for DB persistence
+                    accumulatedText += delta.text
+                    if (!currentTextPart) {
+                      currentTextPart = { type: 'text', text: '' }
+                      orderedParts.push(currentTextPart)
+                    }
+                    currentTextPart.text += delta.text
+                  } else if (delta?.type === 'input_json_delta' && delta.partial_json) {
+                    currentToolInput += delta.partial_json
+                    writer.write({
+                      type: 'tool-input-delta',
+                      toolCallId: currentToolId || `tool-${event.index}`,
+                      inputTextDelta: delta.partial_json,
+                    })
+                  }
+                  break
+                }
+                case 'content_block_stop': {
+                  if (currentTextId) {
+                    writer.write({ type: 'text-end', id: currentTextId })
+                    currentTextId = null
+                  }
+                  if (currentToolId) {
+                    // Finalize tool input — emit tool-input-available so UI shows it as "executing"
+                    let parsedInput: any = {}
+                    try { parsedInput = JSON.parse(currentToolInput || '{}') } catch {}
+                    writer.write({
+                      type: 'tool-input-available',
+                      toolCallId: currentToolId,
+                      toolName: currentToolName || 'unknown',
+                      input: parsedInput,
+                      dynamic: true,
+                    })
+                    // server-side-persistence: capture tool call details for message parts
+                    const toolDetail = {
+                      toolCallId: currentToolId,
+                      toolName: currentToolName || 'unknown',
+                      input: parsedInput,
+                    }
+                    toolCallDetails.push(toolDetail)
+                    currentTextPart = null
+                    orderedParts.push({
+                      type: 'dynamic-tool',
+                      toolCallId: toolDetail.toolCallId,
+                      toolName: toolDetail.toolName,
+                      input: toolDetail.input,
+                      output: { success: true },
+                      state: 'output-available',
+                    })
+                    // Track for result emission when next turn starts
+                    pendingToolResults.set(currentToolId, currentToolName || 'unknown')
+                    currentToolId = null
+                    currentToolName = null
+                    currentToolInput = ''
+                  }
+                  break
+                }
+                case 'message_stop': {
+                  if (currentTextId) {
+                    writer.write({ type: 'text-end', id: currentTextId })
+                    currentTextId = null
+                  }
+                  currentToolId = null
+                  currentToolName = null
+                  currentToolInput = ''
+                  writer.write({ type: 'finish-step' })
+                  writer.write({ type: 'start-step' })
+                  break
+                }
               }
             }
 
-            // Use for-await-of loop over processInterleavedStream
-            // Wrap in async IIFE to allow Promise.race against completion signal
-            const processStream = async () => {
-              for await (const chunk of processInterleavedStream(result.fullStream, interleavedOptions)) {
-                writer.write(chunk)
-              }
-              return { type: 'stream-exhausted' as const }
-            }
+            // -----------------------------------------------------------------
+            // SDKAssistantMessage — complete assistant response per turn
+            // When streaming is active, this is a duplicate of the already-
+            // streamed content and should be skipped for text/tool output.
+            // When streaming is NOT active (fallback), emit content from here.
+            // -----------------------------------------------------------------
+            else if (msg.type === 'assistant') {
+              resultSessionId = msgAny.session_id
+              const content = msgAny.message?.content as Array<any> | undefined
 
-            // Race the stream processing against completion signal
-            const raceResult = await Promise.race([
-              processStream(),
-              completeSignal
-            ])
-
-            if (raceResult.type === 'completion-signal') {
-              console.log(`${LOG_PREFIX} ✅ Loop breaking due to completion signal`)
-              // Completion signal won - stream is being closed by Stop/SessionEnd hook
-            } else {
-              console.log(`${LOG_PREFIX} ✅ Stream processing complete (stream exhausted)`)
-            }
-          } else {
-            // =====================================================================
-            // ROLLBACK: Original toUIMessageStream implementation
-            // Set USE_INTERLEAVED_STREAM = false to restore this behavior
-            // =====================================================================
-            // Merge the LLM stream with messageMetadata for session ID
-            const llmStream = result.toUIMessageStream({
-              messageMetadata: ({ part }) => {
-                // Debug logging for session ID extraction (task-cc-api-endpoint)
-                const hasProviderMetadata = !!(part as any).providerMetadata
-                const claudeCodeMeta = ((part as any).providerMetadata as Record<string, Record<string, unknown>> | undefined)?.['claude-code']
-                const sessionId = claudeCodeMeta?.sessionId as string | undefined
-                console.log('[messageMetadata]', {
-                  hasProviderMetadata,
-                  hasClaudeCodeMeta: !!claudeCodeMeta,
-                  sessionId: sessionId ?? 'undefined',
-                  partType: (part as any).type,
+              // Resolve any pending tool results from the previous turn
+              for (const [tcId] of pendingToolResults) {
+                writer.write({
+                  type: 'tool-output-available',
+                  toolCallId: tcId,
+                  output: { success: true },
                 })
-                return sessionId ? { ccSessionId: sessionId } : undefined
-              },
-            })
-
-            // Read and forward all chunks from LLM stream
-            // CRITICAL: Race each read against the stream completion signal
-            // This fixes the hang when subagents complete but the reader is still waiting
-            const reader = llmStream.getReader()
-            console.log(`${LOG_PREFIX} 📖 Starting reader loop with completion race`)
-
-            // Create the complete signal ONCE outside the loop to avoid repeated logging
-            let streamCompleteWon = false
-            const completeSignal = streamCompletePromise.then(() => {
-              if (!streamCompleteWon) {
-                streamCompleteWon = true
-                console.log(`${LOG_PREFIX} 🏁 Stream complete signal won the race - closing stream`)
               }
-              return { done: true as const, value: undefined }
-            })
+              pendingToolResults.clear()
 
-            while (true) {
-              // Race the read against the completion signal from Stop/SessionEnd hooks
-              const readResult = await Promise.race([
-                reader.read(),
-                completeSignal
-              ])
+              // The V2 SDK handles tools internally and may NOT stream tool_use
+              // blocks via stream_event. The assistant message is the only reliable
+              // source of tool call information. We always extract tool_use blocks,
+              // but skip text when it was already streamed.
+              const toolBlocks = content?.filter((b: any) => b.type === 'tool_use') || []
 
-              if (readResult.done) {
-                console.log(`${LOG_PREFIX} ✅ Reader loop complete (done=${readResult.done})`)
-                break
+              if (receivedStreamEvents) {
+                // Text was already streamed. Only emit tool calls that weren't
+                // already emitted via stream_event (avoid duplicates).
+                for (const block of toolBlocks) {
+                  if (streamedToolIds.has(block.id)) continue // Already emitted
+                  writer.write({
+                    type: 'tool-input-start',
+                    toolCallId: block.id,
+                    toolName: block.name,
+                    dynamic: true,
+                  })
+                  if (block.input) {
+                    writer.write({
+                      type: 'tool-input-delta',
+                      toolCallId: block.id,
+                      inputTextDelta: JSON.stringify(block.input),
+                    })
+                  }
+                  writer.write({
+                    type: 'tool-input-available',
+                    toolCallId: block.id,
+                    toolName: block.name,
+                    input: block.input || {},
+                    dynamic: true,
+                  })
+                  // server-side-persistence: capture non-streamed tool calls
+                  const nonStreamedTool = {
+                    toolCallId: block.id,
+                    toolName: block.name,
+                    input: block.input || {},
+                  }
+                  toolCallDetails.push(nonStreamedTool)
+                  currentTextPart = null
+                  orderedParts.push({
+                    type: 'dynamic-tool',
+                    toolCallId: nonStreamedTool.toolCallId,
+                    toolName: nonStreamedTool.toolName,
+                    input: nonStreamedTool.input,
+                    output: { success: true },
+                    state: 'output-available',
+                  })
+                  pendingToolResults.set(block.id, block.name)
+                }
+                // Don't emit finish-step/start-step — message_stop already did
+              } else {
+                // No streaming — emit everything from the complete message
+                if (content && Array.isArray(content)) {
+                  for (const block of content) {
+                    if (block.type === 'text' && block.text) {
+                      const textId = `text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+                      writer.write({ type: 'text-start', id: textId })
+                      writer.write({ type: 'text-delta', id: textId, delta: block.text })
+                      writer.write({ type: 'text-end', id: textId })
+                      // server-side-persistence: accumulate text for non-streaming path
+                      accumulatedText += block.text
+                      currentTextPart = { type: 'text', text: block.text }
+                      orderedParts.push(currentTextPart)
+                    } else if (block.type === 'tool_use') {
+                      writer.write({
+                        type: 'tool-input-start',
+                        toolCallId: block.id,
+                        toolName: block.name,
+                        dynamic: true,
+                      })
+                      if (block.input) {
+                        writer.write({
+                          type: 'tool-input-delta',
+                          toolCallId: block.id,
+                          inputTextDelta: JSON.stringify(block.input),
+                        })
+                      }
+                      writer.write({
+                        type: 'tool-input-available',
+                        toolCallId: block.id,
+                        toolName: block.name,
+                        input: block.input || {},
+                        dynamic: true,
+                      })
+                      // server-side-persistence: capture tool call for non-streaming path
+                      const fallbackTool = {
+                        toolCallId: block.id,
+                        toolName: block.name,
+                        input: block.input || {},
+                      }
+                      toolCallDetails.push(fallbackTool)
+                      currentTextPart = null
+                      orderedParts.push({
+                        type: 'dynamic-tool',
+                        toolCallId: fallbackTool.toolCallId,
+                        toolName: fallbackTool.toolName,
+                        input: fallbackTool.input,
+                        output: { success: true },
+                        state: 'output-available',
+                      })
+                      pendingToolResults.set(block.id, block.name)
+                    }
+                  }
+                }
+                writer.write({ type: 'finish-step' })
+                writer.write({ type: 'start-step' })
               }
-              if (readResult.value) {
-                writer.write(readResult.value)
+
+              // Reset streaming flag for the next turn
+              // (each turn may or may not have stream_events)
+              receivedStreamEvents = false
+            }
+
+            // -----------------------------------------------------------------
+            // SDKSystemMessage — session init with metadata
+            // -----------------------------------------------------------------
+            else if (msg.type === 'system' && msgAny.subtype === 'init') {
+              resultSessionId = msgAny.session_id
+              console.log(`${LOG_PREFIX} Session init: ${resultSessionId}`)
+            }
+
+            // -----------------------------------------------------------------
+            // SDKResultMessage — turn complete with usage data
+            // -----------------------------------------------------------------
+            else if (msg.type === 'result') {
+              const result = msg as any
+              resultUsage = result.usage
+              resultSessionId = result.session_id
+              console.log(`${LOG_PREFIX} Result: ${result.subtype}, tokens: ${JSON.stringify(resultUsage)}`)
+
+              // Finalize any open text
+              if (currentTextId) {
+                writer.write({ type: 'text-end', id: currentTextId })
+                currentTextId = null
               }
+
+              // Resolve any remaining pending tool results
+              for (const [tcId] of pendingToolResults) {
+                writer.write({
+                  type: 'tool-output-available',
+                  toolCallId: tcId,
+                  output: { success: true },
+                })
+              }
+              pendingToolResults.clear()
+
+              // Write session metadata
+              if (resultSessionId) {
+                writer.write({
+                  type: 'message-metadata',
+                  messageMetadata: { ccSessionId: resultSessionId },
+                })
+              }
+
+              // Emit finish
+              writer.write({
+                type: 'finish',
+                finishReason: result.subtype === 'success' ? 'stop' : 'error',
+              })
+              break // Turn is complete
             }
           }
         } finally {
-          // Cleanup: remove progress listener to prevent memory leak
-          console.log(`${LOG_PREFIX} 🧹 Removing progress listener (stream ending)`)
+          // Release active session lock
+          activeSessions.delete(scopeKey)
+
+          // Cleanup listeners
           progressEvents.off('progress', onProgress)
           virtualToolEvents.off('virtual-tool', onVirtualTool)
-          streamCompletionEvents.off('complete', onStreamComplete)
           streamWriter = null
-          console.log(`${LOG_PREFIX} 📊 Remaining listener count:`, progressEvents.listenerCount('progress'))
-          console.log(`${VT_LOG_PREFIX} 📊 Remaining listener count:`, virtualToolEvents.listenerCount('virtual-tool'))
 
-          // credit-tracking: Charge credits AFTER stream completes based on token usage
-          // Fire-and-forget pattern - don't block the stream response
-          if (workspaceId && userId) {
+          // server-side-persistence: Persist assistant message to database (fire-and-forget)
+          // This ensures messages survive page refreshes and client disconnects.
+          if (chatSessionId && (accumulatedText || toolCallDetails.length > 0)) {
             (async () => {
               try {
-                const usage = await result.usage as any
-                // AI SDK usage may have totalTokens, promptTokens/completionTokens, or inputTokens/outputTokens
-                const inputTokens = usage?.promptTokens ?? usage?.inputTokens ?? 0
-                const outputTokens = usage?.completionTokens ?? usage?.outputTokens ?? 0
-                const totalTokens = usage?.totalTokens ?? (inputTokens + outputTokens)
-                const creditCost = calculateCreditCost(totalTokens)
+                const session = await prisma.chatSession.findUnique({ where: { id: chatSessionId } })
+                if (session) {
+                  // Use orderedParts which preserves the natural interleaving of
+                  // text and tool calls as they appeared in the stream.
+                  // Filter out empty text parts that can accumulate from keepalive pings.
+                  const parts = orderedParts.filter(
+                    (p: any) => !(p.type === 'text' && (!p.text || !p.text.trim()))
+                  )
 
-                await billingService.consumeCredits(
-                  workspaceId,
-                  projectId || null, // projectId
-                  userId,
-                  'chat_message',
-                  creditCost,
-                  {
-                    ccSessionId,
-                    inputTokens,
-                    outputTokens,
-                    totalTokens,
-                  }
-                )
-                console.log(`[/api/chat] 💰 Charged ${creditCost} credits (${totalTokens} tokens) for workspace ${workspaceId}`)
-              } catch (creditError: any) {
-                console.error(`[/api/chat] ⚠️ Failed to charge credits:`, creditError.message)
+                  await prisma.chatMessage.create({
+                    data: {
+                      sessionId: chatSessionId,
+                      role: 'assistant',
+                      content: accumulatedText,
+                      parts: parts.length > 0 ? JSON.stringify(parts) : undefined,
+                    },
+                  })
+                  console.log(`[/api/chat] 💾 Persisted assistant message (${accumulatedText.length} chars, ${toolCallDetails.length} tool calls) for session ${chatSessionId}`)
+                }
+              } catch (persistError: any) {
+                console.error(`[/api/chat] ⚠️ Failed to persist assistant message:`, persistError.message)
               }
             })()
+          }
+
+          // Close the billing session — the AI proxy accumulated tokens
+          // across all API calls, and this triggers the single charge.
+          if (projectId) {
+            closeBillingSession(projectId).then(({ creditCost }) => {
+              if (creditCost > 0) {
+                console.log(`[/api/chat] 💰 Billing session closed — charged ${creditCost} credits`)
+              }
+            }).catch((err) => {
+              console.error(`[/api/chat] ⚠️ Failed to close billing session:`, err)
+            })
           }
         }
       },
       onError: (error) => {
+        activeSessions.delete(scopeKey)
         console.error('[/api/chat] Stream error:', error)
-        // Cleanup on error too
         progressEvents.off('progress', onProgress)
         virtualToolEvents.off('virtual-tool', onVirtualTool)
-        streamCompletionEvents.off('complete', onStreamComplete)
         streamWriter = null
         return 'An error occurred during streaming'
       },
@@ -2613,8 +3741,8 @@ app.post('/api/billing/checkout', async (c) => {
 
     // Include workspace ID in URLs for proper navigation after checkout
     const frontendUrl = getFrontendUrl()
-    const successUrl = `${frontendUrl}/app?workspace=${workspaceId}&checkout=success&session_id={CHECKOUT_SESSION_ID}`
-    const cancelUrl = `${frontendUrl}/app?workspace=${workspaceId}&checkout=canceled`
+    const successUrl = `${frontendUrl}/?workspace=${workspaceId}&checkout=success&session_id={CHECKOUT_SESSION_ID}`
+    const cancelUrl = `${frontendUrl}/?workspace=${workspaceId}&checkout=canceled`
 
     // Create Stripe checkout session
     const session = await stripe.checkout.sessions.create({
@@ -2632,6 +3760,155 @@ app.post('/api/billing/checkout', async (c) => {
   } catch (error: any) {
     console.error('[Billing] Checkout error:', error)
     return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
+  }
+})
+
+app.get('/api/billing/workspace-plan', async (c) => {
+  try {
+    const url = new URL(c.req.url)
+    const workspaceId = url.searchParams.get('workspaceId')
+    const workspaceIds = url.searchParams.get('workspaceIds')
+
+    if (workspaceIds) {
+      const ids = workspaceIds.split(',').filter(Boolean)
+      const plans: Record<string, { planId: string; status: string | null }> = {}
+      await Promise.all(ids.map(async (id) => {
+        const sub = await billingService.getSubscription(id)
+        plans[id] = { planId: sub?.planId ?? 'free', status: sub?.status ?? null }
+      }))
+      return c.json({ ok: true, plans })
+    }
+
+    if (!workspaceId) return c.json({ error: 'missing workspaceId or workspaceIds' }, 400)
+    const sub = await billingService.getSubscription(workspaceId)
+    const ledger = await billingService.getCreditLedger(workspaceId)
+    return c.json({
+      ok: true,
+      planId: sub?.planId ?? 'free',
+      status: sub?.status ?? null,
+      billingInterval: sub?.billingInterval ?? null,
+      monthlyCredits: ledger?.monthlyCredits ?? 0,
+      dailyCredits: ledger?.dailyCredits ?? 0,
+    })
+  } catch (error: any) {
+    return c.json({ error: { code: 'plan_query_failed', message: error.message } }, 500)
+  }
+})
+
+app.post('/api/billing/workspace-checkout', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+
+    const body = await c.req.json()
+    const { workspaceName, planId, billingInterval, userEmail, userId } = body
+
+    if (!workspaceName || !planId || !billingInterval || !userId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing required fields: workspaceName, planId, billingInterval, userId' } }, 400)
+    }
+
+    const priceId = getPriceId(planId, billingInterval as 'monthly' | 'annual')
+    if (!priceId) {
+      return c.json({ error: { code: 'invalid_plan', message: `No price found for ${planId} ${billingInterval}` } }, 400)
+    }
+
+    // Create workspace + owner membership immediately (bypasses hook limit)
+    const wsResult = await workspaceService.createPaidWorkspace(userId, workspaceName)
+    const newWorkspaceId = wsResult.workspace.id
+    console.log('[Billing] Created paid workspace:', newWorkspaceId, 'for user:', userId)
+
+    // Allocate free credits so the workspace is usable while subscription provisions
+    await billingService.allocateFreeCredits(newWorkspaceId)
+
+    const metadata: Record<string, string> = {
+      workspaceId: newWorkspaceId,
+      planId,
+      billingInterval,
+    }
+
+    const frontendUrl = getFrontendUrl()
+    const successUrl = `${frontendUrl}/?workspace=${newWorkspaceId}&checkout=workspace_created&session_id={CHECKOUT_SESSION_ID}`
+    const cancelUrl = `${frontendUrl}/?workspace=${newWorkspaceId}&checkout=canceled`
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      payment_method_types: ['card'],
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+      metadata,
+      ...(userEmail && { customer_email: userEmail }),
+    })
+
+    return c.json({ sessionId: session.id, url: session.url, workspaceId: newWorkspaceId }, 200)
+  } catch (error: any) {
+    console.error('[Billing] Workspace checkout error:', error)
+    return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
+  }
+})
+
+app.post('/api/billing/verify-checkout', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+
+    const body = await c.req.json()
+    const { sessionId } = body
+    if (!sessionId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing sessionId' } }, 400)
+    }
+
+    const session = await stripe.checkout.sessions.retrieve(sessionId)
+    if (session.payment_status !== 'paid') {
+      return c.json({ error: { code: 'not_paid', message: 'Checkout session not paid' } }, 400)
+    }
+
+    const { workspaceId, planId, billingInterval } = session.metadata || {}
+    if (!workspaceId || !planId || !billingInterval || !session.subscription || !session.customer) {
+      return c.json({ error: { code: 'invalid_session', message: 'Missing metadata in session' } }, 400)
+    }
+
+    const existing = await billingService.getSubscription(workspaceId)
+    if (existing) {
+      return c.json({ ok: true, workspaceId, planId, alreadyProvisioned: true }, 200)
+    }
+
+    const stripeSubscription = await stripe.subscriptions.retrieve(session.subscription as string) as Stripe.Subscription & {
+      current_period_start?: number
+      current_period_end?: number
+    }
+
+    const now = Date.now()
+    const currentPeriodStart = stripeSubscription.current_period_start
+      ? stripeSubscription.current_period_start * 1000
+      : (stripeSubscription.billing_cycle_anchor || stripeSubscription.start_date) * 1000 || now
+    const currentPeriodEnd = stripeSubscription.current_period_end
+      ? stripeSubscription.current_period_end * 1000
+      : now + (30 * 24 * 60 * 60 * 1000)
+
+    const basePlanId = planId.split('_')[0] as 'pro' | 'business' | 'enterprise'
+
+    await billingService.syncFromStripe({
+      stripeSubscriptionId: stripeSubscription.id,
+      stripeCustomerId: session.customer as string,
+      workspaceId,
+      planId: basePlanId,
+      status: stripeSubscription.status as 'active' | 'past_due' | 'canceled' | 'trialing' | 'paused',
+      billingInterval: billingInterval as 'monthly' | 'annual',
+      currentPeriodStart: new Date(currentPeriodStart),
+      currentPeriodEnd: new Date(currentPeriodEnd),
+      cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end ?? false,
+    })
+
+    await billingService.allocateMonthlyCredits(workspaceId, planId)
+    console.log('[Billing] Verify-checkout: subscription provisioned for workspace:', workspaceId, 'plan:', planId)
+
+    return c.json({ ok: true, workspaceId, planId }, 200)
+  } catch (error: any) {
+    console.error('[Billing] Verify-checkout error:', error)
+    return c.json({ error: { code: 'verify_error', message: error.message } }, 500)
   }
 })
 
@@ -2731,39 +4008,39 @@ app.post('/api/webhooks/stripe', async (c) => {
           metadata: session.metadata,
         })
 
-        // Create subscription in billing domain
+        // Workspace is already created by the checkout endpoint; webhook only provisions the subscription
         const { workspaceId, planId, billingInterval } = session.metadata || {}
         if (workspaceId && planId && billingInterval && session.subscription && session.customer) {
           try {
-            // Fetch the full subscription details from Stripe
-            // Note: current_period_start/end are returned by the API but not in the TypeScript types for Stripe v20+
             const stripeSubscription = await stripe!.subscriptions.retrieve(session.subscription as string) as Stripe.Subscription & {
               current_period_start?: number
               current_period_end?: number
             }
 
-            // Convert Stripe timestamps (seconds) to milliseconds, with fallbacks
-            // Use billing_cycle_anchor or start_date as fallback if current_period fields are missing
             const now = Date.now()
             const currentPeriodStart = stripeSubscription.current_period_start
               ? stripeSubscription.current_period_start * 1000
               : (stripeSubscription.billing_cycle_anchor || stripeSubscription.start_date) * 1000 || now
             const currentPeriodEnd = stripeSubscription.current_period_end
               ? stripeSubscription.current_period_end * 1000
-              : now + (30 * 24 * 60 * 60 * 1000) // Default to 30 days from now
+              : now + (30 * 24 * 60 * 60 * 1000)
+
+            const basePlanId = planId.split('_')[0] as 'pro' | 'business' | 'enterprise'
 
             await billingService.syncFromStripe({
               stripeSubscriptionId: stripeSubscription.id,
               stripeCustomerId: session.customer as string,
               workspaceId,
-              planId: planId as 'pro' | 'business' | 'enterprise',
+              planId: basePlanId,
               status: stripeSubscription.status as 'active' | 'past_due' | 'canceled' | 'trialing' | 'paused',
               billingInterval: billingInterval as 'monthly' | 'annual',
               currentPeriodStart: new Date(currentPeriodStart),
               currentPeriodEnd: new Date(currentPeriodEnd),
               cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end ?? false,
             })
-            console.log('[Webhook] Subscription created for workspace:', workspaceId)
+
+            await billingService.allocateMonthlyCredits(workspaceId, planId)
+            console.log('[Webhook] Subscription created + credits allocated for workspace:', workspaceId, 'plan:', planId)
           } catch (err: any) {
             console.error('[Webhook] Failed to create subscription:', err.message)
           }
@@ -2782,29 +4059,269 @@ app.post('/api/webhooks/stripe', async (c) => {
 })
 
 // =============================================================================
+// AI Model Proxy Routes (OpenAI-compatible, project-scoped token auth)
+// =============================================================================
+
+// Mount AI proxy routes BEFORE the general auth middleware.
+// The proxy uses its own project-scoped token authentication.
+const aiProxy = aiProxyRoutes()
+app.route('/api', aiProxy)
+
+// =============================================================================
 // Domain API routes - For APIPersistence layer
 // =============================================================================
 
-// Note: Domain routes are now served via /api/v2 (generated routes below)
+// Note: Domain routes are now served via generated Prisma CRUD routes at /api
 
 // =============================================================================
-// Generated API routes (v2) - Auto-generated from Prisma schema with hooks
+// Super Admin Routes (self-contained auth middleware)
 // =============================================================================
 
-// Apply auth middleware to extract session for all v2 routes
+// Generated admin CRUD routes - full model CRUD with pagination/search/sorting
+// Protected by auth + requireSuperAdmin middleware stack
+app.route('/api/admin', createAdminRoutes({
+  prisma,
+  middleware: [authMiddleware, requireAuth, requireSuperAdmin],
+}))
+
+// Hand-written admin routes for custom analytics endpoints
+app.route('/api/admin', adminRoutes())
+
+// Scoped analytics routes handle their own auth (workspace/project membership checks)
+app.route('/api', scopedAnalyticsRoutes())
+
+// Composio integration routes for managed OAuth (connect/disconnect/status)
+app.route('/api', integrationRoutes())
+
+// =============================================================================
+// Current User Route (/api/me) - Returns user profile with role
+// =============================================================================
+
+app.get('/api/me', authMiddleware, requireAuth, async (c) => {
+  const authCtx = c.get('auth')
+  if (!authCtx?.userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Not authenticated' } }, 401)
+  }
+  const user = await prisma.user.findUnique({
+    where: { id: authCtx.userId },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      emailVerified: true,
+      image: true,
+      role: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  })
+  if (!user) {
+    return c.json({ error: { code: 'not_found', message: 'User not found' } }, 404)
+  }
+  return c.json({ ok: true, data: user })
+})
+
+// =============================================================================
+// Generated API Routes - Auto-generated from Prisma schema with hooks
+// =============================================================================
+
+// Apply auth middleware to extract session for all routes
 // This makes ctx.userId available in route hooks for authorization
-app.use('/api/v2/*', authMiddleware)
+app.use('/api/*', authMiddleware)
 
-// Require authentication for all v2 routes
+// Require authentication for all routes
 // Unauthenticated requests get 401 Unauthorized
-app.use('/api/v2/*', requireAuth)
+app.use('/api/*', requireAuth)
 
-// Mount generated routes at /api/v2
+
+// =============================================================================
+// Invite Link Routes (custom, not auto-generated)
+// =============================================================================
+
+// Create invite link for a project or workspace
+app.post('/api/invite-links', async (c) => {
+  const auth = c.get('auth') as any
+  const userId = auth?.userId
+  if (!userId) return c.json({ error: 'Unauthorized' }, 401)
+
+  const body = await c.req.json()
+  const { projectId, workspaceId, role = 'member' } = body
+
+  if (!projectId && !workspaceId) {
+    return c.json({ error: 'projectId or workspaceId required' }, 400)
+  }
+
+  // Resolve workspaceId from project if needed
+  let resolvedWorkspaceId = workspaceId
+  if (projectId && !workspaceId) {
+    const project = await prisma.project.findUnique({ where: { id: projectId }, select: { workspaceId: true } })
+    if (!project) return c.json({ error: 'Project not found' }, 404)
+    resolvedWorkspaceId = project.workspaceId
+  }
+
+  // Verify admin access
+  const membership = await prisma.member.findFirst({
+    where: { userId, workspaceId: resolvedWorkspaceId },
+  })
+  if (!membership || (membership.role !== 'owner' && membership.role !== 'admin')) {
+    return c.json({ error: 'Only admins and owners can create invite links' }, 403)
+  }
+
+  const link = await prisma.inviteLink.create({
+    data: { projectId, workspaceId: resolvedWorkspaceId, role, createdBy: userId },
+  })
+
+  return c.json({ ok: true, data: link })
+})
+
+// List invite links
+app.get('/api/invite-links', async (c) => {
+  const auth = c.get('auth') as any
+  const userId = auth?.userId
+  if (!userId) return c.json({ error: 'Unauthorized' }, 401)
+
+  const projectId = c.req.query('projectId')
+  const workspaceId = c.req.query('workspaceId')
+
+  const where: any = {}
+  if (projectId) where.projectId = projectId
+  else if (workspaceId) where.workspaceId = workspaceId
+  else return c.json({ ok: true, items: [] })
+
+  const links = await prisma.inviteLink.findMany({ where, orderBy: { createdAt: 'desc' } })
+  return c.json({ ok: true, items: links })
+})
+
+// Toggle invite link (owner must be the creator or workspace admin)
+app.patch('/api/invite-links/:id', async (c) => {
+  const auth = c.get('auth') as any
+  const userId = auth?.userId
+  if (!userId) return c.json({ error: 'Unauthorized' }, 401)
+
+  const id = c.req.param('id')
+  const existing = await prisma.inviteLink.findUnique({ where: { id } })
+  if (!existing) return c.json({ error: 'Not found' }, 404)
+
+  // Only the creator or a workspace admin can modify
+  if (existing.createdBy !== userId) {
+    const wsId = existing.workspaceId
+    if (wsId) {
+      const member = await prisma.member.findFirst({ where: { userId, workspaceId: wsId } })
+      if (!member || (member.role !== 'owner' && member.role !== 'admin')) {
+        return c.json({ error: 'Forbidden' }, 403)
+      }
+    } else {
+      return c.json({ error: 'Forbidden' }, 403)
+    }
+  }
+
+  const body = await c.req.json()
+  const link = await prisma.inviteLink.update({ where: { id }, data: { enabled: body.enabled } })
+  return c.json({ ok: true, data: link })
+})
+
+app.delete('/api/invite-links/:id', async (c) => {
+  const auth = c.get('auth') as any
+  const userId = auth?.userId
+  if (!userId) return c.json({ error: 'Unauthorized' }, 401)
+
+  const existing = await prisma.inviteLink.findUnique({ where: { id: c.req.param('id') } })
+  if (!existing) return c.json({ error: 'Not found' }, 404)
+
+  if (existing.createdBy !== userId) {
+    const wsId = existing.workspaceId
+    if (wsId) {
+      const member = await prisma.member.findFirst({ where: { userId, workspaceId: wsId } })
+      if (!member || (member.role !== 'owner' && member.role !== 'admin')) {
+        return c.json({ error: 'Forbidden' }, 403)
+      }
+    } else {
+      return c.json({ error: 'Forbidden' }, 403)
+    }
+  }
+
+  await prisma.inviteLink.delete({ where: { id: existing.id } })
+  return c.json({ ok: true })
+})
+
+// Accept invite link (public-ish - requires auth but not membership)
+app.post('/api/invite-links/:token/accept', async (c) => {
+  const auth = c.get('auth') as any
+  const userId = auth?.userId
+  if (!userId) return c.json({ error: 'Unauthorized' }, 401)
+
+  const token = c.req.param('token')
+  const link = await prisma.inviteLink.findUnique({ where: { token } })
+
+  if (!link || !link.enabled) {
+    return c.json({ error: 'Invite link not found or disabled' }, 404)
+  }
+  if (link.expiresAt && new Date(link.expiresAt) < new Date()) {
+    return c.json({ error: 'Invite link has expired' }, 410)
+  }
+
+  // Check if already a member
+  const existingMember = await prisma.member.findFirst({
+    where: {
+      userId,
+      ...(link.projectId ? { projectId: link.projectId } : { workspaceId: link.workspaceId }),
+    },
+  })
+  if (existingMember) {
+    return c.json({ ok: true, data: existingMember, alreadyMember: true })
+  }
+
+  // Create membership
+  const memberData: any = { userId, role: link.role }
+  if (link.projectId) {
+    memberData.projectId = link.projectId
+    // Also resolve workspace for the member record
+    const project = await prisma.project.findUnique({ where: { id: link.projectId }, select: { workspaceId: true } })
+    if (project) memberData.workspaceId = project.workspaceId
+  } else {
+    memberData.workspaceId = link.workspaceId
+  }
+
+  const member = await prisma.member.create({ data: memberData })
+
+  // Increment use count
+  await prisma.inviteLink.update({ where: { id: link.id }, data: { useCount: { increment: 1 } } })
+
+  return c.json({ ok: true, data: member })
+})
+
+// Get invite link info (for accept page - minimal auth)
+app.get('/api/invite-links/:token/info', async (c) => {
+  const token = c.req.param('token')
+  const link = await prisma.inviteLink.findUnique({
+    where: { token },
+    include: {
+      project: { select: { id: true, name: true } },
+      workspace: { select: { id: true, name: true } },
+    },
+  })
+
+  if (!link || !link.enabled) {
+    return c.json({ error: 'Invite link not found or disabled' }, 404)
+  }
+
+  return c.json({
+    ok: true,
+    data: {
+      role: link.role,
+      projectName: link.project?.name,
+      workspaceName: link.workspace?.name,
+      expired: link.expiresAt ? new Date(link.expiresAt) < new Date() : false,
+    },
+  })
+})
+
+// Mount generated routes at /api
 const generatedRoutes = createGeneratedRoutes({
   prisma,
   hooks: routeHooks,
 })
-app.route('/api/v2', generatedRoutes)
+app.route('/api', generatedRoutes)
 
 // =============================================================================
 // Graceful shutdown handling
@@ -2830,6 +4347,12 @@ async function gracefulShutdown(signal: string) {
   stopAllPrismaStudios()
   console.log('[Server] All Prisma Studios stopped')
 
+  // Flush pending OTEL spans before exit
+  try {
+    const { shutdownTracing } = await import('./instrumentation')
+    await shutdownTracing()
+  } catch (_) { /* instrumentation may not be loaded */ }
+
   console.log('[Server] Shutdown complete')
   process.exit(0)
 }
@@ -2842,7 +4365,11 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 console.log(`🚀 API server running on http://localhost:${API_PORT}`)
 console.log(`   Chat endpoint: POST http://localhost:${API_PORT}/api/chat`)
 console.log(`   Runtime endpoints: POST/GET http://localhost:${API_PORT}/api/projects/:id/runtime/*`)
+console.log(`   AI Proxy: POST http://localhost:${API_PORT}/api/ai/v1/chat/completions`)
+console.log(`   AI Models: GET  http://localhost:${API_PORT}/api/ai/v1/models`)
+console.log(`   AI Proxy Health: GET  http://localhost:${API_PORT}/api/ai/proxy/health`)
 console.log(`   CORS origin: http://localhost:${VITE_PORT}`)
+console.log(`   AI Providers: Anthropic=${!!process.env.ANTHROPIC_API_KEY}, OpenAI=${!!process.env.OPENAI_API_KEY}`)
 
 export default {
   port: API_PORT,
@@ -2851,5 +4378,33 @@ export default {
   // Increase idle timeout for long-running subagent operations
   // Default is 10 seconds which is too short for Claude Code tool execution
   idleTimeout: 120, // 2 minutes
+}
+
+// Pre-warm Claude Code after server is listening.
+// Small delay ensures the export/listen completes before we start the warm-up.
+// The warm-up sends a minimal "ping" to initialize the CLI subprocess and MCP servers.
+const PREWARM_ENABLED = process.env.PREWARM_CLAUDE_CODE !== 'false'
+if (PREWARM_ENABLED) {
+  setTimeout(() => {
+    prewarmClaudeCode().catch((err) => {
+      console.error('[ClaudeCode] ⚠️ Pre-warm error (non-fatal):', err.message)
+    })
+  }, 3000)
+}
+
+// Start warm pool controller (Kubernetes only).
+// Maintains pre-warmed pods to eliminate cold start latency for users.
+// Delay reduced from 5s to 2s to ensure warm pool is available sooner
+// after API pod scale-up events (avoids cold starts during burst traffic).
+if (isKubernetes()) {
+  setTimeout(async () => {
+    try {
+      const { startWarmPool } = await import('./lib/warm-pool-controller')
+      await startWarmPool()
+      console.log('[WarmPool] Warm pool controller started')
+    } catch (err: any) {
+      console.error('[WarmPool] Failed to start warm pool controller (non-fatal):', err.message)
+    }
+  }, 2000)
 }
 

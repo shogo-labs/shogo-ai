@@ -1,0 +1,29 @@
+{
+  "name": "expo-app",
+  "description": "Mobile app with Expo, React Native, and Hono API",
+  "complexity": "beginner",
+  "features": [
+    "prisma",
+    "expo-router",
+    "crud",
+    "mobile",
+    "http-api"
+  ],
+  "models": ["User", "Todo"],
+  "tags": ["mobile", "expo", "react-native", "cross-platform", "todo"],
+  "useCases": [
+    "mobile todo app",
+    "cross-platform app",
+    "react native app",
+    "expo app"
+  ],
+  "techStack": {
+    "database": "postgresql",
+    "orm": "prisma",
+    "frontend": "react-native",
+    "router": "expo-router",
+    "server": "hono",
+    "bundler": "metro",
+    "sdk": "@shogo-ai/sdk"
+  }
+}

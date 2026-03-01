@@ -1,0 +1,14 @@
+import { Loader2 } from 'lucide-react'
+
+interface LoadingSpinnerProps {
+  message?: string
+}
+
+export function LoadingSpinner({ message = 'Loading...' }: LoadingSpinnerProps) {
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center gap-3">
+      <Loader2 className="size-8 animate-spin text-muted-foreground" />
+      <p className="text-sm text-muted-foreground">{message}</p>
+    </div>
+  )
+}

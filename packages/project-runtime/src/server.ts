@@ -11,14 +11,48 @@
  * The API server proxies chat requests here.
  */
 
+// =============================================================================
+// OpenTelemetry - Initialize before anything else
+// =============================================================================
+import { initInstrumentation, traceOperation, createLogger } from '@shogo/shared-runtime'
+initInstrumentation({ serviceName: 'shogo-project-runtime' })
+
+const log = createLogger('project-runtime', {
+  projectId: process.env.PROJECT_ID,
+  poolMode: process.env.WARM_POOL_MODE === 'true' || process.env.PROJECT_ID === '__POOL__',
+})
+
+// =============================================================================
+// Startup Timing - Track cold start performance
+// =============================================================================
+const SERVER_START_TIME = Date.now()
+const ENTRYPOINT_START_TIME = process.env.STARTUP_TIME ? parseInt(process.env.STARTUP_TIME, 10) : SERVER_START_TIME
+
+function logTiming(message: string): void {
+  const now = Date.now()
+  const fromEntrypoint = ENTRYPOINT_START_TIME ? now - ENTRYPOINT_START_TIME : 0
+  const fromServer = now - SERVER_START_TIME
+  console.log(`[project-runtime] [+${fromEntrypoint}ms total, +${fromServer}ms server] ${message}`)
+}
+
+logTiming('Server module loading...')
+
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { streamText, tool, type CoreMessage } from 'ai'
-import { createClaudeCode } from 'ai-sdk-provider-claude-code'
+import { createUIMessageStream, createUIMessageStreamResponse } from 'ai'
 import { z } from 'zod'
 import { resolve, isAbsolute, relative, dirname, join, basename } from 'path'
-import { existsSync, readdirSync, readFileSync, statSync, cpSync, mkdirSync, rmSync } from 'fs'
-import { initializeS3Sync, type S3Sync } from './s3-sync'
+import { existsSync, readdirSync, readFileSync, writeFileSync, copyFileSync, statSync, cpSync, mkdirSync, rmSync } from 'fs'
+import {
+  initializeS3Sync, type S3Sync,
+  initializePostgresBackup, type PostgresBackup,
+  verifyPreviewToken, type PreviewTokenPayload,
+  configureAIProxy, buildClaudeCodeEnv,
+  createSessionManager, type ModelTier, type V2SessionOptions,
+  extractUserText, findLastUserMessage,
+  streamSdkToUI,
+} from '@shogo/shared-runtime'
+import { buildSystemPrompt } from './system-prompt'
 import { fileURLToPath } from 'url'
 
 // Get monorepo root for template access
@@ -31,47 +65,153 @@ const MONOREPO_ROOT = resolve(__dirname, '../../..')
 // Configuration
 // =============================================================================
 
-const PROJECT_ID = process.env.PROJECT_ID
+logTiming('Loading configuration...')
+
+const POOL_PROJECT_ID = '__POOL__'
+let currentProjectId = process.env.PROJECT_ID
 const PROJECT_DIR = process.env.PROJECT_DIR || '/app/project'
 const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
-const MCP_SERVER_PATH = process.env.MCP_SERVER_PATH || '/app/packages/mcp/src/server-templates.ts'
+// MCP server path: resolve from MONOREPO_ROOT for local dev, fallback to Docker path
+const MCP_SERVER_PATH = process.env.MCP_SERVER_PATH || resolve(MONOREPO_ROOT, 'packages/mcp/src/server-templates.ts')
 const PORT = parseInt(process.env.PORT || '8080', 10)
 
 // Fast start mode: server starts before build completes
 const FAST_START_MODE = process.env.FAST_START_MODE === 'true'
 const BUILD_STATUS_FILE = process.env.BUILD_STATUS_FILE || '/tmp/build-status'
 
+// Warm pool mode: pod starts without a real project, awaiting assignment
+const IS_POOL_MODE = currentProjectId === POOL_PROJECT_ID || process.env.WARM_POOL_MODE === 'true'
+let poolAssigned = false
+
 // Validate required environment
-if (!PROJECT_ID) {
+if (!currentProjectId) {
   console.error('[project-runtime] ERROR: PROJECT_ID environment variable is required')
   process.exit(1)
 }
 
-console.log(`[project-runtime] Starting for project: ${PROJECT_ID}`)
+// Alias for backward compatibility (many references throughout this large file)
+const PROJECT_ID = currentProjectId
+
+if (IS_POOL_MODE) {
+  logTiming('Starting in WARM POOL mode (awaiting project assignment)')
+} else {
+  logTiming(`Configuration loaded for project: ${currentProjectId}`)
+}
 console.log(`[project-runtime] Project directory: ${PROJECT_DIR}`)
 console.log(`[project-runtime] Schemas path: ${SCHEMAS_PATH}`)
 console.log(`[project-runtime] MCP server path: ${MCP_SERVER_PATH}`)
+console.log(`[project-runtime] Template endpoints: /templates/list, /templates/copy`)
 if (FAST_START_MODE) {
-  console.log(`[project-runtime] Fast start mode enabled (build runs in background)`)
+  logTiming('Fast start mode enabled (build runs in background)')
 }
 
 // =============================================================================
 // S3 Sync Initialization
 // =============================================================================
 
+logTiming('Setting up S3 sync (async)...')
+
 let s3Sync: S3Sync | null = null
+let postgresBackup: PostgresBackup | null = null
 
 // Initialize S3 sync in background (don't block server startup)
-;(async () => {
+// Writes marker file when complete so background init can proceed
+const S3_RESTORE_MARKER = '/tmp/s3-restore-complete'
+
+// In pool mode, skip S3 sync until a project is assigned
+if (IS_POOL_MODE) {
+  logTiming('Pool mode: skipping S3 sync (no project assigned yet)')
+  writeFileSync(S3_RESTORE_MARKER, `pool-mode:${Date.now()}`)
+}
+
+;(!IS_POOL_MODE) && (async () => {
+  const s3StartTime = Date.now()
+  logTiming(`[s3-init] Starting S3 sync initialization (bucket=${process.env.S3_WORKSPACES_BUCKET}, projectDir=${PROJECT_DIR})`)
   try {
-    s3Sync = await initializeS3Sync(PROJECT_DIR)
-    if (s3Sync) {
-      console.log(`[project-runtime] S3 sync initialized`)
+    logTiming('[s3-init] Calling initializeS3Sync...')
+    const result = await initializeS3Sync(PROJECT_DIR)
+    const s3Duration = Date.now() - s3StartTime
+    logTiming(`[s3-init] initializeS3Sync returned after ${s3Duration}ms (result=${result ? 'ok' : 'null'}, downloadSucceeded=${result?.downloadSucceeded})`)
+    if (result) {
+      const { sync, downloadSucceeded } = result
+      
+      if (downloadSucceeded) {
+        s3Sync = sync
+        logTiming(`[s3-init] S3 download succeeded in ${s3Duration}ms — writing restore marker`)
+        writeFileSync(S3_RESTORE_MARKER, `restored:${Date.now()}`)
+        logTiming('[s3-init] Restore marker written — background init can proceed')
+      } else {
+        // Download failed but not a critical auth error.
+        // CRITICAL: Do NOT set s3Sync - this prevents ANY uploads of template files.
+        console.warn(`[project-runtime] [s3-init] S3 download FAILED after ${s3Duration}ms - sync DISABLED to protect user data`)
+        console.warn(`[project-runtime] [s3-init] Will retry download in 10 seconds...`)
+        writeFileSync(S3_RESTORE_MARKER, `download-failed:${Date.now()}`)
+        
+        const retryDownload = async (attempt: number) => {
+          const retryStart = Date.now()
+          try {
+            console.log(`[project-runtime] [s3-init] Retrying S3 download (attempt ${attempt})...`)
+            const retryStats = await sync.downloadAll()
+            const retryDuration = Date.now() - retryStart
+            if (retryStats.errors.length === 0) {
+              console.log(`[project-runtime] [s3-init] Retry ${attempt} succeeded in ${retryDuration}ms — enabling sync`)
+              s3Sync = sync
+              sync.startPeriodicSync()
+              sync.startWatcher()
+              writeFileSync(S3_RESTORE_MARKER, `restored-retry:${Date.now()}`)
+            } else {
+              console.error(`[project-runtime] [s3-init] Retry ${attempt} failed after ${retryDuration}ms:`, retryStats.errors)
+              if (attempt < 3) {
+                const delay = 10000 * Math.pow(2, attempt - 1) // 10s, 20s, 40s
+                console.log(`[project-runtime] [s3-init] Will retry again in ${delay / 1000}s...`)
+                setTimeout(() => retryDownload(attempt + 1), delay)
+              } else {
+                console.error(`[project-runtime] [s3-init] All S3 download retries exhausted. Sync remains disabled.`)
+              }
+            }
+          } catch (retryError) {
+            console.error(`[project-runtime] [s3-init] Retry ${attempt} threw after ${Date.now() - retryStart}ms:`, retryError)
+            if (attempt < 3) {
+              const delay = 10000 * Math.pow(2, attempt - 1)
+              setTimeout(() => retryDownload(attempt + 1), delay)
+            }
+          }
+        }
+        setTimeout(() => retryDownload(1), 10000)
+      }
+    } else {
+      logTiming(`[s3-init] initializeS3Sync returned null after ${s3Duration}ms (S3_WORKSPACES_BUCKET not set or createS3SyncFromEnv failed)`)
+      writeFileSync(S3_RESTORE_MARKER, `skipped:${Date.now()}`)
     }
   } catch (error) {
-    console.error(`[project-runtime] S3 sync initialization failed:`, error)
+    const s3Duration = Date.now() - s3StartTime
+    console.error(`[project-runtime] [s3-init] S3 sync initialization THREW after ${s3Duration}ms:`, error)
+    writeFileSync(S3_RESTORE_MARKER, `error:${Date.now()}`)
   }
 })()
+
+// PostgreSQL S3 backup initialization
+// NOTE: With CloudNativePG shared cluster, postgres backup is handled by the operator
+// via Barman WAL archiving. The S3 backup module is only used for legacy sidecar mode.
+if (process.env.POSTGRES_S3_BACKUP_ENABLED !== 'false') {
+  ;(async () => {
+    // Wait a bit for postgres to be reachable
+    await new Promise(resolve => setTimeout(resolve, 5000))
+    
+    try {
+      postgresBackup = await initializePostgresBackup()
+      if (postgresBackup) {
+        logTiming('PostgreSQL S3 backup initialized (legacy sidecar mode)')
+      } else {
+        logTiming('PostgreSQL S3 backup not configured')
+      }
+    } catch (error) {
+      console.error(`[project-runtime] PostgreSQL backup initialization failed:`, error)
+    }
+  })()
+} else {
+  logTiming('PostgreSQL S3 backup disabled (using CloudNativePG managed backups)')
+}
 
 // =============================================================================
 // Template Tools (Native - no MCP required)
@@ -92,50 +232,116 @@ interface TemplateInfo extends TemplateMetadata {
   path: string
 }
 
+// Embedded template metadata (used when running from Docker with archived templates)
+const EMBEDDED_TEMPLATES: TemplateInfo[] = [
+  { name: 'todo-app', description: 'Simple task management with lists', path: 'todo-app', complexity: 'beginner', tags: ['productivity', 'tasks'], features: ['CRUD', 'lists'], useCases: ['personal task tracking'], models: ['Todo', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'expense-tracker', description: 'Personal finance with categories', path: 'expense-tracker', complexity: 'beginner', tags: ['finance', 'budgeting'], features: ['categories', 'charts'], useCases: ['expense tracking'], models: ['Expense', 'Category', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'crm', description: 'Customer relationship management', path: 'crm', complexity: 'intermediate', tags: ['business', 'sales'], features: ['contacts', 'deals', 'pipeline'], useCases: ['sales management'], models: ['Contact', 'Deal', 'Company', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'inventory', description: 'Stock and product management', path: 'inventory', complexity: 'intermediate', tags: ['business', 'warehouse'], features: ['products', 'stock', 'suppliers'], useCases: ['inventory management'], models: ['Product', 'Supplier', 'StockMovement', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'kanban', description: 'Project boards with drag-and-drop', path: 'kanban', complexity: 'intermediate', tags: ['productivity', 'project-management'], features: ['boards', 'columns', 'cards', 'drag-drop'], useCases: ['project management'], models: ['Board', 'Column', 'Card', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'ai-chat', description: 'AI chatbot with conversation history', path: 'ai-chat', complexity: 'intermediate', tags: ['ai', 'chatbot'], features: ['chat', 'ai-responses', 'history'], useCases: ['ai assistant'], models: ['Conversation', 'Message', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL', ai: 'Anthropic Claude' } },
+  { name: 'form-builder', description: 'Build custom forms and collect responses', path: 'form-builder', complexity: 'intermediate', tags: ['forms', 'surveys'], features: ['form-builder', 'responses'], useCases: ['surveys', 'data collection'], models: ['Form', 'Field', 'Response', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'feedback-form', description: 'Collect user feedback', path: 'feedback-form', complexity: 'beginner', tags: ['feedback', 'forms'], features: ['feedback', 'ratings'], useCases: ['user feedback'], models: ['Feedback', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  { name: 'booking-app', description: 'Schedule appointments', path: 'booking-app', complexity: 'intermediate', tags: ['scheduling', 'appointments'], features: ['calendar', 'bookings', 'availability'], useCases: ['appointment scheduling'], models: ['Booking', 'TimeSlot', 'Service', 'User'], techStack: { frontend: 'React', backend: 'Hono', database: 'PostgreSQL' } },
+  // { name: 'expo-app', description: 'Mobile app with Expo and React Native', path: 'expo-app', complexity: 'beginner', tags: ['mobile', 'expo', 'react-native'], features: ['CRUD', 'mobile', 'expo-router'], useCases: ['mobile todo app', 'cross-platform app'], models: ['Todo', 'User'], techStack: { frontend: 'React Native', backend: 'Hono', database: 'PostgreSQL', bundler: 'Metro' } },
+]
+
 /**
- * Load all available templates from the SDK examples directory
+ * Load all available templates from the SDK examples directory or archives
  */
 function loadTemplates(): TemplateInfo[] {
   const templatesDir = resolve(MONOREPO_ROOT, 'packages/sdk/examples')
+  const templatesArchiveDir = resolve(MONOREPO_ROOT, 'packages/sdk/templates')
   const templates: TemplateInfo[] = []
 
-  if (!existsSync(templatesDir)) {
-    console.warn(`[project-runtime] Templates directory not found: ${templatesDir}`)
-    return templates
-  }
+  // Check if we have uncompressed templates (local development)
+  if (existsSync(templatesDir)) {
+    const entries = readdirSync(templatesDir, { withFileTypes: true })
 
-  const entries = readdirSync(templatesDir, { withFileTypes: true })
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
 
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue
+      const templateJsonPath = resolve(templatesDir, entry.name, 'template.json')
+      if (!existsSync(templateJsonPath)) continue
 
-    const templateJsonPath = resolve(templatesDir, entry.name, 'template.json')
-    if (!existsSync(templateJsonPath)) continue
-
-    try {
-      const content = readFileSync(templateJsonPath, 'utf-8')
-      const metadata: TemplateMetadata = JSON.parse(content)
-      templates.push({
-        ...metadata,
-        path: resolve(templatesDir, entry.name),
-      })
-    } catch {
-      // Skip invalid template.json files
+      try {
+        const content = readFileSync(templateJsonPath, 'utf-8')
+        const metadata: TemplateMetadata = JSON.parse(content)
+        templates.push({
+          ...metadata,
+          path: resolve(templatesDir, entry.name),
+        })
+      } catch {
+        // Skip invalid template.json files
+      }
+    }
+    
+    if (templates.length > 0) {
+      return templates
     }
   }
 
-  return templates
+  // Check if we have archived templates (Docker production mode)
+  if (existsSync(templatesArchiveDir)) {
+    const entries = readdirSync(templatesArchiveDir)
+    const archiveNames = entries
+      .filter(f => f.endsWith('.tar.gz'))
+      .map(f => f.replace('.tar.gz', ''))
+    
+    // Return embedded metadata for available archives
+    return EMBEDDED_TEMPLATES.filter(t => archiveNames.includes(t.name))
+  }
+
+  console.warn(`[project-runtime] No templates found in ${templatesDir} or ${templatesArchiveDir}`)
+  return []
+}
+
+/**
+ * Sanitize .env file to remove DATABASE_URL.
+ * In K8s, DATABASE_URL is provided via environment variable.
+ * Template .env files have local dev URLs that would override this.
+ */
+function sanitizeEnvFile(projectDir: string): void {
+  const envPath = resolve(projectDir, '.env')
+  if (!existsSync(envPath)) return
+
+  try {
+    const content = readFileSync(envPath, 'utf-8')
+    const lines = content.split('\n')
+    
+    // Filter out DATABASE_URL lines
+    const filteredLines = lines.filter(line => {
+      const trimmed = line.trim()
+      if (trimmed.startsWith('DATABASE_URL=') || trimmed.startsWith('DATABASE_URL =')) {
+        console.log(`[project-runtime] Removing DATABASE_URL from .env (will use environment variable)`)
+        return false
+      }
+      return true
+    })
+    
+    writeFileSync(envPath, filteredLines.join('\n'), 'utf-8')
+  } catch (err: any) {
+    console.warn(`[project-runtime] Warning: Could not sanitize .env file: ${err.message}`)
+  }
 }
 
 /**
  * Copy a template to the project directory
  */
 function copyTemplate(templateName: string, projectName: string): { ok: boolean; message?: string; error?: string; needsRestart?: boolean } {
+  // First, try to find the template archive (tar.gz - includes node_modules + .output)
+  const templatesArchiveDir = resolve(MONOREPO_ROOT, 'packages/sdk/templates')
+  const templateArchivePath = resolve(templatesArchiveDir, `${templateName}.tar.gz`)
+  
+  // Fallback to uncompressed directory (for local development)
   const templatesDir = resolve(MONOREPO_ROOT, 'packages/sdk/examples')
   const templatePath = resolve(templatesDir, templateName)
+  
+  const hasArchive = existsSync(templateArchivePath)
+  const hasDirectory = existsSync(templatePath)
 
-  if (!existsSync(templatePath)) {
-    return { ok: false, error: `Template '${templateName}' not found` }
+  if (!hasArchive && !hasDirectory) {
+    return { ok: false, error: `Template '${templateName}' not found (checked ${templateArchivePath} and ${templatePath})` }
   }
 
   try {
@@ -144,16 +350,51 @@ function copyTemplate(templateName: string, projectName: string): { ok: boolean;
     if (existsSync(srcDir)) {
       rmSync(srcDir, { recursive: true, force: true })
     }
+    
+    // Clean up existing node_modules and .output to ensure fresh copy
+    const nodeModulesDir = resolve(PROJECT_DIR, 'node_modules')
+    const outputDir = resolve(PROJECT_DIR, '.output')
+    if (existsSync(nodeModulesDir)) {
+      rmSync(nodeModulesDir, { recursive: true, force: true })
+    }
+    if (existsSync(outputDir)) {
+      rmSync(outputDir, { recursive: true, force: true })
+    }
 
-    // Copy template files to project directory
-    cpSync(templatePath, PROJECT_DIR, {
-      recursive: true,
-      filter: (src) => !src.includes('node_modules') && !src.includes('.git') && !src.includes('template.json'),
-    })
+    if (hasArchive) {
+      // Extract from tar.gz archive (includes node_modules + .output for instant cold start)
+      console.log(`[project-runtime] Extracting template archive: ${templateArchivePath}`)
+      const startTime = Date.now()
+      
+      // Extract archive - tar strips the first component (template name) with --strip-components=1
+      const result = Bun.spawnSync(['tar', '-xzf', templateArchivePath, '--strip-components=1', '-C', PROJECT_DIR], {
+        stdout: 'inherit',
+        stderr: 'inherit',
+      })
+      
+      if (result.exitCode !== 0) {
+        return { ok: false, error: `Failed to extract template archive (exit code ${result.exitCode})` }
+      }
+      
+      const extractTime = Date.now() - startTime
+      console.log(`[project-runtime] Template extracted in ${extractTime}ms (with node_modules + .output)`)
+    } else {
+      // Fallback: Copy from uncompressed directory (local development mode)
+      console.log(`[project-runtime] Copying template directory: ${templatePath}`)
+      cpSync(templatePath, PROJECT_DIR, {
+        recursive: true,
+        filter: (src) => !src.includes('.git') && !src.includes('template.json'),
+      })
+    }
+
+    // Sanitize .env file to remove DATABASE_URL (K8s provides it via env var)
+    sanitizeEnvFile(PROJECT_DIR)
 
     return {
       ok: true,
-      message: `Successfully copied template '${templateName}' to project. The Vite server needs to be restarted for changes to take effect. Run 'bun install' if dependencies changed.`,
+      message: hasArchive 
+        ? `Successfully extracted template '${templateName}' with pre-installed dependencies. No bun install needed.`
+        : `Successfully copied template '${templateName}' to project. The Vite server needs to be restarted for changes to take effect.`,
       needsRestart: true,
     }
   } catch (error: any) {
@@ -162,113 +403,292 @@ function copyTemplate(templateName: string, projectName: string): { ok: boolean;
 }
 
 /**
- * AI SDK native tools for template operations
+ * Theme CSS presets for template theming
  */
-const templateTools = {
-  'template.list': tool({
-    description: `List and search available starter templates. Returns templates with metadata including name, description, complexity, features, models, and tags.
-
-Available templates:
-- todo-app: Simple task management
-- expense-tracker: Personal finance with categories
-- crm: Customer relationship management
-- inventory: Stock and product management
-- kanban: Project boards with drag-and-drop
-- ai-chat: AI chatbot with conversation history`,
-    parameters: z.object({
-      query: z.string().optional().describe('Optional search query to filter templates'),
-    }),
-    execute: async ({ query }) => {
-      console.log(`[project-runtime] template.list called with query: ${query}`)
-      let templates = loadTemplates()
-
-      if (query) {
-        const queryLower = query.toLowerCase()
-        templates = templates.filter(t =>
-          t.name.toLowerCase().includes(queryLower) ||
-          t.description.toLowerCase().includes(queryLower) ||
-          t.tags.some(tag => tag.toLowerCase().includes(queryLower)) ||
-          t.useCases.some(uc => uc.toLowerCase().includes(queryLower))
-        )
-      }
-
-      return JSON.stringify({ ok: true, templates }, null, 2)
-    },
-  }),
-
-  'template.copy': tool({
-    description: `Copy a starter template to set up the project. This will copy all template files to the current project directory, install dependencies, build the project, and start the preview server automatically.`,
-    parameters: z.object({
-      templateName: z.string().describe('Name of the template to copy (e.g., "ai-chat", "todo-app", "expense-tracker")'),
-      projectName: z.string().optional().describe('Optional project name (for package.json)'),
-    }),
-    execute: async ({ templateName, projectName }) => {
-      console.log(`[project-runtime] template.copy called: ${templateName}`)
-      const result = copyTemplate(templateName, projectName || templateName)
-      
-      // If successful, automatically rebuild and restart the preview
-      if (result.ok) {
-        let restartResult: { success: boolean; message: string; mode?: string; port?: number | null } = {
-          success: false,
-          message: 'Restart not attempted',
-        }
-        
-        try {
-          console.log(`[project-runtime] Rebuilding and restarting preview for project ${PROJECT_ID}...`)
-          // Call our local restart endpoint
-          const response = await fetch(`http://localhost:${PORT}/preview/restart`, {
-            method: 'POST',
-          })
-          
-          if (response.ok) {
-            const data = await response.json() as { success: boolean; mode: string; port: number | null }
-            restartResult = {
-              success: true,
-              message: `Preview restarted in ${data.mode} mode`,
-              mode: data.mode,
-              port: data.port,
-            }
-            console.log(`[project-runtime] Preview restarted in ${data.mode} mode`)
-          } else {
-            const errorData = await response.json().catch(() => ({})) as { error?: string }
-            restartResult = {
-              success: false,
-              message: errorData.error || `Restart failed with status ${response.status}`,
-            }
-          }
-        } catch (err: any) {
-          console.warn(`[project-runtime] Restart error: ${err.message}`)
-          restartResult = {
-            success: false,
-            message: err.message,
-          }
-        }
-        
-        return JSON.stringify({
-          ...result,
-          restart: restartResult,
-          message: restartResult.success 
-            ? `Template copied and preview rebuilt. The preview will show the ${templateName} app.`
-            : 'Template copied but rebuild failed. Try refreshing the preview.',
-        }, null, 2)
-      }
-      
-      return JSON.stringify(result, null, 2)
-    },
-  }),
+const THEME_CSS: Record<string, { light: string; dark: string; radius: string }> = {
+  default: {
+    light: `--background: 0 0% 100%; --foreground: 222.2 84% 4.9%; --card: 0 0% 100%; --card-foreground: 222.2 84% 4.9%; --popover: 0 0% 100%; --popover-foreground: 222.2 84% 4.9%; --primary: 222.2 47.4% 11.2%; --primary-foreground: 210 40% 98%; --secondary: 210 40% 96.1%; --secondary-foreground: 222.2 47.4% 11.2%; --muted: 210 40% 96.1%; --muted-foreground: 215.4 16.3% 46.9%; --accent: 210 40% 96.1%; --accent-foreground: 222.2 47.4% 11.2%; --destructive: 0 84.2% 60.2%; --destructive-foreground: 210 40% 98%; --border: 214.3 31.8% 91.4%; --input: 214.3 31.8% 91.4%; --ring: 222.2 84% 4.9%;`,
+    dark: `--background: 222.2 84% 4.9%; --foreground: 210 40% 98%; --card: 222.2 84% 4.9%; --card-foreground: 210 40% 98%; --popover: 222.2 84% 4.9%; --popover-foreground: 210 40% 98%; --primary: 210 40% 98%; --primary-foreground: 222.2 47.4% 11.2%; --secondary: 217.2 32.6% 17.5%; --secondary-foreground: 210 40% 98%; --muted: 217.2 32.6% 17.5%; --muted-foreground: 215 20.2% 65.1%; --accent: 217.2 32.6% 17.5%; --accent-foreground: 210 40% 98%; --destructive: 0 62.8% 30.6%; --destructive-foreground: 210 40% 98%; --border: 217.2 32.6% 17.5%; --input: 217.2 32.6% 17.5%; --ring: 212.7 26.8% 83.9%;`,
+    radius: '0.5',
+  },
+  lavender: {
+    light: `--background: 270 50% 98%; --foreground: 270 50% 10%; --card: 0 0% 100%; --card-foreground: 270 50% 10%; --popover: 0 0% 100%; --popover-foreground: 270 50% 10%; --primary: 262 83% 58%; --primary-foreground: 0 0% 100%; --secondary: 270 50% 93%; --secondary-foreground: 270 50% 10%; --muted: 270 50% 93%; --muted-foreground: 270 30% 45%; --accent: 262 83% 92%; --accent-foreground: 262 83% 35%; --destructive: 0 84% 60%; --destructive-foreground: 0 0% 100%; --border: 270 30% 88%; --input: 270 30% 88%; --ring: 262 83% 58%;`,
+    dark: `--background: 270 50% 5%; --foreground: 270 50% 98%; --card: 270 50% 8%; --card-foreground: 270 50% 98%; --popover: 270 50% 8%; --popover-foreground: 270 50% 98%; --primary: 262 83% 58%; --primary-foreground: 270 50% 5%; --secondary: 270 30% 17%; --secondary-foreground: 270 50% 98%; --muted: 270 30% 17%; --muted-foreground: 270 30% 65%; --accent: 262 83% 20%; --accent-foreground: 262 83% 90%; --destructive: 0 63% 31%; --destructive-foreground: 270 50% 98%; --border: 270 30% 17%; --input: 270 30% 17%; --ring: 262 83% 58%;`,
+    radius: '0.625',
+  },
+  glacier: {
+    light: `--background: 210 40% 98%; --foreground: 222 47% 11%; --card: 0 0% 100%; --card-foreground: 222 47% 11%; --popover: 0 0% 100%; --popover-foreground: 222 47% 11%; --primary: 199 89% 48%; --primary-foreground: 0 0% 100%; --secondary: 210 40% 93%; --secondary-foreground: 222 47% 11%; --muted: 210 40% 93%; --muted-foreground: 215 16% 47%; --accent: 199 89% 93%; --accent-foreground: 199 89% 30%; --destructive: 0 84% 60%; --destructive-foreground: 0 0% 100%; --border: 214 32% 91%; --input: 214 32% 91%; --ring: 199 89% 48%;`,
+    dark: `--background: 222 47% 6%; --foreground: 210 40% 98%; --card: 222 47% 9%; --card-foreground: 210 40% 98%; --popover: 222 47% 9%; --popover-foreground: 210 40% 98%; --primary: 199 89% 48%; --primary-foreground: 222 47% 6%; --secondary: 217 33% 17%; --secondary-foreground: 210 40% 98%; --muted: 217 33% 17%; --muted-foreground: 215 20% 65%; --accent: 199 89% 20%; --accent-foreground: 199 89% 90%; --destructive: 0 63% 31%; --destructive-foreground: 210 40% 98%; --border: 217 33% 17%; --input: 217 33% 17%; --ring: 199 89% 48%;`,
+    radius: '0.5',
+  },
+  harvest: {
+    light: `--background: 40 33% 98%; --foreground: 20 14% 10%; --primary: 24 95% 53%; --primary-foreground: 0 0% 100%; --secondary: 40 33% 93%; --secondary-foreground: 20 14% 10%; --muted: 40 33% 93%; --muted-foreground: 20 14% 45%; --accent: 24 95% 92%; --accent-foreground: 24 95% 30%; --border: 40 20% 88%; --input: 40 20% 88%; --ring: 24 95% 53%;`,
+    dark: `--background: 20 14% 6%; --foreground: 40 33% 98%; --primary: 24 95% 53%; --primary-foreground: 20 14% 6%; --secondary: 20 14% 17%; --secondary-foreground: 40 33% 98%; --muted: 20 14% 17%; --muted-foreground: 40 20% 65%; --accent: 24 95% 20%; --accent-foreground: 24 95% 90%; --border: 20 14% 17%; --input: 20 14% 17%; --ring: 24 95% 53%;`,
+    radius: '0.5',
+  },
+  brutalist: {
+    light: `--background: 0 0% 100%; --foreground: 0 0% 0%; --primary: 0 0% 0%; --primary-foreground: 0 0% 100%; --secondary: 0 0% 95%; --secondary-foreground: 0 0% 0%; --accent: 351 100% 50%; --accent-foreground: 0 0% 100%; --border: 0 0% 0%; --input: 0 0% 85%; --ring: 0 0% 0%;`,
+    dark: `--background: 0 0% 0%; --foreground: 0 0% 100%; --primary: 0 0% 100%; --primary-foreground: 0 0% 0%; --secondary: 0 0% 15%; --secondary-foreground: 0 0% 100%; --accent: 351 100% 50%; --accent-foreground: 0 0% 100%; --border: 0 0% 100%; --input: 0 0% 20%; --ring: 0 0% 100%;`,
+    radius: '0',
+  },
+  obsidian: {
+    light: `--background: 240 10% 96%; --foreground: 240 10% 10%; --primary: 240 6% 25%; --primary-foreground: 0 0% 100%; --secondary: 240 10% 91%; --secondary-foreground: 240 10% 10%; --muted: 240 10% 91%; --muted-foreground: 240 6% 45%; --border: 240 6% 85%; --input: 240 6% 85%; --ring: 240 6% 25%;`,
+    dark: `--background: 240 6% 6%; --foreground: 240 10% 96%; --primary: 240 10% 90%; --primary-foreground: 240 6% 6%; --secondary: 240 6% 15%; --secondary-foreground: 240 10% 96%; --muted: 240 6% 15%; --muted-foreground: 240 6% 55%; --border: 240 6% 15%; --input: 240 6% 15%; --ring: 240 10% 90%;`,
+    radius: '0.375',
+  },
+  orchid: {
+    light: `--background: 330 50% 98%; --foreground: 330 50% 10%; --primary: 330 81% 60%; --primary-foreground: 0 0% 100%; --secondary: 330 50% 93%; --secondary-foreground: 330 50% 10%; --muted: 330 50% 93%; --muted-foreground: 330 30% 45%; --border: 330 30% 88%; --input: 330 30% 88%; --ring: 330 81% 60%;`,
+    dark: `--background: 330 50% 5%; --foreground: 330 50% 98%; --primary: 330 81% 60%; --primary-foreground: 330 50% 5%; --secondary: 330 30% 17%; --secondary-foreground: 330 50% 98%; --muted: 330 30% 17%; --muted-foreground: 330 30% 65%; --border: 330 30% 17%; --input: 330 30% 17%; --ring: 330 81% 60%;`,
+    radius: '0.5',
+  },
+  solar: {
+    light: `--background: 48 100% 98%; --foreground: 20 14% 10%; --primary: 45 93% 47%; --primary-foreground: 20 14% 10%; --secondary: 48 100% 93%; --secondary-foreground: 20 14% 10%; --muted: 48 100% 93%; --muted-foreground: 20 14% 45%; --border: 48 50% 85%; --input: 48 50% 85%; --ring: 45 93% 47%;`,
+    dark: `--background: 20 14% 6%; --foreground: 48 100% 98%; --primary: 45 93% 47%; --primary-foreground: 20 14% 6%; --secondary: 20 14% 17%; --secondary-foreground: 48 100% 98%; --muted: 20 14% 17%; --muted-foreground: 48 50% 65%; --border: 20 14% 17%; --input: 20 14% 17%; --ring: 45 93% 47%;`,
+    radius: '0.5',
+  },
+  tide: {
+    light: `--background: 180 30% 98%; --foreground: 180 30% 10%; --primary: 173 80% 40%; --primary-foreground: 0 0% 100%; --secondary: 180 30% 93%; --secondary-foreground: 180 30% 10%; --muted: 180 30% 93%; --muted-foreground: 180 20% 45%; --border: 180 20% 88%; --input: 180 20% 88%; --ring: 173 80% 40%;`,
+    dark: `--background: 180 30% 5%; --foreground: 180 30% 98%; --primary: 173 80% 40%; --primary-foreground: 180 30% 5%; --secondary: 180 20% 17%; --secondary-foreground: 180 30% 98%; --muted: 180 20% 17%; --muted-foreground: 180 20% 65%; --border: 180 20% 17%; --input: 180 20% 17%; --ring: 173 80% 40%;`,
+    radius: '0.5',
+  },
+  verdant: {
+    light: `--background: 120 30% 98%; --foreground: 120 30% 10%; --primary: 142 71% 45%; --primary-foreground: 0 0% 100%; --secondary: 120 30% 93%; --secondary-foreground: 120 30% 10%; --muted: 120 30% 93%; --muted-foreground: 120 20% 45%; --border: 120 20% 88%; --input: 120 20% 88%; --ring: 142 71% 45%;`,
+    dark: `--background: 120 30% 5%; --foreground: 120 30% 98%; --primary: 142 71% 45%; --primary-foreground: 120 30% 5%; --secondary: 120 20% 17%; --secondary-foreground: 120 30% 98%; --muted: 120 20% 17%; --muted-foreground: 120 20% 65%; --border: 120 20% 17%; --input: 120 20% 17%; --ring: 142 71% 45%;`,
+    radius: '0.5',
+  },
 }
 
+/**
+ * Merge _template base infrastructure into the project directory.
+ * Ensures all templates get Tailwind v4 deps, PostCSS config, and shadcn setup
+ * regardless of whether the template itself declares them.
+ * _template's deps form the base layer; the template's own deps override on conflict.
+ */
+function ensureBaseInfrastructure(projectDir: string): void {
+  const baseTemplateDir = resolve(MONOREPO_ROOT, 'packages/sdk/examples/_template')
+  if (!existsSync(baseTemplateDir)) {
+    console.warn('[project-runtime] _template directory not found, skipping base infrastructure merge')
+    return
+  }
+
+  const basePackagePath = join(baseTemplateDir, 'package.json')
+  const projectPackagePath = join(projectDir, 'package.json')
+  if (existsSync(basePackagePath) && existsSync(projectPackagePath)) {
+    try {
+      const basePkg = JSON.parse(readFileSync(basePackagePath, 'utf-8'))
+      const projectPkg = JSON.parse(readFileSync(projectPackagePath, 'utf-8'))
+
+      projectPkg.dependencies = { ...basePkg.dependencies, ...projectPkg.dependencies }
+      projectPkg.devDependencies = { ...basePkg.devDependencies, ...projectPkg.devDependencies }
+
+      writeFileSync(projectPackagePath, JSON.stringify(projectPkg, null, 2) + '\n', 'utf-8')
+      console.log('[project-runtime] Merged _template base deps into package.json')
+    } catch (err: any) {
+      console.warn(`[project-runtime] Warning: Could not merge base package.json: ${err.message}`)
+    }
+  }
+
+  const postcssConfig = join(projectDir, 'postcss.config.mjs')
+  if (!existsSync(postcssConfig)) {
+    const basePostcss = join(baseTemplateDir, 'postcss.config.mjs')
+    if (existsSync(basePostcss)) {
+      copyFileSync(basePostcss, postcssConfig)
+      console.log('[project-runtime] Copied postcss.config.mjs from _template')
+    }
+  }
+
+  const componentsJson = join(projectDir, 'components.json')
+  if (!existsSync(componentsJson)) {
+    const baseComponents = join(baseTemplateDir, 'components.json')
+    if (existsSync(baseComponents)) {
+      copyFileSync(baseComponents, componentsJson)
+      console.log('[project-runtime] Copied components.json from _template')
+    }
+  }
+}
+
+/**
+ * Apply a theme to the project's index.css.
+ * Output is Tailwind v4–compatible (@import "tailwindcss", @theme inline) so that
+ * utilities like border-border and bg-background work with the project's Tailwind v4 setup.
+ */
+function formatThemeVars(inlineCSS: string, indent = '  '): string {
+  return inlineCSS
+    .split(';')
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(decl => {
+      const colonIdx = decl.indexOf(':')
+      if (colonIdx === -1) return ''
+      const prop = decl.slice(0, colonIdx).trim()
+      const value = decl.slice(colonIdx + 1).trim()
+      return `${indent}${prop}: hsl(${value});`
+    })
+    .filter(Boolean)
+    .join('\n')
+}
+
+/**
+ * Apply a theme to the project's index.css using Tailwind v4 syntax.
+ */
+function applyThemeToProject(projectDir: string, themeId: string): void {
+  const theme = THEME_CSS[themeId] || THEME_CSS.default
+  const indexCssPath = join(projectDir, 'src', 'index.css')
+  // Theme presets use HSL triplets (e.g. --border: 214.3 31.8% 91.4%); map to Tailwind v4 theme via hsl(var(--x))
+  const themeCSS = `@import "tailwindcss";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@plugin "tailwindcss-animate";
+
+/* Theme: ${themeId} */
+
+:root {
+  ${theme.light}
+  --radius: ${theme.radius}rem;
+}
+
+.dark {
+  ${theme.dark}
+}
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card, 0 0% 100%));
+  --color-card-foreground: hsl(var(--card-foreground, 222.2 84% 4.9%));
+  --color-popover: hsl(var(--popover, 0 0% 100%));
+  --color-popover-foreground: hsl(var(--popover-foreground, 222.2 84% 4.9%));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground, 210 40% 98%));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+      Oxygen, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif;
+  }
+}
+`
+  
+  try {
+    writeFileSync(indexCssPath, themeCSS, 'utf-8')
+    console.log(`[project-runtime] Applied theme "${themeId}" to ${indexCssPath}`)
+  } catch (err: any) {
+    console.warn(`[project-runtime] Warning: Could not apply theme: ${err.message}`)
+  }
+}
+
+// Template HTTP endpoints are registered after `app` is created (see /templates/list and /templates/copy below)
+
 // =============================================================================
-// Path Restriction (Security)
+// Path Restriction & Runtime Command Guardrails (Security)
 // =============================================================================
 
 /**
- * Creates a canUseTool callback that restricts file operations to the project directory.
- * This prevents the agent from accessing files outside the project.
+ * Forbidden runtime commands that the agent must NEVER execute.
+ * These would break the managed vite build --watch process, the Hono API server,
+ * or other managed infrastructure inside the project runtime container.
+ * 
+ * This is a HARD BLOCK — the command is physically prevented from running,
+ * regardless of what the LLM decides.
+ */
+const FORBIDDEN_COMMAND_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
+  // Vite commands (already running in watch mode)
+  { pattern: /\bvite\s+dev\b/, reason: 'The dev server is already running. Vite build --watch handles rebuilds automatically.' },
+  { pattern: /\bvite\s+build\b/, reason: 'Vite build --watch is already running and rebuilds automatically on file changes.' },
+  { pattern: /\bvite\s+serve\b/, reason: 'The server is already running and serving the built files.' },
+  { pattern: /\bvite\s+preview\b/, reason: 'The server is already running and serving the built files.' },
+  { pattern: /\bnpx\s+vite\b/, reason: 'Vite is already running in watch mode. Do not start another instance.' },
+  { pattern: /\bbunx\s+vite\b/, reason: 'Vite is already running in watch mode. Do not start another instance.' },
+  // Dev/build scripts (handled by watch mode)
+  { pattern: /\bbun\s+run\s+dev\b/, reason: 'The dev server is already running. No need to start it manually.' },
+  { pattern: /\bbun\s+run\s+build\b/, reason: 'Vite build --watch handles builds automatically. No manual build needed.' },
+  { pattern: /\bnpm\s+run\s+dev\b/, reason: 'The dev server is already running. No need to start it manually.' },
+  { pattern: /\bnpm\s+run\s+build\b/, reason: 'Vite build --watch handles builds automatically. No manual build needed.' },
+  { pattern: /\byarn\s+dev\b/, reason: 'The dev server is already running. No need to start it manually.' },
+  { pattern: /\byarn\s+build\b/, reason: 'Vite build --watch handles builds automatically. No manual build needed.' },
+  // Process killing (would kill managed infrastructure)
+  { pattern: /\bkill\s+-/, reason: 'Do not kill processes. The runtime manages all server processes automatically.' },
+  { pattern: /\bkill\s+\d/, reason: 'Do not kill processes. The runtime manages all server processes automatically.' },
+  { pattern: /\bpkill\b/, reason: 'Do not kill processes. The runtime manages all server processes automatically.' },
+  { pattern: /\bkillall\b/, reason: 'Do not kill processes. The runtime manages all server processes automatically.' },
+  // Server restart commands
+  { pattern: /\bpm2\s+restart\b/, reason: 'Do not restart processes. The runtime manages the server automatically.' },
+  { pattern: /\bsystemctl\s+restart\b/, reason: 'Do not restart system services. The runtime manages everything.' },
+  // Destructive database commands (would wipe all user data)
+  { pattern: /--force-reset/, reason: 'Database reset would destroy all user data. Use `prisma migrate dev` for schema changes that require data migration, or ask the user for confirmation first.' },
+  { pattern: /--accept-data-loss/, reason: 'This flag would destroy user data. Use `prisma migrate dev` for schema changes that require data migration, or ask the user for confirmation first.' },
+]
+
+/**
+ * Check if a bash command matches any forbidden runtime command pattern.
+ * Returns the reason string if forbidden, or null if allowed.
+ */
+function checkForbiddenCommand(command: string): string | null {
+  const cmd = command.toLowerCase()
+  for (const { pattern, reason } of FORBIDDEN_COMMAND_PATTERNS) {
+    if (pattern.test(cmd)) {
+      return reason
+    }
+  }
+  return null
+}
+
+/**
+ * Creates a canUseTool callback that:
+ * 1. Blocks forbidden runtime commands (vite restart, build, kill, etc.)
+ * 2. Restricts file operations to the project directory
+ * 
+ * This prevents the agent from:
+ * - Breaking the managed vite build --watch / Hono server infrastructure
+ * - Accessing files outside the project directory
  */
 function createPathRestrictor(projectDir: string) {
   return async (toolName: string, input: unknown) => {
-    // Only restrict file operation tools
+    // DEBUG: Log EVERY canUseTool invocation so we can verify it's being called
+    console.error(`[project-runtime] canUseTool called: tool=${toolName}, input=${JSON.stringify(input).slice(0, 300)}`)
+
+    // GUARDRAIL: Block forbidden runtime commands for Bash/Shell tools
+    if (toolName === 'Bash' || toolName === 'bash' || toolName === 'Shell' || toolName === 'shell') {
+      const inputObj = input as Record<string, unknown>
+      const command = String(inputObj.command || '')
+      console.error(`[project-runtime] Bash command intercepted: "${command}"`)
+      const reason = checkForbiddenCommand(command)
+      if (reason) {
+        console.error(`[project-runtime] ❌ BLOCKED forbidden command: "${command}" — reason: ${reason}`)
+        return {
+          behavior: 'deny' as const,
+          message: `Command blocked: ${reason} The runtime container manages vite build --watch and the API server automatically. If something isn't working, check .build.log for errors.`,
+        }
+      }
+      console.error(`[project-runtime] ✅ Bash command allowed: "${command}"`)
+    }
+
+    // Only restrict file operation tools for path checks
     const fileTools = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS', 'Bash']
     if (!fileTools.includes(toolName)) {
       return { behavior: 'allow' as const }
@@ -301,77 +721,243 @@ function createPathRestrictor(projectDir: string) {
 // =============================================================================
 
 const pathRestrictor = createPathRestrictor(PROJECT_DIR)
+console.log(`[project-runtime] ✅ Forbidden command guardrail ACTIVE (${FORBIDDEN_COMMAND_PATTERNS.length} patterns)`)
 
-const claudeCode = createClaudeCode({
-  defaultSettings: {
-    // Enable streaming (required for hooks)
-    streamingInput: 'always',
-    // Verbose logging (disabled in production)
-    verbose: false,
-    // Working directory is the project
-    cwd: PROJECT_DIR,
-    // Path restriction for security
-    canUseTool: pathRestrictor,
-    // Load project settings (.claude/skills, .mcp.json, etc.)
-    settingSources: ['project', 'local'],
-    // MCP server configuration
+// AI Proxy Configuration
+// configureAIProxy() throws when AI_PROXY_URL is set but no token is available,
+// preventing silent fallback to a raw platform ANTHROPIC_API_KEY.
+// In pool mode, the token isn't available yet — it's injected via /pool/assign.
+logTiming('Configuring AI proxy...')
+let aiProxy: ReturnType<typeof configureAIProxy>
+if (IS_POOL_MODE) {
+  aiProxy = { useProxy: false, env: {} }
+  logTiming('Pool mode: deferring AI proxy configuration until assignment')
+} else {
+  try {
+    const aiProxyStart = Date.now()
+    aiProxy = configureAIProxy({ logPrefix: 'project-runtime' })
+    logTiming(`AI proxy configured in ${Date.now() - aiProxyStart}ms (useProxy=${aiProxy.useProxy})`)
+  } catch (err: any) {
+    console.error(`[project-runtime] FATAL: ${err.message}`)
+    process.exit(1)
+  }
+}
+const claudeCodeEnvStart = Date.now()
+let claudeCodeEnv = buildClaudeCodeEnv(aiProxy, {
+  RUNTIME_PORT: String(PORT),
+})
+logTiming(`Claude Code env built in ${Date.now() - claudeCodeEnvStart}ms`)
+
+// =============================================================================
+// V2 Agent SDK Session Management
+// =============================================================================
+// Uses the V2 session-based API from @anthropic-ai/claude-agent-sdk.
+// Sessions persist across HTTP requests, keeping the CLI subprocess alive.
+// This eliminates the 7-12s cold start overhead per message.
+//
+// IMPORTANT: The V2 SDK's unstable_v2_createSession() only forwards a subset
+// of options to the CLI process (model, env, allowedTools, permissionMode,
+// settingSources, canUseTool, hooks, includePartialMessages). It does NOT
+// forward systemPrompt, mcpServers, or cwd — these are silently dropped.
+//
+// To work around this, we write file-based configuration that the CLI reads
+// via settingSources: ['project']:
+//   - CLAUDE.md in PROJECT_DIR → system prompt (loaded as project instructions)
+//   - .mcp.json in PROJECT_DIR → MCP server config (loaded as project MCP servers)
+
+/**
+ * Write CLAUDE.md and .mcp.json to the project directory so the V2 SDK CLI
+ * picks them up via settingSources: ['project']. This is necessary because
+ * the V2 session constructor does not forward systemPrompt or mcpServers
+ * from the programmatic options.
+ */
+function writeAgentConfigFiles(): void {
+  // Write CLAUDE.md with the system prompt
+  const claudeMdPath = resolve(PROJECT_DIR, 'CLAUDE.md')
+  const systemPromptContent = buildSystemPrompt(PROJECT_DIR)
+  writeFileSync(claudeMdPath, systemPromptContent, 'utf-8')
+  console.log(`[project-runtime] Wrote CLAUDE.md to ${claudeMdPath} (${systemPromptContent.length} chars)`)
+
+  // Write .mcp.json with the template MCP server config
+  const mcpJsonPath = resolve(PROJECT_DIR, '.mcp.json')
+  const mcpConfig = {
     mcpServers: {
-      wavesmith: {
+      shogo: {
         command: 'bun',
         args: ['run', MCP_SERVER_PATH],
         env: {
           SCHEMAS_PATH,
-          PROJECT_ID: PROJECT_ID!,
-          PROJECT_DIR,  // Critical: template.copy needs this to copy to the right location
+          PROJECT_ID: currentProjectId!,
+          PROJECT_DIR,
+          RUNTIME_PORT: String(PORT),
           NODE_ENV: process.env.NODE_ENV || 'production',
-          // Forward S3 configuration for schema persistence
-          S3_ENDPOINT: process.env.S3_ENDPOINT || '',
-          S3_SCHEMA_BUCKET: process.env.S3_SCHEMA_BUCKET || '',
-          S3_FORCE_PATH_STYLE: process.env.S3_FORCE_PATH_STYLE || '',
-          AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID || '',
-          AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY || '',
-          AWS_REGION: process.env.AWS_REGION || 'us-east-1',
-          SCHEMA_STORAGE: process.env.SCHEMA_STORAGE || '',
           DATABASE_URL: process.env.DATABASE_URL || '',
         },
       },
     },
-    // Allowed tools
+  }
+  writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2), 'utf-8')
+  console.log(`[project-runtime] Wrote .mcp.json to ${mcpJsonPath}`)
+}
+
+// Write config files and ensure CLI will run in the project directory.
+// process.chdir() is safe here because the server uses absolute paths everywhere.
+try {
+  process.chdir(PROJECT_DIR)
+  logTiming(`Changed cwd to ${PROJECT_DIR}`)
+} catch (e: any) {
+  console.warn(`[project-runtime] Could not chdir to ${PROJECT_DIR}: ${e.message}`)
+}
+if (!IS_POOL_MODE) {
+  const configStart = Date.now()
+  writeAgentConfigFiles()
+  logTiming(`Agent config files written in ${Date.now() - configStart}ms`)
+}
+
+function buildProjectSessionOptions(modelName: ModelTier): V2SessionOptions {
+  return {
+    model: modelName === 'haiku' ? 'claude-haiku-4-5'
+         : modelName === 'opus' ? 'claude-opus-4-6'
+         : 'claude-sonnet-4-5',
+    canUseTool: pathRestrictor,
+    settingSources: ['project', 'local'],
+    env: claudeCodeEnv,
+    includePartialMessages: true,
+    mcpServers: {
+      shogo: {
+        command: 'bun',
+        args: ['run', MCP_SERVER_PATH],
+        env: {
+          SCHEMAS_PATH,
+          PROJECT_ID: currentProjectId!,
+          PROJECT_DIR,
+          RUNTIME_PORT: String(PORT),
+          NODE_ENV: process.env.NODE_ENV || 'production',
+          DATABASE_URL: process.env.DATABASE_URL || '',
+        },
+      },
+    },
     allowedTools: [
-      // File operations
       'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
-      // Skill and agent tools
-      'Skill', 'Task', 'Bash', 'TodoWrite',
-      // Template tools (underscores - Claude Code converts dots to underscores)
-      'mcp__wavesmith__template_list',
-      'mcp__wavesmith__template_copy',
-      // Wavesmith MCP tools - Schema (underscores)
-      // 'mcp__wavesmith__schema_set',
-      // 'mcp__wavesmith__schema_get',
-      // 'mcp__wavesmith__schema_list',
-      // 'mcp__wavesmith__schema_load',
-      // // Wavesmith MCP tools - Store (underscores)
-      // 'mcp__wavesmith__store_create',
-      // 'mcp__wavesmith__store_list',
-      // 'mcp__wavesmith__store_get',
-      // 'mcp__wavesmith__store_update',
-      // 'mcp__wavesmith__store_query',
-      // 'mcp__wavesmith__store_models',
-      // 'mcp__wavesmith__store_delete',
-      // // Wavesmith MCP tools - Views (underscores)
-      // 'mcp__wavesmith__view_execute',
-      // 'mcp__wavesmith__view_define',
-      // 'mcp__wavesmith__view_project',
-      // // Wavesmith MCP tools - Data & DDL (underscores)
-      // 'mcp__wavesmith__data_load',
-      // 'mcp__wavesmith__data_loadAll',
-      // 'mcp__wavesmith__ddl_execute',
-      // 'mcp__wavesmith__ddl_migrate',
+      'Bash',
+      'Skill', 'Task', 'TodoWrite',
+      'mcp__shogo__template_list',
+      'mcp__shogo__template_copy',
     ],
-    // Use default permission mode (our canUseTool callback handles restrictions)
+    disallowedTools: ['EnterPlanMode', 'ExitPlanMode', 'SendMessage', 'TeamCreate', 'TeamDelete'],
     permissionMode: 'default',
-  },
+  }
+}
+
+logTiming('Creating session manager...')
+const sessionMgrStart = Date.now()
+let sessions = createSessionManager({
+  buildSessionOptions: buildProjectSessionOptions,
+  defaultModel: (process.env.AGENT_MODEL || 'sonnet') as ModelTier,
+  logPrefix: 'project-runtime',
 })
+logTiming(`Session manager created in ${Date.now() - sessionMgrStart}ms`)
+
+// =============================================================================
+// Stream Keep-Alive Utility
+// =============================================================================
+
+/**
+ * Wrap a ReadableStream with periodic keep-alive comments.
+ * This prevents HTTP/2 connections from being terminated by load balancers
+ * during long-running operations like template copying (45+ seconds).
+ * 
+ * SSE format keep-alive: ": keep-alive\n\n" (comment line, doesn't affect data)
+ * 
+ * @param stream - Original stream to wrap
+ * @param intervalMs - Interval between keep-alive messages (default 15s)
+ * @returns New stream with keep-alive messages injected
+ */
+function wrapStreamWithKeepalive(
+  stream: ReadableStream<Uint8Array>,
+  intervalMs: number = 15000
+): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder()
+  const keepAliveMessage = encoder.encode(': keep-alive\n\n')
+  
+  let keepAliveInterval: ReturnType<typeof setInterval> | null = null
+  let controller: ReadableStreamDefaultController<Uint8Array> | null = null
+  let streamClosed = false
+  
+  const reader = stream.getReader()
+  
+  function cleanupInterval() {
+    if (keepAliveInterval) {
+      clearInterval(keepAliveInterval)
+      keepAliveInterval = null
+    }
+  }
+  
+  return new ReadableStream({
+    start(ctrl) {
+      controller = ctrl
+      
+      // Start keep-alive interval
+      keepAliveInterval = setInterval(() => {
+        if (streamClosed || !controller) {
+          cleanupInterval()
+          return
+        }
+        try {
+          controller.enqueue(keepAliveMessage)
+          console.log('[project-runtime] Sent keep-alive')
+        } catch {
+          // Stream closed, stop sending
+          streamClosed = true
+          cleanupInterval()
+        }
+      }, intervalMs)
+    },
+    
+    async pull(ctrl) {
+      try {
+        const { done, value } = await reader.read()
+        
+        if (done) {
+          // Mark as closed BEFORE closing to prevent keep-alive race
+          streamClosed = true
+          cleanupInterval()
+          ctrl.close()
+          return
+        }
+        
+        ctrl.enqueue(value)
+      } catch (error) {
+        // Clean up on error
+        streamClosed = true
+        cleanupInterval()
+        ctrl.error(error)
+      }
+    },
+    
+    cancel() {
+      // Clean up on cancel
+      streamClosed = true
+      cleanupInterval()
+      controller = null
+      reader.cancel()
+    },
+  })
+}
+
+// =============================================================================
+// Image Handling Helpers
+// =============================================================================
+
+/**
+ * Parse a data URL to extract mediaType and base64 data.
+ * Example: "data:image/png;base64,iVBORw0..." -> { mimeType: "image/png", base64Data: "iVBORw0..." }
+ */
+function parseDataUrl(dataUrl: string): { mimeType: string; base64Data: string } | null {
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/)
+  if (!match) return null
+  return { mimeType: match[1], base64Data: match[2] }
+}
 
 // =============================================================================
 // Request Schemas
@@ -397,6 +983,12 @@ const ChatRequestSchema = z.object({
   })),
   sessionId: z.string().optional(),
   system: z.string().optional(),
+  // Theme context for AI-aware styling (Phase 3: AI Agent Integration)
+  themeContext: z.string().optional(),
+  // Agent mode for model selection: basic (Haiku) or advanced (Sonnet)
+  agentMode: z.enum(['basic', 'advanced']).optional(),
+  // User's IANA timezone (e.g. "America/New_York")
+  timezone: z.string().optional(),
   // Additional AI SDK fields
   body: z.any().optional(),
 })
@@ -418,7 +1010,7 @@ app.use('*', cors({
 // Build Status Helper (for fast start mode)
 // =============================================================================
 
-function getBuildStatus(): { status: string; ready: boolean } {
+function getBuildStatus(): { status: string; ready: boolean; details?: string } {
   if (!FAST_START_MODE) {
     return { status: 'ready', ready: true }
   }
@@ -426,6 +1018,33 @@ function getBuildStatus(): { status: string; ready: boolean } {
   try {
     if (existsSync(BUILD_STATUS_FILE)) {
       const status = readFileSync(BUILD_STATUS_FILE, 'utf-8').trim()
+      
+      // If build status file says "ready", also verify actual build artifacts exist
+      if (status === 'ready') {
+        const distDir = join(PROJECT_DIR, 'dist')
+        if (!existsSync(distDir)) {
+          console.log('[project-runtime] Build status says ready but dist/ missing')
+          return { status: 'dist_missing', ready: false, details: 'Build artifacts missing - dist/ not found' }
+        }
+        
+        if (!existsSync(join(distDir, 'index.html'))) {
+          // Race condition: entrypoint.sh may have written "ready" before build fully completed.
+          // Wait briefly for the file to appear before declaring incomplete.
+          const waitStart = Date.now()
+          const MAX_WAIT_MS = 3000
+          const POLL_INTERVAL_MS = 100
+          while (Date.now() - waitStart < MAX_WAIT_MS) {
+            Bun.sleepSync(POLL_INTERVAL_MS)
+            if (existsSync(join(distDir, 'index.html'))) {
+              // File appeared, we're good
+              return { status: 'ready', ready: true }
+            }
+          }
+          console.log(`[project-runtime] Build status says ready but dist/index.html missing after ${MAX_WAIT_MS}ms wait`)
+          return { status: 'dist_incomplete', ready: false, details: 'Build incomplete - dist/index.html not found' }
+        }
+      }
+      
       return {
         status,
         ready: status === 'ready',
@@ -441,24 +1060,151 @@ function getBuildStatus(): { status: string; ready: boolean } {
 // Health check endpoint for Kubernetes probes
 // Always returns ok quickly - this is for liveness, not readiness
 app.get('/health', (c) => {
+  const uptimeMs = Date.now() - SERVER_START_TIME
   return c.json({
     status: 'ok',
-    projectId: PROJECT_ID,
+    projectId: currentProjectId,
     projectDir: PROJECT_DIR,
     uptime: process.uptime(),
+    uptimeMs,
+    poolMode: IS_POOL_MODE && !poolAssigned,
     fastStartMode: FAST_START_MODE,
+    coldStartMs: uptimeMs < 60000 ? uptimeMs : undefined, // Only show for first minute
+  })
+})
+
+// =============================================================================
+// Warm Pool Assignment Endpoint
+// =============================================================================
+
+app.post('/pool/assign', async (c) => {
+  if (!IS_POOL_MODE) {
+    return c.json({ error: 'Not in pool mode' }, 400)
+  }
+  if (poolAssigned) {
+    return c.json({ error: 'Already assigned', projectId: currentProjectId }, 400)
+  }
+
+  const startTime = Date.now()
+  const body = await c.req.json()
+  const { projectId, env: envVars } = body
+
+  if (!projectId || typeof projectId !== 'string') {
+    return c.json({ error: 'projectId (string) is required' }, 400)
+  }
+
+  logTiming(`[pool-assign] Starting for project ${projectId} (envVars: ${envVars ? Object.keys(envVars).join(',') : 'none'})`)
+
+  return traceOperation('project-runtime', 'pool.assign', {
+    'project.id': projectId,
+    'has_s3': !!process.env.S3_WORKSPACES_BUCKET,
+  }, async (assignSpan) => {
+
+  // 1. Update project identity
+  currentProjectId = projectId
+  process.env.PROJECT_ID = projectId
+  logTiming(`[pool-assign] Step 1: Project identity updated (${Date.now() - startTime}ms)`)
+
+  // 2. Inject environment variables from the controller
+  if (envVars && typeof envVars === 'object') {
+    const envKeys = Object.keys(envVars).filter(k => typeof (envVars as any)[k] === 'string')
+    for (const [key, value] of Object.entries(envVars)) {
+      if (typeof value === 'string') {
+        process.env[key] = value
+      }
+    }
+    logTiming(`[pool-assign] Step 2: Injected ${envKeys.length} env vars (${Date.now() - startTime}ms)`)
+  }
+
+  // 3. Reconfigure AI proxy with new env (picks up AI_PROXY_TOKEN)
+  const proxyStart = Date.now()
+  try {
+    aiProxy = configureAIProxy({ logPrefix: 'project-runtime' })
+    logTiming(`[pool-assign] Step 3: AI proxy reconfigured in ${Date.now() - proxyStart}ms (useProxy=${aiProxy.useProxy})`)
+  } catch (err: any) {
+    console.error(`[project-runtime] FATAL during reconfigure: ${err.message}`)
+    process.exit(1)
+  }
+  claudeCodeEnv = buildClaudeCodeEnv(aiProxy, {
+    RUNTIME_PORT: String(PORT),
+  })
+
+  // 4. Recreate session manager with updated config
+  const sessionStart = Date.now()
+  sessions = createSessionManager({
+    buildSessionOptions: buildProjectSessionOptions,
+    defaultModel: (process.env.AGENT_MODEL || 'sonnet') as ModelTier,
+    logPrefix: 'project-runtime',
+  })
+  logTiming(`[pool-assign] Step 4: Session manager recreated in ${Date.now() - sessionStart}ms`)
+
+  // 5. Run project-specific initialization
+  try {
+    // Initialize S3 sync to download project data
+    if (process.env.S3_WORKSPACES_BUCKET) {
+      const s3Start = Date.now()
+      logTiming(`[pool-assign] Step 5a: Starting S3 sync for ${PROJECT_DIR}...`)
+      const result = await initializeS3Sync(PROJECT_DIR)
+      const s3Duration = Date.now() - s3Start
+      if (result) {
+        const { sync, downloadSucceeded } = result
+        if (downloadSucceeded) {
+          s3Sync = sync
+          logTiming(`[pool-assign] Step 5a: S3 sync completed in ${s3Duration}ms (download succeeded)`)
+          writeFileSync(S3_RESTORE_MARKER, `pool-assigned:${Date.now()}`)
+        } else {
+          logTiming(`[pool-assign] Step 5a: S3 sync completed in ${s3Duration}ms (download FAILED)`)
+        }
+      } else {
+        logTiming(`[pool-assign] Step 5a: S3 sync returned null in ${s3Duration}ms`)
+      }
+    } else {
+      logTiming(`[pool-assign] Step 5a: S3 sync skipped (no S3_WORKSPACES_BUCKET)`)
+    }
+
+    // Write config files now that we have a real project
+    const configStart = Date.now()
+    writeAgentConfigFiles()
+    logTiming(`[pool-assign] Step 5b: Config files written in ${Date.now() - configStart}ms`)
+
+    poolAssigned = true
+    const duration = Date.now() - startTime
+    assignSpan.setAttribute('assign.duration_ms', duration)
+    logTiming(`[pool-assign] COMPLETE for ${projectId} — total ${duration}ms`)
+    return c.json({ ok: true, projectId, durationMs: duration })
+  } catch (error: any) {
+    const duration = Date.now() - startTime
+    assignSpan.setAttribute('assign.error', error.message)
+    console.error(`[project-runtime] [pool-assign] FAILED for ${projectId} after ${duration}ms:`, error.message)
+    throw error // let traceOperation record the error on the span
+  }
+  }) // end traceOperation
+  .catch((error: any) => {
+    return c.json({ error: `Assignment failed: ${error.message}` }, 500)
   })
 })
 
 // Readiness check - returns 503 until build completes in fast start mode
+// Tracks timing to help diagnose cold start delays
+let firstReadyTime: number | null = null
+let readyCheckCount = 0
+
 app.get('/ready', (c) => {
+  readyCheckCount++
+  const uptimeMs = Date.now() - SERVER_START_TIME
+  const podType = IS_POOL_MODE ? (poolAssigned ? 'pool-assigned' : 'pool-unassigned') : 'project'
+  const podId = currentProjectId || 'unknown'
   const projectDirExists = existsSync(PROJECT_DIR)
   
   if (!projectDirExists) {
+    console.log(`[project-runtime] [${podType}:${podId}] [ready-check #${readyCheckCount}] [+${uptimeMs}ms] NOT READY: Project directory does not exist (${PROJECT_DIR})`)
     return c.json({
       status: 'not_ready',
       reason: 'Project directory does not exist',
       projectDir: PROJECT_DIR,
+      podType,
+      uptimeMs,
+      checkCount: readyCheckCount,
     }, 503)
   }
   
@@ -467,12 +1213,54 @@ app.get('/ready', (c) => {
     const buildStatus = getBuildStatus()
     
     if (!buildStatus.ready) {
+      // Log verbose details every 10th check to avoid flooding, but always log for first 5
+      const shouldLogVerbose = readyCheckCount <= 5 || readyCheckCount % 10 === 0
+      const s3MarkerExists = existsSync(S3_RESTORE_MARKER)
+      let s3MarkerContent = ''
+      if (s3MarkerExists) {
+        try { s3MarkerContent = readFileSync(S3_RESTORE_MARKER, 'utf-8').trim() } catch {}
+      }
+      const buildFileExists = existsSync(BUILD_STATUS_FILE)
+      let buildFileContent = ''
+      if (buildFileExists) {
+        try { buildFileContent = readFileSync(BUILD_STATUS_FILE, 'utf-8').trim() } catch {}
+      }
+      
+      if (shouldLogVerbose) {
+        console.log(`[project-runtime] [${podType}:${podId}] [ready-check #${readyCheckCount}] [+${uptimeMs}ms] NOT READY: phase=${buildFileContent || buildStatus.status}${buildStatus.details ? ` (${buildStatus.details})` : ''} | s3Marker=${s3MarkerExists ? `"${s3MarkerContent}"` : 'WAITING'}`)
+      } else {
+        console.log(`[project-runtime] [${podType}:${podId}] [ready-check #${readyCheckCount}] [+${uptimeMs}ms] NOT READY: ${buildFileContent || buildStatus.status}`)
+      }
+      
       return c.json({
         status: 'initializing',
         buildStatus: buildStatus.status,
+        buildStatusDetails: buildStatus.details,
+        buildFileContent: buildFileContent || undefined,
+        s3MarkerStatus: s3MarkerContent || (s3MarkerExists ? 'empty' : 'missing'),
         reason: 'Background initialization in progress',
-        projectId: PROJECT_ID,
+        podType,
+        projectId: currentProjectId,
+        uptimeMs,
+        checkCount: readyCheckCount,
       }, 503)
+    }
+  }
+  
+  // Track when we first became ready
+  if (!firstReadyTime) {
+    firstReadyTime = uptimeMs
+    logTiming(`[${podType}:${podId}] READY! First ready after ${firstReadyTime}ms (${readyCheckCount} checks)`)
+    
+    // Auto-start vite watch mode for automatic rebuilds (don't block response)
+    // [EXPO DISABLED] Expo uses Metro bundler, so watch mode doesn't apply
+    // const isExpo = existsSync(join(PROJECT_DIR, 'app.json')) || existsSync(join(PROJECT_DIR, 'expo.json'))
+    
+    if (!buildWatchProcess) {
+      console.log('[project-runtime] 🔄 Auto-starting Vite watch mode...')
+      startViteBuildWatch().catch((err) => {
+        console.error('[project-runtime] Failed to auto-start vite watch:', err)
+      })
     }
   }
   
@@ -480,18 +1268,265 @@ app.get('/ready', (c) => {
     status: 'ready',
     projectId: PROJECT_ID,
     projectDir: PROJECT_DIR,
+    uptimeMs,
+    firstReadyAfterMs: firstReadyTime,
+    checkCount: readyCheckCount,
   })
 })
 
 // Build status endpoint - shows detailed initialization progress
 app.get('/build-status', (c) => {
   const buildStatus = getBuildStatus()
+  const isInBackoff = devModeFailureCount >= DEV_MODE_MAX_FAILURES && 
+    devModeLastFailure && (Date.now() - devModeLastFailure < DEV_MODE_BACKOFF_MS)
+  
   return c.json({
     projectId: PROJECT_ID,
     fastStartMode: FAST_START_MODE,
     ...buildStatus,
     uptime: process.uptime(),
+    devMode: {
+      active: isDevMode,
+      starting: devModeStarting,
+      failureCount: devModeFailureCount,
+      error: devModeError,
+      inBackoff: isInBackoff,
+    },
+    // Build watch state
+    buildWatch: {
+      active: buildWatchProcess !== null,
+      state: buildState,
+      building: buildState === 'building',
+      startTime: buildStartTime,
+      duration: buildDuration,
+      lastBuildTime: lastBuildTime,
+      error: buildError,
+    },
+    // Provide a user-friendly message
+    message: devModeError && isInBackoff 
+      ? `Error: ${devModeError}` 
+      : devModeStarting 
+        ? 'Starting dev server...' 
+        : buildState === 'building'
+          ? 'Rebuilding project...'
+          : buildStatus.ready 
+            ? 'Ready' 
+            : 'Initializing...',
   })
+})
+
+/**
+ * Server-Sent Events endpoint for real-time build state updates.
+ * Clients can subscribe to receive instant notifications when builds start/complete.
+ */
+app.get('/build-events', (c) => {
+  // Set SSE headers
+  c.header('Content-Type', 'text/event-stream')
+  c.header('Cache-Control', 'no-cache')
+  c.header('Connection', 'keep-alive')
+  
+  let clientController: ReadableStreamDefaultController | null = null
+  let isClosed = false
+  
+  const stream = new ReadableStream({
+    start(controller) {
+      // Store controller for cancel callback
+      clientController = controller
+      
+      // Add client to subscribers
+      buildEventClients.add(controller)
+      
+      // Send initial state immediately
+      const initialState = JSON.stringify({
+        state: buildState,
+        startTime: buildStartTime,
+        duration: buildDuration,
+        lastBuildTime: lastBuildTime,
+        error: buildError,
+        timestamp: Date.now(),
+      })
+      const encoder = new TextEncoder()
+      try {
+        controller.enqueue(encoder.encode(`data: ${initialState}\n\n`))
+      } catch {
+        // Controller may already be closed
+        isClosed = true
+        buildEventClients.delete(controller)
+      }
+      
+      console.log(`[project-runtime] Build events client connected (total: ${buildEventClients.size})`)
+    },
+    cancel() {
+      isClosed = true
+      if (clientController) {
+        buildEventClients.delete(clientController)
+        clientController = null
+        console.log(`[project-runtime] Build events client disconnected (remaining: ${buildEventClients.size})`)
+      }
+    },
+  })
+  
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    },
+  })
+})
+
+// =============================================================================
+// Template HTTP Endpoints (used by the agent via Bash + curl)
+// =============================================================================
+
+/**
+ * GET /templates/list — List available starter templates
+ * Supports optional query params: ?query=...&complexity=beginner|intermediate|advanced
+ */
+app.get('/templates/list', (c) => {
+  try {
+    let templates = loadTemplates()
+    
+    const query = c.req.query('query')
+    const complexity = c.req.query('complexity') as 'beginner' | 'intermediate' | 'advanced' | undefined
+    
+    // Filter by complexity
+    if (complexity) {
+      templates = templates.filter(t => t.complexity === complexity)
+    }
+    
+    // Search by query string
+    if (query) {
+      const queryLower = query.toLowerCase()
+      const queryWords = queryLower.split(/\s+/)
+      
+      templates = templates
+        .map(template => {
+          const searchableText = [
+            template.name, template.description,
+            ...template.tags, ...template.useCases,
+            ...template.models, ...template.features,
+          ].join(' ').toLowerCase()
+          
+          let score = 0
+          for (const word of queryWords) {
+            if (searchableText.includes(word)) {
+              score++
+              if (template.tags.some(t => t.toLowerCase() === word)) score += 2
+              if (template.useCases.some(u => u.toLowerCase().includes(word))) score += 2
+              if (template.name.toLowerCase().includes(word)) score += 3
+            }
+          }
+          return { template, score }
+        })
+        .filter(({ score }) => score > 0)
+        .sort((a, b) => b.score - a.score)
+        .map(({ template }) => template)
+    }
+    
+    // Strip internal paths from response
+    const safeTemplates = templates.map(({ path, ...rest }) => rest)
+    
+    return c.json({ ok: true, templates: safeTemplates })
+  } catch (error: any) {
+    return c.json({ ok: false, error: error.message || 'Failed to list templates' }, 500)
+  }
+})
+
+/**
+ * POST /templates/copy — Copy a starter template and set up the project
+ * Body: { template: string, name: string, theme?: string }
+ * 
+ * This endpoint:
+ * 1. Copies template files to the project directory
+ * 2. Merges _template base infrastructure (Tailwind deps, PostCSS, shadcn)
+ * 3. Applies optional theme
+ * 4. Triggers /preview/restart to install deps, generate Prisma, build, and start
+ */
+app.post('/templates/copy', async (c) => {
+  try {
+    const body = await c.req.json() as { template: string; name: string; theme?: string }
+    
+    if (!body.template || !body.name) {
+      return c.json({ ok: false, error: 'Missing required fields: template, name' }, 400)
+    }
+    
+    // Step 1: Copy template to project directory
+    const copyResult = copyTemplate(body.template, body.name)
+    if (!copyResult.ok) {
+      return c.json(copyResult, 400)
+    }
+    
+    // Step 2: Merge _template base infrastructure (Tailwind deps, PostCSS, shadcn)
+    ensureBaseInfrastructure(PROJECT_DIR)
+    
+    // Step 3: Apply theme if specified.
+    if (body.theme) {
+      applyThemeToProject(PROJECT_DIR, body.theme)
+    }
+    
+    // Step 4: Trigger restart to install deps, generate Prisma, build, and start
+    try {
+      console.log(`[templates/copy] Triggering preview restart after template copy...`)
+      const restartResponse = await fetch(`http://localhost:${PORT}/preview/restart`, {
+        method: 'POST',
+      })
+      
+      if (restartResponse.ok) {
+        const restartResult = await restartResponse.json() as { mode: string; port: number | null; timings?: any }
+        return c.json({
+          ok: true,
+          message: `Template "${body.template}" copied and fully set up. The preview should now show the app.`,
+          template: body.template,
+          projectDir: PROJECT_DIR,
+          setup: {
+            success: true,
+            mode: restartResult.mode,
+            port: restartResult.port,
+          },
+        })
+      } else {
+        const errorData = await restartResponse.json().catch(() => ({})) as { error?: string }
+        return c.json({
+          ok: true,
+          message: `Template copied but setup had issues: ${errorData.error || 'unknown error'}. Try refreshing the preview.`,
+          template: body.template,
+          projectDir: PROJECT_DIR,
+          setup: { success: false, error: errorData.error },
+        })
+      }
+    } catch (restartError: any) {
+      return c.json({
+        ok: true,
+        message: `Template copied but could not trigger restart: ${restartError.message}. Try refreshing the preview.`,
+        template: body.template,
+        projectDir: PROJECT_DIR,
+        setup: { success: false, error: restartError.message },
+      })
+    }
+  } catch (error: any) {
+    return c.json({ ok: false, error: error.message || 'Failed to copy template' }, 500)
+  }
+})
+
+// Stop/interrupt endpoint - called when user clicks stop or before a new message
+app.post('/agent/stop', async (c) => {
+  console.log(`[project-runtime] Received stop request for project: ${PROJECT_ID}`)
+  
+  try {
+    const body = await c.req.json().catch(() => ({}))
+    const modelName = (body as any)?.modelName || 'sonnet'
+    
+    if (sessions.isActive(modelName)) {
+      await sessions.interrupt(modelName)
+      return c.json({ success: true, message: `Interrupted ${modelName} session` })
+    }
+    
+    return c.json({ success: true, message: 'No active session to interrupt' })
+  } catch (error: any) {
+    console.error('[project-runtime] Stop error:', error)
+    return c.json({ success: false, error: error.message }, 500)
+  }
 })
 
 // Main chat endpoint - receives from API, streams response
@@ -513,67 +1548,92 @@ app.post('/agent/chat', async (c) => {
       }, 400)
     }
     
-    const { messages, system } = parsed.data
+    const { messages, system, themeContext, agentMode, timezone } = parsed.data
     
-    // Convert to CoreMessage format, handling both string and parts content
-    const coreMessages: CoreMessage[] = messages.map((msg) => {
-      let content: string
-      
-      if (typeof msg.content === 'string') {
-        content = msg.content
-      } else if (Array.isArray(msg.content)) {
-        // Extract text from content parts
-        content = msg.content
-          .filter((part): part is { type: 'text'; text: string } => 
-            part && typeof part === 'object' && part.type === 'text')
-          .map(part => part.text)
-          .join('')
-      } else if (Array.isArray(msg.parts)) {
-        // AI SDK v4 parts format
-        content = msg.parts
-          .filter((part): part is { type: 'text'; text: string } => 
-            part && typeof part === 'object' && part.type === 'text')
-          .map(part => part.text)
-          .join('')
-      } else {
-        content = ''
-      }
-      
-      return {
-        role: msg.role,
-        content,
-      }
+    // Model selection: agentMode takes precedence, then AGENT_MODEL env var, then sonnet
+    const getModelFromAgentMode = (mode?: 'basic' | 'advanced'): 'haiku' | 'sonnet' | 'opus' => {
+      if (mode === 'basic') return 'haiku'
+      if (mode === 'advanced') return 'sonnet'
+      return (process.env.AGENT_MODEL || 'sonnet') as 'haiku' | 'sonnet' | 'opus'
+    }
+    const modelName = getModelFromAgentMode(agentMode)
+    console.log(`[project-runtime] Using model: ${modelName} (agentMode: ${agentMode || 'default'})`)
+
+    // If a previous query is still active for this model, interrupt it first.
+    if (sessions.isActive(modelName)) {
+      console.log(`[project-runtime] Previous session still active for ${modelName}, interrupting...`)
+      await sessions.interrupt(modelName)
+    }
+
+    const session = sessions.getOrCreate(modelName)
+    sessions.markActive(modelName)
+
+    await sessions.ensureMcpServers(modelName)
+
+    const lastUserMessage = findLastUserMessage(messages)
+    if (!lastUserMessage) {
+      return c.json({ error: { code: 'no_user_message', message: 'No user message found' } }, 400)
+    }
+
+    const userText = extractUserText(lastUserMessage)
+
+    // Prepend dynamic context (build status, theme, timezone) to the user message
+    const buildContext = getBuildStatusContext()
+    let contextPrefix = ''
+    if (buildContext) contextPrefix += `[Build Status]\n${buildContext}\n\n`
+    if (themeContext) contextPrefix += `[Theme Context]\n${themeContext}\n\n`
+    if (timezone) contextPrefix += `[User Timezone]\n${timezone}\n\n`
+    if (system) contextPrefix += `[Additional Instructions]\n${system}\n\n`
+    const fullUserText = contextPrefix ? `${contextPrefix}${userText}` : userText
+
+    console.log(`[project-runtime] Processing message (${fullUserText.length} chars, context prefix: ${contextPrefix.length} chars)`)
+
+    await session.send(fullUserText)
+
+    const stream = createUIMessageStream({
+      execute: async ({ writer }) => {
+        try {
+          await streamSdkToUI(session, writer, {
+            logPrefix: 'project-runtime',
+            onQueryCreated: (query) => sessions.setActiveQuery(modelName, query),
+            onUsage: (usage) => {
+              writer.write({
+                type: 'data-usage' as any,
+                data: {
+                  inputTokens: usage.inputTokens,
+                  outputTokens: usage.outputTokens,
+                  totalTokens: usage.inputTokens + usage.outputTokens,
+                },
+              })
+            },
+          })
+        } finally {
+          sessions.markInactive(modelName)
+          sessions.deleteActiveQuery(modelName)
+
+          if (s3Sync) {
+            s3Sync.triggerSync()
+          }
+        }
+      },
+      onError: (error) => {
+        sessions.markInactive(modelName)
+        sessions.deleteActiveQuery(modelName)
+        console.error('[project-runtime] Stream error:', error)
+        return 'An error occurred during streaming'
+      },
     })
-    
-    console.log(`[project-runtime] Processing ${messages.length} messages`)
-    
-    // Create streaming response using Claude Code with native template tools
-    const result = streamText({
-      model: claudeCode('sonnet', {
-        streamingInput: 'always',
-      }) as Parameters<typeof streamText>[0]['model'],
-      system: system || `You are Shogo - an AI assistant for building applications. The project files are in ${PROJECT_DIR}.
 
-## Starter Templates
-
-When a user wants to build an app, use the template tools:
-
-- **template.list** - List and search available starter templates
-- **template.copy** - Copy a template to set up the project
-
-Available templates include: todo-app, expense-tracker, crm, inventory, kanban, ai-chat.
-
-After using template.copy, the Vite server restarts automatically and the preview will update to show the new app. No manual restart is needed.
-
-You also have access to file operations (Read, Write, Edit, Glob, Grep, Bash) for file management.`,
-      messages: coreMessages,
-      tools: templateTools,
-      maxSteps: 10,
-    })
-    
-    // Return the AI SDK UI message stream response directly
-    // This ensures compatibility with @ai-sdk/react's useChat hook (DefaultChatTransport)
-    return result.toUIMessageStreamResponse()
+    // Wrap with keep-alive for long-running operations (template.copy etc.)
+    const response = createUIMessageStreamResponse({ stream })
+    if (response.body) {
+      const wrappedStream = wrapStreamWithKeepalive(response.body, 15000)
+          return new Response(wrappedStream, {
+            status: response.status,
+            headers: response.headers,
+          })
+        }
+        return response
   } catch (error: any) {
     console.error('[project-runtime] Chat error:', error)
     return c.json({
@@ -592,6 +1652,7 @@ app.get('/info', (c) => {
     projectDir: PROJECT_DIR,
     schemasPath: SCHEMAS_PATH,
     mcpServerPath: MCP_SERVER_PATH,
+    templateEndpoints: ['/templates/list', '/templates/copy'],
     nodeEnv: process.env.NODE_ENV,
     port: PORT,
     uptime: process.uptime(),
@@ -601,6 +1662,40 @@ app.get('/info', (c) => {
     } : {
       enabled: false,
     },
+    aiProxy: {
+      url: process.env.AI_PROXY_URL || null,
+      configured: !!process.env.AI_PROXY_TOKEN,
+    },
+  })
+})
+
+// =============================================================================
+// AI Proxy Configuration Endpoint
+// =============================================================================
+// Exposes AI proxy credentials to user-created apps running in this project.
+// User apps call this endpoint to get the proxy URL and token without needing
+// raw API keys in their environment.
+
+app.get('/ai/config', (c) => {
+  const proxyUrl = process.env.AI_PROXY_URL
+  const proxyToken = process.env.AI_PROXY_TOKEN
+
+  if (!proxyUrl || !proxyToken) {
+    return c.json({
+      configured: false,
+      message: 'AI proxy not configured for this project runtime.',
+    })
+  }
+
+  return c.json({
+    configured: true,
+    proxyUrl,
+    proxyToken,
+    // OpenAI-compatible base URL that AI SDKs can use directly
+    baseUrl: proxyUrl,
+    // Models available through the proxy
+    modelsUrl: `${proxyUrl}/models`,
+    completionsUrl: `${proxyUrl}/chat/completions`,
   })
 })
 
@@ -674,132 +1769,2124 @@ app.post('/sync/download', async (c) => {
 // =============================================================================
 
 const DIST_DIR = join(PROJECT_DIR, 'dist')
-const NITRO_SERVER_PORT = parseInt(process.env.NITRO_SERVER_PORT || '3000', 10)
 
-// Track current preview mode and Nitro server process
-let isTanStackStart = process.env.IS_TANSTACK_START === 'true'
-let nitroProcess: ReturnType<typeof Bun.spawn> | null = null
+// Port configuration: Vite UI on 3000, Backend API on 3001
+const VITE_DEV_PORT = parseInt(process.env.VITE_DEV_PORT || '3000', 10)
+const SERVER_PORT = parseInt(process.env.SERVER_PORT || '3001', 10)
+// [EXPO DISABLED] const EXPO_SERVER_PORT = parseInt(process.env.EXPO_SERVER_PORT || '8081', 10)
+
+// Track current preview mode and server processes
+// [EXPO DISABLED] let isExpo = process.env.IS_EXPO === 'true'
+const isExpo = false
+let serverProcess: any = null
+// [EXPO DISABLED] let expoServerProcess: any = null
+
+// Dev mode: use vite dev server with HMR instead of production builds
+let isDevMode = false
+let viteDevProcess: ReturnType<typeof Bun.spawn> | null = null
+// [EXPO DISABLED] let expoDevProcess: ReturnType<typeof Bun.spawn> | null = null
+let devModeStarting = false  // Track if dev mode is currently being started
+
+// Circuit breaker state for dev mode auto-start
+let devModeFailureCount = 0
+let devModeLastFailure: number | null = null
+let devModeError: string | null = null
+const DEV_MODE_MAX_FAILURES = 3
+const DEV_MODE_BACKOFF_MS = 60000  // 1 minute backoff after max failures
+
+// Build watch state for automatic rebuilds with vite build --watch
+let buildWatchProcess: ReturnType<typeof Bun.spawn> | null = null
+let buildState: 'idle' | 'building' | 'success' | 'error' = 'idle'
+let buildStartTime: number | null = null
+let buildDuration: number | null = null
+let lastBuildTime: number | null = null
+let buildError: string | null = null
+
+// Build time history for calculating averages (last 10 builds)
+const BUILD_HISTORY_MAX = 10
+let buildTimeHistory: number[] = []
+
+// Watch process crash recovery
+let watchCrashCount = 0
+let lastWatchCrashTime: number | null = null
+const WATCH_CRASH_COOLDOWN_MS = 5000  // Wait 5s between auto-restarts
+const MAX_WATCH_CRASHES = 5  // Max crashes before giving up auto-restart
+
+// =============================================================================
+// Enhanced Build Error Context (for agent build recovery)
+// =============================================================================
+
+interface BuildErrorContext {
+  errorMessage: string
+  errorCategory: 'missing_files' | 'typescript_error' | 'dependency_missing' | 'syntax_error' | 'schema_sync' | 'build_tool' | 'unknown'
+  rootCause: string
+  canSelfFix: boolean
+  logFilePath: string
+  logExcerpt: string  // Last 30 lines of build log
+  detectedIssues: Array<{
+    type: string
+    file?: string
+    line?: number
+    suggestion: string
+  }>
+  recoverySteps: string[]
+}
+
+let buildErrorContext: BuildErrorContext | null = null
+
+/**
+ * Analyze build error and create rich error context for agent recovery
+ */
+function analyzeBuildError(errorLine: string): BuildErrorContext {
+  const logExcerpt = buildLogLines.slice(-30).join('\n')
+  const fullLog = buildLogLines.join('\n')
+  
+  // Detect error category and extract details
+  let category: BuildErrorContext['errorCategory'] = 'unknown'
+  let rootCause = errorLine
+  let canSelfFix = true
+  const detectedIssues: BuildErrorContext['detectedIssues'] = []
+  const recoverySteps: string[] = []
+  
+  // Pattern matching for common error types
+  const patterns = {
+    missingRoutesDir: /ENOENT.*scandir.*['"](.*routes.*)['"]/i,
+    missingFile: /ENOENT.*['"](.*)['"]/i,
+    noRouteFiles: /No route files found|no route files/i,
+    moduleNotFound: /Module not found|Cannot find module|Can't resolve ['"](.*)['"]/i,
+    typescriptError: /TS\d+:|error TS\d+|Type '.*' is not assignable/i,
+    syntaxError: /SyntaxError|Unexpected token|Parse error/i,
+    prismaError: /PrismaClient|prisma.*generate|@prisma\/client/i,
+    buildToolError: /bundle.*size|chunk.*size/i,
+    invalidExtension: /Invalid.*extension|\.jsx.*not supported/i,
+    reactNotDefined: /React is not defined|'React' is not defined/i,
+    importError: /Cannot resolve|wrong.*path|import.*error/i,
+  }
+  
+  // Check for missing routes directory
+  if (patterns.missingRoutesDir.test(fullLog) || patterns.noRouteFiles.test(fullLog)) {
+    category = 'missing_files'
+    const match = fullLog.match(/['"](.*routes.*)['"]/i)
+    const routesPath = match ? match[1] : 'src/routes'
+    rootCause = `Routes directory or files missing: ${routesPath}`
+    detectedIssues.push({
+      type: 'missing_routes',
+      file: routesPath,
+      suggestion: 'Create routes directory and add at least one route file (index.tsx)'
+    })
+    recoverySteps.push(
+      'STEP 1: Read the full build log: `cat .build.log`',
+      'STEP 2: Check if routes directory exists: `ls -la src/routes/` or `ls -la src/`',
+      'STEP 3: If directory missing, create it: `mkdir -p src/routes`',
+      'STEP 4: Create index route file with basic route component',
+      'STEP 5: Wait for automatic rebuild and verify success'
+    )
+  }
+  // Check for TypeScript errors
+  else if (patterns.typescriptError.test(fullLog) || patterns.reactNotDefined.test(fullLog)) {
+    category = 'typescript_error'
+    const tsMatch = fullLog.match(/TS(\d+):/i)
+    const fileMatch = fullLog.match(/([^\s]+\.tsx?):(\d+)/i)
+    rootCause = tsMatch ? `TypeScript error TS${tsMatch[1]}` : 'TypeScript compilation error'
+    if (fileMatch) {
+      detectedIssues.push({
+        type: 'typescript_error',
+        file: fileMatch[1],
+        line: parseInt(fileMatch[2], 10),
+        suggestion: 'Fix the TypeScript error in the indicated file and line'
+      })
+    }
+    if (patterns.reactNotDefined.test(fullLog)) {
+      detectedIssues.push({
+        type: 'missing_import',
+        suggestion: "Add `import React from 'react'` at the top of the component file"
+      })
+    }
+    recoverySteps.push(
+      'STEP 1: Read the full build log: `cat .build.log`',
+      'STEP 2: Identify the exact file and line with the error',
+      'STEP 3: Read the problematic file to understand the context',
+      'STEP 4: Fix the TypeScript error (missing import, type mismatch, etc.)',
+      'STEP 5: Wait for automatic rebuild and verify success'
+    )
+  }
+  // Check for missing modules/imports
+  else if (patterns.moduleNotFound.test(fullLog) || patterns.importError.test(fullLog)) {
+    category = 'missing_files'
+    const moduleMatch = fullLog.match(/[Cc]an't resolve ['"](.*)['"]/i) || fullLog.match(/Module not found.*['"](.*)['"]/i)
+    rootCause = moduleMatch ? `Cannot resolve module: ${moduleMatch[1]}` : 'Module resolution error'
+    detectedIssues.push({
+      type: 'import_error',
+      suggestion: 'Check import path - may be wrong relative depth or missing file'
+    })
+    recoverySteps.push(
+      'STEP 1: Read the full build log: `cat .build.log`',
+      'STEP 2: Find the file with the bad import',
+      'STEP 3: Check if the imported file exists at that path',
+      'STEP 4: Fix the import path (check relative depth: ../ vs ../../)',
+      'STEP 5: Wait for automatic rebuild and verify success'
+    )
+  }
+  // Check for schema/prisma sync issues
+  else if (patterns.prismaError.test(fullLog) || /schema.*sync|generated.*types.*stale/i.test(fullLog)) {
+    category = 'schema_sync'
+    rootCause = 'Prisma schema out of sync with generated files'
+    detectedIssues.push({
+      type: 'schema_sync',
+      suggestion: 'Run `bunx shogo generate` to regenerate types from schema.prisma'
+    })
+    recoverySteps.push(
+      'STEP 1: Read the full build log: `cat .build.log`',
+      'STEP 2: Check if schema was recently modified: `cat prisma/schema.prisma`',
+      'STEP 3: Regenerate all SDK files: `bunx shogo generate`',
+      'STEP 4: Wait for automatic rebuild and verify success'
+    )
+  }
+  // Check for syntax errors
+  else if (patterns.syntaxError.test(fullLog)) {
+    category = 'syntax_error'
+    const fileMatch = fullLog.match(/([^\s]+\.[jt]sx?):(\d+)/i)
+    rootCause = 'JavaScript/TypeScript syntax error'
+    if (fileMatch) {
+      detectedIssues.push({
+        type: 'syntax_error',
+        file: fileMatch[1],
+        line: parseInt(fileMatch[2], 10),
+        suggestion: 'Fix the syntax error at the indicated location'
+      })
+    }
+    recoverySteps.push(
+      'STEP 1: Read the full build log: `cat .build.log`',
+      'STEP 2: Identify the file and line with the syntax error',
+      'STEP 3: Read the file to see the malformed code',
+      'STEP 4: Fix the syntax (missing bracket, quote, semicolon, etc.)',
+      'STEP 5: Wait for automatic rebuild and verify success'
+    )
+  }
+  // Check for invalid file extensions
+  else if (patterns.invalidExtension.test(fullLog)) {
+    category = 'missing_files'
+    const fileMatch = fullLog.match(/([^\s]+\.jsx)/i)
+    rootCause = 'Invalid file extension (.jsx not supported, use .tsx)'
+    if (fileMatch) {
+      detectedIssues.push({
+        type: 'wrong_extension',
+        file: fileMatch[1],
+        suggestion: 'Rename file from .jsx to .tsx'
+      })
+    }
+    recoverySteps.push(
+      'STEP 1: Read the full build log: `cat .build.log`',
+      'STEP 2: Find the file with wrong extension',
+      'STEP 3: Rename the file: `mv src/routes/index.jsx src/routes/index.tsx`',
+      'STEP 4: Wait for automatic rebuild and verify success'
+    )
+  }
+  // Check for build tool errors (Vite)
+  else if (patterns.buildToolError.test(fullLog)) {
+    category = 'build_tool'
+    rootCause = 'Build tool error (Vite)'
+    canSelfFix = false  // These often need user intervention
+    detectedIssues.push({
+      type: 'build_tool_error',
+      suggestion: 'May require dependency update or configuration change'
+    })
+    recoverySteps.push(
+      'STEP 1: Read the full build log: `cat .build.log`',
+      'STEP 2: Check for specific Vite error messages',
+      'STEP 3: This may require manual investigation - explain the issue to the user'
+    )
+  }
+  // Unknown error - still provide recovery steps
+  else {
+    category = 'unknown'
+    rootCause = errorLine || 'Unknown build error'
+    recoverySteps.push(
+      'STEP 1: Read the FULL build log first: `cat .build.log`',
+      'STEP 2: Search for "error" in the log to find the root cause',
+      'STEP 3: Identify the file(s) involved',
+      'STEP 4: Read the problematic file(s) to understand context',
+      'STEP 5: Apply appropriate fix based on error type',
+      'STEP 6: Wait for automatic rebuild and verify success'
+    )
+  }
+  
+  return {
+    errorMessage: errorLine,
+    errorCategory: category,
+    rootCause,
+    canSelfFix,
+    logFilePath: BUILD_LOG_PATH,
+    logExcerpt,
+    detectedIssues,
+    recoverySteps
+  }
+}
+
+function recordBuildTime(durationMs: number) {
+  buildTimeHistory.push(durationMs)
+  if (buildTimeHistory.length > BUILD_HISTORY_MAX) {
+    buildTimeHistory = buildTimeHistory.slice(-BUILD_HISTORY_MAX)
+  }
+}
+
+function getAverageBuildTime(): number | null {
+  if (buildTimeHistory.length === 0) return null
+  const sum = buildTimeHistory.reduce((a, b) => a + b, 0)
+  return Math.round(sum / buildTimeHistory.length)
+}
+
+// Build log - circular buffer of recent build output (last 500 lines)
+const BUILD_LOG_MAX_LINES = 500
+let buildLogLines: string[] = []
+const BUILD_LOG_PATH = join(PROJECT_DIR, '.build.log')
+
+function appendToBuildLog(line: string) {
+  const timestamp = new Date().toISOString().slice(11, 19) // HH:MM:SS
+  const logLine = `[${timestamp}] ${line}`
+  buildLogLines.push(logLine)
+  if (buildLogLines.length > BUILD_LOG_MAX_LINES) {
+    buildLogLines = buildLogLines.slice(-BUILD_LOG_MAX_LINES)
+  }
+  // Also write to file for agent access
+  try {
+    writeFileSync(BUILD_LOG_PATH, buildLogLines.join('\n'))
+  } catch (e) {
+    // Ignore write errors
+  }
+}
+
+// Console log - captures stdout/stderr from the running application server
+const CONSOLE_LOG_MAX_LINES = 500
+let consoleLogLines: string[] = []
+const CONSOLE_LOG_PATH = join(PROJECT_DIR, '.console.log')
+
+function appendToConsoleLog(line: string, stream: 'stdout' | 'stderr' = 'stdout') {
+  const timestamp = new Date().toISOString().slice(11, 19) // HH:MM:SS
+  const prefix = stream === 'stderr' ? '[err]' : '[out]'
+  const logLine = `[${timestamp}] ${prefix} ${line}`
+  consoleLogLines.push(logLine)
+  if (consoleLogLines.length > CONSOLE_LOG_MAX_LINES) {
+    consoleLogLines = consoleLogLines.slice(-CONSOLE_LOG_MAX_LINES)
+  }
+  // Also write to file for agent access
+  try {
+    writeFileSync(CONSOLE_LOG_PATH, consoleLogLines.join('\n'))
+  } catch (e) {
+    // Ignore write errors
+  }
+  
+  // Push to SSE console event clients
+  if (consoleEventClients.size > 0) {
+    const payload = JSON.stringify({ line: logLine, stream, timestamp })
+    const encoder = new TextEncoder()
+    const message = encoder.encode(`data: ${payload}\n\n`)
+    const deadControllers: ReadableStreamDefaultController[] = []
+    for (const controller of consoleEventClients) {
+      try {
+        controller.enqueue(message)
+      } catch (e) {
+        deadControllers.push(controller)
+      }
+    }
+    for (const dead of deadControllers) {
+      consoleEventClients.delete(dead)
+    }
+  }
+}
+
+/**
+ * Stream process output to console log file.
+ * Captures stdout and stderr from spawned server processes.
+ */
+function streamProcessOutput(proc: ReturnType<typeof Bun.spawn>, name: string) {
+  // Stream stdout
+  if (proc.stdout && typeof proc.stdout !== 'number') {
+    ;(async () => {
+      const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader()
+      const decoder = new TextDecoder()
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          const output = decoder.decode(value)
+          for (const line of output.split('\n')) {
+            if (line.trim()) {
+              console.log(`[${name}] ${line}`)
+              appendToConsoleLog(line, 'stdout')
+            }
+          }
+        }
+      } catch (e) {
+        // Process ended
+      }
+    })()
+  }
+  
+  // Stream stderr
+  if (proc.stderr && typeof proc.stderr !== 'number') {
+    ;(async () => {
+      const reader = (proc.stderr as ReadableStream<Uint8Array>).getReader()
+      const decoder = new TextDecoder()
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          const output = decoder.decode(value)
+          for (const line of output.split('\n')) {
+            if (line.trim()) {
+              console.error(`[${name}:error] ${line}`)
+              appendToConsoleLog(line, 'stderr')
+            }
+          }
+        }
+      } catch (e) {
+        // Process ended
+      }
+    })()
+  }
+}
+
+// Browser console log - captures console.log/error/warn from client-side code
+const BROWSER_LOG_MAX_LINES = 500
+let browserLogLines: string[] = []
+const BROWSER_LOG_PATH = join(PROJECT_DIR, '.browser.log')
+
+function appendToBrowserLog(level: string, message: string) {
+  const timestamp = new Date().toISOString().slice(11, 19) // HH:MM:SS
+  const levelPrefix = level === 'error' ? '[err]' : level === 'warn' ? '[warn]' : '[log]'
+  const logLine = `[${timestamp}] ${levelPrefix} ${message}`
+  browserLogLines.push(logLine)
+  if (browserLogLines.length > BROWSER_LOG_MAX_LINES) {
+    browserLogLines = browserLogLines.slice(-BROWSER_LOG_MAX_LINES)
+  }
+  // Also write to file for agent access
+  try {
+    writeFileSync(BROWSER_LOG_PATH, browserLogLines.join('\n'))
+  } catch (e) {
+    // Ignore write errors
+  }
+}
+
+/**
+ * JavaScript snippet to inject into HTML pages to capture browser console logs.
+ * Sends logs to /__console endpoint for server-side storage.
+ */
+const BROWSER_CONSOLE_CAPTURE_SCRIPT = `
+<script>
+(function() {
+  if (window.__shogoBrowserLoggerInstalled) return;
+  window.__shogoBrowserLoggerInstalled = true;
+  
+  const originalConsole = {
+    log: console.log.bind(console),
+    error: console.error.bind(console),
+    warn: console.warn.bind(console)
+  };
+  
+  function sendLog(level, args) {
+    try {
+      const message = args.map(arg => {
+        if (arg instanceof Error) return arg.stack || arg.message;
+        if (typeof arg === 'object') {
+          try { return JSON.stringify(arg); } catch { return String(arg); }
+        }
+        return String(arg);
+      }).join(' ');
+      
+      fetch('/__console', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ level, message })
+      }).catch(() => {});
+    } catch (e) {}
+  }
+  
+  console.log = function(...args) {
+    originalConsole.log(...args);
+    sendLog('log', args);
+  };
+  
+  console.error = function(...args) {
+    originalConsole.error(...args);
+    sendLog('error', args);
+  };
+  
+  console.warn = function(...args) {
+    originalConsole.warn(...args);
+    sendLog('warn', args);
+  };
+  
+  // Capture unhandled errors
+  window.addEventListener('error', function(event) {
+    sendLog('error', ['Uncaught Error: ' + event.message + ' at ' + event.filename + ':' + event.lineno]);
+  });
+  
+  // Capture unhandled promise rejections
+  window.addEventListener('unhandledrejection', function(event) {
+    sendLog('error', ['Unhandled Promise Rejection: ' + (event.reason?.stack || event.reason?.message || event.reason)]);
+  });
+})();
+</script>
+`;
+
+/**
+ * Get current build status context for inclusion in agent system prompt.
+ * Returns a formatted string describing the build state.
+ * 
+ * When there's a build error, this includes:
+ * - Rich error context with category and root cause
+ * - Explicit step-by-step recovery instructions
+ * - Last 30 lines of build log
+ * - Detected issues with suggestions
+ */
+export function getBuildStatusContext(): string {
+  const now = Date.now()
+  let status = ''
+  const avgBuildTime = getAverageBuildTime()
+  const avgStr = avgBuildTime ? `${(avgBuildTime / 1000).toFixed(1)}s` : 'unknown'
+  
+  if (buildState === 'building') {
+    const elapsed = buildStartTime ? Math.round((now - buildStartTime) / 1000) : 0
+    status = `⏳ BUILD IN PROGRESS (${elapsed}s elapsed, avg build time: ${avgStr}) - Wait for completion before testing changes`
+  } else if (buildState === 'error' && buildError) {
+    // Use rich error context if available
+    if (buildErrorContext) {
+      status = formatBuildErrorWithRecovery(buildErrorContext)
+    } else {
+      status = `❌ BUILD ERROR: ${buildError}\nFix the error and save the file - the build will retry automatically.`
+    }
+  } else if (buildState === 'success' || buildState === 'idle') {
+    if (lastBuildTime) {
+      const ago = Math.round((now - lastBuildTime) / 1000)
+      const duration = buildDuration ? `${buildDuration}ms` : 'unknown'
+      status = `✅ BUILD READY (last build: ${ago}s ago, took ${duration})`
+    } else {
+      status = '✅ BUILD READY'
+    }
+  }
+  
+  // Add average build time info if we have history
+  const avgInfo = avgBuildTime 
+    ? `\nAverage build time: ${avgStr} (based on last ${buildTimeHistory.length} builds)`
+    : ''
+  
+  return `## Current Build Status
+
+${status}${avgInfo}
+
+**Log files available:**
+- \`cat .build.log\` - Build output (compilation, bundling)
+- \`cat .console.log\` - Server console output (API handlers, server-side logs)
+- \`cat .browser.log\` - Browser console output (client-side logs, React errors, unhandled exceptions)
+- \`curl -s http://localhost:${PORT}/preview/status | jq .buildWatch\` - Build status as JSON`
+}
+
+/**
+ * Format build error with context for the agent.
+ */
+function formatBuildErrorWithRecovery(ctx: BuildErrorContext): string {
+  return `❌ BUILD ERROR: ${ctx.rootCause}
+
+**Error Category:** ${ctx.errorCategory}
+
+Read the full build log for details: \`cat .build.log\`
+
+**Log Excerpt (Last 30 Lines):**
+\`\`\`
+${ctx.logExcerpt}
+\`\`\``
+}
+
+// SSE clients listening for build events
+const buildEventClients = new Set<ReadableStreamDefaultController>()
+
+// SSE clients listening for console log events
+const consoleEventClients = new Set<ReadableStreamDefaultController>()
+
+/**
+ * Check if a TCP port is accepting connections.
+ * Uses Bun's native TCP socket support for reliability.
+ */
+async function checkTcpPort(host: string, port: number, timeoutMs: number = 1000): Promise<boolean> {
+  return new Promise((resolve) => {
+    let resolved = false
+    const resolveOnce = (value: boolean) => {
+      if (!resolved) {
+        resolved = true
+        resolve(value)
+      }
+    }
+    
+    Bun.connect({
+      hostname: host,
+      port: port,
+      socket: {
+        open(socket) {
+          socket.end()
+          resolveOnce(true)
+        },
+        data() {},
+        close() {},
+        error() {
+          resolveOnce(false)
+        },
+        connectError() {
+          resolveOnce(false)
+        },
+      },
+    }).catch(() => resolveOnce(false))
+    
+    // Timeout fallback
+    setTimeout(() => resolveOnce(false), timeoutMs)
+  })
+}
+
+/**
+ * Wait for PostgreSQL to be ready to accept connections.
+ * Uses direct TCP socket connection for reliability - no external tools needed.
+ * Supports both local sidecar (localhost) and remote shared cluster (CloudNativePG).
+ * Parses DATABASE_URL to determine the host and port.
+ * 
+ * @param timeoutMs - Maximum time to wait (default 30s)
+ * @returns true if postgres is ready, false if timeout
+ */
+async function waitForPostgresReady(timeoutMs: number = 30000): Promise<boolean> {
+  const startTime = Date.now()
+  const checkInterval = 500
+  
+  // Parse host and port from DATABASE_URL, fallback to localhost:5432
+  let pgHost = 'localhost'
+  let pgPort = 5432
+  const dbUrl = process.env.DATABASE_URL
+  if (dbUrl) {
+    try {
+      const url = new URL(dbUrl)
+      pgHost = url.hostname
+      pgPort = parseInt(url.port, 10) || 5432
+    } catch {
+      // Invalid URL, use defaults
+    }
+  }
+  
+  console.log(`[project-runtime] Waiting for PostgreSQL at ${pgHost}:${pgPort}...`)
+  
+  while (Date.now() - startTime < timeoutMs) {
+    // Direct TCP connection check - most reliable method
+    const isReady = await checkTcpPort(pgHost, pgPort, 1000)
+    if (isReady) {
+      const elapsed = Date.now() - startTime
+      console.log(`[project-runtime] PostgreSQL ready after ${elapsed}ms (TCP check on ${pgHost}:${pgPort})`)
+      return true
+    }
+    
+    await new Promise(resolve => setTimeout(resolve, checkInterval))
+  }
+  
+  console.error(`[project-runtime] PostgreSQL not ready after ${timeoutMs}ms at ${pgHost}:${pgPort}`)
+  return false
+}
+
+/**
+ * Parse Vite stdout to detect rebuild events
+ */
+function parseViteBuildOutput(line: string): 'start' | 'success' | 'error' | null {
+  // Vite build start: "vite v5.x.x building for production..." or "building..."
+  if (line.includes('building for production') || line.includes('building...')) {
+    return 'start'
+  }
+  // Vite build success: "✓ built in XXXms" or "built in"
+  if (line.includes('✓ built in') || line.match(/built in \d+/)) {
+    return 'success'
+  }
+  // Vite build error: typically starts with "error" or "failed"
+  if (line.toLowerCase().includes('error') || line.toLowerCase().includes('failed')) {
+    return 'error'
+  }
+  return null
+}
+
+/**
+ * Notify all SSE clients about build state change
+ */
+function notifyBuildStateChange() {
+  const payload = JSON.stringify({
+    state: buildState,
+    startTime: buildStartTime,
+    duration: buildDuration,
+    lastBuildTime: lastBuildTime,
+    error: buildError,
+    // Include error context for rich error display
+    errorContext: buildErrorContext ? {
+      category: buildErrorContext.errorCategory,
+      rootCause: buildErrorContext.rootCause,
+      canAutoRecover: buildErrorContext.canSelfFix,
+      suggestions: buildErrorContext.detectedIssues?.map(i => i.suggestion) || [],
+    } : null,
+    // Include last 10 lines of build log for quick preview
+    logPreview: buildLogLines.slice(-10).join('\n'),
+    // Include crash recovery info
+    watchCrashCount,
+    canAutoRestart: watchCrashCount <= MAX_WATCH_CRASHES,
+    timestamp: Date.now(),
+  })
+  
+  const encoder = new TextEncoder()
+  const message = encoder.encode(`data: ${payload}\n\n`)
+  
+  // Notify all connected clients - collect dead controllers to avoid modifying Set during iteration
+  const deadControllers: ReadableStreamDefaultController[] = []
+  for (const controller of buildEventClients) {
+    try {
+      controller.enqueue(message)
+    } catch (e) {
+      // Client disconnected
+      deadControllers.push(controller)
+    }
+  }
+  // Clean up dead controllers after iteration
+  for (const dead of deadControllers) {
+    buildEventClients.delete(dead)
+  }
+  
+  if (buildEventClients.size > 0) {
+    console.log(`[project-runtime] 📡 Notified ${buildEventClients.size} client(s) of build state: ${buildState}`)
+  }
+}
+
+/**
+ * Start Vite in watch mode with rebuild detection.
+ * Monitors stdout for rebuild events and notifies SSE clients.
+ * Automatically recovers from crashes (like the Object.entries bug).
+ */
+async function startViteBuildWatch(): Promise<void> {
+  if (buildWatchProcess) {
+    console.log('[project-runtime] Vite watch already running')
+    return
+  }
+  
+  console.log('[project-runtime] 🔄 Starting Vite build watch...')
+  
+  buildWatchProcess = Bun.spawn(['bun', '--bun', 'vite', 'build', '--watch'], {
+    cwd: PROJECT_DIR,
+    stdout: 'pipe',
+    stderr: 'pipe',
+    env: process.env,
+  })
+  
+  const currentProcess = buildWatchProcess
+  
+  // Monitor process exit for auto-recovery
+  currentProcess.exited.then((exitCode) => {
+    // Only handle if this is still the current process
+    if (buildWatchProcess !== currentProcess) return
+    
+    console.log(`[project-runtime] ⚠️ Vite watch process exited with code ${exitCode}`)
+    buildWatchProcess = null
+    
+    // Handle crash recovery
+    const now = Date.now()
+    if (lastWatchCrashTime && now - lastWatchCrashTime > 60000) {
+      // Reset crash count if more than 1 minute since last crash
+      watchCrashCount = 0
+    }
+    
+    lastWatchCrashTime = now
+    watchCrashCount++
+    
+    // Check if this was likely a known Object.entries crash
+    const isKnownCrash = buildError?.includes('Object.entries') || 
+                       buildLogLines.some(l => l.includes('Object.entries'))
+    
+    if (isKnownCrash) {
+      console.log('[project-runtime] 🔧 Detected Object.entries crash - will auto-recover')
+      appendToBuildLog('⚠️ Watch process crashed (known issue)')
+    }
+    
+    // Notify frontend of crash
+    buildState = 'error'
+    buildError = buildError || `Watch process crashed (exit code ${exitCode})`
+    buildErrorContext = {
+      errorMessage: buildError,
+      errorCategory: isKnownCrash ? 'build_tool' : 'unknown',
+      rootCause: isKnownCrash 
+        ? 'Vite watch mode crash (Object.entries on null)'
+        : 'Watch process exited unexpectedly',
+      canSelfFix: true,
+      logFilePath: '.build.log',
+      logExcerpt: buildLogLines.slice(-30).join('\n'),
+      detectedIssues: isKnownCrash ? [{
+        type: 'vite_watch_crash',
+        suggestion: 'This is a known Vite watch mode bug. Auto-recovery in progress.'
+      }] : [],
+      recoverySteps: ['Automatic restart in progress...']
+    }
+    notifyBuildStateChange()
+    
+    // Auto-restart if under crash limit
+    if (watchCrashCount <= MAX_WATCH_CRASHES) {
+      const delay = WATCH_CRASH_COOLDOWN_MS * watchCrashCount  // Exponential backoff
+      console.log(`[project-runtime] 🔄 Auto-restarting watch in ${delay}ms (crash ${watchCrashCount}/${MAX_WATCH_CRASHES})`)
+      appendToBuildLog(`🔄 Auto-restarting watch in ${delay/1000}s...`)
+      
+      setTimeout(() => {
+        if (!buildWatchProcess) {
+          console.log('[project-runtime] 🔄 Attempting watch process recovery...')
+          startViteBuildWatch()
+        }
+      }, delay)
+    } else {
+      console.error(`[project-runtime] ❌ Watch process crashed ${watchCrashCount} times - giving up auto-restart`)
+      appendToBuildLog(`❌ Watch process crashed too many times. Use "Rebuild" button to restart.`)
+      buildError = 'Watch process crashed repeatedly. Use the Rebuild button to manually restart.'
+      notifyBuildStateChange()
+    }
+  })
+  
+  // Stream stdout and detect rebuild events
+  ;(async () => {
+    if (!currentProcess.stdout) return
+    const stdout = currentProcess.stdout
+    if (typeof stdout === 'number') return
+    const reader = stdout.getReader()
+    const decoder = new TextDecoder()
+    
+    while (buildWatchProcess === currentProcess) {
+      try {
+        const { done, value } = await reader.read()
+        if (done) break
+        
+        const output = decoder.decode(value)
+        const lines = output.split('\n')
+        
+        for (const line of lines) {
+          // Log to console for debugging
+          if (line.trim()) {
+            console.log(`[vite] ${line}`)
+            appendToBuildLog(line)
+          }
+          
+          // Parse for events
+          const event = parseViteBuildOutput(line)
+          if (event === 'start') {
+            buildState = 'building'
+            buildStartTime = Date.now()
+            buildError = null
+            buildErrorContext = null  // Clear error context on new build
+            appendToBuildLog('🔨 Build started...')
+            console.log('[project-runtime] 🔨 Vite rebuild started')
+            notifyBuildStateChange()
+          } else if (event === 'success') {
+            buildState = 'success'
+            // If we missed the 'start' event (race condition during startup), 
+            // use the watch start time or estimate duration from Vite's own output
+            if (!buildStartTime) {
+              buildStartTime = Date.now() - 5000 // Estimate 5s if we missed the start
+            }
+            buildDuration = Date.now() - buildStartTime
+            lastBuildTime = Date.now()
+            if (buildDuration) recordBuildTime(buildDuration)
+            appendToBuildLog(`✅ Build complete (${buildDuration}ms)`)
+            console.log(`[project-runtime] ✅ Vite rebuild complete (${buildDuration}ms)`)
+            // Reset crash count on successful build
+            watchCrashCount = 0
+            notifyBuildStateChange()
+            
+            // Restart the backend API server after each successful rebuild.
+            // This ensures any changes to generated routes (from `shogo generate`)
+            // or server.tsx are picked up immediately. The overhead is minimal
+            // (~500ms to restart a Bun process) vs the UX cost of stale API routes.
+            if (serverProcess) {
+              const serverTsxPath = join(PROJECT_DIR, 'server.tsx')
+              const serverTsPath = join(PROJECT_DIR, 'server.ts')
+              const serverPath = existsSync(serverTsxPath) ? serverTsxPath : (existsSync(serverTsPath) ? serverTsPath : null)
+              if (serverPath) {
+                console.log('[project-runtime] 🔄 Restarting backend API server after rebuild...')
+                serverProcess.kill()
+                serverProcess = null
+                serverProcess = Bun.spawn(['bun', 'run', serverPath], {
+                  cwd: PROJECT_DIR,
+                  env: { ...process.env, PORT: String(SERVER_PORT) },
+                  stdout: 'pipe',
+                  stderr: 'pipe',
+                })
+                streamProcessOutput(serverProcess, 'api-server')
+                appendToBuildLog('🔄 Backend API server restarted')
+              }
+            }
+            
+            // Return to idle after 1s
+            setTimeout(() => {
+              if (buildState === 'success') {
+                buildState = 'idle'
+                notifyBuildStateChange()
+              }
+            }, 1000)
+          } else if (event === 'error') {
+            buildState = 'error'
+            buildError = line
+            buildErrorContext = analyzeBuildError(line)  // Create rich error context
+            appendToBuildLog(`❌ Build error: ${line}`)
+            console.error('[project-runtime] ❌ Vite rebuild error:', line)
+            console.log('[project-runtime] Error context:', JSON.stringify(buildErrorContext, null, 2))
+            notifyBuildStateChange()
+          }
+        }
+      } catch (e) {
+        console.error('[project-runtime] Error reading Vite output:', e)
+        break
+      }
+    }
+  })()
+  
+  // Also stream stderr - but only treat actual errors as build failures
+  // Vite commonly outputs warnings and informational messages to stderr
+  ;(async () => {
+    if (!currentProcess.stderr) return
+    const stderr = currentProcess.stderr
+    if (typeof stderr === 'number') return
+    const reader = stderr.getReader()
+    const decoder = new TextDecoder()
+    
+    while (buildWatchProcess === currentProcess) {
+      try {
+        const { done, value } = await reader.read()
+        if (done) break
+        const output = decoder.decode(value)
+        if (output.trim()) {
+          console.error(`[vite:error] ${output}`)
+          appendToBuildLog(`[error] ${output}`)
+          
+          // Only treat stderr as a build error if it contains actual error indicators
+          // AND we're currently building. Vite outputs warnings/deprecations to stderr
+          // that shouldn't be treated as build failures.
+          const isActualError = output.includes('Error:') || 
+                               output.includes('error:') ||
+                               output.includes('ENOENT') ||
+                               output.includes('SIGTERM') ||
+                               output.includes('Failed to')
+          if (buildState === 'building' && isActualError) {
+            buildState = 'error'
+            buildError = output
+            buildErrorContext = analyzeBuildError(output)
+            notifyBuildStateChange()
+          }
+        }
+      } catch (e) {
+        break
+      }
+    }
+  })()
+  
+  console.log('[project-runtime] ✅ Vite watch started')
+}
+
+/**
+ * Stop Vite watch process
+ */
+function stopViteBuildWatch(): void {
+  if (buildWatchProcess) {
+    console.log('[project-runtime] Stopping Vite build watch...')
+    buildWatchProcess.kill()
+    buildWatchProcess = null
+    buildState = 'idle'
+    notifyBuildStateChange()
+  }
+}
+
+/**
+ * Pause/resume watcher API endpoints.
+ * Used by `bunx shogo generate` (scripts/generate.ts) to prevent the watcher
+ * from crashing due to rapid file writes during code generation.
+ * 
+ * Flow: pause → write generated files → resume (triggers fresh build + restart watch)
+ */
+let watcherPausedForGenerate = false
+let watcherPauseTimeout: ReturnType<typeof setTimeout> | null = null
+
+app.post('/preview/watch/pause', async (c) => {
+  if (buildWatchProcess) {
+    console.log('[project-runtime] ⏸️  Pausing watcher for code generation...')
+    stopViteBuildWatch()
+    watcherPausedForGenerate = true
+    
+    // Safety: auto-resume after 60s in case generate crashes without resuming
+    if (watcherPauseTimeout) clearTimeout(watcherPauseTimeout)
+    watcherPauseTimeout = setTimeout(() => {
+      if (watcherPausedForGenerate) {
+        console.log('[project-runtime] ⚠️ Watcher pause timeout - auto-resuming')
+        watcherPausedForGenerate = false
+        startViteBuildWatch()
+      }
+    }, 60000)
+    
+    return c.json({ paused: true })
+  }
+  return c.json({ paused: false, message: 'No watcher running' })
+})
+
+app.post('/preview/watch/resume', async (c) => {
+  if (watcherPauseTimeout) {
+    clearTimeout(watcherPauseTimeout)
+    watcherPauseTimeout = null
+  }
+  watcherPausedForGenerate = false
+  
+  // Reset crash count since this is a controlled restart
+  watchCrashCount = 0
+  lastWatchCrashTime = null
+  
+  console.log('[project-runtime] ▶️  Resuming watcher after code generation...')
+  
+  // Run a fresh build first, then start watch mode
+  try {
+    console.log('[project-runtime] 🔨 Running fresh build after generation...')
+    appendToBuildLog('🔨 Building after code generation...')
+    buildState = 'building'
+    buildStartTime = Date.now()
+    notifyBuildStateChange()
+    
+    const buildProc = Bun.spawnSync(['bun', '--bun', 'vite', 'build'], {
+      cwd: PROJECT_DIR,
+      env: process.env,
+    })
+    
+    const stdout = buildProc.stdout?.toString() || ''
+    const stderr = buildProc.stderr?.toString() || ''
+    if (stdout.trim()) appendToBuildLog(stdout)
+    if (stderr.trim()) appendToBuildLog(`[error] ${stderr}`)
+    
+    const durationMs = Date.now() - (buildStartTime || Date.now())
+    
+    if (buildProc.exitCode === 0) {
+      buildState = 'success'
+      buildDuration = durationMs
+      lastBuildTime = Date.now()
+      recordBuildTime(durationMs)
+      appendToBuildLog(`✅ Build complete (${durationMs}ms)`)
+      console.log(`[project-runtime] ✅ Post-generate build complete (${durationMs}ms)`)
+    } else {
+      buildState = 'error'
+      buildError = stderr || 'Build failed'
+      buildErrorContext = analyzeBuildError(buildError)
+      appendToBuildLog(`❌ Build failed: ${stderr}`)
+      console.error(`[project-runtime] ❌ Post-generate build failed:`, stderr)
+    }
+    notifyBuildStateChange()
+    
+    // Restart the backend server to pick up new generated routes
+    // This must always restart (not just when serverProcess exists) because
+    // generation may have changed models/routes, and the server needs fresh imports.
+    const serverTsxPath = join(PROJECT_DIR, 'server.tsx')
+    const serverTsPath = join(PROJECT_DIR, 'server.ts')
+    const serverPath = existsSync(serverTsxPath) ? serverTsxPath : (existsSync(serverTsPath) ? serverTsPath : null)
+    
+    if (serverPath && !isExpo) {
+      console.log('[project-runtime] 🔄 Restarting backend API server...')
+      if (serverProcess) {
+        serverProcess.kill()
+        serverProcess = null
+      }
+      serverProcess = Bun.spawn(['bun', 'run', serverPath], {
+        cwd: PROJECT_DIR,
+        env: { ...process.env, PORT: String(SERVER_PORT) },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+      streamProcessOutput(serverProcess, 'api-server')
+      
+      // Wait for server to be ready (critical: detect startup crashes early)
+      let serverReady = false
+      for (let attempt = 1; attempt <= 10 && !serverReady; attempt++) {
+        try {
+          const healthCheck = await fetch(`http://localhost:${SERVER_PORT}/health`, {
+            signal: AbortSignal.timeout(500),
+          })
+          if (healthCheck.ok || healthCheck.status < 500) {
+            serverReady = true
+            console.log(`[project-runtime] ✅ Backend API server ready after ${attempt} attempt(s)`)
+            appendToBuildLog(`✅ Backend API server ready`)
+          }
+        } catch (e) {
+          await new Promise(resolve => setTimeout(resolve, Math.min(100 * attempt, 500)))
+        }
+      }
+      
+      if (!serverReady) {
+        console.warn('[project-runtime] ⚠️ Backend API server may still be starting...')
+        appendToBuildLog('⚠️ Backend API server may still be starting after generation')
+      }
+    }
+    
+    // Restart watch mode
+    await startViteBuildWatch()
+    
+    // Trigger S3 sync
+    if (s3Sync) {
+      s3Sync.triggerSync()
+    }
+    
+    return c.json({ 
+      resumed: true, 
+      buildSuccess: buildProc.exitCode === 0,
+      durationMs,
+    })
+  } catch (err: any) {
+    console.error('[project-runtime] Error resuming watcher:', err)
+    // Still try to restart watch mode even if build failed
+    await startViteBuildWatch()
+    return c.json({ resumed: true, error: err.message }, 500)
+  }
+})
 
 /**
  * Restart the preview server after template changes.
  * This will:
- * 1. Kill any existing Nitro server process
+ * 1. Kill any existing server processes
  * 2. Install dependencies
- * 3. Run prisma generate/push if needed
- * 4. Build with Vite (Nitro produces .output/server/index.mjs)
- * 5. Start the Nitro server (for TanStack Start) or serve static files (plain Vite)
+ * 3. Wait for PostgreSQL to be ready (if prisma is present)
+ * 4. Run prisma generate/push if needed
+ * 5. Build with Vite
+ * 6. Start the Hono server (for Expo) or serve static files (plain Vite)
  */
 app.post('/preview/restart', async (c) => {
-  console.log(`[project-runtime] Restarting preview for project ${PROJECT_ID}...`)
+  const startTime = performance.now()
+  const timings: { step: string; durationMs: number }[] = []
+  let lastMark = startTime
+  
+  const markStep = (name: string) => {
+    const now = performance.now()
+    const duration = Math.round(now - lastMark)
+    timings.push({ step: name, durationMs: duration })
+    console.log(`[project-runtime] ⏱️  ${name}: ${duration}ms`)
+    lastMark = now
+  }
+  
+  console.log(`[project-runtime] ⏱️  Starting preview restart for project ${PROJECT_ID}...`)
   
   try {
-    // 1. Kill existing Nitro server if running
-    if (nitroProcess) {
-      console.log('[project-runtime] Stopping existing Nitro server...')
-      nitroProcess.kill()
-      nitroProcess = null
+    // 1. Kill existing servers (Hono, Vite dev, Expo if running)
+    if (serverProcess) {
+      console.log('[project-runtime] Stopping existing backend server...')
+      serverProcess.kill()
+      serverProcess = null
     }
+    // [EXPO DISABLED] if (expoServerProcess) {
+    //   console.log('[project-runtime] Stopping existing Expo server...')
+    //   expoServerProcess.kill()
+    //   expoServerProcess = null
+    // }
+    if (viteDevProcess) {
+      // Note: Killing vite will cause exit code 143 (SIGTERM) - this is expected
+      console.log('[project-runtime] Stopping existing Vite dev server (exit code 143 is expected)...')
+      viteDevProcess.kill()
+      viteDevProcess = null
+      isDevMode = false
+      devModeStarting = false
+    }
+    // [EXPO DISABLED] if (expoDevProcess) {
+    //   console.log('[project-runtime] Stopping existing Expo dev server...')
+    //   expoDevProcess.kill()
+    //   expoDevProcess = null
+    // }
+    // Stop build watch process if running
+    stopViteBuildWatch()
+    markStep('killExistingServer')
     
-    // 2. Check if this is a TanStack Start project
+    // 2. Check project type
     const packageJsonPath = join(PROJECT_DIR, 'package.json')
     if (!existsSync(packageJsonPath)) {
-      return c.json({ success: false, error: 'No package.json found' }, 400)
+      const totalMs = Math.round(performance.now() - startTime)
+      return c.json({ success: false, error: 'No package.json found', timings: { steps: timings, totalMs } }, 400)
     }
     
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'))
     const deps = { ...packageJson.dependencies, ...packageJson.devDependencies }
-    isTanStackStart = !!deps['@tanstack/react-start']
+    // [EXPO DISABLED] isExpo = !!deps['expo']
     const hasPrisma = !!deps['@prisma/client'] || !!deps['prisma']
+    markStep('parsePackageJson')
+
+    const projectType = 'Vite + Hono'
+    console.log(`[project-runtime] Project type: ${projectType}`)
     
-    console.log(`[project-runtime] Project type: ${isTanStackStart ? 'TanStack Start (Nitro)' : 'Plain Vite'}`)
+    // 3. Install dependencies (skip if node_modules was copied from pre-installed template)
+    const nodeModulesPath = join(PROJECT_DIR, 'node_modules')
+    const nodeModulesExists = existsSync(nodeModulesPath)
     
-    // 3. Install dependencies
-    console.log('[project-runtime] Installing dependencies...')
-    const installProc = Bun.spawn(['bun', 'install'], {
-      cwd: PROJECT_DIR,
-      stdout: 'inherit',
-      stderr: 'inherit',
-    })
-    await installProc.exited
+    // Check if node_modules appears complete (has key packages AND lockfile)
+    // Without bun.lock, bun install must run to properly resolve the dependency graph.
+    // This prevents PostCSS/devDependency errors (e.g. @tailwindcss/postcss) when
+    // node_modules is copied from a template without a lockfile.
+    const hasReact = existsSync(join(nodeModulesPath, 'react'))
+    const hasVite = existsSync(join(nodeModulesPath, 'vite'))
+    const hasLockfile = existsSync(join(PROJECT_DIR, 'bun.lock'))
+    const nodeModulesComplete = nodeModulesExists && hasReact && hasVite && hasLockfile
     
-    if (installProc.exitCode !== 0) {
-      console.error('[project-runtime] Install failed')
-      return c.json({ success: false, error: 'Dependency installation failed' }, 500)
+    // Check if package.json has overrides - if so, we MUST run bun install to apply them
+    // This is critical for templates using rolldown-vite via "overrides": { "vite": "npm:rolldown-vite@latest" }
+    const hasOverrides = !!(packageJson.overrides || packageJson.resolutions)
+    if (hasOverrides) {
+      console.log('[project-runtime] Package has overrides/resolutions - will run bun install to apply them')
+    }
+    
+    if (nodeModulesComplete && !hasOverrides) {
+      console.log('[project-runtime] ⚡ node_modules already exists (pre-installed from template) - skipping bun install')
+      markStep('bunInstall (skipped - pre-installed)')
+    } else {
+      console.log('[project-runtime] ⏱️  Installing dependencies...')
+      const installProc = Bun.spawn(['bun', 'install'], {
+        cwd: PROJECT_DIR,
+        stdout: 'inherit',
+        stderr: 'inherit',
+      })
+      await installProc.exited
+      markStep('bunInstall')
+      
+      if (installProc.exitCode !== 0) {
+        console.error('[project-runtime] Install failed')
+        const totalMs = Math.round(performance.now() - startTime)
+        return c.json({ success: false, error: 'Dependency installation failed', timings: { steps: timings, totalMs } }, 500)
+      }
     }
     
     // 4. Run prisma generate and db push if prisma is present
     if (hasPrisma) {
-      console.log('[project-runtime] Running prisma generate...')
-      const prismaGenProc = Bun.spawn(['bunx', 'prisma', 'generate'], {
-        cwd: PROJECT_DIR,
-        stdout: 'inherit',
-        stderr: 'inherit',
-      })
-      await prismaGenProc.exited
+      // 4a. Wait for PostgreSQL to be ready (critical for sidecar postgres)
+      // Without this wait, prisma db push fails silently because postgres isn't accepting connections
+      const postgresReady = await waitForPostgresReady(30000)
+      markStep('waitForPostgres')
       
-      console.log('[project-runtime] Running prisma db push...')
-      const prismaPushProc = Bun.spawn(['bunx', 'prisma', 'db', 'push'], {
+      if (!postgresReady) {
+        console.error('[project-runtime] ❌ PostgreSQL not ready - cannot run prisma commands')
+        const totalMs = Math.round(performance.now() - startTime)
+        return c.json({ 
+          success: false, 
+          error: 'PostgreSQL database not ready. The postgres sidecar may still be starting.',
+          hint: 'Wait a few seconds and try again, or check pod logs for postgres container.',
+          timings: { steps: timings, totalMs } 
+        }, 503)
+      }
+      
+      // 4b. Run prisma generate (skip if Prisma client already exists from template)
+      const prismaClientExists = existsSync(join(PROJECT_DIR, 'node_modules', '.prisma', 'client', 'index.js'))
+      
+      if (prismaClientExists) {
+        console.log('[project-runtime] ⚡ Prisma client already exists (pre-generated from template) - skipping prisma generate')
+        markStep('prismaGenerate (skipped - pre-generated)')
+      } else {
+        console.log('[project-runtime] ⏱️  Running prisma generate...')
+        const prismaGenProc = Bun.spawn(['bun', '--bun', 'x', 'prisma', 'generate'], {
+          cwd: PROJECT_DIR,
+          stdout: 'inherit',
+          stderr: 'inherit',
+        })
+        await prismaGenProc.exited
+        markStep('prismaGenerate')
+        
+        if (prismaGenProc.exitCode !== 0) {
+          console.error('[project-runtime] ❌ prisma generate failed with exit code:', prismaGenProc.exitCode)
+          // Track failure for circuit breaker (shared with auto-start)
+          devModeFailureCount++
+          devModeLastFailure = Date.now()
+          devModeError = `prisma generate failed with exit code ${prismaGenProc.exitCode}`
+          const totalMs = Math.round(performance.now() - startTime)
+          return c.json({ 
+            success: false, 
+            error: `prisma generate failed with exit code ${prismaGenProc.exitCode}`,
+            hint: 'Check that the prisma schema is valid.',
+            timings: { steps: timings, totalMs } 
+          }, 500)
+        }
+      }
+      
+      // 4c. Run prisma db push with --accept-data-loss flag for development
+      // This ensures tables are created even if there are schema changes
+      console.log('[project-runtime] ⏱️  Running prisma db push...')
+      const prismaPushProc = Bun.spawn(['bun', '--bun', 'x', 'prisma', 'db', 'push', '--accept-data-loss'], {
         cwd: PROJECT_DIR,
         stdout: 'inherit',
         stderr: 'inherit',
+        env: {
+          ...process.env,
+          // Ensure DATABASE_URL from environment takes precedence over .env file
+          DATABASE_URL: process.env.DATABASE_URL,
+        },
       })
       await prismaPushProc.exited
-    }
-    
-    // 5. Build the project
-    console.log('[project-runtime] Building project...')
-    const buildProc = Bun.spawn(['bun', '--bun', 'vite', 'build'], {
-      cwd: PROJECT_DIR,
-      stdout: 'inherit',
-      stderr: 'inherit',
-    })
-    await buildProc.exited
-    
-    if (buildProc.exitCode !== 0) {
-      console.error('[project-runtime] Build failed')
-      return c.json({ success: false, error: 'Build failed' }, 500)
-    }
-    
-    // 6. Start Nitro server for TanStack Start
-    if (isTanStackStart) {
-      const serverPath = join(PROJECT_DIR, '.output', 'server', 'index.mjs')
-      if (!existsSync(serverPath)) {
-        return c.json({ success: false, error: 'Nitro build output not found at .output/server/index.mjs' }, 500)
+      markStep('prismaDbPush')
+      
+      if (prismaPushProc.exitCode !== 0) {
+        console.error('[project-runtime] ❌ prisma db push failed with exit code:', prismaPushProc.exitCode)
+        // Track failure for circuit breaker (shared with auto-start)
+        devModeFailureCount++
+        devModeLastFailure = Date.now()
+        devModeError = `prisma db push failed with exit code ${prismaPushProc.exitCode}`
+        const totalMs = Math.round(performance.now() - startTime)
+        return c.json({ 
+          success: false, 
+          error: `prisma db push failed with exit code ${prismaPushProc.exitCode}`,
+          hint: 'Check database connection and schema compatibility. DATABASE_URL: ' + 
+                (process.env.DATABASE_URL ? '[set]' : '[not set]'),
+          timings: { steps: timings, totalMs } 
+        }, 500)
       }
       
-      console.log(`[project-runtime] Starting Nitro server on port ${NITRO_SERVER_PORT}...`)
-      nitroProcess = Bun.spawn(['bun', 'run', serverPath], {
+      console.log('[project-runtime] ✅ Database schema pushed successfully')
+    }
+    
+    // 5. Build the project (skip if build artifacts are up-to-date)
+    // Conditions to skip build:
+    //   - Build artifacts exist (dist/ or .output/)
+    //   - force=false (force=true always rebuilds)
+    //   - No source files are newer than the build artifacts
+    const url = new URL(c.req.url)
+    const forceRebuild = url.searchParams.get('force') === 'true'
+    
+    const viteDistPath = join(PROJECT_DIR, 'dist', 'index.html')
+    // [EXPO DISABLED] const expoDistPath = join(PROJECT_DIR, 'dist', 'index.html')
+    // [EXPO DISABLED] const expoServerPath = join(PROJECT_DIR, 'server.ts')
+    const viteDistExists = existsSync(viteDistPath)
+    // [EXPO DISABLED] const expoDistExists = existsSync(expoDistPath) && existsSync(expoServerPath) && isExpo
+    const buildExists = viteDistExists
+    
+    // Check if source files have been modified since the last build
+    let sourceFilesModified = false
+    if (buildExists && !forceRebuild) {
+      const buildPath = viteDistPath
+      const buildMtime = statSync(buildPath).mtimeMs
+      
+      // Check if any source files are newer than the build
+      const srcDir = join(PROJECT_DIR, 'src')
+      if (existsSync(srcDir)) {
+        const checkSourceFiles = (dir: string): boolean => {
+          try {
+            const entries = readdirSync(dir, { withFileTypes: true })
+            for (const entry of entries) {
+              const fullPath = join(dir, entry.name)
+              if (entry.isDirectory() && entry.name !== 'node_modules') {
+                if (checkSourceFiles(fullPath)) return true
+              } else if (entry.isFile() && /\.(tsx?|jsx?|css|scss|html|json)$/.test(entry.name)) {
+                const fileMtime = statSync(fullPath).mtimeMs
+                if (fileMtime > buildMtime) {
+                  console.log(`[project-runtime] Source file modified: ${fullPath} (${new Date(fileMtime).toISOString()} > ${new Date(buildMtime).toISOString()})`)
+                  return true
+                }
+              }
+            }
+          } catch {
+            // Ignore errors reading directories
+          }
+          return false
+        }
+        sourceFilesModified = checkSourceFiles(srcDir)
+      }
+    }
+    
+    if (buildExists && !forceRebuild && !sourceFilesModified) {
+      console.log('[project-runtime] ⚡ Build output already exists and up-to-date - skipping vite build')
+      markStep('viteBuild (skipped - up-to-date)')
+    } else {
+      if (sourceFilesModified) {
+        console.log('[project-runtime] ⏱️  Rebuilding project (source files modified)...')
+      } else if (forceRebuild && buildExists) {
+        console.log('[project-runtime] ⏱️  Rebuilding project (force=true)...')
+      } else {
+        console.log('[project-runtime] ⏱️  Building project...')
+      }
+      console.log('[project-runtime] ════════════════════════════════════════')
+      console.log(`[project-runtime] 🔨 VITE BUILD STARTING...`)
+      console.log('[project-runtime] ════════════════════════════════════════')
+      const buildStartTime = performance.now()
+
+      let buildProc: ReturnType<typeof Bun.spawn>
+      // [EXPO DISABLED] if (isExpo) {
+      //   buildProc = Bun.spawn(['bunx', 'expo', 'export', '--platform', 'web', '--output-dir', 'dist'], {
+      //     cwd: PROJECT_DIR,
+      //     stdout: 'inherit',
+      //     stderr: 'inherit',
+      //   })
+      // } else {
+      buildProc = Bun.spawn(['bun', '--bun', 'vite', 'build'], {
         cwd: PROJECT_DIR,
-        env: { ...process.env, PORT: String(NITRO_SERVER_PORT) },
         stdout: 'inherit',
         stderr: 'inherit',
       })
+      // }
+      await buildProc.exited
+      const buildDuration = Math.round(performance.now() - buildStartTime)
+      console.log('[project-runtime] ════════════════════════════════════════')
+      console.log(`[project-runtime] ✅ VITE BUILD COMPLETED: ${buildDuration}ms (${(buildDuration / 1000).toFixed(2)}s)`)
+      console.log('[project-runtime] ════════════════════════════════════════')
+      markStep('viteBuild')
       
-      // Wait for server to start
-      await new Promise(resolve => setTimeout(resolve, 3000))
-      
-      // Check if running
-      try {
-        const healthCheck = await fetch(`http://localhost:${NITRO_SERVER_PORT}/`)
-        console.log(`[project-runtime] Nitro server health check: ${healthCheck.status}`)
-      } catch (e) {
-        console.warn('[project-runtime] Nitro server may still be starting...')
+      if (buildProc.exitCode !== 0) {
+        console.error('[project-runtime] Build failed')
+        const totalMs = Math.round(performance.now() - startTime)
+        return c.json({ success: false, error: 'Build failed', timings: { steps: timings, totalMs } }, 500)
       }
     }
     
-    console.log('[project-runtime] Preview restart completed')
+    // After initial build completes, start watch mode for future automatic rebuilds
+    // [EXPO DISABLED] Expo uses Metro bundler, so watch mode doesn't apply
+    // if (!isExpo) {
+    console.log('[project-runtime] 🔄 Starting Vite watch mode for automatic rebuilds...')
+    await startViteBuildWatch()
+    markStep('startViteBuildWatch')
+    // }
+    
+    // 6. Start Hono/API server if server.ts or server.tsx exists
+    // For Expo: required (serves both API routes and static files)
+    // For plain Vite: optional (serves API routes like /api/* if the project has a backend)
+    const serverTsPath = join(PROJECT_DIR, 'server.ts')
+    const serverTsxPath = join(PROJECT_DIR, 'server.tsx')
+    const serverPath = existsSync(serverTsxPath) ? serverTsxPath : serverTsPath
+    const hasServerFile = existsSync(serverPath)
+    
+    // [EXPO DISABLED] if (isExpo) {
+    //   if (!hasServerFile) {
+    //     const totalMs = Math.round(performance.now() - startTime)
+    //     return c.json({ success: false, error: 'Expo server.ts not found', timings: { steps: timings, totalMs } }, 500)
+    //   }
+    //
+    //   console.log(`[project-runtime] ⏱️  Starting Expo Hono server on port ${EXPO_SERVER_PORT}...`)
+    //   appendToConsoleLog(`--- Expo server starting on port ${EXPO_SERVER_PORT} ---`, 'stdout')
+    //   expoServerProcess = Bun.spawn(['bun', 'run', serverPath], {
+    //     cwd: PROJECT_DIR,
+    //     env: { ...process.env, PORT: String(EXPO_SERVER_PORT) },
+    //     stdout: 'pipe',
+    //     stderr: 'pipe',
+    //   })
+    //   streamProcessOutput(expoServerProcess, 'expo')
+    //
+    //   let serverReady = false
+    //   const maxAttempts = 10
+    //   const baseDelayMs = 100
+    //
+    //   for (let attempt = 1; attempt <= maxAttempts && !serverReady; attempt++) {
+    //     try {
+    //       const healthCheck = await fetch(`http://localhost:${EXPO_SERVER_PORT}/`, {
+    //         signal: AbortSignal.timeout(500),
+    //       })
+    //       if (healthCheck.ok || healthCheck.status < 500) {
+    //         serverReady = true
+    //         console.log(`[project-runtime] ⏱️  Expo Hono server ready after ${attempt} attempt(s)`)
+    //       }
+    //     } catch (e) {
+    //       const delay = Math.min(baseDelayMs * attempt, 500)
+    //       await new Promise(resolve => setTimeout(resolve, delay))
+    //     }
+    //   }
+    //   markStep('startExpoServer')
+    //
+    //   if (!serverReady) {
+    //     console.warn('[project-runtime] Expo Hono server may still be starting after health checks...')
+    //   }
+    // } else
+    if (hasServerFile) {
+      // Plain Vite project with server.ts — start it for API route handling
+      // This allows projects with a Hono backend (e.g., /api/* routes) to work correctly.
+      // Without this, /api/* requests fall through to static file serving and return HTML.
+      console.log(`[project-runtime] ⏱️  Starting project API server on port ${SERVER_PORT}...`)
+      appendToConsoleLog(`--- Project API server starting on port ${SERVER_PORT} ---`, 'stdout')
+      
+      // Kill existing server process if any
+      if (serverProcess) {
+        serverProcess.kill()
+        serverProcess = null
+      }
+      
+      serverProcess = Bun.spawn(['bun', 'run', serverPath], {
+        cwd: PROJECT_DIR,
+        env: { ...process.env, PORT: String(SERVER_PORT) },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+      streamProcessOutput(serverProcess, 'api-server')
+
+      // Wait for server to be ready with exponential backoff
+      let serverReady = false
+      const maxAttempts = 10
+      const baseDelayMs = 100
+
+      for (let attempt = 1; attempt <= maxAttempts && !serverReady; attempt++) {
+        try {
+          const healthCheck = await fetch(`http://localhost:${SERVER_PORT}/`, {
+            signal: AbortSignal.timeout(500),
+          })
+          if (healthCheck.ok || healthCheck.status < 500) {
+            serverReady = true
+            console.log(`[project-runtime] ⏱️  Project API server ready after ${attempt} attempt(s)`)
+          }
+        } catch (e) {
+          const delay = Math.min(baseDelayMs * attempt, 500)
+          await new Promise(resolve => setTimeout(resolve, delay))
+        }
+      }
+      markStep('startProjectApiServer')
+
+      if (!serverReady) {
+        console.warn('[project-runtime] Project API server may still be starting after health checks...')
+      }
+    }
+
+    const totalMs = Math.round(performance.now() - startTime)
+    console.log('[project-runtime] ════════════════════════════════════════')
+    console.log(`[project-runtime] 🎉 PREVIEW RESTART COMPLETED: ${totalMs}ms (${(totalMs / 1000).toFixed(2)}s)`)
+    console.log('[project-runtime] ════════════════════════════════════════')
+    console.log('[project-runtime] ⏱️  Timing breakdown:')
+    for (const { step, durationMs } of timings) {
+      console.log(`[project-runtime]    • ${step}: ${durationMs}ms`)
+    }
+    console.log('[project-runtime] ════════════════════════════════════════')
+
+    // [EXPO DISABLED] const mode = isExpo ? 'expo' : (serverProcess ? 'static+api' : 'static')
+    // [EXPO DISABLED] const port = isExpo ? EXPO_SERVER_PORT : (serverProcess ? SERVER_PORT : null)
+    const mode = serverProcess ? 'static+api' : 'static'
+    const port = serverProcess ? SERVER_PORT : null
+
     return c.json({
       success: true,
-      mode: isTanStackStart ? 'nitro' : 'static',
-      port: isTanStackStart ? NITRO_SERVER_PORT : null,
+      mode,
+      port,
+      timings: { steps: timings, totalMs },
     })
   } catch (error: any) {
-    console.error('[project-runtime] Preview restart error:', error)
-    return c.json({ success: false, error: error.message }, 500)
+    const totalMs = Math.round(performance.now() - startTime)
+    console.error(`[project-runtime] ⏱️  Preview restart error after ${totalMs}ms:`, error)
+    return c.json({ success: false, error: error.message, timings: { steps: timings, totalMs } }, 500)
   }
 })
 
-console.log(`[project-runtime] Preview mode: ${isTanStackStart ? 'TanStack Start (proxy)' : 'Static files'}`)
+/**
+ * Manual rebuild endpoint - triggers a fresh vite build and restarts watch mode.
+ * Use this when:
+ * - Watch mode has crashed and auto-recovery failed
+ * - User wants to force a full rebuild
+ * - Build is in an error state and user wants to retry
+ */
+app.post('/preview/rebuild', async (c) => {
+  const startTime = performance.now()
+  
+  console.log('[project-runtime] 🔨 Manual rebuild triggered')
+  appendToBuildLog('🔨 Manual rebuild triggered by user')
+  
+  try {
+    // 1. Stop existing watch process
+    stopViteBuildWatch()
+    
+    // Reset crash counter for manual rebuilds
+    watchCrashCount = 0
+    lastWatchCrashTime = null
+    
+    // 2. Clear error state and set to building
+    buildState = 'building'
+    buildStartTime = Date.now()
+    buildError = null
+    buildErrorContext = null
+    notifyBuildStateChange()
+    
+    // 3. Run a fresh vite build
+    console.log('[project-runtime] 🔨 Running fresh vite build...')
+    appendToBuildLog('🔨 Running fresh vite build...')
+    
+    const buildProc = Bun.spawnSync(['bun', '--bun', 'vite', 'build'], {
+      cwd: PROJECT_DIR,
+      env: process.env,
+    })
+    
+    const stdout = buildProc.stdout?.toString() || ''
+    const stderr = buildProc.stderr?.toString() || ''
+    
+    // Log output
+    if (stdout.trim()) {
+      appendToBuildLog(stdout)
+      console.log(`[vite] ${stdout}`)
+    }
+    if (stderr.trim()) {
+      appendToBuildLog(`[error] ${stderr}`)
+      console.error(`[vite:error] ${stderr}`)
+    }
+    
+    const durationMs = Math.round(performance.now() - startTime)
+    
+    if (buildProc.exitCode !== 0) {
+      buildState = 'error'
+      buildError = stderr || 'Build failed with exit code ' + buildProc.exitCode
+      buildErrorContext = analyzeBuildError(buildError)
+      buildDuration = durationMs
+      appendToBuildLog(`❌ Build failed (${durationMs}ms)`)
+      notifyBuildStateChange()
+      
+      return c.json({
+        success: false,
+        error: buildError,
+        buildLog: buildLogLines.slice(-50).join('\n'),
+        durationMs,
+      }, 500)
+    }
+    
+    // 4. Build succeeded - update state
+    buildState = 'success'
+    buildDuration = durationMs
+    lastBuildTime = Date.now()
+    recordBuildTime(durationMs)
+    appendToBuildLog(`✅ Build complete (${durationMs}ms)`)
+    console.log(`[project-runtime] ✅ Manual rebuild complete (${durationMs}ms)`)
+    notifyBuildStateChange()
+    
+    // 4a. Update BUILD_STATUS_FILE so readiness probe reflects the successful build
+    // (getBuildStatus reads from this file, not the in-memory buildState)
+    if (FAST_START_MODE) {
+      try {
+        writeFileSync(BUILD_STATUS_FILE, 'ready')
+        console.log(`[project-runtime] ✅ Build status file updated to 'ready'`)
+      } catch (e) {
+        console.warn(`[project-runtime] ⚠️ Failed to update build status file:`, e)
+      }
+    }
+    
+    // 4b. Restart the backend server process if server.tsx exists
+    // This is critical: when the AI modifies server.tsx or generates new API routes,
+    // the old serverProcess is stale and must be restarted to pick up changes.
+    const serverTsxPath = join(PROJECT_DIR, 'server.tsx')
+    const serverTsPath = join(PROJECT_DIR, 'server.ts')
+    const rebuildServerPath = existsSync(serverTsxPath) ? serverTsxPath : (existsSync(serverTsPath) ? serverTsPath : null)
+    
+    if (rebuildServerPath && !isExpo) {
+      console.log(`[project-runtime] 🔄 Restarting backend API server (${rebuildServerPath})...`)
+      appendToBuildLog('🔄 Restarting backend API server...')
+      
+      if (serverProcess) {
+        serverProcess.kill()
+        serverProcess = null
+      }
+      
+      serverProcess = Bun.spawn(['bun', 'run', rebuildServerPath], {
+        cwd: PROJECT_DIR,
+        env: { ...process.env, PORT: String(SERVER_PORT) },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+      streamProcessOutput(serverProcess, 'api-server')
+      
+      // Wait for server to be ready
+      let serverReady = false
+      for (let attempt = 1; attempt <= 10 && !serverReady; attempt++) {
+        try {
+          const healthCheck = await fetch(`http://localhost:${SERVER_PORT}/health`, {
+            signal: AbortSignal.timeout(500),
+          })
+          if (healthCheck.ok || healthCheck.status < 500) {
+            serverReady = true
+            console.log(`[project-runtime] ✅ Backend API server ready after ${attempt} attempt(s)`)
+            appendToBuildLog(`✅ Backend API server ready`)
+          }
+        } catch (e) {
+          await new Promise(resolve => setTimeout(resolve, Math.min(100 * attempt, 500)))
+        }
+      }
+      
+      if (!serverReady) {
+        console.warn('[project-runtime] ⚠️ Backend API server may still be starting...')
+        appendToBuildLog('⚠️ Backend API server may still be starting...')
+      }
+    }
+    
+    // 5. Restart watch mode for future changes
+    console.log('[project-runtime] 🔄 Restarting watch mode...')
+    await startViteBuildWatch()
+    
+    // 6. Trigger S3 sync to persist the build output
+    if (s3Sync) {
+      console.log('[project-runtime] 📦 Triggering S3 sync after rebuild')
+      s3Sync.triggerSync()
+    }
+    
+    // Return to idle after short delay
+    setTimeout(() => {
+      if (buildState === 'success') {
+        buildState = 'idle'
+        notifyBuildStateChange()
+      }
+    }, 1000)
+    
+    return c.json({
+      success: true,
+      buildLog: buildLogLines.slice(-50).join('\n'),
+      durationMs,
+    })
+  } catch (error: any) {
+    const durationMs = Math.round(performance.now() - startTime)
+    console.error('[project-runtime] ❌ Manual rebuild error:', error)
+    
+    buildState = 'error'
+    buildError = error.message || 'Rebuild failed'
+    appendToBuildLog(`❌ Rebuild error: ${buildError}`)
+    notifyBuildStateChange()
+    
+    return c.json({
+      success: false,
+      error: error.message,
+      buildLog: buildLogLines.slice(-50).join('\n'),
+      durationMs,
+    }, 500)
+  }
+})
+
+/**
+ * Get the current build log (last N lines)
+ */
+app.get('/build-log', (c) => {
+  const lines = parseInt(c.req.query('lines') || '100', 10)
+  return c.json({
+    log: buildLogLines.slice(-lines).join('\n'),
+    totalLines: buildLogLines.length,
+    state: buildState,
+    error: buildError,
+    errorContext: buildErrorContext,
+  })
+})
+
+/**
+ * Get the current server console log (last N lines)
+ * Captures stdout/stderr from the running application server.
+ */
+app.get('/console-log', (c) => {
+  const lines = parseInt(c.req.query('lines') || '100', 10)
+  return c.json({
+    log: consoleLogLines.slice(-lines).join('\n'),
+    totalLines: consoleLogLines.length,
+  })
+})
+
+/**
+ * Append log lines to the console log (used by RuntimeManager in local dev).
+ * In local dev, the Vite dev server is managed by RuntimeManager, not by
+ * project-runtime. RuntimeManager forwards Vite output here so the Server tab can display it.
+ */
+app.post('/console-log/append', async (c) => {
+  try {
+    const body = await c.req.json()
+    const { line, stream = 'stdout' } = body as { line: string; stream?: 'stdout' | 'stderr' }
+    if (line) {
+      appendToConsoleLog(line, stream)
+    }
+    return c.json({ ok: true })
+  } catch {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+})
+
+/**
+ * Server-Sent Events endpoint for real-time server console log streaming.
+ * Clients subscribe to receive new log lines as they arrive from the server process.
+ */
+app.get('/console-events', (c) => {
+  c.header('Content-Type', 'text/event-stream')
+  c.header('Cache-Control', 'no-cache')
+  c.header('Connection', 'keep-alive')
+  
+  let clientController: ReadableStreamDefaultController | null = null
+  
+  const stream = new ReadableStream({
+    start(controller) {
+      clientController = controller
+      consoleEventClients.add(controller)
+      
+      // Send current log as initial payload so client has context
+      const initialPayload = JSON.stringify({
+        type: 'init',
+        log: consoleLogLines.slice(-200).join('\n'),
+        totalLines: consoleLogLines.length,
+      })
+      const encoder = new TextEncoder()
+      try {
+        controller.enqueue(encoder.encode(`data: ${initialPayload}\n\n`))
+      } catch {
+        consoleEventClients.delete(controller)
+      }
+      
+      console.log(`[project-runtime] Console events client connected (total: ${consoleEventClients.size})`)
+    },
+    cancel() {
+      if (clientController) {
+        consoleEventClients.delete(clientController)
+        clientController = null
+        console.log(`[project-runtime] Console events client disconnected (remaining: ${consoleEventClients.size})`)
+      }
+    },
+  })
+  
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    },
+  })
+})
+
+/**
+ * Start Vite Dev Server with HMR
+ * 
+ * This provides instant updates via Hot Module Replacement instead of rebuilding.
+ * Much faster for iterative development:
+ * - First start: ~1-2s
+ * - Subsequent updates: instant (HMR)
+ * 
+ * Steps:
+ * 1. Kill any existing build/vite processes
+ * 2. Check project type
+ * 3. Install dependencies if needed
+ * 4. Run prisma generate/push if needed
+ * 5. Start vite dev server
+ */
+app.post('/preview/dev', async (c) => {
+  const startTime = performance.now()
+  const timings: { step: string; durationMs: number }[] = []
+  let lastMark = startTime
+  
+  const markStep = (name: string) => {
+    const now = performance.now()
+    const duration = Math.round(now - lastMark)
+    timings.push({ step: name, durationMs: duration })
+    console.log(`[project-runtime] ⏱️  ${name}: ${duration}ms`)
+    lastMark = now
+  }
+  
+  console.log(`[project-runtime] ⏱️  Starting dev mode for project ${PROJECT_ID}...`)
+  devModeStarting = true
+  
+  try {
+    // 1. Kill existing processes
+    if (serverProcess) {
+      console.log('[project-runtime] Stopping existing backend server...')
+      serverProcess.kill()
+      serverProcess = null
+    }
+    // [EXPO DISABLED] if (expoServerProcess) {
+    //   console.log('[project-runtime] Stopping existing Expo server...')
+    //   expoServerProcess.kill()
+    //   expoServerProcess = null
+    // }
+    if (viteDevProcess) {
+      // Note: Killing vite will cause exit code 143 (SIGTERM) - this is expected
+      console.log('[project-runtime] Stopping existing Vite dev server (exit code 143 is expected)...')
+      viteDevProcess.kill()
+      viteDevProcess = null
+    }
+    // [EXPO DISABLED] if (expoDevProcess) {
+    //   console.log('[project-runtime] Stopping existing Expo dev server...')
+    //   expoDevProcess.kill()
+    //   expoDevProcess = null
+    // }
+    markStep('killExistingServers')
+    
+    // 2. Check project type
+    const packageJsonPath = join(PROJECT_DIR, 'package.json')
+    if (!existsSync(packageJsonPath)) {
+      devModeStarting = false  // Reset flag on failure
+      const totalMs = Math.round(performance.now() - startTime)
+      return c.json({ success: false, error: 'No package.json found', timings: { steps: timings, totalMs } }, 400)
+    }
+    
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'))
+    const deps = { ...packageJson.dependencies, ...packageJson.devDependencies }
+    // Use local variables first, only update globals after successful start
+    // [EXPO DISABLED] const detectedExpo = !!deps['expo']
+    const detectedExpo = false
+    const hasPrisma = !!deps['@prisma/client'] || !!deps['prisma']
+    markStep('parsePackageJson')
+
+    const projectType = 'Vite + Hono'
+    console.log(`[project-runtime] Project type: ${projectType}`)
+    
+    // 3. Install dependencies (skip if node_modules was copied from pre-installed template)
+    const nodeModulesPath = join(PROJECT_DIR, 'node_modules')
+    const nodeModulesExists = existsSync(nodeModulesPath)
+    const hasReact = existsSync(join(nodeModulesPath, 'react'))
+    const hasVite = existsSync(join(nodeModulesPath, 'vite'))
+    const hasLockfile = existsSync(join(PROJECT_DIR, 'bun.lock'))
+    const nodeModulesComplete = nodeModulesExists && hasReact && hasVite && hasLockfile
+
+    // Check if package.json has overrides - if so, we MUST run bun install to apply them
+    // This is critical for templates using rolldown-vite via "overrides": { "vite": "npm:rolldown-vite@latest" }
+    const hasOverrides = !!(packageJson.overrides || packageJson.resolutions)
+    if (hasOverrides) {
+      console.log('[project-runtime] Package has overrides/resolutions - will run bun install to apply them')
+    }
+
+    // Skip check disabled for now: always run bun install
+    if (false && nodeModulesComplete && !hasOverrides) {
+      console.log('[project-runtime] ⚡ node_modules already exists - skipping bun install')
+      markStep('bunInstall (skipped)')
+    } else {
+      console.log('[project-runtime] ⏱️  Installing dependencies...')
+      const installProc = Bun.spawn(['bun', 'install'], {
+        cwd: PROJECT_DIR,
+        stdout: 'inherit',
+        stderr: 'inherit',
+      })
+      await installProc.exited
+      markStep('bunInstall')
+      
+      if (installProc.exitCode !== 0) {
+        devModeStarting = false  // Reset flag on failure
+        const totalMs = Math.round(performance.now() - startTime)
+        return c.json({ success: false, error: 'Dependency installation failed', timings: { steps: timings, totalMs } }, 500)
+      }
+    }
+    
+    // 4. Run prisma generate and db push if prisma is present
+    if (hasPrisma) {
+      const postgresReady = await waitForPostgresReady(30000)
+      markStep('waitForPostgres')
+      
+      if (!postgresReady) {
+        devModeStarting = false  // Reset flag on failure
+        const totalMs = Math.round(performance.now() - startTime)
+        return c.json({ 
+          success: false, 
+          error: 'PostgreSQL database not ready',
+          timings: { steps: timings, totalMs } 
+        }, 503)
+      }
+      
+      const prismaClientExists = existsSync(join(PROJECT_DIR, 'node_modules', '.prisma', 'client', 'index.js'))
+      
+      if (prismaClientExists) {
+        console.log('[project-runtime] ⚡ Prisma client already exists - skipping prisma generate')
+        markStep('prismaGenerate (skipped)')
+      } else {
+        console.log('[project-runtime] ⏱️  Running prisma generate...')
+        const prismaGenProc = Bun.spawn(['bun', '--bun', 'x', 'prisma', 'generate'], {
+          cwd: PROJECT_DIR,
+          stdout: 'inherit',
+          stderr: 'inherit',
+        })
+        await prismaGenProc.exited
+        markStep('prismaGenerate')
+        
+        if (prismaGenProc.exitCode !== 0) {
+          devModeStarting = false  // Reset flag on failure
+          const totalMs = Math.round(performance.now() - startTime)
+          return c.json({ 
+            success: false, 
+            error: `prisma generate failed`,
+            timings: { steps: timings, totalMs } 
+          }, 500)
+        }
+      }
+      
+      console.log('[project-runtime] ⏱️  Running prisma db push...')
+      const prismaPushProc = Bun.spawn(['bun', '--bun', 'x', 'prisma', 'db', 'push', '--accept-data-loss'], {
+        cwd: PROJECT_DIR,
+        stdout: 'inherit',
+        stderr: 'inherit',
+        env: { ...process.env, DATABASE_URL: process.env.DATABASE_URL },
+      })
+      await prismaPushProc.exited
+      markStep('prismaDbPush')
+      
+      if (prismaPushProc.exitCode !== 0) {
+        devModeStarting = false  // Reset flag on failure
+        const totalMs = Math.round(performance.now() - startTime)
+        return c.json({ 
+          success: false, 
+          error: `prisma db push failed`,
+          timings: { steps: timings, totalMs } 
+        }, 500)
+      }
+    }
+    
+    // 5. Start dev server (Expo Metro or Vite) with HMR
+    const isKubernetes = !!process.env.KUBERNETES_SERVICE_HOST
+    let serverPort: number
+    let serverReady = false
+    const maxAttempts = 20
+    const baseDelayMs = 200
+
+    // [EXPO DISABLED] if (detectedExpo) {
+    //   console.log('[project-runtime] ════════════════════════════════════════')
+    //   console.log(`[project-runtime] 🚀 STARTING EXPO SERVER ON PORT ${EXPO_SERVER_PORT}...`)
+    //   console.log('[project-runtime] ════════════════════════════════════════')
+    //
+    //   const serverPath = join(PROJECT_DIR, 'server.ts')
+    //   if (!existsSync(serverPath)) {
+    //     devModeStarting = false
+    //     const totalMs = Math.round(performance.now() - startTime)
+    //     return c.json({ success: false, error: 'Expo server.ts not found', timings: { steps: timings, totalMs } }, 500)
+    //   }
+    //
+    //   console.log('[project-runtime] Building Expo web app...')
+    //   const buildProc = Bun.spawn(['bunx', 'expo', 'export', '--platform', 'web', '--output-dir', 'dist'], {
+    //     cwd: PROJECT_DIR,
+    //     stdout: 'inherit',
+    //     stderr: 'inherit',
+    //   })
+    //   await buildProc.exited
+    //
+    //   if (buildProc.exitCode !== 0) {
+    //     devModeStarting = false
+    //     const totalMs = Math.round(performance.now() - startTime)
+    //     return c.json({ success: false, error: 'Expo build failed', timings: { steps: timings, totalMs } }, 500)
+    //   }
+    //   markStep('expoBuild')
+    //
+    //   appendToConsoleLog(`--- Expo server starting on port ${EXPO_SERVER_PORT} ---`, 'stdout')
+    //   expoServerProcess = Bun.spawn(['bun', 'run', serverPath], {
+    //     cwd: PROJECT_DIR,
+    //     env: { ...process.env, PORT: String(EXPO_SERVER_PORT) },
+    //     stdout: 'pipe',
+    //     stderr: 'pipe',
+    //   })
+    //   streamProcessOutput(expoServerProcess, 'expo')
+    //   serverPort = EXPO_SERVER_PORT
+    //
+    //   for (let attempt = 1; attempt <= maxAttempts && !serverReady; attempt++) {
+    //     try {
+    //       const healthCheck = await fetch(`http://localhost:${EXPO_SERVER_PORT}/`, {
+    //         signal: AbortSignal.timeout(500),
+    //       })
+    //       if (healthCheck.ok || healthCheck.status < 500) {
+    //         serverReady = true
+    //         console.log(`[project-runtime] ✅ Expo Hono server ready after ${attempt} attempt(s)`)
+    //       }
+    //     } catch (e) {
+    //       const delay = Math.min(baseDelayMs * attempt, 500)
+    //       await new Promise(resolve => setTimeout(resolve, delay))
+    //     }
+    //   }
+    //   markStep('startExpoServer')
+    // } else {
+    {
+      console.log('[project-runtime] ════════════════════════════════════════')
+      console.log(`[project-runtime] 🚀 STARTING VITE DEV SERVER ON PORT ${VITE_DEV_PORT}...`)
+      console.log('[project-runtime] ════════════════════════════════════════')
+
+      // Start vite dev server - served directly on subdomain for proper HMR
+      // In Kubernetes (staging/prod), set SHOGO_RUNTIME to use wss:// on port 443 for HMR
+      // Locally, let Vite auto-detect the WebSocket settings
+      appendToConsoleLog(`--- Vite dev server starting on port ${VITE_DEV_PORT} ---`, 'stdout')
+      viteDevProcess = Bun.spawn(['bun', '--bun', 'vite', 'dev', '--port', String(VITE_DEV_PORT), '--host', '0.0.0.0'], {
+        cwd: PROJECT_DIR,
+        stdout: 'pipe',
+        stderr: 'pipe',
+        env: {
+          ...process.env,
+          PORT: String(VITE_DEV_PORT),
+          ...(isKubernetes && { SHOGO_RUNTIME: 'true' }),  // Signal to vite config to use production HMR settings
+        },
+      })
+      streamProcessOutput(viteDevProcess, 'vite')
+      serverPort = VITE_DEV_PORT
+
+      // Wait for Vite dev server to be ready
+      for (let attempt = 1; attempt <= maxAttempts && !serverReady; attempt++) {
+        try {
+          const healthCheck = await fetch(`http://localhost:${VITE_DEV_PORT}/`, {
+            signal: AbortSignal.timeout(500),
+          })
+          if (healthCheck.ok || healthCheck.status < 500) {
+            serverReady = true
+            console.log(`[project-runtime] ✅ Vite dev server ready after ${attempt} attempt(s)`)
+          }
+        } catch (e) {
+          const delay = Math.min(baseDelayMs * attempt, 500)
+          await new Promise(resolve => setTimeout(resolve, delay))
+        }
+      }
+      markStep('startViteDevServer')
+    }
+
+    if (!serverReady) {
+      console.warn(`[project-runtime] ⚠️  Vite dev server may still be starting...`)
+    }
+
+    // Only update globals after successful start
+    // This prevents state inconsistency when dev mode fails to start
+    // [EXPO DISABLED] isExpo = detectedExpo
+    isDevMode = true
+    devModeStarting = false
+
+    const totalMs = Math.round(performance.now() - startTime)
+    console.log('[project-runtime] ════════════════════════════════════════')
+    console.log(`[project-runtime] 🎉 DEV MODE STARTED: ${totalMs}ms (${(totalMs / 1000).toFixed(2)}s)`)
+    console.log('[project-runtime] ════════════════════════════════════════')
+    console.log('[project-runtime] ⏱️  Timing breakdown:')
+    for (const { step, durationMs } of timings) {
+      console.log(`[project-runtime]    • ${step}: ${durationMs}ms`)
+    }
+    console.log('[project-runtime] ════════════════════════════════════════')
+    if (!detectedExpo) {
+      console.log('[project-runtime] 🔥 HMR is now active - changes will update instantly!')
+    }
+
+    return c.json({
+      success: true,
+      mode: detectedExpo ? 'expo' : 'dev',
+      port: serverPort,
+      hmr: !detectedExpo,
+      timings: { steps: timings, totalMs },
+    })
+  } catch (error: any) {
+    devModeStarting = false
+    const totalMs = Math.round(performance.now() - startTime)
+    console.error(`[project-runtime] ⏱️  Dev mode error after ${totalMs}ms:`, error)
+    return c.json({ success: false, error: error.message, timings: { steps: timings, totalMs } }, 500)
+  }
+})
+
+/**
+ * Stop dev mode and switch back to production build mode
+ * Note: When the vite process is killed, it may log "exited with code 143" (SIGTERM).
+ * This is expected behavior during restart/stop and not an error.
+ */
+app.post('/preview/dev/stop', async (c) => {
+  if (viteDevProcess) {
+    console.log('[project-runtime] Stopping Vite dev server (SIGTERM exit is expected)...')
+    viteDevProcess.kill()
+    viteDevProcess = null
+    isDevMode = false
+    return c.json({ success: true, message: 'Dev mode stopped' })
+  }
+  // [EXPO DISABLED] if (expoDevProcess) {
+  //   console.log('[project-runtime] Stopping Expo dev server...')
+  //   expoDevProcess.kill()
+  //   expoDevProcess = null
+  //   isDevMode = false
+  //   return c.json({ success: true, message: 'Expo dev mode stopped' })
+  // }
+  // [EXPO DISABLED] if (expoServerProcess) {
+  //   console.log('[project-runtime] Stopping Expo Hono server...')
+  //   expoServerProcess.kill()
+  //   expoServerProcess = null
+  //   isDevMode = false
+  //   return c.json({ success: true, message: 'Expo server stopped' })
+  // }
+  return c.json({ success: true, message: 'Dev mode was not running' })
+})
+
+/**
+ * Endpoint to receive browser console logs from injected client script.
+ * Stores logs in .browser.log for agent access.
+ */
+app.post('/__console', async (c) => {
+  try {
+    const body = await c.req.json()
+    const { level, message } = body
+    if (level && message) {
+      appendToBrowserLog(level, message)
+    }
+    return c.json({ ok: true })
+  } catch (e) {
+    return c.json({ ok: false }, 400)
+  }
+})
+
+// [EXPO DISABLED] const previewMode = isExpo ? 'Expo (Hono server)' : 'Static files'
+const previewMode = 'Static files'
+console.log(`[project-runtime] Preview mode: ${previewMode}`)
 
 /**
  * MIME type mapping for static files (used for plain Vite projects)
@@ -860,16 +3947,36 @@ function rewritePreviewHtml(html: string, basePath: string = '/preview/'): strin
   // Rewrite absolute paths in link tags (modulepreload, stylesheet, etc.)
   // This is critical because <link rel="modulepreload" href="/assets/..."> is fetched
   // by the browser before any JavaScript runs, so the script patch doesn't help
-  html = html.replace(/<link([^>]*)\s+href="\/assets\/([^"]+)"([^>]*)>/gi, 
+  html = html.replace(/<link([^>]*)\s+href="\/assets\/([^"]+)"([^>]*)>/gi,
     `<link$1 href="${basePath}assets/$2"$3>`)
-  html = html.replace(/<link([^>]*)\s+href="\/src\/([^"]+)"([^>]*)>/gi, 
+  html = html.replace(/<link([^>]*)\s+href="\/src\/([^"]+)"([^>]*)>/gi,
     `<link$1 href="${basePath}src/$2"$3>`)
-  
+
+  // Rewrite Vite dev server paths (/@vite, /@react-refresh, /@id, /node_modules)
+  html = html.replace(/<link([^>]*)\s+href="\/@([^"]+)"([^>]*)>/gi,
+    `<link$1 href="${basePath}@$2"$3>`)
+
+  // [EXPO DISABLED] Rewrite Expo paths (/_expo/static/js/...)
+  // html = html.replace(/<link([^>]*)\s+href="\/_expo\/([^"]+)"([^>]*)>/gi,
+  //   `<link$1 href="${basePath}_expo/$2"$3>`)
+
   // Rewrite absolute paths in script tags
-  html = html.replace(/<script([^>]*)\s+src="\/assets\/([^"]+)"([^>]*)>/gi, 
+  html = html.replace(/<script([^>]*)\s+src="\/assets\/([^"]+)"([^>]*)>/gi,
     `<script$1 src="${basePath}assets/$2"$3>`)
-  html = html.replace(/<script([^>]*)\s+src="\/src\/([^"]+)"([^>]*)>/gi, 
+  html = html.replace(/<script([^>]*)\s+src="\/src\/([^"]+)"([^>]*)>/gi,
     `<script$1 src="${basePath}src/$2"$3>`)
+
+  // Rewrite Vite dev server script paths
+  html = html.replace(/<script([^>]*)\s+src="\/@([^"]+)"([^>]*)>/gi,
+    `<script$1 src="${basePath}@$2"$3>`)
+
+  // [EXPO DISABLED] Rewrite Expo script paths (/_expo/static/js/...)
+  // html = html.replace(/<script([^>]*)\s+src="\/_expo\/([^"]+)"([^>]*)>/gi,
+  //   `<script$1 src="${basePath}_expo/$2"$3>`)
+  
+  // Rewrite inline script imports for Vite dev paths
+  html = html.replace(/from\s+["']\/@([^"']+)["']/gi, `from "${basePath}@$1"`)
+  html = html.replace(/import\s*\(\s*["']\/@([^"']+)["']\s*\)/gi, `import("${basePath}@$1")`)
   
   // Check if already has a base tag
   if (html.includes('<base')) {
@@ -887,12 +3994,19 @@ function rewritePreviewHtml(html: string, basePath: string = '/preview/'): strin
 (function() {
   var proxyBase = ${JSON.stringify(basePath)};
   
+  // Helper to check if URL needs rewriting
+  function needsRewrite(url) {
+    return url.startsWith('/assets/') || url.startsWith('/src/') ||
+           url.startsWith('/@') || url.startsWith('/node_modules/');
+           // [EXPO DISABLED] || url.startsWith('/_expo/');
+  }
+  
   // Store original fetch
   var originalFetch = window.fetch;
   window.fetch = function(url, options) {
     if (typeof url === 'string') {
-      // Rewrite absolute /assets/ paths to use proxy base
-      if (url.startsWith('/assets/') || url.startsWith('/src/')) {
+      // Rewrite absolute paths to use proxy base
+      if (needsRewrite(url)) {
         url = proxyBase + url.substring(1);
       }
       // Fix any http:// to https:// if current page is https
@@ -908,7 +4022,7 @@ function rewritePreviewHtml(html: string, basePath: string = '/preview/'): strin
   XMLHttpRequest.prototype.open = function(method, url) {
     var args = Array.prototype.slice.call(arguments, 2);
     if (typeof url === 'string') {
-      if (url.startsWith('/assets/') || url.startsWith('/src/')) {
+      if (needsRewrite(url)) {
         url = proxyBase + url.substring(1);
       }
       if (window.location.protocol === 'https:' && url.startsWith('http://')) {
@@ -929,15 +4043,19 @@ function rewritePreviewHtml(html: string, basePath: string = '/preview/'): strin
     html = html.replace('<head>', `<head>${patchScript}`)
   }
   
+  // Inject browser console capture script (before </head> to ensure it runs early)
+  if (html.includes('</head>')) {
+    html = html.replace('</head>', `${BROWSER_CONSOLE_CAPTURE_SCRIPT}</head>`)
+  } else if (html.includes('</body>')) {
+    // Fallback: inject before </body> if no </head>
+    html = html.replace('</body>', `${BROWSER_CONSOLE_CAPTURE_SCRIPT}</body>`)
+  }
+  
   return html
 }
 
 /**
- * Preview handler - proxies to TanStack Start server or serves static files.
- * 
- * For TanStack Start projects:
- * - Proxies all requests to the running TanStack Start server on port 3000
- * - Full SSR, server functions, and routing handled by TanStack
+ * Preview handler - serves static files from dist/.
  * 
  * For plain Vite projects:
  * - Serves pre-built static assets from dist/
@@ -1020,86 +4138,80 @@ app.get('/preview/*', async (c) => {
     }
   }
   
-  // TanStack Start: proxy to the running server
-  if (isTanStackStart) {
-    const targetUrl = `http://localhost:${NITRO_SERVER_PORT}${relativePath}`
-    console.log(`[project-runtime] Proxying preview to TanStack: ${targetUrl}`)
-    
-    try {
-      const response = await fetch(targetUrl, {
-        method: c.req.method,
-        headers: {
-          'Host': `localhost:${NITRO_SERVER_PORT}`,
-          'Accept': c.req.header('Accept') || '*/*',
-          'Accept-Encoding': c.req.header('Accept-Encoding') || '',
-        },
-      })
-      
-      // Get response body
-      const contentType = response.headers.get('Content-Type') || 'text/html'
-      const body = await response.arrayBuffer()
-      
-      // Rewrite HTML responses to fix asset paths when accessed through proxy
-      if (contentType.includes('text/html')) {
-        const html = new TextDecoder().decode(body)
-        const rewrittenHtml = rewritePreviewHtml(html, externalBasePath)
-        return new Response(rewrittenHtml, {
-          status: response.status,
-          headers: {
-            'Content-Type': contentType,
-            'Content-Length': String(Buffer.byteLength(rewrittenHtml)),
-            'Cache-Control': 'no-cache',
-            'Access-Control-Allow-Origin': '*',
-          },
-        })
-      }
-      
-      // Rewrite JavaScript responses to fix dynamic import paths
-      // Vite generates code like import('/assets/...') which needs to be rewritten
-      if (contentType.includes('javascript') || contentType.includes('application/javascript')) {
-        let js = new TextDecoder().decode(body)
-        // Rewrite absolute paths in dynamic imports: import("/assets/...") and import('/assets/...')
-        js = js.replace(/import\(["']\/assets\//g, `import("${externalBasePath}assets/`)
-        js = js.replace(/import\(["']\/src\//g, `import("${externalBasePath}src/`)
-        // Also handle other common patterns: __vite_ssr_dynamic_import__, etc.
-        js = js.replace(/"\/assets\//g, `"${externalBasePath}assets/`)
-        js = js.replace(/'\/assets\//g, `'${externalBasePath}assets/`)
-        js = js.replace(/"\/src\//g, `"${externalBasePath}src/`)
-        js = js.replace(/'\/src\//g, `'${externalBasePath}src/`)
-        return new Response(js, {
-          status: response.status,
-          headers: {
-            'Content-Type': contentType,
-            'Content-Length': String(Buffer.byteLength(js)),
-            'Cache-Control': 'no-cache',
-            'Access-Control-Allow-Origin': '*',
-          },
-        })
-      }
-      
-      return new Response(body, {
-        status: response.status,
-        headers: {
-          'Content-Type': contentType,
-          'Cache-Control': 'no-cache',
-          'Access-Control-Allow-Origin': '*',
-        },
-      })
-    } catch (error: any) {
-      console.error('[project-runtime] TanStack proxy error:', error)
-      return c.html(`
-        <html>
-          <body style="font-family: system-ui; padding: 2rem;">
-            <h1>Preview Loading...</h1>
-            <p>The TanStack Start server is starting up. Please wait a moment and refresh.</p>
-            <p style="color: #666; font-size: 0.9em;">Error: ${error.message}</p>
-            <script>setTimeout(() => location.reload(), 3000)</script>
-          </body>
-        </html>
-      `, 503)
-    }
-  }
-  
+  // [EXPO DISABLED] Expo proxy to the Expo Hono server
+  // if (isExpo && expoServerProcess) {
+  //   const targetUrl = `http://localhost:${EXPO_SERVER_PORT}${relativePath}`
+  //   console.log(`[project-runtime] Proxying preview to Expo Hono server: ${targetUrl}`)
+  //
+  //   try {
+  //     const response = await fetch(targetUrl, {
+  //       method: c.req.method,
+  //       headers: {
+  //         'Host': `localhost:${EXPO_SERVER_PORT}`,
+  //         'Accept': c.req.header('Accept') || '*/*',
+  //         'Accept-Encoding': c.req.header('Accept-Encoding') || '',
+  //       },
+  //     })
+  //
+  //     const contentType = response.headers.get('Content-Type') || 'text/html'
+  //     const body = await response.arrayBuffer()
+  //
+  //     if (contentType.includes('text/html')) {
+  //       const html = new TextDecoder().decode(body)
+  //       const rewrittenHtml = rewritePreviewHtml(html, externalBasePath)
+  //       return new Response(rewrittenHtml, {
+  //         status: response.status,
+  //         headers: {
+  //           'Content-Type': contentType,
+  //           'Content-Length': String(Buffer.byteLength(rewrittenHtml)),
+  //           'Cache-Control': 'no-cache',
+  //           'Access-Control-Allow-Origin': '*',
+  //         },
+  //       })
+  //     }
+  //
+  //     if (contentType.includes('javascript') || contentType.includes('application/javascript')) {
+  //       let js = new TextDecoder().decode(body)
+  //       js = js.replace(/import\(["']\/assets\//g, `import("${externalBasePath}assets/`)
+  //       js = js.replace(/import\(["']\/src\//g, `import("${externalBasePath}src/`)
+  //       js = js.replace(/"\/assets\//g, `"${externalBasePath}assets/`)
+  //       js = js.replace(/'\/assets\//g, `'${externalBasePath}assets/`)
+  //       js = js.replace(/"\/src\//g, `"${externalBasePath}src/`)
+  //       js = js.replace(/'\/src\//g, `'${externalBasePath}src/`)
+  //       return new Response(js, {
+  //         status: response.status,
+  //         headers: {
+  //           'Content-Type': contentType,
+  //           'Content-Length': String(Buffer.byteLength(js)),
+  //           'Cache-Control': 'no-cache',
+  //           'Access-Control-Allow-Origin': '*',
+  //         },
+  //       })
+  //     }
+  //
+  //     return new Response(body, {
+  //       status: response.status,
+  //       headers: {
+  //         'Content-Type': contentType,
+  //         'Cache-Control': 'no-cache',
+  //         'Access-Control-Allow-Origin': '*',
+  //       },
+  //     })
+  //   } catch (error: any) {
+  //     console.error('[project-runtime] Expo proxy error:', error)
+  //     return c.html(`
+  //       <html>
+  //         <body style="font-family: system-ui; padding: 2rem;">
+  //           <h1>Preview Loading...</h1>
+  //           <p>The Expo server is starting up. Please wait a moment and refresh.</p>
+  //           <p style="color: #666; font-size: 0.9em;">Error: ${error.message}</p>
+  //           <script>setTimeout(() => location.reload(), 3000)</script>
+  //         </body>
+  //       </html>
+  //     `, 503)
+  //   }
+  // }
+
   // Plain Vite: serve static files from dist/
   let filePath = relativePath
   if (filePath.startsWith('/')) {
@@ -1108,9 +4220,9 @@ app.get('/preview/*', async (c) => {
   if (filePath === '' || filePath === '/') {
     filePath = 'index.html'
   }
-  
+
   const absolutePath = join(DIST_DIR, filePath)
-  
+
   console.log(`[project-runtime] Serving static preview: ${filePath} from ${absolutePath}`)
   
   // Helper to serve HTML with rewriting for proxy support
@@ -1228,6 +4340,842 @@ app.get('/preview', (c) => {
 })
 
 // =============================================================================
+// Subdomain Preview Routes - Direct access via preview--{projectId}--{env}.{domain}
+// =============================================================================
+// When accessed via subdomain, serve the app at root (/) instead of /preview/
+// This eliminates the need for path rewriting and makes dynamic imports work correctly.
+// Authentication is via __preview_token query parameter (JWT).
+
+/**
+ * Validate preview token middleware for subdomain access.
+ * Called when __preview_token is present in query string.
+ */
+async function validateSubdomainAccess(token: string): Promise<PreviewTokenPayload | null> {
+  if (!token) {
+    return null
+  }
+  
+  const payload = await verifyPreviewToken(token)
+  if (!payload) {
+    return null
+  }
+  
+  // Verify the token is for this project
+  if (payload.projectId !== PROJECT_ID) {
+    console.log(`[project-runtime] Token project ID mismatch: expected ${PROJECT_ID}, got ${payload.projectId}`)
+    return null
+  }
+  
+  return payload
+}
+
+/**
+ * Helper to check if request is from subdomain access (has __preview_token)
+ */
+function isSubdomainAccess(c: any): boolean {
+  return !!c.req.query('__preview_token')
+}
+
+/**
+ * Check if request is for subdomain preview or published app access.
+ * Returns true for:
+ * - Preview subdomains (preview--{projectId}.staging.shogo.ai)
+ * - Preview token in query string (__preview_token=...)
+ * - Published app domains (*.shogo.one)
+ */
+function isSubdomainPreviewRequest(c: any): boolean {
+  const token = c.req.query('__preview_token')
+  const host = c.req.header('host') || ''
+  const isPreviewSubdomain = host.startsWith('preview--')
+  const isPublishedDomain = host.endsWith('.shogo.one')
+  return !!(token || isPreviewSubdomain || isPublishedDomain)
+}
+
+/**
+ * Handle internal /files API requests.
+ * This is called from the catch-all for non-subdomain requests.
+ */
+function handleFilesRequest(c: any): Response | null {
+  const path = c.req.path
+  
+  // GET /files - list all files
+  if (path === '/files' && c.req.method === 'GET') {
+    try {
+      const files: Array<{ path: string; size: number; isDirectory: boolean }> = []
+      
+      function listRecursive(dir: string, prefix: string = '') {
+        const entries = readdirSync(dir, { withFileTypes: true })
+        for (const entry of entries) {
+          if (['node_modules', '.git', '.next', 'dist', 'build', '.cache', '.output'].includes(entry.name)) continue
+          const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name
+          const fullPath = `${dir}/${entry.name}`
+          if (entry.isDirectory()) {
+            files.push({ path: relativePath, size: 0, isDirectory: true })
+            listRecursive(fullPath, relativePath)
+          } else {
+            const stats = statSync(fullPath)
+            files.push({ path: relativePath, size: stats.size, isDirectory: false })
+          }
+        }
+      }
+      
+      listRecursive(PROJECT_DIR)
+      return c.json({ files })
+    } catch (error: any) {
+      console.error('[project-runtime] Files list error:', error)
+      return c.json({ error: { code: 'files_error', message: error.message || 'Failed to list files' } }, 500)
+    }
+  }
+  
+  // GET /files/* - get specific file content
+  if (path.startsWith('/files/') && c.req.method === 'GET') {
+    try {
+      const filePath = path.replace('/files/', '')
+      const absolutePath = isAbsolute(filePath) ? filePath : resolve(PROJECT_DIR, filePath)
+      const relativePath = relative(PROJECT_DIR, absolutePath)
+      
+      if (relativePath.startsWith('..') || isAbsolute(relativePath)) {
+        return c.json({ error: { code: 'invalid_path', message: 'Path is outside project directory' } }, 400)
+      }
+      
+      if (!existsSync(absolutePath)) {
+        return c.json({ error: { code: 'not_found', message: 'File not found' } }, 404)
+      }
+      
+      // Check if path is a directory - cannot read directories as files
+      const stats = statSync(absolutePath)
+      if (stats.isDirectory()) {
+        return c.json({ error: { code: 'is_directory', message: 'Cannot read directory as file' } }, 400)
+      }
+      
+      const content = readFileSync(absolutePath, 'utf-8')
+      return c.json({ path: filePath, content })
+    } catch (error: any) {
+      console.error('[project-runtime] File read error:', error)
+      return c.json({ error: { code: 'file_error', message: error.message || 'Failed to read file' } }, 500)
+    }
+  }
+  
+  return null // Not a files request
+}
+
+/**
+ * Subdomain preview catch-all handler.
+ * 
+ * Handles two types of requests:
+ * 1. Subdomain preview requests (with __preview_token or preview-- host)
+ * 2. Internal API requests (/files, /terminal/*, etc.) from the API server
+ * 
+ * IMPORTANT: This catch-all is defined BEFORE specific API routes (/terminal/*, /tests/*, /database/*)
+ * because Hono needs to handle subdomain preview at root level. We explicitly skip known API paths
+ * here so they can be handled by their specific route handlers defined later in this file.
+ */
+app.all('/*', async (c, next) => {
+  const path = c.req.path
+  
+  // Handle internal API requests (from API server, not subdomain)
+  // These come without __preview_token and without preview-- host
+  if (!isSubdomainPreviewRequest(c)) {
+    // Check if this is a /files request
+    const filesResponse = handleFilesRequest(c)
+    if (filesResponse) return filesResponse
+    
+    // FIXED: Skip known API paths - let them fall through to specific route handlers
+    // These routes are defined after this catch-all but need to be handled by their specific handlers
+    const apiPaths = [
+      '/terminal/',
+      '/tests/',
+      '/database/',
+      '/security/',
+      '/api/',
+      '/lsp',
+    ]
+    
+    // Also allow exact-match internal endpoints that are called directly by the API server
+    const internalEndpoints = [
+      '/download',
+      '/build-log',
+      '/build-events',
+      '/build-status',
+      '/console-log',
+      '/console-log/append',
+      '/console-events',
+      '/preview/restart',
+      '/preview/rebuild',
+      '/preview/dev',
+      '/preview/dev/stop',
+      '/preview/status',
+      '/agent/chat',
+      '/sync/download',
+      '/sync/upload',
+    ]
+    
+    if (apiPaths.some(p => path.startsWith(p)) || internalEndpoints.some(p => path === p || path.startsWith(p + '?'))) {
+      // Call next() to let Hono continue to the specific route handlers
+      return next()
+    }
+    
+    // For truly unknown paths, return 404
+    return c.notFound()
+  }
+  
+  const token = c.req.query('__preview_token')
+  
+  // Validate token if present (subdomain access requires valid token)
+  if (token) {
+    const payload = await validateSubdomainAccess(token)
+    if (!payload) {
+      return c.json({ error: { code: 'unauthorized', message: 'Invalid or expired preview token' } }, 401)
+    }
+  }
+  
+  // === Subdomain access: serve app directly at root ===
+  let relativePath = c.req.path || '/'
+  
+  // Normalize path - strip /api/projects/.../preview/ prefix if present
+  // This happens when requests are proxied through the API server
+  // Without this, Vite dev server receives wrong paths like /api/projects/.../preview/node_modules/...
+  const previewPathMatch = relativePath.match(/\/api\/projects\/[^/]+\/preview(.*)/)
+  if (previewPathMatch) {
+    relativePath = previewPathMatch[1] || '/'
+  }
+  
+  // Pass through internal runtime endpoints to their dedicated route handlers.
+  // Without this, subdomain requests to /build-events (SSE), /build-status, etc.
+  // would fall through to static file serving and return HTML instead of the SSE stream.
+  // This is critical for the preview auto-refresh mechanism (SSE build events).
+  const runtimeInternalPaths = [
+    '/build-events',
+    '/build-status',
+    '/preview/restart',
+    '/preview/rebuild',
+    '/preview/status',
+    '/console-log',
+    '/console-events',
+  ]
+  
+  if (runtimeInternalPaths.some(p => relativePath === p || relativePath.startsWith(p + '/'))) {
+    console.log(`[project-runtime] Subdomain: passing through internal endpoint ${relativePath}`)
+    return next()
+  }
+  
+  // Proxy /api/* requests to the project's backend server.
+  // For Expo: handled below via the Expo server proxy.
+  // For plain Vite: proxy to the project's Hono server started from server.ts.
+  // IMPORTANT: /api/* must NEVER fall through to static file serving (which returns HTML).
+  if (!isExpo && relativePath.startsWith('/api/')) {
+    // If the backend is not running, try to auto-start it before returning an error.
+    // This handles cold starts from S3 restore where dist/ exists but the backend hasn't started.
+    if (!serverProcess) {
+      const serverTsxPath = join(PROJECT_DIR, 'server.tsx')
+      const serverTsPath = join(PROJECT_DIR, 'server.ts')
+      const _serverTsxExists = existsSync(serverTsxPath) || existsSync(serverTsPath)
+      const _distExists = existsSync(join(PROJECT_DIR, 'dist'))
+      
+      if (_serverTsxExists && _distExists) {
+        console.log('[project-runtime] 🔄 Auto-starting backend API server for /api/ request...')
+        const serverPath = existsSync(serverTsxPath) ? serverTsxPath : serverTsPath
+        serverProcess = Bun.spawn(['bun', 'run', serverPath], {
+          cwd: PROJECT_DIR,
+          env: { ...process.env, PORT: String(SERVER_PORT) },
+          stdout: 'pipe',
+          stderr: 'pipe',
+        })
+        streamProcessOutput(serverProcess, 'api-server')
+        console.log(`[project-runtime] Backend API server started (PID: ${serverProcess.pid}, port: ${SERVER_PORT})`)
+        
+        // Monitor for crashes — reset serverProcess to null so next request can retry
+        const proc = serverProcess
+        proc.exited.then((exitCode) => {
+          if (serverProcess === proc) {
+            console.error(`[project-runtime] ⚠️ Backend API server exited with code ${exitCode}`)
+            serverProcess = null
+          }
+        })
+        
+        // Give the server a moment to start before proxying
+        await new Promise(resolve => setTimeout(resolve, 2000))
+      } else {
+        // No server.tsx or no dist/ — can't start backend
+        console.error(`[project-runtime] Subdomain: /api/ request but no backend server available (path: ${relativePath})`)
+      return c.json({
+        error: { 
+          code: 'backend_unavailable', 
+            message: 'Backend API server is not available. The project may not have a server.tsx file.' 
+        }
+      }, 503)
+    }
+    }
+    
+    // If server process crashed between the auto-start above and now, return error
+    if (!serverProcess) {
+      console.error(`[project-runtime] Subdomain: /api/ backend server crashed during startup (path: ${relativePath})`)
+      return c.json({
+        error: { 
+          code: 'backend_unavailable', 
+          message: 'Backend API server crashed during startup. Check server logs for errors.' 
+        }
+      }, 503)
+    }
+    
+    const targetUrl = `http://localhost:${SERVER_PORT}${relativePath}`
+    const method = c.req.method
+    console.log(`[project-runtime] Subdomain: proxying ${method} ${relativePath} to project API server at ${targetUrl}`)
+    
+    try {
+      // Build headers for the proxy request
+      const proxyHeaders: Record<string, string> = {
+        'Host': `localhost:${SERVER_PORT}`,
+        'Accept': c.req.header('Accept') || '*/*',
+        'Accept-Encoding': c.req.header('Accept-Encoding') || '',
+      }
+      
+      // Forward Content-Type for POST/PUT/PATCH requests
+      const contentType = c.req.header('Content-Type')
+      if (contentType) {
+        proxyHeaders['Content-Type'] = contentType
+      }
+      
+      // Forward cookies for auth
+      const cookies = c.req.header('Cookie')
+      if (cookies) {
+        proxyHeaders['Cookie'] = cookies
+      }
+      
+      // Forward Authorization header
+      const authHeader = c.req.header('Authorization')
+      if (authHeader) {
+        proxyHeaders['Authorization'] = authHeader
+      }
+      
+      // Build fetch options — read body once before any retry loop
+      const fetchOptions: RequestInit = {
+        method,
+        headers: proxyHeaders,
+      }
+      
+      // Forward request body for POST/PUT/PATCH
+      let bodyBuffer: ArrayBuffer | null = null
+      if (method !== 'GET' && method !== 'HEAD') {
+        try {
+          bodyBuffer = await c.req.arrayBuffer()
+          if (bodyBuffer.byteLength > 0) {
+            fetchOptions.body = bodyBuffer
+          }
+        } catch {
+          // No body or couldn't read body - that's ok
+        }
+      }
+      
+      // Retry logic: the backend server may have just been auto-started and not listening yet.
+      // Retry up to 5 times with 1s delay to give it time to start.
+      let response: Response | null = null
+      let lastError: Error | null = null
+      const MAX_PROXY_RETRIES = 5
+      for (let attempt = 1; attempt <= MAX_PROXY_RETRIES; attempt++) {
+        try {
+          // Re-attach body for retries (ArrayBuffer can only be consumed once)
+          const retryOptions = { ...fetchOptions }
+          if (bodyBuffer && bodyBuffer.byteLength > 0) {
+            retryOptions.body = bodyBuffer.slice(0) // clone for retry
+          }
+          response = await fetch(targetUrl, retryOptions)
+          break // Success
+        } catch (err: any) {
+          lastError = err
+          if (attempt < MAX_PROXY_RETRIES && (err.code === 'ECONNREFUSED' || err.message?.includes('ECONNREFUSED') || err.message?.includes('Failed to connect'))) {
+            console.log(`[project-runtime] API proxy attempt ${attempt}/${MAX_PROXY_RETRIES} failed (server starting?), retrying in 1s...`)
+            await new Promise(resolve => setTimeout(resolve, 1000))
+          } else {
+            throw err
+          }
+        }
+      }
+      
+      if (!response) {
+        throw lastError || new Error('API proxy failed after retries')
+      }
+      
+      const responseContentType = response.headers.get('Content-Type') || 'application/json'
+      const body = await response.arrayBuffer()
+      
+      // Build response headers
+      const responseHeaders: Record<string, string> = {
+        'Content-Type': responseContentType,
+        'Cache-Control': 'no-cache',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Credentials': 'true',
+      }
+      
+      // Forward Set-Cookie headers for auth
+      const setCookie = response.headers.get('Set-Cookie')
+      if (setCookie) {
+        responseHeaders['Set-Cookie'] = setCookie
+      }
+      
+      return new Response(body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error('[project-runtime] Subdomain API proxy error:', error)
+      return c.json({
+        error: { code: 'api_proxy_error', message: `Failed to proxy to project API server: ${error.message}` }
+      }, 502)
+    }
+  }
+  
+  // Check if dev mode has failed too many times (circuit breaker)
+  const isInBackoff = devModeFailureCount >= DEV_MODE_MAX_FAILURES && 
+    devModeLastFailure && (Date.now() - devModeLastFailure < DEV_MODE_BACKOFF_MS)
+  
+  // Show error page if dev mode has repeatedly failed
+  if (devModeError && isInBackoff) {
+    const retryInSeconds = Math.ceil((DEV_MODE_BACKOFF_MS - (Date.now() - (devModeLastFailure || 0))) / 1000)
+    return c.html(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dev Server Error</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+    }
+    .container { text-align: center; padding: 2rem; max-width: 500px; }
+    .icon { font-size: 3rem; margin-bottom: 1rem; }
+    h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+    p { opacity: 0.9; font-size: 0.95rem; margin-bottom: 1rem; }
+    .error-box { 
+      background: rgba(0,0,0,0.2); 
+      padding: 1rem; 
+      border-radius: 8px; 
+      font-family: monospace; 
+      font-size: 0.85rem; 
+      text-align: left;
+      margin-bottom: 1rem;
+      word-break: break-word;
+    }
+    .retry-info { opacity: 0.8; font-size: 0.85rem; }
+    .btn {
+      display: inline-block;
+      margin-top: 1rem;
+      padding: 0.75rem 1.5rem;
+      background: rgba(255,255,255,0.2);
+      border: none;
+      border-radius: 8px;
+      color: white;
+      font-size: 0.9rem;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    .btn:hover { background: rgba(255,255,255,0.3); }
+  </style>
+  <script>
+    let retrySeconds = ${retryInSeconds};
+    const updateTimer = () => {
+      const el = document.getElementById('timer');
+      if (el) el.textContent = retrySeconds + 's';
+      if (retrySeconds <= 0) location.reload();
+      retrySeconds--;
+    };
+    setInterval(updateTimer, 1000);
+    updateTimer();
+  </script>
+</head>
+<body>
+  <div class="container">
+    <div class="icon">⚠️</div>
+    <h1>Dev Server Failed to Start</h1>
+    <p>The development server encountered an error after multiple attempts.</p>
+    <div class="error-box">${devModeError}</div>
+    <p class="retry-info">Auto-retry in <span id="timer">${retryInSeconds}s</span></p>
+    <a href="/" class="btn" onclick="location.reload(); return false;">Retry Now</a>
+  </div>
+</body>
+</html>
+    `, 503)
+  }
+  
+  // Reset circuit breaker if backoff period has passed
+  if (!isInBackoff && devModeFailureCount >= DEV_MODE_MAX_FAILURES) {
+    console.log('[project-runtime] Circuit breaker reset - backoff period passed')
+    devModeFailureCount = 0
+    devModeError = null
+  }
+  
+  // Check if dist/ exists (build mode for plain Vite)
+  const DIST_DIR = join(PROJECT_DIR, 'dist')
+  const distExists = existsSync(DIST_DIR)
+  
+  // Auto-start build mode if nothing is running AND dist/ doesn't exist yet
+  // Use build+restart approach instead of dev mode for reliability and simplicity
+  // This avoids HMR complexity and provides consistent preview updates
+  // For plain Vite: only auto-start if dist/ doesn't exist (prevents redundant builds)
+  // [EXPO DISABLED] const needsAutoStart = !serverProcess && !expoServerProcess && !devModeStarting && !isInBackoff && !distExists
+  const needsAutoStart = !serverProcess && !devModeStarting && !isInBackoff && !distExists
+  
+  // Also check: dist/ exists but the backend server isn't running and a server.tsx exists.
+  // This happens on cold starts from S3 restore (bg-init builds dist/ but doesn't start the backend).
+  // For published domains (*.shogo.one), we need the backend server for /api/* routes.
+  const serverTsxExists = existsSync(join(PROJECT_DIR, 'server.tsx')) || existsSync(join(PROJECT_DIR, 'server.ts'))
+  // [EXPO DISABLED] const needsBackendStart = !serverProcess && !isExpo && !devModeStarting && !isInBackoff && distExists && serverTsxExists
+  const needsBackendStart = !serverProcess && !devModeStarting && !isInBackoff && distExists && serverTsxExists
+  
+  if (needsAutoStart) {
+    console.log('[project-runtime] Auto-starting build mode on first subdomain request...')
+    devModeStarting = true
+    
+    // Start build mode in background (don't await - we'll show loading page)
+    fetch(`http://localhost:${PORT}/preview/restart`, { method: 'POST' })
+      .then(async (res) => {
+        if (res.ok) {
+          console.log('[project-runtime] Build mode auto-started successfully')
+          // Reset failure tracking on success
+          devModeFailureCount = 0
+          devModeError = null
+        } else {
+          const errorText = await res.text()
+          console.error('[project-runtime] Build mode auto-start failed:', errorText)
+          devModeFailureCount++
+          devModeLastFailure = Date.now()
+          try {
+            const errorJson = JSON.parse(errorText)
+            devModeError = errorJson.error || 'Unknown error'
+          } catch {
+            devModeError = errorText.substring(0, 200)
+          }
+        }
+        devModeStarting = false
+      })
+      .catch((err) => {
+        console.error('[project-runtime] Build mode auto-start error:', err)
+        devModeFailureCount++
+        devModeLastFailure = Date.now()
+        devModeError = err.message || 'Connection error'
+        devModeStarting = false
+      })
+  } else if (needsBackendStart) {
+    // dist/ exists (from S3 restore / bg-init build) but backend server isn't running.
+    // Start ONLY the backend server (no rebuild needed) so /api/* routes work.
+    console.log('[project-runtime] 🔄 Auto-starting backend API server (dist/ exists, server not running)...')
+    const serverTsxPath = join(PROJECT_DIR, 'server.tsx')
+    const serverTsPath = join(PROJECT_DIR, 'server.ts')
+    const serverPath = existsSync(serverTsxPath) ? serverTsxPath : serverTsPath
+    
+    serverProcess = Bun.spawn(['bun', 'run', serverPath], {
+      cwd: PROJECT_DIR,
+      env: { ...process.env, PORT: String(SERVER_PORT) },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+    streamProcessOutput(serverProcess, 'api-server')
+    console.log(`[project-runtime] Backend API server started (PID: ${serverProcess.pid}, port: ${SERVER_PORT})`)
+    
+    // Monitor for crashes — reset serverProcess to null so next request can retry
+    const proc = serverProcess
+    proc.exited.then((exitCode) => {
+      if (serverProcess === proc) {
+        console.error(`[project-runtime] ⚠️ Backend API server exited with code ${exitCode}`)
+        serverProcess = null
+      }
+    })
+  }
+  
+  // Show loading page while build is starting
+  // For plain Vite: only show loading if dist/ doesn't exist yet
+  // [EXPO DISABLED] const needsProcess = existsSync(join(PROJECT_DIR, 'app.json'))
+  
+  // [EXPO DISABLED] if (devModeStarting || (!distExists && !serverProcess && !expoServerProcess && !isInBackoff)) {
+  if (devModeStarting || (!distExists && !serverProcess && !isInBackoff)) {
+    return c.html(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Building Preview...</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+    }
+    .container { text-align: center; padding: 2rem; }
+    .spinner {
+      width: 50px; height: 50px;
+      border: 3px solid rgba(255,255,255,0.3);
+      border-radius: 50%;
+      border-top-color: white;
+      animation: spin 1s ease-in-out infinite;
+      margin: 0 auto 1.5rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+    p { opacity: 0.8; font-size: 0.9rem; }
+    .status { margin-top: 1rem; padding: 0.5rem 1rem; background: rgba(255,255,255,0.2); border-radius: 20px; font-size: 0.8rem; }
+    .attempt { margin-top: 0.5rem; opacity: 0.7; font-size: 0.75rem; }
+  </style>
+  <script>
+    let attempts = 0;
+    const maxAttempts = 60; // 60 seconds max
+    setInterval(async () => {
+      attempts++;
+      try {
+        const res = await fetch('/build-status');
+        const data = await res.json();
+        document.querySelector('.status').textContent = data.message || 'Building...';
+        if (data.ready) location.reload();
+        if (data.error) location.reload(); // Reload to show error page
+      } catch {}
+      document.querySelector('.attempt').textContent = 'Attempt ' + attempts + '/' + maxAttempts;
+      if (attempts >= maxAttempts) location.reload(); // Force reload to check for error state
+    }, 1000);
+  </script>
+</head>
+<body>
+  <div class="container">
+    <div class="spinner"></div>
+    <h1>Building Your Preview</h1>
+    <p>Compiling your project... This takes 5-10 seconds.</p>
+    <div class="status">Initializing...</div>
+    <div class="attempt">Starting...</div>
+  </div>
+</body>
+</html>
+    `, 200)
+  }
+  
+  // In fast start mode, show loading page if build not ready (for production mode fallback)
+  if (FAST_START_MODE && !isDevMode) {
+    const buildStatus = getBuildStatus()
+    if (!buildStatus.ready) {
+      return c.html(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Loading Preview...</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+    }
+    .container { text-align: center; padding: 2rem; }
+    .spinner {
+      width: 50px; height: 50px;
+      border: 3px solid rgba(255,255,255,0.3);
+      border-radius: 50%;
+      border-top-color: white;
+      animation: spin 1s ease-in-out infinite;
+      margin: 0 auto 1.5rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+    p { opacity: 0.8; font-size: 0.9rem; }
+    .status { margin-top: 1rem; padding: 0.5rem 1rem; background: rgba(255,255,255,0.2); border-radius: 20px; font-size: 0.8rem; }
+  </style>
+  <script>
+    setInterval(async () => {
+      try {
+        const res = await fetch('/build-status');
+        const data = await res.json();
+        if (data.ready) location.reload();
+      } catch {}
+    }, 2000);
+  </script>
+</head>
+<body>
+  <div class="container">
+    <div class="spinner"></div>
+    <h1>Building Your App</h1>
+    <p>Installing dependencies and compiling...</p>
+    <div class="status">${buildStatus.status}</div>
+  </div>
+</body>
+</html>
+      `, 200)
+    }
+  }
+  
+  // [EXPO DISABLED] Subdomain Expo proxy
+  // if (isExpo && expoServerProcess) {
+  //   const targetUrl = `http://localhost:${EXPO_SERVER_PORT}${relativePath}`
+  //   const method = c.req.method
+  //   console.log(`[project-runtime] Subdomain: proxying ${method} to Expo Hono server at ${targetUrl}`)
+  //
+  //   try {
+  //     const proxyHeaders: Record<string, string> = {
+  //       'Host': `localhost:${EXPO_SERVER_PORT}`,
+  //       'Accept': c.req.header('Accept') || '*/*',
+  //       'Accept-Encoding': c.req.header('Accept-Encoding') || '',
+  //     }
+  //
+  //     const contentType = c.req.header('Content-Type')
+  //     if (contentType) {
+  //       proxyHeaders['Content-Type'] = contentType
+  //     }
+  //
+  //     const cookies = c.req.header('Cookie')
+  //     if (cookies) {
+  //       proxyHeaders['Cookie'] = cookies
+  //     }
+  //
+  //     const fetchOptions: RequestInit = {
+  //       method,
+  //       headers: proxyHeaders,
+  //     }
+  //
+  //     if (method !== 'GET' && method !== 'HEAD') {
+  //       try {
+  //         const bodyBuffer = await c.req.arrayBuffer()
+  //         if (bodyBuffer.byteLength > 0) {
+  //           fetchOptions.body = bodyBuffer
+  //         }
+  //       } catch {
+  //       }
+  //     }
+  //
+  //     const response = await fetch(targetUrl, fetchOptions)
+  //
+  //     const responseContentType = response.headers.get('Content-Type') || 'text/html'
+  //     const body = await response.arrayBuffer()
+  //
+  //     const responseHeaders: Record<string, string> = {
+  //       'Content-Type': responseContentType,
+  //       'Cache-Control': 'no-cache',
+  //       'Access-Control-Allow-Origin': '*',
+  //       'Access-Control-Allow-Credentials': 'true',
+  //     }
+  //
+  //     const setCookie = response.headers.get('Set-Cookie')
+  //     if (setCookie) {
+  //       responseHeaders['Set-Cookie'] = setCookie
+  //     }
+  //
+  //     return new Response(body, {
+  //       status: response.status,
+  //       headers: responseHeaders,
+  //     })
+  //   } catch (error: any) {
+  //     console.error('[project-runtime] Subdomain Expo proxy error:', error)
+  //     return c.html(`
+  //       <html>
+  //         <body style="font-family: system-ui; padding: 2rem;">
+  //           <h1>Preview Loading...</h1>
+  //           <p>The Expo server is starting up. Please wait a moment and refresh.</p>
+  //           <script>setTimeout(() => location.reload(), 3000)</script>
+  //         </body>
+  //       </html>
+  //     `, 503)
+  //   }
+  // }
+
+  // Plain Vite: serve static files from dist/
+  let filePath = relativePath
+  if (filePath.startsWith('/')) {
+    filePath = filePath.substring(1)
+  }
+  if (filePath === '' || filePath === '/') {
+    filePath = 'index.html'
+  }
+
+  const absolutePath = join(DIST_DIR, filePath)
+  console.log(`[project-runtime] Subdomain: serving static ${filePath} from ${absolutePath}`)
+  
+  try {
+    // Security: prevent path traversal
+    if (!absolutePath.startsWith(DIST_DIR)) {
+      return c.text('Forbidden', 403)
+    }
+    
+    // Check if file exists
+    if (!existsSync(absolutePath)) {
+      // For SPA routing: if file not found and not an asset, serve index.html
+      const ext = filePath.substring(filePath.lastIndexOf('.'))
+      if (!MIME_TYPES[ext.toLowerCase()]) {
+        const indexPath = join(DIST_DIR, 'index.html')
+        if (existsSync(indexPath)) {
+          const content = readFileSync(indexPath)
+          return new Response(content, {
+            status: 200,
+            headers: {
+              'Content-Type': 'text/html',
+              'Content-Length': String(content.length),
+              'Cache-Control': 'no-cache',
+              'Access-Control-Allow-Origin': '*',
+            },
+          })
+        }
+      }
+      return c.text('Not Found', 404)
+    }
+    
+    // Check if it's a directory
+    const stats = statSync(absolutePath)
+    if (stats.isDirectory()) {
+      const indexPath = join(absolutePath, 'index.html')
+      if (existsSync(indexPath)) {
+        const content = readFileSync(indexPath)
+        return new Response(content, {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/html',
+            'Content-Length': String(content.length),
+            'Cache-Control': 'no-cache',
+            'Access-Control-Allow-Origin': '*',
+          },
+        })
+      }
+      return c.text('Not Found', 404)
+    }
+    
+    // Read and serve the file (no rewriting needed for subdomain access!)
+    const content = readFileSync(absolutePath)
+    const mimeType = getMimeType(absolutePath)
+    
+    // Set cache headers (long cache for hashed assets)
+    const isHashedAsset = /\.[a-f0-9]{8,}\.(js|css|woff2?|ttf|png|jpg|svg)$/i.test(filePath)
+    const cacheControl = isHashedAsset ? 'public, max-age=31536000, immutable' : 'no-cache'
+    
+    return new Response(content, {
+      status: 200,
+      headers: {
+        'Content-Type': mimeType,
+        'Content-Length': String(content.length),
+        'Cache-Control': cacheControl,
+        'Access-Control-Allow-Origin': '*',
+      },
+    })
+  } catch (error: any) {
+    console.error('[project-runtime] Subdomain static serve error:', error)
+    return c.json({
+      error: { code: 'static_serve_error', message: error.message || 'Failed to serve file' }
+    }, 500)
+  }
+})
+
+// =============================================================================
 // Files API (for Code Explorer)
 // =============================================================================
 
@@ -1237,7 +5185,7 @@ app.get('/preview', (c) => {
  */
 app.get('/files', (c) => {
   try {
-    const files: Array<{ path: string; size: number; isDirectory: boolean }> = []
+    const files: Array<{ path: string; name: string; type: 'file' | 'directory'; extension?: string; size?: number }> = []
     
     function listRecursive(dir: string, prefix: string = '') {
       const entries = readdirSync(dir, { withFileTypes: true })
@@ -1252,11 +5200,22 @@ app.get('/files', (c) => {
         const fullPath = `${dir}/${entry.name}`
         
         if (entry.isDirectory()) {
-          files.push({ path: relativePath, size: 0, isDirectory: true })
+          files.push({ 
+            path: relativePath, 
+            name: entry.name,
+            type: 'directory'
+          })
           listRecursive(fullPath, relativePath)
         } else {
           const stats = statSync(fullPath)
-          files.push({ path: relativePath, size: stats.size, isDirectory: false })
+          const ext = entry.name.includes('.') ? '.' + entry.name.split('.').pop() : undefined
+          files.push({ 
+            path: relativePath, 
+            name: entry.name,
+            type: 'file',
+            extension: ext,
+            size: stats.size 
+          })
         }
       }
     }
@@ -1268,6 +5227,108 @@ app.get('/files', (c) => {
     console.error('[project-runtime] Files list error:', error)
     return c.json({
       error: { code: 'files_error', message: error.message || 'Failed to list files' }
+    }, 500)
+  }
+})
+
+/**
+ * Download project source code as a tar.gz archive.
+ * Excludes node_modules, .git, dist, build, .cache, .output, and other non-source directories.
+ * Used by the code editor UI to let users download their project files.
+ */
+app.get('/download', async (c) => {
+  try {
+    if (!existsSync(PROJECT_DIR)) {
+      return c.json({
+        error: { code: 'no_project', message: 'Project directory not found' }
+      }, 404)
+    }
+
+    // Use tar to create a gzipped archive, excluding non-source dirs
+    const excludes = [
+      'node_modules', '.git', '.next', 'dist', 'build', '.cache',
+      '.output', '.nuxt', '.turbo', '.bun', '.vite'
+    ]
+    const excludeArgs = excludes.flatMap(dir => ['--exclude', dir])
+
+    const projectName = PROJECT_ID || 'project'
+    const result = Bun.spawnSync(
+      ['tar', '-czf', '-', ...excludeArgs, '-C', PROJECT_DIR, '.'],
+      { stdout: 'pipe', stderr: 'pipe' }
+    )
+
+    if (result.exitCode !== 0) {
+      const stderr = result.stderr?.toString() || 'Unknown error'
+      console.error('[project-runtime] Download archive error:', stderr)
+      return c.json({
+        error: { code: 'archive_error', message: `Failed to create archive: ${stderr}` }
+      }, 500)
+    }
+
+    const archiveBuffer = result.stdout
+    console.log(`[project-runtime] Created download archive for project ${PROJECT_ID} (${(archiveBuffer.byteLength / 1024).toFixed(1)} KB)`)
+
+    return new Response(archiveBuffer, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/gzip',
+        'Content-Disposition': `attachment; filename="${projectName}.tar.gz"`,
+        'Content-Length': String(archiveBuffer.byteLength),
+      },
+    })
+  } catch (error: any) {
+    console.error('[project-runtime] Download error:', error)
+    return c.json({
+      error: { code: 'download_error', message: error.message || 'Failed to create download' }
+    }, 500)
+  }
+})
+
+/**
+ * Get all built dist files for publishing.
+ * Returns files as base64-encoded content for S3 upload.
+ * Used by the publish API to upload built assets.
+ */
+app.get('/api/dist-files', (c) => {
+  try {
+    const distDir = join(PROJECT_DIR, 'dist')
+    
+    if (!existsSync(distDir)) {
+      return c.json({ 
+        error: { code: 'no_dist', message: 'No dist directory found. Run a build first.' } 
+      }, 404)
+    }
+    
+    const files: Array<{ path: string; content: string }> = []
+    
+    function readRecursive(dir: string, prefix: string = '') {
+      const entries = readdirSync(dir, { withFileTypes: true })
+      
+      for (const entry of entries) {
+        const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name
+        const fullPath = join(dir, entry.name)
+        
+        if (entry.isDirectory()) {
+          readRecursive(fullPath, relativePath)
+        } else {
+          // Read file and encode as base64
+          const content = readFileSync(fullPath)
+          files.push({
+            path: relativePath,
+            content: content.toString('base64'),
+          })
+        }
+      }
+    }
+    
+    readRecursive(distDir)
+    
+    console.log(`[project-runtime] Returning ${files.length} dist files for publishing`)
+    return c.json(files)
+  } catch (error: any) {
+    console.error('[project-runtime] Dist files error:', error)
+    return c.json({
+      error: { code: 'dist_error', message: error.message || 'Failed to read dist files' }
     }, 500)
   }
 })
@@ -1343,12 +5404,12 @@ const PRESET_COMMANDS: PresetCommand[] = [
  */
 const COMMAND_MAP: Record<string, { command: string; timeout: number }> = {
   'bun-install': { command: 'bun install', timeout: 120000 },
-  'prisma-generate': { command: 'bunx prisma generate', timeout: 60000 },
-  'prisma-push': { command: 'bunx prisma db push', timeout: 60000 },
-  'prisma-reset': { command: 'bunx prisma db push --force-reset', timeout: 30000 },
-  'prisma-migrate': { command: 'bunx prisma migrate dev --name auto', timeout: 60000 },
-  'playwright-test': { command: 'bunx playwright test', timeout: 180000 },
-  'typecheck': { command: 'bunx tsc --noEmit', timeout: 60000 },
+  'prisma-generate': { command: 'bun --bun x prisma generate', timeout: 60000 },
+  'prisma-push': { command: 'bun --bun x prisma db push', timeout: 60000 },
+  'prisma-reset': { command: 'bun --bun x prisma db push --force-reset', timeout: 30000 },
+  'prisma-migrate': { command: 'bun --bun x prisma migrate dev --name auto', timeout: 60000 },
+  'playwright-test': { command: 'bun --bun x playwright test', timeout: 180000 },
+  'typecheck': { command: 'bun --bun x tsc --noEmit', timeout: 60000 },
   'build': { command: 'bun run build', timeout: 120000 },
 }
 
@@ -1391,6 +5452,26 @@ app.post('/terminal/exec', async (c) => {
     if (!cmdConfig) {
       return c.json({ error: { code: 'command_not_found', message: 'Command configuration not found' } }, 500)
     }
+
+    // For Playwright tests, ensure dependencies are installed (workspaces from template may have no node_modules)
+    if (commandId === 'playwright-test') {
+      const nodeModulesDir = join(PROJECT_DIR, 'node_modules')
+      if (!existsSync(nodeModulesDir)) {
+        console.log(`[project-runtime] Running bun install before playwright (node_modules missing)`)
+        const installResult = Bun.spawnSync(['bun', 'install'], {
+          cwd: PROJECT_DIR,
+          env: { ...process.env, CI: 'true' },
+          stdout: 'inherit',
+          stderr: 'inherit',
+        })
+        if (installResult.exitCode !== 0) {
+          return c.json(
+            { error: { code: 'install_failed', message: 'bun install failed. Run "bun install" in the project and try again.' } },
+            500
+          )
+        }
+      }
+    }
     
     console.log(`[project-runtime] Executing terminal command: ${cmdConfig.command}`)
     
@@ -1407,10 +5488,12 @@ app.post('/terminal/exec', async (c) => {
         const proc = Bun.spawn(['sh', '-c', cmdConfig.command], {
           cwd: PROJECT_DIR,
           env: { ...process.env, FORCE_COLOR: '1', CI: 'true' },
+          stdout: 'pipe',
+          stderr: 'pipe',
         })
         
         // Stream stdout
-        const reader = proc.stdout.getReader()
+        const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader()
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
@@ -1418,8 +5501,8 @@ app.post('/terminal/exec', async (c) => {
         }
         
         // Stream stderr
-        if (proc.stderr) {
-          const stderrReader = proc.stderr.getReader()
+        if (proc.stderr && typeof proc.stderr !== 'number') {
+          const stderrReader = (proc.stderr as ReadableStream<Uint8Array>).getReader()
           while (true) {
             const { done, value } = await stderrReader.read()
             if (done) break
@@ -1616,7 +5699,8 @@ app.get('/tests/list', (c) => {
  * 
  * Request body:
  * - file?: string - Specific test file to run (relative path)
- * - testName?: string - Specific test name pattern (grep)
+ * - testName?: string - Test name pattern (grep), ignored when line is set
+ * - line?: number - Run only the test at this line (file:line); takes precedence over testName
  * - headed?: boolean - Run in headed mode
  * - reporter?: 'list' | 'json' | 'line' - Reporter to use
  */
@@ -1627,6 +5711,7 @@ app.post('/tests/run', async (c) => {
   let body: { 
     file?: string
     testName?: string
+    line?: number
     headed?: boolean
     reporter?: 'list' | 'json' | 'line'
   } = {}
@@ -1637,19 +5722,23 @@ app.post('/tests/run', async (c) => {
     // Empty body is fine, use defaults
   }
 
-  const { file, testName, headed, reporter = 'list' } = body
+  const { file, testName, line, headed, reporter = 'list' } = body
 
   // Build command
   let command = 'bunx playwright test'
   
-  // Add specific file
+  // Add specific file (or file:line to run a single test)
   if (file) {
-    command += ` "${file}"`
+    if (line != null && line > 0) {
+      command += ` "${file}:${line}"`
+    } else {
+      command += ` "${file}"`
+    }
   }
   
-  // Add test name filter (grep)
-  if (testName) {
-    command += ` --grep "${testName}"`
+  // Add test name filter (grep) only when not targeting by line
+  if (testName && (line == null || line <= 0)) {
+    command += ` --grep "${testName.replace(/"/g, '\\"')}"`
   }
   
   // Add headed mode
@@ -1659,6 +5748,24 @@ app.post('/tests/run', async (c) => {
   
   // Add reporter
   command += ` --reporter=${reporter}`
+
+  // Ensure dependencies are installed (workspaces created from template may have no node_modules)
+  const nodeModulesDir = join(PROJECT_DIR, 'node_modules')
+  if (!existsSync(nodeModulesDir)) {
+    console.log(`[project-runtime] Running bun install before tests (node_modules missing)`)
+    const installResult = Bun.spawnSync(['bun', 'install'], {
+      cwd: PROJECT_DIR,
+      env: { ...process.env, CI: 'true' },
+      stdout: 'inherit',
+      stderr: 'inherit',
+    })
+    if (installResult.exitCode !== 0) {
+      return c.json(
+        { error: { code: 'install_failed', message: 'bun install failed. Run "bun install" in the project and try again.' } },
+        500
+      )
+    }
+  }
 
   console.log(`[project-runtime] Executing: ${command}`)
 
@@ -1681,10 +5788,12 @@ app.post('/tests/run', async (c) => {
           FORCE_COLOR: '1',
           CI: 'true',
         },
+        stdout: 'pipe',
+        stderr: 'pipe',
       })
 
       // Stream stdout
-      const reader = proc.stdout.getReader()
+      const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader()
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
@@ -1692,8 +5801,8 @@ app.post('/tests/run', async (c) => {
       }
       
       // Stream stderr
-      if (proc.stderr) {
-        const stderrReader = proc.stderr.getReader()
+      if (proc.stderr && typeof proc.stderr !== 'number') {
+        const stderrReader = (proc.stderr as ReadableStream<Uint8Array>).getReader()
         while (true) {
           const { done, value } = await stderrReader.read()
           if (done) break
@@ -1702,6 +5811,32 @@ app.post('/tests/run', async (c) => {
       }
 
       const exitCode = await proc.exited
+
+      // Append any test-result attachments (screenshots, traces, videos)
+      // Playwright only prints these for failures; we surface them for all runs
+      const resultsDir = join(PROJECT_DIR, 'test-results')
+      if (existsSync(resultsDir)) {
+        const attachments: string[] = []
+        function walkResults(dir: string) {
+          try {
+            for (const entry of readdirSync(dir, { withFileTypes: true })) {
+              const full = join(dir, entry.name)
+              if (entry.isDirectory()) walkResults(full)
+              else if (entry.name.endsWith('.png') || entry.name === 'trace.zip' || entry.name.endsWith('.webm')) {
+                attachments.push(full.replace(PROJECT_DIR + '/', ''))
+              }
+            }
+          } catch { /* ignore */ }
+        }
+        walkResults(resultsDir)
+        if (attachments.length > 0) {
+          await writer.write(encoder.encode('\n--- Test Artifacts ---\n'))
+          for (const a of attachments) {
+            await writer.write(encoder.encode(`${a}\n`))
+          }
+        }
+      }
+
       await writer.write(encoder.encode(`\n\n[Process exited with code ${exitCode}]\n`))
       await writer.close()
     } catch (err: any) {
@@ -1861,6 +5996,59 @@ app.delete('/tests/traces', async (c) => {
 })
 
 // =============================================================================
+// Security Scanning API — proxied from API server in Kubernetes
+// =============================================================================
+
+import { runSecurityScan } from './security-scanner'
+
+/**
+ * POST /security/scan
+ *
+ * Runs a comprehensive security scan on the project files.
+ * In K8s, the API server proxies POST /api/projects/:id/security/scan → here.
+ *
+ * Rate limited: one concurrent scan at a time per pod.
+ */
+let _securityScanRunning = false
+let _lastScanTime = 0
+const SCAN_COOLDOWN_MS = 10_000 // 10 s cooldown between scans
+
+app.post('/security/scan', async (c) => {
+  // Rate limit: reject if a scan is already in-flight
+  if (_securityScanRunning) {
+    return c.json({
+      ok: false,
+      error: { code: 'scan_in_progress', message: 'A security scan is already running. Please wait.' },
+    }, 429)
+  }
+
+  // Cooldown: reject rapid re-scans
+  const now = Date.now()
+  if (now - _lastScanTime < SCAN_COOLDOWN_MS) {
+    const waitMs = SCAN_COOLDOWN_MS - (now - _lastScanTime)
+    return c.json({
+      ok: false,
+      error: { code: 'rate_limited', message: `Please wait ${Math.ceil(waitMs / 1000)}s before re-scanning.` },
+    }, 429)
+  }
+
+  _securityScanRunning = true
+  try {
+    const result = await runSecurityScan(PROJECT_DIR)
+    _lastScanTime = Date.now()
+    return c.json(result, result.ok ? 200 : 500)
+  } catch (error: any) {
+    console.error('[project-runtime] Security scan error:', error)
+    return c.json({
+      ok: false,
+      error: { code: 'scan_failed', message: error.message || 'Security scan failed' },
+    }, 500)
+  } finally {
+    _securityScanRunning = false
+  }
+})
+
+// =============================================================================
 // Database API (Prisma Studio) - Simplified for Kubernetes
 // =============================================================================
 
@@ -1900,7 +6088,7 @@ async function ensurePrismaStudioRunning(): Promise<{ ok: boolean; error?: strin
   console.log(`[project-runtime] Starting Prisma Studio on port ${PRISMA_STUDIO_PORT}...`)
   
   try {
-    prismaStudioProcess = Bun.spawn(['bunx', 'prisma', 'studio', '--port', String(PRISMA_STUDIO_PORT), '--browser', 'none'], {
+    prismaStudioProcess = Bun.spawn(['bun', '--bun', 'x', 'prisma', 'studio', '--port', String(PRISMA_STUDIO_PORT), '--browser', 'none'], {
       cwd: PROJECT_DIR,
       env: { ...process.env },
       stdout: 'inherit',
@@ -1964,6 +6152,10 @@ app.get('/database/url', async (c) => {
  * - Asset paths resolved correctly via base tag
  * - API calls intercepted and rewritten via fetch/XHR patching
  * 
+ * IMPORTANT: The <base> tag only works with RELATIVE URLs (e.g., "ui/index.js").
+ * Absolute paths like "/ui/index.js" ignore the base tag and resolve from domain root.
+ * We must convert absolute paths to relative paths so the base tag works.
+ * 
  * @param html - The original HTML content
  * @param basePath - The full proxy base path (e.g., '/api/projects/xyz/database/proxy/')
  */
@@ -1985,6 +6177,21 @@ function rewritePrismaStudioHtml(html: string, basePath: string = '/database/pro
   // Fix any hardcoded http://localhost:PORT URLs to be empty (rely on base tag)
   html = html.replace(/http:\/\/localhost:\d+/g, '')
   
+  // CRITICAL: Convert absolute paths to relative paths in script/link/img tags
+  // The <base> tag only affects relative URLs - absolute paths like "/ui/index.js"
+  // bypass the base tag entirely and resolve from domain root (causing 404s).
+  // By removing the leading "/", we make them relative so the base tag works.
+  
+  // Convert src="/..." to src="..." (for script, img tags)
+  // Handle both cases: <script src="/..." and <script async src="/...
+  html = html.replace(/\ssrc="\/(?!\/)/gi, ' src="')
+  html = html.replace(/\ssrc='\/(?!\/)/gi, " src='")
+  
+  // Convert href="/..." to href="..." (for link tags, excluding http/https and //)
+  // Negative lookahead (?!\/) ensures we don't touch href="//" (protocol-relative URLs)
+  html = html.replace(/\shref="\/(?!\/)/gi, ' href="')
+  html = html.replace(/\shref='\/(?!\/)/gi, " href='")
+  
   // Fix any absolute /api/ paths that bypass the base tag (in inline scripts)
   // Prisma Studio's JS sometimes constructs URLs like: location.origin + '/api/'
   // We inject a script to patch fetch/XMLHttpRequest to rewrite /api/ calls
@@ -1992,6 +6199,14 @@ function rewritePrismaStudioHtml(html: string, basePath: string = '/database/pro
 <script>
 (function() {
   var proxyBase = ${JSON.stringify(basePath)};
+  
+  // Helper to extract URL string from various input types (string, URL, Request)
+  function extractUrlString(input) {
+    if (typeof input === 'string') return input;
+    if (input instanceof URL) return input.toString();
+    if (input instanceof Request) return input.url;
+    return null;
+  }
   
   // Helper to rewrite URL for proxy
   function rewriteUrl(url) {
@@ -2003,21 +6218,32 @@ function rewritePrismaStudioHtml(html: string, basePath: string = '/database/pro
         var urlObj = new URL(url);
         // Check if same domain or localhost - rewrite to use proxy
         if (urlObj.hostname === window.location.hostname || urlObj.hostname === 'localhost') {
-          // Strip the origin and treat as relative path through proxy
           var path = urlObj.pathname;
-          if (path.startsWith('/')) path = path.substring(1);
-          url = proxyBase + path + urlObj.search;
-          console.log('[Prisma Studio Proxy] Rewrote full URL to:', url);
+          
+          // CRITICAL FIX: Check if pathname already contains the proxy base
+          // If it does, don't prepend it again (prevents double-prefixing)
+          if (path.startsWith(proxyBase)) {
+            // Path already has proxy base, use as-is
+            url = path + urlObj.search;
+          } else {
+            // Strip the origin and treat as relative path through proxy
+            if (path.startsWith('/')) path = path.substring(1);
+            url = proxyBase + path + urlObj.search;
+          }
         }
       } catch(e) {
         // Invalid URL, leave as-is
       }
     }
-    // Handle /api/ calls  
-    else if (url.startsWith('/api/') || url.startsWith('/api')) {
+    // Handle protocol-relative URLs (//...) - leave unchanged
+    else if (url.startsWith('//')) {
+      return url;
+    }
+    // Handle /api/ calls - but check if already proxied
+    else if ((url.startsWith('/api/') || url.startsWith('/api')) && !url.startsWith(proxyBase)) {
       url = proxyBase + url.substring(1);
     }
-    // Handle other absolute paths at root
+    // Handle other absolute paths at root - but check if already proxied
     else if (url.startsWith('/') && !url.startsWith(proxyBase)) {
       url = proxyBase + url.substring(1);
     }
@@ -2032,17 +6258,99 @@ function rewritePrismaStudioHtml(html: string, basePath: string = '/database/pro
   
   // Store original fetch
   var originalFetch = window.fetch;
-  window.fetch = function(url, options) {
-    url = rewriteUrl(url);
-    return originalFetch.call(this, url, options);
+  window.fetch = function(input, init) {
+    // fix-prisma-proxy: Handle Request, URL, and string inputs
+    // Modern frameworks (including Prisma Studio) may pass Request or URL objects
+    // instead of plain strings, which previously bypassed URL rewriting entirely.
+    if (input instanceof Request) {
+      var rewrittenUrl = rewriteUrl(input.url);
+      if (rewrittenUrl !== input.url) {
+        // Create a new Request with rewritten URL, preserving all other properties
+        input = new Request(rewrittenUrl, input);
+      }
+      return originalFetch.call(this, input, init);
+    }
+    if (input instanceof URL) {
+      var urlStr = rewriteUrl(input.toString());
+      return originalFetch.call(this, urlStr, init);
+    }
+    var rewritten = rewriteUrl(input);
+    return originalFetch.call(this, rewritten, init);
   };
   
   // Store original XMLHttpRequest.open
   var originalOpen = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function(method, url) {
     var args = Array.prototype.slice.call(arguments, 2);
-    url = rewriteUrl(url);
+    // fix-prisma-proxy: Handle URL objects in XHR too
+    var urlStr = extractUrlString(url);
+    if (urlStr !== null) {
+      url = rewriteUrl(urlStr);
+    }
     return originalOpen.apply(this, [method, url].concat(args));
+  };
+  
+  // fix-prisma-proxy: Prevent Prisma Studio SPA router from changing location
+  // If Prisma Studio pushes history state, it changes location.pathname which
+  // breaks subsequent relative URL resolution. Lock the pathname to the proxy base.
+  var originalPushState = history.pushState;
+  var originalReplaceState = history.replaceState;
+  history.pushState = function(state, title, url) {
+    // Only allow if URL stays within proxy base path, otherwise no-op
+    if (url) {
+      var urlStr = typeof url === 'string' ? url : url.toString();
+      if (!urlStr.startsWith(proxyBase) && urlStr.startsWith('/')) {
+        // Redirect to proxy-prefixed path
+        url = proxyBase + urlStr.substring(1);
+      }
+    }
+    return originalPushState.call(this, state, title, url);
+  };
+  history.replaceState = function(state, title, url) {
+    if (url) {
+      var urlStr = typeof url === 'string' ? url : url.toString();
+      if (!urlStr.startsWith(proxyBase) && urlStr.startsWith('/')) {
+        url = proxyBase + urlStr.substring(1);
+      }
+    }
+    return originalReplaceState.call(this, state, title, url);
+  };
+  
+  // Patch dynamically created script/link elements
+  // Some frameworks create these via createElement and set src/href
+  var originalCreateElement = document.createElement.bind(document);
+  document.createElement = function(tagName, options) {
+    var element = originalCreateElement(tagName, options);
+    var tag = tagName.toLowerCase();
+    
+    if (tag === 'script' || tag === 'img') {
+      // Intercept src setter
+      var descriptor = Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, 'src') ||
+                       Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+      if (descriptor && descriptor.set) {
+        var originalSetter = descriptor.set;
+        Object.defineProperty(element, 'src', {
+          set: function(value) {
+            return originalSetter.call(this, rewriteUrl(value));
+          },
+          get: descriptor.get
+        });
+      }
+    } else if (tag === 'link') {
+      // Intercept href setter for link elements
+      var linkDescriptor = Object.getOwnPropertyDescriptor(HTMLLinkElement.prototype, 'href');
+      if (linkDescriptor && linkDescriptor.set) {
+        var originalLinkSetter = linkDescriptor.set;
+        Object.defineProperty(element, 'href', {
+          set: function(value) {
+            return originalLinkSetter.call(this, rewriteUrl(value));
+          },
+          get: linkDescriptor.get
+        });
+      }
+    }
+    
+    return element;
   };
   
   console.log('[Prisma Studio Proxy] URL rewriting enabled, base:', proxyBase);
@@ -2265,6 +6573,20 @@ async function gracefulShutdown(signal: string) {
     ws.close(1001, 'Server shutting down')
   }
   lspConnections.clear()
+  
+  // Stop build watch process
+  stopViteBuildWatch()
+
+  // Run final postgres backup before shutdown (critical for data persistence)
+  if (postgresBackup) {
+    console.log(`[project-runtime] Running final PostgreSQL backup to S3...`)
+    try {
+      await postgresBackup.shutdown()
+      console.log(`[project-runtime] PostgreSQL backup completed`)
+    } catch (error) {
+      console.error(`[project-runtime] PostgreSQL final backup failed:`, error)
+    }
+  }
 
   // Upload any pending changes to S3 before shutdown
   if (s3Sync) {
@@ -2290,11 +6612,60 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 // Start Server
 // =============================================================================
 
-console.log(`[project-runtime] Starting server on port ${PORT}`)
+logTiming(`Starting HTTP server on port ${PORT}...`)
 
-// WebSocket handlers for LSP
+// Track HMR WebSocket connections for proxying to vite dev server
+const hmrConnections = new Map<ServerWebSocket<unknown>, WebSocket>()
+
+// WebSocket handlers for LSP and HMR
 const websocketHandlers = {
   async open(ws: ServerWebSocket<unknown>) {
+    const data = (ws as any).data as { type?: string; path?: string } | undefined
+    
+    // Handle HMR WebSocket connections
+    if (data?.type === 'hmr' && isDevMode && viteDevProcess) {
+      // Build the WebSocket URL for Vite dev server
+      // Use normalized path and preserve query params
+      const wsPath = data.path || '/'
+      const wsSearch = (data as any).search || ''
+      const viteWsUrl = `ws://localhost:${VITE_DEV_PORT}${wsPath}${wsSearch}`
+      
+      console.log(`[HMR WebSocket] Client connected, proxying to vite dev server at ${viteWsUrl}`)
+      try {
+        // Create connection to vite dev server
+        const viteWs = new WebSocket(viteWsUrl)
+        
+        viteWs.onopen = () => {
+          console.log('[HMR WebSocket] Connected to vite dev server')
+        }
+        
+        viteWs.onmessage = (event) => {
+          // Forward messages from vite to client
+          if (ws.readyState === 1) {
+            ws.send(typeof event.data === 'string' ? event.data : JSON.stringify(event.data))
+          }
+        }
+        
+        viteWs.onerror = (error) => {
+          console.error('[HMR WebSocket] Vite connection error:', error)
+        }
+        
+        viteWs.onclose = () => {
+          console.log('[HMR WebSocket] Vite connection closed')
+          hmrConnections.delete(ws)
+          ws.close()
+        }
+        
+        hmrConnections.set(ws, viteWs)
+        return
+      } catch (error) {
+        console.error('[HMR WebSocket] Failed to connect to vite dev server:', error)
+        ws.close(1011, 'Failed to connect to vite dev server')
+        return
+      }
+    }
+    
+    // Handle LSP WebSocket connections
     console.log('[LSP WebSocket] Client connected')
     lspConnections.add(ws)
 
@@ -2322,6 +6693,17 @@ const websocketHandlers = {
   },
   
   message(ws: ServerWebSocket<unknown>, message: string | Buffer) {
+    // Handle HMR messages
+    const viteWs = hmrConnections.get(ws)
+    if (viteWs) {
+      // Forward message to vite dev server
+      if (viteWs.readyState === WebSocket.OPEN) {
+        viteWs.send(typeof message === 'string' ? message : message.toString())
+      }
+      return
+    }
+    
+    // Handle LSP messages
     try {
       const msg = JSON.parse(typeof message === 'string' ? message : message.toString())
       const lspServer = (ws as any).__lspServer
@@ -2336,6 +6718,16 @@ const websocketHandlers = {
   },
   
   close(ws: ServerWebSocket<unknown>, code: number, reason: string) {
+    // Handle HMR close
+    const viteWs = hmrConnections.get(ws)
+    if (viteWs) {
+      console.log('[HMR WebSocket] Client disconnected:', code, reason)
+      viteWs.close()
+      hmrConnections.delete(ws)
+      return
+    }
+    
+    // Handle LSP close
     console.log('[LSP WebSocket] Client disconnected:', code, reason)
     lspConnections.delete(ws)
     
@@ -2350,9 +6742,10 @@ const websocketHandlers = {
 // Create a wrapper fetch function that handles WebSocket upgrades
 function fetchHandler(request: Request, server: { upgrade: (req: Request, options?: { data?: unknown }) => boolean }) {
   const url = new URL(request.url)
+  const isWebSocketUpgrade = request.headers.get('upgrade')?.toLowerCase() === 'websocket'
   
   // Handle WebSocket upgrade for /lsp endpoint
-  if (url.pathname === '/lsp' && request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+  if (url.pathname === '/lsp' && isWebSocketUpgrade) {
     const success = server.upgrade(request)
     if (success) {
       // Return undefined to signal Bun that the upgrade was handled
@@ -2361,9 +6754,40 @@ function fetchHandler(request: Request, server: { upgrade: (req: Request, option
     return new Response('WebSocket upgrade failed', { status: 500 })
   }
   
+  // Handle WebSocket upgrade for HMR when in dev mode
+  // Vite HMR WebSocket connects to root or /@vite paths
+  if (isDevMode && viteDevProcess && isWebSocketUpgrade) {
+    // Normalize the path - strip any /api/projects/.../preview/ prefix
+    // The browser might be connecting through a proxy path, but Vite expects root
+    let wsPath = url.pathname
+    const previewPathMatch = wsPath.match(/\/api\/projects\/[^/]+\/preview(.*)/)
+    if (previewPathMatch) {
+      wsPath = previewPathMatch[1] || '/'
+    }
+    // Also handle direct subdomain paths
+    if (wsPath === '' || wsPath === '/?') {
+      wsPath = '/'
+    }
+    
+    console.log(`[project-runtime] HMR WebSocket upgrade requested: ${url.pathname} -> normalized: ${wsPath}`)
+    const success = server.upgrade(request, { 
+      data: { 
+        type: 'hmr', 
+        path: wsPath,
+        search: url.search  // Preserve query params
+      } 
+    })
+    if (success) {
+      return undefined
+    }
+    return new Response('HMR WebSocket upgrade failed', { status: 500 })
+  }
+  
   // Forward all other requests to Hono
   return app.fetch(request)
 }
+
+logTiming('Server configuration complete, starting to accept connections')
 
 // Export default server configuration
 export default {
@@ -2372,3 +6796,12 @@ export default {
   idleTimeout: 120,
   websocket: websocketHandlers,
 }
+
+// Pre-warm Claude Code after server is listening.
+// In pool mode, pre-warm eagerly (the whole point is to have a warm session ready).
+// In normal mode, small delay ensures the export/listen completes first.
+setTimeout(() => {
+  sessions.prewarm().catch((err: any) => {
+    console.error('[project-runtime] Pre-warm error (non-fatal):', err.message)
+  })
+}, IS_POOL_MODE ? 1000 : 2000)

@@ -13,8 +13,9 @@
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "paths": {
+      "@/*": ["./src/*"],
       "~/*": ["./src/*"]
     }
   },
-  "include": ["src/**/*", "*.config.ts"]
+  "include": ["src/**/*", "*.config.ts", "server.tsx"]
 }

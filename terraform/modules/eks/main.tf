@@ -61,6 +61,12 @@ variable "enable_secondary_node_group" {
   default     = false
 }
 
+variable "node_disk_size" {
+  description = "Disk size in GB for node group instances"
+  type        = number
+  default     = 50
+}
+
 variable "secondary_node_instance_types" {
   description = "Instance types for secondary node group (defaults to primary node_instance_types)"
   type        = list(string)
@@ -83,6 +89,24 @@ variable "secondary_node_max_size" {
   description = "Maximum number of nodes in secondary node group (defaults to node_max_size)"
   type        = number
   default     = null
+}
+
+variable "ami_type" {
+  description = "AMI type for node group (AL2_x86_64, BOTTLEROCKET_x86_64, etc.)"
+  type        = string
+  default     = "BOTTLEROCKET_x86_64"
+}
+
+variable "enable_asg_warm_pool" {
+  description = "Enable ASG warm pool for faster node scaling (keeps stopped instances ready to resume)"
+  type        = bool
+  default     = true
+}
+
+variable "asg_warm_pool_size" {
+  description = "Number of pre-initialized stopped instances in the ASG warm pool"
+  type        = number
+  default     = 2
 }
 
 variable "tags" {
@@ -149,6 +173,9 @@ resource "aws_eks_cluster" "main" {
   name     = var.cluster_name
   version  = var.cluster_version
   role_arn = aws_iam_role.cluster.arn
+
+  # Explicitly set to false to match imported cluster state (prevents forced replacement)
+  bootstrap_self_managed_addons = false
 
   vpc_config {
     subnet_ids              = var.private_subnets
@@ -254,6 +281,20 @@ resource "aws_launch_template" "node_group" {
     aws_eks_cluster.main.vpc_config[0].cluster_security_group_id
   ]
 
+  # Data volume configuration
+  # Bottlerocket uses /dev/xvdb for the data partition (xvda is the immutable OS volume managed by EKS).
+  # AL2 uses /dev/xvda as the root volume.
+  block_device_mappings {
+    device_name = var.ami_type == "BOTTLEROCKET_x86_64" ? "/dev/xvdb" : "/dev/xvda"
+
+    ebs {
+      volume_size           = var.node_disk_size
+      volume_type           = "gp3"
+      delete_on_termination = true
+      encrypted             = true
+    }
+  }
+
   # Metadata options for IMDSv2 (recommended)
   metadata_options {
     http_endpoint               = "enabled"
@@ -281,9 +322,10 @@ resource "aws_eks_node_group" "main" {
   subnet_ids      = var.private_subnets
 
   instance_types = var.node_instance_types
+  ami_type       = var.ami_type
   capacity_type  = "ON_DEMAND"
 
-  # Use launch template to attach our security group
+  # Use launch template to attach our security group and configure disk size
   launch_template {
     id      = aws_launch_template.node_group.id
     version = aws_launch_template.node_group.latest_version
@@ -305,9 +347,53 @@ resource "aws_eks_node_group" "main" {
 
   tags = var.tags
 
+  # Force recreation when launch template changes to ensure nodes get new disk size
+  lifecycle {
+    replace_triggered_by = [
+      aws_launch_template.node_group.latest_version
+    ]
+  }
+
   depends_on = [
     aws_iam_role_policy_attachment.node_group_policies
   ]
+}
+
+# -----------------------------------------------------------------------------
+# ASG Warm Pool (keeps stopped instances ready for fast resume)
+# EKS managed node groups don't expose a warm_pool block, so we configure
+# it via AWS CLI after the node group and its underlying ASG are created.
+# -----------------------------------------------------------------------------
+resource "null_resource" "asg_warm_pool" {
+  count = var.enable_asg_warm_pool ? 1 : 0
+
+  triggers = {
+    asg_name          = aws_eks_node_group.main.resources[0].autoscaling_groups[0].name
+    warm_pool_size    = var.asg_warm_pool_size
+    node_desired_size = var.node_desired_size
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      aws autoscaling put-warm-pool \
+        --auto-scaling-group-name "${aws_eks_node_group.main.resources[0].autoscaling_groups[0].name}" \
+        --pool-state Stopped \
+        --min-size 1 \
+        --max-group-prepared-capacity ${var.node_desired_size + var.asg_warm_pool_size} \
+        --instance-reuse-policy '{"ReuseOnScaleIn": true}'
+    EOT
+  }
+
+  provisioner "local-exec" {
+    when    = destroy
+    command = <<-EOT
+      aws autoscaling delete-warm-pool \
+        --auto-scaling-group-name "${self.triggers.asg_name}" \
+        --force-delete || true
+    EOT
+  }
+
+  depends_on = [aws_eks_node_group.main]
 }
 
 # -----------------------------------------------------------------------------
@@ -322,9 +408,10 @@ resource "aws_eks_node_group" "medium" {
   subnet_ids      = var.private_subnets
 
   instance_types = coalesce(var.secondary_node_instance_types, var.node_instance_types)
+  ami_type       = var.ami_type
   capacity_type  = "ON_DEMAND"
 
-  # Use same launch template as primary node group
+  # Use same launch template as primary node group (includes 50GB disk)
   launch_template {
     id      = aws_launch_template.node_group.id
     version = aws_launch_template.node_group.latest_version
@@ -345,6 +432,13 @@ resource "aws_eks_node_group" "medium" {
   }
 
   tags = var.tags
+
+  # Force recreation when launch template changes to ensure nodes get new disk size
+  lifecycle {
+    replace_triggered_by = [
+      aws_launch_template.node_group.latest_version
+    ]
+  }
 
   depends_on = [
     aws_iam_role_policy_attachment.node_group_policies
@@ -425,6 +519,55 @@ resource "aws_eks_addon" "ebs_csi_driver" {
   depends_on = [
     aws_eks_node_group.main,
     aws_iam_role_policy_attachment.ebs_csi_driver
+  ]
+}
+
+# -----------------------------------------------------------------------------
+# EFS CSI Driver (for shared storage - supports multi-attach unlike EBS)
+# -----------------------------------------------------------------------------
+# IAM role for EFS CSI driver using IRSA (IAM Roles for Service Accounts)
+resource "aws_iam_role" "efs_csi_driver" {
+  name = "${var.cluster_name}-efs-csi-driver-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Federated = aws_iam_openid_connect_provider.cluster.arn
+      }
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringLike = {
+          "${replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")}:aud" = "sts.amazonaws.com"
+          "${replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")}:sub" = "system:serviceaccount:kube-system:efs-csi-*"
+        }
+      }
+    }]
+  })
+
+  tags = var.tags
+
+  depends_on = [aws_iam_openid_connect_provider.cluster]
+}
+
+resource "aws_iam_role_policy_attachment" "efs_csi_driver" {
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy"
+  role       = aws_iam_role.efs_csi_driver.name
+}
+
+resource "aws_eks_addon" "efs_csi_driver" {
+  cluster_name             = aws_eks_cluster.main.name
+  addon_name               = "aws-efs-csi-driver"
+  service_account_role_arn = aws_iam_role.efs_csi_driver.arn
+
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
+
+  depends_on = [
+    aws_eks_node_group.main,
+    aws_iam_role_policy_attachment.efs_csi_driver,
+    aws_iam_openid_connect_provider.cluster
   ]
 }
 
@@ -522,4 +665,29 @@ output "oidc_provider_url" {
 output "ebs_csi_driver_role_arn" {
   description = "IAM role ARN for EBS CSI driver"
   value       = aws_iam_role.ebs_csi_driver.arn
+}
+
+output "efs_csi_driver_role_arn" {
+  description = "IAM role ARN for EFS CSI driver"
+  value       = aws_iam_role.efs_csi_driver.arn
+}
+
+output "node_role_name" {
+  description = "IAM role name for EKS node group"
+  value       = aws_iam_role.node_group.name
+}
+
+output "node_role_arn" {
+  description = "IAM role ARN for EKS node group"
+  value       = aws_iam_role.node_group.arn
+}
+
+output "node_group_asg_name" {
+  description = "Name of the Auto Scaling Group backing the main node group"
+  value       = aws_eks_node_group.main.resources[0].autoscaling_groups[0].name
+}
+
+output "node_instance_profile_name" {
+  description = "Instance profile name for EKS node group (used by Karpenter)"
+  value       = "${var.cluster_name}-node-group-role"
 }

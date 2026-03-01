@@ -8,7 +8,7 @@ This package provides a complete runtime environment for a single project, inclu
 
 - **Agent Server** (port 8080): Receives chat requests from the API and streams responses
 - **Claude Code Agent**: Executes code generation and file operations
-- **MCP (Wavesmith)**: Provides schema and data management tools
+- **MCP (Shogo)**: Provides schema and data management tools
 - **Vite Dev Server** (port 5173): Serves the project preview
 
 ## Architecture
@@ -38,7 +38,7 @@ This package provides a complete runtime environment for a single project, inclu
 │  ┌──────────────────────┐                                       │
 │  │   Claude Code        │                                       │
 │  │   + MCP subprocess   │                                       │
-│  │   (Wavesmith)        │                                       │
+│  │   (Shogo)            │                                       │
 │  └──────────────────────┘                                       │
 │                                                                  │
 │  Storage:                                                        │
@@ -54,12 +54,14 @@ This package provides a complete runtime environment for a single project, inclu
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `PROJECT_ID` | Yes | - | Unique identifier for the project |
-| `ANTHROPIC_API_KEY` | Yes | - | Anthropic API key for Claude |
+| `ANTHROPIC_API_KEY` | Yes | - | Anthropic API key for Claude Code agent |
 | `PROJECT_DIR` | No | `/app/project` | Path to project files |
 | `SCHEMAS_PATH` | No | `/app/.schemas` | Path to schema storage |
 | `PORT` | No | `8080` | Agent server port |
 | `S3_WORKSPACES_BUCKET` | No | - | S3 bucket for file sync |
 | `S3_ENDPOINT` | No | - | Custom S3 endpoint (MinIO) |
+| `AI_PROXY_URL` | No | - | Shogo AI proxy URL for user apps (OpenAI-compatible) |
+| `AI_PROXY_TOKEN` | No | - | Project-scoped token for the AI proxy |
 
 ## API Endpoints
 

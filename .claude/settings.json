@@ -2,7 +2,7 @@
   "permissions": {
     "allow": [
       "mcp__chrome-devtools__*",
-      "mcp__wavesmith__*"
+      "mcp__shogo__*"
     ]
   },
   "hooks": {
@@ -12,6 +12,17 @@
           {
             "type": "command",
             "command": "cd \"$CLAUDE_PROJECT_DIR\" && bun run build && echo '✓ Build complete - MCP servers ready'"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|MultiEdit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/protect-generated.sh"
           }
         ]
       }

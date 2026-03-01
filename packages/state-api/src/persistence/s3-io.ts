@@ -317,7 +317,9 @@ export async function getPresignedReadUrl(
     Key: key,
   })
 
-  return getSignedUrl(client, command, { expiresIn })
+  // Type assertion needed due to AWS SDK version compatibility issues
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return getSignedUrl(client as any, command, { expiresIn })
 }
 
 /**
@@ -345,7 +347,9 @@ export async function getPresignedWriteUrl(
     ...(options.contentType && { ContentType: options.contentType }),
   })
 
-  return getSignedUrl(client, command, { expiresIn })
+  // Type assertion needed due to AWS SDK version compatibility issues
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return getSignedUrl(client as any, command, { expiresIn })
 }
 
 /**

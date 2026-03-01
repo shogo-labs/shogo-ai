@@ -25,6 +25,23 @@ export interface HttpClientConfig {
 
   /** Auth endpoint path (default: '/api/auth') */
   authPath?: string
+
+  /** Request deduplication window in ms (default: 100) */
+  dedupWindowMs?: number
+
+  /** Fetch credentials mode (default: 'same-origin'). Set to 'include' for cross-origin cookie auth. */
+  credentials?: RequestCredentials
+
+  /** Function to get auth cookies for native apps (e.g. from expo-secure-store). When set, credentials is forced to 'omit'. */
+  getAuthCookie?: () => string | null
+}
+
+/**
+ * Cache entry for request deduplication
+ */
+interface CacheEntry<T> {
+  promise: Promise<T>
+  timestamp: number
 }
 
 export class HttpClient {
@@ -34,13 +51,28 @@ export class HttpClient {
   private authPath: string
   private mcpSessionId: string | null = null
   private mcpInitPromise: Promise<void> | null = null
+  private credentials: RequestCredentials
+  private getAuthCookie: (() => string | null) | null
+
+  /** Request deduplication window in milliseconds */
+  private dedupWindowMs: number
+
+  /** Cache for in-flight and recently completed GET requests */
+  private requestCache = new Map<string, CacheEntry<any>>()
 
   constructor(config: HttpClientConfig) {
-    // Remove trailing slash from baseUrl
-    this.baseUrl = config.baseUrl.replace(/\/$/, '')
+    const base = config.baseUrl?.replace(/\/$/, '') || ''
+    if (!base && typeof globalThis.window !== 'undefined') {
+      this.baseUrl = globalThis.window.location.origin
+    } else {
+      this.baseUrl = base
+    }
     this.getToken = config.getToken ?? (() => null)
     this.mcpPath = config.mcpPath ?? '/mcp'
     this.authPath = config.authPath ?? '/api/auth'
+    this.dedupWindowMs = config.dedupWindowMs ?? 100
+    this.getAuthCookie = config.getAuthCookie ?? null
+    this.credentials = this.getAuthCookie ? 'omit' : (config.credentials ?? 'same-origin')
   }
 
   /**
@@ -77,13 +109,97 @@ export class HttpClient {
       headers['Authorization'] = `Bearer ${token}`
     }
 
+    if (this.getAuthCookie) {
+      const cookie = this.getAuthCookie()
+      if (cookie) {
+        headers['Cookie'] = cookie
+      }
+    }
+
     return headers
   }
 
   /**
-   * Make an HTTP request
+   * Make an HTTP request with optional deduplication for GET requests
    */
   async request<T = unknown>(
+    path: string,
+    options: RequestOptions = {}
+  ): Promise<ShogoResponse<T>> {
+    const { method = 'GET', headers, body, searchParams, signal } = options
+
+    // Only dedupe GET requests
+    if (method === 'GET') {
+      const cacheKey = this.buildCacheKey(path, searchParams)
+      const cached = this.getCachedRequest<ShogoResponse<T>>(cacheKey)
+      if (cached) {
+        return cached
+      }
+
+      // Execute and cache
+      const promise = this.executeRequest<T>(path, options)
+      this.cacheRequest(cacheKey, promise)
+      return promise
+    }
+
+    // Non-GET requests are not deduplicated
+    return this.executeRequest<T>(path, options)
+  }
+
+  /**
+   * Build cache key for request deduplication
+   */
+  private buildCacheKey(path: string, searchParams?: Record<string, string>): string {
+    const params = searchParams ? JSON.stringify(searchParams) : ''
+    return `GET:${path}:${params}`
+  }
+
+  /**
+   * Get a cached request if still valid
+   */
+  private getCachedRequest<T>(cacheKey: string): Promise<T> | undefined {
+    const entry = this.requestCache.get(cacheKey)
+    if (!entry) return undefined
+
+    const age = Date.now() - entry.timestamp
+    if (age > this.dedupWindowMs) {
+      // Cache expired
+      this.requestCache.delete(cacheKey)
+      return undefined
+    }
+
+    return entry.promise
+  }
+
+  /**
+   * Cache a request promise
+   */
+  private cacheRequest<T>(cacheKey: string, promise: Promise<T>): void {
+    this.requestCache.set(cacheKey, {
+      promise,
+      timestamp: Date.now(),
+    })
+
+    // Clean up after dedup window expires
+    setTimeout(() => {
+      const entry = this.requestCache.get(cacheKey)
+      if (entry && Date.now() - entry.timestamp >= this.dedupWindowMs) {
+        this.requestCache.delete(cacheKey)
+      }
+    }, this.dedupWindowMs + 10)
+  }
+
+  /**
+   * Clear the request cache (e.g., after auth change)
+   */
+  clearCache(): void {
+    this.requestCache.clear()
+  }
+
+  /**
+   * Execute an HTTP request (internal, no deduplication)
+   */
+  private async executeRequest<T = unknown>(
     path: string,
     options: RequestOptions = {}
   ): Promise<ShogoResponse<T>> {
@@ -98,6 +214,7 @@ export class HttpClient {
         headers: requestHeaders,
         body: body ? JSON.stringify(body) : undefined,
         signal,
+        credentials: this.credentials,
       })
 
       const data = await this.parseResponse<T>(response)
@@ -241,7 +358,7 @@ export class HttpClient {
         protocolVersion: '2024-11-05',
         capabilities: {},
         clientInfo: {
-          name: '@shogo/sdk',
+          name: '@shogo-ai/sdk',
           version: '0.1.0',
         },
       },
@@ -251,6 +368,7 @@ export class HttpClient {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify(request),
+      credentials: this.credentials,
     })
 
     // Extract session ID from response header
@@ -298,6 +416,7 @@ export class HttpClient {
       method: 'POST',
       headers,
       body: JSON.stringify(request),
+      credentials: this.credentials,
     })
 
     const result = await response.json() as MCPResponse<{ content: Array<{ type: string; text: string }> }>

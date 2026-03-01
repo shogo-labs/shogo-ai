@@ -36,8 +36,8 @@ test.describe('Inventory Management - Shogo SDK Example', () => {
     await page.goto(BASE_URL)
     await page.waitForLoadState('networkidle')
     
-    // Should have some attribution text (TanStack/Prisma)
-    const attr = page.getByText(/TanStack|Prisma/i)
+    // Should have some attribution text (Prisma)
+    const attr = page.getByText(/Prisma/i)
     await expect(attr.first()).toBeVisible({ timeout: 15000 })
   })
 

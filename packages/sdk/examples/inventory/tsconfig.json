@@ -12,9 +12,11 @@
     "isolatedModules": true,
     "esModuleInterop": true,
     "resolveJsonModule": true,
+    "baseUrl": ".",
     "paths": {
+      "@/*": ["./src/*"],
       "~/*": ["./src/*"]
     }
   },
-  "include": ["src/**/*", "*.config.ts"]
+  "include": ["src/**/*", "*.config.ts", "server.tsx"]
 }

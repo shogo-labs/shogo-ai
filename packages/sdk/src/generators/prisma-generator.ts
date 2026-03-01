@@ -2,28 +2,52 @@
  * Prisma Schema Generator
  *
  * Parses Prisma schema and generates:
- * - TanStack Start server functions (CRUD)
- * - MST domain stores with collections
- * - TypeScript types
+ * - Hono routes (per-model)
+ * - TypeScript types (per-model)
+ * - OptimisticStore instances (per-model)
+ * - Docusaurus documentation site
+ * - Index files for re-exports
  */
 
-import { generateServerFunctions } from './server-functions'
-import { generateDomainStore } from './domain-store'
-import { generateTypes } from './types-generator'
+import { generateTypes, generateTypesPerModel, generateTypesIndex } from './types-generator'
+import { generateRoutes, generateRoutesIndex } from './routes-generator'
+import { generateStores, generateStoresIndex } from './stores-generator'
+import { generateMSTModels } from './mst-model-generator'
+import { generateMSTCollections } from './mst-collection-generator'
+import { generateMSTDomain } from './mst-domain-generator'
+import { generateServer, generateDbModule } from './server-generator'
+import { generateApiClient } from './api-client'
+import { generateAuthStore, getUserModel, hasUserModel } from './auth-store-generator'
+import { generateDocs } from './docs-generator'
+import { generateDocsSiteScaffold, generateDocsTsConfig } from './docs-site-generator'
+import { generateAdminRoutes } from './admin-routes-generator'
 
 // ============================================================================
 // Types
 // ============================================================================
 
+export interface OutputConfig {
+  /** Output directory */
+  dir: string
+  /** What to generate */
+  generate: ('routes' | 'hooks' | 'types' | 'stores' | 'mst' | 'server' | 'db' | 'api-client' | 'auth' | 'docs' | 'admin-routes')[]
+  /** Generate per-model files (default: true) */
+  perModel?: boolean
+  /** File extension for generated files: 'ts' or 'tsx' (default: 'tsx') */
+  fileExtension?: 'ts' | 'tsx'
+}
+
 export interface GenerateOptions {
   /** Path to Prisma schema file */
   schemaPath: string
-  /** Output directory for generated files */
-  outputDir: string
+  /** Output directory for generated files (legacy single-dir mode) */
+  outputDir?: string
   /** Models to generate (default: all) */
   models?: string[]
   /** Models to exclude */
   excludeModels?: string[]
+  /** Multiple output configurations (new per-model mode) */
+  outputs?: OutputConfig[]
 }
 
 export interface GenerateResult {
@@ -38,6 +62,7 @@ export interface GenerateResult {
 export interface GeneratedFile {
   path: string
   content: string
+  skipIfExists?: boolean  // If true, don't overwrite if file already exists
 }
 
 // ============================================================================
@@ -76,13 +101,32 @@ export interface PrismaDMMF {
 
 /**
  * Parse Prisma schema file to DMMF
+ * 
+ * Note: Prisma 7 uses prisma.config.ts for datasource URL.
+ * We pass the config path to getDMMF for proper parsing.
  */
 export async function parsePrismaSchema(schemaPath: string): Promise<PrismaDMMF> {
   const { getDMMF } = await import('@prisma/internals')
-  const { readFileSync } = await import('fs')
+  const { readFileSync, existsSync } = await import('fs')
+  const { dirname, join, resolve } = await import('path')
   
   const schemaString = readFileSync(schemaPath, 'utf-8')
-  return await getDMMF({ datamodel: schemaString }) as unknown as PrismaDMMF
+  const schemaDir = dirname(schemaPath)
+  const projectRoot = resolve(schemaDir, '..')
+  
+  // Check for prisma.config.ts in the schema's parent directory (project root)
+  const possibleConfigPaths = [
+    join(projectRoot, 'prisma.config.ts'),
+    join(schemaDir, 'prisma.config.ts'),
+  ]
+  
+  const configPath = possibleConfigPaths.find(p => existsSync(p))
+  
+  // getDMMF in Prisma 7 requires the config path for datasource URL
+  return await getDMMF({ 
+    datamodel: schemaString,
+    ...(configPath && { prismaConfigPath: configPath }),
+  }) as unknown as PrismaDMMF
 }
 
 /**
@@ -126,9 +170,13 @@ export function toKebabCase(name: string): string {
 
 /**
  * Generate all code from Prisma schema
+ *
+ * Supports two modes:
+ * 1. Legacy single-dir mode: outputDir + all types in one file
+ * 2. New per-model mode: outputs[] with per-model files
  */
 export async function generateFromPrisma(options: GenerateOptions): Promise<GenerateResult> {
-  const { schemaPath, outputDir, models: includeModels, excludeModels = [] } = options
+  const { schemaPath, outputDir, models: includeModels, excludeModels = [], outputs } = options
   const warnings: string[] = []
   const files: GeneratedFile[] = []
 
@@ -146,38 +194,268 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
     throw new Error('No models found to generate')
   }
 
-  // Generate types
-  const typesCode = generateTypes(models, dmmf.datamodel.enums)
+  const enums = dmmf.datamodel.enums
+
+  // New per-model mode with multiple outputs
+  if (outputs && outputs.length > 0) {
+    for (const output of outputs) {
+      const dir = output.dir
+      const perModel = output.perModel !== false // default true
+      const ext = output.fileExtension || 'tsx'
+      const indexFile = `${dir}/index.${ext}`
+
+      // Generate routes
+      if (output.generate.includes('routes')) {
+        if (perModel) {
+          const { routes, hooks } = generateRoutes(models, { fileExtension: ext })
+          
+          // Route files
+          for (const route of routes) {
+            files.push({
+              path: `${dir}/${route.fileName}`,
+              content: route.code,
+            })
+          }
+          
+          // Hooks files (only if hooks requested)
+          // IMPORTANT: Skip hooks files that already exist - they're meant to be edited by users
+          if (output.generate.includes('hooks')) {
+            for (const hook of hooks) {
+              files.push({
+                path: `${dir}/${hook.fileName}`,
+                content: hook.code,
+                skipIfExists: true, // Don't overwrite user customizations
+              })
+            }
+          }
+          
+          // Routes index
+          files.push({
+            path: indexFile,
+            content: generateRoutesIndex(models),
+          })
+        }
+      }
+
+      // Generate types
+      if (output.generate.includes('types')) {
+        if (perModel) {
+          const typeFiles = generateTypesPerModel(models, enums, ext)
+          for (const typeFile of typeFiles) {
+            files.push({
+              path: `${dir}/${typeFile.fileName}`,
+              content: typeFile.code,
+            })
+          }
+          
+          // Create types re-export file (for api-client imports)
+          files.push({
+            path: `${dir}/types.${ext}`,
+            content: generateTypesIndex(models),
+          })
+          
+          // Also append to index for convenience
+          const existingIndex = files.find(f => f.path === indexFile)
+          if (existingIndex) {
+            existingIndex.content += '\n' + generateTypesIndex(models)
+          } else {
+            files.push({
+              path: indexFile,
+              content: generateTypesIndex(models),
+            })
+          }
+        } else {
+          // Single file mode
+          files.push({
+            path: `${dir}/types.${ext}`,
+            content: generateTypes(models, enums),
+          })
+        }
+      }
+
+      // Generate stores (plain MobX)
+      if (output.generate.includes('stores')) {
+        if (perModel) {
+          const storeFiles = generateStores(models, { fileExtension: ext })
+          for (const storeFile of storeFiles) {
+            files.push({
+              path: `${dir}/${storeFile.fileName}`,
+              content: storeFile.code,
+            })
+          }
+          
+          // Stores index (append to existing index or create)
+          const existingStoresIndex = files.find(f => f.path === indexFile)
+          if (existingStoresIndex) {
+            existingStoresIndex.content += '\n' + generateStoresIndex(models)
+          } else {
+            files.push({
+              path: indexFile,
+              content: generateStoresIndex(models),
+            })
+          }
+        }
+      }
+
+      // Generate MST (MobX-State-Tree)
+      if (output.generate.includes('mst')) {
+        if (perModel) {
+          // Generate MST models (pass enums for proper enum value generation)
+          const mstModelFiles = generateMSTModels(models, models, enums, ext)
+          for (const modelFile of mstModelFiles) {
+            files.push({
+              path: `${dir}/${modelFile.fileName}`,
+              content: modelFile.code,
+            })
+          }
+
+          // Generate MST collections
+          const mstCollectionFiles = generateMSTCollections(models, ext)
+          for (const collectionFile of mstCollectionFiles) {
+            files.push({
+              path: `${dir}/${collectionFile.fileName}`,
+              content: collectionFile.code,
+            })
+          }
+
+          // Generate domain (root store)
+          const domainFile = generateMSTDomain(models, ext)
+          files.push({
+            path: `${dir}/${domainFile.fileName}`,
+            content: domainFile.code,
+          })
+
+          // Update or create index to export domain
+          const existingMstIndex = files.find(f => f.path === indexFile)
+          const mstExports = generateMSTIndex(models)
+          if (existingMstIndex) {
+            existingMstIndex.content += '\n' + mstExports
+          } else {
+            files.push({
+              path: indexFile,
+              content: mstExports,
+            })
+          }
+        }
+      }
+
+      // Generate API client (fetch client for browser)
+      if (output.generate.includes('api-client')) {
+        files.push({
+          path: `${dir}/api-client.${ext}`,
+          content: generateApiClient(models),
+        })
+      }
+
+      // Generate auth store (requires User model with email field)
+      if (output.generate.includes('auth')) {
+        if (hasUserModel(models)) {
+          const userModel = getUserModel(models)!
+          files.push({
+            path: `${dir}/auth.${ext}`,
+            content: generateAuthStore({ userModel }),
+          })
+        } else {
+          warnings.push('Auth store generation skipped: No User model with email field found')
+        }
+      }
+
+      // Generate server entry point (Hono)
+      if (output.generate.includes('server')) {
+        files.push({
+          path: `${dir}/server.${ext}`,
+          content: generateServer({
+            routesPath: './src/generated',
+            dbPath: './src/lib/db',
+          }),
+          skipIfExists: true, // Don't overwrite user customizations
+        })
+      }
+
+      // Generate database module (Prisma client)
+      if (output.generate.includes('db')) {
+        files.push({
+          path: `${dir}/db.${ext}`,
+          content: generateDbModule(),
+          skipIfExists: true, // Don't overwrite user customizations
+        })
+      }
+
+      // Generate Docusaurus documentation site
+      if (output.generate.includes('docs')) {
+        // Scaffold the Docusaurus site (skipIfExists — won't overwrite user edits)
+        const scaffoldFiles = generateDocsSiteScaffold({
+          projectName: 'My App',
+        })
+        for (const sf of scaffoldFiles) {
+          files.push({
+            path: `${dir}/${sf.path}`,
+            content: sf.content,
+            skipIfExists: sf.skipIfExists,
+          })
+        }
+
+        // tsconfig for the docs site
+        const tsConfig = generateDocsTsConfig()
+        files.push({
+          path: `${dir}/${tsConfig.path}`,
+          content: tsConfig.content,
+          skipIfExists: true,
+        })
+
+        // Generate documentation content (always regenerated)
+        const docFiles = generateDocs(models, enums, {
+          apiBasePath: '/api',
+        })
+        for (const df of docFiles) {
+          files.push({
+            path: `${dir}/${df.path}`,
+            content: df.content,
+            skipIfExists: df.skipIfExists,
+          })
+        }
+      }
+
+      // Generate admin routes (single file with unrestricted CRUD for all models)
+      if (output.generate.includes('admin-routes')) {
+        const adminFile = generateAdminRoutes(models, { fileExtension: ext as 'ts' | 'tsx' })
+        files.push({
+          path: `${dir}/${adminFile.fileName}`,
+          content: adminFile.code,
+        })
+      }
+    }
+
+    return {
+      files,
+      models: models.map(m => m.name),
+      warnings,
+    }
+  }
+
+  // Legacy single-dir mode (backward compatible)
+  if (!outputDir) {
+    throw new Error('Either outputDir or outputs[] must be provided')
+  }
+
+  // Generate types (single file)
+  const typesCode = generateTypes(models, enums)
   files.push({
-    path: `${outputDir}/types.ts`,
+    path: `${outputDir}/types.tsx`,
     content: typesCode,
-  })
-
-  // Generate server functions
-  const serverFunctionsCode = generateServerFunctions(models)
-  files.push({
-    path: `${outputDir}/server-functions.ts`,
-    content: serverFunctionsCode,
-  })
-
-  // Generate domain store
-  const domainStoreCode = generateDomainStore(models)
-  files.push({
-    path: `${outputDir}/domain.ts`,
-    content: domainStoreCode,
   })
 
   // Generate hooks template (user-editable)
   const hooksCode = generateHooksTemplate(models)
   files.push({
-    path: `${outputDir}/hooks.ts`,
+    path: `${outputDir}/hooks.tsx`,
     content: hooksCode,
   })
 
   // Generate index file
   const indexCode = generateIndexFile(models)
   files.push({
-    path: `${outputDir}/index.ts`,
+    path: `${outputDir}/index.tsx`,
     content: indexCode,
   })
 
@@ -241,7 +519,7 @@ function generateIndexFile(models: PrismaModel[]): string {
     '// Types',
     'export * from \'./types\'',
     '',
-    '// Server Functions (TanStack Start)',
+    '// Server Functions',
     'export * from \'./server-functions\'',
     '',
     '// Domain Store (MST/MobX)',
@@ -249,6 +527,34 @@ function generateIndexFile(models: PrismaModel[]): string {
     '',
     '// Hooks (customizable)',
     'export { hooks } from \'./hooks\'',
+    '',
+  ]
+
+  return lines.join('\n')
+}
+
+/**
+ * Generate MST index exports
+ */
+function generateMSTIndex(models: PrismaModel[]): string {
+  const lines: string[] = [
+    '/**',
+    ' * MST Domain Exports',
+    ' *',
+    ' * Generated by @shogo-ai/sdk - DO NOT EDIT DIRECTLY',
+    ' */',
+    '',
+    '// Domain store (root)',
+    'export {',
+    '  DomainStore,',
+    '  createDomainStore,',
+    '  getDomainStore,',
+    '  resetDomainStore,',
+    '  type IDomainStore,',
+    '  type IDomainStoreSnapshotIn,',
+    '  type IDomainStoreSnapshotOut,',
+    '  type ISDKEnvironment,',
+    '} from "./domain"',
     '',
   ]
 

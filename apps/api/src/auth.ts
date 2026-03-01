@@ -13,8 +13,23 @@
  */
 
 import { betterAuth } from "better-auth"
+import { expo } from "@better-auth/expo"
 import { Pool } from "pg"
 import { createPersonalWorkspace } from "./services/workspace.service"
+import { sendWelcomeEmail } from "./services/email.service"
+
+/**
+ * Strip HTML tags and angle brackets from user input.
+ * Server-side safety net against XSS — even if client-side validation is bypassed,
+ * no HTML/script content will be stored in the database.
+ */
+function sanitizeName(name: string | undefined | null): string {
+  if (!name) return ""
+  return name
+    .replace(/<[^>]*>/g, "")
+    .replace(/[<>]/g, "")
+    .trim()
+}
 
 // Port configuration from environment
 const API_PORT = process.env.API_PORT || "8002"
@@ -73,6 +88,13 @@ export const auth = betterAuth({
     },
     // JWT session with 7-day expiry (in seconds)
     expiresIn: 60 * 60 * 24 * 7,
+    // Cookie cache to reduce database queries on repeated get-session calls
+    // This stores session data in a short-lived signed cookie, avoiding
+    // database lookups for each useSession() call in React StrictMode
+    cookieCache: {
+      enabled: true,
+      maxAge: 5 * 60, // Cache for 5 minutes
+    },
   },
 
   // Account model configuration - uses Prisma's accounts table
@@ -116,13 +138,28 @@ export const auth = betterAuth({
     },
   },
 
-  // Trusted origins for CORS - configured via ALLOWED_ORIGINS env var
-  trustedOrigins: getAllowedOrigins(),
+  trustedOrigins: (request) => {
+    const origins = [...getAllowedOrigins(), 'shogo://']
+    if (process.env.NODE_ENV !== 'production') {
+      const reqOrigin = request?.headers?.get?.('origin')
+      if (reqOrigin?.startsWith('http://localhost:') && !origins.includes(reqOrigin)) {
+        origins.push(reqOrigin)
+      }
+      // Allow local network origins (React Native on physical Android/iOS devices)
+      if (reqOrigin && /^http:\/\/192\.168\.\d+\.\d+/.test(reqOrigin) && !origins.includes(reqOrigin)) {
+        origins.push(reqOrigin)
+      }
+      // Expo Go deep links (used by @better-auth/expo for OAuth redirects)
+      origins.push('exp://')
+    }
+    return origins
+  },
+
+  plugins: [expo()],
 
   // Advanced configuration
   advanced: {
     database: {
-      // Generate UUIDs for all BetterAuth tables to match our frontend schema
       generateId: (options) => crypto.randomUUID(),
     },
   },
@@ -133,6 +170,16 @@ export const auth = betterAuth({
     user: {
       create: {
         /**
+         * Before creating a user, sanitize the name to prevent stored XSS.
+         * Strips any HTML tags and angle brackets from the name field.
+         */
+        before: async (user) => {
+          if (user.name) {
+            user.name = sanitizeName(user.name)
+          }
+          return { data: user }
+        },
+        /**
          * After a new user is created, automatically create their personal workspace.
          * This ensures every user has at least one workspace to work in immediately after signup.
          *
@@ -142,8 +189,21 @@ export const auth = betterAuth({
          */
         after: async (user) => {
           try {
+            // BLOCKING: Create workspace (user needs this immediately)
             await createPersonalWorkspace(user.id, user.name || "User")
             console.log(`Created personal workspace for user ${user.email}`)
+            
+            // FIRE-AND-FORGET: Send welcome email (non-blocking)
+            const baseUrl = process.env.APP_URL || process.env.BETTER_AUTH_URL || 'http://localhost:3001'
+            sendWelcomeEmail({
+              to: user.email,
+              name: user.name || 'User',
+              loginUrl: `${baseUrl}/login`
+            }).catch((err) => {
+              // Gracefully log email failures without blocking
+              console.error(`Welcome email failed for ${user.email}:`, err)
+            })
+            
           } catch (error) {
             // Log error but don't block user creation
             console.error(
@@ -151,6 +211,18 @@ export const auth = betterAuth({
               error instanceof Error ? error.message : String(error)
             )
           }
+        },
+      },
+      update: {
+        /**
+         * Before updating a user, sanitize the name to prevent stored XSS.
+         * This covers profile name changes via settings pages.
+         */
+        before: async (user) => {
+          if (user.name) {
+            user.name = sanitizeName(user.name)
+          }
+          return { data: user }
         },
       },
     },

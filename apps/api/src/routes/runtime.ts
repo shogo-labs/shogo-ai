@@ -147,6 +147,7 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
    * GET /projects/:projectId/runtime/status - Get runtime status
    *
    * Returns current status of the runtime (running, stopped, starting, error).
+   * Response format matches Kubernetes environment for frontend compatibility.
    */
   router.get("/projects/:projectId/runtime/status", async (c) => {
     const projectId = c.req.param("projectId")
@@ -158,16 +159,21 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
         return c.json({
           projectId,
           status: "stopped",
+          ready: false,
           url: null,
           port: null,
+          message: "Runtime not started",
         })
       }
 
+      const isReady = runtime.status === 'running'
       return c.json({
         projectId,
         status: runtime.status,
+        ready: isReady,
         url: runtime.url,
         port: runtime.port,
+        message: isReady ? "Runtime ready" : `Runtime is ${runtime.status}`,
       })
     } catch (error: any) {
       console.error("[Runtime] Status error:", error)
@@ -182,12 +188,13 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
    * GET /projects/:projectId/sandbox/url - Get sandbox URL
    *
    * Returns URL with sandbox attributes for secure iframe embedding.
+   * Response format matches Kubernetes environment for frontend compatibility.
    */
   router.get("/projects/:projectId/sandbox/url", async (c) => {
     const projectId = c.req.param("projectId")
 
     try {
-      // Validate project
+      // Validate project exists in database
       const project = await validateProject(projectId)
       if (!project) {
         return c.json(
@@ -202,19 +209,34 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
         runtime = await runtimeManager.start(projectId)
       }
 
-      // Generate sandbox URL
-      const sandboxUrl = runtime.url
+      const isReady = runtime.status === 'running'
 
+      // Build agent URL for the project-runtime server (separate from Vite dev server locally)
+      // In local dev, Vite runs on basePort (e.g. 5200) and agent on basePort+1000 (e.g. 6200)
+      // The frontend needs the agent URL for SSE endpoints like /console-events and /build-events
+      const agentUrl = runtime.agentPort 
+        ? `http://localhost:${runtime.agentPort}` 
+        : runtime.url  // Fallback: in K8s, same URL serves both
+
+      // Return format matching Kubernetes response for frontend compatibility
       return c.json({
-        success: true,
-        projectId,
-        url: sandboxUrl,
-        sandboxAttributes: SANDBOX_ATTRIBUTES,
+        url: runtime.url,
+        directUrl: runtime.url,
+        agentUrl,
+        sandbox: SANDBOX_ATTRIBUTES,
+        status: runtime.status,
+        ready: isReady,
+        message: isReady ? "Runtime ready" : `Runtime is ${runtime.status}`,
       })
     } catch (error: any) {
       console.error("[Runtime] Sandbox URL error:", error)
       return c.json(
-        { error: { code: "sandbox_failed", message: error.message || "Failed to get sandbox URL" } },
+        { 
+          url: null,
+          status: 'error',
+          ready: false,
+          error: { code: "sandbox_failed", message: error.message || "Failed to get sandbox URL" } 
+        },
         500
       )
     }

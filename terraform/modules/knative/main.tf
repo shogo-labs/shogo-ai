@@ -50,6 +50,12 @@ variable "ssl_certificate_arn_publish" {
   default     = ""
 }
 
+variable "ssl_certificate_arn_preview" {
+  description = "Tertiary ACM certificate ARN for preview subdomains (e.g., *.staging.shogo.ai)"
+  type        = string
+  default     = ""
+}
+
 # -----------------------------------------------------------------------------
 # Knative Serving Installation via kubectl
 # -----------------------------------------------------------------------------
@@ -102,10 +108,11 @@ resource "null_resource" "kourier" {
 # Uses AWS Load Balancer Controller for ALB with SNI multi-certificate support
 # -----------------------------------------------------------------------------
 locals {
-  # Combine certificate ARNs if both are provided (comma-separated for ALB SNI)
-  ssl_certs = compact([var.ssl_certificate_arn, var.ssl_certificate_arn_publish])
+  # Combine certificate ARNs if provided (comma-separated for ALB SNI)
+  # Supports: primary (*.shogo.ai), publish (*.shogo.one), preview (*.staging.shogo.ai)
+  ssl_certs           = compact([var.ssl_certificate_arn, var.ssl_certificate_arn_publish, var.ssl_certificate_arn_preview])
   ssl_cert_annotation = join(",", local.ssl_certs)
-  has_ssl = length(local.ssl_certs) > 0
+  has_ssl             = length(local.ssl_certs) > 0
 }
 
 # Configure Kourier to use AWS Load Balancer Controller with ALB
@@ -159,7 +166,7 @@ resource "null_resource" "kourier_alb" {
 # Configure Knative via kubectl (ConfigMaps)
 # -----------------------------------------------------------------------------
 variable "ecr_registry" {
-  description = "ECR registry URL to skip tag resolution for (e.g., 123456789.dkr.ecr.us-east-1.amazonaws.com)"
+  description = "ECR registry URL to skip tag resolution for. Required because the Knative controller lacks ECR auth to resolve tags to digests. The deploy workflow compensates by always using immutable SHA-based image tags."
   type        = string
   default     = ""
 }
@@ -196,8 +203,10 @@ resource "null_resource" "knative_config" {
         --type merge \
         --patch '{"data":{"enable-scale-to-zero":"true","scale-to-zero-grace-period":"${var.scale_to_zero_grace_period}","scale-to-zero-pod-retention-period":"0s"}}'
       
-      # Configure ECR registry to skip tag resolution (avoids controller needing ECR auth)
-      # This allows Knative to use image tags directly without resolving to digests
+      # Skip tag-to-digest resolution for ECR (controller lacks ECR auth).
+      # IMPORTANT: Because of this, mutable tags like "staging-latest" will use
+      # the node's cached image (imagePullPolicy: IfNotPresent). The deploy
+      # workflow must always set SHA-specific immutable tags via kubectl patch.
       %{if var.ecr_registry != ""}
       kubectl patch configmap/config-deployment \
         --namespace knative-serving \
@@ -205,13 +214,13 @@ resource "null_resource" "knative_config" {
         --patch '{"data":{"registries-skipping-tag-resolving":"kind.local,ko.local,dev.local,${var.ecr_registry}"}}'
       %{endif}
 
-      # Enable PVC support feature flags (for workspace code persistence)
+      # Enable PVC support and scheduling feature flags
       # See: https://knative.dev/docs/serving/configuration/feature-flags/
       %{if var.enable_pvc_support}
       kubectl patch configmap/config-features \
         --namespace knative-serving \
         --type merge \
-        --patch '{"data":{"kubernetes.podspec-persistent-volume-claim":"enabled","kubernetes.podspec-persistent-volume-write":"enabled","kubernetes.podspec-securitycontext":"enabled"}}'
+        --patch '{"data":{"kubernetes.podspec-persistent-volume-claim":"enabled","kubernetes.podspec-persistent-volume-write":"enabled","kubernetes.podspec-securitycontext":"enabled","kubernetes.podspec-affinity":"enabled"}}'
       %{endif}
     EOT
   }

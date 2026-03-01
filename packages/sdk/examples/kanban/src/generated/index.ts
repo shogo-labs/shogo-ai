@@ -1,17 +1,17 @@
 /**
  * Generated Shogo SDK Code
  *
- * DO NOT EDIT - regenerate with `shogo generate`
+ * DO NOT EDIT - regenerate with `bun run generate`
  */
 
 // Types
 export * from './types'
 
-// Server Functions (TanStack Start)
+// Server Functions
 export * from './server-functions'
 
-// Domain Store (MST/MobX)
+// Domain Store
 export * from './domain'
 
-// Hooks (customizable)
+// Hooks
 export { hooks } from './hooks'

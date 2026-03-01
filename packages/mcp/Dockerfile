@@ -5,7 +5,7 @@
 # Runs the HTTP server on port 3100 (configurable via MCP_PORT)
 # =============================================================================
 
-FROM oven/bun:1.2-alpine AS builder
+FROM oven/bun:1.3-alpine AS builder
 
 WORKDIR /app
 
@@ -14,18 +14,34 @@ COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
 # Copy package.json files for dependency resolution
+# All workspace members must be present for bun install to succeed
 COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/mcp/package.json ./packages/mcp/
+COPY packages/project-runtime/package.json ./packages/project-runtime/
+COPY packages/agent-runtime/package.json ./packages/agent-runtime/
+COPY packages/shared-runtime/package.json ./packages/shared-runtime/
+COPY packages/sdk/package.json ./packages/sdk/
+COPY packages/domain-stores/package.json ./packages/domain-stores/
+COPY packages/shared-app/package.json ./packages/shared-app/
+COPY packages/shared-ui/package.json ./packages/shared-ui/
+COPY packages/ui-kit/package.json ./packages/ui-kit/
+COPY apps/api/package.json ./apps/api/
+COPY apps/mobile/package.json ./apps/mobile/
+
+# Copy scripts needed for postinstall
+COPY scripts ./scripts
 
 # Install all dependencies
 RUN bun install
 
 # Copy source code
 COPY packages/state-api ./packages/state-api
+COPY packages/shared-runtime ./packages/shared-runtime
 COPY packages/mcp ./packages/mcp
 
 # Copy domain schemas (studio-core, platform-features, etc.)
-COPY .schemas ./.schemas
+# Schemas are located inside the mcp package
+COPY packages/mcp/.schemas ./.schemas
 
 # Build state-api first (dependency)
 WORKDIR /app/packages/state-api
@@ -38,7 +54,7 @@ RUN bun run build || true
 # =============================================================================
 # Production image
 # =============================================================================
-FROM oven/bun:1.2-alpine
+FROM oven/bun:1.3-alpine
 
 WORKDIR /app
 
@@ -48,6 +64,7 @@ RUN apk add --no-cache curl
 # Copy built artifacts and node_modules
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages/state-api ./packages/state-api
+COPY --from=builder /app/packages/shared-runtime ./packages/shared-runtime
 COPY --from=builder /app/packages/mcp ./packages/mcp
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/tsconfig.base.json ./

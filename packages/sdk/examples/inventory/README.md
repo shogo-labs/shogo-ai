@@ -218,7 +218,7 @@ This inventory example complements the [expense-tracker](../expense-tracker/) ex
 
 Both examples demonstrate the same SDK patterns:
 - Prisma pass-through for full database access
-- Server functions with TanStack Start
+- Server functions with Hono
 - Relations and aggregations
 - User-scoped data
 

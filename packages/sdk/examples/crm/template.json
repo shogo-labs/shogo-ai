@@ -29,10 +29,10 @@
     "client management"
   ],
   "techStack": {
-    "database": "sqlite",
+    "database": "postgresql",
     "orm": "prisma",
     "frontend": "react",
-    "router": "tanstack-router",
+    "backend": "hono",
     "sdk": "@shogo-ai/sdk"
   }
 }

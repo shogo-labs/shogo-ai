@@ -14,8 +14,11 @@ resources:
   - domain-mappings.yaml
   - api-service.yaml
   - web-service.yaml
+  - docs-service.yaml
   - workspace-services.yaml
   - alb-ingress.yaml  # AWS Application Load Balancer for HTTPS ingress
+  - image-prepuller.yaml  # Pre-pull images on all nodes for faster cold starts
+  - image-prepuller-pdb.yaml  # Ensure prepuller pods aren't all deleted at once
 
 labels:
   - pairs:
@@ -33,4 +36,15 @@ images:
     newTag: staging-latest
   - name: shogo-web
     newName: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-web
+    newTag: staging-latest
+  - name: shogo-docs
+    newName: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-docs
+    newTag: staging-latest
+  # Project runtime image for pre-puller DaemonSet
+  - name: shogo-project-runtime
+    newName: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/project-runtime
+    newTag: staging-latest
+  # Agent runtime image for pre-puller DaemonSet
+  - name: shogo-agent-runtime
+    newName: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/agent-runtime
     newTag: staging-latest

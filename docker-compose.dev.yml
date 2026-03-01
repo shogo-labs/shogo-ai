@@ -2,17 +2,30 @@
 # Shogo AI - Development Override (Hot Reloading)
 # =============================================================================
 # Usage:
-#   docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 #
-# Or create a convenient alias:
-#   alias shogo-dev='docker-compose -f docker-compose.yml -f docker-compose.dev.yml'
-#   shogo-dev up -d
-#   shogo-dev logs -f api mcp web
+# Quick start:
+#   bun run docker:dev        # Start with HMR support
+#   bun run docker:dev:build  # Rebuild and start
+#   bun run docker:dev:logs   # Follow all logs
+#   bun run docker:dev:down   # Stop all services
+#
+# Port Reference:
+#   - Web UI:    http://localhost:5173 (with HMR)
+#   - API:       http://localhost:8002
+#   - MCP:       http://localhost:3100
+#   - Postgres:  localhost:5432
+#   - MinIO:     localhost:9000 (console: 9001)
+#   - Redis:     localhost:6379
+#
+# E2E Tests:
+#   cd apps/web && bun run test:e2e
 #
 # This override:
 #   - Mounts source code for live editing
 #   - Uses watch mode for api and mcp (auto-restart on file changes)
-#   - Uses Vite dev server for web (HMR)
+#   - Uses Vite dev server for web (HMR with WebSocket)
+#   - Project preview works via RuntimeManager (no separate container needed)
 # =============================================================================
 
 services:
@@ -54,6 +67,9 @@ services:
   # ---------------------------------------------------------------------------
   # API Server - Development with hot reloading
   # ---------------------------------------------------------------------------
+  # The API also runs RuntimeManager for project previews, spawning Vite
+  # processes inside this container. No separate runtime container needed.
+  # ---------------------------------------------------------------------------
   api:
     build:
       context: .
@@ -65,35 +81,23 @@ services:
       - /app/packages/mcp/node_modules
       - /app/packages/project-runtime/node_modules
       - /app/apps/api/node_modules
+      # Persist workspaces for project files
+      - ./workspaces:/app/workspaces
     environment:
       NODE_ENV: development
-      # Include port 3001 for dev Vite server
-      ALLOWED_ORIGINS: http://localhost:3000,http://localhost:3001,http://localhost:5173
+      # CORS: Allow all development origins
+      ALLOWED_ORIGINS: http://localhost:3000,http://localhost:5173,http://127.0.0.1:5173,http://host.docker.internal:5173
+      # RuntimeManager config for project previews
+      WORKSPACES_DIR: /app/workspaces
+      RUNTIME_BASE_PORT: "5200"
+      RUNTIME_DOMAIN_SUFFIX: localhost
+      # Projects database (isolated from platform database)
+      PROJECTS_DATABASE_URL: postgres://project:project_dev@postgres-projects:5432/projects
     command: ["bun", "--watch", "src/server.ts"]
 
   # ---------------------------------------------------------------------------
-  # Web Frontend - Development with Vite HMR
+  # Web Frontend (Expo) - Development
   # ---------------------------------------------------------------------------
-  web:
-    build:
-      context: .
-      dockerfile: apps/web/Dockerfile.dev
-    ports:
-      - "3001:3000"
-    volumes:
-      - .:/app
-      - /app/node_modules
-      - /app/packages/state-api/node_modules
-      - /app/packages/mcp/node_modules
-      - /app/apps/web/node_modules
-    environment:
-      NODE_ENV: development
-      # Client-side URLs (used by browser)
-      VITE_API_URL: http://localhost:8002
-      VITE_MCP_URL: http://localhost:3100
-      VITE_BETTER_AUTH_URL: http://localhost:8002
-      VITE_WORKSPACE: workspace
-      # Server-side proxy targets (Vite dev server uses Docker networking)
-      VITE_API_PROXY_TARGET: http://api:8002
-      VITE_MCP_PROXY_TARGET: http://mcp:3100
-    command: ["bun", "run", "dev", "--host", "0.0.0.0", "--port", "3000"]
+  # For dev, run Expo directly: bun run web:dev
+  # The Docker web service is production-only (static export + nginx).
+  # ---------------------------------------------------------------------------

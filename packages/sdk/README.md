@@ -1,19 +1,19 @@
-# @shogo/sdk
+# @shogo-ai/sdk
 
-Shogo Platform SDK - Zero-boilerplate auth and database for Shogo apps.
+Shogo Platform SDK - Zero-boilerplate auth, database, and email for Shogo apps.
 
 ## Installation
 
 ```bash
-npm install @shogo/sdk
+npm install @shogo-ai/sdk
 # or
-bun add @shogo/sdk
+bun add @shogo-ai/sdk
 ```
 
 ## Quick Start
 
 ```typescript
-import { createClient } from '@shogo/sdk'
+import { createClient } from '@shogo-ai/sdk'
 
 const client = createClient({
   apiUrl: 'http://localhost:3000',
@@ -35,6 +35,7 @@ await client.db.todos.delete(todo.id)
 
 - **Authentication** - Email/password auth with Better Auth integration
 - **Database** - Zero-config CRUD operations with MongoDB-style filtering
+- **Email** - SMTP and AWS SES support with templates
 - **TypeScript** - Full type safety with generics
 - **Cross-Platform** - Works in browsers, Node.js, and React Native
 
@@ -43,7 +44,7 @@ await client.db.todos.delete(todo.id)
 ### Client Setup
 
 ```typescript
-import { createClient } from '@shogo/sdk'
+import { createClient } from '@shogo-ai/sdk'
 
 const client = createClient({
   apiUrl: 'http://localhost:3000',  // Your app backend URL
@@ -94,6 +95,19 @@ const todos = await client.db.todos.list({
   orderBy: { createdAt: 'desc' },
   take: 20,
   skip: 0,
+})
+
+// List with query parameters (sent as URL query params)
+// Example: GET /api/v2/projects?workspaceId=abc123&status=active
+const projects = await client.db.projects.list({
+  where: { workspaceId: 'abc123', status: 'active' },
+  limit: 20,
+})
+
+// You can also use the params option for additional query parameters
+const filtered = await client.db.items.list({
+  where: { category: 'electronics' },
+  params: { sortBy: 'price', order: 'asc' },
 })
 
 // Get by ID
@@ -154,7 +168,7 @@ const count = await client.db.todos.count({
 
 ```typescript
 import { useState, useEffect } from 'react'
-import { createClient, type AuthState } from '@shogo/sdk'
+import { createClient, type AuthState } from '@shogo-ai/sdk'
 
 const client = createClient({ apiUrl: 'http://localhost:3000' })
 
@@ -182,7 +196,7 @@ function useAuth() {
 ### React Native
 
 ```typescript
-import { createClient, AsyncStorageAdapter } from '@shogo/sdk'
+import { createClient, AsyncStorageAdapter } from '@shogo-ai/sdk'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 
 const client = createClient({
@@ -196,7 +210,7 @@ const client = createClient({
 Use `createTypedClient` for full type inference:
 
 ```typescript
-import { createTypedClient } from '@shogo/sdk'
+import { createTypedClient } from '@shogo-ai/sdk'
 
 interface Todo {
   id: string
@@ -220,6 +234,127 @@ const client = createTypedClient<{
 // Now fully typed!
 const todos: Todo[] = await client.db.todos.list()
 const user: User | null = await client.db.users.get('123')
+```
+
+## Email (Server-Side)
+
+The SDK includes a server-side email module for sending transactional emails via SMTP or AWS SES.
+
+### Setup
+
+```bash
+# For SMTP (works with SES SMTP, SendGrid, Mailgun, etc.)
+npm install nodemailer
+
+# For AWS SES native API
+npm install @aws-sdk/client-ses
+```
+
+### Environment Variables
+
+```bash
+# SMTP Configuration
+SMTP_HOST=email-smtp.us-east-1.amazonaws.com
+SMTP_PORT=587
+SMTP_USER=AKIA...
+SMTP_PASSWORD=your-password
+EMAIL_FROM=noreply@yourapp.com
+
+# OR AWS SES Configuration
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=AKIA...
+AWS_SECRET_ACCESS_KEY=...
+EMAIL_FROM=noreply@yourapp.com
+```
+
+### Usage
+
+```typescript
+// In server functions or API routes
+import { createEmail } from '@shogo-ai/sdk/email/server'
+
+// Auto-configured from environment variables
+const email = createEmail()
+
+// Send a templated email (built-in templates: welcome, password-reset, invitation, notification)
+await email.sendTemplate({
+  to: 'user@example.com',
+  template: 'welcome',
+  data: { name: 'Alice', appName: 'MyApp' },
+})
+
+// Send a raw email
+await email.send({
+  to: 'user@example.com',
+  subject: 'Hello!',
+  html: '<h1>Hello World</h1>',
+})
+
+// Register custom templates
+email.registerTemplate({
+  name: 'order-confirmation',
+  subject: 'Order #{{orderId}} Confirmed',
+  html: '<h1>Thanks for your order, {{name}}!</h1><p>Order: {{orderId}}</p>',
+})
+
+await email.sendTemplate({
+  to: 'customer@example.com',
+  template: 'order-confirmation',
+  data: { name: 'Bob', orderId: '12345' },
+})
+```
+
+### Built-in Templates
+
+| Template | Variables |
+|----------|-----------|
+| `welcome` | `name`, `appName`, `loginUrl?` |
+| `password-reset` | `name?`, `appName`, `resetUrl`, `expiresIn?` |
+| `invitation` | `inviterName`, `resourceName`, `role?`, `acceptUrl`, `appName` |
+| `notification` | `title`, `message`, `actionUrl?`, `actionText?`, `appName` |
+
+### Explicit Configuration
+
+```typescript
+// SMTP with explicit config
+const email = createEmail({
+  config: {
+    provider: 'smtp',
+    defaultFrom: 'noreply@myapp.com',
+    smtp: {
+      host: 'smtp.example.com',
+      port: 587,
+      user: 'username',
+      password: 'password',
+    },
+  },
+})
+
+// AWS SES with explicit config
+const email = createEmail({
+  config: {
+    provider: 'ses',
+    defaultFrom: 'noreply@myapp.com',
+    ses: {
+      region: 'us-east-1',
+      // credentials optional if using IAM role
+    },
+  },
+})
+```
+
+### Optional Email (Graceful Degradation)
+
+```typescript
+import { createEmailOptional } from '@shogo-ai/sdk/email/server'
+
+const email = createEmailOptional()
+
+if (email) {
+  await email.sendTemplate({ ... })
+} else {
+  console.log('Email not configured, skipping')
+}
 ```
 
 ## Examples

@@ -36,7 +36,7 @@ test.describe('CRM - Shogo SDK Example', () => {
     await page.waitForLoadState('networkidle')
     
     // Should have some attribution
-    const attr = page.getByText(/TanStack|Prisma/i)
+    const attr = page.getByText(/Prisma/i)
     await expect(attr.first()).toBeVisible({ timeout: 15000 })
   })
 

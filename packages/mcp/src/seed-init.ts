@@ -13,7 +13,7 @@
  * @module mcp/seed-init
  */
 
-import { loadSchema, domain, SHOGO_ORG_ID, PLATFORM_PROJECT_ID, isS3Enabled } from "@shogo/state-api"
+import { loadSchema, domain, SHOGO_ORG_ID, PLATFORM_PROJECT_ID, isS3Enabled, NullPersistence } from "@shogo/state-api"
 import {
   isPostgresAvailable,
   isSqliteAvailable,
@@ -278,9 +278,10 @@ export async function initializeSeedData(schemasDir: string): Promise<void> {
       from: enhanced,
     })
 
-    // 4. Create runtime store with backendRegistry only (no FileSystemPersistence)
+    // 4. Create runtime store with backendRegistry (NullPersistence since we use postgres backend)
     const store = d.createStore({
       services: {
+        persistence: new NullPersistence(),
         backendRegistry: getGlobalBackendRegistry(),
       },
       context: {
@@ -313,9 +314,10 @@ export async function initializeSeedData(schemasDir: string): Promise<void> {
         from: componentBuilderEnhanced,
       })
 
-      // 9. Create runtime store with backendRegistry
+      // 9. Create runtime store with backendRegistry (NullPersistence since we use postgres backend)
       const componentBuilderStore = componentBuilderDomain.createStore({
         services: {
+          persistence: new NullPersistence(),
           backendRegistry: getGlobalBackendRegistry(),
         },
         context: {

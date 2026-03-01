@@ -1,6 +1,71 @@
 # =============================================================================
 # API Service - Staging Environment
 # =============================================================================
+
+# ServiceAccount for the API pod
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: api-service-account
+  namespace: shogo-staging-system
+---
+# ClusterRole for managing DomainMappings and Knative Services (for publish feature)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: shogo-staging-api-domainmapping-manager
+rules:
+  - apiGroups: ["serving.knative.dev"]
+    resources: ["domainmappings"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: ["serving.knative.dev"]
+    resources: ["services"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list"]
+---
+# Bind the ClusterRole to the API service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: shogo-staging-api-domainmapping-manager
+subjects:
+  - kind: ServiceAccount
+    name: api-service-account
+    namespace: shogo-staging-system
+roleRef:
+  kind: ClusterRole
+  name: shogo-staging-api-domainmapping-manager
+  apiGroup: rbac.authorization.k8s.io
+---
+# Role for managing database credential Secrets in the workspaces namespace.
+# The API creates/reads/updates/deletes Secrets named "project-{id}-db-creds"
+# to persistently store per-project database credentials (source of truth).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: shogo-api-db-secret-manager
+  namespace: shogo-staging-workspaces
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: shogo-api-db-secret-manager
+  namespace: shogo-staging-workspaces
+subjects:
+  - kind: ServiceAccount
+    name: api-service-account
+    namespace: shogo-staging-system
+roleRef:
+  kind: Role
+  name: shogo-api-db-secret-manager
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
@@ -16,11 +81,12 @@ spec:
         autoscaling.knative.dev/min-scale: "1"
         autoscaling.knative.dev/max-scale: "5"
     spec:
-      # Service account with permissions to create Knative services in workspaces namespace
+      # Service account with permissions to create Knative services and DomainMappings
       serviceAccountName: api-service-account
       containers:
         - name: api
           image: shogo-api  # Replaced by kustomize
+          imagePullPolicy: Always
           ports:
             - containerPort: 8002
           env:
@@ -38,10 +104,23 @@ spec:
               value: "shogo-staging-workspaces"
             - name: PROJECT_RUNTIME_IMAGE
               value: "097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/project-runtime:staging-latest"
+            # S3 configuration for project file persistence
+            # knative-project-manager injects this into project runtime pods
+            - name: S3_WORKSPACES_BUCKET
+              value: "shogo-workspaces-staging"
+            - name: S3_REGION
+              value: "us-east-1"
+            # Publishing configuration - namespace and domain for DomainMappings
+            # Note: PUBLISH_NAMESPACE must match where the "studio" service lives
+            # because DomainMappings must be in the same namespace as their target
+            - name: PUBLISH_NAMESPACE
+              value: "shogo-staging-system"
+            - name: PUBLISH_DOMAIN
+              value: "shogo.one"
             - name: BETTER_AUTH_URL
-              value: "https://api-staging.shogo.ai"
+              value: "https://studio-staging.shogo.ai"
             - name: ALLOWED_ORIGINS
-              value: "https://studio-staging.shogo.ai,https://api-staging.shogo.ai"
+              value: "https://studio-staging.shogo.ai"
             - name: REDIS_URL
               valueFrom:
                 secretKeyRef:
@@ -53,6 +132,23 @@ spec:
                 secretKeyRef:
                   name: postgres-credentials
                   key: DATABASE_URL
+            - name: PROJECTS_DB_ADMIN_URL
+              valueFrom:
+                secretKeyRef:
+                  name: projects-db-admin
+                  key: PROJECTS_DB_ADMIN_URL
+            - name: PROJECTS_DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: projects-db-admin
+                  key: PROJECTS_DB_HOST
+                  optional: true
+            - name: PROJECTS_DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: projects-db-admin
+                  key: PROJECTS_DB_PORT
+                  optional: true
             - name: BETTER_AUTH_SECRET
               valueFrom:
                 secretKeyRef:
@@ -75,10 +171,89 @@ spec:
                   name: api-secrets
                   key: STRIPE_WEBHOOK_SECRET
                   optional: true
+            # GitHub App configuration for Git sync integration
+            - name: GH_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GH_APP_ID
+                  optional: true
+            - name: GH_APP_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GH_APP_CLIENT_ID
+                  optional: true
+            - name: GH_APP_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GH_APP_CLIENT_SECRET
+                  optional: true
+            - name: GH_APP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GH_APP_PRIVATE_KEY
+                  optional: true
+            - name: GH_APP_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GH_APP_WEBHOOK_SECRET
+                  optional: true
+            - name: GH_APP_SLUG
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GH_APP_SLUG
+                  optional: true
+            # Composio integration
+            - name: COMPOSIO_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: COMPOSIO_API_KEY
+                  optional: true
+            - name: COMPOSIO_PROJECT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: COMPOSIO_PROJECT_ID
+                  optional: true
+            # OpenAI
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: OPENAI_API_KEY
+                  optional: true
+            # Observability
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "https://ingest.us.signoz.cloud:443"
+            - name: OTEL_SERVICE_NAME
+              value: "shogo-api-staging"
+            - name: OTEL_LOG_LEVEL
+              value: "info"
+            - name: SIGNOZ_INGESTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: signoz-credentials
+                  key: SIGNOZ_INGESTION_KEY
+                  optional: true
+            # Agent runtime for warm pool
+            - name: AGENT_RUNTIME_IMAGE
+              value: "097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/agent-runtime:staging-latest"
+            - name: WARM_POOL_PROJECT_SIZE
+              value: "0"
+            - name: WARM_POOL_AGENTS_PER_NODE
+              value: "10"
+            - name: WARM_POOL_MAX_AGE_MS
+              value: "3600000"
           resources:
             requests:
               memory: "256Mi"
               cpu: "100m"
             limits:
-              memory: "512Mi"
-              cpu: "500m"
+              memory: "2Gi"
+              cpu: "1"

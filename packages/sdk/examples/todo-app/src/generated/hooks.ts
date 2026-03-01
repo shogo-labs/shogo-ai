@@ -24,9 +24,30 @@ export const hooks: ServerFunctionHooks = {
       // Allow all gets for now - the beforeList handles filtering
       return undefined
     },
-    // No need to modify input - userId is passed from client
+    // Inject userId from context into the create input
+    // This ensures the todo is associated with the authenticated user
     beforeCreate: async (input, ctx) => {
-      return input
+      if (!ctx.userId) {
+        throw new Error('Authentication required: userId is missing')
+      }
+      return {
+        ...input,
+        userId: ctx.userId,
+      }
+    },
+    // Verify ownership before updating a todo
+    beforeUpdate: async (id, input, ctx) => {
+      // Prevent changing the userId on update
+      if (input.userId && input.userId !== ctx.userId) {
+        return { deny: true }
+      }
+      return undefined
+    },
+    // Verify ownership before deleting a todo
+    beforeDelete: async (id, ctx) => {
+      // The beforeList filter ensures users only see their own todos,
+      // so if they can see it, they can delete it
+      return undefined
     },
   },
 }

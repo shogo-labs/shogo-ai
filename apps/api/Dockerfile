@@ -6,7 +6,7 @@
 # Includes BetterAuth for authentication
 # =============================================================================
 
-FROM oven/bun:1.2-alpine AS builder
+FROM oven/bun:1.3-alpine AS builder
 
 WORKDIR /app
 
@@ -15,10 +15,22 @@ COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
 # Copy package.json files for dependency resolution
+# All workspace members must be present for bun install to succeed
 COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/mcp/package.json ./packages/mcp/
 COPY packages/project-runtime/package.json ./packages/project-runtime/
+COPY packages/agent-runtime/package.json ./packages/agent-runtime/
+COPY packages/shared-runtime/package.json ./packages/shared-runtime/
+COPY packages/sdk/package.json ./packages/sdk/
+COPY packages/domain-stores/package.json ./packages/domain-stores/
+COPY packages/shared-app/package.json ./packages/shared-app/
+COPY packages/shared-ui/package.json ./packages/shared-ui/
+COPY packages/ui-kit/package.json ./packages/ui-kit/
 COPY apps/api/package.json ./apps/api/
+COPY apps/mobile/package.json ./apps/mobile/
+
+# Copy scripts needed for postinstall (patch-claude-sdk runs during bun install)
+COPY scripts ./scripts
 
 # Install all dependencies
 RUN bun install
@@ -27,15 +39,38 @@ RUN bun install
 COPY packages/state-api ./packages/state-api
 COPY packages/mcp ./packages/mcp
 COPY packages/project-runtime ./packages/project-runtime
+COPY packages/agent-runtime ./packages/agent-runtime
+COPY packages/shared-runtime ./packages/shared-runtime
+COPY packages/sdk ./packages/sdk
 COPY apps/api ./apps/api
 
-# Build state-api first (dependency)
+# Copy prisma schema and config for generation
+COPY prisma ./prisma
+COPY prisma.config.ts ./prisma.config.ts
+
+# Generate Prisma client (must be done before building apps)
+# Use local prisma from node_modules to ensure correct version (v6)
+# Provide a placeholder DATABASE_URL (not used during generation, but schema validation requires it)
+RUN DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder" \
+    ./node_modules/.bin/prisma generate
+
+# Build SDK first (dependency of api)
+WORKDIR /app/packages/sdk
+RUN bun run build
+
+# Build state-api (dependency)
 WORKDIR /app/packages/state-api
 RUN bun run build
 
 # Build MCP package
 WORKDIR /app/packages/mcp
 RUN bun run build
+
+# Clean per-package node_modules in packages/* to avoid bun symlink bloat
+# during COPY (each symlinked node_modules adds ~500MB of duplicates).
+# Keep apps/api/node_modules — it may contain non-hoisted deps (e.g. OTEL).
+WORKDIR /app
+RUN rm -rf packages/*/node_modules
 
 # =============================================================================
 # Production image
@@ -47,8 +82,7 @@ WORKDIR /app
 
 # Install curl for healthchecks, bash for shell, and Bun
 RUN apk add --no-cache curl bash unzip && \
-    curl -fsSL https://bun.sh/install | bash && \
-    mv /root/.bun/bin/bun /usr/local/bin/ && \
+    curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v1.3.9" && \
     rm -rf /root/.bun
 
 # Install Claude Code CLI globally (required for ai-sdk-provider-claude-code)
@@ -61,14 +95,32 @@ ENV SHELL=/bin/bash
 RUN addgroup -g 1001 -S appgroup && \
     adduser -u 1001 -S appuser -G appgroup
 
-# Copy built artifacts and node_modules
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/packages/state-api ./packages/state-api
-COPY --from=builder /app/packages/mcp ./packages/mcp
-COPY --from=builder /app/packages/project-runtime ./packages/project-runtime
-COPY --from=builder /app/apps/api ./apps/api
-COPY --from=builder /app/package.json ./
-COPY --from=builder /app/tsconfig.base.json ./
+# Copy built artifacts with --chown (avoids expensive recursive chown layer duplication)
+COPY --chown=appuser:appgroup --from=builder /app/node_modules ./node_modules
+COPY --chown=appuser:appgroup --from=builder /app/packages/state-api ./packages/state-api
+COPY --chown=appuser:appgroup --from=builder /app/packages/mcp ./packages/mcp
+COPY --chown=appuser:appgroup --from=builder /app/packages/project-runtime ./packages/project-runtime
+COPY --chown=appuser:appgroup --from=builder /app/packages/agent-runtime ./packages/agent-runtime
+COPY --chown=appuser:appgroup --from=builder /app/packages/shared-runtime ./packages/shared-runtime
+COPY --chown=appuser:appgroup --from=builder /app/packages/sdk ./packages/sdk
+COPY --chown=appuser:appgroup --from=builder /app/apps/api ./apps/api
+COPY --chown=appuser:appgroup --from=builder /app/package.json ./
+COPY --chown=appuser:appgroup --from=builder /app/bun.lock ./
+COPY --chown=appuser:appgroup --from=builder /app/tsconfig.base.json ./
+
+# Re-create workspace symlinks (Docker COPY doesn't preserve cross-tree symlinks)
+RUN mkdir -p node_modules/@shogo && \
+    ln -sf ../../../packages/shared-runtime node_modules/@shogo/shared-runtime && \
+    ln -sf ../../../packages/state-api node_modules/@shogo/state-api && \
+    ln -sf ../../../packages/mcp node_modules/@shogo/mcp && \
+    ln -sf ../../../packages/sdk node_modules/@shogo/sdk && \
+    ln -sf ../../../packages/project-runtime node_modules/@shogo/project-runtime && \
+    ln -sf ../../../packages/agent-runtime node_modules/@shogo/agent-runtime && \
+    chown -h appuser:appgroup node_modules/@shogo node_modules/@shogo/*
+
+# Copy prisma schema, config, and migrations for runtime migrations
+COPY --chown=appuser:appgroup --from=builder /app/prisma ./prisma
+COPY --chown=appuser:appgroup --from=builder /app/prisma.config.ts ./prisma.config.ts
 
 # Copy SDK examples folder for templates API
 COPY packages/sdk/examples ./packages/sdk/examples
@@ -85,8 +137,8 @@ RUN mkdir -p /app/workspaces
 RUN mkdir -p /app/.claude && \
     chmod 777 /app /app/.claude
 
-# Change ownership to non-root user (but keep world-writable for host UID override)
-RUN chown -R appuser:appgroup /app
+# Set ownership on specific directories (COPY --chown handled the rest)
+RUN chown -R appuser:appgroup /app/workspaces /app/.claude
 
 # Switch to non-root user
 # Note: For development with mounted volumes, may need to run as root
@@ -108,5 +160,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 # Run API server
 WORKDIR /app/apps/api
 ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["bun", "run", "src/server.ts"]
+CMD ["bun", "run", "src/entry.ts"]
 

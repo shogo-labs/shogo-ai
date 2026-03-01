@@ -1,5 +1,5 @@
 /**
- * Wavesmith MCP Server - Template Tools Only
+ * Shogo MCP Server - Template Tools Only
  *
  * A minimal MCP server that only exposes template tools for the Shogo agent.
  * Used by project runtime for rapid app scaffolding via starter templates.
@@ -11,9 +11,9 @@
 import { FastMCP } from "fastmcp"
 import { registerTemplateTools } from "./tools/registry"
 
-// Wavesmith MCP (stdio transport for Claude Code sessions)
+// Shogo MCP (stdio transport for Claude Code sessions)
 const server = new FastMCP({
-  name: "wavesmith-templates",
+  name: "shogo-templates",
   version: "0.0.1",
 })
 

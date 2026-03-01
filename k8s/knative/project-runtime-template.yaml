@@ -5,17 +5,22 @@
 #
 # Architecture:
 # Each project pod contains TWO containers:
-# 1. project-runtime: Claude Code agent + MCP (wavesmith) + Vite
+# 1. project-runtime: Claude Code agent + MCP (shogo) + Vite
 # 2. postgres: PostgreSQL 16 sidecar for per-project database
 #
 # Key features:
 # - Scale-to-zero: Both containers scale down together after idle timeout
 # - Per-project PostgreSQL: Each project has its own isolated database
-# - Persistent storage: Two PVCs - one for code, one for PostgreSQL data
+# - Ephemeral project storage: Uses emptyDir for fast cold starts (~6s faster)
+# - S3 sync: Project files sync to/from S3 for persistence across restarts
+# - Persistent database: PostgreSQL data persists in PVC
 # - Local database: PostgreSQL runs on localhost:5432 (no network latency)
 #
+# Storage strategy:
+# - project-data: emptyDir (fast, ephemeral) - synced to S3 for persistence
+# - postgres-data: PVC (persistent) - database must survive restarts
+#
 # PVCs created per project:
-# - pvc-project-{id}: Project code/files (1Gi)
 # - pvc-postgres-{id}: PostgreSQL data (1Gi)
 #
 # Usage:
@@ -44,9 +49,12 @@ spec:
     metadata:
       annotations:
         # Knative autoscaling configuration
+        # min-scale: 0 enables scale-to-zero for cost savings
+        # scale-to-zero-pod-retention-period: Keep pod running for 15 min after last request
+        #   to reduce cold starts for actively used projects
         autoscaling.knative.dev/min-scale: "0"
         autoscaling.knative.dev/max-scale: "1"
-        autoscaling.knative.dev/scale-to-zero-pod-retention-period: "300s"
+        autoscaling.knative.dev/scale-to-zero-pod-retention-period: "900s"
         autoscaling.knative.dev/target: "10"
     spec:
       timeoutSeconds: 600
@@ -72,11 +80,20 @@ spec:
             # PostgreSQL connection - localhost since sidecar
             - name: DATABASE_URL
               value: "postgres://shogo:shogo@localhost:5432/project"
-            - name: ANTHROPIC_API_KEY
+            # AI_PROXY_URL and AI_PROXY_TOKEN are injected programmatically
+            # by knative-project-manager.ts at pod creation time.
+            # Raw API keys are never exposed to project pods.
+            # S3 sync configuration - enables file persistence with emptyDir
+            - name: S3_WORKSPACES_BUCKET
               valueFrom:
                 secretKeyRef:
-                  name: anthropic-credentials
-                  key: api-key
+                  name: s3-credentials
+                  key: workspaces-bucket
+                  optional: true
+            - name: S3_WATCH_ENABLED
+              value: "true"
+            - name: S3_SYNC_INTERVAL
+              value: "30000"
           resources:
             requests:
               memory: "256Mi"
@@ -88,15 +105,15 @@ spec:
             - name: project-data
               mountPath: /app/project
           # Optimized probes for fast startup
-          # Health check passes in ~2s, ready in ~5s with deferred init
+          # Check every 1s instead of 2s for faster cold start detection
           readinessProbe:
             httpGet:
               path: /ready
               port: 8080
-            initialDelaySeconds: 1
-            periodSeconds: 2
+            initialDelaySeconds: 0
+            periodSeconds: 1
             timeoutSeconds: 2
-            failureThreshold: 30
+            failureThreshold: 60
           livenessProbe:
             httpGet:
               path: /health
@@ -146,9 +163,12 @@ spec:
             failureThreshold: 3
 
       volumes:
+        # Project files: emptyDir for fast cold starts (~6s faster than EBS)
+        # Files are synced to/from S3 for persistence across restarts
         - name: project-data
-          persistentVolumeClaim:
-            claimName: pvc-project-{id}
+          emptyDir:
+            sizeLimit: "2Gi"
+        # PostgreSQL data: PVC for persistent database storage
         - name: postgres-data
           persistentVolumeClaim:
             claimName: pvc-postgres-{id}

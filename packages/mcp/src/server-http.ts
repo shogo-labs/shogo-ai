@@ -1,3 +1,8 @@
+import { initInstrumentation, createLogger } from "@shogo/shared-runtime"
+initInstrumentation({ serviceName: "shogo-mcp" })
+
+const log = createLogger("mcp")
+
 import { FastMCP } from "fastmcp"
 import { join } from "node:path"
 import { registerAllTools } from "./tools/registry"
@@ -26,13 +31,13 @@ await initializeSeedData(SCHEMAS_PATH)
 // This ensures schemas are available immediately for queries without waiting for browser schema.load calls
 await preloadCoreSchemas(SCHEMAS_PATH)
 
-// Wavesmith MCP with HTTP/SSE transport
+// Shogo MCP with HTTP/SSE transport
 const server = new FastMCP({
-  name: "wavesmith-mcp",
+  name: "shogo-mcp",
   version: "0.0.1",
 })
 
-// Register all Wavesmith tools (18 tools)
+// Register all Shogo tools (18 tools)
 registerAllTools(server)
 
 // Health check endpoint for Kubernetes probes
@@ -65,7 +70,7 @@ server.start({
   },
 })
 
-console.log(`Wavesmith MCP HTTP server running on http://0.0.0.0:${MCP_PORT}`)
+console.log(`Shogo MCP HTTP server running on http://0.0.0.0:${MCP_PORT}`)
 console.log(`HTTP Stream endpoint: http://localhost:${MCP_PORT}/mcp`)
 console.log(`SSE endpoint: http://localhost:${MCP_PORT}/sse`)
 console.log(`SQL backend: ${isPostgresAvailable() ? "postgres" : isSqliteAvailable() ? "sqlite" : "memory only"}`)

@@ -20,6 +20,7 @@ spec:
       containers:
         - name: web
           image: shogo-web  # Replaced by kustomize
+          imagePullPolicy: Always
           ports:
             - containerPort: 80
           env:

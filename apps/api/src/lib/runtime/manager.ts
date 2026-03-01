@@ -6,7 +6,7 @@
  */
 
 import { spawn, execSync, type ChildProcess } from 'child_process'
-import { existsSync, cpSync, mkdirSync, writeFileSync } from 'fs'
+import { existsSync, cpSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import type {
@@ -32,6 +32,12 @@ const BUNDLED_TEMPLATE_DIR = join(__dirname, '..', '..', '..', '..', '..', 'pack
  * Used for local development to run the agent chat endpoint.
  */
 const PROJECT_RUNTIME_SERVER = join(__dirname, '..', '..', '..', '..', '..', 'packages', 'project-runtime', 'src', 'server.ts')
+
+/**
+ * Path to the agent-runtime server.
+ * Used for local development to run agent projects.
+ */
+const AGENT_RUNTIME_SERVER = join(__dirname, '..', '..', '..', '..', '..', 'packages', 'agent-runtime', 'src', 'server.ts')
 
 /**
  * Path to the MCP server (for project-runtime to spawn).
@@ -69,7 +75,117 @@ export class RuntimeManager implements IRuntimeManager {
   }
 
   /**
+   * Check if a port is actually in use by attempting to connect to it.
+   * This helps detect stale processes from previous API server instances.
+   */
+  private async isPortInUse(port: number): Promise<boolean> {
+    try {
+      const response = await fetch(`http://localhost:${port}/`, {
+        method: 'HEAD',
+        signal: AbortSignal.timeout(500),
+      })
+      return true // Port responded
+    } catch {
+      return false // Port not responding
+    }
+  }
+
+  /**
+   * Kill any process running on the specified port.
+   * Uses lsof to find the PID and kills it.
+   *
+   * IMPORTANT: Excludes the current process (and its parent) to avoid
+   * the API server killing itself when it has connections to the port.
+   */
+  private killProcessOnPort(port: number): void {
+    try {
+      // Find PID using lsof (works on macOS and Linux)
+      const result = execSync(`lsof -ti :${port} 2>/dev/null || true`, { encoding: 'utf-8' })
+      const pids = result.trim().split('\n').filter(pid => pid.length > 0)
+
+      // Never kill ourselves or our parent process
+      const selfPid = String(process.pid)
+      const parentPid = String(process.ppid)
+      const safePids = pids.filter(pid => pid !== selfPid && pid !== parentPid)
+
+      if (pids.length > 0 && safePids.length === 0) {
+        console.log(`[RuntimeManager] Port ${port} is held by the current process — skipping kill`)
+      }
+
+      for (const pid of safePids) {
+        try {
+          console.log(`[RuntimeManager] Killing stale process ${pid} on port ${port}`)
+          execSync(`kill -9 ${pid} 2>/dev/null || true`)
+        } catch {
+          // Process might have already exited
+        }
+      }
+      
+      if (safePids.length > 0) {
+        // Give the OS a moment to release the port
+        execSync('sleep 0.5')
+      }
+    } catch (err) {
+      console.warn(`[RuntimeManager] Failed to kill process on port ${port}:`, err)
+    }
+  }
+
+  /**
+   * Allocate a port for a project - in local dev, always use the same port per project.
+   * If the port is in use by a stale process, kill it first.
+   * This ensures consistent port assignments and avoids port drift on hot reload.
+   */
+  private async allocatePortAsync(): Promise<number> {
+    const { basePort, maxRuntimes } = this.config
+    
+    // In local development, always try to use basePort first (5200)
+    // This provides consistent URLs and avoids confusion
+    const port = basePort
+    const agentPort = port + 1000
+    
+    // Check if ports are in use
+    const viteInUse = await this.isPortInUse(port)
+    const agentInUse = await this.isPortInUse(agentPort)
+    
+    // If either port is in use by a stale process, kill it
+    if (viteInUse) {
+      console.log(`[RuntimeManager] Port ${port} is in use, killing stale process...`)
+      this.killProcessOnPort(port)
+    }
+    if (agentInUse) {
+      console.log(`[RuntimeManager] Port ${agentPort} is in use, killing stale process...`)
+      this.killProcessOnPort(agentPort)
+    }
+    
+    // Verify ports are now free
+    const stillViteInUse = await this.isPortInUse(port)
+    const stillAgentInUse = await this.isPortInUse(agentPort)
+    
+    if (stillViteInUse || stillAgentInUse) {
+      console.error(`[RuntimeManager] Failed to free ports ${port}/${agentPort}, trying next available...`)
+      // Fall back to finding next available port
+      for (let offset = 1; offset < maxRuntimes; offset++) {
+        const nextPort = basePort + offset
+        const nextAgentPort = nextPort + 1000
+        if (!this.usedPorts.has(nextPort)) {
+          const nextViteInUse = await this.isPortInUse(nextPort)
+          const nextAgentInUse = await this.isPortInUse(nextAgentPort)
+          if (!nextViteInUse && !nextAgentInUse) {
+            this.usedPorts.add(nextPort)
+            return nextPort
+          }
+        }
+      }
+      throw new Error(`Cannot allocate port - all ports occupied`)
+    }
+    
+    this.usedPorts.add(port)
+    return port
+  }
+
+  /**
    * Allocate next available port starting from basePort.
+   * @deprecated Use allocatePortAsync for proper stale process detection
    */
   private allocatePort(): number {
     const { basePort, maxRuntimes } = this.config
@@ -270,6 +386,36 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     return projectDir
   }
 
+  private async getProjectInfo(projectId: string): Promise<{ type: 'APP' | 'AGENT'; templateId?: string; name?: string }> {
+    try {
+      const { prisma } = await import('../prisma')
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { type: true, templateId: true, name: true },
+      })
+      return {
+        type: (project?.type as 'APP' | 'AGENT') || 'APP',
+        templateId: project?.templateId ?? undefined,
+        name: project?.name ?? undefined,
+      }
+    } catch {
+      return { type: 'APP' }
+    }
+  }
+
+  private async getProjectWorkspaceId(projectId: string): Promise<string | null> {
+    try {
+      const { prisma } = await import('../prisma')
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { workspaceId: true },
+      })
+      return project?.workspaceId ?? null
+    } catch {
+      return null
+    }
+  }
+
   async start(projectId: string): Promise<IProjectRuntime> {
     // Check if already running
     const existing = this.runtimes.get(projectId)
@@ -277,11 +423,14 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       throw new Error(`Runtime for project ${projectId} is already running`)
     }
 
+    const projectInfo = await this.getProjectInfo(projectId)
+    const isAgentProject = projectInfo.type === 'AGENT'
+
     // Ensure project directory exists with dependencies
     const projectDir = await this.ensureProjectDirectory(projectId)
 
-    // Allocate ports
-    const port = this.allocatePort()
+    // Allocate ports (async to check for stale processes)
+    const port = await this.allocatePortAsync()
     const agentPort = port + 1000
     const url = this.buildUrl(projectId, port)
     const startedAt = Date.now()
@@ -300,19 +449,122 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     this.runtimes.set(projectId, runtime)
 
     try {
-      // Spawn Vite dev server
-      const proc = spawn('bun', ['run', 'dev', '--port', String(port), '--host', '0.0.0.0'], {
+      // Agent projects don't need a Vite dev server — only the agent-runtime
+      if (!isAgentProject) {
+
+      // Build Vite environment - override DATABASE_URL with projects database if available
+      // This ensures project runtimes connect to the isolated projects database, not the platform database
+      const viteEnv: Record<string, string> = {
+        ...process.env as Record<string, string>,
+        PROJECT_ID: projectId,
+        VITE_PROJECT_ID: projectId,
+        VITE_PORT: String(port),
+        PORT: String(port),
+      }
+      
+      // Override DATABASE_URL with PROJECTS_DATABASE_URL to isolate project data
+      if (process.env.PROJECTS_DATABASE_URL) {
+        viteEnv.DATABASE_URL = process.env.PROJECTS_DATABASE_URL
+        console.log(`[RuntimeManager] Vite using projects database: ${process.env.PROJECTS_DATABASE_URL.replace(/:[^:@]+@/, ':***@')}`)
+      }
+
+      // [EXPO DISABLED] Detect if this is an Expo project
+      // let isExpoProject = false
+      // try {
+      //   const pkgJsonPath = join(projectDir, 'package.json')
+      //   if (existsSync(pkgJsonPath)) {
+      //     const pkgJson = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'))
+      //     isExpoProject = !!(pkgJson.dependencies?.expo || pkgJson.devDependencies?.expo)
+      //   }
+      // } catch {
+      // }
+
+      // [EXPO DISABLED] Expo branch commented out -- only Vite dev server path remains
+      // if (isExpoProject) {
+      //   console.log(`[RuntimeManager] Installing dependencies for Expo project ${projectId}...`)
+      //   const installProc = spawn('bun', ['install'], {
+      //     cwd: projectDir,
+      //     stdio: ['ignore', 'pipe', 'pipe'],
+      //     env: viteEnv,
+      //   })
+      //
+      //   await new Promise<void>((resolve, reject) => {
+      //     installProc.on('exit', (code) => {
+      //       if (code === 0) {
+      //         console.log(`[RuntimeManager] Dependencies installed for ${projectId}`)
+      //         resolve()
+      //       } else {
+      //         reject(new Error(`bun install failed with code ${code}`))
+      //       }
+      //     })
+      //     installProc.on('error', reject)
+      //     installProc.stderr?.on('data', (data) => {
+      //       console.error(`[RuntimeManager] bun install stderr: ${data.toString()}`)
+      //     })
+      //   })
+      //
+      //   console.log(`[RuntimeManager] Setting up database for ${projectId}...`)
+      //   const prismaGenProc = spawn('bunx', ['prisma', 'generate'], {
+      //     cwd: projectDir,
+      //     stdio: ['ignore', 'pipe', 'pipe'],
+      //     env: viteEnv,
+      //   })
+      //   await new Promise<void>((resolve) => {
+      //     prismaGenProc.on('exit', () => resolve())
+      //     prismaGenProc.on('error', () => resolve())
+      //   })
+      //
+      //   const prismaPushProc = spawn('bunx', ['prisma', 'db', 'push', '--accept-data-loss'], {
+      //     cwd: projectDir,
+      //     stdio: ['ignore', 'pipe', 'pipe'],
+      //     env: viteEnv,
+      //   })
+      //   await new Promise<void>((resolve) => {
+      //     prismaPushProc.on('exit', () => resolve())
+      //     prismaPushProc.on('error', () => resolve())
+      //   })
+      //
+      //   console.log(`[RuntimeManager] Building Expo project ${projectId}...`)
+      //   const buildProc = spawn('bun', ['run', 'build'], {
+      //     cwd: projectDir,
+      //     stdio: ['ignore', 'pipe', 'pipe'],
+      //     env: viteEnv,
+      //   })
+      //
+      //   await new Promise<void>((resolve, reject) => {
+      //     buildProc.on('exit', (code) => {
+      //       if (code === 0) {
+      //         console.log(`[RuntimeManager] Expo build completed for ${projectId}`)
+      //         resolve()
+      //       } else {
+      //         reject(new Error(`Expo build failed with code ${code}`))
+      //       }
+      //     })
+      //     buildProc.on('error', reject)
+      //     buildProc.stderr?.on('data', (data) => {
+      //       console.error(`[RuntimeManager] Expo build stderr: ${data.toString()}`)
+      //     })
+      //   })
+      //
+      //   console.log(`[RuntimeManager] Starting Expo Hono server for ${projectId} on port ${port}`)
+      //   proc = spawn('bun', ['run', 'start'], {
+      //     cwd: projectDir,
+      //     stdio: ['ignore', 'pipe', 'pipe'],
+      //     detached: false,
+      //     env: { ...viteEnv, PORT: String(port) },
+      //   })
+      // } else {
+
+      // Run Vite dev server
+      let proc: ReturnType<typeof spawn>
+      const devArgs = ['run', 'dev', '--port', String(port), '--host', '0.0.0.0']
+      proc = spawn('bun', devArgs, {
         cwd: projectDir,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: false,
-        env: {
-          ...process.env,
-          PROJECT_ID: projectId,
-          VITE_PROJECT_ID: projectId,
-          VITE_PORT: String(port),
-          PORT: String(port),
-        },
+        env: viteEnv,
       })
+      // }
 
       runtime.process = proc
 
@@ -334,21 +586,48 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         if (output.includes('Local:') || output.includes('ready in')) {
           console.log(`[RuntimeManager] Vite ready for ${projectId} on port ${port}`)
         }
+        // Forward Vite output to the agent server's console log for the Server tab
+        for (const line of output.split('\n')) {
+          if (line.trim()) {
+            fetch(`http://localhost:${agentPort}/console-log/append`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ line: line.trim(), stream: 'stdout' }),
+            }).catch(() => {}) // Ignore if agent isn't ready yet
+          }
+        }
       })
 
       proc.stderr?.on('data', (data) => {
-        console.error(`[RuntimeManager] Vite stderr for ${projectId}:`, data.toString())
+        const output = data.toString()
+        console.error(`[RuntimeManager] Vite stderr for ${projectId}:`, output)
+        // Forward Vite stderr to the agent server's console log for the Server tab
+        for (const line of output.split('\n')) {
+          if (line.trim()) {
+            fetch(`http://localhost:${agentPort}/console-log/append`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ line: line.trim(), stream: 'stderr' }),
+            }).catch(() => {}) // Ignore if agent isn't ready yet
+          }
+        }
       })
 
-      // Spawn project-runtime agent server for local development
-      if (existsSync(PROJECT_RUNTIME_SERVER)) {
-        console.log(`[RuntimeManager] Starting agent server for ${projectId} on port ${agentPort}`)
+      } // end if (!isAgentProject) — skip Vite for agent projects
+
+      // Spawn runtime agent server for local development
+      const runtimeServerPath = isAgentProject ? AGENT_RUNTIME_SERVER : PROJECT_RUNTIME_SERVER
+      if (existsSync(runtimeServerPath)) {
+        console.log(`[RuntimeManager] Starting ${isAgentProject ? 'agent' : 'project'} runtime for ${projectId} on port ${agentPort}`)
         
-        // Build environment for project runtime
+        // Build environment for runtime
         const runtimeEnv: Record<string, string> = {
           ...process.env as Record<string, string>,
           PROJECT_ID: projectId,
           PROJECT_DIR: projectDir,
+          ...(isAgentProject ? { AGENT_DIR: projectDir } : {}),
+          ...(projectInfo.templateId ? { TEMPLATE_ID: projectInfo.templateId } : {}),
+          ...(projectInfo.name ? { AGENT_NAME: projectInfo.name } : {}),
           PORT: String(agentPort),
           SCHEMAS_PATH: join(this.config.workspacesDir || process.cwd(), '..', '.schemas'),
           MCP_SERVER_PATH: MCP_SERVER_PATH,
@@ -362,8 +641,31 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           runtimeEnv.DATABASE_URL = process.env.PROJECTS_DATABASE_URL
           console.log(`[RuntimeManager] Using isolated projects database: ${process.env.PROJECTS_DATABASE_URL.replace(/:[^:@]+@/, ':***@')}`)
         }
+
+        // AI Proxy configuration — always route Claude Code through the local API proxy.
+        // We generate a fresh, project-scoped token here rather than propagating
+        // process.env.AI_PROXY_TOKEN (which may be a platform-level or stale token).
+        // The raw ANTHROPIC_API_KEY is explicitly deleted from the child env so the
+        // runtime process cannot fall back to the platform API key.
+        const apiPort = process.env.API_PORT || '8002'
+        const proxyUrl = `http://localhost:${apiPort}/api/ai/v1`
+        runtimeEnv.AI_PROXY_URL = proxyUrl
+
+        try {
+          const { generateProxyToken } = await import('../ai-proxy-token')
+          const workspaceId = await this.getProjectWorkspaceId(projectId) || 'local-dev'
+          runtimeEnv.AI_PROXY_TOKEN = await generateProxyToken(projectId, workspaceId, 'system', 7 * 24 * 60 * 60 * 1000)
+          console.log(`[RuntimeManager] Generated AI proxy token for ${projectId} (workspace: ${workspaceId})`)
+        } catch (err: any) {
+          console.error(`[RuntimeManager] Failed to generate proxy token for ${projectId}: ${err.message}`)
+          console.error(`[RuntimeManager] Runtime will start without AI proxy — LLM calls will fail`)
+        }
+
+        // Strip the raw platform API key so the child process cannot bypass the proxy.
+        delete runtimeEnv.ANTHROPIC_API_KEY
+        delete runtimeEnv.ANTHROPIC_BASE_URL
         
-        const agentProc = spawn('bun', ['run', PROJECT_RUNTIME_SERVER], {
+        const agentProc = spawn('bun', ['run', runtimeServerPath], {
           cwd: projectDir,
           stdio: ['ignore', 'pipe', 'pipe'],
           detached: false,
@@ -378,24 +680,32 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 
         agentProc.on('exit', (code, signal) => {
           console.log(`[RuntimeManager] Agent process exited for ${projectId}: code=${code}, signal=${signal}`)
+          if (runtime.status !== 'stopping' && runtime.status !== 'stopped') {
+            runtime.status = 'stopped'
+          }
         })
 
         agentProc.stdout?.on('data', (data) => {
-          const output = data.toString()
-          if (output.includes('Starting server') || output.includes('port')) {
-            console.log(`[RuntimeManager] Agent server ready for ${projectId} on port ${agentPort}`)
+          const output = data.toString().trim()
+          if (output) {
+            console.log(`[Agent:${projectId.slice(0, 8)}] ${output}`)
           }
         })
 
         agentProc.stderr?.on('data', (data) => {
-          console.error(`[RuntimeManager] Agent stderr for ${projectId}:`, data.toString())
+          const output = data.toString().trim()
+          if (output) {
+            console.error(`[Agent:${projectId.slice(0, 8)}] ${output}`)
+          }
         })
       } else {
-        console.warn(`[RuntimeManager] Agent server not found at ${PROJECT_RUNTIME_SERVER}, skipping agent startup`)
+        console.warn(`[RuntimeManager] Runtime server not found at ${runtimeServerPath}, skipping startup`)
       }
 
-      // Wait for Vite to start
-      await this.waitForReady(projectId, port, 30000)
+      // Wait for Vite to start (skip for agent projects — no Vite)
+      if (!isAgentProject) {
+        await this.waitForReady(projectId, port, 30000)
+      }
 
       // Wait for agent server
       if (runtime.agentProcess) {
@@ -423,6 +733,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 
   /**
    * Wait for Vite server to be ready.
+   * Accepts any HTTP response (including 500) as "server is ready" because:
+   * - Vite returns 500 when the app has runtime errors (e.g., missing DATABASE_URL)
+   * - The server is still functional and can serve the error page
    */
   private async waitForReady(projectId: string, port: number, timeoutMs: number): Promise<void> {
     const startTime = Date.now()
@@ -434,11 +747,11 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           method: 'HEAD',
           signal: AbortSignal.timeout(1000),
         })
-        if (response.ok || response.status === 404) {
-          return
-        }
+        // Accept any response - server is running even if app has errors
+        // This includes 200, 404, 500, etc.
+        return
       } catch {
-        // Server not ready yet
+        // Server not ready yet (connection refused, timeout, etc.)
       }
       await new Promise((resolve) => setTimeout(resolve, checkInterval))
     }
@@ -447,7 +760,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   }
 
   /**
-   * Wait for the agent server to be ready.
+   * Wait for the agent server to be ready and verify it's for the correct project.
+   * This prevents routing to stale agent processes from other projects (e.g., after hot reload).
    */
   private async waitForAgentReady(projectId: string, port: number, _timeoutMs: number): Promise<void> {
     const MAX_RETRIES = 50
@@ -460,10 +774,22 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           signal: AbortSignal.timeout(2000),
         })
         if (response.ok) {
+          // Verify the agent is for the correct project (prevents stale agent routing)
+          const data = await response.json() as { projectId?: string }
+          if (data.projectId && data.projectId !== projectId) {
+            // Stale agent from another project - this can happen after hot reload
+            // The old agent process is still running on this port
+            console.error(`[RuntimeManager] Port ${port} has stale agent for project ${data.projectId}, expected ${projectId}`)
+            throw new Error(`Port ${port} is occupied by agent for different project (${data.projectId}). Kill the old process or use a different port.`)
+          }
           return
         }
-      } catch {
-        // Server not ready yet
+      } catch (err: any) {
+        // If it's a project mismatch error, don't retry - fail immediately
+        if (err.message?.includes('occupied by agent for different project')) {
+          throw err
+        }
+        // Server not ready yet - continue retrying
       }
 
       if (attempt < MAX_RETRIES) {
@@ -477,7 +803,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   async stop(projectId: string): Promise<void> {
     const runtime = this.runtimes.get(projectId)
     if (!runtime) {
-      throw new Error(`No runtime found for project ${projectId}`)
+      // Idempotent: succeed silently if not running
+      return
     }
 
     this.stopHealthCheck(projectId)
@@ -552,8 +879,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     }
 
     try {
-      const response = await fetch(`http://localhost:${runtime.port}`, {
-        method: 'HEAD',
+      const healthPort = runtime.agentPort && !runtime.process ? runtime.agentPort : runtime.port
+      const response = await fetch(`http://localhost:${healthPort}${runtime.process ? '' : '/health'}`, {
+        method: runtime.process ? 'HEAD' : 'GET',
         signal: AbortSignal.timeout(5000),
       })
 

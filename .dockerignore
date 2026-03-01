@@ -49,3 +49,6 @@ package-lock.json
 yarn.lock
 pnpm-lock.yaml
 
+# Vite/TanStack generated timestamp files (bust Docker cache)
+**/app.config.timestamp*.js
+

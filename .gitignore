@@ -67,15 +67,18 @@ _tmp/
 .terraform/
 *.tfstate
 *.tfstate.*
-.terraform.lock.hcl
+# .terraform.lock.hcl - should be committed for version consistency
 tfplan
 
 # Kubernetes secrets (managed by GitHub Actions/Terraform, not committed)
 k8s/**/secrets.yaml
 
 apps/web/playwright-report/
-
 apps/web/test-results/
+
+# Docusaurus
+apps/docs/build/
+apps/docs/.docusaurus/
 
 workspaces/
 
@@ -84,3 +87,34 @@ workspaces/
 
 /packages/sdk/examples/*/test-results
 /packages/sdk/examples/*/playwright-report
+/packages/sdk/examples/*/.output
+/packages/sdk/examples/*/.nitro
+/packages/sdk/examples/*/dev-docs/build
+/packages/sdk/examples/*/dev-docs/node_modules
+/packages/sdk/examples/*/dev-docs/.docusaurus
+
+# Vite/TanStack generated timestamp files (bust Docker cache)
+app.config.timestamp*.js
+electron.vite.config.*.mjs
+
+apps/mobile/.expo/
+# Chat export logs (auto-generated agent outputs)
+shogo-chats/
+packages/mcp/src/evals/dspy/__pycache__/
+packages/agent-runtime/src/evals/dspy/__pycache__/
+packages/agent-runtime/src/evals/dspy/results/
+
+
+
+apps/mobile/.env
+apps/mobile/android/
+apps/mobile/ios/
+
+*.png
+!apps/mobile/assets/*.png
+tests/
+
+.dynamic-app-runtimes/
+
+*.webm
+test-results/

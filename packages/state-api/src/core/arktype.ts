@@ -1,9 +1,9 @@
 /**
- * arkType integration utilities for the Wavesmith State API
+ * arkType integration utilities for the Shogo State API
  */
 
 import { type, Type } from 'arktype'
-import type { ArkTypeSchema, ArkTypeValidationResult, ValidationResult, WavesmithSchema } from './types'
+import type { ArkTypeSchema, ArkTypeValidationResult, ValidationResult, ShogoSchema } from './types'
 
 /**
  * Validates data against an arkType schema and returns a standardized result
@@ -61,12 +61,12 @@ export function validateField<T>(
 }
 
 /**
- * Creates a Wavesmith schema wrapper with metadata
+ * Creates a Shogo schema wrapper with metadata
  */
-export function createWavesmithSchema<T>(
+export function createShogoSchema<T>(
   definition: string,
-  metadata: Partial<WavesmithSchema<T>['metadata']> = {}
-): WavesmithSchema<T> {
+  metadata: Partial<ShogoSchema<T>['metadata']> = {}
+): ShogoSchema<T> {
   const schema = type(definition as any)
   
   return {

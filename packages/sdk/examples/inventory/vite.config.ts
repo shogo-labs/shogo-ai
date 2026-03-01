@@ -1,23 +1,33 @@
-import { tanstackStart } from '@tanstack/react-start/plugin/vite'
 import { defineConfig } from 'vite'
-import tsConfigPaths from 'vite-tsconfig-paths'
 import react from '@vitejs/plugin-react'
-import { nitroV2Plugin } from '@tanstack/nitro-v2-vite-plugin'
+import tsConfigPaths from 'vite-tsconfig-paths'
+import path from 'path'
 
 export default defineConfig({
   server: {
-    port: 3004,
+    port: 3000,
+    host: '0.0.0.0',
+    cors: true,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+    },
   },
   plugins: [
     tsConfigPaths({
       projects: ['./tsconfig.json'],
     }),
-    tanstackStart({
-      tsr: {
-        appDirectory: 'src',
-      },
-    }),
-    nitroV2Plugin({ preset: 'bun' }),
     react(),
   ],
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, './src'),
+    },
+  },
+  build: {
+    target: 'esnext',
+    minify: false,
+  },
 })

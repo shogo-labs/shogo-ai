@@ -1,15 +1,43 @@
 /**
  * Store Provider and Context
  *
- * Uses the generated domain store from @shogo-ai/sdk
+ * Uses the generated auth store from @shogo-ai/sdk
  */
 
 import { createContext, useContext, useRef } from 'react'
-import { RootStore, getStore } from '../generated/domain'
+import { makeAutoObservable } from 'mobx'
+import { AuthStore, getAuthStore } from '../generated/auth'
 
-// Re-export types
-export type { RootStore } from '../generated/domain'
-export type { UserType, CategoryType, SupplierType, ProductType, StockMovementType } from '../generated/types'
+// Re-export AuthStore and types
+export { AuthStore, getAuthStore, createAuthStore, resetAuthStore } from '../generated/auth'
+export type { AuthUser, SignInInput, SignUpInput } from '../generated/auth'
+
+/**
+ * Root Store with auth
+ */
+export class RootStore {
+  auth: AuthStore
+
+  constructor() {
+    this.auth = getAuthStore()
+    makeAutoObservable(this)
+  }
+
+  /** Clear all stores */
+  clearAll() {
+    this.auth.signOut()
+  }
+}
+
+// Singleton instance
+let rootStore: RootStore | null = null
+
+function getStore(): RootStore {
+  if (!rootStore) {
+    rootStore = new RootStore()
+  }
+  return rootStore
+}
 
 const StoreContext = createContext<RootStore | null>(null)
 

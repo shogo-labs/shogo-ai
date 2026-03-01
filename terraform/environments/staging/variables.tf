@@ -3,6 +3,12 @@
 # Updated: January 2026
 # =============================================================================
 
+variable "bootstrap_mode" {
+  description = "Set to true for initial deployment when EKS cluster doesn't exist yet. Set to false after cluster is created."
+  type        = bool
+  default     = false
+}
+
 variable "aws_region" {
   description = "AWS region for deployment"
   type        = string
@@ -42,7 +48,7 @@ variable "eks_cluster_version" {
 variable "node_instance_types" {
   description = "Instance types for EKS node group"
   type        = list(string)
-  default     = ["t3.medium"] # Smaller than production
+  default     = ["t3.xlarge"]
 }
 
 variable "node_desired_size" {
@@ -60,7 +66,7 @@ variable "node_min_size" {
 variable "node_max_size" {
   description = "Maximum number of nodes in the node group"
   type        = number
-  default     = 5 # Smaller than production
+  default     = 15
 }
 
 variable "enable_secondary_node_group" {
@@ -70,24 +76,20 @@ variable "enable_secondary_node_group" {
 }
 
 # -----------------------------------------------------------------------------
-# RDS Configuration
+# CloudNativePG Configuration (replaces RDS)
 # -----------------------------------------------------------------------------
-variable "rds_instance_class" {
-  description = "RDS instance class"
+variable "cnpg_s3_access_key_id" {
+  description = "AWS Access Key ID for CloudNativePG S3 backups (leave empty to use node IAM role)"
   type        = string
-  default     = "db.t3.micro" # Smaller than production
+  default     = ""
+  sensitive   = true
 }
 
-variable "rds_allocated_storage" {
-  description = "Allocated storage for RDS in GB"
-  type        = number
-  default     = 20
-}
-
-variable "rds_backup_retention_period" {
-  description = "RDS backup retention period in days (0 for Free Tier accounts)"
-  type        = number
-  default     = 0
+variable "cnpg_s3_secret_access_key" {
+  description = "AWS Secret Access Key for CloudNativePG S3 backups (leave empty to use node IAM role)"
+  type        = string
+  default     = ""
+  sensitive   = true
 }
 
 # -----------------------------------------------------------------------------
@@ -132,6 +134,12 @@ variable "ssl_certificate_domain_publish" {
   default     = ""
 }
 
+variable "ssl_certificate_domain_preview" {
+  description = "Domain name to look up ACM certificate for preview subdomains (e.g., *.staging.shogo.ai)"
+  type        = string
+  default     = ""
+}
+
 # -----------------------------------------------------------------------------
 # Application Configuration
 # -----------------------------------------------------------------------------
@@ -145,42 +153,12 @@ variable "anthropic_api_key" {
   description = "Anthropic API key for Claude Code integration"
   type        = string
   sensitive   = true
-  default     = ""  # Optional - can be managed by GitHub Actions instead
+  default     = "" # Optional - can be managed by GitHub Actions instead
 }
 
 # -----------------------------------------------------------------------------
-# Project Runtime Configuration (Per-Project PostgreSQL Sidecar)
+# Project Runtime Configuration
 # -----------------------------------------------------------------------------
-variable "project_runtime_postgres_enabled" {
-  description = "Enable PostgreSQL sidecar for project runtimes"
-  type        = bool
-  default     = true
-}
-
-variable "project_runtime_postgres_image" {
-  description = "PostgreSQL image for project runtime sidecar"
-  type        = string
-  default     = "postgres:16-alpine"
-}
-
-variable "project_runtime_postgres_storage_size" {
-  description = "Storage size for PostgreSQL data PVC per project"
-  type        = string
-  default     = "1Gi"
-}
-
-variable "project_runtime_postgres_memory_limit" {
-  description = "Memory limit for PostgreSQL sidecar container"
-  type        = string
-  default     = "512Mi"
-}
-
-variable "project_runtime_postgres_cpu_limit" {
-  description = "CPU limit for PostgreSQL sidecar container"
-  type        = string
-  default     = "250m"
-}
-
 variable "project_runtime_idle_timeout" {
   description = "Idle timeout in seconds before project pods scale to zero"
   type        = number
@@ -200,4 +178,50 @@ variable "github_repo" {
   description = "GitHub repository name"
   type        = string
   default     = "shogo-ai"
+}
+
+# -----------------------------------------------------------------------------
+# Observability Configuration (SigNoz)
+# -----------------------------------------------------------------------------
+variable "enable_signoz" {
+  description = "Enable SigNoz K8s infrastructure monitoring"
+  type        = bool
+  default     = true
+}
+
+variable "signoz_endpoint" {
+  description = "SigNoz OTLP endpoint (gRPC) - e.g., http://signoz-otel-collector.signoz.svc.cluster.local:4317 or ingest.us.signoz.cloud:443"
+  type        = string
+  default     = ""
+}
+
+variable "signoz_ingestion_key" {
+  description = "SigNoz Cloud ingestion key (required for SigNoz Cloud, leave empty for self-hosted)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "signoz_namespace" {
+  description = "Namespace for SigNoz K8s Infra components"
+  type        = string
+  default     = "signoz"
+}
+
+variable "signoz_enable_logs" {
+  description = "Enable log collection in SigNoz"
+  type        = bool
+  default     = false
+}
+
+variable "signoz_enable_events" {
+  description = "Enable Kubernetes event collection in SigNoz"
+  type        = bool
+  default     = true
+}
+
+variable "signoz_enable_metrics" {
+  description = "Enable metrics collection in SigNoz"
+  type        = bool
+  default     = true
 }

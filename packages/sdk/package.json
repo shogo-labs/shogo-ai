@@ -1,19 +1,31 @@
 {
   "name": "@shogo-ai/sdk",
-  "version": "0.2.0",
-  "description": "Shogo Platform SDK - Zero-boilerplate auth, database, and state management for TanStack Start apps",
+  "version": "0.3.1",
+  "description": "Shogo Platform SDK - Zero-boilerplate auth and database for Shogo apps",
   "type": "module",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
-  "bin": {
-    "shogo": "./bin/shogo.ts"
-  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
+    },
+    "./db": {
+      "types": "./dist/db/index.d.ts",
+      "import": "./dist/db/index.js",
+      "require": "./dist/db/index.cjs"
+    },
+    "./email": {
+      "types": "./dist/email/index.d.ts",
+      "import": "./dist/email/index.js",
+      "require": "./dist/email/index.cjs"
+    },
+    "./email/server": {
+      "types": "./dist/email/server.d.ts",
+      "import": "./dist/email/server.js",
+      "require": "./dist/email/server.cjs"
     },
     "./react": {
       "types": "./dist/react/index.d.ts",
@@ -26,12 +38,15 @@
       "require": "./dist/generators/index.cjs"
     }
   },
+  "bin": {
+    "shogo": "./bin/cli.mjs"
+  },
   "files": [
     "dist/**/*.js",
     "dist/**/*.cjs",
     "dist/**/*.d.ts",
     "dist/**/*.d.cts",
-    "bin/**/*.ts"
+    "bin/cli.mjs"
   ],
   "scripts": {
     "build": "tsup",
@@ -41,27 +56,39 @@
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui"
   },
-  "dependencies": {
-    "mobx": "^6.13.0"
-  },
+  "dependencies": {},
   "devDependencies": {
+    "@aws-sdk/client-ses": "^3.700.0",
     "@playwright/test": "^1.40.0",
-    "@prisma/internals": "^6.0.0",
+    "@prisma/internals": "^7.3.0",
+    "@types/nodemailer": "^6.4.17",
     "@types/react": "^19.0.0",
-    "react": "^19.0.0",
+    "mobx": "^6.13.5",
+    "nodemailer": "^6.9.16",
     "tsup": "^8.0.0",
     "typescript": "^5.0.0"
   },
   "peerDependencies": {
-    "@tanstack/react-start": ">=1.0.0",
-    "mobx-react-lite": ">=4.0.0",
+    "nodemailer": ">=6.0.0",
+    "@aws-sdk/client-ses": ">=3.0.0",
+    "@prisma/adapter-pg": "^7.3.0",
+    "@prisma/adapter-libsql": "",
     "react": ">=18.0.0"
   },
   "peerDependenciesMeta": {
-    "@tanstack/react-start": {
+    "nodemailer": {
       "optional": true
     },
-    "mobx-react-lite": {
+    "@aws-sdk/client-ses": {
+      "optional": true
+    },
+    "@prisma/adapter-pg": {
+      "optional": true
+    },
+    "@prisma/adapter-libsql": {
+      "optional": true
+    },
+    "react": {
       "optional": true
     }
   },
@@ -74,10 +101,10 @@
     "typescript",
     "auth",
     "database",
-    "tanstack",
-    "mobx",
-    "prisma",
-    "code-generation"
+    "email",
+    "smtp",
+    "ses",
+    "mcp"
   ],
   "author": "Shogo Team",
   "license": "MIT"

@@ -1,0 +1,8 @@
+[
+  { "id": "budget-food-jan", "category": "cat-food", "monthlyLimit": 500, "month": "2026-01" },
+  { "id": "budget-transport-jan", "category": "cat-transport", "monthlyLimit": 200, "month": "2026-01" },
+  { "id": "budget-entertainment-jan", "category": "cat-entertainment", "monthlyLimit": 100, "month": "2026-01" },
+  { "id": "budget-utilities-jan", "category": "cat-utilities", "monthlyLimit": 150, "month": "2026-01" },
+  { "id": "budget-shopping-jan", "category": "cat-shopping", "monthlyLimit": 300, "month": "2026-01" },
+  { "id": "budget-health-jan", "category": "cat-health", "monthlyLimit": 100, "month": "2026-01" }
+]

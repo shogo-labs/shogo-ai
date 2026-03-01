@@ -1,5 +1,5 @@
 /**
- * Wavesmith State API
+ * Shogo State API
  *
  * Schema-first reactive state management bridging arkType to MST
  * with isomorphic execution and built-in collaboration.
@@ -35,11 +35,6 @@ export * from './authorization'
 // Billing layer
 export * from './billing'
 
-// Email layer - only export browser-safe parts (types and templates)
-// SMTP implementation should be imported directly: import { SmtpEmailService } from '@shogo/state-api/email/smtp'
-export * from './email/types'
-export * from './email/templates'
-
 // BetterAuth layer
 export * from './better-auth'
 
@@ -68,6 +63,3 @@ export * from './studio-chat'
 
 // Component Builder layer
 export * from './component-builder'
-
-// Utilities
-export * from './utils'

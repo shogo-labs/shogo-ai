@@ -33,6 +33,7 @@ on:
 
 env:
   AWS_REGION: us-east-1
+  AWS_REGION_EU: eu-west-1
   # ECR_REGISTRY is set per-environment in the setup job
 
 jobs:
@@ -45,11 +46,14 @@ jobs:
     outputs:
       environment: ${{ steps.set-env.outputs.environment }}
       eks_cluster: ${{ steps.set-env.outputs.eks_cluster }}
+      eks_cluster_eu: ${{ steps.set-env.outputs.eks_cluster_eu }}
       ecr_registry: ${{ steps.set-env.outputs.ecr_registry }}
       namespace_system: ${{ steps.set-env.outputs.namespace_system }}
       namespace_workspaces: ${{ steps.set-env.outputs.namespace_workspaces }}
       domain: ${{ steps.set-env.outputs.domain }}
       mcp_domain: ${{ steps.set-env.outputs.mcp_domain }}
+      docs_domain: ${{ steps.set-env.outputs.docs_domain }}
+      multi_region: ${{ steps.set-env.outputs.multi_region }}
     steps:
       - name: Set environment variables
         id: set-env
@@ -76,17 +80,141 @@ jobs:
           
           if [[ "$ENV" == "production" ]]; then
             echo "eks_cluster=shogo-production" >> $GITHUB_OUTPUT
+            echo "eks_cluster_eu=shogo-production-eu" >> $GITHUB_OUTPUT
             echo "namespace_system=shogo-system" >> $GITHUB_OUTPUT
             echo "namespace_workspaces=shogo-workspaces" >> $GITHUB_OUTPUT
             echo "domain=studio.shogo.ai" >> $GITHUB_OUTPUT
             echo "mcp_domain=mcp.shogo.ai" >> $GITHUB_OUTPUT
+            echo "docs_domain=docs.shogo.ai" >> $GITHUB_OUTPUT
+            echo "multi_region=true" >> $GITHUB_OUTPUT
           else
             echo "eks_cluster=shogo-staging" >> $GITHUB_OUTPUT
+            echo "eks_cluster_eu=" >> $GITHUB_OUTPUT
             echo "namespace_system=shogo-staging-system" >> $GITHUB_OUTPUT
             echo "namespace_workspaces=shogo-staging-workspaces" >> $GITHUB_OUTPUT
             echo "domain=studio-staging.shogo.ai" >> $GITHUB_OUTPUT
             echo "mcp_domain=mcp-staging.shogo.ai" >> $GITHUB_OUTPUT
+            echo "docs_domain=docs-staging.shogo.ai" >> $GITHUB_OUTPUT
+            echo "multi_region=false" >> $GITHUB_OUTPUT
           fi
+
+  # ===========================================================================
+  # Stage 0.5: Detect Changes - Skip image builds when code hasn't changed
+  # ===========================================================================
+  detect-changes:
+    name: Detect Changed Images
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      has_changes: ${{ steps.set-matrix.outputs.has_changes }}
+      mcp_changed: ${{ steps.set-matrix.outputs.mcp_changed }}
+      api_changed: ${{ steps.set-matrix.outputs.api_changed }}
+      web_changed: ${{ steps.set-matrix.outputs.web_changed }}
+      agent_runtime_changed: ${{ steps.set-matrix.outputs.agent_runtime_changed }}
+      docs_changed: ${{ steps.set-matrix.outputs.docs_changed }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed paths and build matrix
+        id: set-matrix
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          FORCE_ALL="${{ github.event_name == 'workflow_dispatch' }}"
+
+          if [ "$FORCE_ALL" = "true" ]; then
+            echo "🔧 workflow_dispatch — forcing all image builds"
+            CHANGED=""
+          elif [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            CHANGED=$(git diff --name-only "$BEFORE_SHA" HEAD)
+            echo "📂 Comparing $BEFORE_SHA..HEAD (push event)"
+          else
+            CHANGED=$(git diff --name-only HEAD~1 HEAD)
+            echo "📂 Comparing HEAD~1..HEAD (fallback)"
+          fi
+
+          echo ""
+          echo "Changed files:"
+          echo "$CHANGED"
+          echo ""
+
+          has_match() {
+            [ "$FORCE_ALL" = "true" ] && { echo "true"; return; }
+            echo "$CHANGED" | grep -qE "$1" && echo "true" || echo "false"
+          }
+
+          SHARED=$(has_match '^(package\.json|bun\.lock|tsconfig\.base\.json|scripts/)')
+          STATE_API=$(has_match '^packages/state-api/')
+          MCP_PKG=$(has_match '^packages/mcp/')
+          SDK=$(has_match '^packages/sdk/')
+          SHARED_RUNTIME=$(has_match '^packages/shared-runtime/')
+          AGENT_RUNTIME_PKG=$(has_match '^packages/agent-runtime/')
+          API_APP=$(has_match '^(apps/api/|prisma/|prisma\.config\.ts)')
+          WEB_APP=$(has_match '^(apps/mobile/|packages/domain-stores/|packages/shared-app/|packages/shared-ui/|packages/ui-kit/)')
+          DOCS_APP=$(has_match '^apps/docs/')
+
+          MCP_CHANGED=false
+          if [ "$SHARED" = "true" ] || [ "$STATE_API" = "true" ] || [ "$MCP_PKG" = "true" ]; then
+            MCP_CHANGED=true
+          fi
+
+          API_CHANGED=false
+          if [ "$SHARED" = "true" ] || [ "$STATE_API" = "true" ] || [ "$MCP_PKG" = "true" ] || [ "$SDK" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$AGENT_RUNTIME_PKG" = "true" ] || [ "$API_APP" = "true" ]; then
+            API_CHANGED=true
+          fi
+
+          WEB_CHANGED=false
+          if [ "$SHARED" = "true" ] || [ "$STATE_API" = "true" ] || [ "$MCP_PKG" = "true" ] || [ "$SDK" = "true" ] || [ "$WEB_APP" = "true" ]; then
+            WEB_CHANGED=true
+          fi
+
+          AGENT_RUNTIME_CHANGED=false
+          if [ "$SHARED" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$AGENT_RUNTIME_PKG" = "true" ]; then
+            AGENT_RUNTIME_CHANGED=true
+          fi
+
+          DOCS_CHANGED=false
+          if [ "$DOCS_APP" = "true" ]; then
+            DOCS_CHANGED=true
+          fi
+
+          echo "mcp_changed=$MCP_CHANGED" >> $GITHUB_OUTPUT
+          echo "api_changed=$API_CHANGED" >> $GITHUB_OUTPUT
+          echo "web_changed=$WEB_CHANGED" >> $GITHUB_OUTPUT
+          echo "agent_runtime_changed=$AGENT_RUNTIME_CHANGED" >> $GITHUB_OUTPUT
+          echo "docs_changed=$DOCS_CHANGED" >> $GITHUB_OUTPUT
+
+          ENTRIES=""
+          add_entry() {
+            [ -n "$ENTRIES" ] && ENTRIES="$ENTRIES,"
+            ENTRIES="$ENTRIES$1"
+          }
+
+          [ "$MCP_CHANGED" = "true" ] && add_entry '{"image":"mcp","dockerfile":"packages/mcp/Dockerfile","ecr_name":"shogo-mcp","build_args":""}'
+          [ "$API_CHANGED" = "true" ] && add_entry '{"image":"api","dockerfile":"apps/api/Dockerfile","ecr_name":"shogo-api","build_args":"api"}'
+          [ "$WEB_CHANGED" = "true" ] && add_entry '{"image":"web","dockerfile":"apps/mobile/Dockerfile","ecr_name":"shogo-web","build_args":"web"}'
+          [ "$AGENT_RUNTIME_CHANGED" = "true" ] && add_entry '{"image":"agent-runtime","dockerfile":"packages/agent-runtime/Dockerfile","ecr_name":"agent-runtime","build_args":""}'
+          [ "$DOCS_CHANGED" = "true" ] && add_entry '{"image":"docs","dockerfile":"apps/docs/Dockerfile","ecr_name":"shogo-docs","build_args":""}'
+
+          if [ -z "$ENTRIES" ]; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "matrix={\"include\":[]}" >> $GITHUB_OUTPUT
+            echo "✅ No image changes detected — all builds will be skipped"
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "matrix={\"include\":[$ENTRIES]}" >> $GITHUB_OUTPUT
+          fi
+
+          echo ""
+          echo "📊 Changes detected:"
+          echo "  mcp: $MCP_CHANGED"
+          echo "  api: $API_CHANGED"
+          echo "  web: $WEB_CHANGED"
+          echo "  agent-runtime: $AGENT_RUNTIME_CHANGED"
+          echo "  docs: $DOCS_CHANGED"
 
   # ===========================================================================
   # Stage 1: Build and Test
@@ -120,19 +248,38 @@ jobs:
         continue-on-error: true  # Don't fail on type errors for now
 
   # ===========================================================================
-  # Stage 2: Build and Push Docker Images
+  # Stage 2: Build and Push Docker Images (in parallel)
   # ===========================================================================
   build-and-push:
-    name: Build & Push Images
+    name: Build ${{ matrix.image }}
     runs-on: ubuntu-latest
-    needs: [setup]
+    needs: [setup, detect-changes]
+    if: needs.detect-changes.outputs.has_changes == 'true'
     environment: ${{ needs.setup.outputs.environment }}
+    timeout-minutes: 30
+    
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
     
     permissions:
       id-token: write
       contents: read
 
     steps:
+      - name: Free disk space (large runtime images)
+        if: matrix.image == 'agent-runtime'
+        uses: jlumbroso/free-disk-space@main
+        with:
+          # Frees ~31GB - keeps only what's needed for Docker builds
+          tool-cache: false      # Keep tool cache (node, etc)
+          android: true          # Remove Android SDK (~10GB)
+          dotnet: true           # Remove .NET (~2GB)
+          haskell: true          # Remove Haskell (~5GB)
+          large-packages: true   # Remove large apt packages (~5GB)
+          docker-images: true    # Remove pre-cached Docker images (~3GB)
+          swap-storage: true     # Remove swap (~4GB)
+
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -140,7 +287,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          role-session-name: github-actions-deploy
+          role-session-name: github-actions-deploy-${{ matrix.image }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
@@ -150,72 +297,36 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push MCP image
+      - name: Build and push ${{ matrix.image }} image
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: packages/mcp/Dockerfile
+          file: ${{ matrix.dockerfile }}
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ needs.setup.outputs.ecr_registry }}/shogo/shogo-mcp:${{ needs.setup.outputs.environment }}-latest
-            ${{ needs.setup.outputs.ecr_registry }}/shogo/shogo-mcp:${{ needs.setup.outputs.environment }}-${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Build and push API image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: apps/api/Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ${{ needs.setup.outputs.ecr_registry }}/shogo/shogo-api:${{ needs.setup.outputs.environment }}-latest
-            ${{ needs.setup.outputs.ecr_registry }}/shogo/shogo-api:${{ needs.setup.outputs.environment }}-${{ github.sha }}
+            ${{ needs.setup.outputs.ecr_registry }}/shogo/${{ matrix.ecr_name }}:${{ needs.setup.outputs.environment }}-latest
+            ${{ needs.setup.outputs.ecr_registry }}/shogo/${{ matrix.ecr_name }}:${{ needs.setup.outputs.environment }}-${{ github.sha }}
           build-args: |
-            ALLOWED_ORIGINS=${{ vars.ALLOWED_ORIGINS }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Build and push Web image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: apps/web/Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ${{ needs.setup.outputs.ecr_registry }}/shogo/shogo-web:${{ needs.setup.outputs.environment }}-latest
-            ${{ needs.setup.outputs.ecr_registry }}/shogo/shogo-web:${{ needs.setup.outputs.environment }}-${{ github.sha }}
-          build-args: |
-            VITE_API_URL=${{ vars.VITE_API_URL }}
-            VITE_MCP_URL=${{ vars.VITE_MCP_URL }}
-            VITE_BETTER_AUTH_URL=${{ vars.VITE_BETTER_AUTH_URL }}
-            VITE_WORKSPACE=${{ vars.VITE_WORKSPACE }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Build and push Project Runtime image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: packages/project-runtime/Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ${{ needs.setup.outputs.ecr_registry }}/shogo/project-runtime:${{ needs.setup.outputs.environment }}-latest
-            ${{ needs.setup.outputs.ecr_registry }}/shogo/project-runtime:${{ needs.setup.outputs.environment }}-${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            ${{ matrix.build_args == 'api' && format('ALLOWED_ORIGINS={0}', vars.ALLOWED_ORIGINS) || '' }}
+            ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_API_URL={0}', vars.EXPO_PUBLIC_API_URL) || '' }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 
   # ===========================================================================
   # Stage 3: Deploy to EKS
   # ===========================================================================
+  # Note: Migrations run automatically on API container startup via entrypoint.sh
   deploy:
     name: Deploy to EKS (${{ needs.setup.outputs.environment }})
     runs-on: ubuntu-latest
-    needs: [setup, build-and-push]
+    needs: [setup, detect-changes, build-and-push]
+    # Run even when build-and-push was skipped (no changes) — secrets/manifests still need applying
+    if: |
+      always() &&
+      needs.setup.result == 'success' &&
+      needs.detect-changes.result == 'success' &&
+      (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped')
     environment: ${{ needs.setup.outputs.environment }}
     
     permissions:
@@ -229,6 +340,7 @@ jobs:
       NS_WORKSPACES: ${{ needs.setup.outputs.namespace_workspaces }}
       DOMAIN: ${{ needs.setup.outputs.domain }}
       MCP_DOMAIN: ${{ needs.setup.outputs.mcp_domain }}
+      DOCS_DOMAIN: ${{ needs.setup.outputs.docs_domain }}
       IMAGE_TAG: ${{ needs.setup.outputs.environment }}-${{ github.sha }}
 
     steps:
@@ -253,20 +365,50 @@ jobs:
 
       - name: Create or update API secrets
         run: |
-          # Create or update the api-secrets secret with ANTHROPIC_API_KEY
-          # BETTER_AUTH_SECRET is optional - if not set in GitHub, it will use the value from kustomization
+          # Build the api-secrets secret with all required keys
+          # Optional secrets are included only when set in GitHub environment
+          SECRET_ARGS=(
+            --from-literal=ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}"
+          )
+          
+          # Better Auth secret (optional)
           if [ -n "${{ secrets.BETTER_AUTH_SECRET }}" ]; then
-            kubectl create secret generic api-secrets \
-              --namespace=${{ env.NS_SYSTEM }} \
-              --from-literal=ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}" \
-              --from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}" \
-              --dry-run=client -o yaml | kubectl apply -f -
-          else
-            kubectl create secret generic api-secrets \
-              --namespace=${{ env.NS_SYSTEM }} \
-              --from-literal=ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}" \
-              --dry-run=client -o yaml | kubectl apply -f -
+            SECRET_ARGS+=(--from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}")
           fi
+          
+          # Stripe secrets (optional)
+          if [ -n "${{ secrets.STRIPE_SECRET_KEY }}" ]; then
+            SECRET_ARGS+=(--from-literal=STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}")
+          fi
+          if [ -n "${{ secrets.STRIPE_WEBHOOK_SECRET }}" ]; then
+            SECRET_ARGS+=(--from-literal=STRIPE_WEBHOOK_SECRET="${{ secrets.STRIPE_WEBHOOK_SECRET }}")
+          fi
+          
+          # GitHub App secrets (optional - for Git sync integration)
+          # Note: Uses GH_ prefix because GitHub Actions reserves the GITHUB_ prefix
+          if [ -n "${{ secrets.GH_APP_ID }}" ]; then
+            SECRET_ARGS+=(--from-literal=GH_APP_ID="${{ secrets.GH_APP_ID }}")
+          fi
+          if [ -n "${{ secrets.GH_APP_CLIENT_ID }}" ]; then
+            SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_ID="${{ secrets.GH_APP_CLIENT_ID }}")
+          fi
+          if [ -n "${{ secrets.GH_APP_CLIENT_SECRET }}" ]; then
+            SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_SECRET="${{ secrets.GH_APP_CLIENT_SECRET }}")
+          fi
+          if [ -n "${{ secrets.GH_APP_PRIVATE_KEY }}" ]; then
+            SECRET_ARGS+=(--from-literal=GH_APP_PRIVATE_KEY="${{ secrets.GH_APP_PRIVATE_KEY }}")
+          fi
+          if [ -n "${{ secrets.GH_APP_WEBHOOK_SECRET }}" ]; then
+            SECRET_ARGS+=(--from-literal=GH_APP_WEBHOOK_SECRET="${{ secrets.GH_APP_WEBHOOK_SECRET }}")
+          fi
+          if [ -n "${{ secrets.GH_APP_SLUG }}" ]; then
+            SECRET_ARGS+=(--from-literal=GH_APP_SLUG="${{ secrets.GH_APP_SLUG }}")
+          fi
+          
+          kubectl create secret generic api-secrets \
+            --namespace=${{ env.NS_SYSTEM }} \
+            "${SECRET_ARGS[@]}" \
+            --dry-run=client -o yaml | kubectl apply -f -
           
           echo "✅ API secrets created/updated in ${{ env.NS_SYSTEM }} namespace"
           
@@ -279,76 +421,297 @@ jobs:
           
           echo "✅ Anthropic credentials created/updated in ${{ env.NS_WORKSPACES }} namespace"
 
+      - name: Save current Knative service images
+        id: save-images
+        run: |
+          get_image() {
+            kubectl get ksvc "$1" -n "$2" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo ""
+          }
+          echo "web_image=$(get_image studio ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
+          echo "api_image=$(get_image api ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
+          echo "mcp_image=$(get_image mcp-workspace-1 ${{ env.NS_WORKSPACES }})" >> $GITHUB_OUTPUT
+          echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
+
+      - name: Apply Kubernetes manifests
+        run: |
+          echo "📦 Applying Kubernetes manifests for ${{ env.ENVIRONMENT }}"
+          kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/ || true
+          echo "✅ Kubernetes manifests applied"
+
       - name: Deploy Knative services
         env:
           ECR_REGISTRY: ${{ needs.setup.outputs.ecr_registry }}
+          WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
+          API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
+          MCP_CHANGED: ${{ needs.detect-changes.outputs.mcp_changed }}
+          DOCS_CHANGED: ${{ needs.detect-changes.outputs.docs_changed }}
+          PREV_WEB_IMAGE: ${{ steps.save-images.outputs.web_image }}
+          PREV_API_IMAGE: ${{ steps.save-images.outputs.api_image }}
+          PREV_MCP_IMAGE: ${{ steps.save-images.outputs.mcp_image }}
+          PREV_DOCS_IMAGE: ${{ steps.save-images.outputs.docs_image }}
         run: |
-          # Update Knative services with new image tags
-          # Infrastructure is managed by Terraform, we just update the images
-          
+          # Patch a ksvc: use new SHA tag if changed, otherwise restore the
+          # pre-kustomize image so the apply doesn't silently downgrade it.
+          patch_ksvc() {
+            local name=$1 ns=$2 ecr_name=$3 changed=$4 prev=$5
+            if [ "$changed" = "true" ]; then
+              echo "🔄 Deploying $name → ${{ env.IMAGE_TAG }}"
+              kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
+                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${ECR_REGISTRY}/shogo/${ecr_name}:${{ env.IMAGE_TAG }}\"}
+              ]" || echo "$name service not found, may need terraform apply first"
+            elif [ -n "$prev" ]; then
+              echo "📌 Restoring $name → $prev (no changes, undoing kustomize reset)"
+              kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
+                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${prev}\"}
+              ]" || true
+            else
+              echo "⏭️ Skipping $name (not found)"
+            fi
+          }
+
           echo "📦 Updating images for ${{ env.ENVIRONMENT }}"
-          
-          # Update Studio service
-          kubectl patch ksvc studio -n ${{ env.NS_SYSTEM }} --type='json' -p="[
-            {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${ECR_REGISTRY}/shogo/shogo-web:${{ env.IMAGE_TAG }}\"}
-          ]" || echo "Studio service not found, may need terraform apply first"
-          
-          # Update API service  
-          kubectl patch ksvc api -n ${{ env.NS_SYSTEM }} --type='json' -p="[
-            {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${ECR_REGISTRY}/shogo/shogo-api:${{ env.IMAGE_TAG }}\"}
-          ]" || echo "API service not found, may need terraform apply first"
-          
-          # Update MCP service
-          kubectl patch ksvc mcp-workspace -n ${{ env.NS_WORKSPACES }} --type='json' -p="[
-            {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${ECR_REGISTRY}/shogo/shogo-mcp:${{ env.IMAGE_TAG }}\"}
-          ]" || echo "MCP service not found, may need terraform apply first"
+          patch_ksvc studio       "${{ env.NS_SYSTEM }}"     shogo-web  "$WEB_CHANGED"  "$PREV_WEB_IMAGE"
+          patch_ksvc api          "${{ env.NS_SYSTEM }}"     shogo-api  "$API_CHANGED"  "$PREV_API_IMAGE"
+          patch_ksvc mcp-workspace-1 "${{ env.NS_WORKSPACES }}" shogo-mcp  "$MCP_CHANGED"  "$PREV_MCP_IMAGE"
+          patch_ksvc docs         "${{ env.NS_SYSTEM }}"     shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
 
       - name: Wait for rollout
         run: |
           echo "⏳ Waiting for service rollouts in ${{ env.ENVIRONMENT }}..."
-          
-          echo "Waiting for studio rollout..."
           kubectl wait --for=condition=ready ksvc/studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
-          
-          echo "Waiting for api rollout..."
           kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          kubectl wait --for=condition=ready ksvc/mcp-workspace-1 -n ${{ env.NS_WORKSPACES }} --timeout=300s || true
+          kubectl wait --for=condition=ready ksvc/docs -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+
+      - name: Restart image prepuller
+        if: needs.detect-changes.outputs.agent_runtime_changed == 'true'
+        run: |
+          echo "🔄 Restarting image-prepuller to pull new runtime images..."
           
-          echo "Waiting for mcp rollout..."
-          kubectl wait --for=condition=ready ksvc/mcp-workspace -n ${{ env.NS_WORKSPACES }} --timeout=300s || true
+          # Force-delete any pods stuck in Terminating (e.g., on NotReady nodes)
+          # These block DaemonSet rollouts with maxUnavailable: 1
+          STUCK=$(kubectl get pods -n ${{ env.NS_SYSTEM }} -l app.kubernetes.io/name=image-prepuller --field-selector=status.phase!=Running -o name 2>/dev/null || true)
+          if [ -n "$STUCK" ]; then
+            echo "🧹 Cleaning up stuck prepuller pods: $STUCK"
+            echo "$STUCK" | xargs -r kubectl delete -n ${{ env.NS_SYSTEM }} --force --grace-period=0 2>/dev/null || true
+            sleep 5
+          fi
+          
+          kubectl rollout restart daemonset/image-prepuller -n ${{ env.NS_SYSTEM }} || echo "Image prepuller not found, skipping"
+          
+          echo "⏳ Waiting for image-prepuller rollout..."
+          kubectl rollout status daemonset/image-prepuller -n ${{ env.NS_SYSTEM }} --timeout=300s || echo "Prepuller rollout timeout (may still be pulling large image)"
 
       - name: Verify deployment
         run: |
-          echo "=== Knative Services Status (${{ env.NS_SYSTEM }}) ==="
+          echo "=== Knative Services (${{ env.NS_SYSTEM }}) ==="
           kubectl get ksvc -n ${{ env.NS_SYSTEM }}
           echo ""
-          echo "=== Knative Services Status (${{ env.NS_WORKSPACES }}) ==="
-          kubectl get ksvc -n ${{ env.NS_WORKSPACES }}
+          echo "=== Workspace Services (count) ==="
+          TOTAL=$(kubectl get ksvc -n ${{ env.NS_WORKSPACES }} --no-headers 2>/dev/null | wc -l)
+          READY=$(kubectl get ksvc -n ${{ env.NS_WORKSPACES }} --no-headers 2>/dev/null | awk '$3=="True"' | wc -l)
+          FAILED=$(kubectl get ksvc -n ${{ env.NS_WORKSPACES }} --no-headers 2>/dev/null | awk '$3=="False"' | wc -l)
+          echo "Total: $TOTAL | Ready: $READY | Failed: $FAILED"
           echo ""
-          echo "=== Domain Mappings ==="
-          kubectl get domainmapping -n ${{ env.NS_SYSTEM }}
-          echo ""
-          echo "=== Pods Status (${{ env.NS_SYSTEM }}) ==="
+          echo "=== Pods (${{ env.NS_SYSTEM }}) ==="
           kubectl get pods -n ${{ env.NS_SYSTEM }}
 
-      - name: Summary
+      - name: Post-deploy health check
+        if: env.ENVIRONMENT == 'staging'
+        run: |
+          echo "=== Post-deploy health checks ==="
+          
+          # Wait for API to be ready (API is proxied through studio, not exposed directly)
+          echo "Waiting for API health..."
+          for i in $(seq 1 30); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://${{ env.DOMAIN }}/api/health" || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "API healthy (attempt $i)"
+              break
+            fi
+            echo "API not ready ($STATUS), waiting... (attempt $i/30)"
+            sleep 10
+          done
+          
+          # Verify warm pool pods are running
+          echo ""
+          echo "=== Warm Pool Status ==="
+          kubectl get ksvc -n ${{ env.NS_WORKSPACES }} -l shogo.io/warm-pool=true 2>/dev/null || echo "No warm pool services found"
+          
+          # Check for broken services
+          echo ""
+          echo "=== Broken Services ==="
+          BROKEN=$(kubectl get ksvc -n ${{ env.NS_WORKSPACES }} 2>/dev/null | grep "False" | wc -l || echo "0")
+          echo "Broken Knative services: $BROKEN"
+          if [ "$BROKEN" -gt "5" ]; then
+            echo "::warning::$BROKEN Knative services are in failed state"
+          fi
+
+      - name: Summary (Primary Region)
+        env:
+          MCP_CHANGED: ${{ needs.detect-changes.outputs.mcp_changed }}
+          API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
+          WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
+          AGENT_RUNTIME_CHANGED: ${{ needs.detect-changes.outputs.agent_runtime_changed }}
+          DOCS_CHANGED: ${{ needs.detect-changes.outputs.docs_changed }}
         run: |
           echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Environment: \`${{ env.ENVIRONMENT }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Services Deployed" >> $GITHUB_STEP_SUMMARY
-          echo "| Service | Image Tag |" >> $GITHUB_STEP_SUMMARY
-          echo "|---------|-----------|" >> $GITHUB_STEP_SUMMARY
-          echo "| MCP | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| API | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Web | \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "### Database Migrations" >> $GITHUB_STEP_SUMMARY
+          echo "🔄 Migrations run automatically on API container startup" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Services" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|--------|" >> $GITHUB_STEP_SUMMARY
+          [ "$MCP_CHANGED" = "true" ] && echo "| MCP | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| MCP | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
+          [ "$API_CHANGED" = "true" ] && echo "| API | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| API | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
+          [ "$WEB_CHANGED" = "true" ] && echo "| Web | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| Web | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
+          [ "$AGENT_RUNTIME_CHANGED" = "true" ] && echo "| Agent Runtime | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| Agent Runtime | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
+          [ "$DOCS_CHANGED" = "true" ] && echo "| Docs | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| Docs | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Endpoints" >> $GITHUB_STEP_SUMMARY
           echo "- **Studio**: https://${{ env.DOMAIN }}" >> $GITHUB_STEP_SUMMARY
           echo "- **API**: https://${{ env.DOMAIN }}/api" >> $GITHUB_STEP_SUMMARY
           echo "- **MCP**: https://${{ env.MCP_DOMAIN }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Docs**: https://${{ env.DOCS_DOMAIN }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Cluster" >> $GITHUB_STEP_SUMMARY
+          echo "### Cluster (Primary - us-east-1)" >> $GITHUB_STEP_SUMMARY
           echo "- **EKS Cluster**: \`${{ env.EKS_CLUSTER }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **System Namespace**: \`${{ env.NS_SYSTEM }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Workspaces Namespace**: \`${{ env.NS_WORKSPACES }}\`" >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # Stage 4: Deploy to EU Region (production only, runs in parallel with primary)
+  # ===========================================================================
+  deploy-eu:
+    name: Deploy to EKS EU (${{ needs.setup.outputs.environment }})
+    runs-on: ubuntu-latest
+    needs: [setup, detect-changes, build-and-push]
+    if: |
+      always() &&
+      needs.setup.outputs.multi_region == 'true' &&
+      needs.setup.result == 'success' &&
+      needs.detect-changes.result == 'success' &&
+      (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped')
+    environment: ${{ needs.setup.outputs.environment }}
+
+    permissions:
+      id-token: write
+      contents: read
+
+    env:
+      ENVIRONMENT: ${{ needs.setup.outputs.environment }}
+      EKS_CLUSTER: ${{ needs.setup.outputs.eks_cluster_eu }}
+      NS_SYSTEM: ${{ needs.setup.outputs.namespace_system }}
+      NS_WORKSPACES: ${{ needs.setup.outputs.namespace_workspaces }}
+      IMAGE_TAG: ${{ needs.setup.outputs.environment }}-${{ github.sha }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: github-actions-deploy-eu
+          aws-region: eu-west-1
+
+      - name: Update kubeconfig (EU)
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region eu-west-1
+
+      - name: Create namespaces if not exist
+        run: |
+          kubectl create namespace ${{ env.NS_SYSTEM }} --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace ${{ env.NS_WORKSPACES }} --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Create or update API secrets (EU)
+        run: |
+          SECRET_ARGS=(
+            --from-literal=ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}"
+          )
+
+          if [ -n "${{ secrets.BETTER_AUTH_SECRET }}" ]; then
+            SECRET_ARGS+=(--from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}")
+          fi
+
+          if [ -n "${{ secrets.STRIPE_SECRET_KEY }}" ]; then
+            SECRET_ARGS+=(--from-literal=STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}")
+          fi
+          if [ -n "${{ secrets.STRIPE_WEBHOOK_SECRET }}" ]; then
+            SECRET_ARGS+=(--from-literal=STRIPE_WEBHOOK_SECRET="${{ secrets.STRIPE_WEBHOOK_SECRET }}")
+          fi
+
+          kubectl create secret generic api-secrets \
+            --namespace=${{ env.NS_SYSTEM }} \
+            "${SECRET_ARGS[@]}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          kubectl create secret generic anthropic-credentials \
+            --namespace=${{ env.NS_WORKSPACES }} \
+            --from-literal=api-key="${{ secrets.ANTHROPIC_API_KEY }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          echo "API secrets created/updated in EU cluster"
+
+      - name: Save current Knative service images (EU)
+        id: save-images-eu
+        run: |
+          get_image() {
+            kubectl get ksvc "$1" -n "$2" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo ""
+          }
+          echo "web_image=$(get_image studio ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
+          echo "api_image=$(get_image api ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
+          echo "mcp_image=$(get_image mcp-workspace-1 ${{ env.NS_WORKSPACES }})" >> $GITHUB_OUTPUT
+
+      - name: Deploy Knative services (EU)
+        env:
+          ECR_REGISTRY: ${{ needs.setup.outputs.ecr_registry }}
+          WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
+          API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
+          MCP_CHANGED: ${{ needs.detect-changes.outputs.mcp_changed }}
+          PREV_WEB_IMAGE: ${{ steps.save-images-eu.outputs.web_image }}
+          PREV_API_IMAGE: ${{ steps.save-images-eu.outputs.api_image }}
+          PREV_MCP_IMAGE: ${{ steps.save-images-eu.outputs.mcp_image }}
+        run: |
+          # ECR images are replicated to eu-west-1 automatically
+          # Use the eu-west-1 ECR registry for image references
+          EU_REGISTRY=$(echo "$ECR_REGISTRY" | sed 's/us-east-1/eu-west-1/')
+
+          patch_ksvc() {
+            local name=$1 ns=$2 ecr_name=$3 changed=$4 prev=$5
+            if [ "$changed" = "true" ]; then
+              echo "Deploying $name -> ${{ env.IMAGE_TAG }} (EU)"
+              kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
+                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${EU_REGISTRY}/shogo/${ecr_name}:${{ env.IMAGE_TAG }}\"}
+              ]" || echo "$name service not found in EU cluster"
+            elif [ -n "$prev" ]; then
+              echo "Restoring $name -> $prev (EU)"
+              kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
+                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${prev}\"}
+              ]" || true
+            fi
+          }
+
+          echo "Updating images in EU cluster"
+          patch_ksvc studio       "${{ env.NS_SYSTEM }}"     shogo-web  "$WEB_CHANGED"  "$PREV_WEB_IMAGE"
+          patch_ksvc api          "${{ env.NS_SYSTEM }}"     shogo-api  "$API_CHANGED"  "$PREV_API_IMAGE"
+          patch_ksvc mcp-workspace-1 "${{ env.NS_WORKSPACES }}" shogo-mcp  "$MCP_CHANGED"  "$PREV_MCP_IMAGE"
+
+      - name: Wait for rollout (EU)
+        run: |
+          echo "Waiting for EU service rollouts..."
+          kubectl wait --for=condition=ready ksvc/studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          kubectl wait --for=condition=ready ksvc/mcp-workspace-1 -n ${{ env.NS_WORKSPACES }} --timeout=300s || true
+
+      - name: Verify deployment (EU)
+        run: |
+          echo "=== Knative Services (EU - ${{ env.NS_SYSTEM }}) ==="
+          kubectl get ksvc -n ${{ env.NS_SYSTEM }}
+          echo ""
+          echo "=== Pods (EU - ${{ env.NS_SYSTEM }}) ==="
+          kubectl get pods -n ${{ env.NS_SYSTEM }}

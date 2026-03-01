@@ -29,7 +29,7 @@ export type MCPContext = 'platform' | 'project'
 /**
  * Platform MCP interface for singleton platform tools.
  *
- * Platform MCP provides full access to all Wavesmith tools for:
+ * Platform MCP provides full access to all Shogo tools for:
  * - Claude orchestration (AI-driven development)
  * - Schema management (DDL, migrations)
  * - Cross-project operations
