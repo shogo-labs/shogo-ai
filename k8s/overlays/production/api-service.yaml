@@ -1,6 +1,69 @@
 # =============================================================================
 # API Service - Production Environment
 # =============================================================================
+
+# ServiceAccount for the API pod
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: api-service-account
+  namespace: shogo-system
+---
+# ClusterRole for managing DomainMappings and Knative Services
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: shogo-production-api-domainmapping-manager
+rules:
+  - apiGroups: ["serving.knative.dev"]
+    resources: ["domainmappings"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: ["serving.knative.dev"]
+    resources: ["services", "revisions", "configurations", "routes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list"]
+---
+# Bind the ClusterRole to the API service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: shogo-production-api-domainmapping-manager
+subjects:
+  - kind: ServiceAccount
+    name: api-service-account
+    namespace: shogo-system
+roleRef:
+  kind: ClusterRole
+  name: shogo-production-api-domainmapping-manager
+  apiGroup: rbac.authorization.k8s.io
+---
+# Role for managing database credential Secrets in the workspaces namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: shogo-api-db-secret-manager
+  namespace: shogo-workspaces
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: shogo-api-db-secret-manager
+  namespace: shogo-workspaces
+subjects:
+  - kind: ServiceAccount
+    name: api-service-account
+    namespace: shogo-system
+roleRef:
+  kind: Role
+  name: shogo-api-db-secret-manager
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
@@ -13,10 +76,10 @@ spec:
   template:
     metadata:
       annotations:
-        # Production: always keep at least 1 replica for availability
         autoscaling.knative.dev/min-scale: "1"
         autoscaling.knative.dev/max-scale: "10"
     spec:
+      serviceAccountName: api-service-account
       containers:
         - name: api
           image: shogo-api  # Replaced by kustomize
@@ -30,8 +93,22 @@ spec:
               value: "production"
             - name: NODE_TLS_REJECT_UNAUTHORIZED
               value: "0"
+            - name: SYSTEM_NAMESPACE
+              value: "shogo-system"
             - name: MCP_URL
               value: "http://mcp-workspace-1.shogo-workspaces.svc.cluster.local"
+            - name: PROJECT_NAMESPACE
+              value: "shogo-workspaces"
+            - name: PROJECT_RUNTIME_IMAGE
+              value: "097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/project-runtime:production-latest"
+            - name: S3_WORKSPACES_BUCKET
+              value: "shogo-workspaces-production"
+            - name: S3_REGION
+              value: "us-east-1"
+            - name: PUBLISH_NAMESPACE
+              value: "shogo-system"
+            - name: PUBLISH_DOMAIN
+              value: "shogo.one"
             - name: BETTER_AUTH_URL
               value: "https://api.shogo.ai"
             - name: ALLOWED_ORIGINS
@@ -47,6 +124,23 @@ spec:
                 secretKeyRef:
                   name: postgres-credentials
                   key: DATABASE_URL
+            - name: PROJECTS_DB_ADMIN_URL
+              valueFrom:
+                secretKeyRef:
+                  name: projects-db-admin
+                  key: PROJECTS_DB_ADMIN_URL
+            - name: PROJECTS_DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: projects-db-admin
+                  key: PROJECTS_DB_HOST
+                  optional: true
+            - name: PROJECTS_DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: projects-db-admin
+                  key: PROJECTS_DB_PORT
+                  optional: true
             - name: BETTER_AUTH_SECRET
               valueFrom:
                 secretKeyRef:
@@ -57,10 +151,52 @@ spec:
                 secretKeyRef:
                   name: api-secrets
                   key: ANTHROPIC_API_KEY
+            # Composio integration
+            - name: COMPOSIO_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: COMPOSIO_API_KEY
+                  optional: true
+            - name: COMPOSIO_PROJECT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: COMPOSIO_PROJECT_ID
+                  optional: true
+            # OpenAI
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: OPENAI_API_KEY
+                  optional: true
+            # Observability
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "https://ingest.us.signoz.cloud:443"
+            - name: OTEL_SERVICE_NAME
+              value: "shogo-api-production"
+            - name: OTEL_LOG_LEVEL
+              value: "info"
+            - name: SIGNOZ_INGESTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: signoz-credentials
+                  key: SIGNOZ_INGESTION_KEY
+                  optional: true
+            # Agent runtime for warm pool
+            - name: AGENT_RUNTIME_IMAGE
+              value: "097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/agent-runtime:production-latest"
+            - name: WARM_POOL_PROJECT_SIZE
+              value: "0"
+            - name: WARM_POOL_AGENTS_PER_NODE
+              value: "10"
+            - name: WARM_POOL_MAX_AGE_MS
+              value: "3600000"
           resources:
             requests:
-              memory: "256Mi"
+              memory: "512Mi"
               cpu: "100m"
             limits:
-              memory: "512Mi"
-              cpu: "500m"
+              memory: "2Gi"
+              cpu: "1"

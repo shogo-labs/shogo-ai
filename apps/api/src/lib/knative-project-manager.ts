@@ -850,9 +850,9 @@ export class KnativeProjectManager {
     //
     // Fallback: If proxy token generation fails, inject the raw ANTHROPIC_API_KEY
     // from K8s secrets so the pod can still function.
-    // Derive the API service URL from the pod's own namespace (e.g., shogo-staging-system)
+    // Derive the API service URL from the pod's own namespace
     // The API is a Knative service exposed on port 80 via kourier
-    const systemNamespace = process.env.SYSTEM_NAMESPACE || 'shogo-staging-system'
+    const systemNamespace = process.env.SYSTEM_NAMESPACE || (process.env.NODE_ENV === 'production' ? 'shogo-system' : 'shogo-staging-system')
     const apiUrl = process.env.API_URL || process.env.SHOGO_API_URL || `http://api.${systemNamespace}.svc.cluster.local`
     env.push({ name: "AI_PROXY_URL", value: `${apiUrl}/api/ai/v1` })
 
