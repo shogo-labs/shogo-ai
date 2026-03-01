@@ -94,6 +94,21 @@ const PROJECT_ID = currentProjectId
 
 if (IS_POOL_MODE) {
   logTiming('Starting in WARM POOL mode (awaiting project assignment)')
+
+  // Self-assign: if this pod was previously promoted (has ASSIGNED_PROJECT),
+  // fetch config from the API and apply it so the pod resumes serving.
+  const { checkSelfAssign } = await import('@shogo/shared-runtime/self-assign')
+  const selfAssignConfig = await checkSelfAssign()
+  if (selfAssignConfig) {
+    logTiming(`[self-assign] Applying config for project ${selfAssignConfig.projectId}`)
+    currentProjectId = selfAssignConfig.projectId
+    process.env.PROJECT_ID = selfAssignConfig.projectId
+    for (const [key, value] of Object.entries(selfAssignConfig.env)) {
+      if (typeof value === 'string') process.env[key] = value
+    }
+    poolAssigned = true
+    logTiming(`[self-assign] Self-assigned to ${selfAssignConfig.projectId}`)
+  }
 } else {
   logTiming(`Configuration loaded for project: ${currentProjectId}`)
 }

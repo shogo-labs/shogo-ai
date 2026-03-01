@@ -37,6 +37,7 @@ import { adminRoutes } from './routes/admin'
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
 import { integrationRoutes } from './routes/integrations'
 import { agentTemplateRoutes } from './routes/agent-templates'
+import internalRoutes from './routes/internal'
 import { requireSuperAdmin } from './middleware/super-admin'
 // Generated admin CRUD routes (unrestricted, middleware-protected)
 import { createAdminRoutes } from './generated/admin-routes'
@@ -1060,7 +1061,7 @@ app.post('/api/projects/:projectId/runtime/start', async (c) => {
       const { getKnativeProjectManager } = await import('./lib/knative-project-manager')
       const knativeManager = getKnativeProjectManager()
       await knativeManager.createProject(projectId)
-      const podUrl = `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`
+      const podUrl = await knativeManager.resolveProjectPodUrl(projectId)
       return c.json({
         success: true,
         projectId,
@@ -1343,10 +1344,11 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         })
         .catch(() => {})
 
+      const resolvedDirectUrl = await manager.resolveProjectPodUrl(projectId)
       return c.json({
         url: previewUrl,
         proxyUrl: legacyProxyUrl, // Backwards compat - legacy proxy URL
-        directUrl: `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`,
+        directUrl: resolvedDirectUrl,
         ...(agentUrl && { agentUrl }),
         sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
         status: 'running',
@@ -1355,12 +1357,13 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
       }, 200)
     }
     
+    const resolvedDirectUrl = await manager.resolveProjectPodUrl(projectId)
+
     // Pod doesn't exist or isn't ready
     if (!shouldWait) {
       // Caller requested non-blocking - return current status
       // This triggers pod creation in the background if needed
       if (!status.exists) {
-        // Start creation in background (don't await)
         getProjectPodUrl(projectId).catch(err => {
           console.error(`[Runtime] Background pod creation failed for ${projectId}:`, err)
         })
@@ -1370,7 +1373,7 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
       return c.json({
         url: previewUrl,
         proxyUrl: legacyProxyUrl,
-        directUrl: `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`,
+        directUrl: resolvedDirectUrl,
         ...(agentUrl && { agentUrl }),
         sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
         status: status.exists ? 'starting' : 'creating',
@@ -1379,19 +1382,18 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         message: status.exists 
           ? 'Project runtime is starting, please poll /runtime/status until ready'
           : 'Project runtime is being created, please poll /runtime/status until ready',
-      }, 202) // 202 Accepted - request accepted but processing not complete
+      }, 202)
     }
     
     // Wait for pod to be ready (default behavior)
     try {
-      // This will create the pod if it doesn't exist and wait for it to be ready
       await getProjectPodUrl(projectId)
       
       console.log(`[sandbox/url] Returning waited response with url=${previewUrl}`)
       return c.json({
         url: previewUrl,
         proxyUrl: legacyProxyUrl,
-        directUrl: `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`,
+        directUrl: resolvedDirectUrl,
         ...(agentUrl && { agentUrl }),
         sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
         status: 'running',
@@ -4092,6 +4094,9 @@ app.route('/api', scopedAnalyticsRoutes())
 
 // Composio integration routes for managed OAuth (connect/disconnect/status)
 app.route('/api', integrationRoutes())
+
+// Internal routes for cluster-internal pod communication (not exposed externally)
+app.route('/api/internal', internalRoutes)
 
 // =============================================================================
 // Current User Route (/api/me) - Returns user profile with role
