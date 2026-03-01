@@ -542,6 +542,18 @@ export function lintComponents(components: Array<{ id?: string; component?: stri
       }
     }
 
+    // Button without any action or href — the button will do nothing when clicked
+    if (comp.component === 'Button' && !comp.action && !comp.href) {
+      messages.push({
+        severity: 'warning',
+        componentId: cid,
+        message: `Button has no action or href — it will do nothing when clicked. ` +
+          `Fix: add an action prop with a mutation. ` +
+          `For external links: action: { name: "open", mutation: { endpoint: "https://example.com", method: "OPEN" } }. ` +
+          `For per-item URLs in a DataList: action: { name: "open", mutation: { endpoint: { path: "url" }, method: "OPEN" } }.`,
+      })
+    }
+
     // Button action.mutation validation
     if (comp.component === 'Button' && comp.action) {
       const action = comp.action as Record<string, unknown>
@@ -585,7 +597,9 @@ export function lintComponents(components: Array<{ id?: string; component?: stri
             message: `Button action.mutation.method "${method}" is not valid. Use one of: POST, PATCH, DELETE, OPEN.`,
           })
         }
-        if (typeof endpoint === 'string' && endpoint.includes(':') && !mutation.params) {
+        const endpointStr = typeof endpoint === 'string' ? endpoint : ''
+        const pathPart = endpointStr.replace(/^https?:\/\/[^/]*/, '')
+        if (pathPart.includes(':') && !mutation.params) {
           messages.push({
             severity: 'error',
             componentId: cid,

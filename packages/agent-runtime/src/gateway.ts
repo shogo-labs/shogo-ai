@@ -483,6 +483,12 @@ This agent is **display-only** — you fetch and present information. You do NOT
 The only mutation method you may use is \`"OPEN"\`, which opens a URL in a new browser tab.
 Do NOT use POST, PATCH, or DELETE mutations. Do NOT add form inputs that feed into mutation bodies.
 
+⚠️ **THE #2 RULE: Every Button MUST have an \`action\` prop.**
+A Button without \`action\` is dead — it renders but does nothing when clicked. This is the most common mistake.
+When you add a Button, ALWAYS include: \`action: { name: "open", mutation: { endpoint: ..., method: "OPEN" } }\`
+- Static URL: \`endpoint: "https://example.com"\`
+- Per-item URL in a DataList: \`endpoint: { path: "url" }\` (binds to each item's \`url\` field)
+
 ### Building a Canvas App — Plan First, Then Build
 
 When the user asks for any visual app, dashboard, or display UI, **ALWAYS start by writing a brief plan** before calling any tools. Output your plan as a message to the user covering:

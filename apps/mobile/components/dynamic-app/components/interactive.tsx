@@ -92,6 +92,8 @@ interface DynButtonProps {
 }
 
 export function DynButton({ label, text, variant = 'default', size = 'default', disabled, href, action, onAction, className }: DynButtonProps) {
+  const isMisconfigured = !href && !action
+
   const handlePress = useCallback(() => {
     if (href) {
       Linking.openURL(href)
@@ -111,6 +113,24 @@ export function DynButton({ label, text, variant = 'default', size = 'default', 
     }
     console.warn(`[DynamicApp] Button "${label || text || 'unnamed'}" pressed but has no action or href configured. It will do nothing.`)
   }, [href, action, onAction, label, text])
+
+  if (isMisconfigured) {
+    return (
+      <View className={cn('flex-row items-center gap-1.5', className)}>
+        <Button
+          action="negative"
+          variant="outline"
+          size={BUTTON_SIZE_MAP[size] || 'md'}
+          isDisabled
+          className="border-destructive/50 opacity-70"
+        >
+          <ButtonText className="text-destructive">
+            {label || text || 'Button'} (no action)
+          </ButtonText>
+        </Button>
+      </View>
+    )
+  }
 
   return (
     <Button
