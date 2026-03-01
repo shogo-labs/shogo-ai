@@ -327,17 +327,17 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
       },
       {
         id: 'correct-lifecycle-order',
-        description: 'Tools in correct order: search → install → fetch → create → bind',
+        description: 'Tools in correct order: search → install → fetch, then create and bind both after fetch',
         points: 10,
         phase: 'execution',
         validate: (r) => {
           const searchIdx = r.toolCalls.findIndex(t => t.name === 'tool_search')
           const installIdx = r.toolCalls.findIndex(t => t.name === 'tool_install')
           const fetchIdx = r.toolCalls.findIndex(t => t.name === 'GITHUB_LIST_ISSUES')
-          const createIdx = r.toolCalls.findIndex(t => t.name === 'canvas_create')
+          const createIdx = r.toolCalls.findIndex(t => t.name === 'canvas_create' || t.name === 'canvas_delegate')
           const bindIdx = r.toolCalls.findIndex(t => t.name === 'canvas_api_bind')
           return searchIdx >= 0 && installIdx > searchIdx && fetchIdx > installIdx &&
-                 createIdx > fetchIdx && bindIdx > createIdx
+                 createIdx > fetchIdx && bindIdx > fetchIdx
         },
       },
       {

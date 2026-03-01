@@ -3011,6 +3011,105 @@ const BUILTIN_MOCKS: ToolMockMap = {
   browser: { type: 'static', response: { ok: true, snapshot: '<html>Mock browser snapshot</html>' } },
 }
 
+// ---------------------------------------------------------------------------
+// Fixture: CI/CD Pipeline Monitor — GitHub Actions Deployments
+// Agent should search for GitHub, install it, call GITHUB_LIST_WORKFLOW_RUNS,
+// then build a canvas dashboard with deploy status, branch, and trend chart.
+// ---------------------------------------------------------------------------
+
+export const CICD_PIPELINE_MOCKS: ToolMockMap = {
+  tool_list: {
+    type: 'static',
+    description: 'List all currently installed MCP servers and their available tools.',
+    paramKeys: [],
+    response: { servers: [], totalServers: 0, totalTools: 0 },
+  },
+  tool_search: {
+    type: 'pattern',
+    description: 'Search for MCP servers by capability or keyword.',
+    paramKeys: ['query', 'limit'],
+    patterns: [
+      {
+        match: { query: 'github' },
+        response: {
+          query: 'github',
+          results: [
+            { name: 'github', description: 'GitHub — managed OAuth integration. Access repos, issues, PRs, and Actions.', source: 'composio' },
+          ],
+          message: 'Found 1 result(s). Use tool_install to add it.',
+        },
+      },
+      {
+        match: { query: 'deploy' },
+        response: {
+          query: 'deploy',
+          results: [
+            { name: 'github', description: 'GitHub — managed OAuth integration. Access repos, issues, PRs, and Actions.', source: 'composio' },
+            { name: 'vercel', description: 'Vercel — managed OAuth integration. View deployments and projects.', source: 'composio' },
+          ],
+          message: 'Found 2 result(s). Use tool_install to add one.',
+        },
+      },
+      {
+        match: { query: 'ci' },
+        response: {
+          query: 'ci',
+          results: [
+            { name: 'github', description: 'GitHub — managed OAuth integration. Access repos, issues, PRs, and Actions.', source: 'composio' },
+          ],
+          message: 'Found 1 result(s). Use tool_install to add it.',
+        },
+      },
+    ],
+    default: {
+      query: 'deployment',
+      results: [
+        { name: 'github', description: 'GitHub — managed OAuth integration. Access repos, issues, PRs, and Actions.', source: 'composio' },
+      ],
+      message: 'Found 1 result(s). Use tool_install to add it.',
+    },
+  },
+  tool_install: {
+    type: 'static',
+    description: 'Install a tool, making its capabilities available immediately.',
+    paramKeys: ['name'],
+    response: {
+      ok: true,
+      server: 'composio',
+      integration: 'github',
+      toolCount: 3,
+      connected: true,
+      authStatus: 'active',
+      tools: ['GITHUB_LIST_WORKFLOW_RUNS', 'GITHUB_LIST_ISSUES', 'GITHUB_GET_REPO'],
+      message: 'Installed github with 3 tool(s). Auth is active — connected and ready.',
+    },
+  },
+  GITHUB_LIST_WORKFLOW_RUNS: {
+    type: 'static',
+    description: 'List recent workflow runs (deployments) for a GitHub repository.',
+    paramKeys: ['owner', 'repo', 'per_page', 'status'],
+    hidden: true,
+    response: {
+      data: {
+        workflow_runs: [
+          { id: 9001, name: 'Deploy Production', head_branch: 'main', head_sha: 'a1b2c3d', status: 'completed', conclusion: 'success', created_at: '2026-02-27T14:30:00Z', run_started_at: '2026-02-27T14:30:12Z', updated_at: '2026-02-27T14:33:45Z', html_url: 'https://github.com/acme/app/actions/runs/9001' },
+          { id: 8998, name: 'Deploy Production', head_branch: 'main', head_sha: 'e4f5g6h', status: 'completed', conclusion: 'failure', created_at: '2026-02-27T10:15:00Z', run_started_at: '2026-02-27T10:15:08Z', updated_at: '2026-02-27T10:18:22Z', html_url: 'https://github.com/acme/app/actions/runs/8998' },
+          { id: 8995, name: 'Deploy Staging', head_branch: 'feature/auth-v2', head_sha: 'i7j8k9l', status: 'completed', conclusion: 'success', created_at: '2026-02-26T16:45:00Z', run_started_at: '2026-02-26T16:45:05Z', updated_at: '2026-02-26T16:48:30Z', html_url: 'https://github.com/acme/app/actions/runs/8995' },
+          { id: 8990, name: 'Deploy Production', head_branch: 'main', head_sha: 'm0n1o2p', status: 'completed', conclusion: 'success', created_at: '2026-02-26T11:00:00Z', run_started_at: '2026-02-26T11:00:10Z', updated_at: '2026-02-26T11:04:15Z', html_url: 'https://github.com/acme/app/actions/runs/8990' },
+          { id: 8987, name: 'Deploy Staging', head_branch: 'fix/memory-leak', head_sha: 'q3r4s5t', status: 'completed', conclusion: 'success', created_at: '2026-02-25T09:30:00Z', run_started_at: '2026-02-25T09:30:08Z', updated_at: '2026-02-25T09:33:50Z', html_url: 'https://github.com/acme/app/actions/runs/8987' },
+          { id: 8984, name: 'Deploy Production', head_branch: 'main', head_sha: 'u6v7w8x', status: 'completed', conclusion: 'failure', created_at: '2026-02-24T15:20:00Z', run_started_at: '2026-02-24T15:20:15Z', updated_at: '2026-02-24T15:24:02Z', html_url: 'https://github.com/acme/app/actions/runs/8984' },
+          { id: 8980, name: 'Deploy Production', head_branch: 'main', head_sha: 'y9z0a1b', status: 'completed', conclusion: 'success', created_at: '2026-02-24T10:00:00Z', run_started_at: '2026-02-24T10:00:06Z', updated_at: '2026-02-24T10:03:42Z', html_url: 'https://github.com/acme/app/actions/runs/8980' },
+          { id: 8976, name: 'Deploy Staging', head_branch: 'feature/dashboard', head_sha: 'c2d3e4f', status: 'completed', conclusion: 'success', created_at: '2026-02-23T17:10:00Z', run_started_at: '2026-02-23T17:10:10Z', updated_at: '2026-02-23T17:13:28Z', html_url: 'https://github.com/acme/app/actions/runs/8976' },
+          { id: 8972, name: 'Deploy Production', head_branch: 'main', head_sha: 'g5h6i7j', status: 'completed', conclusion: 'success', created_at: '2026-02-22T13:45:00Z', run_started_at: '2026-02-22T13:45:12Z', updated_at: '2026-02-22T13:48:55Z', html_url: 'https://github.com/acme/app/actions/runs/8972' },
+          { id: 8968, name: 'Deploy Production', head_branch: 'main', head_sha: 'k8l9m0n', status: 'in_progress', conclusion: null, created_at: '2026-02-21T11:30:00Z', run_started_at: '2026-02-21T11:30:05Z', updated_at: '2026-02-21T11:31:00Z', html_url: 'https://github.com/acme/app/actions/runs/8968' },
+        ],
+        total_count: 10,
+      },
+      successful: true,
+    },
+  },
+}
+
 /**
  * Build the mock payload for an eval. Merges built-in tool mocks with
  * the eval's specific `toolMocks`. Only MCP tools explicitly listed in

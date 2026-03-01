@@ -50,6 +50,16 @@ export function toolCallArgsContain(result: EvalResult, toolName: string, value:
     .some(t => JSON.stringify(t.input).toLowerCase().includes(value.toLowerCase()))
 }
 
+/** True if `toolName` was called and succeeded (not an error) at least once. */
+export function usedToolSuccessfully(result: EvalResult, toolName: string): boolean {
+  return result.toolCalls.some(t => t.name === toolName && !t.error)
+}
+
+/** Count of successful (non-error) calls to `toolName` across all turns. */
+export function successfulToolCallCount(result: EvalResult, toolName: string): number {
+  return result.toolCalls.filter(t => t.name === toolName && !t.error).length
+}
+
 /** True if any tool_install call was made without `command` or `args` (i.e. managed-style name-only install). */
 export function installCalledWithoutCommand(result: EvalResult): boolean {
   return result.toolCalls

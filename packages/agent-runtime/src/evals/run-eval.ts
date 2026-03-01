@@ -71,7 +71,7 @@ const trackArg = getArg('track', 'all')!
 const modelArg = getArg('model', 'haiku')!
 const workersArg = parseInt(getArg('workers', '1')!)
 const filterArg = getArg('filter')
-const agentArg = getArg('agent') as 'basic' | 'advanced' | undefined
+const agentArg = (getArg('agent') || 'basic') as 'basic' | 'advanced' | 'all'
 const verboseFlag = args.includes('--verbose') || args.includes('-v')
 
 const MODEL_MAP: Record<string, string> = {
@@ -147,7 +147,7 @@ async function startWorker(id: number): Promise<Worker> {
       PROJECT_DIR: dir,
       PROJECT_ID: `eval-worker-${id}`,
       AGENT_MODEL: modelArg,
-      ...(agentArg ? { AGENT_VARIANT: agentArg } : {}),
+      ...(agentArg !== 'all' ? { AGENT_VARIANT: agentArg } : {}),
       NODE_OPTIONS: '--max-old-space-size=512',
     },
     stdout: 'ignore',
@@ -316,6 +316,8 @@ async function main() {
     const before = evals.length
     evals = evals.filter(e => e.requiredAgent === 'advanced')
     console.log(`  Filtered to advanced-agent evals: ${evals.length} (skipped ${before - evals.length} basic)`)
+  } else if (agentArg === 'all') {
+    console.log(`  Running all evals (no agent filter)`)
   }
 
   console.log(`  Evals: ${evals.length}`)

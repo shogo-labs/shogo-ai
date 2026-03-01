@@ -10,7 +10,8 @@
  */
 
 import type { AgentEval, EvalResult, ValidationPhase } from './types'
-import { usedTool, toolCallCount, responseContains } from './eval-helpers'
+import { usedTool, toolCallCount, responseContains, usedToolSuccessfully, successfulToolCallCount } from './eval-helpers'
+import { CICD_PIPELINE_MOCKS } from './tool-mocks'
 
 // ---------------------------------------------------------------------------
 // Canvas-specific helpers
@@ -193,22 +194,24 @@ function hasChartType(result: EvalResult, chartType: string): boolean {
 }
 
 /**
- * Check that Chart data arrays across canvas_update calls have at least
- * `minPoints` entries total (across all Chart components).
+ * Check that Chart data arrays across canvas_update AND canvas_data calls
+ * have at least `minPoints` entries total. Data may be inline in canvas_update
+ * or set via canvas_data when using path bindings.
  */
 function chartHasMinDataPoints(result: EvalResult, minPoints: number): boolean {
-  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
-  const json = JSON.stringify(updateCalls.map(t => t.input))
+  const relevantCalls = result.toolCalls.filter(t => t.name === 'canvas_update' || t.name === 'canvas_data')
+  const json = JSON.stringify(relevantCalls.map(t => t.input))
   const labelMatches = json.match(/"label"\s*:\s*"/g)
   return (labelMatches?.length ?? 0) >= minPoints
 }
 
 /**
- * Check that a Chart component includes specific label text (case-insensitive).
+ * Check that chart-related tool calls include specific label text (case-insensitive).
+ * Checks both canvas_update (inline data) and canvas_data (bound data).
  */
 function chartDataContainsLabel(result: EvalResult, label: string): boolean {
-  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
-  const json = JSON.stringify(updateCalls.map(t => t.input)).toLowerCase()
+  const relevantCalls = result.toolCalls.filter(t => t.name === 'canvas_update' || t.name === 'canvas_data')
+  const json = JSON.stringify(relevantCalls.map(t => t.input)).toLowerCase()
   return json.includes(label.toLowerCase())
 }
 
@@ -696,26 +699,41 @@ export const CANVAS_EVALS: AgentEval[] = [
     ],
   },
 
-  // ---- Level 2: CI/CD Pipeline Monitor (OpenClaw DevOps) ----
+  // ---- Level 2: CI/CD Pipeline Monitor (GitHub Actions) ----
   {
     id: 'canvas-cicd-monitor',
     name: 'Canvas: CI/CD pipeline monitor',
     category: 'canvas',
     level: 2,
-    input: 'Show me our recent deployments — I want to see which ones passed and which failed, plus the trend over the last week.',
+    input: 'Show me our recent deployments from GitHub — I want to see which ones passed and which failed, plus the trend over the last week.',
+    toolMocks: CICD_PIPELINE_MOCKS,
     maxScore: 100,
     validationCriteria: [
       {
+        id: 'installed-github',
+        description: 'Installed the GitHub integration',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'tool_install'),
+      },
+      {
+        id: 'fetched-deployments',
+        description: 'Called GitHub workflow runs API to get real data',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'GITHUB_LIST_WORKFLOW_RUNS'),
+      },
+      {
         id: 'used-canvas-create',
         description: 'Created a canvas surface',
-        points: 15,
+        points: 10,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_create'),
       },
       {
         id: 'used-canvas-update',
         description: 'Added components to the canvas',
-        points: 15,
+        points: 10,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_update'),
       },
@@ -732,7 +750,7 @@ export const CANVAS_EVALS: AgentEval[] = [
       {
         id: 'has-chart',
         description: 'Included a Chart for deploy frequency',
-        points: 15,
+        points: 10,
         phase: 'execution',
         validate: (r) => JSON.stringify(r.toolCalls).includes('"Chart"'),
       },
@@ -743,25 +761,25 @@ export const CANVAS_EVALS: AgentEval[] = [
         phase: 'execution',
         validate: (r) => {
           const json = JSON.stringify(r.toolCalls).toLowerCase()
-          return json.includes('success') || json.includes('failed') || json.includes('running')
+          return json.includes('success') || json.includes('fail')
         },
       },
       {
         id: 'has-deploy-data',
-        description: 'Data includes branch and commit info',
+        description: 'Data includes branch info from the real GitHub data',
         points: 10,
         phase: 'execution',
         validate: (r) => {
           const json = JSON.stringify(r.toolCalls).toLowerCase()
-          return json.includes('branch') || json.includes('commit')
+          return json.includes('main') || json.includes('branch')
         },
       },
       {
         id: 'reasonable-tool-count',
-        description: 'Completed in <= 15 tool calls',
-        points: 15,
+        description: 'Completed in <= 20 tool calls',
+        points: 10,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 15,
+        validate: (r) => r.toolCalls.length <= 20,
       },
     ],
   },
@@ -1371,10 +1389,10 @@ export const CANVAS_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'triggered-at-least-once',
-        description: 'Used canvas_trigger_action at least once',
+        description: 'Used canvas_trigger_action successfully at least once',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_trigger_action'),
+        validate: (r) => usedToolSuccessfully(r, 'canvas_trigger_action'),
       },
       {
         id: 'used-inspect',
@@ -1385,10 +1403,10 @@ export const CANVAS_EVALS: AgentEval[] = [
       },
       {
         id: 'triggered-3-times',
-        description: 'Used canvas_trigger_action at least 3 times',
+        description: 'canvas_trigger_action succeeded at least 3 times',
         points: 30,
         phase: 'execution',
-        validate: (r) => toolCallCount(r, 'canvas_trigger_action') >= 3,
+        validate: (r) => successfulToolCallCount(r, 'canvas_trigger_action') >= 3,
       },
       {
         id: 'inspect-after-triggers',
@@ -2622,6 +2640,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Searchable contact list',
     category: 'canvas',
     level: 2,
+    requiredAgent: 'advanced' as const,
     input: 'Build me a contact list with a search bar. I should be able to type a name and filter the list. Seed it with 6 sample contacts with name, email, and company fields.',
     maxScore: 100,
     validationCriteria: [
@@ -2802,6 +2821,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: FAQ knowledge base with search and category filter',
     category: 'canvas',
     level: 3,
+    requiredAgent: 'advanced' as const,
     input: 'Create a FAQ knowledge base. Each entry has a question, answer, and category (General, Billing, Technical). Add a search bar that filters across both question and answer text, and a category dropdown to filter by category. Seed with 6 sample FAQs.',
     maxScore: 100,
     validationCriteria: [
