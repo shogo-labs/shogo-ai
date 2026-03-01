@@ -540,6 +540,20 @@ describe('WarmPoolController', () => {
 
   describe('Pod Promotion', () => {
     test('should patch annotations and save DB mapping after assignment', async () => {
+      // Mock getNamespacedCustomObject for the spec patch
+      mockK8sCustomApi.getNamespacedCustomObject.mockResolvedValue({
+        spec: {
+          template: {
+            spec: {
+              containers: [{
+                name: 'agent-runtime',
+                env: [{ name: 'PROJECT_ID', value: '__POOL__' }],
+              }],
+            },
+          },
+        },
+      })
+
       const mockPod: WarmPodInfo = {
         id: 'test-pod',
         serviceName: 'warm-pool-agent-abc123',
@@ -554,15 +568,18 @@ describe('WarmPoolController', () => {
       })
 
       // Give async promotion time to run
-      await new Promise(resolve => setTimeout(resolve, 200))
+      await new Promise(resolve => setTimeout(resolve, 300))
 
-      // Should have patched annotations on the Knative Service
+      // First patch: metadata annotations + labels (no spec change, no restart)
       expect(mockK8sCustomApi.patchNamespacedCustomObject).toHaveBeenCalled()
-      const patchCall = mockK8sCustomApi.patchNamespacedCustomObject.mock.calls[0][0] as any
-      expect(patchCall.name).toBe('warm-pool-agent-abc123')
-      expect(patchCall.body.metadata.annotations['shogo.io/assigned-project']).toBe('test-project-promote')
-      expect(patchCall.body.metadata.labels['shogo.io/warm-pool-status']).toBe('promoted')
-      expect(patchCall.body.spec.template.metadata.annotations['autoscaling.knative.dev/min-scale']).toBe('0')
+      const metadataPatch = mockK8sCustomApi.patchNamespacedCustomObject.mock.calls[0][0] as any
+      expect(metadataPatch.name).toBe('warm-pool-agent-abc123')
+      expect(metadataPatch.body.metadata.annotations['shogo.io/assigned-project']).toBe('test-project-promote')
+      expect(metadataPatch.body.metadata.labels['shogo.io/warm-pool-status']).toBe('promoted')
+
+      // Second patch: spec with ASSIGNED_PROJECT env + min-scale (creates new revision)
+      const specPatch = mockK8sCustomApi.patchNamespacedCustomObject.mock.calls[1][0] as any
+      expect(specPatch.body.spec.template.metadata.annotations['autoscaling.knative.dev/min-scale']).toBe('0')
 
       // Should have saved DB mapping
       expect(mockPrismaProjectUpdate).toHaveBeenCalledWith({
@@ -644,21 +661,50 @@ describe('WarmPoolController', () => {
       expect(mockK8sCustomApi.createNamespacedCustomObject).toHaveBeenCalled()
     })
 
-    test('warm pod spec should include ASSIGNED_PROJECT env from Downward API', async () => {
-      mockK8sCustomApi.listNamespacedCustomObject.mockResolvedValue({ items: [] })
+    test('promotion should patch ASSIGNED_PROJECT env into service spec', async () => {
+      // Mock getNamespacedCustomObject to return a service with existing env
+      mockK8sCustomApi.getNamespacedCustomObject.mockResolvedValue({
+        spec: {
+          template: {
+            spec: {
+              containers: [{
+                name: 'agent-runtime',
+                env: [
+                  { name: 'PROJECT_ID', value: '__POOL__' },
+                  { name: 'WARM_POOL_MODE', value: 'true' },
+                ],
+              }],
+            },
+          },
+        },
+      })
 
-      await controller.start()
-      await new Promise(resolve => setTimeout(resolve, 200))
+      const mockPod: WarmPodInfo = {
+        id: 'test-pod',
+        serviceName: 'warm-pool-agent-envtest',
+        type: 'agent',
+        url: 'http://warm-pool-agent-envtest.test-namespace.svc.cluster.local',
+        createdAt: Date.now(),
+        ready: true,
+      }
 
-      const calls = mockK8sCustomApi.createNamespacedCustomObject.mock.calls
-      expect(calls.length).toBeGreaterThan(0)
+      await controller.assign(mockPod, 'test-project-envpatch', {
+        PROJECT_ID: 'test-project-envpatch',
+      })
 
-      const body = (calls[0][0] as any)?.body || calls[0][0]
-      const envVars = body.spec.template.spec.containers[0].env
+      // Give async promotion time to run
+      await new Promise(resolve => setTimeout(resolve, 300))
 
-      const assignedProjectEnv = envVars.find((e: any) => e.name === 'ASSIGNED_PROJECT')
-      expect(assignedProjectEnv).toBeDefined()
-      expect(assignedProjectEnv.valueFrom.fieldRef.fieldPath).toContain('shogo.io/assigned-project')
+      // Should have two patch calls: metadata + spec
+      const patchCalls = mockK8sCustomApi.patchNamespacedCustomObject.mock.calls
+      expect(patchCalls.length).toBeGreaterThanOrEqual(2)
+
+      // Second patch should contain ASSIGNED_PROJECT in container env
+      const specPatch = (patchCalls[1][0] as any).body
+      const envVars = specPatch.spec.template.spec.containers[0].env
+      const assignedEnv = envVars.find((e: any) => e.name === 'ASSIGNED_PROJECT')
+      expect(assignedEnv).toBeDefined()
+      expect(assignedEnv.value).toBe('test-project-envpatch')
     })
   })
 

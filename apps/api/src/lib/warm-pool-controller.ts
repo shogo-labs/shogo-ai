@@ -572,9 +572,9 @@ export class WarmPoolController {
     const t0 = Date.now()
     const api = getCustomApi()
 
-    // Patch annotations only — this does NOT create a new Revision.
-    // The running pod continues serving without restart.
-    const patch = {
+    // First: patch metadata annotations + labels. This does NOT create a new
+    // Revision, so the running pod keeps serving without interruption.
+    const metadataPatch = {
       metadata: {
         annotations: {
           'shogo.io/assigned-project': projectId,
@@ -582,15 +582,6 @@ export class WarmPoolController {
         labels: {
           [POOL_STATUS_LABEL_KEY]: 'promoted',
           'shogo.io/project': projectId,
-        },
-      },
-      spec: {
-        template: {
-          metadata: {
-            annotations: {
-              'autoscaling.knative.dev/min-scale': '0',
-            },
-          },
         },
       },
     }
@@ -602,14 +593,77 @@ export class WarmPoolController {
         namespace: this.namespace,
         plural: 'services',
         name: pod.serviceName,
-        body: patch,
+        body: metadataPatch,
       })
       console.log(
-        `[WarmPool] Patched annotations on ${pod.serviceName} for ${projectId} (${Date.now() - t0}ms)`
+        `[WarmPool] Patched metadata on ${pod.serviceName} for ${projectId} (${Date.now() - t0}ms)`
       )
     } catch (err: any) {
       console.error(
-        `[WarmPool] Failed to patch annotations on ${pod.serviceName}:`,
+        `[WarmPool] Failed to patch metadata on ${pod.serviceName}:`,
+        err.message
+      )
+    }
+
+    // Second: patch the template spec to add ASSIGNED_PROJECT env var and
+    // enable scale-to-zero. This WILL create a new Revision, but it does
+    // NOT disrupt the currently running pod — Knative routes traffic to the
+    // latest ready revision, and the current pod stays up until it idles out.
+    // When the pod next cold-starts, it boots with the new revision's spec
+    // which includes ASSIGNED_PROJECT, enabling self-assign.
+    try {
+      // Fetch current service to get existing env vars
+      const current = await api.getNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: KNATIVE_VERSION,
+        namespace: this.namespace,
+        plural: 'services',
+        name: pod.serviceName,
+      }) as any
+
+      const containers = current.spec?.template?.spec?.containers || []
+      const container = containers[0]
+      if (container) {
+        const existingEnv = container.env || []
+        // Add ASSIGNED_PROJECT if not already present
+        const hasAssigned = existingEnv.some((e: any) => e.name === 'ASSIGNED_PROJECT')
+        if (!hasAssigned) {
+          existingEnv.push({ name: 'ASSIGNED_PROJECT', value: projectId })
+        }
+
+        const specPatch = {
+          spec: {
+            template: {
+              metadata: {
+                annotations: {
+                  'autoscaling.knative.dev/min-scale': '0',
+                },
+              },
+              spec: {
+                containers: [{
+                  name: container.name,
+                  env: existingEnv,
+                }],
+              },
+            },
+          },
+        }
+
+        await api.patchNamespacedCustomObject({
+          group: KNATIVE_GROUP,
+          version: KNATIVE_VERSION,
+          namespace: this.namespace,
+          plural: 'services',
+          name: pod.serviceName,
+          body: specPatch,
+        })
+        console.log(
+          `[WarmPool] Patched spec with ASSIGNED_PROJECT on ${pod.serviceName} (${Date.now() - t0}ms) — new revision created for future cold starts`
+        )
+      }
+    } catch (err: any) {
+      console.error(
+        `[WarmPool] Failed to patch spec on ${pod.serviceName}:`,
         err.message
       )
     }
@@ -858,14 +912,6 @@ export class WarmPoolController {
       ...(type === 'agent' ? [{ name: 'AGENT_DIR', value: workDir }] : []),
       { name: 'SCHEMAS_PATH', value: '/app/.schemas' },
       { name: 'WARM_POOL_MODE', value: 'true' },
-      // Downward API: expose the assigned-project annotation as an env var.
-      // After promotion, this lets the runtime self-assign on cold start.
-      {
-        name: 'ASSIGNED_PROJECT',
-        valueFrom: {
-          fieldRef: { fieldPath: "metadata.annotations['shogo.io/assigned-project']" },
-        },
-      },
     ]
 
     // AI Proxy URL (no token yet — assigned later)
