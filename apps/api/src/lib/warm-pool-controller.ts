@@ -615,28 +615,36 @@ export class WarmPoolController {
         name: pod.serviceName,
       }) as any
 
-      const containers = current.spec?.template?.spec?.containers || []
+      const currentTemplate = current.spec?.template
+      const containers = currentTemplate?.spec?.containers || []
       const container = containers[0]
       if (container) {
-        const existingEnv = container.env || []
+        const existingEnv = [...(container.env || [])]
         const hasAssigned = existingEnv.some((e: any) => e.name === 'ASSIGNED_PROJECT')
         if (!hasAssigned) {
           existingEnv.push({ name: 'ASSIGNED_PROJECT', value: projectId })
+        }
+
+        // Merge-patch replaces arrays entirely, so we must include ALL required
+        // container fields. Spread the existing container and override only env.
+        const updatedContainer = { ...container, env: existingEnv }
+
+        // Merge existing template annotations with our changes
+        const existingAnnotations = currentTemplate?.metadata?.annotations || {}
+        const mergedAnnotations = {
+          ...existingAnnotations,
+          'autoscaling.knative.dev/min-scale': '0',
         }
 
         const specPatch = {
           spec: {
             template: {
               metadata: {
-                annotations: {
-                  'autoscaling.knative.dev/min-scale': '0',
-                },
+                annotations: mergedAnnotations,
               },
               spec: {
-                containers: [{
-                  name: container.name,
-                  env: existingEnv,
-                }],
+                ...currentTemplate?.spec,
+                containers: [updatedContainer],
               },
             },
           },
