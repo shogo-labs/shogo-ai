@@ -17,6 +17,7 @@ import { auth } from './auth'
 import { getPriceId } from './config/stripe-prices'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
 import * as billingService from './services/billing.service'
+import { sendPlanUpgradedEmail, sendPaymentReceiptEmail, sendPaymentFailedEmail } from './services/email.service'
 import * as workspaceService from './services/workspace.service'
 import { publishRoutes } from './routes/publish'
 import { runtimeRoutes } from './routes/runtime'
@@ -4018,8 +4019,89 @@ app.post('/api/webhooks/stripe', async (c) => {
 
             await billingService.allocateMonthlyCredits(workspaceId, planId)
             console.log('[Webhook] Subscription created + credits allocated for workspace:', workspaceId, 'plan:', planId)
+
+            // Send plan-upgraded email to workspace owner
+            try {
+              const workspace = await prisma.workspace.findUnique({
+                where: { id: workspaceId },
+                include: { members: { where: { role: 'owner' }, include: { user: { select: { email: true } } } } },
+              })
+              const ownerEmail = workspace?.members?.[0]?.user?.email
+              if (ownerEmail) {
+                const planLabel = planId.charAt(0).toUpperCase() + planId.slice(1)
+                const baseUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'
+                sendPlanUpgradedEmail({
+                  to: ownerEmail,
+                  workspaceName: workspace!.name,
+                  planName: planLabel,
+                  billingInterval: billingInterval === 'annual' ? 'Annual' : 'Monthly',
+                  dashboardUrl: `${baseUrl}/settings?tab=billing`,
+                }).catch((err) => console.error('[Webhook] plan-upgraded email failed:', err))
+              }
+            } catch (emailErr: any) {
+              console.error('[Webhook] plan-upgraded email lookup failed:', emailErr.message)
+            }
           } catch (err: any) {
             console.error('[Webhook] Failed to create subscription:', err.message)
+          }
+        }
+        break
+      }
+      case 'invoice.payment_succeeded': {
+        const invoice = event.data.object as Stripe.Invoice & { subscription?: string | null }
+        const customerId = typeof invoice.customer === 'string' ? invoice.customer : (invoice.customer as any)?.id
+        if (customerId && invoice.subscription) {
+          try {
+            const sub = await stripe!.subscriptions.retrieve(invoice.subscription)
+            const wsId = sub.metadata?.workspaceId
+            if (wsId) {
+              const workspace = await prisma.workspace.findUnique({ where: { id: wsId }, include: { members: { where: { role: 'owner' }, include: { user: { select: { email: true } } } } } })
+              const ownerEmail = workspace?.members?.[0]?.user?.email
+              if (ownerEmail) {
+                const planLabel = (sub.metadata?.planId || 'Pro').charAt(0).toUpperCase() + (sub.metadata?.planId || 'pro').slice(1)
+                const baseUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'
+                sendPaymentReceiptEmail({
+                  to: ownerEmail,
+                  workspaceName: workspace!.name,
+                  planName: planLabel,
+                  amount: ((invoice.amount_paid || 0) / 100).toFixed(2),
+                  currency: (invoice.currency || 'usd') === 'usd' ? '$' : invoice.currency?.toUpperCase() || '$',
+                  invoiceDate: new Date((invoice.created || 0) * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+                  ...(invoice.hosted_invoice_url ? { invoiceUrl: invoice.hosted_invoice_url } : {}),
+                }).catch((err) => console.error('[Webhook] payment-receipt email failed:', err))
+              }
+            }
+          } catch (err: any) {
+            console.error('[Webhook] payment-receipt lookup failed:', err.message)
+          }
+        }
+        break
+      }
+      case 'invoice.payment_failed': {
+        const invoice = event.data.object as Stripe.Invoice & { subscription?: string | null }
+        const customerId = typeof invoice.customer === 'string' ? invoice.customer : (invoice.customer as any)?.id
+        if (customerId && invoice.subscription) {
+          try {
+            const sub = await stripe!.subscriptions.retrieve(invoice.subscription)
+            const wsId = sub.metadata?.workspaceId
+            if (wsId) {
+              const workspace = await prisma.workspace.findUnique({ where: { id: wsId }, include: { members: { where: { role: 'owner' }, include: { user: { select: { email: true } } } } } })
+              const ownerEmail = workspace?.members?.[0]?.user?.email
+              if (ownerEmail) {
+                const planLabel = (sub.metadata?.planId || 'Pro').charAt(0).toUpperCase() + (sub.metadata?.planId || 'pro').slice(1)
+                const baseUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'
+                sendPaymentFailedEmail({
+                  to: ownerEmail,
+                  workspaceName: workspace!.name,
+                  planName: planLabel,
+                  amount: ((invoice.amount_due || 0) / 100).toFixed(2),
+                  currency: (invoice.currency || 'usd') === 'usd' ? '$' : invoice.currency?.toUpperCase() || '$',
+                  retryUrl: `${baseUrl}/settings?tab=billing`,
+                }).catch((err) => console.error('[Webhook] payment-failed email failed:', err))
+              }
+            }
+          } catch (err: any) {
+            console.error('[Webhook] payment-failed lookup failed:', err.message)
           }
         }
         break

@@ -5,7 +5,7 @@
  * This file is safe to edit - it will not be overwritten.
  */
 
-import { sendInvitationEmail } from "../services/email.service"
+import { sendInvitationEmail, sendProjectInviteEmail, sendInviteAcceptedEmail } from "../services/email.service"
 
 /**
  * Result from a hook that can modify or reject the operation
@@ -275,13 +275,24 @@ export const invitationHooks: InvitationHooks = {
     const baseUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'
     const acceptUrl = `${baseUrl}/invitations/${invitation.id}/accept`
 
-    const emailResult = await sendInvitationEmail({
-      to: invitation.email,
-      inviterName: inviter?.name || inviter?.email || 'A team member',
-      workspaceName: resourceName,
-      role: invitation.role,
-      acceptUrl,
-    })
+    const inviterName = inviter?.name || inviter?.email || 'A team member'
+
+    const emailResult = invitation.projectId && project?.name
+      ? await sendProjectInviteEmail({
+          to: invitation.email,
+          inviterName,
+          projectName: project.name,
+          workspaceName: workspace?.name,
+          role: invitation.role,
+          acceptUrl,
+        })
+      : await sendInvitationEmail({
+          to: invitation.email,
+          inviterName,
+          workspaceName: workspace?.name || resourceName,
+          role: invitation.role,
+          acceptUrl,
+        })
 
     await ctx.prisma.invitation.update({
       where: { id: invitation.id },
@@ -291,6 +302,35 @@ export const invitationHooks: InvitationHooks = {
         emailError: emailResult.error || null,
       },
     })
+  },
+
+  afterUpdate: async (record, ctx) => {
+    if (record.status !== 'accepted' || !record.invitedBy) return
+
+    try {
+      const [inviter, invitee, workspace, project] = await Promise.all([
+        ctx.prisma.user.findUnique({ where: { id: record.invitedBy }, select: { email: true } }),
+        ctx.prisma.user.findFirst({ where: { email: record.email.toLowerCase() }, select: { name: true } }),
+        record.workspaceId ? ctx.prisma.workspace.findUnique({ where: { id: record.workspaceId }, select: { name: true } }) : null,
+        record.projectId ? ctx.prisma.project.findUnique({ where: { id: record.projectId }, select: { name: true } }) : null,
+      ])
+      if (!inviter?.email) return
+
+      const resourceName = project?.name || workspace?.name
+      if (!resourceName) return
+
+      const baseUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'
+      sendInviteAcceptedEmail({
+        to: inviter.email,
+        inviteeName: invitee?.name || record.email,
+        inviteeEmail: record.email,
+        resourceName,
+        resourceType: project ? 'project' : 'workspace',
+        dashboardUrl: `${baseUrl}/settings?tab=people`,
+      }).catch((err) => console.error('[Email] invite-accepted failed:', err))
+    } catch (err) {
+      console.error('[Email] afterUpdate hook error:', err)
+    }
   },
 
   beforeUpdate: async (id, input, ctx) => {
