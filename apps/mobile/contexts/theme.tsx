@@ -59,6 +59,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     loadTheme().then((stored) => {
       setThemeState(stored)
       setIsLoaded(true)
+      if (Platform.OS === 'web' && typeof document !== 'undefined') {
+        const resolved = stored === 'system'
+          ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+          : stored
+        document.documentElement.classList.toggle('dark', resolved === 'dark')
+      }
     })
   }, [])
 

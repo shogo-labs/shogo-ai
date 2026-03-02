@@ -39,6 +39,11 @@ output "redis_endpoint" {
   sensitive   = true
 }
 
+output "s3_workspaces_bucket" {
+  description = "S3 bucket for workspace file storage"
+  value       = aws_s3_bucket.workspaces.id
+}
+
 output "kubeconfig_command" {
   description = "Command to configure kubectl"
   value       = "aws eks update-kubeconfig --region ${var.aws_region} --name ${module.eks.cluster_name}"
@@ -48,7 +53,6 @@ output "deploy_command" {
   description = "Command to deploy the application"
   value       = "cd ${path.module}/../../../ && ./scripts/deploy-eks.sh"
 }
-
 
 output "github_actions_role_arn" {
   description = "GitHub Actions IAM role ARN (use this in GitHub secrets as AWS_ROLE_ARN)"

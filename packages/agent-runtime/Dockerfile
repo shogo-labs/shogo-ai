@@ -136,11 +136,7 @@ RUN mkdir -p /app/mcp-packages && \
     npm install --omit=dev --no-audit --no-fund \
       @openbnb/mcp-server-airbnb@0.1.3 \
       mcp-fetch-node@latest \
-      @modelcontextprotocol/server-github@latest \
       @modelcontextprotocol/server-postgres@latest \
-      @modelcontextprotocol/server-brave-search@latest \
-      @notionhq/notion-mcp-server@latest \
-      @modelcontextprotocol/server-slack@latest \
       @modelcontextprotocol/server-filesystem@latest \
     && rm -rf /app/mcp-packages/package.json /app/mcp-packages/package-lock.json
 

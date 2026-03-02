@@ -105,6 +105,44 @@ function getCustomApi(): k8s.CustomObjectsApi {
   return k8sCustomApi
 }
 
+/**
+ * Perform a JSON Merge Patch (RFC 7386) on a Knative Service.
+ * The @kubernetes/client-node library defaults to JSON Patch (RFC 6902, array
+ * of operations) for PATCH calls, but we need Merge Patch (plain object).
+ * This helper uses raw fetch with the correct Content-Type header.
+ */
+export async function mergePatchKnativeService(
+  namespace: string,
+  serviceName: string,
+  patch: Record<string, any>,
+): Promise<void> {
+  const kc = getKubeConfig()
+  const cluster = kc.getCurrentCluster()
+  if (!cluster) throw new Error('No current K8s cluster configured')
+
+  const user = kc.getCurrentUser()
+  const url = `${cluster.server}/apis/${KNATIVE_GROUP}/${KNATIVE_VERSION}/namespaces/${namespace}/services/${serviceName}`
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/merge-patch+json',
+    'Accept': 'application/json',
+  }
+  if (user?.token) {
+    headers['Authorization'] = `Bearer ${user.token}`
+  }
+
+  const resp = await fetch(url, {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify(patch),
+  })
+
+  if (!resp.ok) {
+    const body = await resp.text()
+    throw new Error(`Merge-patch failed (${resp.status}): ${body}`)
+  }
+}
+
 function getCoreApi(): k8s.CoreV1Api {
   if (!k8sCoreApi) {
     const kc = getKubeConfig()
@@ -213,23 +251,52 @@ export class KnativeProjectManager {
   }
 
   /**
-   * Get the internal cluster URL for a project pod.
-   * This URL is used for proxying requests from the API to the project runtime.
+   * Get the internal cluster URL for a project pod by convention (project-{id}).
+   * For promoted warm pods with custom service names, use resolveProjectPodUrl().
    */
   getProjectPodUrl(projectId: string): string {
     if (!isKubernetes()) {
-      // Local development requires Knative
+      throw new Error("KnativeProjectManager requires Kubernetes environment")
+    }
+    return `http://project-${projectId}.${this.namespace}.svc.cluster.local`
+  }
+
+  /**
+   * Resolve the actual service URL for a project, checking DB mapping first.
+   * Falls back to the project-{id} convention for legacy projects.
+   */
+  async resolveProjectPodUrl(projectId: string): Promise<string> {
+    if (!isKubernetes()) {
       throw new Error("KnativeProjectManager requires Kubernetes environment")
     }
 
-    // Knative Service internal URL format
+    try {
+      const { prisma } = await import('./prisma')
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { knativeServiceName: true },
+      })
+
+      if (project?.knativeServiceName) {
+        return `http://${project.knativeServiceName}.${this.namespace}.svc.cluster.local`
+      }
+    } catch (err: any) {
+      console.error(`[KnativeProjectManager] Failed to look up knativeServiceName for ${projectId}:`, err.message)
+    }
+
     return `http://project-${projectId}.${this.namespace}.svc.cluster.local`
   }
 
   /**
    * Check if a project's Knative Service exists and get its status.
+   * Checks both the DB-mapped service name and the legacy project-{id} convention.
    */
   async getStatus(projectId: string): Promise<ProjectPodStatus> {
+    const serviceName = await this.resolveServiceName(projectId)
+    return this.getServiceStatus(serviceName, projectId)
+  }
+
+  async getServiceStatus(serviceName: string, projectId: string): Promise<ProjectPodStatus> {
     try {
       const api = getCustomApi()
       const response = await api.getNamespacedCustomObject({
@@ -237,7 +304,7 @@ export class KnativeProjectManager {
         version: KNATIVE_VERSION,
         namespace: this.namespace,
         plural: "services",
-        name: `project-${projectId}`,
+        name: serviceName,
       })
 
       const service = response as any
@@ -249,14 +316,13 @@ export class KnativeProjectManager {
       return {
         exists: true,
         ready: readyCondition?.status === "True",
-        url: status.url || this.getProjectPodUrl(projectId),
+        url: status.url || `http://${serviceName}.${this.namespace}.svc.cluster.local`,
         replicas: status.actualReplicas || 0,
         message: readyCondition?.message,
         createdAt: metadata.creationTimestamp,
         updatedAt: status.observedGeneration ? metadata.generation?.toString() : undefined,
       }
     } catch (error: any) {
-      // Kubernetes client uses error.code for HTTP status codes
       if (error?.code === 404 || error?.response?.statusCode === 404) {
         return { exists: false, ready: false, url: null, replicas: 0 }
       }
@@ -485,7 +551,17 @@ export class KnativeProjectManager {
       await this.createPreviewDomainMapping(projectId)
     } catch (error: any) {
       console.error(`[KnativeProjectManager] Failed to create preview DomainMapping for ${projectId}:`, error.message)
-      // Don't fail project creation - DomainMapping is a nice-to-have
+    }
+
+    // Save the service name in the database for routing
+    try {
+      const { prisma } = await import('./prisma')
+      await prisma.project.update({
+        where: { id: projectId },
+        data: { knativeServiceName: `project-${projectId}` },
+      })
+    } catch (err: any) {
+      console.error(`[KnativeProjectManager] Failed to save knativeServiceName for ${projectId}:`, err.message)
     }
     
     return this.getProjectPodUrl(projectId)
@@ -493,7 +569,7 @@ export class KnativeProjectManager {
 
   /**
    * Delete a project's Knative Service, DomainMapping, and PVCs.
-   * Removes both the project code PVC and PostgreSQL data PVC.
+   * Handles both promoted warm pods (custom service name) and legacy project-{id} services.
    */
   async deleteProject(projectId: string): Promise<void> {
     console.log(`[KnativeProjectManager] Deleting project: ${projectId}`)
@@ -506,21 +582,50 @@ export class KnativeProjectManager {
       await this.deletePreviewDomainMapping(projectId)
     } catch (error: any) {
       console.error(`[KnativeProjectManager] Failed to delete preview DomainMapping for ${projectId}:`, error.message)
-      // Continue with service deletion even if DomainMapping fails
     }
 
-    // Delete Knative Service
+    // Resolve the actual service name (may be a promoted warm pod)
+    const serviceName = await this.resolveServiceName(projectId)
+
+    // Delete the Knative Service
     try {
       await api.deleteNamespacedCustomObject({
         group: KNATIVE_GROUP,
         version: KNATIVE_VERSION,
         namespace: this.namespace,
         plural: "services",
-        name: `project-${projectId}`,
+        name: serviceName,
       })
-      console.log(`[KnativeProjectManager] Deleted Knative Service: project-${projectId}`)
+      console.log(`[KnativeProjectManager] Deleted Knative Service: ${serviceName}`)
     } catch (error: any) {
       if (error?.code !== 404 && error?.response?.statusCode !== 404) throw error
+    }
+
+    // Also try deleting the legacy project-{id} service if the resolved name is different
+    if (serviceName !== `project-${projectId}`) {
+      try {
+        await api.deleteNamespacedCustomObject({
+          group: KNATIVE_GROUP,
+          version: KNATIVE_VERSION,
+          namespace: this.namespace,
+          plural: "services",
+          name: `project-${projectId}`,
+        })
+        console.log(`[KnativeProjectManager] Deleted legacy Knative Service: project-${projectId}`)
+      } catch (error: any) {
+        if (error?.code !== 404 && error?.response?.statusCode !== 404) throw error
+      }
+    }
+
+    // Clear the DB mapping
+    try {
+      const { prisma } = await import('./prisma')
+      await prisma.project.update({
+        where: { id: projectId },
+        data: { knativeServiceName: null },
+      })
+    } catch {
+      // Project may already be deleted from DB
     }
 
     // Note: Both project code and postgres now use emptyDir + S3 sync/backup
@@ -618,12 +723,11 @@ export class KnativeProjectManager {
 
   /**
    * Scale a project to a specific number of replicas.
-   * Useful for warming up pods before they're needed.
+   * Resolves the actual Knative Service name from the DB before scaling.
    */
   async scaleProject(projectId: string, replicas: number): Promise<void> {
-    const api = getCustomApi()
+    const serviceName = await this.resolveServiceName(projectId)
     
-    // Patch the service to update min-scale annotation
     const patch = {
       spec: {
         template: {
@@ -636,16 +740,30 @@ export class KnativeProjectManager {
       },
     }
 
-    await api.patchNamespacedCustomObject({
-      group: KNATIVE_GROUP,
-      version: KNATIVE_VERSION,
-      namespace: this.namespace,
-      plural: "services",
-      name: `project-${projectId}`,
-      body: patch,
-    })
+    await mergePatchKnativeService(this.namespace, serviceName, patch)
 
-    console.log(`[KnativeProjectManager] Scaled project ${projectId} to ${replicas} replica(s)`)
+    console.log(`[KnativeProjectManager] Scaled project ${projectId} (service: ${serviceName}) to ${replicas} replica(s)`)
+  }
+
+  /**
+   * Resolve the Knative Service name for a project.
+   * Checks the DB for a saved knativeServiceName (promoted warm pod),
+   * falls back to the project-{id} convention.
+   */
+  private async resolveServiceName(projectId: string): Promise<string> {
+    try {
+      const { prisma } = await import('./prisma')
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { knativeServiceName: true },
+      })
+      if (project?.knativeServiceName) {
+        return project.knativeServiceName
+      }
+    } catch (err: any) {
+      console.error(`[KnativeProjectManager] Failed to resolve service name for ${projectId}:`, err.message)
+    }
+    return `project-${projectId}`
   }
 
   /**
@@ -726,7 +844,7 @@ export class KnativeProjectManager {
     const { prisma } = await import('./prisma')
     const projectRecord = await prisma.project.findUnique({
       where: { id: projectId },
-      select: { type: true },
+      select: { type: true, templateId: true, name: true },
     })
     const isAgentProject = projectRecord?.type === 'AGENT'
     const runtimeImage = isAgentProject ? AGENT_RUNTIME_IMAGE : this.image
@@ -738,6 +856,8 @@ export class KnativeProjectManager {
       { name: "PROJECT_ID", value: projectId },
       { name: "PROJECT_DIR", value: workDir },
       ...(isAgentProject ? [{ name: "AGENT_DIR", value: workDir }] : []),
+      ...(projectRecord?.templateId ? [{ name: "TEMPLATE_ID", value: projectRecord.templateId }] : []),
+      ...(projectRecord?.name ? [{ name: "AGENT_NAME", value: projectRecord.name }] : []),
       { name: "SCHEMAS_PATH", value: "/app/.schemas" },
       // Auth secret for validating preview JWT tokens
       {
@@ -760,11 +880,12 @@ export class KnativeProjectManager {
     //
     // Fallback: If proxy token generation fails, inject the raw ANTHROPIC_API_KEY
     // from K8s secrets so the pod can still function.
-    // Derive the API service URL from the pod's own namespace (e.g., shogo-staging-system)
+    // Derive the API service URL from the pod's own namespace
     // The API is a Knative service exposed on port 80 via kourier
-    const systemNamespace = process.env.SYSTEM_NAMESPACE || 'shogo-staging-system'
+    const systemNamespace = process.env.SYSTEM_NAMESPACE || (process.env.NODE_ENV === 'production' ? 'shogo-system' : 'shogo-staging-system')
     const apiUrl = process.env.API_URL || process.env.SHOGO_API_URL || `http://api.${systemNamespace}.svc.cluster.local`
     env.push({ name: "AI_PROXY_URL", value: `${apiUrl}/api/ai/v1` })
+    env.push({ name: "TOOLS_PROXY_URL", value: `${apiUrl}/api/tools` })
 
     let proxyTokenGenerated = false
 
@@ -800,48 +921,14 @@ export class KnativeProjectManager {
       console.warn(`[KnativeProjectManager] AI proxy token not generated for ${projectId} — AI features will be unavailable in this pod`)
     }
 
-    // Inject web search API keys for agent runtime tools (web_search, MCP servers).
-    // Keys are stored in the "agent-tool-secrets" K8s Secret in the workspaces namespace.
-    if (isAgentProject) {
-      env.push(
-        {
-          name: "SERPER_API_KEY",
-          valueFrom: {
-            secretKeyRef: { name: "agent-tool-secrets", key: "SERPER_API_KEY", optional: true },
-          },
-        },
-        {
-          name: "EXA_API_KEY",
-          valueFrom: {
-            secretKeyRef: { name: "agent-tool-secrets", key: "EXA_API_KEY", optional: true },
-          },
-        },
-        {
-          name: "BRAVE_API_KEY",
-          valueFrom: {
-            secretKeyRef: { name: "agent-tool-secrets", key: "BRAVE_API_KEY", optional: true },
-          },
-        },
-        {
-          name: "COMPOSIO_API_KEY",
-          valueFrom: {
-            secretKeyRef: { name: "agent-tool-secrets", key: "COMPOSIO_API_KEY", optional: true },
-          },
-        },
-        {
-          name: "COMPOSIO_PROJECT_ID",
-          valueFrom: {
-            secretKeyRef: { name: "agent-tool-secrets", key: "COMPOSIO_PROJECT_ID", optional: true },
-          },
-        },
-        {
-          name: "OPENAI_API_KEY",
-          valueFrom: {
-            secretKeyRef: { name: "agent-tool-secrets", key: "OPENAI_API_KEY", optional: true },
-          },
-        },
-      )
+    // Inject public-facing URL so agent-runtime can build OAuth callback URLs (Composio, etc.)
+    if (process.env.BETTER_AUTH_URL) {
+      env.push({ name: "BETTER_AUTH_URL", value: process.env.BETTER_AUTH_URL })
     }
+
+    // Third-party API keys (Composio, Serper, OpenAI embeddings) are NOT
+    // injected into pods. Agents proxy these requests through the API server
+    // via TOOLS_PROXY_URL, which holds the real keys server-side.
 
     // Add PostgreSQL DATABASE_URL for shared CloudNativePG cluster
     // Database is provisioned per-project on the shared projects-pg cluster
@@ -1115,6 +1202,7 @@ export async function getProjectPodUrl(projectId: string): Promise<string> {
     try {
       const manager = getKnativeProjectManager()
 
+      // 1. Check in-memory warm pool assigned map (covers active session)
       const { getWarmPoolController } = await import('./warm-pool-controller')
       const warmPool = getWarmPoolController()
       const warmUrl = warmPool.getAssignedUrl(projectId)
@@ -1126,9 +1214,44 @@ export async function getProjectPodUrl(projectId: string): Promise<string> {
         return warmUrl
       }
 
+      // 2. Check database for a saved knativeServiceName (promoted warm pod)
+      const { prisma } = await import('./prisma')
+      const projectRecord = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { knativeServiceName: true },
+      })
+      if (projectRecord?.knativeServiceName) {
+        // Validate the mapped service still exists (it won't survive API redeployments
+        // because warm pool services are ephemeral)
+        const svcStatus = await manager.getServiceStatus(
+          projectRecord.knativeServiceName,
+          projectId,
+        ).catch(() => ({ exists: false, ready: false, url: null, replicas: 0 }) as ProjectPodStatus)
+
+        if (svcStatus.exists) {
+          const dbUrl = `http://${projectRecord.knativeServiceName}.${NAMESPACE}.svc.cluster.local`
+          span.setAttribute('resolve.method', 'db_mapping')
+          span.setAttribute('resolve.duration_ms', Date.now() - totalStartTime)
+          span.setStatus({ code: SpanStatusCode.OK })
+          console.log(`[KnativeProjectManager] Project ${projectId} resolved via DB mapping to ${projectRecord.knativeServiceName} (elapsed: ${Date.now() - totalStartTime}ms)`)
+          return dbUrl
+        }
+
+        // Stale mapping — service no longer exists. Clear it so we don't keep checking.
+        console.warn(`[KnativeProjectManager] Stale DB mapping for ${projectId}: ${projectRecord.knativeServiceName} no longer exists — clearing and re-assigning`)
+        await prisma.project.update({
+          where: { id: projectId },
+          data: { knativeServiceName: null },
+        }).catch((err: any) => {
+          console.error(`[KnativeProjectManager] Failed to clear stale mapping for ${projectId}:`, err.message)
+        })
+      }
+
+      // 3. Check if a legacy project-{id} Knative Service exists
       const status = await manager.getStatus(projectId)
 
       if (!status.exists) {
+        // 4. No service found — try claiming a warm pod
         const warmPodUrl = await tryClaimWarmPod(projectId, manager)
         if (warmPodUrl) {
           const totalDuration = Date.now() - totalStartTime
@@ -1139,6 +1262,7 @@ export async function getProjectPodUrl(projectId: string): Promise<string> {
           return warmPodUrl
         }
 
+        // 5. Cold start fallback
         span.setAttribute('resolve.method', 'cold_start')
         console.log(`[KnativeProjectManager] Project ${projectId} does not exist, creating (cold start)... (elapsed: ${Date.now() - totalStartTime}ms)`)
         await manager.createProject(projectId)
@@ -1236,15 +1360,9 @@ async function tryClaimWarmPod(
     const t4 = Date.now()
     console.log(`[KnativeProjectManager] assign for ${projectId}: ${t4 - t3}ms (total warm pipeline: ${t4 - t0}ms)`)
 
-    // Create the real Knative Service in the background so future
-    // cold starts (after the warm pod scales to zero) work correctly.
-    // This is fire-and-forget — the warm pod is already serving.
-    manager.createProject(projectId).catch((err) => {
-      console.error(
-        `[KnativeProjectManager] Background createProject for ${projectId} failed:`,
-        err.message
-      )
-    })
+    // No background createProject() — the warm pod IS the project pod now.
+    // Annotations are patched by assign() for scale-to-zero support, and the
+    // runtime self-assigns on cold start via /api/internal/pod-config.
 
     return pod.url
   } catch (err: any) {

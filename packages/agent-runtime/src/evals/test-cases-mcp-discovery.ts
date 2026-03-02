@@ -1,8 +1,9 @@
 /**
- * MCP Discovery Eval Test Cases
+ * Tool Discovery Eval Test Cases
  *
- * Tests the agent's ability to discover, install, use, and manage MCP servers
- * at runtime. Prompts simulate non-technical users who don't know about MCP —
+ * Tests the agent's ability to discover, install, use, and manage tools
+ * at runtime via the unified tool_search / tool_install interface.
+ * Prompts simulate non-technical users who don't know about tools —
  * the agent must figure out that it needs new capabilities and go through
  * the search/install/use lifecycle autonomously.
  *
@@ -52,7 +53,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
   // =========================================================================
   {
     id: 'mcp-list-installed',
-    name: 'MCP Discovery: User asks about extra capabilities',
+    name: 'Tool Discovery: User asks about extra capabilities',
     category: 'mcp-discovery',
     level: 1,
     input: 'What extra integrations or services do you have access to right now? I want to know what you can connect to beyond the basics.',
@@ -61,10 +62,10 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-list-installed',
-        description: 'Used mcp_list_installed to check servers',
+        description: 'Used tool_list to check servers',
         points: 40,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_list_installed'),
+        validate: (r) => usedTool(r, 'tool_list'),
       },
       {
         id: 'mentions-playwright',
@@ -101,7 +102,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
   // =========================================================================
   {
     id: 'mcp-search-basic',
-    name: 'MCP Discovery: User asks about database capability',
+    name: 'Tool Discovery: User asks about database capability',
     category: 'mcp-discovery',
     level: 2,
     conversationHistory: [
@@ -113,10 +114,10 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-mcp-search',
-        description: 'Used mcp_search to find postgres servers',
+        description: 'Used tool_search to find postgres servers',
         points: 35,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_search'),
+        validate: (r) => usedTool(r, 'tool_search'),
       },
       {
         id: 'search-mentions-postgres',
@@ -133,7 +134,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
         description: 'Did NOT install (user said just show options)',
         points: 20,
         phase: 'execution',
-        validate: (r) => !usedToolInFinalTurn(r, 'mcp_install'),
+        validate: (r) => !usedToolInFinalTurn(r, 'tool_install'),
       },
       {
         id: 'response-lists-options',
@@ -159,7 +160,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
   // =========================================================================
   {
     id: 'mcp-install-and-use',
-    name: 'MCP Discovery: User wants to browse files',
+    name: 'Tool Discovery: User wants to browse files',
     category: 'mcp-discovery',
     level: 3,
     input: 'I need to see what files are in /tmp on my server. Can you get yourself set up with a file browsing tool and then show me the directory listing?',
@@ -168,17 +169,17 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-mcp-search',
-        description: 'Used mcp_search to find a filesystem server',
+        description: 'Used tool_search to find a filesystem server',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_search'),
+        validate: (r) => usedTool(r, 'tool_search'),
       },
       {
         id: 'used-mcp-install',
-        description: 'Used mcp_install to install the server',
+        description: 'Used tool_install to install the server',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_install'),
+        validate: (r) => usedTool(r, 'tool_install'),
       },
       {
         id: 'used-filesystem-tool',
@@ -193,8 +194,8 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
         points: 15,
         phase: 'execution',
         validate: (r) => {
-          const searchIdx = r.toolCalls.findIndex(t => t.name === 'mcp_search')
-          const installIdx = r.toolCalls.findIndex(t => t.name === 'mcp_install')
+          const searchIdx = r.toolCalls.findIndex(t => t.name === 'tool_search')
+          const installIdx = r.toolCalls.findIndex(t => t.name === 'tool_install')
           const useIdx = r.toolCalls.findIndex(t => t.name === 'mcp_filesystem_list_directory')
           return searchIdx >= 0 && installIdx > searchIdx && useIdx > installIdx
         },
@@ -223,7 +224,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
   // =========================================================================
   {
     id: 'mcp-uninstall',
-    name: 'MCP Discovery: User asks to disconnect Slack',
+    name: 'Tool Discovery: User asks to disconnect Slack',
     category: 'mcp-discovery',
     level: 2,
     conversationHistory: [
@@ -235,17 +236,17 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-list-installed',
-        description: 'Used mcp_list_installed to check what\'s running',
+        description: 'Used tool_list to check what\'s running',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_list_installed'),
+        validate: (r) => usedTool(r, 'tool_list'),
       },
       {
         id: 'used-mcp-uninstall',
-        description: 'Used mcp_uninstall to remove the server',
+        description: 'Used tool_uninstall to remove the server',
         points: 40,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_uninstall'),
+        validate: (r) => usedTool(r, 'tool_uninstall'),
       },
       {
         id: 'uninstalled-slack',
@@ -282,7 +283,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
   // =========================================================================
   {
     id: 'mcp-self-extend-figma',
-    name: 'MCP Discovery: User wants Figma access',
+    name: 'Tool Discovery: User wants Figma access',
     category: 'mcp-discovery',
     level: 3,
     conversationHistory: [
@@ -294,17 +295,17 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'searched-for-capability',
-        description: 'Used mcp_search to find a Figma capability',
+        description: 'Used tool_search to find a Figma capability',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_search'),
+        validate: (r) => usedTool(r, 'tool_search'),
       },
       {
         id: 'installed-mcp-server',
-        description: 'Used mcp_install to add the Figma capability',
+        description: 'Used tool_install to add the Figma capability',
         points: 30,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_install'),
+        validate: (r) => usedTool(r, 'tool_install'),
       },
       {
         id: 'passed-token',
@@ -341,12 +342,12 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
   // Case 6: I need to check my database
   // Level 3 | Discovery-only: no postgres tools mocked. Agent must install
   //           DB access with the connection string. Multi-turn: the history
-  //           turn may trigger mcp_search, so the final turn validates
+  //           turn may trigger tool_search, so the final turn validates
   //           install + config passing, not necessarily a fresh search.
   // =========================================================================
   {
     id: 'mcp-self-extend-database',
-    name: 'MCP Discovery: User wants to connect to their database',
+    name: 'Tool Discovery: User wants to connect to their database',
     category: 'mcp-discovery',
     level: 3,
     conversationHistory: [
@@ -358,17 +359,17 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-discovery-or-install',
-        description: 'Used mcp_search or mcp_install (discovery flow)',
+        description: 'Used tool_search or tool_install (discovery flow)',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_search') || usedTool(r, 'mcp_install'),
+        validate: (r) => usedTool(r, 'tool_search') || usedTool(r, 'tool_install'),
       },
       {
         id: 'installed-mcp-server',
-        description: 'Used mcp_install to add the postgres server',
+        description: 'Used tool_install to add the postgres server',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_install'),
+        validate: (r) => usedTool(r, 'tool_install'),
       },
       {
         id: 'passed-connection-config',
@@ -408,7 +409,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
   // =========================================================================
   {
     id: 'mcp-multi-server-orchestration',
-    name: 'MCP Discovery: GitHub PR review + Slack notification',
+    name: 'Tool Discovery: GitHub PR review + Slack notification',
     category: 'mcp-discovery',
     level: 5,
     conversationHistory: [
@@ -486,7 +487,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
   // =========================================================================
   {
     id: 'mcp-discovery-to-personality',
-    name: 'MCP Discovery: Become a project management assistant',
+    name: 'Tool Discovery: Become a project management assistant',
     category: 'mcp-discovery',
     level: 4,
     conversationHistory: [

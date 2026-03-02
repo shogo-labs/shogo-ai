@@ -931,16 +931,19 @@ resource "null_resource" "postgres_credentials" {
       # Extract projects cluster admin URI
       PROJECTS_ADMIN_URI=$(kubectl get secret projects-pg-superuser -n shogo-staging-system -o jsonpath='{.data.uri}' | base64 -d)
       
-      # Create projects-db-admin secret for the API to use for database provisioning
-      if [ -n "$PROJECTS_ADMIN_URI" ]; then
-        kubectl create secret generic projects-db-admin \
-          --namespace shogo-staging-system \
-          --from-literal=PROJECTS_DB_ADMIN_URL="$PROJECTS_ADMIN_URI" \
-          --from-literal=PROJECTS_DB_HOST="projects-pg-rw.shogo-staging-system.svc.cluster.local" \
-          --from-literal=PROJECTS_DB_PORT="5432" \
-          --dry-run=client -o yaml | kubectl apply -f -
-        echo "Projects DB admin secret created"
+      if [ -z "$PROJECTS_ADMIN_URI" ]; then
+        echo "ERROR: Could not extract projects-pg URI"
+        exit 1
       fi
+
+      echo "Projects DB admin URI extracted successfully"
+
+      kubectl create secret generic projects-db-admin \
+        --namespace shogo-staging-system \
+        --from-literal=PROJECTS_DB_ADMIN_URL="$PROJECTS_ADMIN_URI" \
+        --from-literal=PROJECTS_DB_HOST="projects-pg-rw.shogo-staging-system.svc.cluster.local" \
+        --from-literal=PROJECTS_DB_PORT="5432" \
+        --dry-run=client -o yaml | kubectl apply -f -
 
       echo "All database secrets created successfully"
     EOT
@@ -992,11 +995,47 @@ resource "kubernetes_secret" "api_secrets" {
   }
 
   data = merge(
-    {
+    var.better_auth_secret != "" ? {
       BETTER_AUTH_SECRET = var.better_auth_secret
-    },
+    } : {},
     var.anthropic_api_key != "" ? {
       ANTHROPIC_API_KEY = var.anthropic_api_key
+    } : {},
+    var.google_client_id != "" ? {
+      GOOGLE_CLIENT_ID = var.google_client_id
+    } : {},
+    var.google_client_secret != "" ? {
+      GOOGLE_CLIENT_SECRET = var.google_client_secret
+    } : {},
+    var.composio_api_key != "" ? {
+      COMPOSIO_API_KEY = var.composio_api_key
+    } : {},
+    var.composio_project_id != "" ? {
+      COMPOSIO_PROJECT_ID = var.composio_project_id
+    } : {},
+    var.gh_app_client_id != "" ? {
+      GH_APP_CLIENT_ID = var.gh_app_client_id
+    } : {},
+    var.gh_app_client_secret != "" ? {
+      GH_APP_CLIENT_SECRET = var.gh_app_client_secret
+    } : {},
+    var.gh_app_id != "" ? {
+      GH_APP_ID = var.gh_app_id
+    } : {},
+    var.gh_app_private_key != "" ? {
+      GH_APP_PRIVATE_KEY = var.gh_app_private_key
+    } : {},
+    var.gh_app_slug != "" ? {
+      GH_APP_SLUG = var.gh_app_slug
+    } : {},
+    var.gh_app_webhook_secret != "" ? {
+      GH_APP_WEBHOOK_SECRET = var.gh_app_webhook_secret
+    } : {},
+    var.stripe_secret_key != "" ? {
+      STRIPE_SECRET_KEY = var.stripe_secret_key
+    } : {},
+    var.stripe_webhook_secret != "" ? {
+      STRIPE_WEBHOOK_SECRET = var.stripe_webhook_secret
     } : {}
   )
 }
@@ -1306,7 +1345,7 @@ resource "null_resource" "knative_services" {
                   - name: BETTER_AUTH_URL
                     value: "https://studio-staging.shogo.ai"
                   - name: ALLOWED_ORIGINS
-                    value: "https://studio-staging.shogo.ai,https://api-staging.shogo.ai"
+                    value: "https://studio-staging.shogo.ai"
                   - name: REDIS_URL
                     valueFrom:
                       secretKeyRef:
@@ -1335,6 +1374,30 @@ resource "null_resource" "knative_services" {
                       secretKeyRef:
                         name: api-secrets
                         key: ANTHROPIC_API_KEY
+                        optional: true
+                  - name: GOOGLE_CLIENT_ID
+                    valueFrom:
+                      secretKeyRef:
+                        name: api-secrets
+                        key: GOOGLE_CLIENT_ID
+                        optional: true
+                  - name: GOOGLE_CLIENT_SECRET
+                    valueFrom:
+                      secretKeyRef:
+                        name: api-secrets
+                        key: GOOGLE_CLIENT_SECRET
+                        optional: true
+                  - name: COMPOSIO_API_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: api-secrets
+                        key: COMPOSIO_API_KEY
+                        optional: true
+                  - name: COMPOSIO_PROJECT_ID
+                    valueFrom:
+                      secretKeyRef:
+                        name: api-secrets
+                        key: COMPOSIO_PROJECT_ID
                         optional: true
                   # Shared PostgreSQL configuration (CloudNativePG)
                   - name: POSTGRES_ENABLED

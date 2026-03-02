@@ -69,6 +69,7 @@ _tmp/
 *.tfstate.*
 # .terraform.lock.hcl - should be committed for version consistency
 tfplan
+*.auto.tfvars
 
 # Kubernetes secrets (managed by GitHub Actions/Terraform, not committed)
 k8s/**/secrets.yaml
@@ -95,6 +96,7 @@ workspaces/
 
 # Vite/TanStack generated timestamp files (bust Docker cache)
 app.config.timestamp*.js
+electron.vite.config.*.mjs
 
 apps/mobile/.expo/
 # Chat export logs (auto-generated agent outputs)

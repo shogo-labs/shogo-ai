@@ -2214,3 +2214,111 @@ describe('Dynamic App E2E: DataList Mutation Parameter Resolution', () => {
     expect(tasksAfterPatch.find((t: any) => t.id === taskAId)?.title).toBe('Task A Updated')
   })
 })
+
+// ============================================================================
+// Button without action — lint warning + agent awareness
+// ============================================================================
+
+describe('Dynamic App E2E: Button without action warning', () => {
+  test('linter produces warning for Button with no action or href', () => {
+    const { lintComponents } = require('../canvas-component-schema')
+    const components = [
+      { id: 'root', component: 'Column', children: ['view_btn'] },
+      { id: 'view_btn', component: 'Button', label: 'View on Airbnb', variant: 'outline' },
+    ]
+
+    const messages = lintComponents(components)
+    const btnWarnings = messages.filter(
+      (m: any) => m.componentId === 'view_btn' && m.severity === 'warning'
+    )
+    expect(btnWarnings.length).toBe(1)
+    expect(btnWarnings[0].message).toContain('no action or href')
+    expect(btnWarnings[0].message).toContain('will do nothing when clicked')
+    expect(btnWarnings[0].message).toContain('method: "OPEN"')
+  })
+
+  test('linter does NOT warn for Button with a valid action', () => {
+    const { lintComponents } = require('../canvas-component-schema')
+    const components = [
+      { id: 'root', component: 'Column', children: ['open_btn'] },
+      {
+        id: 'open_btn', component: 'Button', label: 'View Listing', variant: 'outline',
+        action: { name: 'open_listing', mutation: { endpoint: { path: 'url' }, method: 'OPEN' } },
+      },
+    ]
+
+    const messages = lintComponents(components)
+    const btnWarnings = messages.filter(
+      (m: any) => m.componentId === 'open_btn' && m.message.includes('no action or href')
+    )
+    expect(btnWarnings.length).toBe(0)
+  })
+
+  test('canvas_update tool returns warning to agent when Button has no action', async () => {
+    resetDynamicAppManager()
+    let gateway: AgentGateway | undefined
+    try {
+      setupWorkspace()
+
+      // Track what tool results the agent sees
+      let toolResultTexts: string[] = []
+
+      const mockStream = createMockStreamFn([
+        // Step 1: Create surface + add button WITHOUT action
+        buildToolUseResponse([
+          {
+            name: 'canvas_create',
+            arguments: { surfaceId: 'test_app', title: 'Test App' },
+            id: 'toolu_1',
+          },
+          {
+            name: 'canvas_update',
+            arguments: {
+              surfaceId: 'test_app',
+              components: [
+                { id: 'root', component: 'Column', children: ['bad_btn'] },
+                { id: 'bad_btn', component: 'Button', label: 'View on Airbnb', variant: 'outline' },
+              ],
+            },
+            id: 'toolu_2',
+          },
+        ]),
+        // Step 2: Agent sees warnings and responds
+        buildTextResponse('I see the warning about the button missing an action.'),
+      ], (_index, messages) => {
+        // Capture all toolResult message texts to verify warnings flow to the agent
+        for (const msg of messages) {
+          if ((msg as any).role === 'toolResult') {
+            const content = (msg as any).content
+            if (Array.isArray(content)) {
+              for (const block of content) {
+                if (block.type === 'text' && typeof block.text === 'string') {
+                  toolResultTexts.push(block.text)
+                }
+              }
+            } else if (typeof content === 'string') {
+              toolResultTexts.push(content)
+            }
+          }
+        }
+      })
+
+      gateway = new AgentGateway(TEST_DIR, 'test-project')
+      gateway.setStreamFn(mockStream)
+      await gateway.start()
+
+      await gateway.processChatMessage('Build me an Airbnb button')
+
+      // Verify: at least one tool result the agent received mentions the warning
+      const allToolResultText = toolResultTexts.join('\n')
+      expect(allToolResultText).toContain('bad_btn')
+      expect(allToolResultText).toContain('no action or href')
+      expect(allToolResultText).toContain('warning')
+      expect(allToolResultText).toContain('will do nothing when clicked')
+    } finally {
+      if (gateway) await gateway.stop()
+      rmSync(TEST_DIR, { recursive: true, force: true })
+      resetDynamicAppManager()
+    }
+  })
+})

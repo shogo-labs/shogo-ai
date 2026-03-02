@@ -18,6 +18,7 @@ import {
   type ToolResultMessage,
   type AssistantMessageEvent,
   type TextContent,
+  type ImageContent,
   type ToolCall,
   type Usage,
   EventStream,
@@ -139,6 +140,18 @@ export function userMessage(text: string): UserMessage {
     content: text,
     timestamp: Date.now(),
   }
+}
+
+/**
+ * Create a Pi UserMessage with text and optional image content.
+ * Falls back to simple string content when no images are provided.
+ */
+export function userMessageWithImages(text: string, images: ImageContent[]): UserMessage {
+  if (images.length === 0) return userMessage(text)
+  const content: (TextContent | ImageContent)[] = []
+  if (text) content.push({ type: 'text', text })
+  content.push(...images)
+  return { role: 'user', content, timestamp: Date.now() }
 }
 
 /**

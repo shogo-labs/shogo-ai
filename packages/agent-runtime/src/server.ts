@@ -50,6 +50,7 @@ import {
   unlinkSync,
   readdirSync,
   statSync,
+  rmSync,
 } from 'fs'
 import {
   initializeS3Sync,
@@ -57,12 +58,11 @@ import {
   configureAIProxy,
 } from '@shogo/shared-runtime'
 import { buildAgentSystemPrompt } from './system-prompt'
-import { seedWorkspaceDefaults } from './workspace-defaults'
+import { seedWorkspaceDefaults, seedWorkspaceFromTemplate } from './workspace-defaults'
 import { AgentGateway } from './gateway'
 import { userMessage } from './pi-adapter'
 import { getDynamicAppManager, initDynamicAppManager } from './dynamic-app-manager'
 import type { ActionEvent } from './dynamic-app-types'
-import { extractFilePartsAsText } from './file-attachment-utils'
 import { fileURLToPath } from 'url'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -96,6 +96,21 @@ if (!currentProjectId) {
 
 if (IS_POOL_MODE) {
   logTiming('Starting in WARM POOL mode (awaiting project assignment)')
+
+  // Self-assign: if this pod was previously promoted (has ASSIGNED_PROJECT),
+  // fetch config from the API and apply it so the pod resumes serving.
+  const { checkSelfAssign } = await import('@shogo/shared-runtime')
+  const selfAssignConfig = await checkSelfAssign()
+  if (selfAssignConfig) {
+    logTiming(`[self-assign] Applying config for project ${selfAssignConfig.projectId}`)
+    currentProjectId = selfAssignConfig.projectId
+    process.env.PROJECT_ID = selfAssignConfig.projectId
+    for (const [key, value] of Object.entries(selfAssignConfig.env)) {
+      if (typeof value === 'string') process.env[key] = value
+    }
+    poolAssigned = true
+    logTiming(`[self-assign] Self-assigned to ${selfAssignConfig.projectId}`)
+  }
 } else {
   logTiming(`Configuration loaded for agent: ${currentProjectId}`)
 }
@@ -106,6 +121,20 @@ console.log(`[agent-runtime] Agent directory: ${AGENT_DIR}`)
 // =============================================================================
 
 function ensureWorkspaceFiles(): void {
+  const templateMarker = join(AGENT_DIR, '.template')
+  const templateIdFromEnv = process.env.TEMPLATE_ID
+  const templateIdFromFile = existsSync(templateMarker) ? readFileSync(templateMarker, 'utf-8').trim() : undefined
+  const templateId = templateIdFromEnv || templateIdFromFile
+
+  if (templateId) {
+    const seeded = seedWorkspaceFromTemplate(AGENT_DIR, templateId, process.env.AGENT_NAME)
+    if (seeded) {
+      logTiming(`Workspace seeded from template: ${templateId}`)
+      return
+    }
+    logTiming(`Template "${templateId}" not found, falling back to defaults`)
+  }
+
   seedWorkspaceDefaults(AGENT_DIR)
   logTiming('Workspace defaults seeded')
 }
@@ -312,11 +341,21 @@ app.post('/pool/assign', async (c) => {
 
   logTiming(`Pool assignment starting for project ${projectId}`)
 
-  // 1. Update project identity
+  // 1. Clean workspace to prevent cross-project file leakage.
+  // emptyDir should be fresh, but wipe user-data directories defensively.
+  for (const subdir of ['files', 'memory', 'skills']) {
+    const dirPath = join(AGENT_DIR, subdir)
+    if (existsSync(dirPath)) {
+      rmSync(dirPath, { recursive: true, force: true })
+      mkdirSync(dirPath, { recursive: true })
+    }
+  }
+
+  // 2. Update project identity
   currentProjectId = projectId
   process.env.PROJECT_ID = projectId
 
-  // 2. Inject environment variables from the controller
+  // 3. Inject environment variables from the controller
   if (envVars && typeof envVars === 'object') {
     for (const [key, value] of Object.entries(envVars)) {
       if (typeof value === 'string') {
@@ -325,7 +364,7 @@ app.post('/pool/assign', async (c) => {
     }
   }
 
-  // 3. Reconfigure AI proxy with new env (picks up AI_PROXY_TOKEN)
+  // 4. Reconfigure AI proxy with new env (picks up AI_PROXY_TOKEN)
   try {
     aiProxy = configureAIProxy({ logPrefix: 'agent-runtime' })
   } catch (err: any) {
@@ -336,14 +375,14 @@ app.post('/pool/assign', async (c) => {
     Object.assign(process.env, aiProxy.env)
   }
 
-  // 4. Run essential initialization (workspace files, S3 sync, config)
+  // 5. Run essential initialization (workspace files, S3 sync, config)
   try {
     await initializeEssentials()
     poolAssigned = true
     const duration = Date.now() - startTime
     logTiming(`Pool assignment essentials complete for ${projectId} (${duration}ms)`)
 
-    // 5. Start gateway in background — don't block the assign response.
+    // 6. Start gateway in background — don't block the assign response.
     // The pod can serve health, file, and catalog endpoints immediately.
     // Chat/heartbeat endpoints return 503 until gateway is ready.
     startGateway().catch((error) => {
@@ -368,6 +407,89 @@ app.get('/agent/status', (c) => {
   return c.json(status)
 })
 
+// Channel connect — persist to config.json and hot-connect via the gateway
+app.post('/agent/channels/connect', async (c) => {
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+
+  const { type, config: channelConfig } = await c.req.json() as {
+    type: string
+    config: Record<string, string>
+  }
+
+  if (!type || !channelConfig) {
+    return c.json({ error: 'type and config are required' }, 400)
+  }
+
+  const validTypes = ['telegram', 'discord', 'slack', 'whatsapp', 'email']
+  if (!validTypes.includes(type)) {
+    return c.json({ error: `Invalid channel type: ${type}. Must be one of: ${validTypes.join(', ')}` }, 400)
+  }
+
+  try {
+    const configPath = join(AGENT_DIR, 'config.json')
+    let fileConfig: Record<string, any> = {}
+    if (existsSync(configPath)) {
+      try {
+        fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'))
+      } catch {
+        // config.json is corrupted — start fresh but preserve the file
+        console.error('[agent-runtime] config.json is invalid JSON, starting with empty config')
+        fileConfig = {}
+      }
+    }
+
+    fileConfig.channels = fileConfig.channels || []
+    const existing = fileConfig.channels.findIndex((ch: any) => ch.type === type)
+    if (existing >= 0) {
+      fileConfig.channels[existing] = { type, config: channelConfig }
+    } else {
+      fileConfig.channels.push({ type, config: channelConfig })
+    }
+
+    await agentGateway.connectChannel(type, channelConfig)
+
+    writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8')
+
+    return c.json({ ok: true, type, message: `${type} channel connected` })
+  } catch (error: any) {
+    return c.json({ error: error.message || `Failed to connect ${type}` }, 500)
+  }
+})
+
+// Channel disconnect — remove from config.json and disconnect live adapter
+app.post('/agent/channels/disconnect', async (c) => {
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+
+  const { type } = await c.req.json() as { type: string }
+
+  if (!type) {
+    return c.json({ error: 'type is required' }, 400)
+  }
+
+  try {
+    await agentGateway.disconnectChannel(type)
+
+    const configPath = join(AGENT_DIR, 'config.json')
+    if (existsSync(configPath)) {
+      try {
+        const fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'))
+        fileConfig.channels = (fileConfig.channels || []).filter((ch: any) => ch.type !== type)
+        writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8')
+      } catch {
+        console.error('[agent-runtime] config.json is invalid JSON, skipping config update')
+      }
+    }
+
+    return c.json({ ok: true, type, message: `${type} channel disconnected` })
+  } catch (error: any) {
+    return c.json({ error: error.message || `Failed to disconnect ${type}` }, 500)
+  }
+})
+
 // Agent chat endpoint — send a message to the running agent.
 // Accepts AI SDK v3 format: { messages: [{ role, parts: [{ type: 'text', text }] }] }
 // Returns an AI SDK UI message stream so the frontend can use useChat().
@@ -378,9 +500,10 @@ app.post('/agent/chat', async (c) => {
 
   const body = await c.req.json()
 
-  const allMessages = (body.messages || []) as Array<{ role: string; parts: Array<{ type: string; text?: string; mediaType?: string; url?: string }> }>
+  const allMessages = (body.messages || []) as Array<{ role: string; parts: Array<{ type: string; text?: string; mediaType?: string; url?: string; name?: string }> }>
 
   let userText: string | undefined
+  let userFileParts: Array<{ type: string; mediaType?: string; url?: string; name?: string }> = []
   if (allMessages.length > 0) {
     const last = [...allMessages].reverse().find((m: any) => m.role === 'user')
     if (last?.parts && Array.isArray(last.parts)) {
@@ -389,14 +512,13 @@ app.post('/agent/chat', async (c) => {
         .map((p: any) => p.text)
         .join('\n')
 
-      const fileContext = extractFilePartsAsText(last.parts)
-      if (fileContext) {
-        userText = (userText || '') + '\n\n' + fileContext
-      }
+      userFileParts = last.parts.filter(
+        (p: any) => p.type === 'file' && p.url,
+      )
     }
   }
 
-  if (!userText) {
+  if (!userText && userFileParts.length === 0) {
     return c.json({ error: 'message is required — send { messages: [{ role: "user", parts: [{ type: "text", text: "..." }] }] }' }, 400)
   }
 
@@ -414,11 +536,26 @@ app.post('/agent/chat', async (c) => {
           .filter((p: any) => p.type === 'text')
           .map((p: any) => p.text)
           .join('\n')
-        if (!text) continue
 
         if (msg.role === 'user') {
-          sessionMgr.addMessages('chat', userMessage(text))
+          const historyFileParts = (msg.parts || []).filter(
+            (p: any) => p.type === 'file' && p.url,
+          )
+          if (historyFileParts.length > 0) {
+            const imageCount = historyFileParts.filter((p: any) => p.mediaType?.startsWith('image/')).length
+            const fileCount = historyFileParts.length - imageCount
+            const notes: string[] = []
+            if (imageCount > 0) notes.push(`[${imageCount} image(s) were attached]`)
+            if (fileCount > 0) notes.push(`[${fileCount} file(s) were attached]`)
+            const effectiveText = [text, ...notes].filter(Boolean).join('\n')
+            if (!effectiveText) continue
+            sessionMgr.addMessages('chat', userMessage(effectiveText))
+          } else {
+            if (!text) continue
+            sessionMgr.addMessages('chat', userMessage(text))
+          }
         } else if (msg.role === 'assistant') {
+          if (!text) continue
           sessionMgr.addMessages('chat', {
             role: 'assistant',
             content: [{ type: 'text', text }],
@@ -439,11 +576,18 @@ app.post('/agent/chat', async (c) => {
     : agentMode === 'advanced' ? 'claude-sonnet-4-5'
     : undefined
 
+  if (body.timezone && typeof body.timezone === 'string') {
+    agentGateway!.setUserTimezone(body.timezone)
+  }
+
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
       try {
         writer.write({ type: 'start-step' })
-        await agentGateway!.processChatMessageStream(userText!, writer, { modelOverride })
+        await agentGateway!.processChatMessageStream(userText || '', writer, {
+          modelOverride,
+          fileParts: userFileParts.length > 0 ? userFileParts : undefined,
+        })
 
         const usage = agentGateway!.consumeLastTurnUsage()
         if (usage) {
@@ -937,12 +1081,12 @@ app.post('/agent/workspace/reindex', async (c) => {
   }
 })
 
-// MCP Catalog endpoints — powers the "MCP Servers" tab in the web UI
-import { MCP_CATALOG, MCP_CATEGORIES } from './mcp-catalog'
+// Tool catalog and search — powers the "Tools" tab in the web UI
+import { MCP_CATALOG, MCP_CATEGORIES, isPreinstalledMcpId, getPreinstalledPackages } from './mcp-catalog'
+import { isComposioEnabled, searchComposioToolkits, findComposioToolkit, initComposioSession } from './composio'
+
 // Agent Templates API — powers the templates gallery
-import { getTemplateSummaries, TEMPLATE_CATEGORIES } from './agent-templates'
-// Agent Recipes API — powers the recipes wizard
-import { AGENT_RECIPES, RECIPE_CATEGORIES } from './agent-recipes'
+import { getTemplateSummaries, getAgentTemplateById, TEMPLATE_CATEGORIES } from './agent-templates'
 
 app.get('/agent/mcp-catalog', (c) => {
   return c.json({ catalog: MCP_CATALOG, categories: MCP_CATEGORIES })
@@ -1003,8 +1147,10 @@ app.get('/agent/templates', (c) => {
   return c.json({ templates: getTemplateSummaries(), categories: TEMPLATE_CATEGORIES })
 })
 
-app.get('/agent/recipes', (c) => {
-  return c.json({ recipes: AGENT_RECIPES, categories: RECIPE_CATEGORIES })
+app.get('/agent/templates/:id', (c) => {
+  const template = getAgentTemplateById(c.req.param('id'))
+  if (!template) return c.json({ error: 'Template not found' }, 404)
+  return c.json({ template })
 })
 
 app.post('/agent/mcp-servers/toggle', async (c) => {
@@ -1015,8 +1161,9 @@ app.post('/agent/mcp-servers/toggle', async (c) => {
   }
 
   const entry = MCP_CATALOG.find((e) => e.id === serverId)
-  if (!entry) {
-    return c.json({ error: `Unknown MCP server: ${serverId}` }, 400)
+  if (!entry || !entry.preinstalled) {
+    const allowed = getPreinstalledPackages().map(e => e.id).join(', ')
+    return c.json({ error: `MCP server "${serverId}" is not available. Only preinstalled servers are supported: ${allowed}` }, 400)
   }
 
   const configPath = join(AGENT_DIR, 'config.json')
@@ -1039,6 +1186,170 @@ app.post('/agent/mcp-servers/toggle', async (c) => {
 
   writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
   return c.json({ ok: true, serverId, enabled, servers: config.mcpServers })
+})
+
+// ---------------------------------------------------------------------------
+// Unified Tools API — powers the "Tools" tab
+// ---------------------------------------------------------------------------
+
+app.get('/agent/tools/status', (c) => {
+  if (!agentGateway) {
+    return c.json({ tools: [] })
+  }
+  const mcpMgr = agentGateway.getMcpClientManager()
+  const serverInfo = mcpMgr.getServerInfo()
+
+  const tools = serverInfo.map((s) => {
+    const catalogEntry = MCP_CATALOG.find((e) => e.id === s.name)
+    const isComposio = s.name === 'composio'
+    return {
+      id: s.name,
+      name: catalogEntry?.name || s.name,
+      source: isComposio ? 'managed' as const : (catalogEntry ? 'catalog' as const : 'custom' as const),
+      status: 'running' as const,
+      toolCount: s.toolCount,
+      tools: s.toolNames,
+      composioToolkit: isComposio ? 'composio' : catalogEntry?.composioToolkit,
+    }
+  })
+
+  return c.json({ tools })
+})
+
+app.get('/agent/tools/search', async (c) => {
+  const query = c.req.query('q') || ''
+  if (!query.trim()) {
+    return c.json({ results: [] })
+  }
+
+  const installedNames = new Set<string>()
+  if (agentGateway) {
+    for (const s of agentGateway.getMcpClientManager().getServerInfo()) {
+      installedNames.add(s.name)
+    }
+  }
+
+  const results: Array<Record<string, any>> = []
+  const seenSlugs = new Set<string>()
+
+  if (isComposioEnabled()) {
+    try {
+      const composioToolkits = await searchComposioToolkits(query)
+      for (const tk of composioToolkits.slice(0, 5)) {
+        seenSlugs.add(tk.slug.toLowerCase().replace(/[-_\s]/g, ''))
+        results.push({
+          id: tk.slug,
+          name: tk.name,
+          description: `${tk.name} — managed OAuth integration. No credentials needed.`,
+          source: 'managed',
+          installed: installedNames.has('composio'),
+          authType: 'oauth',
+          composioToolkit: tk.slug,
+          icon: tk.logo,
+        })
+      }
+    } catch { /* Composio unavailable */ }
+  }
+
+  const queryLower = query.toLowerCase()
+  const queryWords = queryLower.split(/\s+/).filter((w) => w.length > 2)
+  const scored: Array<{ entry: typeof MCP_CATALOG[0]; score: number }> = []
+  for (const entry of MCP_CATALOG) {
+    const haystack = `${entry.id} ${entry.name} ${entry.description} ${entry.category} ${entry.providedTools.join(' ')}`.toLowerCase()
+    const idName = `${entry.id} ${entry.name}`.toLowerCase()
+    let score = 0
+    if (haystack.includes(queryLower)) score += 10
+    if (idName.includes(queryLower)) score += 20
+    for (const w of queryWords) {
+      if (idName.includes(w)) score += 5
+      else if (haystack.includes(w)) score += 1
+    }
+    if (score > 0) scored.push({ entry, score })
+  }
+  scored.sort((a, b) => b.score - a.score)
+  for (const { entry } of scored.slice(0, 5)) {
+    const entryNorm = entry.id.toLowerCase().replace(/[-_\s]/g, '')
+    if (seenSlugs.has(entryNorm)) continue
+    seenSlugs.add(entryNorm)
+    results.push({
+      id: entry.id,
+      name: entry.name,
+      description: entry.description,
+      source: 'catalog',
+      installed: installedNames.has(entry.id),
+      authType: entry.authType === 'composio' ? 'oauth' : (Object.keys(entry.requiredEnv).length > 0 ? 'api_key' : 'none'),
+      requiredEnv: Object.keys(entry.requiredEnv).length > 0 ? entry.requiredEnv : undefined,
+      composioToolkit: entry.composioToolkit,
+      icon: entry.icon,
+    })
+  }
+
+  return c.json({ results })
+})
+
+app.post('/agent/tools/install', async (c) => {
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+
+  const { id, env } = await c.req.json() as {
+    id: string
+    env?: Record<string, string>
+  }
+
+  const mcpMgr = agentGateway.getMcpClientManager()
+
+  if (isComposioEnabled()) {
+    const composioToolkit = await findComposioToolkit(id)
+    if (composioToolkit) {
+      try {
+        const userId = process.env.USER_ID || 'default'
+        const projectId = process.env.PROJECT_ID || 'default'
+        await initComposioSession(userId, projectId)
+        return c.json({ ok: true, id, source: 'managed' })
+      } catch (err: any) {
+        return c.json({ error: `Failed to connect: ${err.message}` }, 500)
+      }
+    }
+  }
+
+  const catalogEntry = MCP_CATALOG.find((e) => e.id === id)
+  if (!catalogEntry || !catalogEntry.preinstalled) {
+    const allowed = getPreinstalledPackages().map(e => e.id).join(', ')
+    return c.json({ error: `MCP server "${id}" is not available. Only preinstalled servers are supported: ${allowed}` }, 400)
+  }
+
+  try {
+    const serverEnv = env || {}
+    await mcpMgr.hotAddServer(id, {
+      command: 'npx',
+      args: [catalogEntry.package, ...catalogEntry.defaultArgs],
+      env: Object.keys(serverEnv).length > 0 ? serverEnv : undefined,
+    })
+    return c.json({ ok: true, id, source: 'catalog' })
+  } catch (err: any) {
+    return c.json({ error: `Failed to install: ${err.message}` }, 500)
+  }
+})
+
+app.delete('/agent/tools/:id', async (c) => {
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+
+  const id = c.req.param('id')
+  const mcpMgr = agentGateway.getMcpClientManager()
+
+  if (!mcpMgr.isRunning(id)) {
+    return c.json({ error: `Tool "${id}" is not running` }, 404)
+  }
+
+  try {
+    await mcpMgr.hotRemoveServer(id)
+    return c.json({ ok: true, removed: id })
+  } catch (err: any) {
+    return c.json({ error: `Failed to uninstall: ${err.message}` }, 500)
+  }
 })
 
 // Agent export/import — bundle workspace into a shareable .shogo config
@@ -1294,15 +1605,174 @@ app.post('/agent/dynamic-app/edit', async (c) => {
   }
 })
 
+// Test setup endpoint: creates pre-configured test surfaces for E2E testing
+app.post('/agent/dynamic-app/test-setup', async (c) => {
+  const manager = getDynamicAppManager()
+  const body = await c.req.json() as { scenario: string }
+  const scenario = body.scenario
+
+  if (scenario === 'expense-form') {
+    const surfaceId = 'test_expense'
+    manager.createSurface(surfaceId, 'Expense Form Test')
+    manager.applyApiSchema(surfaceId, [
+      { name: 'Expense', fields: [
+        { name: 'description', type: 'String' },
+        { name: 'amount', type: 'Float' },
+        { name: 'category', type: 'String' },
+      ] },
+    ])
+    manager.seedApiData(surfaceId, 'Expense', [
+      { description: 'Lunch', amount: 12.50, category: 'Food' },
+      { description: 'Bus pass', amount: 45, category: 'Transport' },
+      { description: 'Movie ticket', amount: 18.99, category: 'Entertainment' },
+    ])
+    manager.queryApiData(surfaceId, 'Expense', {}, '/expenses')
+    manager.updateComponents(surfaceId, [
+      { id: 'root', component: 'Column', children: ['header', 'metrics', 'form_card', 'list_card'], gap: 'lg' },
+      { id: 'header', component: 'Row', children: ['title', 'badge'], align: 'center', justify: 'between' },
+      { id: 'title', component: 'Text', text: 'Expense Tracker', variant: 'h2' },
+      { id: 'badge', component: 'Badge', text: 'Test', variant: 'outline' },
+      { id: 'metrics', component: 'Grid', columns: 2, children: ['m_count', 'm_total'] },
+      { id: 'm_count', component: 'Metric', label: 'Count', value: { path: '/expenseCount' } },
+      { id: 'm_total', component: 'Metric', label: 'Total', value: { path: '/expenseTotal' }, unit: '$' },
+      { id: 'form_card', component: 'Card', title: 'Add Expense', child: 'form_row' },
+      { id: 'form_row', component: 'Row', children: ['desc_input', 'amt_input', 'cat_select', 'add_btn'], gap: 'sm', align: 'end' },
+      { id: 'desc_input', component: 'TextField', label: 'Description', placeholder: 'e.g. Coffee', dataPath: '/newDesc' },
+      { id: 'amt_input', component: 'TextField', label: 'Amount', placeholder: '0.00', type: 'number', dataPath: '/newAmt' },
+      { id: 'cat_select', component: 'Select', label: 'Category', placeholder: 'Select...', dataPath: '/newCat', options: [
+        { label: 'Food', value: 'Food' },
+        { label: 'Transport', value: 'Transport' },
+        { label: 'Entertainment', value: 'Entertainment' },
+      ] },
+      { id: 'add_btn', component: 'Button', label: 'Add Expense', action: { name: 'add_expense', mutation: {
+        endpoint: '/api/expenses', method: 'POST',
+        body: { description: { path: '/newDesc' }, amount: { path: '/newAmt' }, category: { path: '/newCat' } },
+      } } },
+      { id: 'list_card', component: 'Card', title: 'Expenses', child: 'expense_list' },
+      { id: 'expense_list', component: 'DataList', children: { path: '/expenses', templateId: 'expense_row' }, emptyText: 'No expenses yet' },
+      { id: 'expense_row', component: 'Row', children: ['exp_desc', 'exp_amt', 'exp_cat', 'exp_del'], align: 'center', justify: 'between' },
+      { id: 'exp_desc', component: 'Text', text: { path: 'description' } },
+      { id: 'exp_amt', component: 'Text', text: { path: 'amount' }, variant: 'large' },
+      { id: 'exp_cat', component: 'Badge', text: { path: 'category' }, variant: 'secondary' },
+      { id: 'exp_del', component: 'Button', label: 'Delete', variant: 'destructive', size: 'sm', action: { name: 'delete_expense', mutation: {
+        endpoint: '/api/expenses/:id', method: 'DELETE', params: { id: { path: 'id' } },
+      } } },
+    ] as any)
+    manager.registerHooks(surfaceId, 'Expense', {
+      afterCreate: [{ action: 'recompute', source: 'Expense', operation: 'count', target: '/expenseCount' },
+                     { action: 'recompute', source: 'Expense', operation: 'sum', field: 'amount', target: '/expenseTotal' }],
+      afterDelete: [{ action: 'recompute', source: 'Expense', operation: 'count', target: '/expenseCount' },
+                     { action: 'recompute', source: 'Expense', operation: 'sum', field: 'amount', target: '/expenseTotal' }],
+    })
+    return c.json({ ok: true, surfaceId })
+
+  } else if (scenario === 'pipeline-where') {
+    const surfaceId = 'test_pipeline_where'
+    manager.createSurface(surfaceId, 'Pipeline (where prop)')
+    manager.applyApiSchema(surfaceId, [
+      { name: 'Lead', fields: [
+        { name: 'name', type: 'String' },
+        { name: 'company', type: 'String' },
+        { name: 'value', type: 'Float' },
+        { name: 'stage', type: 'String', default: 'new' },
+      ] },
+    ])
+    manager.seedApiData(surfaceId, 'Lead', [
+      { name: 'Alice Chen', company: 'Acme Corp', value: 25000, stage: 'new' },
+      { name: 'Bob Smith', company: 'Globex', value: 40000, stage: 'new' },
+      { name: 'Carol Davis', company: 'Initech', value: 55000, stage: 'qualified' },
+      { name: 'Dave Wilson', company: 'Umbrella', value: 32000, stage: 'qualified' },
+      { name: 'Eve Brown', company: 'Wayne Ent', value: 78000, stage: 'closed' },
+      { name: 'Frank Lee', company: 'Stark Ind', value: 95000, stage: 'closed' },
+    ])
+    manager.queryApiData(surfaceId, 'Lead', {}, '/leads')
+    manager.updateComponents(surfaceId, [
+      { id: 'root', component: 'Column', children: ['header', 'board'], gap: 'lg' },
+      { id: 'header', component: 'Row', children: ['title', 'badge'], align: 'center', justify: 'between' },
+      { id: 'title', component: 'Text', text: 'CRM Pipeline', variant: 'h2' },
+      { id: 'badge', component: 'Badge', text: 'where prop test', variant: 'outline' },
+      { id: 'board', component: 'Grid', columns: 3, gap: 'md', children: ['new_col', 'qual_col', 'closed_col'] },
+      { id: 'new_col', component: 'Card', title: 'New', child: 'new_list' },
+      { id: 'new_list', component: 'DataList', children: { path: '/leads', templateId: 'lead_card' }, where: { stage: 'new' }, emptyText: 'No new leads' },
+      { id: 'qual_col', component: 'Card', title: 'Qualified', child: 'qual_list' },
+      { id: 'qual_list', component: 'DataList', children: { path: '/leads', templateId: 'lead_card' }, where: { stage: 'qualified' }, emptyText: 'No qualified leads' },
+      { id: 'closed_col', component: 'Card', title: 'Closed', child: 'closed_list' },
+      { id: 'closed_list', component: 'DataList', children: { path: '/leads', templateId: 'lead_card' }, where: { stage: 'closed' }, emptyText: 'No closed leads' },
+      { id: 'lead_card', component: 'Card', title: { path: 'name' }, description: { path: 'company' }, children: ['lead_actions'] },
+      { id: 'lead_actions', component: 'Row', children: ['lead_value', 'lead_qualify_btn', 'lead_close_btn', 'lead_back_btn', 'lead_del_btn'], align: 'center', gap: 'sm' },
+      { id: 'lead_value', component: 'Text', text: { path: 'value' }, variant: 'muted' },
+      { id: 'lead_qualify_btn', component: 'Button', label: 'Qualify', size: 'sm', variant: 'outline', action: { name: 'qualify', mutation: {
+        endpoint: '/api/leads/:id', method: 'PATCH', body: { stage: 'qualified' }, params: { id: { path: 'id' } },
+      } } },
+      { id: 'lead_close_btn', component: 'Button', label: 'Close', size: 'sm', variant: 'default', action: { name: 'close', mutation: {
+        endpoint: '/api/leads/:id', method: 'PATCH', body: { stage: 'closed' }, params: { id: { path: 'id' } },
+      } } },
+      { id: 'lead_back_btn', component: 'Button', label: 'Back', size: 'sm', variant: 'outline', action: { name: 'back_to_new', mutation: {
+        endpoint: '/api/leads/:id', method: 'PATCH', body: { stage: 'new' }, params: { id: { path: 'id' } },
+      } } },
+      { id: 'lead_del_btn', component: 'Button', label: 'Delete', size: 'sm', variant: 'destructive', action: { name: 'delete', mutation: {
+        endpoint: '/api/leads/:id', method: 'DELETE', params: { id: { path: 'id' } },
+      } } },
+    ] as any)
+    return c.json({ ok: true, surfaceId })
+
+  } else if (scenario === 'pipeline-queries') {
+    const surfaceId = 'test_pipeline_queries'
+    manager.createSurface(surfaceId, 'Pipeline (server queries)')
+    manager.applyApiSchema(surfaceId, [
+      { name: 'Lead', fields: [
+        { name: 'name', type: 'String' },
+        { name: 'company', type: 'String' },
+        { name: 'value', type: 'Float' },
+        { name: 'stage', type: 'String', default: 'new' },
+      ] },
+    ])
+    manager.seedApiData(surfaceId, 'Lead', [
+      { name: 'Alice Chen', company: 'Acme Corp', value: 25000, stage: 'new' },
+      { name: 'Bob Smith', company: 'Globex', value: 40000, stage: 'new' },
+      { name: 'Carol Davis', company: 'Initech', value: 55000, stage: 'qualified' },
+      { name: 'Dave Wilson', company: 'Umbrella', value: 32000, stage: 'qualified' },
+      { name: 'Eve Brown', company: 'Wayne Ent', value: 78000, stage: 'closed' },
+      { name: 'Frank Lee', company: 'Stark Ind', value: 95000, stage: 'closed' },
+    ])
+    manager.queryApiData(surfaceId, 'Lead', { where: { stage: 'new' } }, '/newLeads')
+    manager.queryApiData(surfaceId, 'Lead', { where: { stage: 'qualified' } }, '/qualifiedLeads')
+    manager.queryApiData(surfaceId, 'Lead', { where: { stage: 'closed' } }, '/closedLeads')
+    manager.updateComponents(surfaceId, [
+      { id: 'root', component: 'Column', children: ['header', 'board'], gap: 'lg' },
+      { id: 'header', component: 'Row', children: ['title', 'badge'], align: 'center', justify: 'between' },
+      { id: 'title', component: 'Text', text: 'CRM Pipeline', variant: 'h2' },
+      { id: 'badge', component: 'Badge', text: 'server queries test', variant: 'outline' },
+      { id: 'board', component: 'Grid', columns: 3, gap: 'md', children: ['new_col', 'qual_col', 'closed_col'] },
+      { id: 'new_col', component: 'Card', title: 'New', child: 'new_list' },
+      { id: 'new_list', component: 'DataList', children: { path: '/newLeads', templateId: 'lead_card' }, emptyText: 'No new leads' },
+      { id: 'qual_col', component: 'Card', title: 'Qualified', child: 'qual_list' },
+      { id: 'qual_list', component: 'DataList', children: { path: '/qualifiedLeads', templateId: 'lead_card' }, emptyText: 'No qualified leads' },
+      { id: 'closed_col', component: 'Card', title: 'Closed', child: 'closed_list' },
+      { id: 'closed_list', component: 'DataList', children: { path: '/closedLeads', templateId: 'lead_card' }, emptyText: 'No closed leads' },
+      { id: 'lead_card', component: 'Card', title: { path: 'name' }, description: { path: 'company' }, children: ['lead_actions'] },
+      { id: 'lead_actions', component: 'Row', children: ['lead_value', 'lead_qualify_btn', 'lead_close_btn', 'lead_del_btn'], align: 'center', gap: 'sm' },
+      { id: 'lead_value', component: 'Text', text: { path: 'value' }, variant: 'muted' },
+      { id: 'lead_qualify_btn', component: 'Button', label: 'Qualify', size: 'sm', variant: 'outline', action: { name: 'qualify', mutation: {
+        endpoint: '/api/leads/:id', method: 'PATCH', body: { stage: 'qualified' }, params: { id: { path: 'id' } },
+      } } },
+      { id: 'lead_close_btn', component: 'Button', label: 'Close', size: 'sm', variant: 'default', action: { name: 'close', mutation: {
+        endpoint: '/api/leads/:id', method: 'PATCH', body: { stage: 'closed' }, params: { id: { path: 'id' } },
+      } } },
+      { id: 'lead_del_btn', component: 'Button', label: 'Delete', size: 'sm', variant: 'destructive', action: { name: 'delete', mutation: {
+        endpoint: '/api/leads/:id', method: 'DELETE', params: { id: { path: 'id' } },
+      } } },
+    ] as any)
+    return c.json({ ok: true, surfaceId })
+  }
+
+  return c.json({ error: `Unknown scenario "${scenario}". Available: expense-form, pipeline-where, pipeline-queries` }, 400)
+})
+
 // Proxy requests to managed API runtimes (per-surface data layer)
 app.all('/agent/dynamic-app/api/:surfaceId/*', async (c) => {
   const surfaceId = c.req.param('surfaceId')
   const manager = getDynamicAppManager()
-  const runtime = manager.getRuntime(surfaceId)
-
-  if (!runtime || !runtime.isReady()) {
-    return c.json({ error: `No API runtime for surface "${surfaceId}"` }, 404)
-  }
 
   const prefix = `/agent/dynamic-app/api/${surfaceId}`
   const subPath = c.req.path.replace(prefix, '') || '/'
@@ -1315,6 +1785,21 @@ app.all('/agent/dynamic-app/api/:surfaceId/*', async (c) => {
     headers: c.req.raw.headers,
     body: c.req.method !== 'GET' && c.req.method !== 'HEAD' ? c.req.raw.body : undefined,
   })
+
+  // Try tool-backed runtime first, then SQLite-backed runtime
+  const toolRuntime = manager.getToolRuntime(surfaceId)
+  if (toolRuntime) {
+    const toolResponse = await toolRuntime.getApp().fetch(subRequest.clone())
+    if (toolResponse.status !== 404) return toolResponse
+  }
+
+  const runtime = manager.getRuntime(surfaceId)
+  if (!runtime || !runtime.isReady()) {
+    if (!toolRuntime) {
+      return c.json({ error: `No API runtime for surface "${surfaceId}"` }, 404)
+    }
+    return c.json({ error: `Route not found` }, 404)
+  }
 
   return runtime.getApp().fetch(subRequest)
 })
@@ -1444,9 +1929,12 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 // Start Server
 // =============================================================================
 
-if (IS_POOL_MODE) {
+if (IS_POOL_MODE && !poolAssigned) {
   logTiming('Pool mode: skipping project init, server ready for assignment')
 } else {
+  // Runs for both normal (non-pool) startup AND self-assigned cold-start pods.
+  // Self-assigned pods have poolAssigned=true and need full init to restore
+  // their workspace from S3 and start the gateway.
   initialize()
     .then(() => {
       logTiming(`Starting server on port ${PORT}`)

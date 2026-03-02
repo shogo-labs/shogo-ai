@@ -10,7 +10,8 @@
  */
 
 import type { AgentEval, EvalResult, ValidationPhase } from './types'
-import { usedTool, toolCallCount, responseContains } from './eval-helpers'
+import { usedTool, neverUsedTool, toolCallCount, responseContains, usedToolSuccessfully, successfulToolCallCount } from './eval-helpers'
+import { CICD_PIPELINE_MOCKS } from './tool-mocks'
 
 // ---------------------------------------------------------------------------
 // Canvas-specific helpers
@@ -176,6 +177,32 @@ function hasSelectComponent(result: EvalResult): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Basic agent display-only helpers
+// ---------------------------------------------------------------------------
+
+const FORBIDDEN_INTERACTIVE_COMPONENTS = ['TextField', 'Select', 'Checkbox', 'ChoicePicker']
+
+/**
+ * True if NO canvas_update call includes any forbidden interactive component
+ * (TextField, Select, Checkbox, ChoicePicker).
+ */
+function noForbiddenInteractiveComponents(result: EvalResult): boolean {
+  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
+  const json = JSON.stringify(updateCalls.map(t => t.input))
+  return FORBIDDEN_INTERACTIVE_COMPONENTS.every(c => !json.includes(`"${c}"`))
+}
+
+/**
+ * True if any Button component in canvas_update uses a non-OPEN mutation method.
+ */
+function hasNonOpenButtonMutation(result: EvalResult): boolean {
+  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
+  const json = JSON.stringify(updateCalls.map(t => t.input))
+  const methodPattern = /"method"\s*:\s*"(POST|PATCH|DELETE)"/i
+  return methodPattern.test(json)
+}
+
+// ---------------------------------------------------------------------------
 // Chart-specific helpers
 // ---------------------------------------------------------------------------
 
@@ -193,22 +220,24 @@ function hasChartType(result: EvalResult, chartType: string): boolean {
 }
 
 /**
- * Check that Chart data arrays across canvas_update calls have at least
- * `minPoints` entries total (across all Chart components).
+ * Check that Chart data arrays across canvas_update AND canvas_data calls
+ * have at least `minPoints` entries total. Data may be inline in canvas_update
+ * or set via canvas_data when using path bindings.
  */
 function chartHasMinDataPoints(result: EvalResult, minPoints: number): boolean {
-  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
-  const json = JSON.stringify(updateCalls.map(t => t.input))
+  const relevantCalls = result.toolCalls.filter(t => t.name === 'canvas_update' || t.name === 'canvas_data')
+  const json = JSON.stringify(relevantCalls.map(t => t.input))
   const labelMatches = json.match(/"label"\s*:\s*"/g)
   return (labelMatches?.length ?? 0) >= minPoints
 }
 
 /**
- * Check that a Chart component includes specific label text (case-insensitive).
+ * Check that chart-related tool calls include specific label text (case-insensitive).
+ * Checks both canvas_update (inline data) and canvas_data (bound data).
  */
 function chartDataContainsLabel(result: EvalResult, label: string): boolean {
-  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
-  const json = JSON.stringify(updateCalls.map(t => t.input)).toLowerCase()
+  const relevantCalls = result.toolCalls.filter(t => t.name === 'canvas_update' || t.name === 'canvas_data')
+  const json = JSON.stringify(relevantCalls.map(t => t.input)).toLowerCase()
   return json.includes(label.toLowerCase())
 }
 
@@ -393,6 +422,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Build todo app with CRUD API',
     category: 'canvas',
     level: 3,
+    requiredAgent: 'advanced' as const,
     input: 'I want to track my todos — adding, completing, and deleting them. Set me up with a few sample ones to start.',
     maxScore: 100,
     validationCriteria: [
@@ -489,6 +519,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Interactive button actions',
     category: 'canvas',
     level: 3,
+    requiredAgent: 'advanced' as const,
     input: 'I need a quick poll — give people two options, A and B, and let them pick one.',
     maxScore: 100,
     validationCriteria: [
@@ -694,26 +725,41 @@ export const CANVAS_EVALS: AgentEval[] = [
     ],
   },
 
-  // ---- Level 2: CI/CD Pipeline Monitor (OpenClaw DevOps) ----
+  // ---- Level 2: CI/CD Pipeline Monitor (GitHub Actions) ----
   {
     id: 'canvas-cicd-monitor',
     name: 'Canvas: CI/CD pipeline monitor',
     category: 'canvas',
     level: 2,
-    input: 'Show me our recent deployments — I want to see which ones passed and which failed, plus the trend over the last week.',
+    input: 'Show me our recent deployments from GitHub — I want to see which ones passed and which failed, plus the trend over the last week.',
+    toolMocks: CICD_PIPELINE_MOCKS,
     maxScore: 100,
     validationCriteria: [
       {
+        id: 'installed-github',
+        description: 'Installed the GitHub integration',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'tool_install'),
+      },
+      {
+        id: 'fetched-deployments',
+        description: 'Called GitHub workflow runs API to get real data',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'GITHUB_LIST_WORKFLOW_RUNS'),
+      },
+      {
         id: 'used-canvas-create',
         description: 'Created a canvas surface',
-        points: 15,
+        points: 10,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_create'),
       },
       {
         id: 'used-canvas-update',
         description: 'Added components to the canvas',
-        points: 15,
+        points: 10,
         phase: 'intention',
         validate: (r) => usedTool(r, 'canvas_update'),
       },
@@ -730,7 +776,7 @@ export const CANVAS_EVALS: AgentEval[] = [
       {
         id: 'has-chart',
         description: 'Included a Chart for deploy frequency',
-        points: 15,
+        points: 10,
         phase: 'execution',
         validate: (r) => JSON.stringify(r.toolCalls).includes('"Chart"'),
       },
@@ -741,25 +787,25 @@ export const CANVAS_EVALS: AgentEval[] = [
         phase: 'execution',
         validate: (r) => {
           const json = JSON.stringify(r.toolCalls).toLowerCase()
-          return json.includes('success') || json.includes('failed') || json.includes('running')
+          return json.includes('success') || json.includes('fail')
         },
       },
       {
         id: 'has-deploy-data',
-        description: 'Data includes branch and commit info',
+        description: 'Data includes branch info from the real GitHub data',
         points: 10,
         phase: 'execution',
         validate: (r) => {
           const json = JSON.stringify(r.toolCalls).toLowerCase()
-          return json.includes('branch') || json.includes('commit')
+          return json.includes('main') || json.includes('branch')
         },
       },
       {
         id: 'reasonable-tool-count',
-        description: 'Completed in <= 15 tool calls',
-        points: 15,
+        description: 'Completed in <= 20 tool calls',
+        points: 10,
         phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 15,
+        validate: (r) => r.toolCalls.length <= 20,
       },
     ],
   },
@@ -770,6 +816,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Support ticket system with CRUD',
     category: 'canvas',
     level: 3,
+    requiredAgent: 'advanced' as const,
     input: 'I need a way to manage support tickets. Should have priority levels and status tracking. Throw in some example tickets to start.',
     maxScore: 100,
     validationCriteria: [
@@ -866,6 +913,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Invoice management with CRUD',
     category: 'canvas',
     level: 3,
+    requiredAgent: 'advanced' as const,
     input: 'Help me track my invoices — client, amount, due date, and whether they\'re paid. Add a few sample invoices to start.',
     maxScore: 100,
     validationCriteria: [
@@ -969,6 +1017,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Recruiting pipeline with CRUD',
     category: 'canvas',
     level: 3,
+    requiredAgent: 'advanced' as const,
     input: 'I need to track job applicants through our hiring process — who applied, what role, what stage they\'re at, and how they rate. Seed it with a few sample candidates.',
     maxScore: 100,
     validationCriteria: [
@@ -1145,6 +1194,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: E-commerce order management with CRUD (multi-turn)',
     category: 'canvas',
     level: 4,
+    requiredAgent: 'advanced' as const,
     conversationHistory: [
       { role: 'user', content: 'I need to manage my incoming orders — can you help me track revenue, shipments, and the order list?' },
     ],
@@ -1255,6 +1305,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: CRUD app with self-testing via trigger+inspect',
     category: 'canvas',
     level: 4,
+    requiredAgent: 'advanced' as const,
     input: 'Build me a quick todo tracker with a couple sample items. Make sure it actually works.',
     maxScore: 100,
     validationCriteria: [
@@ -1355,6 +1406,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Counter with trigger/inspect verification loop (multi-turn)',
     category: 'canvas',
     level: 4,
+    requiredAgent: 'advanced' as const,
     conversationHistory: [
       { role: 'user', content: 'Make me a simple counter on the canvas — just a number display and a button I can click to increment it. Start the count at 0.' },
     ],
@@ -1363,10 +1415,10 @@ export const CANVAS_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'triggered-at-least-once',
-        description: 'Used canvas_trigger_action at least once',
+        description: 'Used canvas_trigger_action successfully at least once',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'canvas_trigger_action'),
+        validate: (r) => usedToolSuccessfully(r, 'canvas_trigger_action'),
       },
       {
         id: 'used-inspect',
@@ -1377,10 +1429,10 @@ export const CANVAS_EVALS: AgentEval[] = [
       },
       {
         id: 'triggered-3-times',
-        description: 'Used canvas_trigger_action at least 3 times',
+        description: 'canvas_trigger_action succeeded at least 3 times',
         points: 30,
         phase: 'execution',
-        validate: (r) => toolCallCount(r, 'canvas_trigger_action') >= 3,
+        validate: (r) => successfulToolCallCount(r, 'canvas_trigger_action') >= 3,
       },
       {
         id: 'inspect-after-triggers',
@@ -1423,6 +1475,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Full CRUD roundtrip with verification',
     category: 'canvas',
     level: 5,
+    requiredAgent: 'advanced' as const,
     input: 'Build me a contacts list where I can add, edit, and delete people — name, email, phone. Seed a couple entries, then run through each operation to make sure it all works and tell me the results.',
     maxScore: 100,
     validationCriteria: [
@@ -1532,6 +1585,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Faithful trigger resolves mutations from button definitions',
     category: 'canvas',
     level: 5,
+    requiredAgent: 'advanced' as const,
     input: 'Build a task list where I can add tasks, mark them done, and delete them. Seed 3 tasks. Test every action to make sure it works — I need to know the buttons actually function when clicked.',
     maxScore: 100,
     validationCriteria: [
@@ -1656,6 +1710,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Expense tracker with auto-updating metrics and validation hooks',
     category: 'canvas',
     level: 3,
+    requiredAgent: 'advanced' as const,
     input: 'Build an expense tracker with a list of expenses and summary metrics showing total spent, expense count, and average expense. The metrics should update automatically when expenses are added or removed. Also make sure expenses can\'t be added with a negative amount or without a description. Seed 3 sample expenses, then test it.',
     maxScore: 100,
     validationCriteria: [
@@ -1776,6 +1831,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Project management with cascade-delete, recompute, and audit log hooks',
     category: 'canvas',
     level: 4,
+    requiredAgent: 'advanced' as const,
     input: 'Build a project management board. Each project has a name and status. Each task has a title, status, and belongs to a project (projectId). Show metrics for total projects, total tasks, and completed task count. When a project is deleted, its tasks should be automatically removed too. Keep an activity log of all changes. Seed 2 projects with 3 tasks each, then test: add a new task, delete a project (should cascade-delete its tasks), and verify the activity log.',
     maxScore: 100,
     validationCriteria: [
@@ -1911,6 +1967,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Full hooks lifecycle with all 5 action types',
     category: 'canvas',
     level: 5,
+    requiredAgent: 'advanced' as const,
     input: 'Build a customer order system. Customers have a name and email. Orders have a customer name, amount, and status (pending/shipped/delivered). I need: (1) metrics for total revenue, order count, and average order value that auto-update, (2) validation so orders can\'t have negative amounts and must have a status, (3) emails should be stored lowercase and trimmed, (4) when a customer is deleted, their orders should be removed too, (5) an activity log tracking all changes. Seed 3 customers and 5 orders. Test adding a new order and verify everything works.',
     maxScore: 100,
     validationCriteria: [
@@ -2137,6 +2194,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Visual Quality: CRUD app has proper layout hierarchy',
     category: 'canvas',
     level: 3,
+    requiredAgent: 'advanced' as const,
     input: 'Build an expense tracker with categories, amounts, and budget tracking',
     maxScore: 100,
     validationCriteria: [
@@ -2608,6 +2666,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Searchable contact list',
     category: 'canvas',
     level: 2,
+    requiredAgent: 'advanced' as const,
     input: 'Build me a contact list with a search bar. I should be able to type a name and filter the list. Seed it with 6 sample contacts with name, email, and company fields.',
     maxScore: 100,
     validationCriteria: [
@@ -2684,6 +2743,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Product catalog with search and CRUD',
     category: 'canvas',
     level: 3,
+    requiredAgent: 'advanced' as const,
     input: 'I need a product catalog manager. Products have a name, category, price, and stock count. Include a search bar to filter products by name or category, and buttons to add new products and delete existing ones. Add 5 sample products.',
     maxScore: 100,
     validationCriteria: [
@@ -2787,6 +2847,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: FAQ knowledge base with search and category filter',
     category: 'canvas',
     level: 3,
+    requiredAgent: 'advanced' as const,
     input: 'Create a FAQ knowledge base. Each entry has a question, answer, and category (General, Billing, Technical). Add a search bar that filters across both question and answer text, and a category dropdown to filter by category. Seed with 6 sample FAQs.',
     maxScore: 100,
     validationCriteria: [
@@ -2880,6 +2941,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Employee directory with server-side search',
     category: 'canvas',
     level: 4,
+    requiredAgent: 'advanced' as const,
     input: 'Build an employee directory for a large company. Employees have name, department, title, email, and phone. I need a search bar that searches across name and title — this should use the API to filter since there could be thousands of employees. Include department metrics at the top. Seed with 8 sample employees across 3 departments.',
     maxScore: 100,
     validationCriteria: [
@@ -3040,5 +3102,71 @@ export const CANVAS_EVALS: AgentEval[] = [
       },
     ],
     antiPatterns: ['No search input', 'DataList missing filterPath'],
+  },
+
+  // ---- Negative: Basic agent must NOT use interactive components ----
+  {
+    id: 'canvas-basic-no-interactive',
+    name: 'Canvas: Notes app must be display-only (no buttons/inputs)',
+    category: 'canvas',
+    level: 2,
+    input: 'Build a simple notes app',
+    requiredAgent: 'basic',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Added components to the canvas',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'no-textfield',
+        description: 'Did NOT use TextField component',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => !hasTextField(r),
+      },
+      {
+        id: 'no-select',
+        description: 'Did NOT use Select component',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => !hasSelectComponent(r),
+      },
+      {
+        id: 'no-forbidden-interactive',
+        description: 'No forbidden interactive components (TextField, Select, Checkbox, ChoicePicker)',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => noForbiddenInteractiveComponents(r),
+      },
+      {
+        id: 'no-crud-mutations',
+        description: 'No POST/PATCH/DELETE mutations on buttons',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => !hasNonOpenButtonMutation(r),
+      },
+      {
+        id: 'no-trigger-action',
+        description: 'Did NOT use canvas_trigger_action (basic agent lacks it)',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => neverUsedTool(r, 'canvas_trigger_action'),
+      },
+    ],
+    antiPatterns: [
+      'Agent used TextField or other form inputs in a display-only canvas',
+      'Agent used POST/PATCH/DELETE mutations in basic agent mode',
+    ],
   },
 ]

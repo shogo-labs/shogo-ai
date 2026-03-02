@@ -200,7 +200,9 @@ export const ProjectScalarFieldEnum = {
   type: 'type',
   siteTitle: 'siteTitle',
   siteDescription: 'siteDescription',
-  thumbnailUrl: 'thumbnailUrl'
+  thumbnailUrl: 'thumbnailUrl',
+  templateId: 'templateId',
+  knativeServiceName: 'knativeServiceName'
 } as const
 
 export type ProjectScalarFieldEnum = (typeof ProjectScalarFieldEnum)[keyof typeof ProjectScalarFieldEnum]

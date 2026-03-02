@@ -1,259 +1,162 @@
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   View,
   Text,
   Pressable,
-  FlatList,
   ActivityIndicator,
   Alert,
   Platform,
   ScrollView,
 } from 'react-native'
-import { SafeAreaView } from 'react-native-safe-area-context'
 import { useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
-import { Database, LayoutDashboard } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
 import {
-  useWorkspaceCollection,
   useProjectCollection,
   useDomainActions,
 } from '../../contexts/domain'
+import { API_URL } from '../../lib/api'
+import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 
-interface CanvasTemplate {
+interface AgentTemplate {
   id: string
-  user_request: string
-  needs_api_schema: boolean
-  component_types: string[]
-  component_count: number
+  name: string
+  description: string
+  category: string
+  icon: string
+  tags: string[]
+  settings: {
+    heartbeatInterval: number
+    heartbeatEnabled: boolean
+    modelProvider: string
+    modelName: string
+  }
+  skills: string[]
 }
 
-function formatTemplateName(id: string): string {
-  return id
-    .replace(/-crud$/, '')
-    .split('-')
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ')
+/**
+ * Reads the dark class directly from the DOM and observes mutations.
+ * Avoids relying on React context which MobX observer() can swallow.
+ */
+function useDarkMode() {
+  const [isDark, setIsDark] = useState(() => {
+    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+      return document.documentElement.classList.contains('dark')
+    }
+    return false
+  })
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return
+    setIsDark(document.documentElement.classList.contains('dark'))
+    const obs = new MutationObserver(() => {
+      setIsDark(document.documentElement.classList.contains('dark'))
+    })
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+    return () => obs.disconnect()
+  }, [])
+  return isDark
 }
 
-const TEMPLATE_TAGLINES: Record<string, string> = {
-  'weather-display': 'Live weather forecast',
-  'flight-search': 'Search & pick flights',
-  'email-dashboard': 'Metrics, tabs & email tables',
-  'analytics-dashboard': 'Revenue charts & top products',
-  'research-report': 'Expandable sections & progress',
-  'counter': 'Simple interactive counter',
-  'task-tracker-crud': 'Add, complete & delete tasks',
-  'stock-dashboard-crud': 'Portfolio & price tracking',
-  'meeting-scheduler': 'Date/time pickers & submit',
-  'notification-feed': 'PR reviews, builds & reminders',
-  'crm-pipeline': 'Leads across pipeline stages',
-  'expense-dashboard': 'Spend, budgets & recent expenses',
-  'cicd-monitor': 'Deploy status & frequency',
-  'support-tickets-crud': 'Priority levels & status tracking',
-  'invoice-tracker-crud': 'Clients, amounts & due dates',
-  'hr-pipeline-crud': 'Applicants, stages & ratings',
-  'social-media-dashboard': 'Followers, trends & posts',
-  'ecommerce-orders-crud': 'Order metrics & status',
+const TEMPLATE_COLORS: Record<string, string> = {
+  'research-assistant': '#3b82f6',
+  'github-ops': '#f97316',
+  'support-desk': '#8b5cf6',
+  'meeting-prep': '#10b981',
+  'revenue-tracker': '#ec4899',
+  'project-board': '#06b6d4',
+  'incident-commander': '#ef4444',
+  'personal-assistant': '#f59e0b',
 }
 
-const TEMPLATE_ICONS: Record<string, string> = {
-  'weather-display': '\u{1F324}\u{FE0F}',
-  'flight-search': '\u{2708}\u{FE0F}',
-  'email-dashboard': '\u{1F4E7}',
-  'analytics-dashboard': '\u{1F4CA}',
-  'research-report': '\u{1F4D1}',
-  'counter': '\u{1F522}',
-  'task-tracker-crud': '\u{2705}',
-  'stock-dashboard-crud': '\u{1F4C8}',
-  'meeting-scheduler': '\u{1F4C5}',
-  'notification-feed': '\u{1F514}',
-  'crm-pipeline': '\u{1F91D}',
-  'expense-dashboard': '\u{1F4B0}',
-  'cicd-monitor': '\u{1F680}',
-  'support-tickets-crud': '\u{1F3AB}',
-  'invoice-tracker-crud': '\u{1F9FE}',
-  'hr-pipeline-crud': '\u{1F465}',
-  'social-media-dashboard': '\u{1F4F1}',
-  'ecommerce-orders-crud': '\u{1F6D2}',
-}
-
-const CANVAS_TEMPLATES: CanvasTemplate[] = [
-  {
-    id: 'analytics-dashboard',
-    user_request: 'Create a sales analytics dashboard with revenue chart and top products',
-    needs_api_schema: false,
-    component_types: ['Column', 'Row', 'Text', 'Badge', 'Grid', 'Metric', 'Card', 'Chart', 'Table'],
-    component_count: 12,
-  },
-  {
-    id: 'task-tracker-crud',
-    user_request: 'Build a task tracker where I can add, complete, and delete tasks',
-    needs_api_schema: true,
-    component_types: ['Column', 'Card', 'Table', 'Button', 'TextField'],
-    component_count: 8,
-  },
-  {
-    id: 'email-dashboard',
-    user_request: 'Build an email dashboard with metrics, tabs, and email tables',
-    needs_api_schema: false,
-    component_types: ['Column', 'Grid', 'Metric', 'Separator', 'Tabs', 'Table', 'Alert', 'Text'],
-    component_count: 14,
-  },
-  {
-    id: 'crm-pipeline',
-    user_request: 'Build a CRM pipeline canvas showing leads in 3 stages: New, Qualified, Closed with lead details',
-    needs_api_schema: false,
-    component_types: ['Column', 'Grid', 'Card', 'Text', 'Badge', 'Metric'],
-    component_count: 12,
-  },
-  {
-    id: 'support-tickets-crud',
-    user_request: 'Build a support ticket management app with CRUD API, priority levels, and status tracking',
-    needs_api_schema: true,
-    component_types: ['Column', 'Table', 'Button', 'Badge'],
-    component_count: 8,
-  },
-  {
-    id: 'expense-dashboard',
-    user_request: 'Create an expense tracker dashboard with total spend, budget remaining, and a table of recent expenses',
-    needs_api_schema: false,
-    component_types: ['Column', 'Row', 'Metric', 'Table', 'Badge'],
-    component_count: 8,
-  },
-  {
-    id: 'stock-dashboard-crud',
-    user_request: 'Create a stock portfolio dashboard with price tracking',
-    needs_api_schema: true,
-    component_types: ['Column', 'Grid', 'Metric', 'Card', 'Table', 'Chart'],
-    component_count: 10,
-  },
-  {
-    id: 'ecommerce-orders-crud',
-    user_request: 'Build an order management dashboard with CRUD showing order metrics, order table with status, and seed data',
-    needs_api_schema: true,
-    component_types: ['Column', 'Row', 'Metric', 'Table', 'Badge', 'Button'],
-    component_count: 12,
-  },
-  {
-    id: 'meeting-scheduler',
-    user_request: 'Create a meeting scheduler with date/time pickers and a submit button',
-    needs_api_schema: false,
-    component_types: ['Card', 'Column', 'TextField', 'Select', 'ChoicePicker', 'Row', 'Button'],
-    component_count: 9,
-  },
-  {
-    id: 'notification-feed',
-    user_request: 'Show a notification feed with PR reviews, build failures, and meeting reminders',
-    needs_api_schema: false,
-    component_types: ['Column', 'Text', 'DataList', 'Card', 'Row', 'Badge'],
-    component_count: 7,
-  },
-  {
-    id: 'cicd-monitor',
-    user_request: 'Build a CI/CD pipeline monitor showing recent deploys with status and a deploy frequency chart',
-    needs_api_schema: false,
-    component_types: ['Column', 'Card', 'Table', 'Badge', 'Text', 'Chart'],
-    component_count: 10,
-  },
-  {
-    id: 'social-media-dashboard',
-    user_request: 'Build a social media analytics dashboard with follower/engagement metrics, trends chart, and scheduled posts table',
-    needs_api_schema: false,
-    component_types: ['Column', 'Row', 'Grid', 'Metric', 'Chart', 'Table', 'Badge'],
-    component_count: 14,
-  },
-  {
-    id: 'invoice-tracker-crud',
-    user_request: 'Build an invoice tracker with CRUD API, client name, amount, due date, status, and total metric',
-    needs_api_schema: true,
-    component_types: ['Column', 'Metric', 'Table', 'Badge', 'Button'],
-    component_count: 9,
-  },
-  {
-    id: 'hr-pipeline-crud',
-    user_request: 'Create a recruiting pipeline app tracking applicants with name, position, stage, rating, and notes',
-    needs_api_schema: true,
-    component_types: ['Column', 'Table', 'Badge', 'Text', 'Button'],
-    component_count: 8,
-  },
-  {
-    id: 'research-report',
-    user_request: 'Build a research report on the EV market with progress tracking and expandable sections',
-    needs_api_schema: false,
-    component_types: ['Column', 'Row', 'Text', 'Badge', 'Card', 'Chart', 'Accordion', 'AccordionItem', 'Grid', 'Metric', 'Table', 'Alert'],
-    component_count: 17,
-  },
-  {
-    id: 'weather-display',
-    user_request: 'Show me the current weather forecast',
-    needs_api_schema: false,
-    component_types: ['Column', 'Text', 'Badge'],
-    component_count: 4,
-  },
-  {
-    id: 'flight-search',
-    user_request: 'Find flights from SFO to JFK and let me pick one',
-    needs_api_schema: false,
-    component_types: ['Column', 'Text', 'Card', 'Button'],
-    component_count: 6,
-  },
+const FILTER_TABS = [
+  { key: 'all', label: 'All Templates', icon: '⊞' },
+  { key: 'research', label: 'Research', icon: '📚' },
+  { key: 'development', label: 'Development', icon: '🐙' },
+  { key: 'business', label: 'Business', icon: '💼' },
+  { key: 'operations', label: 'DevOps', icon: '🚨' },
+  { key: 'personal', label: 'Personal', icon: '⚡' },
 ]
 
 function TemplateCard({
   template,
   isLoading,
   onPress,
+  isDark,
 }: {
-  template: CanvasTemplate
+  template: AgentTemplate
   isLoading: boolean
   onPress: () => void
+  isDark: boolean
 }) {
-  const tagline = TEMPLATE_TAGLINES[template.id] ?? template.user_request.slice(0, 50)
-  const icon = TEMPLATE_ICONS[template.id] ?? '\u{1F9E9}'
+  const color = TEMPLATE_COLORS[template.id] || '#6366f1'
 
   return (
     <Pressable
       onPress={onPress}
       disabled={isLoading}
       className={cn(
-        'flex-1 mx-1.5 mb-3 rounded-xl p-4 border border-border/50 bg-card/60',
-        isLoading && 'opacity-50'
+        'rounded-2xl overflow-hidden border border-border bg-card',
+        isLoading && 'opacity-50',
       )}
+      style={Platform.OS === 'web' ? {
+        boxShadow: isDark
+          ? '0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2)'
+          : '0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)',
+        transition: 'box-shadow 0.2s ease, transform 0.15s ease',
+        cursor: 'pointer',
+      } as any : {}}
     >
-      <View className="flex-row items-start gap-3">
-        <Text className="text-2xl mt-0.5">{icon}</Text>
-        <View className="flex-1">
-          <Text className="text-foreground font-semibold text-[15px] leading-tight">
-            {formatTemplateName(template.id)}
-          </Text>
-          <Text className="text-muted-foreground text-sm mt-1" numberOfLines={2}>
-            {tagline}
-          </Text>
-        </View>
-      </View>
-
-      <View className="flex-row items-center gap-2 mt-3">
-        {template.needs_api_schema ? (
-          <View className="flex-row items-center gap-1 bg-blue-500/10 border border-blue-500/20 rounded-full px-2 py-0.5">
-            <Database size={12} className="text-blue-400" />
-            <Text className="text-blue-400 text-[11px] font-medium">CRUD</Text>
-          </View>
-        ) : (
-          <View className="flex-row items-center gap-1 bg-emerald-500/10 border border-emerald-500/20 rounded-full px-2 py-0.5">
-            <LayoutDashboard size={12} className="text-emerald-400" />
-            <Text className="text-emerald-400 text-[11px] font-medium">Display</Text>
-          </View>
-        )}
-        <Text className="text-muted-foreground text-[11px]">
-          {template.component_count} components
+      <View
+        style={{
+          height: 240,
+          backgroundColor: isDark ? `${color}15` : `${color}06`,
+          borderBottomWidth: 1,
+          borderBottomColor: isDark ? 'rgba(255,255,255,0.06)' : '#f3f4f6',
+        }}
+        className="items-center justify-center"
+      >
+        <Text style={{ fontSize: 56 }}>{template.icon}</Text>
+        <Text
+          className="text-muted-foreground"
+          style={{
+            fontSize: 11,
+            fontWeight: '500',
+            marginTop: 12,
+            letterSpacing: 0.5,
+          }}
+        >
+          Preview coming soon
         </Text>
       </View>
 
+      <View className="px-5 py-4">
+        <View className="flex-row items-start justify-between gap-2">
+          <View className="flex-1">
+            <Text className="text-base font-semibold text-card-foreground" style={{ lineHeight: 22 }}>
+              {template.name}
+            </Text>
+            <Text
+              className="text-[13px] mt-1.5 leading-[19px] text-muted-foreground"
+              numberOfLines={2}
+            >
+              {template.description}
+            </Text>
+          </View>
+          <View className="rounded-full px-2.5 py-1 mt-0.5 bg-muted">
+            <Text className="text-[11px] font-medium text-muted-foreground">
+              {template.tags[0] ? template.tags[0].charAt(0).toUpperCase() + template.tags[0].slice(1) : template.category}
+            </Text>
+          </View>
+        </View>
+      </View>
+
       {isLoading && (
-        <View className="absolute inset-0 bg-background/60 items-center justify-center rounded-xl">
-          <ActivityIndicator size="small" />
+        <View
+          className="absolute inset-0 items-center justify-center rounded-2xl"
+          style={{ backgroundColor: isDark ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.85)' }}
+        >
+          <ActivityIndicator size="small" color={color} />
         </View>
       )}
     </Pressable>
@@ -264,15 +167,33 @@ export default observer(function TemplatesPage() {
   const router = useRouter()
   const { user } = useAuth()
   const actions = useDomainActions()
-  const workspaces = useWorkspaceCollection()
   const projects = useProjectCollection()
-
+  const isDark = useDarkMode()
+  const [templates, setTemplates] = useState<AgentTemplate[]>([])
+  const [loading, setLoading] = useState(true)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
+  const [activeFilter, setActiveFilter] = useState('all')
 
-  const currentWorkspace = workspaces.all.length > 0 ? workspaces.all[0] : null
+  const currentWorkspace = useActiveWorkspace()
+
+  useEffect(() => {
+    async function fetchTemplates() {
+      try {
+        const res = await fetch(`${API_URL}/api/agent-templates`)
+        if (!res.ok) throw new Error('Failed to fetch templates')
+        const data = await res.json()
+        setTemplates(data.templates || [])
+      } catch (err) {
+        console.error('[TemplatesPage] Failed to fetch templates:', err)
+      } finally {
+        setLoading(false)
+      }
+    }
+    fetchTemplates()
+  }, [])
 
   const handleTemplatePress = useCallback(
-    async (template: CanvasTemplate) => {
+    async (template: AgentTemplate) => {
       if (!user?.id || !currentWorkspace?.id) {
         Alert.alert('Error', 'No user session or workspace available')
         return
@@ -281,20 +202,21 @@ export default observer(function TemplatesPage() {
       setLoadingTemplate(template.id)
 
       try {
-        const displayName = formatTemplateName(template.id)
         const project = await actions.createProject(
-          displayName,
+          template.name,
           currentWorkspace.id,
-          undefined,
+          template.description,
           user.id,
-          'AGENT'
+          'AGENT',
+          template.id
         )
 
         if (project?.id) {
           projects.loadAll()
+          const onboardingMessage = `The "${template.name}" template has been installed. Can you describe what's been set up and walk me through how to customize it or connect my own tools?`
           router.push({
             pathname: '/(app)/projects/[id]',
-            params: { id: project.id, initialMessage: template.user_request },
+            params: { id: project.id, initialMessage: onboardingMessage },
           })
         }
       } catch (error) {
@@ -307,62 +229,117 @@ export default observer(function TemplatesPage() {
     [user?.id, currentWorkspace?.id, actions, projects, router]
   )
 
-  const templates = useMemo(() => CANVAS_TEMPLATES, [])
+  const filteredTemplates =
+    activeFilter === 'all'
+      ? templates
+      : templates.filter((t) => t.category === activeFilter)
 
-  const renderItem = useCallback(
-    ({ item }: { item: CanvasTemplate }) => (
-      <TemplateCard
-        template={item}
-        isLoading={loadingTemplate === item.id}
-        onPress={() => handleTemplatePress(item)}
-      />
-    ),
-    [loadingTemplate, handleTemplatePress]
-  )
+  if (loading) {
+    return (
+      <View className="flex-1 items-center justify-center bg-background">
+        <ActivityIndicator size="large" className="text-muted-foreground" />
+      </View>
+    )
+  }
 
   return (
     <View className="flex-1 bg-background">
-      {/* Header */}
-      <View className="px-6 pt-6 pb-2">
-        <Text className="text-foreground text-2xl font-semibold">Agent Templates</Text>
-        <Text className="text-muted-foreground mt-1">
-          Start from a template to build your next agent
-        </Text>
-      </View>
-
-      {/* Templates Grid */}
-      {Platform.OS === 'web' ? (
-        <ScrollView
-          className="flex-1"
-          contentContainerStyle={{ padding: 24, paddingTop: 12 }}
-        >
-          <View
-            style={{
-              display: 'grid' as any,
-              gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
-              gap: 12,
-              maxWidth: 1200,
-            } as any}
+      <ScrollView
+        className="flex-1"
+        contentContainerStyle={{ paddingBottom: 60 }}
+      >
+        {/* Header */}
+        <View className="items-center pt-10 pb-6 px-6">
+          <Text
+            className="text-center font-bold text-foreground"
+            style={{ fontSize: 32, lineHeight: 40, letterSpacing: -0.3 }}
           >
-            {templates.map((template) => (
-              <TemplateCard
-                key={template.id}
-                template={template}
-                isLoading={loadingTemplate === template.id}
-                onPress={() => handleTemplatePress(template)}
-              />
-            ))}
-          </View>
-        </ScrollView>
-      ) : (
-        <FlatList
-          data={templates}
-          keyExtractor={(item) => item.id}
-          numColumns={2}
-          contentContainerClassName="px-2.5 pt-2 pb-6"
-          renderItem={renderItem}
-        />
-      )}
+            Agent Templates{'\n'}Built With AI
+          </Text>
+          <Text
+            className="text-center mt-3 text-muted-foreground"
+            style={{ fontSize: 15, lineHeight: 22 }}
+          >
+            Production-ready agents from the Shogo team
+          </Text>
+        </View>
+
+        {/* Filter tabs */}
+        <View className="px-6 mb-8">
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{
+              paddingHorizontal: 0,
+              gap: 4,
+              justifyContent: 'center',
+              flexGrow: 1,
+            }}
+          >
+            {FILTER_TABS.map((tab) => {
+              const isActive = activeFilter === tab.key
+              return (
+                <Pressable
+                  key={tab.key}
+                  onPress={() => setActiveFilter(tab.key)}
+                  className="items-center px-4 py-2.5 rounded-lg"
+                  style={{
+                    borderBottomWidth: isActive ? 2 : 0,
+                    borderBottomColor: isActive
+                      ? (isDark ? 'rgba(255,255,255,0.87)' : '#111827')
+                      : 'transparent',
+                    marginBottom: isActive ? -2 : 0,
+                  }}
+                >
+                  <Text style={{ fontSize: 18, marginBottom: 4 }}>{tab.icon}</Text>
+                  <Text
+                    className={cn(
+                      'text-[12px]',
+                      isActive ? 'text-foreground font-semibold' : 'text-muted-foreground',
+                    )}
+                  >
+                    {tab.label}
+                  </Text>
+                </Pressable>
+              )
+            })}
+          </ScrollView>
+          <View className="border-b border-border" style={{ marginTop: 2 }} />
+        </View>
+
+        {/* Template grid */}
+        <View className="px-6">
+          {filteredTemplates.length > 0 ? (
+            <View
+              style={Platform.OS === 'web' ? {
+                display: 'grid' as any,
+                gridTemplateColumns: 'repeat(3, 1fr)',
+                gap: 20,
+                maxWidth: 1100,
+                marginHorizontal: 'auto',
+              } as any : {
+                gap: 16,
+              }}
+            >
+              {filteredTemplates.map((template) => (
+                <TemplateCard
+                  key={template.id}
+                  template={template}
+                  isLoading={loadingTemplate === template.id}
+                  onPress={() => handleTemplatePress(template)}
+                  isDark={isDark}
+                />
+              ))}
+            </View>
+          ) : (
+            <View className="items-center py-16">
+              <Text className="text-muted-foreground text-sm">
+                No templates in this category yet
+              </Text>
+            </View>
+          )}
+        </View>
+      </ScrollView>
     </View>
   )
 })

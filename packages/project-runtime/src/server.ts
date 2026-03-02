@@ -94,6 +94,21 @@ const PROJECT_ID = currentProjectId
 
 if (IS_POOL_MODE) {
   logTiming('Starting in WARM POOL mode (awaiting project assignment)')
+
+  // Self-assign: if this pod was previously promoted (has ASSIGNED_PROJECT),
+  // fetch config from the API and apply it so the pod resumes serving.
+  const { checkSelfAssign } = await import('@shogo/shared-runtime')
+  const selfAssignConfig = await checkSelfAssign()
+  if (selfAssignConfig) {
+    logTiming(`[self-assign] Applying config for project ${selfAssignConfig.projectId}`)
+    currentProjectId = selfAssignConfig.projectId
+    process.env.PROJECT_ID = selfAssignConfig.projectId
+    for (const [key, value] of Object.entries(selfAssignConfig.env)) {
+      if (typeof value === 'string') process.env[key] = value
+    }
+    poolAssigned = true
+    logTiming(`[self-assign] Self-assigned to ${selfAssignConfig.projectId}`)
+  }
 } else {
   logTiming(`Configuration loaded for project: ${currentProjectId}`)
 }
@@ -987,6 +1002,8 @@ const ChatRequestSchema = z.object({
   themeContext: z.string().optional(),
   // Agent mode for model selection: basic (Haiku) or advanced (Sonnet)
   agentMode: z.enum(['basic', 'advanced']).optional(),
+  // User's IANA timezone (e.g. "America/New_York")
+  timezone: z.string().optional(),
   // Additional AI SDK fields
   body: z.any().optional(),
 })
@@ -1546,7 +1563,7 @@ app.post('/agent/chat', async (c) => {
       }, 400)
     }
     
-    const { messages, system, themeContext, agentMode } = parsed.data
+    const { messages, system, themeContext, agentMode, timezone } = parsed.data
     
     // Model selection: agentMode takes precedence, then AGENT_MODEL env var, then sonnet
     const getModelFromAgentMode = (mode?: 'basic' | 'advanced'): 'haiku' | 'sonnet' | 'opus' => {
@@ -1575,11 +1592,12 @@ app.post('/agent/chat', async (c) => {
 
     const userText = extractUserText(lastUserMessage)
 
-    // Prepend dynamic context (build status, theme) to the user message
+    // Prepend dynamic context (build status, theme, timezone) to the user message
     const buildContext = getBuildStatusContext()
     let contextPrefix = ''
     if (buildContext) contextPrefix += `[Build Status]\n${buildContext}\n\n`
     if (themeContext) contextPrefix += `[Theme Context]\n${themeContext}\n\n`
+    if (timezone) contextPrefix += `[User Timezone]\n${timezone}\n\n`
     if (system) contextPrefix += `[Additional Instructions]\n${system}\n\n`
     const fullUserText = contextPrefix ? `${contextPrefix}${userText}` : userText
 

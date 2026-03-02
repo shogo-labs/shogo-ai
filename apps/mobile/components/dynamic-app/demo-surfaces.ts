@@ -785,10 +785,147 @@ export const SUPPORT_TICKETS_SURFACE = buildSurface(
 )
 
 // ---------------------------------------------------------------------------
+// Drive Time to LAX — Imported from staging project 78f280c9
+// Multi-tab dashboard: drive time + weather + restaurants with DataList
+// ---------------------------------------------------------------------------
+
+export const DRIVE_TIME_LAX_SURFACE = buildSurface(
+  'drive_time_lax',
+  'Drive Time to LAX',
+  [
+    { id: 'root', component: 'Column', children: ['header_row', 'main_tabs'] },
+    { id: 'header_row', component: 'Row', children: ['title', 'time_badge'], align: 'center', justify: 'between' },
+    { id: 'title', component: 'Text', text: 'Drive to LAX', variant: 'h2' },
+    { id: 'time_badge', component: 'Badge', text: { path: '/currentTime' }, variant: 'outline' },
+    { id: 'main_tabs', component: 'Tabs', children: ['drive_panel', 'restaurants_panel'] },
+
+    // Drive tab
+    { id: 'drive_panel', component: 'TabPanel', title: 'Drive to LAX', children: ['weather_card', 'metrics_grid', 'details_card', 'traffic_alert'] },
+    { id: 'metrics_grid', component: 'Grid', columns: 3, children: ['metric_time', 'metric_distance', 'metric_delay'] },
+    { id: 'metric_time', component: 'Metric', label: 'Current Drive Time', value: { path: '/durationWithTraffic' }, description: 'With live traffic', trendValue: { path: '/trafficDelay' } },
+    { id: 'metric_distance', component: 'Metric', label: 'Distance', value: { path: '/distance' }, description: 'Via US-101 South' },
+    { id: 'metric_delay', component: 'Metric', label: 'No-Traffic Time', value: { path: '/durationNoTraffic' }, description: 'Baseline duration' },
+    { id: 'details_card', component: 'Card', title: 'Route Details', description: 'Your journey information', child: 'details_content' },
+    { id: 'details_content', component: 'Column', children: ['origin_row', 'dest_row', 'route_row'], gap: 'md' },
+    { id: 'origin_row', component: 'Row', children: ['origin_label', 'origin_value'], align: 'center', gap: 'sm' },
+    { id: 'origin_label', component: 'Text', text: 'From:', weight: 'medium' },
+    { id: 'origin_value', component: 'Text', text: { path: '/origin' } },
+    { id: 'dest_row', component: 'Row', children: ['dest_label', 'dest_value'], align: 'center', gap: 'sm' },
+    { id: 'dest_label', component: 'Text', text: 'To:', weight: 'medium' },
+    { id: 'dest_value', component: 'Text', text: { path: '/destination' } },
+    { id: 'route_row', component: 'Row', children: ['route_label', 'route_value'], align: 'center', gap: 'sm' },
+    { id: 'route_label', component: 'Text', text: 'Best Route:', weight: 'medium' },
+    { id: 'route_value', component: 'Badge', text: { path: '/route' }, variant: 'secondary' },
+    { id: 'traffic_alert', component: 'Alert', title: 'Traffic Notice', description: 'Current traffic is adding 37 minutes to your journey. Consider leaving earlier if you have a tight schedule.', variant: 'default' },
+
+    // Weather card
+    { id: 'weather_card', component: 'Card', title: 'Current Weather', description: 'Conditions at your location', child: 'weather_content' },
+    { id: 'weather_content', component: 'Row', children: ['weather_left', 'weather_right'], justify: 'between', align: 'center' },
+    { id: 'weather_left', component: 'Column', children: ['temp_row', 'condition_text'], gap: 'xs' },
+    { id: 'temp_row', component: 'Row', children: ['temp_value', 'temp_unit'], align: 'baseline', gap: 'xs' },
+    { id: 'temp_value', component: 'Text', text: { path: '/weather/temperature' }, variant: 'h1' },
+    { id: 'temp_unit', component: 'Text', text: { path: '/weather/temperatureUnit' }, variant: 'h3' },
+    { id: 'condition_text', component: 'Badge', text: { path: '/weather/condition' }, variant: 'secondary' },
+    { id: 'weather_right', component: 'Grid', columns: 2, children: ['humidity_metric', 'wind_metric'], gap: 'sm' },
+    { id: 'humidity_metric', component: 'Column', children: ['humidity_label', 'humidity_value'], gap: 'xs' },
+    { id: 'humidity_label', component: 'Text', text: 'Humidity', variant: 'caption' },
+    { id: 'humidity_value', component: 'Text', text: { path: '/weather/humidity' }, weight: 'medium' },
+    { id: 'wind_metric', component: 'Column', children: ['wind_label', 'wind_value'], gap: 'xs' },
+    { id: 'wind_label', component: 'Text', text: 'Wind', variant: 'caption' },
+    { id: 'wind_value', component: 'Text', text: { path: '/weather/windSpeed' }, weight: 'medium' },
+
+    // Restaurants tab
+    { id: 'restaurants_panel', component: 'TabPanel', title: 'Lunch Spots', children: ['restaurants_header', 'restaurants_list'] },
+    { id: 'restaurants_header', component: 'Card', title: 'Favorite Restaurants', description: 'Lunch availability at your go-to spots (1-2 PM)', child: 'preferred_times' },
+    { id: 'preferred_times', component: 'Row', children: ['time_badge_1', 'time_badge_2'], gap: 'sm' },
+    { id: 'time_badge_1', component: 'Badge', text: '1:00 PM', variant: 'secondary' },
+    { id: 'time_badge_2', component: 'Badge', text: '2:00 PM', variant: 'secondary' },
+    { id: 'restaurants_list', component: 'DataList', children: { path: '/restaurants/favorites', templateId: 'restaurant_card' }, emptyText: 'No restaurants saved yet' },
+    { id: 'restaurant_card', component: 'Card', child: 'restaurant_content' },
+    { id: 'restaurant_content', component: 'Column', children: ['restaurant_header', 'restaurant_details', 'restaurant_actions'], gap: 'md' },
+    { id: 'restaurant_header', component: 'Row', children: ['restaurant_name', 'restaurant_rating'], justify: 'between', align: 'center' },
+    { id: 'restaurant_name', component: 'Text', text: { path: 'name' }, variant: 'h4', weight: 'bold' },
+    { id: 'restaurant_rating', component: 'Badge', text: { path: 'rating' }, variant: 'default' },
+    { id: 'restaurant_details', component: 'Column', children: ['restaurant_type_row', 'restaurant_location_row', 'restaurant_contact_row'], gap: 'sm' },
+    { id: 'restaurant_type_row', component: 'Row', children: ['restaurant_type', 'restaurant_price'], gap: 'sm' },
+    { id: 'restaurant_type', component: 'Badge', text: { path: 'type' }, variant: 'secondary' },
+    { id: 'restaurant_price', component: 'Badge', text: { path: 'price' }, variant: 'outline' },
+    { id: 'restaurant_location_row', component: 'Row', children: ['restaurant_address'], gap: 'xs', align: 'center' },
+    { id: 'restaurant_address', component: 'Text', text: { path: 'address' }, variant: 'body' },
+    { id: 'restaurant_contact_row', component: 'Row', children: ['restaurant_phone'], gap: 'xs', align: 'center' },
+    { id: 'restaurant_phone', component: 'Text', text: { path: 'phone' }, variant: 'body' },
+    { id: 'restaurant_actions', component: 'Row', children: ['view_yelp_btn', 'check_availability_info'], gap: 'sm', justify: 'between', align: 'center' },
+    { id: 'view_yelp_btn', component: 'Button', label: 'View on Yelp', variant: 'outline', size: 'sm' },
+    { id: 'check_availability_info', component: 'Text', text: 'Check availability by calling or visiting Yelp', variant: 'caption' },
+  ] as ComponentDefinition[],
+  {
+    origin: '2220 Bella Vista Drive, Montecito, CA',
+    destination: 'Los Angeles International Airport (LAX)',
+    currentTime: 'Friday, February 27, 2026 - 8:22 PM',
+    distance: '97.1 miles',
+    distanceMeters: 156277,
+    durationWithTraffic: '2 hours 16 minutes',
+    durationWithTrafficSeconds: 8183,
+    durationNoTraffic: '1 hour 39 minutes',
+    durationNoTrafficSeconds: 5956,
+    trafficDelay: '+37 minutes',
+    trafficDelaySeconds: 2227,
+    route: 'US-101 South (Optimal with Traffic)',
+    weather: {
+      location: 'Montecito, California',
+      condition: 'Clear sky',
+      temperature: 82,
+      temperatureUnit: '\u00B0F',
+      feelsLike: 82,
+      humidity: 40,
+      windSpeed: 5.7,
+      windSpeedUnit: 'mph',
+      visibility: 6.2,
+      visibilityUnit: 'miles',
+      pressure: 1015,
+      pressureUnit: 'mb',
+      timestamp: 'Friday, Feb 27, 2026 - 12:28 PM PST',
+    },
+    restaurants: {
+      favorites: [
+        {
+          id: 'JffIqp7xncYtwehx0trCGg',
+          name: 'Kappo Miyabi',
+          location: 'Santa Monica',
+          address: '702 Arizona Ave, Ste BB',
+          city: 'Santa Monica, CA 90401',
+          phone: '(310) 260-0085',
+          type: 'Japanese (Sushi, Izakaya)',
+          price: '$$$',
+          rating: 4.3,
+          reviewCount: 1140,
+          summary: 'Japanese izakaya with cozy ambiance known for fresh fish and standout albacore roll.',
+        },
+        {
+          id: 'lD8YBJ29CQ6Oftzmef0P5w',
+          name: "The Butcher's Daughter",
+          location: 'Venice',
+          address: '1205 Abbot Kinney Blvd',
+          city: 'Venice, CA 90291',
+          phone: '(310) 981-3004',
+          type: 'Breakfast & Brunch, Plant-based',
+          price: '$$',
+          rating: 3.9,
+          reviewCount: 2274,
+        },
+      ],
+      preferredTimes: ['1:00 PM', '2:00 PM'],
+      lastChecked: 'Friday, Feb 27, 2026 - 12:33 PM PST',
+    },
+  },
+)
+
+// ---------------------------------------------------------------------------
 // All demos indexed by name
 // ---------------------------------------------------------------------------
 
 export const DEMO_SURFACES: Record<string, { label: string; surface: SurfaceState }> = {
+  drive_lax: { label: 'Drive to LAX', surface: DRIVE_TIME_LAX_SURFACE },
   expenses: { label: 'Expense Tracker', surface: EXPENSE_TRACKER_SURFACE },
   habits: { label: 'Habit Tracker', surface: HABIT_TRACKER_SURFACE },
   support: { label: 'Support Tickets', surface: SUPPORT_TICKETS_SURFACE },

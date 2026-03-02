@@ -3,10 +3,10 @@
  *
  * These test cases exercise advanced agentic patterns:
  * - Multi-canvas (multiple surfaces for different views)
- * - web_fetch -> canvas (pull live data and render it)
+ * - web -> canvas (pull live data and render it)
  * - MCP integration -> canvas (external services populate dashboards)
  * - Memory persistence (store findings for later recall)
- * - Cross-tool orchestration (combining exec, web_fetch, MCP, canvas, messaging)
+ * - Cross-tool orchestration (combining exec, web, MCP, canvas, messaging)
  * - CRUD + verification (every case includes trigger+inspect)
  *
  * All external tools are mocked via the tool-mocks infrastructure so these
@@ -34,7 +34,7 @@ export const COMPLEX_EVALS: AgentEval[] = [
 
   // =========================================================================
   // Case 1: Competitive Intelligence Dashboard
-  // Level 4 | web_fetch + multi-canvas + memory | Multi-turn
+  // Level 4 | web + multi-canvas + memory | Multi-turn
   // =========================================================================
   {
     id: 'complex-competitive-intel',
@@ -50,10 +50,10 @@ export const COMPLEX_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-web-fetch',
-        description: 'Used web_fetch at least 3 times (one per competitor)',
+        description: 'Used web at least 3 times (one per competitor)',
         points: 10,
         phase: 'intention',
-        validate: (r) => toolCallCount(r, 'web_fetch') >= 3,
+        validate: (r) => toolCallCount(r, 'web') >= 3,
       },
       {
         id: 'used-canvas-create-multi',
@@ -133,16 +133,17 @@ export const COMPLEX_EVALS: AgentEval[] = [
     name: 'Complex: GitHub issue triage board',
     category: 'complex',
     level: 4,
+    requiredAgent: 'advanced' as const,
     input: 'I need a triage board for my GitHub issues. Pull the open issues using the GitHub integration, categorize them by severity (Critical, High, Medium, Low based on their labels), and build me a canvas dashboard with the issues organized by severity. Set up a CRUD API so I can update issue status, seed it with the fetched issues, and set up a heartbeat or cron job to periodically re-fetch. Test that I can change an issue\'s status.',
     maxScore: 100,
     toolMocks: GITHUB_TRIAGE_MOCKS,
     validationCriteria: [
       {
         id: 'used-github-issues',
-        description: 'Used mcp__github__list_issues to fetch issues',
+        description: 'Used GITHUB_LIST_ISSUES to fetch issues',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp__github__list_issues'),
+        validate: (r) => usedTool(r, 'GITHUB_LIST_ISSUES'),
       },
       {
         id: 'used-canvas-create',
@@ -212,13 +213,14 @@ export const COMPLEX_EVALS: AgentEval[] = [
 
   // =========================================================================
   // Case 3: Daily News Research Brief
-  // Level 4 | web_fetch + canvas + memory + write_file | Multi-turn
+  // Level 4 | web + canvas + memory + write_file | Multi-turn
   // =========================================================================
   {
     id: 'complex-news-brief',
     name: 'Complex: Daily news research brief',
     category: 'complex',
     level: 4,
+    requiredAgent: 'advanced' as const,
     conversationHistory: [
       { role: 'user', content: 'I want a daily brief on AI infrastructure news.' },
     ],
@@ -228,10 +230,10 @@ export const COMPLEX_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-web-fetch',
-        description: 'Used web_fetch at least 3 times (one per source)',
+        description: 'Used web at least 3 times (one per source)',
         points: 10,
         phase: 'intention',
-        validate: (r) => toolCallCount(r, 'web_fetch') >= 3,
+        validate: (r) => toolCallCount(r, 'web') >= 3,
       },
       {
         id: 'used-memory-write',
@@ -309,7 +311,7 @@ export const COMPLEX_EVALS: AgentEval[] = [
 
   // =========================================================================
   // Case 4: API Health Monitor
-  // Level 4 | web_fetch + multi-canvas + exec
+  // Level 4 | web + multi-canvas + exec
   // =========================================================================
   {
     id: 'complex-api-health',
@@ -322,10 +324,10 @@ export const COMPLEX_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-web-fetch',
-        description: 'Used web_fetch at least 3 times (one per endpoint)',
+        description: 'Used web at least 3 times (one per endpoint)',
         points: 10,
         phase: 'intention',
-        validate: (r) => toolCallCount(r, 'web_fetch') >= 3,
+        validate: (r) => toolCallCount(r, 'web') >= 3,
       },
       {
         id: 'used-canvas-create-multi',
@@ -402,16 +404,17 @@ export const COMPLEX_EVALS: AgentEval[] = [
     name: 'Complex: Sentry error triage + fix tracker',
     category: 'complex',
     level: 4,
+    requiredAgent: 'advanced' as const,
     input: 'Pull the top errors from Sentry using the Sentry integration and build me a triage tracker. I need a canvas with a CRUD table where each error shows its title, occurrence count, last seen date, and a status field (New/Investigating/Fixed). Seed all the Sentry errors into the CRUD API. Then test the workflow by marking one of the errors as "Fixed" using canvas_trigger_action, verify with canvas_inspect that the status changed, and log the triage action to your memory.',
     maxScore: 100,
     toolMocks: SENTRY_TRIAGE_MOCKS,
     validationCriteria: [
       {
         id: 'used-sentry-issues',
-        description: 'Used mcp__sentry__list_issues to fetch errors',
+        description: 'Used SENTRY_LIST_ISSUES to fetch errors',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp__sentry__list_issues'),
+        validate: (r) => usedTool(r, 'SENTRY_LIST_ISSUES'),
       },
       {
         id: 'used-canvas-create',
@@ -485,7 +488,7 @@ export const COMPLEX_EVALS: AgentEval[] = [
 
   // =========================================================================
   // Case 6: Meeting Prep Command Center
-  // Level 5 | MCP Google Calendar + web_fetch + multi-canvas
+  // Level 5 | MCP Google Calendar + web + multi-canvas
   // =========================================================================
   {
     id: 'complex-meeting-prep',
@@ -498,17 +501,17 @@ export const COMPLEX_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-calendar',
-        description: 'Used mcp__google_calendar__list_events',
+        description: 'Used GOOGLECALENDAR_FIND_EVENT',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp__google_calendar__list_events'),
+        validate: (r) => usedTool(r, 'GOOGLECALENDAR_FIND_EVENT'),
       },
       {
         id: 'used-web-fetch',
-        description: 'Used web_fetch at least 2 times for company research',
+        description: 'Used web at least 2 times for company research',
         points: 10,
         phase: 'intention',
-        validate: (r) => toolCallCount(r, 'web_fetch') >= 2,
+        validate: (r) => toolCallCount(r, 'web') >= 2,
       },
       {
         id: 'used-canvas-create-multi',
@@ -579,6 +582,7 @@ export const COMPLEX_EVALS: AgentEval[] = [
     name: 'Complex: Stripe revenue dashboard + invoice manager',
     category: 'complex',
     level: 5,
+    requiredAgent: 'advanced' as const,
     conversationHistory: [
       { role: 'user', content: 'I need to see my Stripe revenue and manage invoices.' },
     ],
@@ -591,7 +595,7 @@ export const COMPLEX_EVALS: AgentEval[] = [
         description: 'Used at least one Stripe MCP tool',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp__stripe__get_balance') || usedTool(r, 'mcp__stripe__list_payments'),
+        validate: (r) => usedTool(r, 'STRIPE_GET_BALANCE') || usedTool(r, 'STRIPE_LIST_PAYMENTS'),
       },
       {
         id: 'used-canvas-create',
@@ -666,23 +670,24 @@ export const COMPLEX_EVALS: AgentEval[] = [
 
   // =========================================================================
   // Case 8: Multi-Repo PR Review Queue
-  // Level 5 | MCP GitHub + web_fetch + canvas + send_message
+  // Level 5 | MCP GitHub + web + canvas + send_message
   // =========================================================================
   {
     id: 'complex-pr-review-queue',
     name: 'Complex: Multi-repo PR review queue',
     category: 'complex',
     level: 5,
+    requiredAgent: 'advanced' as const,
     input: 'I manage 3 repos: frontend, backend, and infra. Use the GitHub integration to pull open PRs from each repo. Build me a unified PR review queue canvas with a CRUD table showing: repo name, PR title, author, CI status, and age. Add "Approve" and "Request Changes" mutation buttons for each PR. For any PR that\'s been open more than 2 days with no review, send a Discord alert using send_message. Seed the PRs into the CRUD API. Then test the approve action on one of the PRs and verify with canvas_inspect.',
     maxScore: 100,
     toolMocks: PR_REVIEW_MOCKS,
     validationCriteria: [
       {
         id: 'used-github-issues-multi',
-        description: 'Used mcp__github__list_issues or mcp__github__list_pull_requests at least 2 times (multi-repo)',
+        description: 'Used GITHUB_LIST_ISSUES or GITHUB_LIST_PULL_REQUESTS at least 2 times (multi-repo)',
         points: 10,
         phase: 'intention',
-        validate: (r) => (toolCallCount(r, 'mcp__github__list_issues') + toolCallCount(r, 'mcp__github__list_pull_requests')) >= 2,
+        validate: (r) => (toolCallCount(r, 'GITHUB_LIST_ISSUES') + toolCallCount(r, 'GITHUB_LIST_PULL_REQUESTS')) >= 2,
       },
       {
         id: 'used-canvas-create',

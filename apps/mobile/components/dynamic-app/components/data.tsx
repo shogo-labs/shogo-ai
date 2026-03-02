@@ -35,17 +35,23 @@ interface MetricProps {
   unit?: string
   trend?: 'up' | 'down' | 'neutral'
   trendValue?: string
+  /** Override the color sentiment: "positive" = green, "negative" = red. By default inferred from direction. */
+  trendSentiment?: 'positive' | 'negative' | 'neutral'
   description?: string
   className?: string
 }
 
-export function DynMetric({ label, value, unit, trend, trendValue, description, className }: MetricProps) {
+export function DynMetric({ label, value, unit, trend, trendValue, trendSentiment, description, className }: MetricProps) {
   const { displayValue, displayUnit } = formatMetricValue(value, unit)
   const depth = useCardDepth()
   const { bgClass, borderClass, shadow } = useCardSurfaceStyle(depth)
 
   const resolvedTrend = trend || inferTrendDirection(trendValue)
   const TrendIcon = resolvedTrend === 'up' ? TrendingUp : resolvedTrend === 'down' ? TrendingDown : Minus
+
+  // Sentiment determines the color: positive = green, negative = red
+  // By default: up = positive, down = negative. trendSentiment overrides this.
+  const sentiment = trendSentiment || (resolvedTrend === 'up' ? 'positive' : resolvedTrend === 'down' ? 'negative' : 'neutral')
 
   return (
     <Card variant="outline" className={cn('p-4 gap-2 rounded-xl flex-1', bgClass, borderClass, className)} style={shadow}>
@@ -56,8 +62,8 @@ export function DynMetric({ label, value, unit, trend, trendValue, description, 
             size={16}
             className={cn(
               'text-muted-foreground',
-              resolvedTrend === 'up' && 'text-emerald-500',
-              resolvedTrend === 'down' && 'text-red-500',
+              sentiment === 'positive' && 'text-emerald-500',
+              sentiment === 'negative' && 'text-red-500',
             )}
           />
         )}

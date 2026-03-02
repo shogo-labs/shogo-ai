@@ -66,14 +66,14 @@ export const MCP_ORCHESTRATION_EVALS: AgentEval[] = [
         description: 'Checked the calendar for meeting details',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_google_calendar_list_events'),
+        validate: (r) => usedTool(r, 'GOOGLECALENDAR_FIND_EVENT'),
       },
       {
         id: 'researched-investor',
         description: 'Researched David Kim / VC Firm Capital online',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'web_fetch'),
+        validate: (r) => usedTool(r, 'web'),
       },
       {
         id: 'queried-metrics',
@@ -159,28 +159,28 @@ export const MCP_ORCHESTRATION_EVALS: AgentEval[] = [
         description: 'Checked Sentry for error reports',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_sentry_list_issues'),
+        validate: (r) => usedTool(r, 'SENTRY_LIST_ISSUES'),
       },
       {
         id: 'checked-deploys',
         description: 'Checked GitHub for recent deploys',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_github_list_recent_deploys'),
+        validate: (r) => usedTool(r, 'GITHUB_LIST_RECENT_DEPLOYS'),
       },
       {
         id: 'checked-metrics',
         description: 'Checked Datadog for infrastructure metrics',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_datadog_query_metrics'),
+        validate: (r) => usedTool(r, 'DATADOG_QUERY_METRICS'),
       },
       {
         id: 'posted-to-slack',
         description: 'Posted findings to #incidents on Slack',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'mcp_slack_send_message'),
+        validate: (r) => usedTool(r, 'SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL'),
       },
       {
         id: 'used-canvas',
@@ -255,28 +255,28 @@ export const MCP_ORCHESTRATION_EVALS: AgentEval[] = [
         description: 'Pulled support tickets from Zendesk',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_zendesk_list_tickets'),
+        validate: (r) => usedTool(r, 'ZENDESK_LIST_TICKETS'),
       },
       {
         id: 'created-linear-issues',
         description: 'Created engineering tasks in Linear',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_linear_create_issue'),
+        validate: (r) => usedTool(r, 'LINEAR_CREATE_ISSUE'),
       },
       {
         id: 'created-multiple-issues',
         description: 'Created multiple Linear issues for different categories',
         points: 10,
         phase: 'execution',
-        validate: (r) => toolCallCount(r, 'mcp_linear_create_issue') >= 2,
+        validate: (r) => toolCallCount(r, 'LINEAR_CREATE_ISSUE') >= 2,
       },
       {
         id: 'posted-to-slack',
         description: 'Posted summary to #engineering on Slack',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'mcp_slack_send_message'),
+        validate: (r) => usedTool(r, 'SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL'),
       },
       {
         id: 'used-canvas',
@@ -350,28 +350,28 @@ export const MCP_ORCHESTRATION_EVALS: AgentEval[] = [
         description: 'Added Sarah to GitHub org',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_github_add_to_org'),
+        validate: (r) => usedTool(r, 'GITHUB_ADD_MEMBER_TO_ORG'),
       },
       {
         id: 'invited-to-slack',
         description: 'Invited Sarah to Slack',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_slack_invite_user'),
+        validate: (r) => usedTool(r, 'SLACK_INVITE_USER_TO_WORKSPACE'),
       },
       {
         id: 'created-onboarding-tasks',
         description: 'Created onboarding tasks in Linear',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_linear_create_issue'),
+        validate: (r) => usedTool(r, 'LINEAR_CREATE_ISSUE'),
       },
       {
         id: 'sent-welcome-message',
         description: 'Sent welcome message to Slack',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'mcp_slack_send_message'),
+        validate: (r) => usedTool(r, 'SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL'),
       },
       {
         id: 'welcome-mentions-sarah',
@@ -379,7 +379,7 @@ export const MCP_ORCHESTRATION_EVALS: AgentEval[] = [
         points: 5,
         phase: 'execution',
         validate: (r) => {
-          const slackCalls = r.toolCalls.filter(t => t.name === 'mcp_slack_send_message')
+          const slackCalls = r.toolCalls.filter(t => t.name === 'SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL')
           return slackCalls.some(t => JSON.stringify(t.input).toLowerCase().includes('sarah'))
         },
       },
@@ -388,7 +388,7 @@ export const MCP_ORCHESTRATION_EVALS: AgentEval[] = [
         description: 'Created multiple onboarding tasks',
         points: 5,
         phase: 'execution',
-        validate: (r) => toolCallCount(r, 'mcp_linear_create_issue') >= 2,
+        validate: (r) => toolCallCount(r, 'LINEAR_CREATE_ISSUE') >= 2,
       },
       {
         id: 'used-canvas',
@@ -403,7 +403,7 @@ export const MCP_ORCHESTRATION_EVALS: AgentEval[] = [
         points: 5,
         phase: 'execution',
         validate: (r) => {
-          const ghCall = r.toolCalls.find(t => t.name === 'mcp_github_add_to_org')
+          const ghCall = r.toolCalls.find(t => t.name === 'GITHUB_ADD_MEMBER_TO_ORG')
           if (!ghCall) return false
           const json = JSON.stringify(ghCall.input).toLowerCase()
           return json.includes('sarah') || json.includes('acme')
@@ -457,7 +457,7 @@ export const MCP_ORCHESTRATION_EVALS: AgentEval[] = [
         description: 'Pulled revenue data from Stripe',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedAnyTool(r, 'mcp_stripe_get_balance', 'mcp_stripe_list_payments'),
+        validate: (r) => usedAnyTool(r, 'STRIPE_GET_BALANCE', 'STRIPE_LIST_PAYMENTS'),
       },
       {
         id: 'queried-database',
@@ -471,7 +471,7 @@ export const MCP_ORCHESTRATION_EVALS: AgentEval[] = [
         description: 'Pulled engineering velocity from GitHub',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'mcp_github_list_pull_requests'),
+        validate: (r) => usedTool(r, 'GITHUB_LIST_PULL_REQUESTS'),
       },
       {
         id: 'used-canvas',

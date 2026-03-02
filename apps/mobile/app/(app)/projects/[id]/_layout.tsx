@@ -39,6 +39,7 @@ import {
 import type { IDomainStore } from '@shogo/domain-stores'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useBillingData } from '@shogo/shared-app/hooks'
+import { getTotalCreditsForPlan } from '../../../../lib/billing-config'
 import { useAuth } from '../../../../contexts/auth'
 import { authClient } from '../../../../lib/auth-client'
 import { API_URL, api } from '../../../../lib/api'
@@ -54,15 +55,12 @@ import { CanvasThemeProvider, CanvasThemedContainer } from '../../../../componen
 import { CanvasThemePicker } from '../../../../components/dynamic-app/CanvasThemePicker'
 import { ProjectTopBar } from '../../../../components/project/ProjectTopBar'
 import {
-  LogsPanel,
-  StatusPanel,
   ChannelsPanel,
-  SkillsPanel,
-  MCPServersPanel,
-  WorkspacePanel,
   FilesBrowserPanel,
-  AnalyticsPanel,
+  CapabilitiesPanel,
+  MonitorPanel,
 } from '../../../../components/project/panels'
+import { RefreshCw } from 'lucide-react-native'
 
 type ActiveTab = 'chat' | 'canvas'
 
@@ -104,6 +102,62 @@ export default observer(function ProjectLayout() {
 
   const billingData = useBillingData(project?.workspaceId)
 
+  const workspaceName = useMemo(() => {
+    try {
+      const ws = store?.workspaceCollection?.all?.find(
+        (w: any) => w.id === project?.workspaceId,
+      )
+      return ws?.name || ''
+    } catch {
+      return ''
+    }
+  }, [store?.workspaceCollection?.all, project?.workspaceId])
+
+  const planLabel = billingData.subscription
+    ? billingData.subscription.planId.charAt(0).toUpperCase() +
+      billingData.subscription.planId.slice(1)
+    : 'Free'
+
+  const creditsTotal = getTotalCreditsForPlan(billingData.subscription?.planId)
+  const creditsRemaining = billingData.effectiveBalance?.total ?? creditsTotal
+
+  const isStarred = useMemo(() => {
+    try {
+      return store?.starredProjectCollection?.all?.some(
+        (s: any) => s.projectId === projectId && s.userId === user?.id,
+      ) ?? false
+    } catch {
+      return false
+    }
+  }, [store?.starredProjectCollection?.all, projectId, user?.id])
+
+  const folders = useMemo(() => {
+    try {
+      return (store?.folderCollection?.all ?? []).map((f: any) => ({
+        id: f.id,
+        name: f.name || 'Untitled',
+      }))
+    } catch {
+      return []
+    }
+  }, [store?.folderCollection?.all])
+
+  const handleRenameProject = useCallback(async (newName: string) => {
+    if (!projectId) return
+    await actions.updateProject(projectId, { name: newName })
+    setProject((prev: any) => prev ? { ...prev, name: newName } : prev)
+  }, [projectId, actions])
+
+  const handleToggleStar = useCallback(async () => {
+    if (!projectId || !user?.id) return
+    await actions.toggleStarProject(projectId, user.id, project?.workspaceId)
+  }, [projectId, user?.id, project?.workspaceId, actions])
+
+  const handleMoveToFolder = useCallback(async (folderId: string | null) => {
+    if (!projectId) return
+    await actions.moveProjectToFolder(projectId, folderId)
+  }, [projectId, actions])
+
   const allProjects = useMemo(() => {
     try {
       const items = projects?.all ?? []
@@ -131,7 +185,7 @@ export default observer(function ProjectLayout() {
     credentials: Platform.OS === 'web' ? 'include' : 'omit',
     headers: nativeHeaders,
   })
-  const { surfaces, connected, dispatchAction, updateLocalData } = useDynamicAppStream(
+  const { surfaces, connected, dispatchAction, updateLocalData, reconnect } = useDynamicAppStream(
     agentUrl,
     nativeHeaders ? { headers: nativeHeaders } : undefined,
   )
@@ -409,6 +463,7 @@ export default observer(function ProjectLayout() {
           onAction={handleCanvasAction}
           onDataChange={updateLocalData}
           authHeaders={nativeHeaders}
+          onRefresh={reconnect}
         />
       </EditModeProvider>
     </CanvasThemeProvider>
@@ -432,6 +487,18 @@ export default observer(function ProjectLayout() {
             activeTab={previewTab}
             onTabChange={setPreviewTab}
             hasActiveSubscription={billingData.hasActiveSubscription}
+            workspaceName={workspaceName}
+            planLabel={planLabel}
+            creditsRemaining={creditsRemaining}
+            creditsTotal={creditsTotal}
+            ownerName={user?.name || ''}
+            projectCreatedAt={project.createdAt}
+            projectModifiedAt={project.updatedAt}
+            isStarred={isStarred}
+            onRenameProject={handleRenameProject}
+            onToggleStar={handleToggleStar}
+            onMoveToFolder={handleMoveToFolder}
+            folders={folders}
           />
           <View className="flex-1 flex-row">
             {!chatCollapsed && (
@@ -459,14 +526,10 @@ export default observer(function ProjectLayout() {
               >
                 {canvasPanel}
               </View>
-              <StatusPanel visible={previewTab === 'status'} projectId={projectId!} agentUrl={agentUrl} />
               <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
-              <WorkspacePanel visible={previewTab === 'workspace'} projectId={projectId!} agentUrl={agentUrl} />
-              <SkillsPanel visible={previewTab === 'skills'} projectId={projectId!} agentUrl={agentUrl} />
-              <MCPServersPanel visible={previewTab === 'mcp-servers'} projectId={projectId!} agentUrl={agentUrl} />
+              <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} />
               <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} />
-              <AnalyticsPanel visible={previewTab === 'analytics'} projectId={projectId!} agentUrl={agentUrl} />
-              <LogsPanel visible={previewTab === 'logs'} projectId={projectId!} agentUrl={agentUrl} />
+              <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} />
             </View>
           </View>
         </View>
@@ -479,6 +542,18 @@ export default observer(function ProjectLayout() {
             projects={allProjects}
             activeTab={previewTab}
             hasActiveSubscription={billingData.hasActiveSubscription}
+            workspaceName={workspaceName}
+            planLabel={planLabel}
+            creditsRemaining={creditsRemaining}
+            creditsTotal={creditsTotal}
+            ownerName={user?.name || ''}
+            projectCreatedAt={project.createdAt}
+            projectModifiedAt={project.updatedAt}
+            isStarred={isStarred}
+            onRenameProject={handleRenameProject}
+            onToggleStar={handleToggleStar}
+            onMoveToFolder={handleMoveToFolder}
+            folders={folders}
             onTabChange={(tabId) => {
               setPreviewTab(tabId)
               if (tabId !== 'dynamic-app') setActiveTab('canvas')
@@ -516,14 +591,10 @@ export default observer(function ProjectLayout() {
             canvasPanel
           ) : (
             <View className="flex-1 relative">
-              <StatusPanel visible={previewTab === 'status'} projectId={projectId!} agentUrl={agentUrl} />
               <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
-              <WorkspacePanel visible={previewTab === 'workspace'} projectId={projectId!} agentUrl={agentUrl} />
-              <SkillsPanel visible={previewTab === 'skills'} projectId={projectId!} agentUrl={agentUrl} />
-              <MCPServersPanel visible={previewTab === 'mcp-servers'} projectId={projectId!} agentUrl={agentUrl} />
+              <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} />
               <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} />
-              <AnalyticsPanel visible={previewTab === 'analytics'} projectId={projectId!} agentUrl={agentUrl} />
-              <LogsPanel visible={previewTab === 'logs'} projectId={projectId!} agentUrl={agentUrl} />
+              <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} />
             </View>
           )}
         </View>
@@ -543,6 +614,7 @@ function CanvasPanel({
   onAction,
   onDataChange,
   authHeaders,
+  onRefresh,
 }: {
   surface: any | null
   connected: boolean
@@ -550,6 +622,7 @@ function CanvasPanel({
   onAction: (surfaceId: string, name: string, context?: Record<string, unknown>) => void
   onDataChange?: (surfaceId: string, path: string, value: unknown) => void
   authHeaders?: () => Record<string, string>
+  onRefresh?: () => void
 }) {
   const editMode = useEditModeOptional()
   const isEditMode = editMode?.isEditMode ?? false
@@ -593,6 +666,15 @@ function CanvasPanel({
                   ? 'The canvas will appear once the agent creates a UI. Ask it to build something!'
                   : 'Connecting to the agent runtime...'}
               </Text>
+              {connected && onRefresh && (
+                <Pressable
+                  onPress={onRefresh}
+                  className="mt-4 flex-row items-center gap-2 rounded-md border border-border px-4 py-2 active:opacity-70"
+                >
+                  <RefreshCw size={14} className="text-muted-foreground" />
+                  <Text className="text-muted-foreground text-sm">Refresh</Text>
+                </Pressable>
+              )}
             </View>
           </CanvasThemedContainer>
         </View>

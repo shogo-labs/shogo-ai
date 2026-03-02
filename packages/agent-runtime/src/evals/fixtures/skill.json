@@ -11,7 +11,7 @@
       "exec",
       "read_file",
       "write_file",
-      "web_fetch",
+      "web",
       "browser",
       "memory_read",
       "memory_write",
@@ -141,7 +141,7 @@
       "expected_skill_name": "github-pr-check",
       "expected_trigger_phrases_min": 3,
       "expected_tools": [
-        "web_fetch",
+        "web",
         "memory_write"
       ],
       "optimal_tool_calls": 1,

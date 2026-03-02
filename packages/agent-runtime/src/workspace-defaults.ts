@@ -1,5 +1,11 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, writeFileSync, copyFileSync, readdirSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { getAgentTemplateById } from './agent-templates'
+import { TEMPLATE_CANVAS_STATES } from './template-canvas-states'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
 
 export const DEFAULT_WORKSPACE_FILES: Record<string, string> = {
   'AGENTS.md': `# Operating Instructions
@@ -102,4 +108,52 @@ export function resetWorkspaceDefaults(dir: string): void {
   for (const [filename, content] of Object.entries(DEFAULT_WORKSPACE_FILES)) {
     writeFileSync(join(dir, filename), content, 'utf-8')
   }
+}
+
+/**
+ * Seed workspace from a template. Writes template-specific files and
+ * copies referenced bundled skills into the workspace skills/ directory.
+ * Only writes files that don't already exist (preserves customizations).
+ * Also writes a .template marker file so the runtime knows which template was used.
+ */
+export function seedWorkspaceFromTemplate(dir: string, templateId: string, agentName?: string): boolean {
+  const template = getAgentTemplateById(templateId)
+  if (!template) return false
+
+  mkdirSync(dir, { recursive: true })
+  mkdirSync(join(dir, 'memory'), { recursive: true })
+  mkdirSync(join(dir, 'skills'), { recursive: true })
+
+  for (const [filename, rawContent] of Object.entries(template.files)) {
+    const filepath = join(dir, filename)
+    if (!existsSync(filepath)) {
+      const parentDir = dirname(filepath)
+      if (parentDir !== dir) mkdirSync(parentDir, { recursive: true })
+      const content = agentName ? rawContent.replace(/\{\{AGENT_NAME\}\}/g, agentName) : rawContent
+      writeFileSync(filepath, content, 'utf-8')
+    }
+  }
+
+  const bundledDir = join(__dirname, 'bundled-skills')
+  if (existsSync(bundledDir)) {
+    for (const skillName of template.skills) {
+      const src = join(bundledDir, `${skillName}.md`)
+      const dest = join(dir, 'skills', `${skillName}.md`)
+      if (existsSync(src) && !existsSync(dest)) {
+        copyFileSync(src, dest)
+      }
+    }
+  }
+
+  const canvasState = TEMPLATE_CANVAS_STATES[templateId]
+  if (canvasState) {
+    const canvasPath = join(dir, '.canvas-state.json')
+    if (!existsSync(canvasPath)) {
+      writeFileSync(canvasPath, JSON.stringify(canvasState, null, 2), 'utf-8')
+    }
+  }
+
+  writeFileSync(join(dir, '.template'), templateId, 'utf-8')
+
+  return true
 }

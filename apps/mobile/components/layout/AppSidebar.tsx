@@ -60,6 +60,8 @@ import {
   Settings,
   Zap,
   Check,
+  Inbox,
+  Shield,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Avatar } from '@shogo/shared-ui/primitives'
@@ -73,7 +75,9 @@ import {
   useDomainHttp,
 } from '../../contexts/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
+import { formatCredits, DAILY_CREDITS } from '../../lib/billing-config'
 import { api } from '../../lib/api'
+import { getActiveWorkspaceId, setActiveWorkspaceId } from '../../lib/workspace-store'
 
 function getInitials(name: string | null | undefined): string {
   if (!name) return '?'
@@ -83,11 +87,6 @@ function getInitials(name: string | null | undefined): string {
     .join('')
     .toUpperCase()
     .slice(0, 2)
-}
-
-function formatCredits(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
-  return n % 1 === 0 ? String(n) : n.toFixed(2)
 }
 
 function isRouteActive(pathname: string, href: string): boolean {
@@ -347,9 +346,10 @@ interface UserMenuProps {
   user: { name?: string | null; email?: string | null; image?: string | null } | null
   onSignOut: () => void
   onNavigate: (href: string) => void
+  isSuperAdmin?: boolean
 }
 
-function UserMenu({ user, onSignOut, onNavigate }: UserMenuProps) {
+function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin }: UserMenuProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [appearanceOpen, setAppearanceOpen] = useState(false)
   const { theme, setTheme } = useTheme()
@@ -424,6 +424,16 @@ function UserMenu({ user, onSignOut, onNavigate }: UserMenuProps) {
                 ))}
               </View>
             )}
+
+            {isSuperAdmin && (
+              <Pressable
+                onPress={() => { onNavigate('/(admin)'); setIsOpen(false) }}
+                className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
+              >
+                <Shield size={16} className="text-primary" />
+                <Text className="text-sm text-foreground">Super Admin</Text>
+              </Pressable>
+            )}
           </View>
 
           <View className="h-px bg-border" />
@@ -478,8 +488,8 @@ function WorkspaceSwitcher({
   const effectiveBalance = billingData.effectiveBalance
   const creditsTotal = effectiveBalance
     ? Math.max(effectiveBalance.total, 1)
-    : 55
-  const creditsRemaining = effectiveBalance?.total ?? 0
+    : DAILY_CREDITS
+  const creditsRemaining = effectiveBalance?.total ?? DAILY_CREDITS
 
   return (
     <Popover
@@ -514,8 +524,8 @@ function WorkspaceSwitcher({
     >
       <PopoverBackdrop />
       <PopoverContent className="max-w-[280px] p-0">
-        <PopoverBody>
-          {/* Current workspace header */}
+        <View className="flex-col overflow-hidden max-h-[480px]">
+          {/* ── Pinned top: workspace header + actions ── */}
           {currentWorkspace && (
             <View className="px-4 py-3">
               <View className="flex-row items-start gap-3">
@@ -534,7 +544,6 @@ function WorkspaceSwitcher({
             </View>
           )}
 
-          {/* Quick actions */}
           {currentWorkspace && (
             <View className="px-3 pb-2 flex-row gap-2">
               <Pressable
@@ -545,7 +554,7 @@ function WorkspaceSwitcher({
                 <Text className="text-xs text-foreground">Settings</Text>
               </Pressable>
               <Pressable
-                onPress={() => { onNavigate('/(app)/members'); setIsOpen(false) }}
+                onPress={() => { onNavigate('/(app)/settings?tab=people'); setIsOpen(false) }}
                 className="flex-1 flex-row items-center justify-center gap-1.5 h-8 rounded-md border border-border active:bg-muted"
               >
                 <Users size={14} className="text-muted-foreground" />
@@ -556,102 +565,110 @@ function WorkspaceSwitcher({
 
           <View className="h-px bg-border" />
 
-          {/* Credits */}
-          {currentWorkspace && (
-            <>
-              <View className="px-4 py-3 gap-2">
-                <View className="flex-row items-center justify-between">
-                  <Text className="text-sm text-muted-foreground">Credits</Text>
-                  <Text className="text-sm font-medium text-foreground">
-                    {formatCredits(creditsRemaining)} left
-                  </Text>
-                </View>
-                <View className="h-1.5 rounded-full bg-muted overflow-hidden">
-                  <View
-                    className="h-full rounded-full bg-primary"
-                    style={{ width: `${Math.min(100, (creditsRemaining / creditsTotal) * 100)}%` }}
-                  />
-                </View>
-                {effectiveBalance && (
-                  <Text className="text-xs text-muted-foreground">
-                    Daily: {formatCredits(effectiveBalance.dailyCredits)} {'\u00B7'} Monthly: {formatCredits(effectiveBalance.monthlyCredits)}
-                  </Text>
-                )}
-              </View>
-
-              <View className="h-px bg-border" />
-            </>
-          )}
-
-          {/* Upgrade CTA */}
-          {currentWorkspace && planType === 'Free' && (
-            <>
-              <View className="px-3 py-2">
-                <Pressable
-                  onPress={() => { onNavigate('/(app)/billing'); setIsOpen(false) }}
-                  className="flex-row items-center justify-center gap-2 h-9 rounded-md"
-                  style={Platform.OS === 'web'
-                    ? { backgroundImage: 'linear-gradient(to right, #3b82f6, #9333ea)' } as any
-                    : { backgroundColor: '#7c3aed' }}
-                >
-                  <Zap size={16} className="text-white" />
-                  <Text className="text-sm font-medium text-white">Upgrade to Pro</Text>
-                </Pressable>
-              </View>
-
-              <View className="h-px bg-border" />
-            </>
-          )}
-
-          {/* All workspaces */}
-          <View className="py-1">
-            <Text className="px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              All workspaces
-            </Text>
-            {workspaces.map((ws: any) => {
-              const isCurrent = ws.id === currentWorkspace?.id
-              return (
-                <Pressable
-                  key={ws.id}
-                  onPress={() => {
-                    if (!isCurrent) {
-                      onSwitchWorkspace(ws.id)
-                    }
-                    setIsOpen(false)
-                  }}
-                  className="flex-row items-center gap-2 px-4 py-2 active:bg-muted"
-                >
-                  <View className="h-6 w-6 rounded bg-primary/10 items-center justify-center">
-                    <Text className="text-[10px] font-medium text-primary">
-                      {ws.name?.[0]?.toUpperCase() ?? 'W'}
+          {/* ── Scrollable middle ── */}
+          <ScrollView
+            className="shrink"
+            showsVerticalScrollIndicator={false}
+            bounces={false}
+            overScrollMode="never"
+          >
+            {/* Credits */}
+            {currentWorkspace && (
+              <>
+                <View className="px-4 py-3 gap-2">
+                  <View className="flex-row items-center justify-between">
+                    <Text className="text-sm text-muted-foreground">Credits</Text>
+                    <Text className="text-sm font-medium text-foreground">
+                      {formatCredits(creditsRemaining)} left
                     </Text>
                   </View>
-                  <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
-                    {ws.name}
-                  </Text>
-                  {(() => {
-                    const wsPlanId = allPlans[ws.id]?.planId ?? 'free'
-                    const isPaid = wsPlanId !== 'free'
-                    const label = isPaid
-                      ? wsPlanId.charAt(0).toUpperCase() + wsPlanId.slice(1)
-                      : 'Free'
-                    return (
-                      <View className={cn('rounded px-1.5 py-0.5', isPaid ? 'bg-primary/10' : 'bg-muted')}>
-                        <Text className={cn('text-[10px]', isPaid ? 'text-primary font-medium' : 'text-muted-foreground')}>{label}</Text>
-                      </View>
-                    )
-                  })()}
-                  {isCurrent && (
-                    <Check size={16} className="text-primary" />
+                  <View className="h-1.5 rounded-full bg-muted overflow-hidden">
+                    <View
+                      className="h-full rounded-full bg-primary"
+                      style={{ width: `${Math.min(100, (creditsRemaining / creditsTotal) * 100)}%` }}
+                    />
+                  </View>
+                  {effectiveBalance && (
+                    <Text className="text-xs text-muted-foreground">
+                      Daily: {formatCredits(effectiveBalance.dailyCredits)}{resolvedPlanId !== 'free' ? ` \u00B7 Monthly: ${formatCredits(effectiveBalance.monthlyCredits)}` : ''}
+                    </Text>
                   )}
-                </Pressable>
-              )
-            })}
-          </View>
+                </View>
+
+                <View className="h-px bg-border" />
+              </>
+            )}
+
+            {/* Upgrade CTA */}
+            {currentWorkspace && planType === 'Free' && (
+              <>
+                <View className="px-3 py-2">
+                  <Pressable
+                    onPress={() => { onNavigate('/(app)/billing'); setIsOpen(false) }}
+                    className="flex-row items-center justify-center gap-2 h-9 rounded-md"
+                    style={Platform.OS === 'web'
+                      ? { backgroundImage: 'linear-gradient(to right, #3b82f6, #9333ea)' } as any
+                      : { backgroundColor: '#7c3aed' }}
+                  >
+                    <Zap size={16} className="text-white" />
+                    <Text className="text-sm font-medium text-white">Upgrade to Pro</Text>
+                  </Pressable>
+                </View>
+
+                <View className="h-px bg-border" />
+              </>
+            )}
+
+            {/* All workspaces */}
+            <View className="py-1">
+              <Text className="px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                All workspaces
+              </Text>
+              {workspaces.map((ws: any) => {
+                const isCurrent = ws.id === currentWorkspace?.id
+                return (
+                  <Pressable
+                    key={ws.id}
+                    onPress={() => {
+                      if (!isCurrent) {
+                        onSwitchWorkspace(ws.id)
+                      }
+                      setIsOpen(false)
+                    }}
+                    className="flex-row items-center gap-2 px-4 py-2 active:bg-muted"
+                  >
+                    <View className="h-6 w-6 rounded bg-primary/10 items-center justify-center">
+                      <Text className="text-[10px] font-medium text-primary">
+                        {ws.name?.[0]?.toUpperCase() ?? 'W'}
+                      </Text>
+                    </View>
+                    <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
+                      {ws.name}
+                    </Text>
+                    {(() => {
+                      const wsPlanId = allPlans[ws.id]?.planId ?? 'free'
+                      const isPaid = wsPlanId !== 'free'
+                      const label = isPaid
+                        ? wsPlanId.charAt(0).toUpperCase() + wsPlanId.slice(1)
+                        : 'Free'
+                      return (
+                        <View className={cn('rounded px-1.5 py-0.5', isPaid ? 'bg-primary/10' : 'bg-muted')}>
+                          <Text className={cn('text-[10px]', isPaid ? 'text-primary font-medium' : 'text-muted-foreground')}>{label}</Text>
+                        </View>
+                      )
+                    })()}
+                    {isCurrent && (
+                      <Check size={16} className="text-primary" />
+                    )}
+                  </Pressable>
+                )
+              })}
+            </View>
+          </ScrollView>
 
           <View className="h-px bg-border" />
 
-          {/* Create new workspace */}
+          {/* ── Pinned bottom: create workspace ── */}
           <View className="p-1">
             <Pressable
               onPress={() => {
@@ -664,7 +681,7 @@ function WorkspaceSwitcher({
               <Text className="text-sm text-foreground">Create new workspace</Text>
             </Pressable>
           </View>
-        </PopoverBody>
+        </View>
       </PopoverContent>
     </Popover>
   )
@@ -834,10 +851,41 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const actions = useDomainActions()
   const http = useDomainHttp()
 
+  const [pendingInvites, setPendingInvites] = useState<any[]>([])
+  const [inboxOpen, setInboxOpen] = useState(false)
+
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false)
+
+  useEffect(() => {
+    if (!user?.id || !http) return
+    let cancelled = false
+    api.getMe(http)
+      .then((data) => {
+        if (!cancelled && data?.ok && data.data?.role === 'super_admin') {
+          setIsSuperAdmin(true)
+        }
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [user?.id, http])
+
   useEffect(() => {
     workspaces.loadAll().catch(() => {})
     projects.loadAll().catch(() => {})
   }, [])
+
+  const loadInvites = useCallback(() => {
+    if (!http || !user?.email) return
+    http.get<{ ok: boolean; items?: any[] }>(
+      `/api/invitations?email=${encodeURIComponent(user.email)}`
+    ).then((res) => {
+      if (res.data?.ok && res.data.items) {
+        setPendingInvites(res.data.items.filter((i: any) => i.status === 'pending'))
+      }
+    }).catch(() => {})
+  }, [http, user?.email])
+
+  useEffect(() => { loadInvites() }, [loadInvites])
 
   // Detect return from Stripe checkout: verify payment, provision subscription, reload
   useEffect(() => {
@@ -858,13 +906,16 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
       const targetWs = params.get('workspace')!
       workspaces.loadAll().then(() => {
         setSelectedWorkspaceId(targetWs)
+        setActiveWorkspaceId(targetWs)
         projects.loadAll({ workspaceId: targetWs }).catch(() => {})
       })
       window.history.replaceState({}, '', '/')
     }
   }, [])
 
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(
+    () => getActiveWorkspaceId()
+  )
 
   let currentWorkspace: any
   try {
@@ -935,6 +986,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const handleSwitchWorkspace = useCallback(
     (workspaceId: string) => {
       setSelectedWorkspaceId(workspaceId)
+      setActiveWorkspaceId(workspaceId)
       projects.loadAll({ workspaceId }).catch(() => {})
     },
     [projects]
@@ -1178,15 +1230,121 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
             user={user}
             onSignOut={handleSignOut}
             onNavigate={(href) => router.push(href as any)}
+            isSuperAdmin={isSuperAdmin}
           />
 
           {!collapsed && (
-            <View className="flex-1 ml-1">
-              <Text className="text-sm text-foreground" numberOfLines={1}>{user?.name || 'User'}</Text>
-            </View>
+            <>
+              <View className="flex-1 ml-1">
+                <Text className="text-sm text-foreground" numberOfLines={1}>{user?.name || 'User'}</Text>
+              </View>
+              <Pressable
+                onPress={() => setInboxOpen(true)}
+                className="relative p-1.5 rounded-md active:bg-muted"
+              >
+                <Inbox size={18} className="text-muted-foreground" />
+                {pendingInvites.length > 0 && (
+                  <View className="absolute -top-0.5 -right-0.5 h-4 w-4 rounded-full bg-destructive items-center justify-center">
+                    <Text className="text-[9px] font-bold text-white">{pendingInvites.length}</Text>
+                  </View>
+                )}
+              </Pressable>
+            </>
           )}
         </View>
       </View>
+
+      {/* Inbox Panel — anchored to bottom-left beside sidebar */}
+      <Modal
+        visible={inboxOpen}
+        transparent
+        animationType="none"
+        onRequestClose={() => setInboxOpen(false)}
+      >
+        <Pressable
+          className="flex-1"
+          onPress={() => setInboxOpen(false)}
+        >
+          <View
+            className="absolute bottom-16 left-[220px] w-[340px] bg-card border border-border rounded-xl shadow-2xl"
+          >
+            <View className="flex-row items-center justify-between px-4 pt-4 pb-2">
+              <Text className="text-base font-semibold text-card-foreground">Inbox</Text>
+              <Pressable onPress={() => setInboxOpen(false)} className="p-1 rounded-md active:bg-muted">
+                <X size={16} className="text-muted-foreground" />
+              </Pressable>
+            </View>
+
+            {pendingInvites.length === 0 ? (
+              <View className="px-4 pb-5 pt-6 items-center gap-2">
+                <Inbox size={28} className="text-muted-foreground" />
+                <Text className="text-sm font-medium text-card-foreground">No messages or invites pending</Text>
+                <Text className="text-xs text-muted-foreground">
+                  Workspace and project invitations will appear here
+                </Text>
+              </View>
+            ) : (
+              <ScrollView className="max-h-[300px]">
+                <Text className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider px-4 pb-1.5 pt-1">
+                  Pending invitations
+                </Text>
+                {pendingInvites.map((inv: any) => (
+                  <Pressable key={inv.id} onPress={(e) => e.stopPropagation()}>
+                    <View className="px-4 py-3 border-t border-border">
+                      <View className="flex-row items-center justify-between mb-0.5">
+                        <Text className="text-sm font-medium text-card-foreground">
+                          {inv.workspace?.name || inv.workspaceName || 'Workspace'}
+                        </Text>
+                        <View className="px-1.5 py-0.5 rounded bg-muted">
+                          <Text className="text-[10px] text-muted-foreground capitalize">{inv.role}</Text>
+                        </View>
+                      </View>
+                      <Text className="text-xs text-muted-foreground mb-2.5">Invited to join this workspace</Text>
+                      <View className="flex-row gap-2">
+                        <Pressable
+                          onPress={async () => {
+                            setPendingInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
+                            try {
+                              if (http) {
+                                await http.patch(`/api/invitations/${inv.id}`, { status: 'accepted' })
+                                await http.post('/api/members', {
+                                  userId: user?.id,
+                                  workspaceId: inv.workspaceId,
+                                  role: inv.role,
+                                  isBillingAdmin: false,
+                                })
+                              }
+                            } catch {}
+                            loadInvites()
+                            workspaces.loadAll().catch(() => {})
+                          }}
+                          className="flex-1 h-8 bg-primary rounded-md items-center justify-center"
+                        >
+                          <Text className="text-xs font-medium text-primary-foreground">Accept</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={async () => {
+                            setPendingInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
+                            try {
+                              if (http) {
+                                await http.patch(`/api/invitations/${inv.id}`, { status: 'declined' })
+                              }
+                            } catch {}
+                            loadInvites()
+                          }}
+                          className="flex-1 h-8 border border-border rounded-md items-center justify-center"
+                        >
+                          <Text className="text-xs font-medium text-card-foreground">Decline</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            )}
+          </View>
+        </Pressable>
+      </Modal>
 
       {/* Modals (true dialogs that are fine as centered overlays) */}
       <CreateFolderModal

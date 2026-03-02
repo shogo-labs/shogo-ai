@@ -126,12 +126,93 @@ export const STRIPE_PRICES_STAGING: StripePriceConfig = {
 }
 
 /**
- * Production environment Stripe price IDs
- * TODO: Add production price IDs when available
+ * Production (Live) environment Stripe price IDs
  */
 export const STRIPE_PRICES_PRODUCTION: StripePriceConfig = {
-  pro: {},
-  business: {},
+  pro: {
+    "100": {
+      monthly: "price_1T6Ht1ADDMNd95GgzAqhbIJN",
+      annual: "price_1T6Ht1ADDMNd95GgQYtajed3",
+    },
+    "200": {
+      monthly: "price_1T6Ht2ADDMNd95Gg7QEN5DtS",
+      annual: "price_1T6Ht2ADDMNd95GgueD8CeDi",
+    },
+    "400": {
+      monthly: "price_1T6Ht2ADDMNd95GguxXoitCJ",
+      annual: "price_1T6Ht3ADDMNd95Gg9V2yDELB",
+    },
+    "800": {
+      monthly: "price_1T6Ht3ADDMNd95GgDjsDYHg3",
+      annual: "price_1T6Ht3ADDMNd95Gg3JL67QTu",
+    },
+    "1200": {
+      monthly: "price_1T6Ht4ADDMNd95GgbFWGI3gw",
+      annual: "price_1T6Ht4ADDMNd95GgBgF3xmxZ",
+    },
+    "2000": {
+      monthly: "price_1T6Ht5ADDMNd95GgEU7syDcX",
+      annual: "price_1T6Ht5ADDMNd95GguMXj1iTk",
+    },
+    "3000": {
+      monthly: "price_1T6Ht5ADDMNd95GgIBymcTvb",
+      annual: "price_1T6Ht5ADDMNd95GgmbsYNOms",
+    },
+    "5000": {
+      monthly: "price_1T6Ht6ADDMNd95GghPqlgO2p",
+      annual: "price_1T6Ht6ADDMNd95GgHVDrV6JC",
+    },
+    "7500": {
+      monthly: "price_1T6Ht6ADDMNd95GgFUj9A0tW",
+      annual: "price_1T6Ht7ADDMNd95GgeR5Zy0YQ",
+    },
+    "10000": {
+      monthly: "price_1T6Ht7ADDMNd95Ggq2iLjCay",
+      annual: "price_1T6Ht7ADDMNd95Gg7d7BQwlZ",
+    },
+  },
+  business: {
+    "100": {
+      monthly: "price_1T6Ht8ADDMNd95GgxYjA5in7",
+      annual: "price_1T6Ht8ADDMNd95Gg2TpR4RID",
+    },
+    "200": {
+      monthly: "price_1T6Ht8ADDMNd95GgV75HO6V4",
+      annual: "price_1T6Ht9ADDMNd95Ggs6W4yvLe",
+    },
+    "400": {
+      monthly: "price_1T6Ht9ADDMNd95GgmG6mar5e",
+      annual: "price_1T6Ht9ADDMNd95GgEW6xKleZ",
+    },
+    "800": {
+      monthly: "price_1T6Ht9ADDMNd95GgXvnlLAs0",
+      annual: "price_1T6HtAADDMNd95GgD20TQf5x",
+    },
+    "1200": {
+      monthly: "price_1T6HtAADDMNd95GgNhp3uNmx",
+      annual: "price_1T6HtAADDMNd95Ggqpz1rpdB",
+    },
+    "2000": {
+      monthly: "price_1T6HtBADDMNd95GgK8nYezfe",
+      annual: "price_1T6HtBADDMNd95Ggf0oiGJTA",
+    },
+    "3000": {
+      monthly: "price_1T6HtBADDMNd95GgzvcDk3WM",
+      annual: "price_1T6HtCADDMNd95GgeZi4Ewde",
+    },
+    "5000": {
+      monthly: "price_1T6HtCADDMNd95Ggv46uIYEL",
+      annual: "price_1T6HtCADDMNd95Gg6GbPIRLf",
+    },
+    "7500": {
+      monthly: "price_1T6HtDADDMNd95Gg0wF7h4nz",
+      annual: "price_1T6HtDADDMNd95GgM0w7xFrn",
+    },
+    "10000": {
+      monthly: "price_1T6HtDADDMNd95GgzvaI59KW",
+      annual: "price_1T6HtDADDMNd95GgBRY5GWKk",
+    },
+  },
 }
 
 /**

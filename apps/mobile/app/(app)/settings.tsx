@@ -6,9 +6,6 @@
  * - People: Workspace members
  * - Account: Profile, email, preferences
  * - Billing: Plan & credits
- * - Privacy: Visibility, security toggles
- * - Labs: Experimental features
- * - GitHub: Source control connector
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
@@ -22,6 +19,7 @@ import {
   ActivityIndicator,
   Alert as RNAlert,
   Linking,
+  Platform,
   useWindowDimensions,
 } from 'react-native'
 import { useRouter, useLocalSearchParams } from 'expo-router'
@@ -35,8 +33,6 @@ import {
   CreditCard,
   Shield,
   User,
-  FlaskConical,
-  Github,
   ExternalLink,
   Loader2,
   Trash2,
@@ -58,10 +54,25 @@ import {
   useWorkspaceCollection,
   useMemberCollection,
   useInvitationCollection,
+  useDomainHttp,
   type IDomainStore,
 } from '../../contexts/domain'
 import { useDomainActions } from '@shogo/shared-app/domain'
+import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { setActiveWorkspaceId } from '../../lib/workspace-store'
 import { useBillingData } from '@shogo/shared-app/hooks'
+import {
+  PRO_TIERS,
+  BUSINESS_TIERS,
+  PRO_FEATURES,
+  BUSINESS_FEATURES,
+  ENTERPRISE_FEATURES,
+  BASE_TIER_CREDITS,
+  getTotalCreditsForPlan as getBillingCreditsTotal,
+  formatCredits,
+} from '../../lib/billing-config'
+import { TierSelector } from '../../components/billing/TierSelector'
+import { FeatureList } from '../../components/billing/FeatureList'
 import {
   Card,
   CardContent,
@@ -77,9 +88,9 @@ import {
 
 const DOCS_URL = 'https://docs.shogo.ai'
 
-type TabId = 'workspace' | 'people' | 'account' | 'billing' | 'privacy' | 'labs' | 'github'
+type TabId = 'workspace' | 'people' | 'account' | 'billing'
 
-const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'billing', 'privacy', 'labs', 'github']
+const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'billing']
 
 interface NavItem {
   id: TabId
@@ -92,9 +103,6 @@ const MOBILE_NAV_ITEMS: NavItem[] = [
   { id: 'people', label: 'People', icon: Users },
   { id: 'account', label: 'Account', icon: User },
   { id: 'billing', label: 'Plans & Credits', icon: CreditCard },
-  { id: 'privacy', label: 'Privacy & Security', icon: Shield },
-  { id: 'labs', label: 'Labs', icon: FlaskConical },
-  { id: 'github', label: 'GitHub', icon: Github },
 ]
 
 function TabBar({
@@ -109,7 +117,7 @@ function TabBar({
       horizontal
       showsHorizontalScrollIndicator={false}
       className="border-b border-border"
-      contentContainerStyle={{ paddingHorizontal: 16 }}
+      contentContainerClassName="px-4"
     >
       {MOBILE_NAV_ITEMS.map((item) => {
         const Icon = item.icon
@@ -175,7 +183,6 @@ function SettingsSidebar({
         { id: 'workspace', label: workspaceName || 'Workspace', avatar: (workspaceName?.[0] || 'W').toUpperCase() },
         { id: 'people', label: 'People' },
         { id: 'billing', label: 'Plans & credits' },
-        { id: 'privacy', label: 'Privacy & security' },
       ],
     },
     {
@@ -185,25 +192,12 @@ function SettingsSidebar({
         { id: 'account', label: userName || 'Account' },
       ],
     },
-    {
-      id: 'labs-standalone',
-      items: [
-        { id: 'labs', label: 'Labs' },
-      ],
-    },
-    {
-      id: 'connectors',
-      label: 'Connectors',
-      items: [
-        { id: 'github', label: 'GitHub' },
-      ],
-    },
   ]
 
   return (
-    <View style={{ width: 210 }} className="pt-4 pb-3 px-3">
+    <View className="w-[210px] pt-4 pb-3 px-3">
       <Pressable
-        onPress={() => router.back()}
+        onPress={() => router.canGoBack() ? router.back() : router.replace('/(app)/projects')}
         className="flex-row items-center gap-1 px-2 py-1.5 mb-4"
       >
         <ArrowLeft size={14} className="text-muted-foreground" />
@@ -259,19 +253,22 @@ function SettingsSidebar({
 // WORKSPACE SETTINGS TAB
 // ============================================================================
 
-function WorkspaceSettingsTab() {
+const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
   const router = useRouter()
   const store = useDomain() as IDomainStore
   const actions = useDomainActions()
   const { user } = useAuth()
   const workspaces = useWorkspaceCollection()
   const members = useMemberCollection()
-
-  const currentWorkspace = workspaces.all.length > 0 ? workspaces.all[0] : null
+  const http = useDomainHttp()
+  const currentWorkspace = useActiveWorkspace()
 
   const [name, setName] = useState(currentWorkspace?.name || '')
   const [isSaving, setIsSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
+  const [isLeaveDialogOpen, setIsLeaveDialogOpen] = useState(false)
+  const [isLeaving, setIsLeaving] = useState(false)
+  const [leaveError, setLeaveError] = useState<string | null>(null)
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [deleteConfirmText, setDeleteConfirmText] = useState('')
@@ -303,6 +300,12 @@ function WorkspaceSettingsTab() {
     setName(currentWorkspace?.name || '')
     setSaveStatus('idle')
   }, [currentWorkspace?.name])
+
+  useEffect(() => {
+    if (currentWorkspace?.id) {
+      members.loadAll({ workspaceId: currentWorkspace.id }).catch(() => {})
+    }
+  }, [currentWorkspace?.id])
 
   const handleSave = async () => {
     if (!hasChanges || !isValid || !currentWorkspace?.id) return
@@ -368,7 +371,7 @@ function WorkspaceSettingsTab() {
 
           {/* Name */}
           <View className="px-6 py-5 flex-row items-start justify-between">
-            <View style={{ flex: 0.45 }} className="mr-4 pt-1">
+            <View className="flex-[0.45] mr-4 pt-1">
               <Text className="text-base font-semibold text-foreground">
                 Name
               </Text>
@@ -376,7 +379,7 @@ function WorkspaceSettingsTab() {
                 Your full workspace name, as visible to others.
               </Text>
             </View>
-            <View style={{ flex: 0.55 }}>
+            <View className="flex-[0.55]">
               <View className="flex-row gap-2 items-start">
                 <View className="flex-1">
                   <Input
@@ -432,7 +435,7 @@ function WorkspaceSettingsTab() {
 
           {/* Default monthly member credit limit */}
           <View className="px-6 py-5 flex-row items-start justify-between">
-            <View style={{ flex: 0.45 }} className="mr-4 pt-1">
+            <View className="flex-[0.45] mr-4 pt-1">
               <Text className="text-base font-semibold text-foreground">
                 Default monthly member credit limit
               </Text>
@@ -440,7 +443,7 @@ function WorkspaceSettingsTab() {
                 The default monthly credit limit for members of this workspace. Leave empty to use no limit.
               </Text>
             </View>
-            <View style={{ flex: 0.55 }}>
+            <View className="flex-[0.55]">
               <Input
                 placeholder="Enter default monthly member credit limit (optional)"
               />
@@ -458,10 +461,17 @@ function WorkspaceSettingsTab() {
                 Leave workspace
               </Text>
               <Text className="text-sm text-muted-foreground mt-0.5">
-                You cannot leave your last workspace. Your account must be a member of at least one workspace.
+                Leave this workspace. You will lose access to its projects and data.
               </Text>
             </View>
-            <Button variant="outline" size="sm" disabled>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={workspaces.all.length <= 1 || (isOwner && !workspaceMembers.some(
+                (m: any) => m.role === 'owner' && m.userId !== user?.id
+              ))}
+              onPress={() => setIsLeaveDialogOpen(true)}
+            >
               Leave workspace
             </Button>
           </View>
@@ -495,6 +505,81 @@ function WorkspaceSettingsTab() {
           )}
         </CardContent>
       </Card>
+
+      {/* Leave Workspace Confirmation Modal */}
+      <Modal
+        visible={isLeaveDialogOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => { if (!isLeaving) { setIsLeaveDialogOpen(false); setLeaveError(null) } }}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 justify-center items-center px-6"
+          onPress={() => { if (!isLeaving) { setIsLeaveDialogOpen(false); setLeaveError(null) } }}
+        >
+          <Pressable className="bg-background rounded-xl p-6 w-full max-w-sm gap-4">
+            <View className="flex-row items-center justify-between">
+              <Text className="text-lg font-semibold text-foreground">
+                Leave workspace
+              </Text>
+              <Pressable onPress={() => { if (!isLeaving) { setIsLeaveDialogOpen(false); setLeaveError(null) } }} className="p-1">
+                <X size={20} className="text-muted-foreground" />
+              </Pressable>
+            </View>
+            <Text className="text-sm text-muted-foreground">
+              Are you sure you want to leave "{currentWorkspace?.name}"? You will lose access to all projects and data in this workspace.
+            </Text>
+            {leaveError && (
+              <Text className="text-sm text-destructive">{leaveError}</Text>
+            )}
+            <View className="flex-row gap-2 justify-end">
+              <Button
+                variant="outline"
+                size="sm"
+                onPress={() => { setIsLeaveDialogOpen(false); setLeaveError(null) }}
+                disabled={isLeaving}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={isLeaving}
+                onPress={async () => {
+                  setIsLeaving(true)
+                  setLeaveError(null)
+                  try {
+                    const wsId = currentWorkspace?.id
+                    if (!wsId) {
+                      setLeaveError('Missing workspace information.')
+                      setIsLeaving(false)
+                      return
+                    }
+                    await http.post(`/api/workspaces/${wsId}/leave`)
+                    await workspaces.loadAll()
+                    const remaining = workspaces.all
+                    if (remaining.length > 0) {
+                      setActiveWorkspaceId((remaining[0] as any).id)
+                    }
+                    setIsLeaveDialogOpen(false)
+                    setLeaveError(null)
+                    router.replace('/(app)/projects')
+                  } catch (error: any) {
+                    console.error('[Settings] Failed to leave workspace:', error)
+                    const msg = error?.details?.error?.message
+                      || error?.message
+                      || 'Failed to leave workspace.'
+                    setLeaveError(msg)
+                    setIsLeaving(false)
+                  }
+                }}
+              >
+                {isLeaving ? 'Leaving...' : 'Leave workspace'}
+              </Button>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* Delete Workspace Confirmation Modal */}
       <Modal
@@ -554,26 +639,26 @@ function WorkspaceSettingsTab() {
       </Modal>
     </View>
   )
-}
+})
 
 // ============================================================================
 // ACCOUNT TAB
 // ============================================================================
 
+const CHAT_SUGGESTIONS_KEY = 'shogo:chat-suggestions'
+
 function AccountTab() {
-  const { user, signOut } = useAuth()
+  const { user, signOut, updateUser } = useAuth()
+  const http = useDomainHttp()
   const router = useRouter()
 
-  const PROFILE_KEY = 'shogo:account-profile'
-  const PREFS_KEY = 'shogo:account-prefs'
-
   const [name, setName] = useState(user?.name || '')
-  const [description, setDescription] = useState('')
-  const [location, setLocation] = useState('')
-  const [link, setLink] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
   const [chatSuggestions, setChatSuggestions] = useState(true)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [deleteConfirmText, setDeleteConfirmText] = useState('')
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
 
   const originalName = user?.name || ''
   const hasNameChanges = name !== originalName
@@ -583,12 +668,27 @@ function AccountTab() {
     setName(user?.name || '')
   }, [user?.name])
 
+  useEffect(() => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      const stored = window.localStorage.getItem(CHAT_SUGGESTIONS_KEY)
+      if (stored !== null) setChatSuggestions(stored !== 'false')
+    }
+  }, [])
+
+  const handleToggleChatSuggestions = useCallback((value: boolean) => {
+    setChatSuggestions(value)
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      window.localStorage.setItem(CHAT_SUGGESTIONS_KEY, String(value))
+    }
+  }, [])
+
   const handleSave = async () => {
     if (!hasChanges || isSaving || !user?.id) return
     if (hasNameChanges && !name.trim()) return
     setIsSaving(true)
     setSaveStatus('idle')
     try {
+      await updateUser({ name: name.trim() })
       setSaveStatus('saved')
       setTimeout(() => setSaveStatus('idle'), 2000)
     } catch (error) {
@@ -602,6 +702,43 @@ function AccountTab() {
   const handleSignOut = async () => {
     await signOut()
     router.replace('/(auth)/sign-in')
+  }
+
+  const handleDeleteAccount = async () => {
+    if (deleteConfirmText !== 'DELETE' || !user?.id || !http) return
+    setIsDeleting(true)
+    try {
+      await http.delete(`/api/users/${user.id}`)
+      await signOut()
+      router.replace('/(auth)/sign-in')
+    } catch (error) {
+      console.error('Failed to delete account:', error)
+      if (Platform.OS === 'web') {
+        window.alert('Failed to delete account. Please try again.')
+      } else {
+        RNAlert.alert('Error', 'Failed to delete account. Please try again.')
+      }
+    } finally {
+      setIsDeleting(false)
+      setIsDeleteDialogOpen(false)
+      setDeleteConfirmText('')
+    }
+  }
+
+  const handleLinkCompany = () => {
+    if (Platform.OS === 'web') {
+      window.alert('SSO linking is coming soon.')
+    } else {
+      RNAlert.alert('Coming Soon', 'SSO linking is coming soon.')
+    }
+  }
+
+  const handleVerify2FA = () => {
+    if (Platform.OS === 'web') {
+      window.alert('Two-factor authentication is coming soon.')
+    } else {
+      RNAlert.alert('Coming Soon', 'Two-factor authentication is coming soon.')
+    }
   }
 
   return (
@@ -755,7 +892,7 @@ function AccountTab() {
             </View>
             <Switch
               checked={chatSuggestions}
-              onCheckedChange={setChatSuggestions}
+              onCheckedChange={handleToggleChatSuggestions}
             />
           </View>
         </CardContent>
@@ -802,7 +939,7 @@ function AccountTab() {
                     Use your organization's single sign-on
                   </Text>
                 </View>
-                <Button variant="outline" size="sm">
+                <Button variant="outline" size="sm" onPress={handleLinkCompany}>
                   Link
                 </Button>
               </View>
@@ -831,7 +968,7 @@ function AccountTab() {
                   settings.
                 </Text>
               </View>
-              <Button variant="outline" size="sm">
+              <Button variant="outline" size="sm" onPress={handleVerify2FA}>
                 Verify
               </Button>
             </View>
@@ -840,18 +977,61 @@ function AccountTab() {
           <Separator />
 
           {/* Delete account */}
-          <View className="px-6 py-5 flex-row items-center justify-between">
-            <View className="flex-1 mr-4">
-              <Text className="text-sm font-semibold text-foreground">
-                Delete account
-              </Text>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                Permanently delete your Shogo account. This cannot be undone.
-              </Text>
+          <View className="px-6 py-5">
+            <View className="flex-row items-center justify-between">
+              <View className="flex-1 mr-4">
+                <Text className="text-sm font-semibold text-foreground">
+                  Delete account
+                </Text>
+                <Text className="text-sm text-muted-foreground mt-0.5">
+                  Permanently delete your Shogo account. This cannot be undone.
+                </Text>
+              </View>
+              <Button
+                variant="destructive"
+                size="sm"
+                onPress={() => setIsDeleteDialogOpen(true)}
+              >
+                Delete
+              </Button>
             </View>
-            <Button variant="destructive" size="sm">
-              Delete
-            </Button>
+            {isDeleteDialogOpen && (
+              <View className="mt-4 p-4 border border-destructive/30 rounded-lg bg-destructive/5">
+                <Text className="text-sm text-foreground font-medium">
+                  Are you sure? This action is irreversible.
+                </Text>
+                <Text className="text-sm text-muted-foreground mt-1">
+                  Type "DELETE" to confirm.
+                </Text>
+                <Input
+                  className="mt-2"
+                  value={deleteConfirmText}
+                  onChangeText={setDeleteConfirmText}
+                  placeholder='Type "DELETE"'
+                />
+                <View className="flex-row gap-2 mt-3">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onPress={() => {
+                      setIsDeleteDialogOpen(false)
+                      setDeleteConfirmText('')
+                    }}
+                    disabled={isDeleting}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onPress={handleDeleteAccount}
+                    disabled={deleteConfirmText !== 'DELETE' || isDeleting}
+                  >
+                    {isDeleting ? 'Deleting...' : 'Permanently delete'}
+                  </Button>
+                </View>
+              </View>
+            )}
           </View>
         </CardContent>
       </Card>
@@ -891,342 +1071,295 @@ function AccountTab() {
 }
 
 // ============================================================================
-// BILLING TAB
+// BILLING TAB — Lovable-style layout
 // ============================================================================
 
-const PLAN_CREDITS: Record<string, number> = {
-  free: 0,
-  starter: 50,
-  pro: 200,
-  team: 500,
-  enterprise: 2000,
-}
-
-const DAILY_CREDITS: Record<string, number> = {
-  free: 5,
-  starter: 10,
-  pro: 25,
-  team: 50,
-  enterprise: 100,
-}
-
-function getTotalCreditsForPlan(
-  planId: string | undefined,
-  planCredits: Record<string, number>,
-  dailyCredits: Record<string, number>
-): number {
-  if (!planId) return (planCredits['free'] || 0) + (dailyCredits['free'] || 0)
-  return (planCredits[planId] || 0) + (dailyCredits[planId] || 0)
-}
-
-function formatCredits(n: number): string {
-  return n % 1 === 0 ? n.toString() : n.toFixed(1)
-}
-
 function BillingTab() {
-  const workspaces = useWorkspaceCollection()
-  const currentWorkspace = workspaces.all.length > 0 ? workspaces.all[0] : null
+  const { user } = useAuth()
+  const actions = useDomainActions()
+  const currentWorkspace = useActiveWorkspace()
 
   const {
     subscription,
     effectiveBalance,
-    hasActiveSubscription,
     isLoading: isBillingLoading,
   } = useBillingData(currentWorkspace?.id)
 
-  const planType = subscription
+  const [selectedProTier, setSelectedProTier] = useState(0)
+  const [selectedBusinessTier, setSelectedBusinessTier] = useState(0)
+  const [proAnnual, setProAnnual] = useState(false)
+  const [businessAnnual, setBusinessAnnual] = useState(false)
+  const [isCheckoutLoading, setIsCheckoutLoading] = useState<string | null>(null)
+  const [isPortalLoading, setIsPortalLoading] = useState(false)
+
+  const planLabel = subscription
     ? subscription.planId.charAt(0).toUpperCase() + subscription.planId.slice(1)
     : 'Free'
 
-  const creditsTotal = getTotalCreditsForPlan(
-    subscription?.planId,
-    PLAN_CREDITS,
-    DAILY_CREDITS
-  )
+  const creditsTotal = getBillingCreditsTotal(subscription?.planId)
   const creditsRemaining = effectiveBalance?.total ?? creditsTotal
+
+  const proTier = PRO_TIERS[selectedProTier]
+  const businessTier = BUSINESS_TIERS[selectedBusinessTier]
+
+  const handleCheckout = useCallback(
+    async (planType: 'pro' | 'business', credits: number, annual: boolean) => {
+      if (!currentWorkspace?.id) return
+      setIsCheckoutLoading(planType)
+      try {
+        const planId = credits === BASE_TIER_CREDITS ? planType : `${planType}_${credits}`
+        const data = await actions.createCheckoutSession({
+          workspaceId: currentWorkspace.id,
+          planId,
+          billingInterval: annual ? 'annual' : 'monthly',
+          userEmail: user?.email,
+        })
+        if (data.url) {
+          if (Platform.OS === 'web') {
+            window.location.href = data.url
+          } else {
+            Linking.openURL(data.url)
+          }
+        }
+      } catch (e) {
+        console.warn('Checkout failed:', e)
+      } finally {
+        setIsCheckoutLoading(null)
+      }
+    },
+    [actions, currentWorkspace?.id, user?.email],
+  )
+
+  const handleManageSubscription = useCallback(async () => {
+    if (!currentWorkspace?.id) return
+    setIsPortalLoading(true)
+    try {
+      const returnUrl = Platform.OS === 'web' ? window.location.href : undefined
+      const data = await actions.createPortalSession(currentWorkspace.id, returnUrl)
+      if (data.url) {
+        if (Platform.OS === 'web') {
+          window.location.href = data.url
+        } else {
+          Linking.openURL(data.url)
+        }
+      }
+    } catch (e) {
+      console.warn('Portal session failed:', e)
+    } finally {
+      setIsPortalLoading(false)
+    }
+  }, [actions, currentWorkspace?.id])
 
   if (isBillingLoading) {
     return (
       <View className="items-center justify-center py-20">
         <ActivityIndicator />
-        <Text className="mt-2 text-sm text-muted-foreground">
-          Loading billing...
-        </Text>
+        <Text className="mt-2 text-sm text-muted-foreground">Loading billing...</Text>
       </View>
     )
   }
 
   return (
     <View className="gap-8">
+      {/* Header */}
       <View>
-        <Text className="text-xl font-semibold text-foreground">
-          Plans & credits
-        </Text>
+        <Text className="text-xl font-semibold text-foreground">Plans & credits</Text>
         <Text className="text-sm text-muted-foreground mt-1">
           Manage your subscription plan and credit balance.
         </Text>
       </View>
 
-      {/* Current plan */}
-      <Card>
-        <CardContent className="p-5">
-          <View className="flex-row items-center gap-3">
-            <View className="h-10 w-10 rounded-lg bg-primary/10 items-center justify-center">
-              <Sparkles size={20} className="text-primary" />
+      {/* Current plan + Credits remaining — side-by-side on desktop */}
+      <View className="gap-4 md:flex-row">
+        <Card className="md:flex-1">
+          <CardContent className="p-5 gap-4">
+            <View className="flex-row items-center gap-3">
+              <View className="h-10 w-10 rounded-lg bg-primary/10 items-center justify-center">
+                <Sparkles size={20} className="text-primary" />
+              </View>
+              <View className="flex-1">
+                <Text className="text-sm font-semibold text-foreground">
+                  You're on {planLabel} Plan
+                </Text>
+                <Text className="text-sm text-muted-foreground">Upgrade anytime</Text>
+              </View>
             </View>
-            <View className="flex-1">
-              <Text className="text-sm font-semibold text-foreground">
-                You're on {planType} Plan
-              </Text>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                {subscription ? 'Manage your subscription' : 'Upgrade anytime'}
-              </Text>
-            </View>
-          </View>
-        </CardContent>
-      </Card>
+            <Button
+              variant="outline"
+              size="sm"
+              onPress={handleManageSubscription}
+              disabled={isPortalLoading}
+              className="self-start"
+            >
+              {isPortalLoading ? 'Loading...' : 'Manage'}
+            </Button>
+          </CardContent>
+        </Card>
 
-      {/* Credits */}
-      <Card>
-        <CardContent className="p-5 gap-3">
-          <View className="flex-row justify-between">
-            <Text className="text-sm text-muted-foreground">
-              Credits remaining
-            </Text>
-            <Text className="text-sm font-medium text-foreground">
-              {formatCredits(creditsRemaining)} of {creditsTotal}
-            </Text>
-          </View>
-          <Progress
-            value={(creditsRemaining / Math.max(creditsTotal, 1)) * 100}
-            className="h-2"
-          />
-          {effectiveBalance && (
-            <Text className="text-xs text-muted-foreground">
-              Daily: {formatCredits(effectiveBalance.dailyCredits)} · Monthly:{' '}
-              {formatCredits(effectiveBalance.monthlyCredits)}
-            </Text>
-          )}
-          <View className="gap-1">
-            <View className="flex-row items-center gap-2">
-              {subscription ? (
-                <>
-                  <Check size={12} className="text-foreground" />
-                  <Text className="text-xs text-muted-foreground">
-                    Credits rollover to next month
-                  </Text>
-                </>
-              ) : (
+        <Card className="md:flex-1">
+          <CardContent className="p-5 gap-3">
+            <View className="flex-row justify-between items-center">
+              <Text className="text-sm text-muted-foreground">Credits remaining</Text>
+              <Text className="text-sm font-medium text-foreground">
+                {formatCredits(creditsRemaining)} of {creditsTotal}
+              </Text>
+            </View>
+            <Progress
+              value={(creditsRemaining / Math.max(creditsTotal, 1)) * 100}
+              className="h-2"
+            />
+            <View className="gap-1.5">
+              <View className="flex-row items-center gap-2">
+                <View className="h-2 w-2 rounded-full bg-primary" />
+                <Text className="text-xs text-muted-foreground">Daily credits used first</Text>
+              </View>
+              <View className="flex-row items-center gap-2">
+                {subscription ? (
+                  <>
+                    <Check size={12} className="text-foreground" />
+                    <Text className="text-xs text-muted-foreground">Credits will rollover</Text>
+                  </>
+                ) : (
+                  <>
+                    <X size={12} className="text-muted-foreground" />
+                    <Text className="text-xs text-muted-foreground">No credits will rollover</Text>
+                  </>
+                )}
+              </View>
+              <View className="flex-row items-center gap-2">
+                <Check size={12} className="text-foreground" />
                 <Text className="text-xs text-muted-foreground">
-                  × No credits will rollover
+                  Daily credits reset at midnight UTC
                 </Text>
-              )}
+              </View>
             </View>
-            <View className="flex-row items-center gap-2">
-              <Check size={12} className="text-foreground" />
-              <Text className="text-xs text-muted-foreground">
-                Daily credits reset at midnight UTC
-              </Text>
-            </View>
-          </View>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      </View>
 
-      {/* Plan cards */}
-      {(['starter', 'pro', 'team'] as const).map((planId) => {
-        const isCurrentPlan = subscription?.planId === planId
-        return (
-          <Card
-            key={planId}
-            className={isCurrentPlan ? 'border-primary' : undefined}
-          >
-            <CardContent className="p-5 gap-2">
-              <View className="flex-row items-center justify-between">
-                <Text className="text-base font-semibold text-foreground capitalize">
-                  {planId}
+      {/* Plan cards — 3 columns on desktop, stacked on mobile */}
+      <View className="gap-6 md:flex-row md:items-start">
+        {/* Pro */}
+        <Card className="md:flex-1 md:w-0">
+          <CardContent className="p-5 gap-4">
+            <Text className="text-lg font-semibold text-foreground">Pro</Text>
+            <Text className="text-sm text-muted-foreground">
+              Designed for fast-moving teams building together in real time.
+            </Text>
+            <View>
+              <View className="flex-row items-baseline gap-1">
+                <Text className="text-3xl font-bold text-foreground">
+                  ${proAnnual ? Math.round(proTier.annual / 12) : proTier.monthly}
                 </Text>
-                {isCurrentPlan && <Badge>Current</Badge>}
+                <Text className="text-sm text-muted-foreground">per month</Text>
               </View>
               <Text className="text-sm text-muted-foreground">
-                {PLAN_CREDITS[planId]} monthly + {DAILY_CREDITS[planId]} daily
-                credits
-              </Text>
-              {!isCurrentPlan && (
-                <Button variant="outline" size="sm" className="mt-2">
-                  {subscription ? 'Switch Plan' : 'Upgrade'}
-                </Button>
-              )}
-            </CardContent>
-          </Card>
-        )
-      })}
-    </View>
-  )
-}
-
-// ============================================================================
-// PRIVACY & SECURITY TAB
-// ============================================================================
-
-function PrivacyTab() {
-  const [mcpServers, setMcpServers] = useState(false)
-  const [dataOptOut, setDataOptOut] = useState(false)
-  const [restrictInvites, setRestrictInvites] = useState(false)
-
-  return (
-    <View className="gap-8">
-      <View>
-        <Text className="text-xl font-semibold text-foreground">
-          Privacy & security
-        </Text>
-        <Text className="text-sm text-muted-foreground mt-1">
-          Control who can access your workspace and how your data is handled.
-        </Text>
-      </View>
-
-      <Card>
-        <CardContent className="p-0">
-          <View className="px-6 py-5 flex-row items-center justify-between">
-            <View className="flex-1 mr-4">
-              <View className="flex-row items-center gap-2">
-                <Text className="text-sm font-semibold text-foreground">
-                  MCP servers access
-                </Text>
-                <Badge className="bg-purple-500/10">
-                  <Text className="text-[10px] text-purple-500">Business</Text>
-                </Badge>
-              </View>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                Enable or disable MCP servers for all workspace members.
+                shared across unlimited users
               </Text>
             </View>
-            <Switch checked={mcpServers} onCheckedChange={setMcpServers} />
-          </View>
-
-          <Separator />
-
-          <View className="px-6 py-5 flex-row items-center justify-between">
-            <View className="flex-1 mr-4">
-              <View className="flex-row items-center gap-2">
-                <Text className="text-sm font-semibold text-foreground">
-                  Data collection opt out
-                </Text>
-                <Badge className="bg-purple-500/10">
-                  <Text className="text-[10px] text-purple-500">Business</Text>
-                </Badge>
-              </View>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                Opt out of data collection for this workspace.
-              </Text>
+            <View className="flex-row items-center gap-2">
+              <Switch checked={proAnnual} onCheckedChange={setProAnnual} />
+              <Text className="text-sm text-foreground">Annual</Text>
             </View>
-            <Switch checked={dataOptOut} onCheckedChange={setDataOptOut} />
-          </View>
-
-          <Separator />
-
-          <View className="px-6 py-5 flex-row items-center justify-between">
-            <View className="flex-1 mr-4">
-              <View className="flex-row items-center gap-2">
-                <Text className="text-sm font-semibold text-foreground">
-                  Restrict workspace invitations
-                </Text>
-                <Badge className="bg-amber-500/10">
-                  <Text className="text-[10px] text-amber-500">
-                    Enterprise
-                  </Text>
-                </Badge>
-              </View>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                When enabled, only admins and owners can invite members.
-              </Text>
-            </View>
-            <Switch
-              checked={restrictInvites}
-              onCheckedChange={setRestrictInvites}
-            />
-          </View>
-        </CardContent>
-      </Card>
-    </View>
-  )
-}
-
-// ============================================================================
-// LABS TAB
-// ============================================================================
-
-function LabsTab() {
-  const [githubBranchSwitching, setGithubBranchSwitching] = useState(false)
-
-  return (
-    <View className="gap-8">
-      <View>
-        <Text className="text-xl font-semibold text-foreground">Labs</Text>
-        <Text className="text-sm text-muted-foreground mt-1">
-          These are experimental features that might be modified or removed.
-        </Text>
-      </View>
-
-      <Card>
-        <CardContent className="p-0">
-          <View className="px-6 py-5 flex-row items-center justify-between">
-            <View className="flex-1 mr-4">
-              <Text className="text-sm font-semibold text-foreground">
-                GitHub branch switching
-              </Text>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                Select the branch to make edits to in your GitHub repository.
-              </Text>
-            </View>
-            <Switch
-              checked={githubBranchSwitching}
-              onCheckedChange={setGithubBranchSwitching}
-            />
-          </View>
-        </CardContent>
-      </Card>
-    </View>
-  )
-}
-
-// ============================================================================
-// GITHUB TAB
-// ============================================================================
-
-function GitHubTab() {
-  return (
-    <View className="gap-8">
-      <View>
-        <Text className="text-xl font-semibold text-foreground">GitHub</Text>
-        <Text className="text-sm text-muted-foreground mt-1">
-          Sync your project 2-way with GitHub to collaborate at source.
-        </Text>
-      </View>
-
-      <Card>
-        <CardContent className="p-0">
-          <View className="px-6 py-5 flex-row items-center justify-between">
-            <View className="flex-1 mr-4">
-              <View className="flex-row items-center gap-2">
-                <Text className="text-sm font-semibold text-foreground">
-                  Connected account
-                </Text>
-                <Badge variant="secondary">
-                  <Text className="text-[10px] text-secondary-foreground">
-                    admin
-                  </Text>
-                </Badge>
-              </View>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                Add your GitHub account to manage connected organizations.
-              </Text>
-            </View>
-            <Button variant="outline" size="sm">
-              Connect
+            <Button
+              onPress={() => handleCheckout('pro', proTier.credits, proAnnual)}
+              disabled={isCheckoutLoading !== null || subscription?.planId?.startsWith('pro')}
+            >
+              {isCheckoutLoading === 'pro'
+                ? 'Loading...'
+                : subscription?.planId?.startsWith('pro')
+                  ? 'Current Plan'
+                  : 'Upgrade'}
             </Button>
-          </View>
-        </CardContent>
-      </Card>
+            <TierSelector
+              tiers={PRO_TIERS}
+              selectedIndex={selectedProTier}
+              onSelect={setSelectedProTier}
+              suffix=" / month"
+            />
+            <View className="gap-2">
+              <Text className="text-sm text-muted-foreground">
+                All features in Free, plus:
+              </Text>
+              <FeatureList features={PRO_FEATURES} />
+            </View>
+          </CardContent>
+        </Card>
+
+        {/* Business */}
+        <Card className="md:flex-1 md:w-0">
+          <CardContent className="p-5 gap-4">
+            <Text className="text-lg font-semibold text-foreground">Business</Text>
+            <Text className="text-sm text-muted-foreground">
+              Advanced controls and power features for growing departments
+            </Text>
+            <View>
+              <View className="flex-row items-baseline gap-1">
+                <Text className="text-3xl font-bold text-foreground">
+                  ${businessAnnual ? Math.round(businessTier.annual / 12) : businessTier.monthly}
+                </Text>
+                <Text className="text-sm text-muted-foreground">per month</Text>
+              </View>
+              <Text className="text-sm text-muted-foreground">
+                shared across unlimited users
+              </Text>
+            </View>
+            <View className="flex-row items-center gap-2">
+              <Switch checked={businessAnnual} onCheckedChange={setBusinessAnnual} />
+              <Text className="text-sm text-foreground">Annual</Text>
+            </View>
+            <Button
+              variant="outline"
+              onPress={() => handleCheckout('business', businessTier.credits, businessAnnual)}
+              disabled={isCheckoutLoading !== null || subscription?.planId?.startsWith('business')}
+            >
+              {isCheckoutLoading === 'business'
+                ? 'Loading...'
+                : subscription?.planId?.startsWith('business')
+                  ? 'Current Plan'
+                  : 'Upgrade'}
+            </Button>
+            <TierSelector
+              tiers={BUSINESS_TIERS}
+              selectedIndex={selectedBusinessTier}
+              onSelect={setSelectedBusinessTier}
+              suffix=" / month"
+            />
+            <View className="gap-2">
+              <Text className="text-sm text-muted-foreground">
+                All features in Pro, plus:
+              </Text>
+              <FeatureList features={BUSINESS_FEATURES} />
+            </View>
+          </CardContent>
+        </Card>
+
+        {/* Enterprise */}
+        <Card className="md:flex-1 md:w-0">
+          <CardContent className="p-5 gap-4">
+            <Text className="text-lg font-semibold text-foreground">Enterprise</Text>
+            <Text className="text-sm text-muted-foreground">
+              Built for large orgs needing flexibility, scale, and governance.
+            </Text>
+            <View>
+              <Text className="text-3xl font-bold text-foreground">Custom</Text>
+              <Text className="text-sm text-muted-foreground">Flexible plans</Text>
+            </View>
+            <Button
+              variant="outline"
+              onPress={() => Linking.openURL('mailto:sales@shogo.ai')}
+            >
+              Book a demo
+            </Button>
+            <View className="gap-2">
+              <Text className="text-sm text-muted-foreground">
+                All features in Business, plus:
+              </Text>
+              <FeatureList features={ENTERPRISE_FEATURES} />
+            </View>
+          </CardContent>
+        </Card>
+      </View>
     </View>
   )
 }
@@ -1254,13 +1387,14 @@ const ROLE_COLORS: Record<string, string> = {
 type SortField = 'name' | 'role' | 'joinedDate' | 'usage' | 'totalUsage' | 'creditLimit'
 type SortDir = 'asc' | 'desc'
 
-function PeopleTab() {
+const PeopleTab = observer(function PeopleTab() {
   const { user } = useAuth()
   const workspaces = useWorkspaceCollection()
   const members = useMemberCollection()
   const invitations = useInvitationCollection()
   const actions = useDomainActions()
-  const currentWorkspace = workspaces.all.length > 0 ? workspaces.all[0] : null
+  const http = useDomainHttp()
+  const currentWorkspace = useActiveWorkspace()
 
   const [subTab, setSubTab] = useState<PeopleSubTab>('all')
   const [search, setSearch] = useState('')
@@ -1270,44 +1404,96 @@ function PeopleTab() {
   const [sortField, setSortField] = useState<SortField>('name')
   const [sortDir, setSortDir] = useState<SortDir>('asc')
   const [isLoading, setIsLoading] = useState(true)
+  const [menuState, setMenuState] = useState<{ memberId: string; view: 'actions' | 'roles' } | null>(null)
+  const [userMap, setUserMap] = useState<Record<string, { name: string; email: string }>>({})
+  const [receivedInvites, setReceivedInvites] = useState<any[]>([])
 
-  useEffect(() => {
-    if (!currentWorkspace?.id) return
-    let cancelled = false
-    const load = async () => {
-      setIsLoading(true)
-      try {
-        await members.loadAll({ workspaceId: currentWorkspace.id })
-        await invitations.loadAll({ workspaceId: currentWorkspace.id })
-      } catch {}
-      if (!cancelled) setIsLoading(false)
+  const [resolvedWs, setResolvedWs] = useState<{ id: string; name: string } | null>(null)
+
+  const loadPeopleData = useCallback(async () => {
+    if (!currentWorkspace?.id) {
+      if (workspaces.all.length === 0) {
+        try { await workspaces.loadAll({}) } catch {}
+      }
+      setIsLoading(false)
+      return
     }
-    load()
-    return () => { cancelled = true }
-  }, [currentWorkspace?.id])
+    setIsLoading(true)
+    try {
+      const ws = currentWorkspace
+      setResolvedWs({ id: ws.id, name: ws.name || 'Workspace' })
+
+      await members.loadAll({ workspaceId: ws.id })
+      await invitations.loadAll({ workspaceId: ws.id })
+
+      if (http) {
+        try {
+          const res = await http.get<{ ok: boolean; items?: any[] }>(
+            `/api/members?workspaceId=${ws.id}`
+          )
+          if (res.data?.ok && res.data.items) {
+            const map: Record<string, { name: string; email: string }> = {}
+            for (const item of res.data.items) {
+              if (item.user && typeof item.user === 'object' && item.user.id) {
+                map[item.user.id] = {
+                  name: item.user.name || '',
+                  email: item.user.email || '',
+                }
+              }
+            }
+            setUserMap(map)
+          }
+        } catch {}
+
+        if (user?.email) {
+          try {
+            const invRes = await http.get<{ ok: boolean; items?: any[] }>(
+              `/api/invitations?email=${encodeURIComponent(user.email)}`
+            )
+            if (invRes.data?.ok && invRes.data.items) {
+              setReceivedInvites(
+                invRes.data.items.filter((i: any) => i.status === 'pending')
+              )
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+    setIsLoading(false)
+  }, [workspaces, members, invitations, http, currentWorkspace?.id, user?.email])
+
+  useEffect(() => { loadPeopleData() }, [loadPeopleData])
+
+  const ROLE_PRIORITY: Record<string, number> = { owner: 0, admin: 1, member: 2, viewer: 3 }
 
   const workspaceMembers = useMemo(() => {
     if (!currentWorkspace?.id) return []
-    return members.all.filter(
-      (m: any) => m.workspaceId === currentWorkspace.id && !m.projectId
-    )
-  }, [members.all, currentWorkspace?.id])
-
-  const pendingInvitations = useMemo(() => {
-    if (!currentWorkspace?.id) return []
-    return invitations.all.filter(
-      (i: any) => i.workspaceId === currentWorkspace.id && i.status === 'pending'
-    )
-  }, [invitations.all, currentWorkspace?.id])
+    const raw = members.all.filter((m: any) => m.workspaceId === currentWorkspace.id && !m.projectId)
+    const byUser = new Map<string, any>()
+    for (const m of raw) {
+      const existing = byUser.get(m.userId)
+      if (!existing || (ROLE_PRIORITY[m.role] ?? 9) < (ROLE_PRIORITY[existing.role] ?? 9)) {
+        byUser.set(m.userId, m)
+      }
+    }
+    return Array.from(byUser.values())
+  }, [currentWorkspace?.id, members.all])
+  const sentInvitations = currentWorkspace?.id
+    ? invitations.all.filter((i: any) => i.workspaceId === currentWorkspace.id && i.status !== 'cancelled')
+    : []
 
   const filteredMembers = useMemo(() => {
     let result = [...workspaceMembers]
     if (search.trim()) {
       const q = search.toLowerCase()
-      result = result.filter((m: any) =>
-        (m.userId || '').toLowerCase().includes(q) ||
-        (m.email || '').toLowerCase().includes(q)
-      )
+      result = result.filter((m: any) => {
+        const u = userMap[m.userId]
+        return (
+          (u?.name || '').toLowerCase().includes(q) ||
+          (u?.email || '').toLowerCase().includes(q) ||
+          (m.userId || '').toLowerCase().includes(q)
+        )
+      })
     }
     if (roleFilter !== 'all') {
       result = result.filter((m: any) => m.role === roleFilter)
@@ -1331,12 +1517,43 @@ function PeopleTab() {
     }
   }
 
-  const handleCancelInvitation = async (invitationId: string) => {
+  const currentUserMembership = workspaceMembers.find((m: any) => m.userId === user?.id)
+  const canManageMembers = currentUserMembership?.role === 'owner' || currentUserMembership?.role === 'admin'
+
+  const handleChangeRole = async (memberId: string, newRole: 'owner' | 'admin' | 'member' | 'viewer') => {
     try {
-      await actions.cancelInvitation(invitationId)
-      await invitations.loadAll({ workspaceId: currentWorkspace!.id })
+      await actions.updateMemberRole(memberId, newRole, user?.id || '')
+      setMenuState(null)
+      await loadPeopleData()
     } catch {}
   }
+
+  const handleRemoveMember = useCallback(async (memberId: string) => {
+    const confirmed = Platform.OS === 'web'
+      ? window.confirm('Are you sure you want to remove this member?')
+      : true
+    if (!confirmed) { setMenuState(null); return }
+    try {
+      setMenuState(null)
+      await actions.removeMember(memberId, user?.id || '')
+      await loadPeopleData()
+    } catch {
+      if (Platform.OS === 'web') {
+        window.alert('Failed to remove member. You may not have permission.')
+      }
+    }
+  }, [actions, user?.id, loadPeopleData])
+
+  const handleCancelInvitation = useCallback(async (invitationId: string) => {
+    const confirmed = Platform.OS === 'web'
+      ? window.confirm('Cancel this invitation? The invite link will no longer work.')
+      : true
+    if (!confirmed) return
+    try {
+      await actions.cancelInvitation(invitationId)
+      await loadPeopleData()
+    } catch {}
+  }, [actions, loadPeopleData])
 
   const builderCount = workspaceMembers.length
   const currentMonth = new Date().toLocaleString('default', { month: 'short' })
@@ -1361,7 +1578,7 @@ function PeopleTab() {
         <Text className="text-sm text-muted-foreground mt-1">
           Inviting people to{' '}
           <Text className="font-semibold text-foreground">
-            {currentWorkspace?.name || 'your workspace'}
+            {resolvedWs?.name || currentWorkspace?.name || 'your workspace'}
           </Text>{' '}
           gives access to workspace shared projects and credits.{' '}
           You have {builderCount} builder{builderCount !== 1 ? 's' : ''} in this workspace.
@@ -1373,7 +1590,11 @@ function PeopleTab() {
         {SUB_TABS.map((tab) => (
           <Pressable
             key={tab.id}
-            onPress={() => setSubTab(tab.id)}
+            onPress={() => {
+              setSubTab(tab.id)
+              setShowRoleFilter(false)
+              setMenuState(null)
+            }}
             className={cn(
               'px-4 py-2.5 mr-1',
               subTab === tab.id
@@ -1397,52 +1618,37 @@ function PeopleTab() {
 
       {/* Controls row */}
       <View className="flex-row items-center gap-2 mb-4 flex-wrap">
-        <View className="flex-row items-center flex-1 min-w-[160px] border border-border rounded-lg px-3 h-9">
-          <Search size={14} className="text-muted-foreground mr-2" />
-          <TextInput
-            value={search}
-            onChangeText={setSearch}
-            placeholder="Search..."
-            placeholderTextColor="#9ca3af"
-            className="flex-1 text-sm text-foreground web:outline-none"
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-        </View>
-
-        <View className="relative">
-          <Pressable
-            onPress={() => setShowRoleFilter(!showRoleFilter)}
-            className="flex-row items-center h-9 px-3 border border-border rounded-lg gap-1.5"
-          >
-            <Text className="text-sm text-foreground">
-              {roleFilter === 'all' ? 'All roles' : ROLE_DISPLAY[roleFilter] || roleFilter}
-            </Text>
-            <ChevronDown size={14} className="text-muted-foreground" />
-          </Pressable>
-          {showRoleFilter && (
-            <View className="absolute top-10 left-0 z-50 bg-background border border-border rounded-lg shadow-lg min-w-[140px]">
-              {[{ value: 'all', label: 'All roles' }, { value: 'owner', label: 'Owner' }, { value: 'admin', label: 'Admin' }, { value: 'member', label: 'Editor' }, { value: 'viewer', label: 'Viewer' }].map((opt) => (
-                <Pressable
-                  key={opt.value}
-                  onPress={() => { setRoleFilter(opt.value); setShowRoleFilter(false) }}
-                  className={cn(
-                    'px-3 py-2',
-                    roleFilter === opt.value && 'bg-accent'
-                  )}
-                >
-                  <Text className={cn('text-sm', roleFilter === opt.value ? 'text-foreground font-medium' : 'text-foreground')}>
-                    {opt.label}
-                  </Text>
-                </Pressable>
-              ))}
+        {subTab === 'all' && (
+          <>
+            <View className="flex-row items-center flex-1 min-w-[160px] border border-border rounded-lg px-3 h-9">
+              <Search size={14} className="text-muted-foreground mr-2" />
+              <TextInput
+                value={search}
+                onChangeText={setSearch}
+                placeholder="Search..."
+                className="flex-1 text-sm text-foreground placeholder:text-muted-foreground web:outline-none"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
             </View>
-          )}
-        </View>
 
-        <Pressable className="h-9 px-3 border border-border rounded-lg items-center justify-center">
-          <Text className="text-sm text-foreground">Export</Text>
-        </Pressable>
+            <Pressable
+              onPress={() => setShowRoleFilter(true)}
+              className="flex-row items-center h-9 px-3 border border-border rounded-lg gap-1.5"
+            >
+              <Text className="text-sm text-foreground">
+                {roleFilter === 'all' ? 'All roles' : ROLE_DISPLAY[roleFilter] || roleFilter}
+              </Text>
+              <ChevronDown size={14} className="text-muted-foreground" />
+            </Pressable>
+
+            <Pressable className="h-9 px-3 border border-border rounded-lg items-center justify-center">
+              <Text className="text-sm text-foreground">Export</Text>
+            </Pressable>
+          </>
+        )}
+
+        {subTab === 'invitations' && <View className="flex-1" />}
 
         <Pressable
           onPress={() => setShowInviteModal(true)}
@@ -1501,11 +1707,14 @@ function PeopleTab() {
                 {filteredMembers.map((member: any) => {
                   const isCurrentUser = member.userId === user?.id
                   const avatarColor = ROLE_COLORS[member.role] || 'bg-primary'
-                  const initial = (member.name || member.userId || 'M')[0]?.toUpperCase()
+                  const resolved = userMap[member.userId]
+                  const mName = isCurrentUser ? (user?.name || user?.email) : (resolved?.name || resolved?.email || member.userId)
+                  const mEmail = isCurrentUser ? user?.email : (resolved?.email || member.userId)
+                  const initial = (mName || 'M')[0]?.toUpperCase()
                   return (
                     <View
                       key={member.id}
-                      className="flex-row items-center px-4 py-3 border-b border-border"
+                      className="flex-row items-center px-4 py-3 border-b border-border overflow-visible"
                     >
                       <View className="flex-row items-center flex-[2] gap-3">
                         <View className={cn('h-8 w-8 rounded-full items-center justify-center', avatarColor)}>
@@ -1514,25 +1723,38 @@ function PeopleTab() {
                         <View>
                           <View className="flex-row items-center gap-1">
                             <Text className="text-sm font-medium text-foreground">
-                              {member.name || member.userId?.slice(0, 20) || 'Unknown'}
+                              {mName}
                             </Text>
                             {isCurrentUser && (
                               <Text className="text-sm text-muted-foreground">(you)</Text>
                             )}
                           </View>
                           <Text className="text-xs text-muted-foreground">
-                            {member.email || `${member.userId?.slice(0, 12)}...`}
+                            {mEmail}
                           </Text>
                         </View>
                       </View>
 
                       <View className="w-24">
-                        <View className="flex-row items-center gap-1">
+                        {canManageMembers && !isCurrentUser ? (
+                          <Pressable
+                            onPress={() => setMenuState(
+                              menuState?.memberId === member.id && menuState?.view === 'roles'
+                                ? null
+                                : { memberId: member.id, view: 'roles' }
+                            )}
+                            className="flex-row items-center gap-1"
+                          >
+                            <Text className="text-sm text-foreground capitalize">
+                              {ROLE_DISPLAY[member.role] || member.role}
+                            </Text>
+                            <ChevronDown size={12} className="text-muted-foreground" />
+                          </Pressable>
+                        ) : (
                           <Text className="text-sm text-foreground capitalize">
                             {ROLE_DISPLAY[member.role] || member.role}
                           </Text>
-                          <ChevronDown size={12} className="text-muted-foreground" />
-                        </View>
+                        )}
                       </View>
 
                       <View className="w-28">
@@ -1555,9 +1777,20 @@ function PeopleTab() {
                         <Text className="text-sm text-foreground">—</Text>
                       </View>
 
-                      <Pressable className="w-8 items-center">
-                        <Text className="text-muted-foreground">···</Text>
-                      </Pressable>
+                      <View className="w-8">
+                        {canManageMembers && !isCurrentUser ? (
+                          <Pressable
+                            onPress={() => setMenuState({ memberId: member.id, view: 'actions' })}
+                            className="items-center"
+                          >
+                            <Text className="text-muted-foreground">···</Text>
+                          </Pressable>
+                        ) : (
+                          <View className="items-center">
+                            <Text className="text-muted-foreground/30">···</Text>
+                          </View>
+                        )}
+                      </View>
                     </View>
                   )
                 })}
@@ -1575,6 +1808,72 @@ function PeopleTab() {
       )}
 
       {subTab === 'invitations' && (
+        <View className="gap-4">
+          {/* Received invitations */}
+          <View>
+            <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 px-1">Received</Text>
+            {receivedInvites.length === 0 ? (
+              <Card><CardContent className="py-6 items-center"><Text className="text-sm text-muted-foreground">No pending invitations</Text></CardContent></Card>
+            ) : (
+              <Card>
+                <CardContent className="p-0">
+                  {receivedInvites.map((inv: any) => (
+                    <View key={inv.id} className="p-4 border-b border-border">
+                      <View className="flex-row items-center justify-between mb-1">
+                        <Text className="text-base font-semibold text-foreground">
+                          {inv.workspace?.name || inv.workspaceName || 'Workspace'}
+                        </Text>
+                        <View className="px-2 py-0.5 rounded bg-muted">
+                          <Text className="text-xs text-muted-foreground capitalize">{ROLE_DISPLAY[inv.role] || inv.role}</Text>
+                        </View>
+                      </View>
+                      <Text className="text-sm text-muted-foreground mb-3">You've been invited to join this workspace</Text>
+                      <View className="flex-row gap-2">
+                        <Pressable
+                          onPress={async () => {
+                            setReceivedInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
+                            try {
+                              if (http) {
+                                await http.patch(`/api/invitations/${inv.id}`, { status: 'accepted' })
+                                await http.post('/api/members', {
+                                  userId: user?.id,
+                                  workspaceId: inv.workspaceId,
+                                  role: inv.role,
+                                  isBillingAdmin: false,
+                                })
+                              }
+                            } catch {}
+                            loadPeopleData()
+                          }}
+                          className="flex-1 h-10 bg-primary rounded-lg items-center justify-center"
+                        >
+                          <Text className="text-sm font-medium text-primary-foreground">Accept</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={async () => {
+                            setReceivedInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
+                            try {
+                              if (http) {
+                                await http.patch(`/api/invitations/${inv.id}`, { status: 'declined' })
+                              }
+                            } catch {}
+                            loadPeopleData()
+                          }}
+                          className="flex-1 h-10 border border-border rounded-lg items-center justify-center"
+                        >
+                          <Text className="text-sm font-medium text-foreground">Decline</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  ))}
+                </CardContent>
+              </Card>
+            )}
+          </View>
+
+          {/* Sent invitations */}
+          <View>
+            <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 px-1">Sent</Text>
         <Card>
           <CardContent className="p-0">
             {isLoading ? (
@@ -1582,7 +1881,7 @@ function PeopleTab() {
                 <ActivityIndicator size="small" />
                 <Text className="text-sm text-muted-foreground mt-2">Loading...</Text>
               </View>
-            ) : pendingInvitations.length === 0 ? (
+            ) : sentInvitations.length === 0 ? (
               <View className="py-16 items-center px-6">
                 <View className="h-12 w-12 rounded-lg bg-muted/50 items-center justify-center mb-4">
                   <Mail size={24} className="text-muted-foreground/50" />
@@ -1615,15 +1914,25 @@ function PeopleTab() {
                   <View className="w-8" />
                 </View>
 
-                {pendingInvitations.map((inv: any) => {
-                  const isExpired = Date.now() > inv.expiresAt
+                {sentInvitations.map((inv: any) => {
+                  const isExpired = inv.status === 'expired' || Date.now() > inv.expiresAt
+                  const status = isExpired ? 'expired' : (inv.status as string)
+                  const isDimmed = status === 'expired' || status === 'declined'
+                  const badgeVariant = status === 'accepted' ? 'default'
+                    : status === 'declined' ? 'destructive'
+                    : status === 'expired' ? 'outline'
+                    : 'secondary'
+                  const badgeLabel = status === 'accepted' ? 'Accepted'
+                    : status === 'declined' ? 'Declined'
+                    : status === 'expired' ? 'Expired'
+                    : 'Pending'
                   return (
                     <View
                       key={inv.id}
-                      className={cn('flex-row items-center px-4 py-3 border-b border-border', isExpired && 'opacity-60')}
+                      className={cn('flex-row items-center px-4 py-3 border-b border-border', isDimmed && 'opacity-50')}
                     >
                       <View className="flex-[2]">
-                        <Text className={cn('text-sm text-foreground', isExpired && 'line-through')}>{inv.email}</Text>
+                        <Text className={cn('text-sm text-foreground', isDimmed && 'line-through')}>{inv.email}</Text>
                       </View>
                       <View className="w-24">
                         <Text className="text-sm text-foreground capitalize">{ROLE_DISPLAY[inv.role] || inv.role}</Text>
@@ -1634,48 +1943,152 @@ function PeopleTab() {
                         </Text>
                       </View>
                       <View className="w-24">
-                        <Badge variant={isExpired ? 'destructive' : 'secondary'}>
-                          <Text className="text-[10px]">{isExpired ? 'Expired' : 'Pending'}</Text>
+                        <Badge variant={badgeVariant}>
+                          <Text className="text-[10px]">{badgeLabel}</Text>
                         </Badge>
                       </View>
-                      <Pressable
-                        onPress={() => handleCancelInvitation(inv.id)}
-                        className="w-8 items-center"
-                      >
-                        <X size={14} className="text-muted-foreground" />
-                      </Pressable>
+                      <View className="w-8 items-center">
+                        {status === 'pending' && (
+                          <Pressable onPress={() => handleCancelInvitation(inv.id)}>
+                            <X size={14} className="text-muted-foreground" />
+                          </Pressable>
+                        )}
+                      </View>
                     </View>
                   )
                 })}
 
                 <View className="px-4 py-2.5">
                   <Text className="text-xs text-muted-foreground">
-                    Showing 1-{pendingInvitations.length} of {pendingInvitations.length}
+                    Showing 1-{sentInvitations.length} of {sentInvitations.length}
                   </Text>
                 </View>
               </>
             )}
-            {pendingInvitations.length === 0 && !isLoading && (
-              <View className="px-4 py-2.5 border-t border-border">
-                <Text className="text-xs text-muted-foreground">No results</Text>
-              </View>
-            )}
           </CardContent>
         </Card>
+          </View>
+        </View>
       )}
+
+      {/* Invite Members Modal */}
+      {/* Role Filter Modal */}
+      <Modal
+        visible={showRoleFilter}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowRoleFilter(false)}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 justify-center items-center px-6"
+          onPress={() => setShowRoleFilter(false)}
+        >
+          <Pressable
+            onPress={(e) => e.stopPropagation()}
+            className="bg-background rounded-xl p-5 w-full max-w-xs gap-1"
+          >
+            <Text className="text-base font-semibold text-foreground mb-2">Filter by role</Text>
+            {[{ value: 'all', label: 'All roles' }, { value: 'owner', label: 'Owner' }, { value: 'admin', label: 'Admin' }, { value: 'member', label: 'Editor' }, { value: 'viewer', label: 'Viewer' }].map((opt) => (
+              <Pressable
+                key={opt.value}
+                onPress={() => { setRoleFilter(opt.value); setShowRoleFilter(false) }}
+                className={cn('py-3 border-b border-border', roleFilter === opt.value && 'bg-accent rounded-md px-3')}
+              >
+                <Text className={cn('text-sm', roleFilter === opt.value ? 'text-foreground font-medium' : 'text-foreground')}>
+                  {opt.label}
+                </Text>
+              </Pressable>
+            ))}
+            <Pressable onPress={() => setShowRoleFilter(false)} className="py-2 mt-1">
+              <Text className="text-sm text-muted-foreground text-center">Cancel</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* Invite Members Modal */}
       <InviteMembersModal
         visible={showInviteModal}
-        onClose={() => setShowInviteModal(false)}
-        workspaceId={currentWorkspace?.id || ''}
-        workspaceName={currentWorkspace?.name || ''}
+        onClose={() => {
+          setShowInviteModal(false)
+          loadPeopleData()
+        }}
+        workspaceId={resolvedWs?.id || currentWorkspace?.id || ''}
+        workspaceName={resolvedWs?.name || currentWorkspace?.name || ''}
         actions={actions}
-        invitationCollection={invitations}
       />
+
+      {/* Member Action Modal */}
+      <Modal
+        visible={menuState !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMenuState(null)}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 justify-center items-center px-6"
+          onPress={() => setMenuState(null)}
+        >
+          <Pressable
+            onPress={(e) => e.stopPropagation()}
+            className="bg-background rounded-xl p-5 w-full max-w-xs gap-3"
+          >
+            {menuState?.view === 'actions' && (
+              <>
+                <Text className="text-base font-semibold text-foreground mb-1">
+                  Member actions
+                </Text>
+                <Pressable
+                  onPress={() => {
+                    if (menuState) setMenuState({ ...menuState, view: 'roles' })
+                  }}
+                  className="py-3 border-b border-border"
+                >
+                  <Text className="text-sm text-foreground">Change role</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    if (menuState) handleRemoveMember(menuState.memberId)
+                  }}
+                  className="py-3"
+                >
+                  <Text className="text-sm text-destructive">Remove member</Text>
+                </Pressable>
+              </>
+            )}
+            {menuState?.view === 'roles' && (
+              <>
+                <Text className="text-base font-semibold text-foreground mb-1">
+                  Select role
+                </Text>
+                {(['owner', 'admin', 'member', 'viewer'] as const).map((r) => {
+                  const activeMember = workspaceMembers.find((m: any) => m.id === menuState?.memberId)
+                  const isActive = activeMember?.role === r
+                  return (
+                    <Pressable
+                      key={r}
+                      onPress={() => {
+                        if (menuState) handleChangeRole(menuState.memberId, r)
+                      }}
+                      className={cn('py-3 border-b border-border', isActive && 'bg-accent rounded-md px-3')}
+                    >
+                      <Text className={cn('text-sm', isActive ? 'text-foreground font-medium' : 'text-foreground')}>
+                        {ROLE_DISPLAY[r]}
+                      </Text>
+                    </Pressable>
+                  )
+                })}
+              </>
+            )}
+            <Pressable onPress={() => setMenuState(null)} className="py-2 mt-1">
+              <Text className="text-sm text-muted-foreground text-center">Cancel</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   )
-}
+})
 
 function InviteMembersModal({
   visible,
@@ -1683,15 +2096,14 @@ function InviteMembersModal({
   workspaceId,
   workspaceName,
   actions,
-  invitationCollection,
 }: {
   visible: boolean
   onClose: () => void
   workspaceId: string
   workspaceName: string
   actions: ReturnType<typeof useDomainActions>
-  invitationCollection: any
 }) {
+  const workspaces = useWorkspaceCollection()
   const [emailInput, setEmailInput] = useState('')
   const [role, setRole] = useState<string>('member')
   const [showRolePicker, setShowRolePicker] = useState(false)
@@ -1718,11 +2130,20 @@ function InviteMembersModal({
 
   const handleSubmit = async () => {
     if (!canSubmit) return
+    let resolvedWsId = workspaceId
+    if (!resolvedWsId) {
+      const ws = workspaces.all[0]
+      resolvedWsId = ws?.id || ''
+    }
+    if (!resolvedWsId) {
+      setError('Workspace not loaded yet. Please close and try again.')
+      return
+    }
     setIsSubmitting(true)
     setError(null)
     try {
       for (const email of validEmails) {
-        await actions.sendInvitation({ email, role: role as any, workspaceId })
+        await actions.sendInvitation({ email, role: role as any, workspaceId: resolvedWsId })
       }
       setEmailInput('')
       setRole('member')
@@ -1775,11 +2196,10 @@ function InviteMembersModal({
               value={emailInput}
               onChangeText={(t) => { setEmailInput(t); setError(null) }}
               placeholder="example1@example.com, example2@example.com"
-              placeholderTextColor="#9ca3af"
               autoCapitalize="none"
               autoCorrect={false}
               editable={!isSubmitting}
-              className="px-3 py-2.5 text-sm text-foreground web:outline-none"
+              className="px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground web:outline-none"
             />
           </View>
 
@@ -1851,9 +2271,6 @@ function SettingsContent({ activeTab }: { activeTab: TabId }) {
       {activeTab === 'people' && <PeopleTab />}
       {activeTab === 'account' && <AccountTab />}
       {activeTab === 'billing' && <BillingTab />}
-      {activeTab === 'privacy' && <PrivacyTab />}
-      {activeTab === 'labs' && <LabsTab />}
-      {activeTab === 'github' && <GitHubTab />}
     </>
   )
 }
@@ -1864,8 +2281,7 @@ export default observer(function SettingsPage() {
   const { width } = useWindowDimensions()
   const isWide = width >= 768
   const { user } = useAuth()
-  const workspaces = useWorkspaceCollection()
-  const currentWorkspace = workspaces.all.length > 0 ? workspaces.all[0] : null
+  const currentWorkspace = useActiveWorkspace()
 
   const [activeTab, setActiveTab] = useState<TabId>(
     () => (ALL_TAB_IDS.includes(params.tab as TabId) ? params.tab as TabId : 'workspace')
@@ -1885,7 +2301,7 @@ export default observer(function SettingsPage() {
         />
         <ScrollView
           className="flex-1"
-          contentContainerStyle={{ paddingHorizontal: 48, paddingTop: 24, paddingBottom: 60 }}
+          contentContainerClassName="px-12 pt-6 pb-[60px]"
           showsVerticalScrollIndicator={false}
         >
           <View>
@@ -1908,7 +2324,7 @@ export default observer(function SettingsPage() {
   return (
     <View className="flex-1 bg-background">
       <View className="flex-row items-center gap-3 px-4 py-3 border-b border-border">
-        <Pressable onPress={() => router.back()}>
+        <Pressable onPress={() => router.canGoBack() ? router.back() : router.replace('/(app)/projects')}>
           <ArrowLeft size={20} className="text-foreground" />
         </Pressable>
         <Text className="text-xl font-bold text-foreground">Settings</Text>
@@ -1918,7 +2334,7 @@ export default observer(function SettingsPage() {
 
       <ScrollView
         className="flex-1"
-        contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
+        contentContainerClassName="p-4 pb-10"
         showsVerticalScrollIndicator={false}
       >
         <SettingsContent activeTab={activeTab} />

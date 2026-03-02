@@ -168,7 +168,7 @@ export function DynCard({ children, title, description, footer, className }: Car
             {description && <Text className="text-sm text-muted-foreground">{description}</Text>}
           </View>
         )}
-        <View className="px-6 pb-6">{children}</View>
+        <View className={cn('px-6 pb-6', !(title || description) && 'pt-6')}>{children}</View>
         {footer && (
           <View className="px-6 pb-6 pt-0 border-t border-border/30">
             <Text className="text-sm text-muted-foreground pt-3">{footer}</Text>

@@ -126,6 +126,10 @@ export function useDynamicAppStream(agentUrl: string | null, options?: DynamicAp
           }
           break
         }
+        case 'clearAll': {
+          next.clear()
+          break
+        }
       }
 
       return next
@@ -250,5 +254,21 @@ export function useDynamicAppStream(agentUrl: string | null, options?: DynamicAp
     [],
   )
 
-  return { surfaces, connected, connecting, error, dispatchAction, updateLocalData }
+  const reconnect = useCallback(() => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close()
+      eventSourceRef.current = null
+    }
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current)
+      reconnectTimeoutRef.current = null
+    }
+    setSurfaces(new Map())
+    setConnected(false)
+    setError(null)
+    reconnectAttemptRef.current = 0
+    connect()
+  }, [connect])
+
+  return { surfaces, connected, connecting, error, dispatchAction, updateLocalData, reconnect }
 }

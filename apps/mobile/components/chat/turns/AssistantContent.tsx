@@ -11,6 +11,10 @@ import { cn } from "@shogo/shared-ui/primitives"
 import { FileText } from "lucide-react-native"
 import type { UIMessage } from "@ai-sdk/react"
 import { InlineToolWidget } from "./InlineToolWidget"
+import {
+  ConnectToolWidget,
+  parseToolInstallResult,
+} from "./ConnectToolWidget"
 import { AskUserQuestionWidget } from "./AskUserQuestionWidget"
 import { TodoWidget } from "./TodoWidget"
 import { ToolCallGroup } from "./ToolCallGroup"
@@ -196,10 +200,11 @@ function ImageThumbnail({
     <Pressable onPress={handlePress} testID="image-thumbnail">
       <Image
         source={{ uri: url }}
-        className="w-[200px] h-[150px] rounded-md border border-border"
+        className="max-w-[280px] rounded-md"
         resizeMode="contain"
         accessibilityLabel={`Image attachment ${index + 1}`}
         onError={() => setHasError(true)}
+        style={{ width: 280, aspectRatio: 4 / 3 }}
       />
     </Pressable>
   )
@@ -316,6 +321,20 @@ export function AssistantContent({
                 onToggle={() => toggleTool(part.id)}
               />
             )
+          }
+
+          if (part.tool.toolName === "tool_install" && part.tool.state === "success") {
+            const installResult = parseToolInstallResult(part.tool.result)
+            if (installResult?.authStatus === "needs_auth" && installResult?.authUrl) {
+              return (
+                <ConnectToolWidget
+                  key={part.id}
+                  toolkitName={installResult.integration || "Service"}
+                  authUrl={installResult.authUrl}
+                  toolCount={installResult.toolCount || 0}
+                />
+              )
+            }
           }
 
           return (

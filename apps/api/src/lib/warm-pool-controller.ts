@@ -11,9 +11,13 @@
  * 2. POST /pool/assign to the warm pod with project-specific config
  * 3. The pod reconfigures itself in-place (loads S3 data, starts gateway, etc.)
  * 4. Return the warm pod URL immediately — user gets instant service
- * 5. In the background, create the real `project-{id}` Knative Service so
- *    future cold starts work correctly with the right env vars
- * 6. Once the real service has a pod running, delete the warm pool service
+ * 5. Patch the Knative Service metadata labels to mark the pod as promoted
+ *    (metadata-only — no new revision, no pod restart)
+ * 6. Save the service name mapping in the database for routing
+ *
+ * On cold start (scale-to-zero recovery or API redeployment), the stale DB
+ * mapping is detected by getProjectPodUrl, cleared, and a fresh warm pod
+ * is assigned.
  *
  * Pool pods run with PROJECT_ID=__POOL__, do generic init (start Hono,
  * pre-warm Claude Code session, load deps into memory), and wait for assignment.
@@ -179,6 +183,13 @@ export class WarmPoolController {
    */
   private assigned = new Map<string, WarmPodInfo>()
 
+  /**
+   * Service names that have been claimed but not yet passed to assign().
+   * Bridges the gap between claim() firing an async reconcile and assign()
+   * adding the pod to `this.assigned`.
+   */
+  private claimedServiceNames = new Set<string>()
+
   /** Pending warm pod creations to avoid duplicate reconciliation */
   private pendingCreations = new Set<string>()
 
@@ -338,22 +349,9 @@ export class WarmPoolController {
       }
     }
 
-    // Clean up assigned pods whose real Knative Service is now running
-    for (const [projectId, pod] of this.assigned) {
-      const realServiceReady = await this.isRealServiceReady(projectId)
-      if (realServiceReady) {
-        console.log(
-          `[WarmPool] Real service for ${projectId} is ready, cleaning up warm pod ${pod.serviceName}`
-        )
-        this.assigned.delete(projectId)
-        this.deleteWarmPodService(pod.serviceName).catch((err) => {
-          console.error(
-            `[WarmPool] Failed to delete assigned pod ${pod.serviceName}:`,
-            err.message
-          )
-        })
-      }
-    }
+    // Promoted pods (assigned) are no longer cleaned up by the reconciler.
+    // They remain as the project's permanent Knative Service with scale-to-zero.
+    // The runtime self-assigns on cold start via /api/internal/pod-config.
 
     // Trim excess pods when pool shrinks (e.g., nodes scaled down).
     // Delete oldest excess pods, 2 per type per cycle, to converge to target.
@@ -464,6 +462,7 @@ export class WarmPoolController {
 
     if (oldest && oldestId) {
       this.available.delete(oldestId)
+      this.claimedServiceNames.add(oldest.serviceName)
       const remaining = this.countAvailable(type)
       const target = this.poolSize[type]
       const utilization = 1 - remaining / target
@@ -513,7 +512,8 @@ export class WarmPoolController {
 
   /**
    * Assign a claimed warm pod to a specific project.
-   * Sends the /pool/assign request and stores the mapping for routing.
+   * Sends the /pool/assign request, patches Knative annotations for promotion,
+   * and saves the service name mapping in the database.
    */
   async assign(
     pod: WarmPodInfo,
@@ -529,6 +529,30 @@ export class WarmPoolController {
     }, async (span) => {
       const startTime = Date.now()
       try {
+        // Defensive: check if another project already maps to this service in DB.
+        // This catches collisions from stale state after API restarts.
+        try {
+          const { prisma } = await import('./prisma')
+          const existing = await prisma.project.findFirst({
+            where: {
+              knativeServiceName: pod.serviceName,
+              id: { not: projectId },
+            },
+            select: { id: true, name: true },
+          })
+          if (existing) {
+            console.warn(
+              `[WarmPool] COLLISION GUARD: pod ${pod.serviceName} already mapped to project ${existing.id} (${existing.name}) — clearing stale mapping before assigning to ${projectId}`
+            )
+            await prisma.project.update({
+              where: { id: existing.id },
+              data: { knativeServiceName: null },
+            })
+          }
+        } catch (dbErr: any) {
+          console.error(`[WarmPool] Collision check failed (non-fatal):`, dbErr.message)
+        }
+
         const response = await fetch(`${pod.url}/pool/assign`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -542,13 +566,24 @@ export class WarmPoolController {
         }
 
         this.assigned.set(projectId, pod)
+        this.claimedServiceNames.delete(pod.serviceName)
         const duration = Date.now() - startTime
         span.setAttribute('assign.duration_ms', duration)
         span.setStatus({ code: SpanStatusCode.OK })
         console.log(
           `[WarmPool] Assigned ${pod.serviceName} to project ${projectId} in ${duration}ms`
         )
+
+        // Promote the warm pod: patch annotations and save DB mapping.
+        // This is non-blocking — the pod is already serving the project.
+        this.promoteWarmPod(pod, projectId).catch((err) => {
+          console.error(
+            `[WarmPool] Failed to promote ${pod.serviceName} for ${projectId} (non-fatal):`,
+            err.message
+          )
+        })
       } catch (err: any) {
+        this.claimedServiceNames.delete(pod.serviceName)
         span.setStatus({ code: SpanStatusCode.ERROR, message: err.message })
         span.recordException(err)
         console.error(
@@ -560,6 +595,94 @@ export class WarmPoolController {
         span.end()
       }
     })
+  }
+
+  /**
+   * Promote a warm pod to a permanent project pod.
+   * Patches Knative Service annotations (no new Revision) and saves
+   * the service name mapping in the database for routing.
+   *
+   * The label patch is the critical gate: if it fails, we skip the DB save
+   * to avoid a state where the pod looks "available" to the reconciler but
+   * has a DB mapping — the root cause of warm-pool collisions.
+   */
+  private async promoteWarmPod(pod: WarmPodInfo, projectId: string): Promise<void> {
+    const t0 = Date.now()
+    const api = getCustomApi()
+    const { mergePatchKnativeService } = await import('./knative-project-manager')
+
+    // Step 1 (CRITICAL): patch metadata labels to mark this pod as promoted.
+    // If this fails, bail out entirely — leaving the label as "available" while
+    // saving a DB mapping causes collisions on API restart.
+    const metadataPatch = {
+      metadata: {
+        annotations: {
+          'shogo.io/assigned-project': projectId,
+        },
+        labels: {
+          [POOL_STATUS_LABEL_KEY]: 'promoted',
+          'shogo.io/project': projectId,
+        },
+      },
+    }
+
+    try {
+      await mergePatchKnativeService(this.namespace, pod.serviceName, metadataPatch)
+      console.log(
+        `[WarmPool] Patched metadata on ${pod.serviceName} for ${projectId} (${Date.now() - t0}ms)`
+      )
+    } catch (err: any) {
+      console.error(
+        `[WarmPool] CRITICAL: Failed to patch metadata on ${pod.serviceName} for ${projectId} — aborting promotion to prevent collision:`,
+        err.message
+      )
+      return
+    }
+
+    // NOTE: We intentionally do NOT patch the Knative spec.template here.
+    // Changing the spec creates a new Revision, which replaces the running pod,
+    // destroying the in-memory agent gateway, local workspace files, and canvas
+    // state. The metadata labels/annotations above are sufficient for the warm
+    // pool controller to identify promoted pods. For cold-start recovery after
+    // scale-to-zero, getProjectPodUrl detects the stale mapping and re-assigns
+    // a fresh warm pod.
+
+    // Step 2: save the DB mapping, clearing any stale mapping from a previous
+    // project that may have been assigned to this same service name.
+    try {
+      const { prisma } = await import('./prisma')
+
+      await prisma.$transaction(async (tx) => {
+        // Clear stale mappings: any OTHER project pointing to this service
+        // is no longer valid — set its knativeServiceName to null.
+        const stale = await tx.project.updateMany({
+          where: {
+            knativeServiceName: pod.serviceName,
+            id: { not: projectId },
+          },
+          data: { knativeServiceName: null },
+        })
+        if (stale.count > 0) {
+          console.warn(
+            `[WarmPool] Cleared stale knativeServiceName from ${stale.count} project(s) that previously mapped to ${pod.serviceName}`
+          )
+        }
+
+        await tx.project.update({
+          where: { id: projectId },
+          data: { knativeServiceName: pod.serviceName },
+        })
+      })
+
+      console.log(
+        `[WarmPool] Saved knativeServiceName=${pod.serviceName} for ${projectId} (${Date.now() - t0}ms)`
+      )
+    } catch (err: any) {
+      console.error(
+        `[WarmPool] Failed to save knativeServiceName for ${projectId}:`,
+        err.message
+      )
+    }
   }
 
   /**
@@ -577,6 +700,7 @@ export class WarmPoolController {
   isAssigned(projectId: string): boolean {
     return this.assigned.has(projectId)
   }
+
 
   /**
    * Get pool status for monitoring/debugging.
@@ -641,10 +765,12 @@ export class WarmPoolController {
       const { prisma } = await import('./prisma')
       const project = await prisma.project.findUnique({
         where: { id: projectId },
-        select: { workspaceId: true, type: true },
+        select: { workspaceId: true, type: true, templateId: true, name: true },
       })
       if (project) {
         projectType = project.type
+        if (project.templateId) env.TEMPLATE_ID = project.templateId
+        if (project.name) env.AGENT_NAME = project.name
         env.AI_PROXY_TOKEN = await generateProxyToken(
           projectId,
           project.workspaceId,
@@ -716,8 +842,16 @@ export class WarmPoolController {
         if (!name || !type) continue
         discoveredIds.add(id)
 
-        // Skip if assigned to a project
-        if (status === 'assigned') continue
+        // Skip pods that are assigned or promoted to a project
+        if (status === 'assigned' || status === 'promoted') continue
+
+        // Skip pods that have been claimed or assigned but whose label hasn't
+        // been patched to 'promoted' yet.  claimedServiceNames covers the window
+        // between claim() and assign(); the assigned map covers the window
+        // between assign() and the async label patch.
+        if (this.claimedServiceNames.has(name)) continue
+        const isAssigned = [...this.assigned.values()].some(p => p.serviceName === name)
+        if (isAssigned) continue
 
         // Check readiness from Knative service conditions
         const conditions = service.status?.conditions || []
@@ -788,12 +922,13 @@ export class WarmPoolController {
     ]
 
     // AI Proxy URL (no token yet — assigned later)
-    const systemNamespace = process.env.SYSTEM_NAMESPACE || 'shogo-staging-system'
+    const systemNamespace = process.env.SYSTEM_NAMESPACE || (process.env.NODE_ENV === 'production' ? 'shogo-system' : 'shogo-staging-system')
     const apiUrl =
       process.env.API_URL ||
       process.env.SHOGO_API_URL ||
       `http://api.${systemNamespace}.svc.cluster.local`
     env.push({ name: 'AI_PROXY_URL', value: `${apiUrl}/api/ai/v1` })
+    env.push({ name: 'TOOLS_PROXY_URL', value: `${apiUrl}/api/tools` })
 
     // OTEL tracing — propagate to warm pool pods so they send traces to SigNoz
     if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
@@ -971,36 +1106,6 @@ export class WarmPoolController {
     }
   }
 
-  /**
-   * Check if the real project Knative Service (project-{id}) is ready.
-   */
-  private async isRealServiceReady(projectId: string): Promise<boolean> {
-    try {
-      const api = getCustomApi()
-      const response = await api.getNamespacedCustomObject({
-        group: KNATIVE_GROUP,
-        version: KNATIVE_VERSION,
-        namespace: this.namespace,
-        plural: 'services',
-        name: `project-${projectId}`,
-      })
-
-      const service = response as any
-      const conditions = service.status?.conditions || []
-      const readyCondition = conditions.find((c: any) => c.type === 'Ready')
-      if (readyCondition?.status !== 'True') return false
-
-      // Double-check with health probe
-      const url = `http://project-${projectId}.${this.namespace}.svc.cluster.local`
-      const healthResp = await fetch(`${url}/ready`, {
-        method: 'GET',
-        signal: AbortSignal.timeout(3000),
-      })
-      return healthResp.ok
-    } catch {
-      return false
-    }
-  }
 }
 
 // =============================================================================

@@ -1,18 +1,18 @@
 # =============================================================================
 # Shogo AI - Production EKS Deployment
 # =============================================================================
-# Region: us-east-1 (Ohio)
+# Region: us-east-1
 # Architecture: Pod-per-Workspace with Knative scale-to-zero
-# Updated: January 2026 - Latest package versions
+# Updated: March 2026 - Full parity with staging
 # =============================================================================
 
 terraform {
-  required_version = ">= 1.5.0" # Supports Homebrew's last open-source Terraform
+  required_version = ">= 1.5.0"
 
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.80" # Latest stable 5.x (6.0 is beta)
+      version = "~> 5.80"
     }
     kubernetes = {
       source  = "hashicorp/kubernetes"
@@ -36,14 +36,12 @@ terraform {
     }
   }
 
-  # Uncomment for remote state (recommended for production)
-  # backend "s3" {
-  #   bucket         = "shogo-terraform-state"
-  #   key            = "production/terraform.tfstate"
-  #   region         = "us-east-1"
-  #   encrypt        = true
-  #   dynamodb_table = "shogo-terraform-locks"
-  # }
+  backend "s3" {
+    bucket  = "shogo-terraform-state"
+    key     = "production/terraform.tfstate"
+    region  = "us-east-1"
+    encrypt = true
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -61,26 +59,42 @@ provider "aws" {
   }
 }
 
+# EKS Cluster Data Sources (for provider configuration)
+# In bootstrap mode, these are skipped and providers use dummy values
+locals {
+  eks_cluster_name = "${var.project_name}-${var.environment}"
+}
+
+data "aws_eks_cluster" "cluster" {
+  count = var.bootstrap_mode ? 0 : 1
+  name  = local.eks_cluster_name
+}
+
+data "aws_eks_cluster_auth" "cluster" {
+  count = var.bootstrap_mode ? 0 : 1
+  name  = local.eks_cluster_name
+}
+
 provider "kubernetes" {
-  host                   = module.eks.cluster_endpoint
-  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+  host                   = var.bootstrap_mode ? "https://localhost" : data.aws_eks_cluster.cluster[0].endpoint
+  cluster_ca_certificate = var.bootstrap_mode ? "" : base64decode(data.aws_eks_cluster.cluster[0].certificate_authority[0].data)
 
   exec {
     api_version = "client.authentication.k8s.io/v1beta1"
     command     = "aws"
-    args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
+    args        = ["eks", "get-token", "--cluster-name", local.eks_cluster_name, "--region", var.aws_region]
   }
 }
 
 provider "helm" {
   kubernetes {
-    host                   = module.eks.cluster_endpoint
-    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+    host                   = var.bootstrap_mode ? "https://localhost" : data.aws_eks_cluster.cluster[0].endpoint
+    cluster_ca_certificate = var.bootstrap_mode ? "" : base64decode(data.aws_eks_cluster.cluster[0].certificate_authority[0].data)
 
     exec {
       api_version = "client.authentication.k8s.io/v1beta1"
       command     = "aws"
-      args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
+      args        = ["eks", "get-token", "--cluster-name", local.eks_cluster_name, "--region", var.aws_region]
     }
   }
 }
@@ -100,16 +114,14 @@ data "aws_caller_identity" "current" {}
 # -----------------------------------------------------------------------------
 # ACM Certificate Lookup (for SSL termination on load balancer)
 # -----------------------------------------------------------------------------
-# Primary certificate for platform (*.shogo.ai)
 data "aws_acm_certificate" "ssl" {
   count       = var.ssl_certificate_domain != "" ? 1 : 0
   domain      = var.ssl_certificate_domain
   statuses    = ["ISSUED"]
   most_recent = true
-  types       = ["AMAZON_ISSUED"] # Prefer Amazon-issued over imported certificates
+  types       = ["AMAZON_ISSUED"]
 }
 
-# Secondary certificate for published apps (*.shogo.one)
 data "aws_acm_certificate" "ssl_publish" {
   count       = var.ssl_certificate_domain_publish != "" ? 1 : 0
   domain      = var.ssl_certificate_domain_publish
@@ -128,7 +140,6 @@ module "vpc" {
   cidr               = var.vpc_cidr
   availability_zones = slice(data.aws_availability_zones.available.names, 0, 3)
 
-  # Single NAT gateway saves ~$64/mo vs one-per-AZ (acceptable at current scale)
   single_nat_gateway = true
 
   tags = {
@@ -167,17 +178,16 @@ module "eks" {
   vpc_id          = module.vpc.vpc_id
   private_subnets = module.vpc.private_subnet_ids
 
-  # Node group configuration
   node_instance_types = var.node_instance_types
   node_desired_size   = var.node_desired_size
   node_min_size       = var.node_min_size
   node_max_size       = var.node_max_size
-  node_disk_size      = 50 # GB - increased from 20GB default to handle large container images
+  node_disk_size      = 50
 
-  # Enable Karpenter for workspace autoscaling
+  enable_secondary_node_group = var.enable_secondary_node_group
+
   enable_karpenter = true
 
-  # Grant cluster-admin access to GitHub Actions role
   admin_role_arns = [
     "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.project_name}-github-actions"
   ]
@@ -188,9 +198,185 @@ module "eks" {
 }
 
 # -----------------------------------------------------------------------------
-# CloudNativePG Operator (replaces RDS)
+# Karpenter (intelligent node provisioning)
+# -----------------------------------------------------------------------------
+module "karpenter" {
+  count  = var.bootstrap_mode ? 0 : 1
+  source = "../../modules/karpenter"
+
+  depends_on = [module.eks]
+
+  cluster_name      = module.eks.cluster_name
+  cluster_arn       = module.eks.cluster_arn
+  cluster_endpoint  = module.eks.cluster_endpoint
+  oidc_provider_arn = module.eks.oidc_provider_arn
+  oidc_provider_url = module.eks.oidc_provider_url
+  node_role_arn     = module.eks.node_role_arn
+  node_role_name    = module.eks.node_role_name
+
+  tags = {
+    Environment = var.environment
+  }
+}
+
+resource "aws_eks_access_entry" "karpenter_nodes" {
+  count = var.bootstrap_mode ? 0 : 1
+
+  cluster_name  = module.eks.cluster_name
+  principal_arn = module.eks.node_role_arn
+  type          = "EC2_LINUX"
+
+  depends_on = [module.eks]
+}
+
+resource "helm_release" "karpenter" {
+  count = var.bootstrap_mode ? 0 : 1
+
+  namespace        = "kube-system"
+  name             = "karpenter"
+  repository       = "oci://public.ecr.aws/karpenter"
+  chart            = "karpenter"
+  version          = "1.9.0"
+  wait             = true
+  create_namespace = false
+
+  values = [yamlencode({
+    settings = {
+      clusterName       = module.eks.cluster_name
+      clusterEndpoint   = module.eks.cluster_endpoint
+      interruptionQueue = module.karpenter[0].queue_name
+    }
+    serviceAccount = {
+      annotations = {
+        "eks.amazonaws.com/role-arn" = module.karpenter[0].controller_role_arn
+      }
+    }
+    controller = {
+      resources = {
+        requests = {
+          cpu    = "100m"
+          memory = "256Mi"
+        }
+        limits = {
+          cpu    = "500m"
+          memory = "512Mi"
+        }
+      }
+    }
+    replicas = 1
+  })]
+
+  depends_on = [
+    module.eks,
+    module.karpenter[0],
+  ]
+}
+
+resource "null_resource" "karpenter_node_pool" {
+  count = var.bootstrap_mode ? 0 : 1
+
+  triggers = {
+    node_pool_hash = sha256(jsonencode({
+      instance_types = ["t3.xlarge", "t3.2xlarge", "m5.xlarge", "m5.2xlarge"]
+      cluster_name   = module.eks.cluster_name
+      node_role_name = module.eks.node_role_name
+      node_sg        = module.eks.node_security_group_id
+      eks_sg         = module.eks.eks_managed_security_group_id
+    }))
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      echo "Waiting for Karpenter CRDs..."
+      for i in $(seq 1 30); do
+        if kubectl get crd nodepools.karpenter.sh > /dev/null 2>&1; then
+          echo "Karpenter CRDs ready"
+          break
+        fi
+        echo "Waiting for CRDs... (attempt $i)"
+        sleep 5
+      done
+
+      echo "Deploying Karpenter NodePool and EC2NodeClass..."
+      cat <<EOF | kubectl apply -f -
+      apiVersion: karpenter.k8s.aws/v1
+      kind: EC2NodeClass
+      metadata:
+        name: workload
+      spec:
+        amiSelectorTerms:
+          - alias: bottlerocket@latest
+        role: ${module.eks.node_role_name}
+        subnetSelectorTerms:
+          - tags:
+              karpenter.sh/discovery: ${module.eks.cluster_name}
+        securityGroupSelectorTerms:
+          - id: ${module.eks.node_security_group_id}
+          - id: ${module.eks.eks_managed_security_group_id}
+        blockDeviceMappings:
+          - deviceName: /dev/xvdb
+            ebs:
+              volumeSize: 50Gi
+              volumeType: gp3
+              encrypted: true
+              deleteOnTermination: true
+        metadataOptions:
+          httpEndpoint: enabled
+          httpProtocolIPv6: disabled
+          httpPutResponseHopLimit: 2
+          httpTokens: required
+        tags:
+          karpenter.sh/discovery: ${module.eks.cluster_name}
+          Environment: ${var.environment}
+          ManagedBy: karpenter
+      ---
+      apiVersion: karpenter.sh/v1
+      kind: NodePool
+      metadata:
+        name: workload
+      spec:
+        template:
+          metadata:
+            labels:
+              node.kubernetes.io/purpose: workload
+          spec:
+            nodeClassRef:
+              group: karpenter.k8s.aws
+              kind: EC2NodeClass
+              name: workload
+            requirements:
+              - key: kubernetes.io/arch
+                operator: In
+                values: ["amd64"]
+              - key: karpenter.sh/capacity-type
+                operator: In
+                values: ["on-demand"]
+              - key: node.kubernetes.io/instance-type
+                operator: In
+                values: ["t3.xlarge", "t3.2xlarge", "m5.xlarge", "m5.2xlarge"]
+            expireAfter: 720h
+        disruption:
+          consolidationPolicy: WhenEmptyOrUnderutilized
+          consolidateAfter: 10m
+          budgets:
+            - nodes: "1"
+        limits:
+          cpu: "64"
+          memory: 256Gi
+      EOF
+
+      echo "Karpenter NodePool and EC2NodeClass deployed"
+    EOT
+  }
+
+  depends_on = [helm_release.karpenter[0]]
+}
+
+# -----------------------------------------------------------------------------
+# CloudNativePG Operator
 # -----------------------------------------------------------------------------
 module "cnpg" {
+  count  = var.bootstrap_mode ? 0 : 1
   source = "../../modules/cnpg"
 
   depends_on = [module.eks]
@@ -213,7 +399,6 @@ module "elasticache" {
 
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.private_subnet_ids
-  # Include ALL EKS security groups: custom cluster SG, node SG, AND EKS-managed SG
   security_group_ids = [
     module.eks.cluster_security_group_id,
     module.eks.node_security_group_id,
@@ -230,16 +415,12 @@ module "elasticache" {
 
 # -----------------------------------------------------------------------------
 # VPC Endpoints (for private subnet access to AWS services)
-# Required for EKS nodes in private subnets to pull images from ECR
 # -----------------------------------------------------------------------------
-
-# Security group for VPC endpoints (interface type)
 resource "aws_security_group" "vpc_endpoints" {
   name        = "${var.project_name}-${var.environment}-vpc-endpoints-sg"
   description = "Security group for VPC endpoints"
   vpc_id      = module.vpc.vpc_id
 
-  # Allow HTTPS from EKS nodes (required for ECR API/DKR endpoints)
   ingress {
     description     = "HTTPS from EKS nodes"
     from_port       = 443
@@ -248,7 +429,6 @@ resource "aws_security_group" "vpc_endpoints" {
     security_groups = [module.eks.node_security_group_id]
   }
 
-  # Also allow from EKS cluster and EKS-managed security groups
   ingress {
     description = "HTTPS from EKS cluster"
     from_port   = 443
@@ -273,7 +453,6 @@ resource "aws_security_group" "vpc_endpoints" {
   }
 }
 
-# ECR API endpoint (for docker login, image manifest operations)
 resource "aws_vpc_endpoint" "ecr_api" {
   vpc_id              = module.vpc.vpc_id
   service_name        = "com.amazonaws.${var.aws_region}.ecr.api"
@@ -288,7 +467,6 @@ resource "aws_vpc_endpoint" "ecr_api" {
   }
 }
 
-# ECR DKR endpoint (for docker pull/push operations)
 resource "aws_vpc_endpoint" "ecr_dkr" {
   vpc_id              = module.vpc.vpc_id
   service_name        = "com.amazonaws.${var.aws_region}.ecr.dkr"
@@ -303,7 +481,6 @@ resource "aws_vpc_endpoint" "ecr_dkr" {
   }
 }
 
-# S3 endpoint (gateway type - required for ECR layer downloads)
 resource "aws_vpc_endpoint" "s3" {
   vpc_id            = module.vpc.vpc_id
   service_name      = "com.amazonaws.${var.aws_region}.s3"
@@ -317,9 +494,10 @@ resource "aws_vpc_endpoint" "s3" {
 }
 
 # -----------------------------------------------------------------------------
-# AWS Load Balancer Controller (for ALB with SNI multi-certificate support)
+# AWS Load Balancer Controller
 # -----------------------------------------------------------------------------
 module "aws_lb_controller" {
+  count  = var.bootstrap_mode ? 0 : 1
   source = "../../modules/aws-load-balancer-controller"
 
   depends_on = [module.eks]
@@ -339,6 +517,7 @@ module "aws_lb_controller" {
 # Knative Serving
 # -----------------------------------------------------------------------------
 module "knative" {
+  count  = var.bootstrap_mode ? 0 : 1
   source = "../../modules/knative"
 
   depends_on = [module.eks, module.aws_lb_controller]
@@ -347,59 +526,67 @@ module "knative" {
   domain          = var.domain
   publish_domain  = var.publish_domain
 
-  # Scale-to-zero configuration
   scale_to_zero_grace_period = "60s"
+  enable_pvc_support         = true
 
-  # Enable PVC support for pod-per-project architecture
-  # Required for project pods to mount persistent volumes for code storage
-  enable_pvc_support = true
-
-  # SSL certificates for HTTPS termination on ALB
-  # Primary: *.shogo.ai for platform
-  ssl_certificate_arn = var.ssl_certificate_domain != "" ? data.aws_acm_certificate.ssl[0].arn : ""
-  # Secondary: *.shogo.one for published apps (SNI routing)
+  ssl_certificate_arn         = var.ssl_certificate_domain != "" ? data.aws_acm_certificate.ssl[0].arn : ""
   ssl_certificate_arn_publish = var.ssl_certificate_domain_publish != "" ? data.aws_acm_certificate.ssl_publish[0].arn : ""
 
-  # ECR registry - skip tag resolution (avoids auth issues with Knative controller)
   ecr_registry = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"
 }
 
 # -----------------------------------------------------------------------------
-# Kubernetes Resources (Namespaces, Secrets, etc.)
+# SigNoz K8s Infrastructure Monitoring (optional)
 # -----------------------------------------------------------------------------
-resource "kubernetes_namespace" "shogo_system" {
+module "signoz" {
+  count  = !var.bootstrap_mode && var.enable_signoz && var.signoz_endpoint != "" ? 1 : 0
+  source = "../../modules/signoz"
+
   depends_on = [module.eks]
 
-  metadata {
-    name = "shogo-system"
-    labels = {
-      "app.kubernetes.io/part-of" = "shogo"
-    }
+  cluster_name         = module.eks.cluster_name
+  signoz_endpoint      = var.signoz_endpoint
+  signoz_ingestion_key = var.signoz_ingestion_key
+  environment          = var.environment
+
+  namespace        = var.signoz_namespace
+  create_namespace = true
+
+  enable_logs    = var.signoz_enable_logs
+  enable_events  = var.signoz_enable_events
+  enable_metrics = var.signoz_enable_metrics
+
+  resource_limits = {
+    cpu    = "500m"
+    memory = "512Mi"
+  }
+
+  resource_requests = {
+    cpu    = "100m"
+    memory = "128Mi"
+  }
+
+  tags = {
+    Environment = var.environment
+    ManagedBy   = "terraform"
+    Project     = var.project_name
   }
 }
 
-resource "kubernetes_namespace" "shogo_workspaces" {
-  depends_on = [module.eks]
-
-  metadata {
-    name = "shogo-workspaces"
-    labels = {
-      "app.kubernetes.io/part-of" = "shogo"
-    }
-  }
-}
-
+# -----------------------------------------------------------------------------
 # CloudNativePG PostgreSQL Clusters
+# -----------------------------------------------------------------------------
 resource "null_resource" "cnpg_clusters" {
+  count = var.bootstrap_mode ? 0 : 1
+
   depends_on = [
-    module.cnpg,
+    module.cnpg[0],
     module.eks,
-    kubernetes_namespace.shogo_system,
   ]
 
   triggers = {
-    platform_hash = filemd5("${path.module}/../../k8s/cnpg/production/platform-cluster.yaml")
-    projects_hash = filemd5("${path.module}/../../k8s/cnpg/production/projects-cluster.yaml")
+    platform_hash = filemd5("${path.module}/../../../k8s/cnpg/production/platform-cluster.yaml")
+    projects_hash = filemd5("${path.module}/../../../k8s/cnpg/production/projects-cluster.yaml")
   }
 
   provisioner "local-exec" {
@@ -407,9 +594,11 @@ resource "null_resource" "cnpg_clusters" {
       echo "Waiting for CloudNativePG operator to be ready..."
       kubectl wait --for=condition=Available deployment -l app.kubernetes.io/name=cloudnative-pg -n cnpg-system --timeout=120s || true
 
+      kubectl get namespace shogo-system || kubectl create namespace shogo-system
+
       echo "Deploying CloudNativePG clusters..."
-      kubectl apply -f ${path.module}/../../k8s/cnpg/production/platform-cluster.yaml
-      kubectl apply -f ${path.module}/../../k8s/cnpg/production/projects-cluster.yaml
+      kubectl apply -f ${path.module}/../../../k8s/cnpg/production/platform-cluster.yaml
+      kubectl apply -f ${path.module}/../../../k8s/cnpg/production/projects-cluster.yaml
 
       echo "Waiting for clusters to be ready..."
       kubectl wait --for=condition=Ready cluster/platform-pg -n shogo-system --timeout=300s || true
@@ -417,88 +606,6 @@ resource "null_resource" "cnpg_clusters" {
 
       echo "CloudNativePG clusters deployed successfully"
     EOT
-  }
-}
-
-# Database credentials bridge secrets (from CNPG auto-generated secrets)
-resource "null_resource" "postgres_credentials" {
-  depends_on = [
-    kubernetes_namespace.shogo_system,
-    kubernetes_namespace.shogo_workspaces,
-    null_resource.cnpg_clusters,
-  ]
-
-  triggers = {
-    timestamp = timestamp()
-  }
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      echo "Waiting for CloudNativePG platform-pg-app secret..."
-      for i in $(seq 1 60); do
-        if kubectl get secret platform-pg-app -n shogo-system > /dev/null 2>&1; then
-          echo "Secret platform-pg-app found"
-          break
-        fi
-        echo "Waiting... (attempt $i)"
-        sleep 5
-      done
-
-      PLATFORM_URI=$(kubectl get secret platform-pg-app -n shogo-system -o jsonpath='{.data.uri}' | base64 -d)
-      
-      if [ -z "$PLATFORM_URI" ]; then
-        echo "ERROR: Could not extract platform-pg URI"
-        exit 1
-      fi
-
-      kubectl create secret generic postgres-credentials \
-        --namespace shogo-system \
-        --from-literal=DATABASE_URL="$PLATFORM_URI" \
-        --dry-run=client -o yaml | kubectl apply -f -
-
-      kubectl create secret generic postgres-credentials \
-        --namespace shogo-workspaces \
-        --from-literal=DATABASE_URL="$PLATFORM_URI" \
-        --dry-run=client -o yaml | kubectl apply -f -
-
-      echo "Waiting for CloudNativePG projects-pg-superuser secret..."
-      for i in $(seq 1 60); do
-        if kubectl get secret projects-pg-superuser -n shogo-system > /dev/null 2>&1; then
-          echo "Secret projects-pg-superuser found"
-          break
-        fi
-        sleep 5
-      done
-
-      PROJECTS_ADMIN_URI=$(kubectl get secret projects-pg-superuser -n shogo-system -o jsonpath='{.data.uri}' | base64 -d)
-      
-      if [ -n "$PROJECTS_ADMIN_URI" ]; then
-        kubectl create secret generic projects-db-admin \
-          --namespace shogo-system \
-          --from-literal=PROJECTS_DB_ADMIN_URL="$PROJECTS_ADMIN_URI" \
-          --from-literal=PROJECTS_DB_HOST="projects-pg-rw.shogo-system.svc.cluster.local" \
-          --from-literal=PROJECTS_DB_PORT="5432" \
-          --dry-run=client -o yaml | kubectl apply -f -
-      fi
-
-      echo "All database secrets created successfully"
-    EOT
-  }
-}
-
-# S3 credentials for CloudNativePG backups
-resource "kubernetes_secret" "cnpg_s3_credentials" {
-  depends_on = [kubernetes_namespace.shogo_system]
-
-  metadata {
-    name      = "cnpg-s3-credentials"
-    namespace = "shogo-system"
-  }
-
-  data = {
-    ACCESS_KEY_ID     = var.cnpg_s3_access_key_id
-    SECRET_ACCESS_KEY = var.cnpg_s3_secret_access_key
-    REGION            = var.aws_region
   }
 }
 
@@ -542,6 +649,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "pg_backups" {
   rule {
     id     = "cleanup-old-backups"
     status = "Enabled"
+    filter {}
     transition {
       days          = 30
       storage_class = "STANDARD_IA"
@@ -582,8 +690,154 @@ resource "aws_iam_role_policy_attachment" "node_cnpg_s3_access" {
   role       = module.eks.node_role_name
 }
 
-# Redis credentials secret (shogo-system namespace)
+# IAM Policy for proactive node scaling
+resource "aws_iam_policy" "api_autoscaling" {
+  name        = "shogo-api-autoscaling-${var.environment}"
+  description = "Allow API pods to proactively scale EKS node group ASG"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "autoscaling:DescribeAutoScalingGroups",
+          "autoscaling:SetDesiredCapacity",
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "node_autoscaling" {
+  policy_arn = aws_iam_policy.api_autoscaling.arn
+  role       = module.eks.node_role_name
+}
+
+# -----------------------------------------------------------------------------
+# Kubernetes Resources (Namespaces, Secrets, etc.)
+# -----------------------------------------------------------------------------
+resource "kubernetes_namespace" "shogo_system" {
+  count      = var.bootstrap_mode ? 0 : 1
+  depends_on = [module.eks]
+
+  metadata {
+    name = "shogo-system"
+    labels = {
+      "app.kubernetes.io/part-of" = "shogo"
+      "environment"               = "production"
+    }
+  }
+}
+
+resource "kubernetes_namespace" "shogo_workspaces" {
+  count      = var.bootstrap_mode ? 0 : 1
+  depends_on = [module.eks]
+
+  metadata {
+    name = "shogo-workspaces"
+    labels = {
+      "app.kubernetes.io/part-of" = "shogo"
+      "environment"               = "production"
+    }
+  }
+}
+
+resource "null_resource" "postgres_credentials" {
+  count = var.bootstrap_mode ? 0 : 1
+
+  depends_on = [
+    kubernetes_namespace.shogo_system,
+    kubernetes_namespace.shogo_workspaces,
+    null_resource.cnpg_clusters,
+  ]
+
+  triggers = {
+    timestamp = timestamp()
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      echo "Waiting for CloudNativePG platform-pg-app secret..."
+      for i in $(seq 1 60); do
+        if kubectl get secret platform-pg-app -n shogo-system > /dev/null 2>&1; then
+          echo "Secret platform-pg-app found"
+          break
+        fi
+        echo "Waiting... (attempt $i)"
+        sleep 5
+      done
+
+      PLATFORM_URI=$(kubectl get secret platform-pg-app -n shogo-system -o jsonpath='{.data.uri}' | base64 -d)
+      
+      if [ -z "$PLATFORM_URI" ]; then
+        echo "ERROR: Could not extract platform-pg URI"
+        exit 1
+      fi
+
+      echo "Platform DB URI extracted successfully"
+
+      kubectl create secret generic postgres-credentials \
+        --namespace shogo-system \
+        --from-literal=DATABASE_URL="$PLATFORM_URI" \
+        --dry-run=client -o yaml | kubectl apply -f -
+
+      kubectl create secret generic postgres-credentials \
+        --namespace shogo-workspaces \
+        --from-literal=DATABASE_URL="$PLATFORM_URI" \
+        --dry-run=client -o yaml | kubectl apply -f -
+
+      echo "Waiting for CloudNativePG projects-pg-superuser secret..."
+      for i in $(seq 1 60); do
+        if kubectl get secret projects-pg-superuser -n shogo-system > /dev/null 2>&1; then
+          echo "Secret projects-pg-superuser found"
+          break
+        fi
+        sleep 5
+      done
+
+      PROJECTS_ADMIN_URI=$(kubectl get secret projects-pg-superuser -n shogo-system -o jsonpath='{.data.uri}' | base64 -d)
+      
+      if [ -z "$PROJECTS_ADMIN_URI" ]; then
+        echo "ERROR: Could not extract projects-pg URI"
+        exit 1
+      fi
+
+      echo "Projects DB admin URI extracted successfully"
+
+      kubectl create secret generic projects-db-admin \
+        --namespace shogo-system \
+        --from-literal=PROJECTS_DB_ADMIN_URL="$PROJECTS_ADMIN_URI" \
+        --from-literal=PROJECTS_DB_HOST="projects-pg-rw.shogo-system.svc.cluster.local" \
+        --from-literal=PROJECTS_DB_PORT="5432" \
+        --dry-run=client -o yaml | kubectl apply -f -
+
+      echo "All database secrets created successfully"
+    EOT
+  }
+}
+
+# S3 credentials for CloudNativePG backups
+resource "kubernetes_secret" "cnpg_s3_credentials" {
+  count      = var.bootstrap_mode ? 0 : 1
+  depends_on = [kubernetes_namespace.shogo_system]
+
+  metadata {
+    name      = "cnpg-s3-credentials"
+    namespace = "shogo-system"
+  }
+
+  data = {
+    ACCESS_KEY_ID     = var.cnpg_s3_access_key_id
+    SECRET_ACCESS_KEY = var.cnpg_s3_secret_access_key
+    REGION            = var.aws_region
+  }
+}
+
+# Redis credentials secret
 resource "kubernetes_secret" "redis_credentials" {
+  count      = var.bootstrap_mode ? 0 : 1
   depends_on = [kubernetes_namespace.shogo_system]
 
   metadata {
@@ -598,6 +852,7 @@ resource "kubernetes_secret" "redis_credentials" {
 
 # API secrets
 resource "kubernetes_secret" "api_secrets" {
+  count      = var.bootstrap_mode ? 0 : 1
   depends_on = [kubernetes_namespace.shogo_system]
 
   metadata {
@@ -606,18 +861,83 @@ resource "kubernetes_secret" "api_secrets" {
   }
 
   data = merge(
-    {
+    var.better_auth_secret != "" ? {
       BETTER_AUTH_SECRET = var.better_auth_secret
-    },
+    } : {},
     var.anthropic_api_key != "" ? {
       ANTHROPIC_API_KEY = var.anthropic_api_key
+    } : {},
+    var.google_client_id != "" ? {
+      GOOGLE_CLIENT_ID = var.google_client_id
+    } : {},
+    var.google_client_secret != "" ? {
+      GOOGLE_CLIENT_SECRET = var.google_client_secret
+    } : {},
+    var.composio_api_key != "" ? {
+      COMPOSIO_API_KEY = var.composio_api_key
+    } : {},
+    var.composio_project_id != "" ? {
+      COMPOSIO_PROJECT_ID = var.composio_project_id
+    } : {},
+    var.gh_app_client_id != "" ? {
+      GH_APP_CLIENT_ID = var.gh_app_client_id
+    } : {},
+    var.gh_app_client_secret != "" ? {
+      GH_APP_CLIENT_SECRET = var.gh_app_client_secret
+    } : {},
+    var.gh_app_id != "" ? {
+      GH_APP_ID = var.gh_app_id
+    } : {},
+    var.gh_app_private_key != "" ? {
+      GH_APP_PRIVATE_KEY = var.gh_app_private_key
+    } : {},
+    var.gh_app_slug != "" ? {
+      GH_APP_SLUG = var.gh_app_slug
+    } : {},
+    var.gh_app_webhook_secret != "" ? {
+      GH_APP_WEBHOOK_SECRET = var.gh_app_webhook_secret
+    } : {},
+    var.stripe_secret_key != "" ? {
+      STRIPE_SECRET_KEY = var.stripe_secret_key
+    } : {},
+    var.stripe_webhook_secret != "" ? {
+      STRIPE_WEBHOOK_SECRET = var.stripe_webhook_secret
     } : {}
   )
 }
 
-# Anthropic credentials for project pods (shogo-workspaces namespace)
+# SigNoz credentials for application-level OTEL tracing
+resource "kubernetes_secret" "signoz_credentials" {
+  count      = var.bootstrap_mode || var.signoz_ingestion_key == "" ? 0 : 1
+  depends_on = [kubernetes_namespace.shogo_system]
+
+  metadata {
+    name      = "signoz-credentials"
+    namespace = "shogo-system"
+  }
+
+  data = {
+    SIGNOZ_INGESTION_KEY = var.signoz_ingestion_key
+  }
+}
+
+resource "kubernetes_secret" "signoz_credentials_workspaces" {
+  count      = var.bootstrap_mode || var.signoz_ingestion_key == "" ? 0 : 1
+  depends_on = [kubernetes_namespace.shogo_workspaces]
+
+  metadata {
+    name      = "signoz-credentials"
+    namespace = "shogo-workspaces"
+  }
+
+  data = {
+    SIGNOZ_INGESTION_KEY = var.signoz_ingestion_key
+  }
+}
+
+# Anthropic credentials for project pods
 resource "kubernetes_secret" "anthropic_credentials_workspaces" {
-  count      = var.anthropic_api_key != "" ? 1 : 0
+  count      = var.bootstrap_mode || var.anthropic_api_key == "" ? 0 : 1
   depends_on = [kubernetes_namespace.shogo_workspaces]
 
   metadata {
@@ -630,10 +950,119 @@ resource "kubernetes_secret" "anthropic_credentials_workspaces" {
   }
 }
 
+# Preview secrets for project pods (JWT validation)
+resource "kubernetes_secret" "preview_secrets_workspaces" {
+  count      = var.bootstrap_mode ? 0 : 1
+  depends_on = [kubernetes_namespace.shogo_workspaces]
+
+  metadata {
+    name      = "preview-secrets"
+    namespace = "shogo-workspaces"
+  }
+
+  data = {
+    BETTER_AUTH_SECRET = var.better_auth_secret
+  }
+}
+
 # -----------------------------------------------------------------------------
-# Storage Class for EBS CSI Driver (for project PVCs)
+# S3 Bucket for Workspace Files
+# -----------------------------------------------------------------------------
+resource "aws_s3_bucket" "workspaces" {
+  bucket = "shogo-workspaces-${var.environment}"
+
+  tags = {
+    Name        = "shogo-workspaces-${var.environment}"
+    Environment = var.environment
+    Purpose     = "workspace-file-storage"
+  }
+}
+
+resource "aws_s3_bucket_versioning" "workspaces" {
+  bucket = aws_s3_bucket.workspaces.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "workspaces" {
+  bucket = aws_s3_bucket.workspaces.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "workspaces" {
+  bucket                  = aws_s3_bucket.workspaces.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "workspaces" {
+  bucket = aws_s3_bucket.workspaces.id
+  rule {
+    id     = "cleanup-old-versions"
+    status = "Enabled"
+    filter {}
+    noncurrent_version_expiration {
+      noncurrent_days = 30
+    }
+  }
+}
+
+resource "aws_iam_policy" "project_runtime_s3_access" {
+  name        = "shogo-project-runtime-s3-${var.environment}"
+  description = "Allow project-runtime pods to access S3 workspaces bucket"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          aws_s3_bucket.workspaces.arn,
+          "${aws_s3_bucket.workspaces.arn}/*"
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "node_s3_access" {
+  policy_arn = aws_iam_policy.project_runtime_s3_access.arn
+  role       = module.eks.node_role_name
+}
+
+resource "kubernetes_secret" "s3_credentials_workspaces" {
+  count      = var.bootstrap_mode ? 0 : 1
+  depends_on = [kubernetes_namespace.shogo_workspaces]
+
+  metadata {
+    name      = "s3-credentials"
+    namespace = "shogo-workspaces"
+  }
+
+  data = {
+    "workspaces-bucket" = aws_s3_bucket.workspaces.id
+    "region"            = var.aws_region
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Storage Class for EBS CSI Driver
 # -----------------------------------------------------------------------------
 resource "kubernetes_storage_class" "ebs_sc" {
+  count      = var.bootstrap_mode ? 0 : 1
   depends_on = [module.eks]
 
   metadata {
@@ -657,37 +1086,32 @@ resource "kubernetes_storage_class" "ebs_sc" {
 # -----------------------------------------------------------------------------
 # Knative Services (Application Deployment)
 # -----------------------------------------------------------------------------
-# Deploy application services via kubectl (avoids kubernetes_manifest CRD issues)
-
 locals {
   ecr_registry = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"
-  # Fallback tag for initial Terraform deploys; CI/CD overrides with SHA-specific tags.
-  image_tag = "${var.environment}-latest"
+  image_tag    = "${var.environment}-latest"
 }
 
-# Deploy all Knative services and domain mappings
 resource "null_resource" "knative_services" {
+  count = var.bootstrap_mode ? 0 : 1
+
   depends_on = [
-    module.knative,
-    kubernetes_namespace.shogo_system,
-    kubernetes_namespace.shogo_workspaces,
-    null_resource.postgres_credentials,
-    null_resource.cnpg_clusters,
-    kubernetes_secret.redis_credentials,
-    kubernetes_secret.api_secrets
+    module.knative[0],
+    kubernetes_namespace.shogo_system[0],
+    kubernetes_namespace.shogo_workspaces[0],
+    null_resource.postgres_credentials[0],
+    null_resource.cnpg_clusters[0],
+    kubernetes_secret.redis_credentials[0],
+    kubernetes_secret.api_secrets[0]
   ]
 
   triggers = {
-    # Trigger redeployment when image tag changes
     image_tag    = local.image_tag
     ecr_registry = local.ecr_registry
-    # Add timestamp trigger for manual refresh (uncomment to force redeploy)
-    # timestamp = timestamp()
+    api_memory   = "2Gi"
   }
 
   provisioner "local-exec" {
     command = <<-EOT
-      # Wait for Knative to be ready
       kubectl wait --for=condition=Available deployment/controller -n knative-serving --timeout=120s || true
       
       # Deploy Studio (Web) Service
@@ -766,7 +1190,7 @@ resource "null_resource" "knative_services" {
                   - name: BETTER_AUTH_URL
                     value: "https://studio.shogo.ai"
                   - name: ALLOWED_ORIGINS
-                    value: "https://studio.shogo.ai,https://api.shogo.ai"
+                    value: "https://studio.shogo.ai"
                   - name: REDIS_URL
                     valueFrom:
                       secretKeyRef:
@@ -783,7 +1207,6 @@ resource "null_resource" "knative_services" {
                       secretKeyRef:
                         name: api-secrets
                         key: BETTER_AUTH_SECRET
-                  # Pod-per-project configuration
                   - name: PROJECT_RUNTIME_IMAGE
                     value: "${local.ecr_registry}/shogo/project-runtime:${local.image_tag}"
                   - name: AGENT_RUNTIME_IMAGE
@@ -796,7 +1219,30 @@ resource "null_resource" "knative_services" {
                         name: api-secrets
                         key: ANTHROPIC_API_KEY
                         optional: true
-                  # Shared PostgreSQL configuration (CloudNativePG)
+                  - name: GOOGLE_CLIENT_ID
+                    valueFrom:
+                      secretKeyRef:
+                        name: api-secrets
+                        key: GOOGLE_CLIENT_ID
+                        optional: true
+                  - name: GOOGLE_CLIENT_SECRET
+                    valueFrom:
+                      secretKeyRef:
+                        name: api-secrets
+                        key: GOOGLE_CLIENT_SECRET
+                        optional: true
+                  - name: COMPOSIO_API_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: api-secrets
+                        key: COMPOSIO_API_KEY
+                        optional: true
+                  - name: COMPOSIO_PROJECT_ID
+                    valueFrom:
+                      secretKeyRef:
+                        name: api-secrets
+                        key: COMPOSIO_PROJECT_ID
+                        optional: true
                   - name: POSTGRES_ENABLED
                     value: "true"
                   - name: PROJECTS_DB_ADMIN_URL
@@ -811,18 +1257,42 @@ resource "null_resource" "knative_services" {
                     value: "5432"
                   - name: PROJECT_IDLE_TIMEOUT
                     value: "${var.project_runtime_idle_timeout}"
+                  - name: S3_WORKSPACES_BUCKET
+                    value: "${aws_s3_bucket.workspaces.id}"
+                  - name: S3_REGION
+                    value: "${var.aws_region}"
+                  - name: PUBLISH_BUCKET
+                    value: "shogo-published-apps-${var.environment}"
+                  - name: PUBLISH_CLOUDFRONT_ID
+                    value: ""
+                  - name: PUBLISH_DOMAIN
+                    value: "${var.publish_domain}"
+                  - name: WARM_POOL_AGENTS_PER_NODE
+                    value: "10"
+                  - name: WARM_POOL_MIN_AGENTS
+                    value: "2"
+                  - name: KARPENTER_ENABLED
+                    value: "true"
+                  - name: EKS_ASG_NAME
+                    value: "${module.eks.cluster_name}-main"
+                  - name: PROACTIVE_SCALING_ENABLED
+                    value: "true"
+                  - name: NODE_HEADROOM_PODS
+                    value: "10"
+                  - name: NODE_MAX_SIZE
+                    value: "15"
+                  - name: WARM_POOL_MAX_AGE_MS
+                    value: "3600000"
                 resources:
                   requests:
-                    memory: "256Mi"
+                    memory: "512Mi"
                     cpu: "100m"
                   limits:
-                    memory: "512Mi"
+                    memory: "2Gi"
                     cpu: "500m"
       EOF
 
       # Deploy MCP Workspace Service
-      # IMPORTANT: min-scale: 1 keeps pod always running to preserve meta-store state.
-      # Scaling to zero loses all loaded schemas, causing query failures.
       cat <<EOF | kubectl apply -f -
       apiVersion: serving.knative.dev/v1
       kind: Service
@@ -836,7 +1306,6 @@ resource "null_resource" "knative_services" {
         template:
           metadata:
             annotations:
-              # Keep at least 1 pod running to preserve meta-store state
               autoscaling.knative.dev/min-scale: "1"
               autoscaling.knative.dev/max-scale: "10"
               autoscaling.knative.dev/target: "100"
@@ -871,7 +1340,6 @@ resource "null_resource" "knative_services" {
                   limits:
                     memory: "512Mi"
                     cpu: "500m"
-                # Startup probe: TCP check on main MCP port
                 startupProbe:
                   tcpSocket:
                     port: 8080
@@ -879,7 +1347,6 @@ resource "null_resource" "knative_services" {
                   periodSeconds: 5
                   timeoutSeconds: 5
                   failureThreshold: 12
-                # Readiness probe: TCP check ensures MCP server is listening
                 readinessProbe:
                   tcpSocket:
                     port: 8080
@@ -924,8 +1391,97 @@ resource "null_resource" "knative_services" {
           kind: Service
           apiVersion: serving.knative.dev/v1
       EOF
+
+      echo "Waiting for services to be ready..."
+      kubectl wait --for=condition=ready ksvc/studio -n shogo-system --timeout=300s || true
+      kubectl wait --for=condition=ready ksvc/api -n shogo-system --timeout=300s || true
+      kubectl wait --for=condition=ready ksvc/mcp-workspace-1 -n shogo-workspaces --timeout=300s || true
+      
+      echo "Knative services deployed successfully"
     EOT
   }
+}
+
+# -----------------------------------------------------------------------------
+# Publish Hosting (S3 + CloudFront for published apps)
+# -----------------------------------------------------------------------------
+module "publish_hosting" {
+  source = "../../modules/publish-hosting"
+
+  count = var.ssl_certificate_domain_publish != "" ? 1 : 0
+
+  environment         = var.environment
+  publish_domain      = var.publish_domain
+  acm_certificate_arn = data.aws_acm_certificate.ssl_publish[0].arn
+
+  tags = {
+    Environment = var.environment
+  }
+}
+
+resource "aws_iam_policy" "api_publish_s3_access" {
+  count       = var.ssl_certificate_domain_publish != "" ? 1 : 0
+  name        = "shogo-api-publish-s3-${var.environment}"
+  description = "Allow API to upload published apps to S3"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          module.publish_hosting[0].bucket_arn,
+          "${module.publish_hosting[0].bucket_arn}/*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "cloudfront:CreateInvalidation"
+        ]
+        Resource = [
+          module.publish_hosting[0].cloudfront_distribution_arn
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "node_publish_s3_access" {
+  count      = var.ssl_certificate_domain_publish != "" ? 1 : 0
+  policy_arn = aws_iam_policy.api_publish_s3_access[0].arn
+  role       = module.eks.node_role_name
+}
+
+resource "kubernetes_secret" "publish_config" {
+  count      = var.bootstrap_mode || var.ssl_certificate_domain_publish == "" ? 0 : 1
+  depends_on = [kubernetes_namespace.shogo_system]
+
+  metadata {
+    name      = "publish-config"
+    namespace = "shogo-system"
+  }
+
+  data = {
+    "bucket-name"    = module.publish_hosting[0].bucket_name
+    "cloudfront-id"  = module.publish_hosting[0].cloudfront_distribution_id
+    "publish-domain" = var.publish_domain
+    "region"         = var.aws_region
+  }
+}
+
+# -----------------------------------------------------------------------------
+# ECR Cross-Region Replication (replicate images to eu-west-1)
+# -----------------------------------------------------------------------------
+module "ecr_replication" {
+  source = "../../modules/ecr-replication"
+
+  replica_regions = ["eu-west-1"]
 }
 
 # -----------------------------------------------------------------------------
@@ -938,11 +1494,10 @@ module "github_oidc" {
   github_org   = var.github_org
   github_repo  = var.github_repo
 
-  # Grant access to both production and staging EKS clusters
   eks_cluster_arns = [
     module.eks.cluster_arn,
-    "arn:aws:eks:${var.aws_region}:${data.aws_caller_identity.current.account_id}:cluster/${var.project_name}-staging"
+    "arn:aws:eks:${var.aws_region}:${data.aws_caller_identity.current.account_id}:cluster/${var.project_name}-staging",
+    "arn:aws:eks:eu-west-1:${data.aws_caller_identity.current.account_id}:cluster/${var.project_name}-production-eu"
   ]
   ecr_repository_arns = values(module.ecr.repository_arns)
 }
-

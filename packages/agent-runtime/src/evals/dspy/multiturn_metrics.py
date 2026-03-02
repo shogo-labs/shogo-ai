@@ -9,7 +9,7 @@ import dspy
 
 
 VALID_TOOLS = {
-    "exec", "read_file", "write_file", "web_fetch",
+    "exec", "read_file", "write_file", "web",
     "memory_read", "memory_write", "memory_search",
     "browser", "send_message", "cron",
     "canvas_create", "canvas_update", "canvas_data",

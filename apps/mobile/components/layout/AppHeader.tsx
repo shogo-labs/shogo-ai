@@ -20,7 +20,6 @@ function getTitleFromPathname(pathname: string): string {
   if (pathname.startsWith('/(app)/shared')) return 'Shared'
   if (pathname.startsWith('/(app)/templates')) return 'Templates'
   if (pathname.startsWith('/(app)/billing')) return 'Billing'
-  if (pathname.startsWith('/(app)/members')) return 'Members'
   if (pathname.startsWith('/(app)/settings')) return 'Settings'
   const segments = pathname.split('/').filter(Boolean)
   const last = segments[segments.length - 1]

@@ -24,6 +24,7 @@ import {
   X,
   FolderPlus,
   FilePlus,
+  Settings,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 
@@ -53,6 +54,16 @@ interface FilesBrowserPanelProps {
   agentUrl: string | null
   visible: boolean
 }
+
+const WORKSPACE_FILES = [
+  { id: 'AGENTS.md', label: 'Instructions', description: 'Operating rules and priorities' },
+  { id: 'SOUL.md', label: 'Persona', description: 'Personality and boundaries' },
+  { id: 'USER.md', label: 'User', description: 'User preferences' },
+  { id: 'IDENTITY.md', label: 'Identity', description: 'Name, emoji, tagline' },
+  { id: 'HEARTBEAT.md', label: 'Heartbeat', description: 'Autonomous task checklist' },
+  { id: 'MEMORY.md', label: 'Memory', description: 'Long-lived facts' },
+  { id: 'TOOLS.md', label: 'Tools', description: 'Tool notes and conventions' },
+]
 
 // ---------------------------------------------------------------------------
 // File Tree Item
@@ -161,6 +172,7 @@ function formatSize(bytes: number): string {
 export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowserPanelProps) {
   const [tree, setTree] = useState<FileEntry[]>([])
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
+  const [isWorkspaceFile, setIsWorkspaceFile] = useState(false)
   const [content, setContent] = useState('')
   const [savedContent, setSavedContent] = useState('')
   const [isLoadingTree, setIsLoadingTree] = useState(false)
@@ -168,6 +180,8 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
   const [isSaving, setIsSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set())
+  const [isExporting, setIsExporting] = useState(false)
+  const [workspaceExpanded, setWorkspaceExpanded] = useState(true)
 
   // Search state
   const [searchQuery, setSearchQuery] = useState('')
@@ -204,6 +218,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
     if (!agentUrl) return
     setIsLoadingFile(true)
     setError(null)
+    setIsWorkspaceFile(false)
     try {
       const res = await fetch(`${agentUrl}/agent/workspace/files/${encodeURIComponent(path)}`)
       if (!res.ok) throw new Error('Failed to load file')
@@ -211,6 +226,25 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
       setContent(data.content || '')
       setSavedContent(data.content || '')
       setSelectedPath(path)
+    } catch (err: any) {
+      setError(err.message)
+    } finally {
+      setIsLoadingFile(false)
+    }
+  }, [agentUrl])
+
+  const loadWorkspaceFile = useCallback(async (filename: string) => {
+    if (!agentUrl) return
+    setIsLoadingFile(true)
+    setError(null)
+    setIsWorkspaceFile(true)
+    try {
+      const res = await fetch(`${agentUrl}/agent/files/${filename}`)
+      if (!res.ok) throw new Error('Failed to load file')
+      const data = await res.json()
+      setContent(data.content || '')
+      setSavedContent(data.content || '')
+      setSelectedPath(filename)
     } catch (err: any) {
       setError(err.message)
     } finally {
@@ -231,14 +265,17 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
     setIsSaving(true)
     setError(null)
     try {
-      const res = await fetch(`${agentUrl}/agent/workspace/files/${encodeURIComponent(selectedPath)}`, {
+      const url = isWorkspaceFile
+        ? `${agentUrl}/agent/files/${selectedPath}`
+        : `${agentUrl}/agent/workspace/files/${encodeURIComponent(selectedPath)}`
+      const res = await fetch(url, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content }),
       })
       if (!res.ok) throw new Error('Failed to save')
       setSavedContent(content)
-      loadTree()
+      if (!isWorkspaceFile) loadTree()
     } catch (err: any) {
       setError(err.message)
     } finally {
@@ -355,6 +392,64 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
     }
   }
 
+  const handleExport = useCallback(async () => {
+    if (!agentUrl) return
+    setIsExporting(true)
+    try {
+      const res = await fetch(`${agentUrl}/agent/export`)
+      if (!res.ok) throw new Error('Failed to export')
+      const bundle = await res.json()
+      const jsonStr = JSON.stringify(bundle, null, 2)
+
+      if (Platform.OS === 'web' && typeof document !== 'undefined') {
+        const blob = new Blob([jsonStr], { type: 'application/json' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `agent-export-${new Date().toISOString().slice(0, 10)}.json`
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+      }
+      setError(null)
+    } catch (err: any) {
+      setError(err.message)
+    } finally {
+      setIsExporting(false)
+    }
+  }, [agentUrl])
+
+  const handleImport = useCallback(() => {
+    if (!agentUrl) return
+    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+      const input = document.createElement('input')
+      input.type = 'file'
+      input.accept = '.json'
+      input.onchange = async (e: any) => {
+        const file = e.target?.files?.[0]
+        if (!file) return
+        try {
+          const text = await file.text()
+          const bundle = JSON.parse(text)
+          const res = await fetch(`${agentUrl}/agent/import`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(bundle),
+          })
+          if (!res.ok) throw new Error('Failed to import agent')
+          if (isWorkspaceFile && selectedPath) {
+            loadWorkspaceFile(selectedPath)
+          }
+          setError(null)
+        } catch (err: any) {
+          setError(err.message || 'Failed to import agent configuration')
+        }
+      }
+      input.click()
+    }
+  }, [agentUrl, isWorkspaceFile, selectedPath, loadWorkspaceFile])
+
   const toggleDir = (path: string) => {
     setExpandedDirs(prev => {
       const next = new Set(prev)
@@ -435,7 +530,56 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
             </View>
           ) : (
             <View className="p-1">
-              <Text className="text-[10px] font-medium text-muted-foreground px-2 py-1">
+              {/* Workspace config files */}
+              <Pressable
+                onPress={() => setWorkspaceExpanded((v) => !v)}
+                className="flex-row items-center gap-1 px-2 py-1"
+              >
+                {workspaceExpanded ? (
+                  <ChevronDown size={10} className="text-muted-foreground" />
+                ) : (
+                  <ChevronRight size={10} className="text-muted-foreground" />
+                )}
+                <Settings size={10} className="text-muted-foreground" />
+                <Text className="text-[10px] font-medium text-muted-foreground">
+                  WORKSPACE
+                </Text>
+              </Pressable>
+              {workspaceExpanded && WORKSPACE_FILES.map((file) => (
+                <Pressable
+                  key={file.id}
+                  onPress={() => loadWorkspaceFile(file.id)}
+                  className={cn(
+                    'px-2 py-1 rounded-md',
+                    isWorkspaceFile && selectedPath === file.id ? 'bg-primary/10' : 'active:bg-muted',
+                  )}
+                  style={{ paddingLeft: 24 }}
+                >
+                  <View className="flex-row items-center gap-1.5">
+                    <FileText
+                      size={12}
+                      className={isWorkspaceFile && selectedPath === file.id ? 'text-primary' : 'text-blue-500'}
+                    />
+                    <Text
+                      className={cn(
+                        'text-xs',
+                        isWorkspaceFile && selectedPath === file.id
+                          ? 'text-primary font-medium'
+                          : 'text-foreground',
+                      )}
+                      numberOfLines={1}
+                    >
+                      {file.label}
+                    </Text>
+                  </View>
+                  <Text className="text-[10px] text-muted-foreground" style={{ marginLeft: 18 }} numberOfLines={1}>
+                    {file.description}
+                  </Text>
+                </Pressable>
+              ))}
+
+              {/* General file tree */}
+              <Text className="text-[10px] font-medium text-muted-foreground px-2 py-1 mt-2">
                 FILES
               </Text>
               {tree.length === 0 ? (
@@ -448,7 +592,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
                     key={entry.path}
                     entry={entry}
                     depth={0}
-                    selectedPath={selectedPath}
+                    selectedPath={!isWorkspaceFile ? selectedPath : null}
                     expandedDirs={expandedDirs}
                     onSelect={loadFile}
                     onToggleDir={toggleDir}
@@ -484,6 +628,25 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
             <Upload size={12} className="text-muted-foreground" />
             <Text className="text-xs text-muted-foreground">Upload Files</Text>
           </Pressable>
+          <View className="border-t border-border mt-1 pt-1 gap-1">
+            <Pressable
+              onPress={handleExport}
+              disabled={isExporting}
+              className="flex-row items-center gap-1.5 px-2 py-1.5 rounded-md active:bg-muted"
+            >
+              <Download size={12} className="text-muted-foreground" />
+              <Text className="text-xs text-muted-foreground">
+                {isExporting ? 'Exporting...' : 'Export Agent'}
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={handleImport}
+              className="flex-row items-center gap-1.5 px-2 py-1.5 rounded-md active:bg-muted"
+            >
+              <Upload size={12} className="text-muted-foreground" />
+              <Text className="text-xs text-muted-foreground">Import Agent</Text>
+            </Pressable>
+          </View>
         </View>
 
         {/* New file/folder dialog */}
@@ -528,25 +691,38 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
             <View className="px-3 py-2 border-b border-border flex-row items-center gap-2">
               <FileText size={14} className="text-muted-foreground" />
               <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
-                {selectedPath}
+                {isWorkspaceFile
+                  ? WORKSPACE_FILES.find((f) => f.id === selectedPath)?.label ?? selectedPath
+                  : selectedPath}
               </Text>
+              {isWorkspaceFile && (
+                <Text className="text-[10px] text-muted-foreground">{selectedPath}</Text>
+              )}
               {hasChanges && <Text className="text-xs text-amber-500">unsaved</Text>}
 
               <View className="ml-auto flex-row items-center gap-1">
+                {!isWorkspaceFile && (
+                  <>
+                    <Pressable
+                      onPress={handleDownload}
+                      className="p-1.5 rounded-md active:bg-muted"
+                    >
+                      <Download size={14} className="text-muted-foreground" />
+                    </Pressable>
+                    <Pressable
+                      onPress={handleDelete}
+                      className="p-1.5 rounded-md active:bg-muted"
+                    >
+                      <Trash2 size={14} className="text-destructive" />
+                    </Pressable>
+                  </>
+                )}
                 <Pressable
-                  onPress={handleDownload}
-                  className="p-1.5 rounded-md active:bg-muted"
-                >
-                  <Download size={14} className="text-muted-foreground" />
-                </Pressable>
-                <Pressable
-                  onPress={handleDelete}
-                  className="p-1.5 rounded-md active:bg-muted"
-                >
-                  <Trash2 size={14} className="text-destructive" />
-                </Pressable>
-                <Pressable
-                  onPress={() => selectedPath && loadFile(selectedPath)}
+                  onPress={() => {
+                    if (selectedPath) {
+                      isWorkspaceFile ? loadWorkspaceFile(selectedPath) : loadFile(selectedPath)
+                    }
+                  }}
                   className="p-1.5 rounded-md active:bg-muted"
                 >
                   <RefreshCw size={14} className="text-muted-foreground" />
@@ -592,11 +768,11 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
           </>
         ) : (
           <View className="flex-1 items-center justify-center gap-3">
-            <FileText size={40} className="text-muted-foreground/30" />
+            <FileText size={40} className="text-muted-foreground/50" />
             <Text className="text-sm text-muted-foreground">
               Select a file to view or edit
             </Text>
-            <Text className="text-xs text-muted-foreground/70 text-center px-8">
+            <Text className="text-xs text-muted-foreground text-center px-8">
               Upload .txt, .csv, or .md files. Your agent can search across all files using RAG.
             </Text>
           </View>

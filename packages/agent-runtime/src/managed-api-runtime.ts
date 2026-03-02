@@ -151,6 +151,12 @@ function coerceForInsert(data: Record<string, unknown>, fields: ModelField[]): R
     }
     if (field.type === 'Boolean') {
       result[key] = val === true || val === 'true' || val === 1 ? 1 : 0
+    } else if (field.type === 'Int' && typeof val === 'string') {
+      const parsed = parseInt(val, 10)
+      result[key] = isNaN(parsed) ? null : parsed
+    } else if (field.type === 'Float' && typeof val === 'string') {
+      const parsed = parseFloat(val)
+      result[key] = isNaN(parsed) ? null : parsed
     } else if (field.type === 'Json' && typeof val !== 'string') {
       result[key] = JSON.stringify(val)
     } else {

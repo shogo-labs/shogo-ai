@@ -31,11 +31,14 @@ import { checkpointRoutes } from './routes/checkpoints'
 import { thumbnailRoutes } from './routes/thumbnail'
 import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
+import { toolsProxyRoutes } from './routes/tools-proxy'
 import { calculateCreditCost } from './lib/credit-cost'
 import { openSession as openBillingSession, closeSession as closeBillingSession } from './lib/proxy-billing-session'
 import { adminRoutes } from './routes/admin'
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
 import { integrationRoutes } from './routes/integrations'
+import { agentTemplateRoutes } from './routes/agent-templates'
+import internalRoutes from './routes/internal'
 import { requireSuperAdmin } from './middleware/super-admin'
 // Generated admin CRUD routes (unrestricted, middleware-protected)
 import { createAdminRoutes } from './generated/admin-routes'
@@ -76,6 +79,36 @@ async function getProjectType(projectId: string): Promise<string> {
   const type = row?.type ?? 'APP'
   projectTypeCache.set(projectId, type)
   return type
+}
+
+/**
+ * Extract the authenticated user from the request via Better Auth session.
+ * Returns the userId or null if unauthenticated.
+ */
+async function getAuthUserId(c: any): Promise<string | null> {
+  try {
+    const session = await auth.api.getSession({ headers: c.req.raw.headers })
+    return session?.user?.id ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Verify that a user has access to a project via workspace membership.
+ * Returns the project's workspaceId if access is granted, null otherwise.
+ */
+async function verifyProjectAccess(userId: string, projectId: string): Promise<string | null> {
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { workspaceId: true },
+  })
+  if (!project) return null
+
+  const member = await prisma.member.findFirst({
+    where: { userId, workspaceId: project.workspaceId },
+  })
+  return member ? project.workspaceId : null
 }
 
 /**
@@ -807,6 +840,9 @@ app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
 // Health check
 app.get('/api/health', (c) => c.json({ ok: true }))
 
+// Agent template catalog — public, no auth required
+app.route('/api', agentTemplateRoutes())
+
 // Warm pool + cluster capacity status (for operational dashboards and load testing)
 app.get('/api/warm-pool/status', async (c) => {
   try {
@@ -1056,7 +1092,7 @@ app.post('/api/projects/:projectId/runtime/start', async (c) => {
       const { getKnativeProjectManager } = await import('./lib/knative-project-manager')
       const knativeManager = getKnativeProjectManager()
       await knativeManager.createProject(projectId)
-      const podUrl = `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`
+      const podUrl = await knativeManager.resolveProjectPodUrl(projectId)
       return c.json({
         success: true,
         projectId,
@@ -1272,6 +1308,16 @@ app.get('/api/projects/:projectId/runtime/status', async (c) => {
 //   ?mode=proxy - Return proxy-based preview URL (legacy, default for backwards compat)
 app.get('/api/projects/:projectId/sandbox/url', async (c) => {
   const projectId = c.req.param('projectId')
+
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const wsId = await verifyProjectAccess(userId, projectId)
+  if (!wsId) {
+    return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+  }
+
   const shouldWait = c.req.query('wait') !== 'false' // Default to waiting for backwards compat
   const previewMode = c.req.query('mode') || 'subdomain' // Default to subdomain mode
   
@@ -1339,10 +1385,11 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         })
         .catch(() => {})
 
+      const resolvedDirectUrl = await manager.resolveProjectPodUrl(projectId)
       return c.json({
         url: previewUrl,
         proxyUrl: legacyProxyUrl, // Backwards compat - legacy proxy URL
-        directUrl: `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`,
+        directUrl: resolvedDirectUrl,
         ...(agentUrl && { agentUrl }),
         sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
         status: 'running',
@@ -1351,12 +1398,13 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
       }, 200)
     }
     
+    const resolvedDirectUrl = await manager.resolveProjectPodUrl(projectId)
+
     // Pod doesn't exist or isn't ready
     if (!shouldWait) {
       // Caller requested non-blocking - return current status
       // This triggers pod creation in the background if needed
       if (!status.exists) {
-        // Start creation in background (don't await)
         getProjectPodUrl(projectId).catch(err => {
           console.error(`[Runtime] Background pod creation failed for ${projectId}:`, err)
         })
@@ -1366,7 +1414,7 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
       return c.json({
         url: previewUrl,
         proxyUrl: legacyProxyUrl,
-        directUrl: `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`,
+        directUrl: resolvedDirectUrl,
         ...(agentUrl && { agentUrl }),
         sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
         status: status.exists ? 'starting' : 'creating',
@@ -1375,19 +1423,18 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         message: status.exists 
           ? 'Project runtime is starting, please poll /runtime/status until ready'
           : 'Project runtime is being created, please poll /runtime/status until ready',
-      }, 202) // 202 Accepted - request accepted but processing not complete
+      }, 202)
     }
     
     // Wait for pod to be ready (default behavior)
     try {
-      // This will create the pod if it doesn't exist and wait for it to be ready
       await getProjectPodUrl(projectId)
       
       console.log(`[sandbox/url] Returning waited response with url=${previewUrl}`)
       return c.json({
         url: previewUrl,
         proxyUrl: legacyProxyUrl,
-        directUrl: `http://project-${projectId}.${PROJECT_NAMESPACE}.svc.cluster.local`,
+        directUrl: resolvedDirectUrl,
         ...(agentUrl && { agentUrl }),
         sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups',
         status: 'running',
@@ -1524,6 +1571,15 @@ app.all('/api/projects/:projectId/preview', async (c) => {
 // Agent proxy - forwards requests directly to agent-runtime pod without /preview prefix
 app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   const projectId = c.req.param('projectId')
+
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const workspaceId = await verifyProjectAccess(userId, projectId)
+  if (!workspaceId) {
+    return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+  }
 
   if (!isKubernetes()) {
     return c.json({ error: { code: 'not_supported', message: 'Agent proxy only available in Kubernetes' } }, 501)
@@ -2850,8 +2906,25 @@ app.route('/api', githubRouter)
 // Project Chat Proxy Routes (pod-per-project architecture)
 // =============================================================================
 
+// Auth guard shared by all chat proxy routes
+async function requireProjectAuth(c: any): Promise<{ error: Response } | { projectId: string }> {
+  const projectId = c.req.param('projectId')
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return { error: c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401) }
+  }
+  const wsId = await verifyProjectAccess(userId, projectId)
+  if (!wsId) {
+    return { error: c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403) }
+  }
+  return { projectId }
+}
+
 // POST /api/projects/:projectId/chat - Proxy chat to project pod
 app.post('/api/projects/:projectId/chat', async (c) => {
+  const authResult = await requireProjectAuth(c)
+  if ('error' in authResult) return authResult.error
+
   const manager = getRuntimeManager()
   const router = projectChatRoutes({ runtimeManager: manager })
   const url = new URL(c.req.url)
@@ -2866,6 +2939,9 @@ app.post('/api/projects/:projectId/chat', async (c) => {
 
 // GET /api/projects/:projectId/chat/status - Check project runtime status
 app.get('/api/projects/:projectId/chat/status', async (c) => {
+  const authResult = await requireProjectAuth(c)
+  if ('error' in authResult) return authResult.error
+
   const manager = getRuntimeManager()
   const router = projectChatRoutes({ runtimeManager: manager })
   const url = new URL(c.req.url)
@@ -2876,6 +2952,9 @@ app.get('/api/projects/:projectId/chat/status', async (c) => {
 
 // POST /api/projects/:projectId/chat/stop - Stop/interrupt active generation
 app.post('/api/projects/:projectId/chat/stop', async (c) => {
+  const authResult = await requireProjectAuth(c)
+  if ('error' in authResult) return authResult.error
+
   const manager = getRuntimeManager()
   const router = projectChatRoutes({ runtimeManager: manager })
   const url = new URL(c.req.url)
@@ -2890,6 +2969,9 @@ app.post('/api/projects/:projectId/chat/stop', async (c) => {
 
 // POST /api/projects/:projectId/chat/wake - Wake up a scaled-to-zero pod
 app.post('/api/projects/:projectId/chat/wake', async (c) => {
+  const authResult = await requireProjectAuth(c)
+  if ('error' in authResult) return authResult.error
+
   const manager = getRuntimeManager()
   const router = projectChatRoutes({ runtimeManager: manager })
   const url = new URL(c.req.url)
@@ -4071,6 +4153,11 @@ app.post('/api/webhooks/stripe', async (c) => {
 const aiProxy = aiProxyRoutes()
 app.route('/api', aiProxy)
 
+// Tools passthrough proxy (Composio, Serper, OpenAI embeddings).
+// Uses the same JWT auth as the AI proxy — no raw API keys in agent pods.
+const toolsProxy = toolsProxyRoutes()
+app.route('/api', toolsProxy)
+
 // =============================================================================
 // Domain API routes - For APIPersistence layer
 // =============================================================================
@@ -4096,6 +4183,9 @@ app.route('/api', scopedAnalyticsRoutes())
 
 // Composio integration routes for managed OAuth (connect/disconnect/status)
 app.route('/api', integrationRoutes())
+
+// Internal routes for cluster-internal pod communication (not exposed externally)
+app.route('/api/internal', internalRoutes)
 
 // =============================================================================
 // Current User Route (/api/me) - Returns user profile with role
@@ -4136,6 +4226,43 @@ app.use('/api/*', authMiddleware)
 // Require authentication for all routes
 // Unauthenticated requests get 401 Unauthorized
 app.use('/api/*', requireAuth)
+
+// =============================================================================
+// Leave Workspace - Removes the current user's membership from a workspace
+// =============================================================================
+
+app.post('/api/workspaces/:id/leave', async (c) => {
+  const auth = c.get('auth') as any
+  const userId = auth?.userId
+  if (!userId) return c.json({ error: 'Unauthorized' }, 401)
+
+  const workspaceId = c.req.param('id')
+
+  const memberships = await prisma.member.findMany({
+    where: { userId, workspaceId },
+  })
+
+  if (memberships.length === 0) {
+    return c.json({ error: { code: 'not_found', message: 'You are not a member of this workspace.' } }, 404)
+  }
+
+  const wsMembership = memberships.find((m: any) => !m.projectId) || memberships[0]
+
+  if (wsMembership.role === 'owner') {
+    const allWsOwners = await prisma.member.findMany({
+      where: { workspaceId, role: 'owner' },
+      select: { id: true, userId: true, projectId: true },
+    })
+    const otherOwners = allWsOwners.filter((m: any) => m.userId !== userId && !m.projectId)
+    if (otherOwners.length === 0) {
+      return c.json({ error: { code: 'last_owner', message: 'You are the only owner. Transfer ownership to another member before leaving.' } }, 400)
+    }
+  }
+
+  await prisma.member.deleteMany({ where: { userId, workspaceId } })
+
+  return c.json({ ok: true })
+})
 
 // =============================================================================
 // Invite Link Routes (custom, not auto-generated)

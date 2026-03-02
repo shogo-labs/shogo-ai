@@ -2,16 +2,22 @@
  * Composio Integration Service
  *
  * Manages Composio sessions for per-user OAuth-based tool integrations.
- * Discovers available toolkits dynamically via the Composio API rather
- * than hardcoding them. Only COMPOSIO_API_KEY is required -- Composio
+ * Uses the Composio SDK directly for tool execution and auth management
+ * (no MCP intermediary). Only COMPOSIO_API_KEY is required -- Composio
  * provides managed OAuth credentials for all toolkits by default.
  * Optional auth config env vars enable white-labeling.
  */
 
 import { Composio } from '@composio/core'
+import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import type { MCPClientManager } from './mcp-client'
+import { fetchComposioToolSchemas, type ComposioToolSchema } from './composio-auto-bind'
 
-const COMPOSIO_MCP_SERVER_NAME = 'composio'
+/** Stored composio user ID for SDK auth and tool execution scoping */
+let storedComposioUserId: string | null = null
+
+/** Track registered proxy tool names for dedup across multiple toolkit installs */
+const registeredProxyToolNames = new Set<string>()
 
 interface ComposioAuthConfigs {
   [toolkit: string]: string
@@ -21,6 +27,31 @@ export interface ComposioToolkitInfo {
   slug: string
   name: string
   logo?: string
+}
+
+// ---------------------------------------------------------------------------
+// Timing infrastructure
+// ---------------------------------------------------------------------------
+
+export interface ComposioTiming {
+  operation: string
+  durationMs: number
+  timestamp: number
+}
+
+const timings: ComposioTiming[] = []
+
+export function getComposioTimings(): ComposioTiming[] {
+  return [...timings]
+}
+
+export function clearComposioTimings(): void {
+  timings.length = 0
+}
+
+function recordTiming(operation: string, durationMs: number) {
+  timings.push({ operation, durationMs, timestamp: Date.now() })
+  console.log(`[Composio] [Timing] ${operation}: ${durationMs.toFixed(0)}ms`)
 }
 
 // ---------------------------------------------------------------------------
@@ -99,15 +130,12 @@ export async function findComposioToolkit(name: string): Promise<ComposioToolkit
 
   const normalized = name.toLowerCase().replace(/[-_\s]/g, '')
 
-  // Exact slug match
   const exact = all.find(t => t.slug.toLowerCase() === name.toLowerCase())
   if (exact) return exact
 
-  // Normalized match (strip hyphens/underscores/spaces)
   const norm = all.find(t => t.slug.toLowerCase().replace(/[-_\s]/g, '') === normalized)
   if (norm) return norm
 
-  // Containment match
   const contained = all.find(t => {
     const tNorm = t.slug.toLowerCase().replace(/[-_\s]/g, '')
     return tNorm.includes(normalized) || normalized.includes(tNorm)
@@ -135,7 +163,6 @@ function getAuthConfigs(): ComposioAuthConfigs {
     }
   }
 
-  // Legacy env var support
   const legacyMap: Record<string, string[]> = {
     COMPOSIO_GOOGLE_AUTH_CONFIG: ['googlecalendar', 'gmail', 'googledrive'],
     COMPOSIO_SLACK_AUTH_CONFIG: ['slack'],
@@ -164,29 +191,43 @@ function getComposioClient(): Composio | null {
   if (composioClient) return composioClient
 
   const apiKey = process.env.COMPOSIO_API_KEY
-  if (!apiKey) {
-    console.log('[Composio] COMPOSIO_API_KEY not set, Composio integration disabled')
-    return null
+  const proxyUrl = process.env.TOOLS_PROXY_URL
+  const proxyToken = process.env.AI_PROXY_TOKEN
+
+  if (apiKey) {
+    composioClient = new Composio({ apiKey })
+    console.log('[Composio] Client initialized (direct)')
+    return composioClient
   }
 
-  composioClient = new Composio({ apiKey })
-  console.log('[Composio] Client initialized')
-  return composioClient
+  if (proxyUrl && proxyToken) {
+    composioClient = new Composio({
+      apiKey: proxyToken,
+      baseURL: `${proxyUrl}/composio`,
+    })
+    console.log('[Composio] Client initialized (via proxy)')
+    return composioClient
+  }
+
+  console.log('[Composio] No COMPOSIO_API_KEY or proxy config, Composio integration disabled')
+  return null
 }
 
 // ---------------------------------------------------------------------------
-// MCP connection
+// SDK-based session init (replaces MCP connection)
 // ---------------------------------------------------------------------------
 
 /**
- * Connect to Composio's MCP endpoint for a given user/project.
- * Creates a Composio session and registers it as a remote MCP server.
+ * Initialize a Composio session for a given user/project.
+ * Creates the session via SDK (registers user with Composio) and stores the
+ * user ID for tool execution scoping. No MCP transport is used.
  */
-export async function connectComposioMCP(
-  mcpClientManager: MCPClientManager,
+export async function initComposioSession(
   userId: string,
   projectId: string,
 ): Promise<boolean> {
+  if (storedComposioUserId) return true
+
   const client = getComposioClient()
   if (!client) return false
 
@@ -195,53 +236,44 @@ export async function connectComposioMCP(
   const hasCustomAuth = Object.keys(authConfigs).length > 0
 
   try {
+    const t0 = performance.now()
     console.log(`[Composio] Creating session for user "${composioUserId}"${hasCustomAuth ? ' (with custom auth configs)' : ' (using Composio managed auth)'}...`)
     const sessionOpts = hasCustomAuth ? { authConfigs } : undefined
-    const session = await client.create(composioUserId, sessionOpts)
+    await client.create(composioUserId, sessionOpts)
 
-    if (!session.mcp?.url) {
-      console.error('[Composio] Session created but no MCP URL returned')
-      return false
-    }
-
-    await mcpClientManager.startRemoteServer(COMPOSIO_MCP_SERVER_NAME, {
-      url: session.mcp.url,
-      headers: session.mcp.headers,
-      excludeTools: [
-        'COMPOSIO_REMOTE_WORKBENCH',
-        'COMPOSIO_REMOTE_BASH_TOOL',
-        'COMPOSIO_GET_TOOL_SCHEMAS',
-      ],
-      maxResultChars: 12000,
-    })
-
-    console.log(`[Composio] Connected to MCP endpoint for user "${composioUserId}"`)
+    storedComposioUserId = composioUserId
+    const elapsed = performance.now() - t0
+    recordTiming('session init', elapsed)
+    console.log(`[Composio] Session initialized for user "${composioUserId}"`)
     return true
   } catch (err: any) {
-    console.error(`[Composio] Failed to connect MCP: ${err.message}`)
+    console.error(`[Composio] Failed to init session: ${err.message}`)
     return false
   }
 }
 
 /**
- * Disconnect from Composio's MCP endpoint.
+ * Reset the Composio session state. Clears stored user ID and proxy tools.
  */
-export async function disconnectComposioMCP(
-  mcpClientManager: MCPClientManager,
-): Promise<void> {
-  try {
-    await mcpClientManager.stopRemoteServer(COMPOSIO_MCP_SERVER_NAME)
-    console.log('[Composio] Disconnected from MCP endpoint')
-  } catch (err: any) {
-    console.error(`[Composio] Error disconnecting: ${err.message}`)
-  }
+export function resetComposioSession(): void {
+  storedComposioUserId = null
+  registeredProxyToolNames.clear()
+  console.log('[Composio] Session reset')
 }
 
 /**
- * Check if Composio integration is configured (API key present).
+ * Check if a Composio session has been initialized.
+ */
+export function isComposioInitialized(): boolean {
+  return storedComposioUserId !== null
+}
+
+/**
+ * Check if Composio integration is configured (direct key or proxy).
  */
 export function isComposioEnabled(): boolean {
-  return !!process.env.COMPOSIO_API_KEY
+  return !!process.env.COMPOSIO_API_KEY ||
+    !!(process.env.TOOLS_PROXY_URL && process.env.AI_PROXY_TOKEN)
 }
 
 /**
@@ -257,4 +289,218 @@ export function getComposio(): Composio | null {
  */
 export function buildComposioUserId(userId: string, projectId: string): string {
   return `shogo_${userId}_${projectId}`
+}
+
+// ---------------------------------------------------------------------------
+// Proxy tool registration
+// ---------------------------------------------------------------------------
+
+function textResult(data: any): AgentToolResult<any> {
+  return {
+    content: [{ type: 'text', text: typeof data === 'string' ? data : JSON.stringify(data) }],
+    details: data,
+  }
+}
+
+/**
+ * Dynamically register proxy AgentTools for each action in a Composio toolkit.
+ * Each proxy tool executes via the Composio SDK directly.
+ * Tool names are the raw Composio slugs (e.g. GOOGLECALENDAR_CREATE_EVENT).
+ */
+export async function registerToolkitProxyTools(
+  mcpClientManager: MCPClientManager,
+  toolkitSlug: string,
+): Promise<{ toolNames: string[]; toolCount: number }> {
+  const prefix = `${toolkitSlug.toUpperCase()}_`
+  const alreadyRegistered = [...registeredProxyToolNames].filter(n => n.startsWith(prefix))
+  if (alreadyRegistered.length > 0) {
+    console.log(`[Composio] Toolkit "${toolkitSlug}" already has ${alreadyRegistered.length} proxy tools registered`)
+    return { toolNames: alreadyRegistered, toolCount: alreadyRegistered.length }
+  }
+
+  const schemas = await fetchComposioToolSchemas(toolkitSlug)
+  const nonDeprecated = schemas.filter(s => !s.is_deprecated)
+
+  if (nonDeprecated.length === 0) {
+    console.warn(`[Composio] No tools found for toolkit "${toolkitSlug}"`)
+    return { toolNames: [], toolCount: 0 }
+  }
+
+  const proxyTools: AgentTool[] = nonDeprecated.map(schema => createProxyTool(schema))
+  mcpClientManager.addProxyTools(proxyTools)
+
+  const toolNames = proxyTools.map(t => t.name)
+  for (const n of toolNames) registeredProxyToolNames.add(n)
+  console.log(`[Composio] Registered ${toolNames.length} proxy tools for "${toolkitSlug}"`)
+  return { toolNames, toolCount: toolNames.length }
+}
+
+function createProxyTool(schema: ComposioToolSchema): AgentTool {
+  const { Type } = require('@sinclair/typebox')
+
+  let parameters: any = Type.Object({})
+  if (schema.input_parameters?.properties) {
+    const props: Record<string, any> = {}
+    const required = new Set(schema.input_parameters.required || [])
+    for (const [key, prop] of Object.entries(schema.input_parameters.properties)) {
+      const tb = jsonSchemaPropertyToTypebox(prop)
+      props[key] = required.has(key) ? tb : Type.Optional(tb)
+    }
+    parameters = Type.Object(props)
+  }
+
+  return {
+    name: schema.slug,
+    description: schema.description || `Composio tool: ${schema.slug}`,
+    label: `composio: ${schema.slug}`,
+    parameters,
+    execute: async (_toolCallId: string, params: unknown) => {
+      const client = getComposioClient()
+      if (!client || !storedComposioUserId) {
+        return textResult({ error: 'Composio not initialized. Call tool_install first.' })
+      }
+      const args = (params && typeof params === 'object') ? params as Record<string, any> : {}
+      try {
+        const t0 = performance.now()
+        const result = await client.tools.execute(schema.slug, {
+          userId: storedComposioUserId,
+          arguments: args,
+          dangerouslySkipVersionCheck: true,
+        })
+        const elapsed = performance.now() - t0
+        recordTiming(schema.slug, elapsed)
+
+        if (!result.successful) {
+          return textResult({ error: result.error || `Tool ${schema.slug} returned an error` })
+        }
+
+        let raw = JSON.stringify(result.data)
+        const MAX_CHARS = 12000
+        if (raw.length > MAX_CHARS) {
+          const headSize = Math.floor(MAX_CHARS * 0.75)
+          const tailSize = Math.max(0, MAX_CHARS - headSize - 100)
+          const omitted = raw.length - headSize - tailSize
+          raw = raw.substring(0, headSize)
+            + `\n\n[... ${omitted} chars truncated ...]\n\n`
+            + (tailSize > 0 ? raw.substring(raw.length - tailSize) : '')
+        }
+
+        return textResult(raw)
+      } catch (err: any) {
+        return textResult({ error: `Tool "${schema.slug}" failed: ${err.message}` })
+      }
+    },
+  } as AgentTool
+}
+
+function jsonSchemaPropertyToTypebox(p: Record<string, any>): any {
+  const { Type } = require('@sinclair/typebox')
+  switch (p.type) {
+    case 'string':
+      return Type.String({ description: p.description })
+    case 'number':
+    case 'integer':
+      return Type.Number({ description: p.description })
+    case 'boolean':
+      return Type.Boolean({ description: p.description })
+    case 'array': {
+      const itemSchema = p.items
+        ? jsonSchemaPropertyToTypebox(p.items as Record<string, any>)
+        : Type.Any()
+      return Type.Array(itemSchema, { description: p.description })
+    }
+    case 'object': {
+      if (p.properties) {
+        const props: Record<string, any> = {}
+        const required = new Set(p.required || [])
+        for (const [key, prop] of Object.entries(p.properties as Record<string, any>)) {
+          const tb = jsonSchemaPropertyToTypebox(prop)
+          props[key] = required.has(key) ? tb : Type.Optional(tb)
+        }
+        return Type.Object(props, { description: p.description })
+      }
+      return Type.Any({ description: p.description })
+    }
+    default:
+      return Type.Any({ description: p.description })
+  }
+}
+
+/**
+ * Check auth status for a Composio toolkit via the SDK.
+ * Lists connected accounts to determine if the user has an active connection,
+ * then falls back to initiating a new auth flow if needed.
+ */
+export async function checkComposioAuth(
+  toolkitSlug: string,
+): Promise<{ status: 'active' | 'needs_auth'; authUrl?: string }> {
+  const client = getComposioClient()
+  if (!client || !storedComposioUserId) {
+    return { status: 'needs_auth' }
+  }
+
+  try {
+    const t0 = performance.now()
+    const accounts = await client.connectedAccounts.list({
+      userIds: [storedComposioUserId],
+      toolkitSlugs: [toolkitSlug],
+    })
+    const elapsed = performance.now() - t0
+    recordTiming(`auth check (${toolkitSlug})`, elapsed)
+
+    const items: any[] = (accounts as any)?.items || (accounts as any)?.data || []
+    const active = items.find((acc: any) => {
+      const status = acc.status?.toLowerCase()
+      return status === 'active'
+    })
+
+    if (active) {
+      return { status: 'active' }
+    }
+
+    return await initiateComposioAuth(toolkitSlug)
+  } catch (err: any) {
+    console.error(`[Composio] Auth check failed for "${toolkitSlug}": ${err.message}`)
+    return await initiateComposioAuth(toolkitSlug)
+  }
+}
+
+/**
+ * Use the Composio SDK to initiate auth and get a redirect URL.
+ */
+async function initiateComposioAuth(
+  toolkitSlug: string,
+): Promise<{ status: 'active' | 'needs_auth'; authUrl?: string }> {
+  const client = getComposioClient()
+  if (!client || !storedComposioUserId) {
+    return { status: 'needs_auth' }
+  }
+
+  try {
+    const authConfigs = getAuthConfigs()
+    const hasCustomAuth = Object.keys(authConfigs).length > 0
+    const sessionOpts = hasCustomAuth ? { authConfigs } : undefined
+    const session = await client.create(storedComposioUserId, sessionOpts)
+
+    const callbackBase = process.env.BETTER_AUTH_URL || process.env.API_URL || 'http://localhost:8002'
+    const connection = await session.authorize(toolkitSlug, {
+      callbackUrl: `${callbackBase}/api/integrations/callback?toolkit=${encodeURIComponent(toolkitSlug)}`,
+    })
+
+    const redirectUrl = (connection as any)?.redirectUrl || (connection as any)?.redirect_url
+    if (redirectUrl) {
+      console.log(`[Composio] Got auth URL via SDK for "${toolkitSlug}"`)
+      return { status: 'needs_auth', authUrl: redirectUrl }
+    }
+
+    const status = (connection as any)?.status
+    if (status === 'active' || status === 'ACTIVE') {
+      return { status: 'active' }
+    }
+
+    return { status: 'needs_auth' }
+  } catch (err: any) {
+    console.error(`[Composio] SDK auth initiation failed for "${toolkitSlug}": ${err.message}`)
+    return { status: 'needs_auth' }
+  }
 }

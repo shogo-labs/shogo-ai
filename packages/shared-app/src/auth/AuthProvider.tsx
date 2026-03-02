@@ -23,7 +23,9 @@ export interface AuthContextValue {
   error: string | null
   signIn: (email: string, password: string) => Promise<void>
   signUp: (name: string, email: string, password: string) => Promise<void>
+  signInWithGoogle: () => void
   signOut: () => Promise<void>
+  updateUser: (fields: { name?: string; image?: string }) => Promise<void>
   clearError: () => void
 }
 
@@ -78,14 +80,32 @@ export function AuthProvider({ authClient, children }: AuthProviderProps) {
     }
   }, [authClient])
 
+  const handleSignInWithGoogle = useCallback(() => {
+    ;(authClient as any).signIn.social({
+      provider: 'google',
+      callbackURL: typeof window !== 'undefined' ? window.location.origin : '/',
+    })
+  }, [authClient])
+
   const handleSignOut = useCallback(async () => {
     try { await authClient.signOut() } finally { setUser(null) }
+  }, [authClient])
+
+  const handleUpdateUser = useCallback(async (fields: { name?: string; image?: string }) => {
+    const { data, error: err } = await (authClient as any).updateUser(fields)
+    if (err) throw new Error(err.message || 'Failed to update profile')
+    if (data?.user) {
+      setUser(data.user as AuthUser)
+    } else {
+      setUser(prev => prev ? { ...prev, ...fields } : prev)
+    }
   }, [authClient])
 
   return (
     <AuthContext.Provider value={{
       user, isLoading, isAuthenticated: !!user, error,
-      signIn: handleSignIn, signUp: handleSignUp, signOut: handleSignOut,
+      signIn: handleSignIn, signUp: handleSignUp, signInWithGoogle: handleSignInWithGoogle, signOut: handleSignOut,
+      updateUser: handleUpdateUser,
       clearError: () => setError(null),
     }}>
       {children}

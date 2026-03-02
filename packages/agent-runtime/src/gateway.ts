@@ -18,13 +18,14 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'fs'
 import { join } from 'path'
-import type { Message } from '@mariozechner/pi-ai'
+import type { Message, ImageContent } from '@mariozechner/pi-ai'
 import type { StreamFn, AgentTool } from '@mariozechner/pi-agent-core'
 import { Type } from '@sinclair/typebox'
 import type { ChannelAdapter, IncomingMessage, AgentStatus, ChannelStatus, StreamChunkConfig, SandboxConfig } from './types'
 import { loadSkills, matchSkill, type Skill } from './skills'
 import { runAgentLoop, type LoopDetectorConfig, type ToolContext } from './agent-loop'
-import { createAllTools, createHeartbeatTools, textResult } from './gateway-tools'
+import { createAllTools, createBasicTools, createHeartbeatTools, textResult } from './gateway-tools'
+import { getDynamicAppManager } from './dynamic-app-manager'
 import { HookEmitter, loadAllHooks } from './hooks'
 import { parseSlashCommand, type SlashCommandContext } from './slash-commands'
 import { SessionManager, type SessionManagerConfig } from './session-manager'
@@ -32,7 +33,9 @@ import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { CronManager, type CronJob } from './cron-manager'
 import { BlockChunker } from './block-chunker'
 import { MCPClientManager, type MCPServerConfig } from './mcp-client'
-import { connectComposioMCP, disconnectComposioMCP, isComposioEnabled } from './composio'
+import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
+import type { FilePart } from './file-attachment-utils'
+import { parseFileAttachments } from './file-attachment-utils'
 import {
   OPTIMIZED_CANVAS_EXAMPLES,
   OPTIMIZED_MEMORY_GUIDE,
@@ -66,6 +69,11 @@ export interface GatewayConfig {
   mcpServers?: Record<string, MCPServerConfig>
 }
 
+function isBasicAgent(): boolean {
+  const variant = process.env.AGENT_VARIANT?.toLowerCase()
+  return !variant || variant === 'basic'
+}
+
 const CANVAS_TOOLS_GUIDE_PREFIX = `## Canvas (Dynamic UI)
 
 You have canvas tools that let you build interactive UIs the user can see in real time.
@@ -96,7 +104,10 @@ Then follow ALL steps below:
 **Step 1: canvas_create** — Create a surface
   canvas_create({ surfaceId: "my_app", title: "My App" })
 
-**Step 2: canvas_api_schema** — Define data model + auto-generate CRUD API
+**Step 2: Choose your data backend — local schema OR tool-backed binding**
+
+  **Option A: canvas_api_schema** — Local SQLite-backed CRUD (default for most apps)
+  Use this when data lives in the canvas itself (user-entered data, sample data, file uploads).
   canvas_api_schema({ surfaceId: "my_app", models: [{
     name: "Task", fields: [
       { name: "title", type: "String" },
@@ -106,11 +117,59 @@ Then follow ALL steps below:
   }]})
   → Creates REST endpoints: GET/POST /api/tasks, GET/PATCH/DELETE /api/tasks/:id
 
-**Step 3: canvas_api_seed + canvas_api_query** — Populate and load data
+  **Option B: Tool-backed live data** (for installed integrations)
+  Use this when the data comes from an installed tool (Google Calendar, GitHub, Slack, etc.).
+  Instead of storing data locally, this routes CRUD operations directly through the
+  installed tool so the canvas always shows live, real-time data from the external service.
+
+  **Preferred: autoBind on tool_install** — auto-discovers CRUD operations from the toolkit schema:
+  tool_install({ name: "googlecalendar", autoBind: { surfaceId: "my_app", dataPath: "/events" } })
+  → Introspects the toolkit, finds list/create/update/delete tools, infers fields and resultPath,
+    creates REST endpoints, and auto-loads data. No prior knowledge of the tool's response needed.
+    If the surface doesn't exist yet, the binding is deferred until canvas_create.
+
+  **Manual: canvas_api_bind** — when you need fine-grained control over bindings:
+  canvas_api_bind({ surfaceId: "my_app", model: "CalendarEvent",
+    fields: [
+      { name: "summary", type: "String" },
+      { name: "start", type: "String" },
+      { name: "end", type: "String" }
+    ],
+    bindings: {
+      list: { tool: "GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS", resultPath: "items" },
+      create: { tool: "GOOGLECALENDAR_CREATE_EVENT", paramMap: { summary: "summary", start: "start", end: "end" } }
+    },
+    cache: { enabled: true, ttlSeconds: 60 },
+    dataPath: "/events"
+  })
+  → Creates REST endpoints backed by live tool calls AND auto-loads data at "/events".
+  → When the agent calls any bound tool directly, the canvas auto-refreshes with fresh data.
+
+  **Skill shortcut: bind at install time** — If a saved skill provides the exact config:
+  tool_install({ name: "googlecalendar", bind: { surfaceId: "my_app", model: "CalendarEvent", ... } })
+
+  **When to use which:**
+  - User asks to "show my calendar events", "list my GitHub issues" → **autoBind** on tool_install (auto-discovers everything)
+  - User asks to "build me a todo app", "create a CRM" with no external source → **canvas_api_schema** (data lives locally)
+  - User uploads a CSV or provides data inline → **canvas_api_schema + canvas_api_seed**
+
+**Step 3: Populate Data** — REAL data first, sample data only as fallback
+  If you used autoBind or canvas_api_bind with dataPath (Option B), skip this step — data is auto-loaded from the tool.
+
+  If you used canvas_api_schema (Option A):
+  BEFORE seeding sample data, check if real data is available:
+  - If the user mentions a service/platform (GitHub, Google, Slack, etc.) → use tool_search + tool_install to fetch real data, then canvas_api_seed with those real results
+  - If the user uploaded files → use read_file/search_files to extract real data, then canvas_api_seed with it
+  - If the user asks for real/live data (e.g. "show my tasks", "list my emails") → search for a tool integration first
+  - ONLY seed fabricated sample data if: (a) the user explicitly asks for fake/demo/sample data, OR (b) no real data source exists for a generic CRUD app (e.g. "build me a todo app")
+
+  Fallback — sample data (only when no real source applies):
   canvas_api_seed({ surfaceId: "my_app", model: "Task", records: [
     { title: "First task", priority: "high" },
     { title: "Second task", status: "done" }
   ]})
+
+  Then load data into the data model:
   canvas_api_query({ surfaceId: "my_app", model: "Task", dataPath: "/tasks" })
   → Now { path: "/tasks" } is available for component data binding
 
@@ -264,10 +323,29 @@ For server-side search, use \`canvas_api_query\` with the collection's data path
 - Set \`debounceMs: 300\` on the TextField to avoid excessive API calls
 - The API performs case-insensitive LIKE matching across the specified fields
 
+**Pattern 3 — Exact-value filter with \`where\` (best for Kanban boards, pipeline columns, status-based views):**
+Use the \`where\` prop on DataList to show only items matching specific field values. Multiple DataLists can share the same data path but display different subsets. When mutations update the shared array, all columns re-render automatically.
+\`\`\`json
+{ "id": "new_col", "component": "DataList",
+  "children": { "path": "/leads", "templateId": "lead_card" },
+  "where": { "stage": "new" } }
+{ "id": "qualified_col", "component": "DataList",
+  "children": { "path": "/leads", "templateId": "lead_card" },
+  "where": { "stage": "qualified" } }
+{ "id": "closed_col", "component": "DataList",
+  "children": { "path": "/leads", "templateId": "lead_card" },
+  "where": { "stage": "closed" } }
+\`\`\`
+- \`where\`: object with field-value pairs. Only items where ALL fields match are shown.
+- Load ALL items into one array with a single \`canvas_api_query\` (no per-column queries needed).
+- After a PATCH mutation changes an item's stage, the base array auto-refreshes and each column re-filters.
+- ALWAYS prefer this pattern for Kanban/pipeline/status boards over creating separate filtered queries.
+
 **When to use which:**
-- Small list (seeded data, < ~50 items) → Pattern 1 (client-side \`filterPath\`)
+- Kanban board / pipeline columns / status-based views → Pattern 3 (\`where\` prop)
+- Small list with search box (seeded data, < ~50 items) → Pattern 1 (client-side \`filterPath\`)
 - Large dataset or user asks for "search" specifically → Pattern 2 (API \`_search\`)
-- When in doubt, use Pattern 1 — it's simpler and works for most canvas use cases
+- When in doubt for search, use Pattern 1 — it's simpler and works for most canvas use cases
 
 ### Component Types
 
@@ -316,6 +394,7 @@ Tabs require EITHER explicit tab definitions OR TabPanel children with \`title\`
 - You MUST test every distinct action button (add, update/mark-complete, delete) — not just one.
 
 ### Other Tools
+- **canvas_api_bind** — Bind installed tool operations to canvas CRUD routes for live data. Use this instead of canvas_api_schema when data comes from an external service. Include dataPath to auto-load data (replaces canvas_api_query). Prefer using autoBind on tool_install instead — it auto-discovers bindings from the toolkit schema.
 - **canvas_api_hooks** — Register declarative hooks (recompute, validate, cascade-delete, transform, log) on model CRUD operations. Hooks fire automatically when data changes.
 - **canvas_data** — Manually push data: \`canvas_data({ surfaceId: "app", path: "/key", value: data })\`
 - **canvas_data_patch** — Atomic operations (increment, decrement, toggle, append, set) without reading first. Use for counters and toggles instead of the full API pipeline.
@@ -337,7 +416,7 @@ The renderer auto-formats numbers (commas, compact notation), currency ($ prefix
 **Mandatory Patterns:**
 - **Dashboard/analytics request**: Grid of 3-4 Metric components with \`trendValue\` (e.g. "+12%"), at least one Chart, Card-wrapped data sections
 - **CRUD app request**: Metric summary row, Card-wrapped form section with title, DataList
-- **Kanban/board request**: Metric summary row (counts per column), Card-wrapped columns in a Grid, inner Cards for each item
+- **Kanban/board request**: Metric summary row (counts per column), Card-wrapped columns in a Grid, each with a DataList using \`where\` prop to filter by status/stage — load ALL items into one array, use \`where: { "stage": "value" }\` per column
 - **Any request with data**: Header Row with title (variant "h2") + context Badge (justify: "between")
 
 **Chart Type Selection:**
@@ -353,7 +432,8 @@ Use \`line\`/\`area\` for time series, \`pie\`/\`donut\` for proportional data, 
 **Metric trendValue format:** Use strings starting with "+" or "-" (e.g. "+12%", "-$48", "+3 this week"). The renderer auto-infers trend direction from the sign — no need to set \`trend: "up"\` manually.
 
 **Data Richness:**
-- Seed 4-6 realistic records with plausible names, amounts, and dates
+- Use real data from MCP/Composio tools or uploaded files whenever possible
+- Only seed 4-6 sample records if the user explicitly requests demo/fake data or no real data source is available
 - Raw numbers and ISO dates are fine — the renderer formats them automatically
 - Bar/line/area charts need at least 5-6 data points with descriptive labels
 - Pie/donut charts need 3-7 labeled segments with values summing to a meaningful total
@@ -388,9 +468,310 @@ Root Column
 - When canvas tools return status: "rendered" or "data_updated", the UI is already live.
 - **NEVER delete and recreate a surface to fix issues.** Use \`canvas_update({ merge: true })\` to patch individual components. Deleting loses all data bindings and causes UI flicker.
 - **Simple state (counters, toggles, single values):** Use canvas_data or canvas_data_patch ONLY. Do NOT use canvas_api_schema/canvas_api_seed/canvas_api_query — those are for persistent CRUD data with multiple records.
+- **External service data (Calendar, GitHub, Slack, etc.):** Use autoBind on tool_install to auto-discover and bind CRUD operations, or canvas_api_bind with dataPath for manual control. Do NOT use canvas_api_schema + canvas_api_seed for data that belongs to an external service — that creates a stale snapshot instead of live data.
 - Table is read-only. For lists needing edit/delete buttons, always use DataList.
 
 `
+
+const BASIC_CANVAS_TOOLS_GUIDE = `## Canvas (Dynamic UI)
+
+You have canvas tools that let you build UIs the user can see in real time.
+Use them whenever a visual display would be more helpful than plain text.
+This agent is **display-only** — you fetch and present information. You do NOT create, update, or delete records through buttons.
+
+⚠️ **THE #1 RULE: Buttons are for external links ONLY.**
+The only mutation method you may use is \`"OPEN"\`, which opens a URL in a new browser tab.
+Do NOT use POST, PATCH, or DELETE mutations. Do NOT add form inputs that feed into mutation bodies.
+
+⚠️ **THE #2 RULE: Every Button MUST have an \`action\` prop.**
+A Button without \`action\` is dead — it renders but does nothing when clicked. This is the most common mistake.
+When you add a Button, ALWAYS include: \`action: { name: "open", mutation: { endpoint: ..., method: "OPEN" } }\`
+- Static URL: \`endpoint: "https://example.com"\`
+- Per-item URL in a DataList: \`endpoint: { path: "url" }\` (binds to each item's \`url\` field)
+- This agent builds display-only UIs. The only interactive component is Button with method "OPEN".
+
+### Building a Canvas App — Plan First, Then Build
+
+When the user asks for any visual app, dashboard, or display UI, **ALWAYS start by writing a brief plan** before calling any tools. Output your plan as a message to the user covering:
+
+1. **What you're building** — one sentence summary (e.g. "A sales dashboard with revenue metrics and top products")
+2. **Data sources** — what data is needed and how you'll get it (API schema + seed, manual canvas_data, or web)
+3. **Component layout** — the component tree structure (e.g. "Column > Grid of Metrics + Card with Chart + Card with Table")
+
+This plan helps you build the right thing the first time and avoids costly delete-and-rebuild cycles. Keep it concise — 3-4 lines, not a full essay.
+
+Then follow ALL steps below:
+
+**Step 1: canvas_create** — Create a surface
+  canvas_create({ surfaceId: "my_app", title: "My App" })
+
+**Step 2 (option A): canvas_api_schema + populate data + canvas_api_query** — For structured data with multiple records
+  First, define the schema:
+  canvas_api_schema({ surfaceId: "my_app", models: [{
+    name: "Product", fields: [
+      { name: "name", type: "String" },
+      { name: "category", type: "String" },
+      { name: "revenue", type: "Float" },
+      { name: "url", type: "String" }
+    ]
+  }]})
+
+  Then populate with REAL data first — check these sources before using sample data:
+  - User mentions a service/platform → tool_search + tool_install to fetch real data, then canvas_api_seed with real results
+  - User uploaded files → read_file/search_files to extract real data, then canvas_api_seed
+  - User asks for real/live data → search for a tool integration first
+  - ONLY use fabricated sample data if: (a) user explicitly asks for fake/demo data, OR (b) no real data source exists
+
+  Fallback — sample data (only when no real source applies):
+  canvas_api_seed({ surfaceId: "my_app", model: "Product", records: [
+    { name: "Widget Pro", category: "Hardware", revenue: 45200, url: "https://example.com/widget-pro" },
+    { name: "Cloud Suite", category: "Software", revenue: 128900, url: "https://example.com/cloud-suite" }
+  ]})
+
+  Then load into the data model:
+  canvas_api_query({ surfaceId: "my_app", model: "Product", dataPath: "/products" })
+  → Now { path: "/products" } is available for component data binding
+
+**Step 2 (option B): canvas_data** — For simple or pre-computed data
+  canvas_data({ surfaceId: "my_app", data: {
+    "/summary": { revenue: 174100, products: 2, avgOrder: 87050 },
+    "/chartData": [{ label: "Q1", value: 42000 }, { label: "Q2", value: 58000 }]
+  }})
+  → Use this when you don't need a queryable model — just push JSON directly
+
+**Step 3: canvas_update** — Build a polished UI with visual hierarchy
+  Note: Root Column auto-gets gap "lg", numbers/dates auto-format, Metric trends auto-infer from trendValue signs.
+  canvas_update({ surfaceId: "my_app", components: [
+    { id: "root", component: "Column", children: ["header_row", "metrics", "list_card"] },
+    { id: "header_row", component: "Row", children: ["title", "status_badge"], align: "center", justify: "between" },
+    { id: "title", component: "Text", text: "Product Catalog", variant: "h2" },
+    { id: "status_badge", component: "Badge", text: "Live", variant: "outline" },
+    { id: "metrics", component: "Grid", columns: 3, children: ["m_revenue", "m_products", "m_avg"] },
+    { id: "m_revenue", component: "Metric", label: "Total Revenue", value: { path: "/summary/revenue" }, unit: "$", trendValue: "+12%" },
+    { id: "m_products", component: "Metric", label: "Products", value: { path: "/summary/products" }, trendValue: "+2" },
+    { id: "m_avg", component: "Metric", label: "Avg Revenue", value: { path: "/summary/avgOrder" }, unit: "$", trendValue: "+8%" },
+    { id: "list_card", component: "Card", child: "product_list", title: "All Products" },
+    { id: "product_list", component: "DataList",
+      children: { path: "/products", templateId: "product_card" }, emptyText: "No products yet" },
+    { id: "product_card", component: "Card", child: "product_row" },
+    { id: "product_row", component: "Row", children: ["product_info", "view_btn"], align: "center", justify: "between" },
+    { id: "product_info", component: "Column", children: ["product_name", "product_category"], gap: "xs" },
+    { id: "product_name", component: "Text", text: { path: "name" }, weight: "medium" },
+    { id: "product_category", component: "Badge", text: { path: "category" } },
+    { id: "view_btn", component: "Button", label: "View Details", variant: "outline", size: "sm",
+      action: { name: "view", mutation: { endpoint: { path: "url" }, method: "OPEN" } } }
+  ]})
+
+**Step 4: Verify** — Use canvas_inspect to confirm the surface looks correct
+  canvas_inspect({ surfaceId: "my_app", mode: "summary" })
+  Check that data bindings resolved and components rendered as expected.
+
+**Step 5: FIX — Patch individual components (don't resend everything)**
+  If you need to tweak a component, use \`merge: true\` to update ONLY that component:
+  canvas_update({ surfaceId: "my_app", merge: true, components: [
+    { id: "view_btn", component: "Button", label: "Open", variant: "outline", size: "sm",
+      action: { name: "view", mutation: { endpoint: { path: "url" }, method: "OPEN" } } }
+  ]})
+  → Only "view_btn" is replaced. All other components stay untouched.
+
+  **Always use \`merge: true\` when updating existing surfaces.** Only omit it on the first canvas_update when building the initial tree.
+
+### Key Patterns
+
+**Data Binding:**
+- \`{ path: "/field" }\` (with leading /) reads from the ROOT data model
+- \`{ path: "field" }\` (NO leading /) reads from the CURRENT ITEM inside a DataList template
+
+**DataList (repeating template):**
+- Set children to: \`{ path: "/items", templateId: "template_id" }\`
+- The template component + its descendants render once per item
+- Use DataList for any list of items. Table is also available for simple read-only tabular data.
+
+**Buttons (External Links Only):**
+Buttons open external URLs using the OPEN mutation. Do NOT use POST, PATCH, or DELETE.
+- Static URL: \`action: { name: "visit", mutation: { endpoint: "https://example.com", method: "OPEN" } }\`
+- Dynamic URL (per-item in DataList): \`action: { name: "view", mutation: { endpoint: { path: "url" }, method: "OPEN" } }\`
+  \`method: "OPEN"\` opens the resolved URL in a new browser tab.
+  Inside a DataList template, use \`{ path: "fieldName" }\` to bind per-item URLs from your data.
+
+### Filtering with \`where\` (categorized views)
+
+Use the \`where\` prop on DataList to show only items matching specific field values. Multiple DataLists can share the same data path but display different subsets.
+\`\`\`json
+{ "id": "new_col", "component": "DataList",
+  "children": { "path": "/leads", "templateId": "lead_card" },
+  "where": { "stage": "new" } }
+{ "id": "qualified_col", "component": "DataList",
+  "children": { "path": "/leads", "templateId": "lead_card" },
+  "where": { "stage": "qualified" } }
+{ "id": "closed_col", "component": "DataList",
+  "children": { "path": "/leads", "templateId": "lead_card" },
+  "where": { "stage": "closed" } }
+\`\`\`
+- \`where\`: object with field-value pairs. Only items where ALL fields match are shown.
+- Load ALL items into one array with a single \`canvas_api_query\` (no per-column queries needed).
+- ALWAYS prefer this pattern for categorized/status-based views over creating separate filtered queries.
+
+### Component Types
+
+**Layout:** Column, Row, Grid, Card, ScrollArea, Tabs, TabPanel, Accordion, AccordionItem
+**Display:** Text, Badge, Image, Icon, Separator, Progress, Skeleton, Alert
+**Data:** Table (read-only), Metric, Chart (bar/line/area/pie/donut), DataList (repeating template)
+**Interactive:** Button (OPEN links only — the ONLY interactive component available)
+
+Use \`canvas_components({ action: "detail", type: "Card" })\` to look up props for any component.
+
+### When to Use Metric Components
+
+When the user asks for a dashboard, summary, overview, or mentions totals, KPIs, revenue, counts, or "at a glance" data, **always include Metric components** at the top. Metrics give instant visibility into key numbers:
+- Use a Row or Grid of Metric cards for 2-4 headline numbers
+- Bind values with \`{ path: "/revenue" }\` to the data model
+- Add \`trend\` ("up"/"down") and \`trendValue\` ("+12%") for change indicators
+
+### Tabs — IMPORTANT
+
+Tabs require EITHER explicit tab definitions OR TabPanel children with \`title\`. Without one of these, tabs render completely empty.
+
+**Preferred pattern — TabPanel with title (auto-derives tab labels):**
+\`\`\`json
+{ "id": "my_tabs", "component": "Tabs", "children": ["hotels_panel", "restaurants_panel"] }
+{ "id": "hotels_panel", "component": "TabPanel", "title": "Hotels", "children": ["hotels_content"] }
+{ "id": "restaurants_panel", "component": "TabPanel", "title": "Restaurants", "children": ["rest_content"] }
+\`\`\`
+
+**Alternative — explicit tabs prop (any children type):**
+\`\`\`json
+{ "id": "my_tabs", "component": "Tabs",
+  "tabs": [{ "id": "hotels", "label": "Hotels" }, { "id": "rest", "label": "Restaurants" }],
+  "children": ["hotels_section", "restaurants_section"] }
+\`\`\`
+
+**NEVER do this — it will render empty:**
+- Tabs with Column/Card children and NO \`tabs\` prop (auto-derive fails)
+- TabPanel children without \`title\` prop (auto-derive has no label)
+- Mismatched count between \`tabs\` array and \`children\` array
+
+### Other Tools
+- **canvas_data** — Manually push data: \`canvas_data({ surfaceId: "app", path: "/key", value: data })\`
+- **canvas_inspect** — Read the current surface state. Use mode: "summary", "data", or "components" to check different aspects.
+- **canvas_delete** — Remove a surface (AVOID using this — prefer canvas_update to fix issues)
+- **canvas_components** — Discover components and their props
+
+### Visual Quality & Layout
+
+The renderer auto-formats numbers (commas, compact notation), currency ($ prefix), dates (ISO → "Feb 26, 2026"), auto-infers Metric trend direction from trendValue strings, auto-wraps naked DataList/Table in Cards, and defaults root Column gap to "lg". You do NOT need to manually format values or wrap DataList/Table in Cards — the renderer handles this.
+
+**What YOU must provide (the renderer cannot infer these):**
+
+**Component Richness:**
+- Dashboard/analytics → 12-20 components (Grid of Metrics + Charts + Tables)
+- Display apps → 10-18 components (Metrics + DataList or Table)
+- If your canvas has fewer than 8 components, it probably needs more structure
+
+**Mandatory Patterns:**
+- **Dashboard/analytics request**: Grid of 3-4 Metric components with \`trendValue\` (e.g. "+12%"), at least one Chart, Card-wrapped data sections
+- **Data display request**: Metric summary row, Card-wrapped DataList or Table
+- **Categorized view request**: Metric summary row (counts per category), Card-wrapped columns in a Grid, each with a DataList using \`where\` prop to filter by field value — load ALL items into one array, use \`where: { "field": "value" }\` per column
+- **Any request with data**: Header Row with title (variant "h2") + context Badge (justify: "between")
+
+**Chart Type Selection:**
+- \`bar\` — Compare values across categories (e.g. sales by region)
+- \`horizontalBar\` — Same as bar but better for long category labels
+- \`line\` — Show trends over time (e.g. monthly revenue, user growth)
+- \`area\` — Like line but with filled area under the curve (good for volume/growth)
+- \`pie\` — Show proportional breakdown of a whole (e.g. market share, budget)
+- \`donut\` — Same as pie but with a center hole (cleaner look, good for dashboards)
+- \`progress\` — Percentage bars (e.g. completion rates, goal progress)
+Use \`line\`/\`area\` for time series, \`pie\`/\`donut\` for proportional data, \`bar\` for comparisons. For pie/donut, provide 3-7 labeled segments.
+
+**Metric trendValue format:** Use strings starting with "+" or "-" (e.g. "+12%", "-$48", "+3 this week"). The renderer auto-infers trend direction from the sign — no need to set \`trend: "up"\` manually.
+
+**Data Richness:**
+- Use real data from MCP/Composio tools or uploaded files whenever possible
+- Only seed 4-6 sample records if the user explicitly requests demo/fake data or no real data source is available
+- Raw numbers and ISO dates are fine — the renderer formats them automatically
+- Bar/line/area charts need at least 5-6 data points with descriptive labels
+- Pie/donut charts need 3-7 labeled segments with values summing to a meaningful total
+
+**Reference Layout — Dashboard:**
+\`\`\`
+Root Column
+  → Row: title (h2) + Badge (justify: between)
+  → Grid (columns: 3-4): Metric cards with trendValues
+  → Grid (columns: 2): Card(Chart type=line/area) + Card(Chart type=pie/donut or Table)
+  → Card (title: "Details"): Table or DataList
+\`\`\`
+
+**Reference Layout — Data Display with Links:**
+\`\`\`
+Root Column
+  → Row: title (h2) + Badge (justify: between)
+  → Grid (columns: 3): Metric + Metric + Metric (with trendValues)
+  → Card (title: "Items"): DataList with template Cards, each with OPEN link Button
+\`\`\`
+
+### Rules
+- **ALWAYS plan before building.** Write a brief plan (data sources, layout) before calling any canvas tools. This prevents costly mistakes and rebuilds.
+- **Buttons are for external links only.** Always use \`method: "OPEN"\` — never POST, PATCH, or DELETE.
+- When canvas tools return status: "rendered" or "data_updated", the UI is already live.
+- **NEVER delete and recreate a surface to fix issues.** Use \`canvas_update({ merge: true })\` to patch individual components. Deleting loses all data bindings and causes UI flicker.
+- **Simple state (counters, single values):** Use canvas_data. Do NOT use canvas_api_schema/canvas_api_seed/canvas_api_query unless you need a queryable model with multiple records.
+- Table and DataList are both suitable for displaying lists. Use DataList when you need per-item OPEN link buttons or custom card layouts; use Table for simple tabular data.
+
+`
+
+const BASIC_CANVAS_EXAMPLES = `### Optimized Planning Examples
+
+These examples show the optimal tool sequence for common canvas requests:
+
+**Example 1:** "Show me the current weather forecast"
+- Surface: \`weather-forecast\`
+- Needs API: No (display only)
+- Tools: canvas_create, canvas_update, canvas_data
+- Components: Column, Grid, Card, Metric, Text, Icon, Badge, Alert
+
+**Example 2:** "Build an email dashboard with metrics, tabs, and email tables"
+- Surface: \`email-dashboard\`
+- Needs API: No (display only)
+- Tools: canvas_create, canvas_update, canvas_data
+- Components: Column, Row, Grid, Card, Metric, Tabs, TabPanel, Table, Text, Badge
+- Tabs pattern: Use TabPanel children with title prop (e.g. { component: "TabPanel", title: "Important", children: [...] })
+
+**Example 3:** "Create a sales analytics dashboard with revenue chart and top products"
+- Surface: \`sales-analytics\`
+- Needs API: No (display only)
+- Tools: canvas_create, canvas_update, canvas_data
+- Components: Column, Grid, Metric, Card, Chart, Table, Text, Badge
+
+### Reference Component Tree — Well-Designed Sales Dashboard
+
+This is the FULL component tree for a polished display-only dashboard. The renderer auto-applies: root gap "lg", Separator injection, date/number formatting, and Metric trend inference from trendValue signs.
+
+\`\`\`json
+canvas_update({ surfaceId: "sales-dashboard", components: [
+  { "id": "root", "component": "Column", "children": ["header_row", "metrics", "charts_row", "details_card"] },
+  { "id": "header_row", "component": "Row", "children": ["title", "period_badge"], "align": "center", "justify": "between" },
+  { "id": "title", "component": "Text", "text": "Sales Dashboard", "variant": "h2" },
+  { "id": "period_badge", "component": "Badge", "text": "February 2026", "variant": "outline" },
+  { "id": "metrics", "component": "Grid", "columns": 3, "children": ["m_revenue", "m_orders", "m_avg"] },
+  { "id": "m_revenue", "component": "Metric", "label": "Total Revenue", "value": { "path": "/summary/revenue" }, "unit": "$", "trendValue": "+12% vs last month" },
+  { "id": "m_orders", "component": "Metric", "label": "Orders", "value": { "path": "/summary/orders" }, "trendValue": "+8%" },
+  { "id": "m_avg", "component": "Metric", "label": "Avg Order Value", "value": { "path": "/summary/avgOrder" }, "unit": "$", "trendValue": "-2%" },
+  { "id": "charts_row", "component": "Grid", "columns": 2, "children": ["revenue_chart_card", "category_chart_card"] },
+  { "id": "revenue_chart_card", "component": "Card", "title": "Monthly Revenue", "child": "revenue_chart" },
+  { "id": "revenue_chart", "component": "Chart", "type": "area", "data": { "path": "/charts/monthlyRevenue" } },
+  { "id": "category_chart_card", "component": "Card", "title": "Sales by Category", "child": "category_chart" },
+  { "id": "category_chart", "component": "Chart", "type": "donut", "data": { "path": "/charts/categories" } },
+  { "id": "details_card", "component": "Card", "title": "Top Products", "child": "products_table" },
+  { "id": "products_table", "component": "Table", "columns": [
+    { "key": "name", "label": "Product" },
+    { "key": "sales", "label": "Sales", "align": "right" },
+    { "key": "revenue", "label": "Revenue", "align": "right" }
+  ], "rows": { "path": "/topProducts" } }
+]})
+\`\`\`
+
+Key design patterns: (1) header Row with title + Badge, (2) Grid of Metrics with trendValues, (3) Grid of Card-wrapped Charts, (4) Card-wrapped Table for details. Note: root gap, Separators, number/date formatting, and trend direction are all handled automatically by the renderer.`
 
 const PERSONALITY_EVOLUTION_GUIDE_PREFIX = `## Personality Self-Update
 
@@ -409,7 +790,6 @@ You have a \`personality_update\` tool that lets you improve your own behavior f
 ### How It Works
 - Specify the file (SOUL.md, AGENTS.md, or IDENTITY.md), the section heading, and the new content
 - Include a reasoning field explaining why the update improves your behavior
-- Max 1 update per session, 3 per day — be selective
 - The Boundaries section in SOUL.md can never be removed, only appended to
 - All updates are logged to daily memory with [personality-update] tag
 
@@ -442,10 +822,13 @@ export class AgentGateway {
   private toolMocks = new Map<string, (params: Record<string, any>) => any>()
   /** Synthetic tool definitions for mocked MCP tools that don't exist in the base tool set */
   private syntheticTools = new Map<string, { description: string; paramKeys: string[] }>()
-  /** Tools that have mock responses but should not appear until promoted via mcp_install */
+  /** Tools that have mock responses but should not appear until promoted via tool_install */
   private hiddenMockTools = new Set<string>()
-  /** Hidden mocks promoted to visible after mcp_install is called during a turn */
+  /** Hidden mocks promoted to visible after tool_install is called during a turn */
   private promotedMockTools: AgentTool[] = []
+  /** User's IANA timezone, set from chat requests. Falls back to server timezone. */
+  private userTimezone: string | null = null
+
   /** Usage from the most recent agentTurn (consumed by server.ts for the finish event) */
   private _lastTurnUsage: {
     inputTokens: number
@@ -481,6 +864,10 @@ export class AgentGateway {
     this._onLog = fn
   }
 
+  setUserTimezone(tz: string): void {
+    this.userTimezone = tz
+  }
+
   /** Install tool-level execute overrides (for eval mocking). Preserves tool schema. */
   setToolMocks(
     mocks: Record<string, (params: Record<string, any>) => any>,
@@ -513,7 +900,7 @@ export class AgentGateway {
     this.promotedMockTools = []
   }
 
-  /** After mock mcp_install returns, promote hidden mock tools listed in the response */
+  /** After mock tool_install returns, promote hidden mock tools listed in the response */
   _promoteHiddenMocksFromInstall(result: any): void {
     const tools = result?.tools
     if (!Array.isArray(tools)) return
@@ -647,13 +1034,13 @@ export class AgentGateway {
       }
     }
 
-    // Connect to Composio MCP endpoint for managed OAuth integrations
+    // Initialize Composio session for managed OAuth integrations
     if (isComposioEnabled()) {
       try {
         const userId = process.env.USER_ID || 'default'
-        await connectComposioMCP(this.mcpClientManager, userId, this.projectId)
+        await initComposioSession(userId, this.projectId)
       } catch (error: any) {
-        console.error('[AgentGateway] Composio MCP connection error:', error.message)
+        console.error('[AgentGateway] Composio session init error:', error.message)
       }
     }
 
@@ -973,13 +1360,13 @@ export class AgentGateway {
         const adapter = (message.channelId && this.channels.has(message.channelType || ''))
           ? this.channels.get(message.channelType!)
           : undefined
-        const streamTarget = adapter && message.channelId && this.config.streamChunk
+        const streamTarget = adapter && message.channelId
           ? { adapter, channelId: message.channelId }
           : undefined
 
         const response = await this.agentTurn(prompt, sessionId, false, streamTarget, undefined, activeSkill)
 
-        if (adapter && message.channelId && !streamTarget) {
+        if (adapter && message.channelId && !this.config.streamChunk) {
           await adapter.sendMessage(message.channelId, response)
         }
 
@@ -1063,7 +1450,7 @@ export class AgentGateway {
   async processChatMessageStream(
     text: string,
     writer: { write(chunk: Record<string, any>): void },
-    options?: { modelOverride?: string },
+    options?: { modelOverride?: string; fileParts?: FilePart[] },
   ): Promise<void> {
     if (options?.modelOverride) {
       const session = this.sessionManager.getOrCreate('chat')
@@ -1071,18 +1458,33 @@ export class AgentGateway {
     }
     this.emitLog(`Chat message received (stream): "${text.substring(0, 100)}"`)
 
+    let images: ImageContent[] | undefined
+    let effectiveText = text
+    if (options?.fileParts && options.fileParts.length > 0) {
+      const parsed = parseFileAttachments(options.fileParts)
+      if (parsed.images.length > 0) {
+        images = parsed.images
+        this.emitLog(`Attached ${parsed.images.length} image(s) for vision`)
+      }
+      if (parsed.textContext) {
+        effectiveText = text
+          ? `${text}\n\n${parsed.textContext}`
+          : parsed.textContext
+      }
+    }
+
     let prompt: string
     let activeSkill: { name: string } | undefined
     if (this.isUnconfigured()) {
-      prompt = this.buildSetupPrompt(text)
+      prompt = this.buildSetupPrompt(effectiveText)
       this.emitLog('Agent is not configured — running setup from user message')
     } else {
-      const result = this.buildChatPrompt(text)
+      const result = this.buildChatPrompt(effectiveText)
       prompt = result.prompt
       activeSkill = result.activeSkill
     }
 
-    const response = await this.agentTurn(prompt, 'chat', false, undefined, writer, activeSkill)
+    const response = await this.agentTurn(prompt, 'chat', false, undefined, writer, activeSkill, images)
     this.emitLog(`Chat response (stream): "${response.substring(0, 100)}"`)
 
     this.appendDailyMemory(`chat: "${text.substring(0, 100)}" -> "${response.substring(0, 100)}"`)
@@ -1120,6 +1522,7 @@ export class AgentGateway {
     streamTarget?: { adapter: ChannelAdapter; channelId: string },
     uiWriter?: { write(chunk: Record<string, any>): void },
     activeSkill?: { name: string },
+    images?: ImageContent[],
   ): Promise<string> {
     if (activeSkill) {
       const skillOverride = [
@@ -1127,9 +1530,8 @@ export class AgentGateway {
         ``,
         `The skill "${activeSkill.name}" has been loaded for this request.`,
         `Follow the skill's instructions directly for this integration:`,
-        `- Call mcp_install if the skill says to (ensures server connection)`,
-        `- Call COMPOSIO_MANAGE_CONNECTIONS if needed (ensures auth)`,
-        `- Proceed to execution with the tool slugs from the skill`,
+        `- Call tool_install if the skill says to (ensures server connection + auth is checked automatically)`,
+        `- Proceed to execution with the tools listed in the skill`,
         ``,
         `You can still use mcp_search if you need additional integrations beyond what the skill provides.`,
       ].join('\n')
@@ -1154,11 +1556,12 @@ export class AgentGateway {
       mainSessionIds: this.config.mainSessionIds,
       mcpClientManager: this.mcpClientManager,
       connectChannel: (type, config) => this.connectChannel(type, config),
+      disconnectChannel: (type) => this.disconnectChannel(type),
     }
 
     const baseTools = isHeartbeat
       ? createHeartbeatTools(toolContext)
-      : createAllTools(toolContext)
+      : isBasicAgent() ? createBasicTools(toolContext) : createAllTools(toolContext)
 
     const mcpTools = this.mcpClientManager.getTools()
     let assembledTools = mcpTools.length > 0 ? [...baseTools, ...mcpTools] : baseTools
@@ -1173,8 +1576,8 @@ export class AgentGateway {
         const mockFn = this.toolMocks.get(tool.name)
         if (!mockFn) return tool
 
-        // Special handling for mcp_install: promote hidden mocks listed in the response
-        if (tool.name === 'mcp_install') {
+        // Special handling for tool_install: promote hidden mocks listed in the response
+        if (tool.name === 'tool_install') {
           return {
             ...tool,
             execute: async (_id: string, params: any) => {
@@ -1195,7 +1598,7 @@ export class AgentGateway {
       })
 
       // Inject synthetic tool definitions for mocked tools not in the base set
-      // Skip hidden tools — they become available only after mcp_install promotes them
+      // Skip hidden tools — they become available only after tool_install promotes them
       for (const [name, mockFn] of this.toolMocks) {
         if (existingNames.has(name)) continue
         if (this.hiddenMockTools.has(name)) continue
@@ -1222,9 +1625,9 @@ export class AgentGateway {
     }
 
     // Dynamic tools proxy: pi-agent-core uses tools.find() and iterates tools.
-    // When mcp_install hot-adds servers mid-turn, their tools must be visible
+    // When tool_install hot-adds servers mid-turn, their tools must be visible
     // immediately. This proxy merges staticTools with live MCP tools on access.
-    // Also includes promotedMockTools (hidden mocks promoted via mock mcp_install).
+    // Also includes promotedMockTools (hidden mocks promoted via mock tool_install).
     const mcpMgr = this.mcpClientManager
     const promoted = this.promotedMockTools
     const staticNames = new Set(staticTools.map(t => t.name))
@@ -1257,10 +1660,10 @@ export class AgentGateway {
       }, 4000)
     }
 
-    // Streaming: set up block chunker if a channel target is provided
+    // Streaming: set up block chunker only if streamChunk config is enabled
     let chunker: BlockChunker | undefined
     const streamedChunks: string[] = []
-    if (streamTarget) {
+    if (streamTarget && this.config.streamChunk) {
       chunker = new BlockChunker(
         (chunk) => {
           streamedChunks.push(chunk)
@@ -1290,6 +1693,7 @@ export class AgentGateway {
         system: systemPrompt,
         history,
         prompt,
+        images,
         tools,
         maxIterations: 50,
         loopDetection: this.config.loopDetection,
@@ -1353,6 +1757,11 @@ export class AgentGateway {
               toolName, args, result, isError, toolCallId, workspaceDir: this.workspaceDir,
             })
           )
+          if (!isError && toolName.startsWith('mcp_')) {
+            try {
+              getDynamicAppManager().handleToolCallInvalidation(toolName)
+            } catch { /* non-critical */ }
+          }
         },
         onAgentEnd: async (loopResult) => {
           await hookEmitter.emit(
@@ -1465,7 +1874,7 @@ export class AgentGateway {
       '## Current Context',
       `- Today: ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
       `- Year: ${now.getFullYear()}`,
-      `- Timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}`,
+      `- Timezone: ${this.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone}`,
       '',
       'When users mention dates without a year, default to the current or next occurrence (never a past date).',
     ].join('\n'))
@@ -1475,13 +1884,17 @@ export class AgentGateway {
       parts.push(uploadedFilesContext)
     }
 
-    const canvasExamples = this.promptOverrides.get('canvas_examples') ?? OPTIMIZED_CANVAS_EXAMPLES
     const personalityGuide = this.promptOverrides.get('personality_guide') ?? OPTIMIZED_PERSONALITY_GUIDE
     const toolPlanningGuide = this.promptOverrides.get('tool_planning_guide') ?? OPTIMIZED_TOOL_PLANNING_GUIDE
     const memoryGuide = this.promptOverrides.get('memory_guide') ?? OPTIMIZED_MEMORY_GUIDE
     const skillMatchingGuide = this.promptOverrides.get('skill_matching_guide') ?? OPTIMIZED_SKILL_MATCHING_GUIDE
 
-    parts.push(CANVAS_TOOLS_GUIDE_PREFIX + canvasExamples)
+    if (isBasicAgent()) {
+      parts.push(BASIC_CANVAS_TOOLS_GUIDE + BASIC_CANVAS_EXAMPLES)
+    } else {
+      const canvasExamples = this.promptOverrides.get('canvas_examples') ?? OPTIMIZED_CANVAS_EXAMPLES
+      parts.push(CANVAS_TOOLS_GUIDE_PREFIX + canvasExamples)
+    }
     parts.push(PERSONALITY_EVOLUTION_GUIDE_PREFIX + personalityGuide)
     parts.push(toolPlanningGuide)
     parts.push(this.promptOverrides.get('constraint_awareness_guide') ?? OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE)
@@ -1613,6 +2026,10 @@ export class AgentGateway {
 
   getChannel(type: string): ChannelAdapter | undefined {
     return this.channels.get(type)
+  }
+
+  getMcpClientManager(): MCPClientManager {
+    return this.mcpClientManager
   }
 
   async disconnectChannel(type: string): Promise<void> {

@@ -42,13 +42,13 @@ export function DynTabs({ tabs = [], defaultTab, children, className }: DynTabsP
               onPress={() => setActiveTab(tab.id)}
               className={cn(
                 'px-4 py-2.5',
-                activeTab === tab.id && 'border-b-2 border-primary-500',
+                activeTab === tab.id && 'border-b-2 border-primary',
               )}
             >
               <Text
                 className={cn(
                   'text-sm font-medium',
-                  activeTab === tab.id ? 'text-primary-500' : 'text-muted-foreground',
+                  activeTab === tab.id ? 'text-foreground' : 'text-muted-foreground',
                 )}
               >
                 {tab.label}
@@ -57,7 +57,7 @@ export function DynTabs({ tabs = [], defaultTab, children, className }: DynTabsP
           ))}
         </View>
       )}
-      <View className="pt-3">
+      <View className="pt-4">
         {activeIdx >= 0 && activeIdx < childArray.length
           ? childArray[activeIdx]
           : childArray[0]}
@@ -73,7 +73,7 @@ interface DynTabPanelProps {
 }
 
 export function DynTabPanel({ children, className }: DynTabPanelProps) {
-  return <View className={cn(className)}>{children}</View>
+  return <View className={cn('flex flex-col gap-4', className)}>{children}</View>
 }
 
 // ---------------------------------------------------------------------------

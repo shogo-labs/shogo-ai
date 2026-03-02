@@ -28,6 +28,8 @@ import type {
   DeleteComponentsMessage,
 } from './dynamic-app-types'
 import { ManagedApiRuntime, type ModelDefinition, type ManagedModelHooks, type ManagedHookResult, type ManagedHookContext } from './managed-api-runtime'
+import { ToolBackedApiRuntime, type ToolBindingConfig } from './tool-backed-api-runtime'
+import type { MCPClientManager } from './mcp-client'
 
 type SSEWriter = (message: DynamicAppMessage) => void
 
@@ -51,8 +53,15 @@ export class DynamicAppManager {
   private persistPath: string | null = null
   private saveTimer: ReturnType<typeof setTimeout> | null = null
   private runtimes = new Map<string, ManagedApiRuntime>()
-  /** Tracks model → dataPath bindings per surface so seedApiData can auto-refresh */
-  private queryBindings = new Map<string, Map<string, { dataPath: string; params?: { where?: Record<string, unknown>; orderBy?: string; limit?: number } }>>()
+  private toolRuntimes = new Map<string, ToolBackedApiRuntime>()
+  /** Tracks model → dataPath bindings per surface so mutations can auto-refresh filtered views */
+  private queryBindings = new Map<string, Map<string, Array<{ dataPath: string; params?: { where?: Record<string, unknown>; orderBy?: string; limit?: number } }>>>()
+  /** Stored MCPClientManager reference for deferred bindings and reactive invalidation */
+  private mcpClientRef: MCPClientManager | null = null
+  /** Deferred tool bindings queued before the target surface exists */
+  private deferredToolBindings = new Map<string, Array<{
+    config: Omit<ToolBindingConfig, 'cache'> & { cache?: { enabled: boolean; ttlSeconds?: number }; dataPath?: string }
+  }>>()
 
   constructor(persistPath?: string) {
     if (persistPath) {
@@ -103,6 +112,24 @@ export class DynamicAppManager {
 
     this.broadcast({ type: 'createSurface', surfaceId, title, theme })
     this.scheduleSave()
+
+    const deferred = this.deferredToolBindings.get(surfaceId)
+    if (deferred && deferred.length > 0 && this.mcpClientRef) {
+      this.deferredToolBindings.delete(surfaceId)
+      for (const { config } of deferred) {
+        this.bindToolApi(surfaceId, config, this.mcpClientRef)
+      }
+    }
+
+    // Apply wildcard deferred bindings (auto-bind from Composio installs)
+    const wildcardDeferred = this.deferredToolBindings.get('*')
+    if (wildcardDeferred && wildcardDeferred.length > 0 && this.mcpClientRef) {
+      this.deferredToolBindings.delete('*')
+      for (const { config } of wildcardDeferred) {
+        this.bindToolApi(surfaceId, config, this.mcpClientRef)
+      }
+    }
+
     return {
       ok: true,
       surfaceId,
@@ -497,6 +524,26 @@ export class DynamicAppManager {
     const dataPath = collectionEndpoint.replace(/^\/api/, '')
     if (Array.isArray(listJson.items)) {
       this.updateData(surfaceId, dataPath, listJson.items)
+
+      // Refresh all filtered query bindings for the affected model
+      const surfaceBindings = this.queryBindings.get(surfaceId)
+      if (surfaceBindings) {
+        const endpointInfo = runtime.getModelEndpointInfo()
+        const matched = endpointInfo.find(e => e.endpoint === collectionEndpoint)
+        if (matched) {
+          const bindings = surfaceBindings.get(matched.name)
+          if (bindings) {
+            for (const binding of bindings) {
+              if (binding.dataPath === dataPath) continue
+              const queryResult = runtime.query(matched.name, binding.params) as any
+              if (queryResult.ok && binding.dataPath) {
+                this.updateData(surfaceId, binding.dataPath, queryResult.items)
+              }
+            }
+          }
+        }
+      }
+
       return { ok: true, dataPath, itemCount: listJson.items.length }
     }
     return { ok: true, dataPath }
@@ -937,6 +984,115 @@ export class DynamicAppManager {
     return result
   }
 
+  bindToolApi(
+    surfaceId: string,
+    config: Omit<ToolBindingConfig, 'cache'> & { cache?: { enabled: boolean; ttlSeconds?: number }; dataPath?: string },
+    mcpClient: MCPClientManager,
+  ): Record<string, unknown> {
+    const surface = this.surfaces.get(surfaceId)
+    if (!surface) {
+      return { ok: false, error: `Surface "${surfaceId}" does not exist. Create it with canvas_create first.` }
+    }
+
+    if (!this.mcpClientRef) {
+      this.mcpClientRef = mcpClient
+    }
+
+    let toolRuntime = this.toolRuntimes.get(surfaceId)
+    if (!toolRuntime) {
+      toolRuntime = new ToolBackedApiRuntime(mcpClient)
+      this.toolRuntimes.set(surfaceId, toolRuntime)
+    }
+
+    const bindingConfig: ToolBindingConfig = {
+      ...config,
+      dataPath: config.dataPath,
+    } as ToolBindingConfig
+    const result = toolRuntime.addBinding(bindingConfig)
+
+    const endpointInfo = toolRuntime.getEndpointInfo()
+    this.broadcast({
+      type: 'configureApi',
+      surfaceId,
+      models: endpointInfo,
+    })
+
+    if (config.dataPath && config.bindings.list) {
+      this.autoQueryToolBinding(surfaceId, config.model, config.dataPath, toolRuntime)
+    }
+
+    return {
+      ok: true,
+      model: result.model,
+      endpoint: result.endpoint,
+      methods: result.methods,
+      dataPath: config.dataPath,
+      message: `Bound "${result.model}" to tool-backed CRUD routes at ${result.endpoint}. Methods: ${result.methods.join(', ')}` +
+        (config.dataPath ? `. Data auto-loaded at "${config.dataPath}".` : ''),
+    }
+  }
+
+  /**
+   * Fetch list data from a tool binding and push it into the surface data model.
+   * Runs asynchronously — does not block the bindToolApi return.
+   */
+  private autoQueryToolBinding(
+    surfaceId: string,
+    model: string,
+    dataPath: string,
+    toolRuntime: ToolBackedApiRuntime,
+  ): void {
+    toolRuntime.fetchListData(model).then(result => {
+      if (result.ok && result.items) {
+        this.updateData(surfaceId, dataPath, result.items)
+      }
+    }).catch(err => {
+      console.error(`[DynamicAppManager] Auto-query for ${model} failed:`, err)
+    })
+  }
+
+  getToolRuntime(surfaceId: string): ToolBackedApiRuntime | undefined {
+    return this.toolRuntimes.get(surfaceId)
+  }
+
+  /**
+   * Queue a tool binding to be applied when the target surface is created.
+   * Used by tool_install's `bind` option when the canvas doesn't exist yet.
+   */
+  deferToolBinding(
+    surfaceId: string,
+    config: Omit<ToolBindingConfig, 'cache'> & { cache?: { enabled: boolean; ttlSeconds?: number }; dataPath?: string },
+    mcpClient: MCPClientManager,
+  ): void {
+    if (!this.mcpClientRef) {
+      this.mcpClientRef = mcpClient
+    }
+    if (!this.deferredToolBindings.has(surfaceId)) {
+      this.deferredToolBindings.set(surfaceId, [])
+    }
+    this.deferredToolBindings.get(surfaceId)!.push({ config })
+  }
+
+  /**
+   * Check if a tool call matches any bound tool across all surfaces.
+   * If so, invalidate the cache and re-push fresh data to the data model.
+   * Called from the gateway's onAfterToolCall hook for reactive UI updates.
+   */
+  handleToolCallInvalidation(toolName: string): void {
+    for (const [surfaceId, toolRuntime] of this.toolRuntimes) {
+      const boundTools = toolRuntime.getBoundToolNames()
+      const model = boundTools.get(toolName)
+      if (!model) continue
+
+      toolRuntime.invalidateCache(model)
+
+      const binding = toolRuntime.getBindings().find(b => b.model === model)
+      if (binding?.dataPath && binding.bindings.list) {
+        this.autoQueryToolBinding(surfaceId, model, binding.dataPath, toolRuntime)
+      }
+    }
+  }
+
   seedApiData(surfaceId: string, model: string, records: Record<string, unknown>[], upsert = false): Record<string, unknown> {
     const runtime = this.runtimes.get(surfaceId)
     if (!runtime || !runtime.isReady()) {
@@ -946,11 +1102,13 @@ export class DynamicAppManager {
 
     if ((result as any).ok) {
       const surfaceBindings = this.queryBindings.get(surfaceId)
-      const binding = surfaceBindings?.get(model)
-      if (binding) {
-        const queryResult = runtime.query(model, binding.params) as any
-        if (queryResult.ok && binding.dataPath) {
-          this.updateData(surfaceId, binding.dataPath, queryResult.items)
+      const bindings = surfaceBindings?.get(model)
+      if (bindings) {
+        for (const binding of bindings) {
+          const queryResult = runtime.query(model, binding.params) as any
+          if (queryResult.ok && binding.dataPath) {
+            this.updateData(surfaceId, binding.dataPath, queryResult.items)
+          }
         }
       }
     }
@@ -979,11 +1137,21 @@ export class DynamicAppManager {
       if (dataPath) {
         this.updateData(surfaceId, dataPath, result.items)
 
-        // Register binding so seedApiData can auto-refresh this data path
+        // Register binding so mutations can auto-refresh this data path
         if (!this.queryBindings.has(surfaceId)) {
           this.queryBindings.set(surfaceId, new Map())
         }
-        this.queryBindings.get(surfaceId)!.set(model, { dataPath, params })
+        const surfaceBindings = this.queryBindings.get(surfaceId)!
+        if (!surfaceBindings.has(model)) {
+          surfaceBindings.set(model, [])
+        }
+        const modelBindings = surfaceBindings.get(model)!
+        const existingIdx = modelBindings.findIndex(b => b.dataPath === dataPath)
+        if (existingIdx >= 0) {
+          modelBindings[existingIdx] = { dataPath, params }
+        } else {
+          modelBindings.push({ dataPath, params })
+        }
       }
     }
 
@@ -1097,7 +1265,8 @@ export class DynamicAppManager {
 
   /**
    * Reload state from disk. Used after S3 sync downloads updated files.
-   * Clears existing state and re-loads everything.
+   * Clears existing state and re-loads everything, then broadcasts
+   * the new state to all connected SSE clients.
    */
   reloadFromDisk(): void {
     for (const runtime of this.runtimes.values()) {
@@ -1106,6 +1275,41 @@ export class DynamicAppManager {
     this.runtimes.clear()
     this.surfaces.clear()
     this.loadFromDisk()
+    this.broadcastFullState()
+  }
+
+  /**
+   * Broadcast the full current state to all connected SSE clients.
+   * Sends a clearAll first so clients reset, then replays all surfaces.
+   */
+  private broadcastFullState(): void {
+    if (this.sseClients.size === 0) return
+
+    this.broadcast({ type: 'clearAll' } as any)
+
+    for (const surface of this.surfaces.values()) {
+      this.broadcast({
+        type: 'createSurface',
+        surfaceId: surface.surfaceId,
+        title: surface.title,
+        theme: (surface as any).theme,
+      })
+
+      const components = Object.values(surface.components) as ComponentDefinition[]
+      if (components.length > 0) {
+        this.broadcast({ type: 'updateComponents', surfaceId: surface.surfaceId, components })
+      }
+
+      if (Object.keys(surface.dataModel).length > 0) {
+        this.broadcast({ type: 'updateData', surfaceId: surface.surfaceId, path: '/', value: surface.dataModel })
+      }
+
+      const runtime = this.runtimes.get(surface.surfaceId)
+      if (runtime) {
+        const modelInfo = runtime.getModelEndpointInfo()
+        this.broadcast({ type: 'configureApi', surfaceId: surface.surfaceId, models: modelInfo })
+      }
+    }
   }
 }
 

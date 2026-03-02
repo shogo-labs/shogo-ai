@@ -244,6 +244,7 @@ export const CANVAS_COMPONENT_SCHEMA: ComponentSchema[] = [
       unit: str('Unit suffix (e.g. "USD", "%")'),
       trend: str('Trend direction', { enum: ['up', 'down', 'neutral'] }),
       trendValue: str('Trend amount (e.g. "+12%")'),
+      trendSentiment: str('Override the color: "positive" = green, "negative" = red, "neutral" = gray. By default up=green, down=red. Use this when up is bad (e.g. traffic delay, error count).', { enum: ['positive', 'negative', 'neutral'] }),
       description: str('Small description below the value'),
       className: CLASS_PROP,
     },
@@ -319,10 +320,17 @@ Search & filter: set filterPath to a JSON Pointer where a TextField writes its v
 The DataList will client-side filter items in real time (case-insensitive substring match).
   { "id": "search", "component": "TextField", "placeholder": "Search...", "dataPath": "/searchTerm" }
   { "id": "list", "component": "DataList", "children": { "path": "/tasks", "templateId": "row" },
-    "filterPath": "/searchTerm", "filterFields": ["title", "description"] }`,
+    "filterPath": "/searchTerm", "filterFields": ["title", "description"] }
+
+Exact-value filtering with "where": show only items where fields match specific values. Ideal for Kanban boards and pipeline columns where multiple DataLists share the same data path but display different subsets.
+  { "id": "new_col", "component": "DataList", "children": { "path": "/leads", "templateId": "lead_card" },
+    "where": { "stage": "new" } }
+  { "id": "qualified_col", "component": "DataList", "children": { "path": "/leads", "templateId": "lead_card" },
+    "where": { "stage": "qualified" } }`,
     hasChildren: true,
     props: {
       emptyText: str('Text to show when empty'),
+      where: { type: 'object', description: 'Exact-value filter object. Only items where every key matches the given value are shown. Example: { "stage": "new" }. Ideal for Kanban/pipeline columns sharing the same data path.' },
       filterPath: str('JSON Pointer to a search term in the data model (e.g. "/searchTerm"). When set with filterFields, items are filtered client-side in real time.'),
       filterFields: arr('Item fields to match against the search term (e.g. ["title", "description"]). Used with filterPath for client-side filtering.'),
       className: CLASS_PROP,
@@ -534,6 +542,18 @@ export function lintComponents(components: Array<{ id?: string; component?: stri
       }
     }
 
+    // Button without any action or href — the button will do nothing when clicked
+    if (comp.component === 'Button' && !comp.action && !comp.href) {
+      messages.push({
+        severity: 'warning',
+        componentId: cid,
+        message: `Button has no action or href — it will do nothing when clicked. ` +
+          `Fix: add an action prop with a mutation. ` +
+          `For external links: action: { name: "open", mutation: { endpoint: "https://example.com", method: "OPEN" } }. ` +
+          `For per-item URLs in a DataList: action: { name: "open", mutation: { endpoint: { path: "url" }, method: "OPEN" } }.`,
+      })
+    }
+
     // Button action.mutation validation
     if (comp.component === 'Button' && comp.action) {
       const action = comp.action as Record<string, unknown>
@@ -577,7 +597,9 @@ export function lintComponents(components: Array<{ id?: string; component?: stri
             message: `Button action.mutation.method "${method}" is not valid. Use one of: POST, PATCH, DELETE, OPEN.`,
           })
         }
-        if (typeof endpoint === 'string' && endpoint.includes(':') && !mutation.params) {
+        const endpointStr = typeof endpoint === 'string' ? endpoint : ''
+        const pathPart = endpointStr.replace(/^https?:\/\/[^/]*/, '')
+        if (pathPart.includes(':') && !mutation.params) {
           messages.push({
             severity: 'error',
             componentId: cid,
@@ -822,6 +844,53 @@ export function normalizeComponents(
   })
 
   return { components: normalized, corrections }
+}
+
+// ---------------------------------------------------------------------------
+// Basic agent schema (display-only — no TextField, Select, Checkbox, ChoicePicker)
+// ---------------------------------------------------------------------------
+
+const BASIC_ACTION_PROP: PropDef = {
+  type: 'object',
+  description: `Action for opening external URLs: { name: "open_link", mutation: { endpoint: "https://example.com" OR { path: "url" }, method: "OPEN" } }
+  method "OPEN" opens the resolved endpoint in a new browser tab. Use this for per-item URLs in a DataList (e.g. Airbnb listing URLs).
+  The ONLY supported method is "OPEN". Do NOT use POST, PATCH, or DELETE.`,
+}
+
+export const BASIC_CANVAS_COMPONENT_SCHEMA: ComponentSchema[] = [
+  ...CANVAS_COMPONENT_SCHEMA.filter((s) =>
+    s.category !== 'interactive'
+  ),
+  {
+    type: 'Button',
+    category: 'interactive',
+    description: `Clickable button for opening external URLs. The ONLY supported method is "OPEN".
+  Example: { name: "view", mutation: { endpoint: "https://example.com", method: "OPEN" } }
+  In a DataList template, bind the URL: mutation: { endpoint: { path: "url" }, method: "OPEN" }
+  method "OPEN" opens the URL in a new browser tab.
+  Do NOT use POST, PATCH, or DELETE — this agent is display-only.`,
+    hasChildren: false,
+    props: {
+      label: str('Button text', { required: true }),
+      text: str('Alias for label'),
+      variant: str('Visual style', { enum: ['default', 'secondary', 'outline', 'ghost', 'link'], default: 'default' }),
+      size: str('Button size', { enum: ['default', 'sm', 'lg', 'icon'], default: 'default' }),
+      disabled: bool('Disable the button'),
+      action: BASIC_ACTION_PROP,
+      className: CLASS_PROP,
+    },
+  },
+]
+
+const basicSchemaByType = new Map<string, ComponentSchema>()
+for (const s of BASIC_CANVAS_COMPONENT_SCHEMA) {
+  basicSchemaByType.set(s.type, s)
+}
+
+export const BASIC_VALID_COMPONENT_TYPES = new Set(BASIC_CANVAS_COMPONENT_SCHEMA.map((s) => s.type))
+
+export function getBasicComponentSchema(type: string): ComponentSchema | undefined {
+  return basicSchemaByType.get(type)
 }
 
 // ---------------------------------------------------------------------------

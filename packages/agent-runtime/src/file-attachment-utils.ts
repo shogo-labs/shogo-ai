@@ -1,7 +1,10 @@
 /**
- * File attachment helpers — decode base64 data-URL file parts into text
- * so the agent LLM can see file content inline in the prompt.
+ * File attachment helpers — parse data-URL file parts into:
+ *   1. ImageContent[] for native multi-modal model support (images)
+ *   2. A text context string for non-image files (PDFs, code, etc.)
  */
+
+import type { ImageContent } from '@mariozechner/pi-ai'
 
 const TEXT_MEDIA_TYPES = new Set([
   'application/json',
@@ -16,32 +19,47 @@ const TEXT_MEDIA_TYPES = new Set([
   'application/ld+json',
 ])
 
-export function extractFilePartsAsText(
-  parts: Array<{ type: string; mediaType?: string; url?: string; name?: string }>,
-): string {
-  const fileParts = parts.filter((p) => p.type === 'file' && p.url)
-  if (fileParts.length === 0) return ''
+export interface FilePart {
+  type: string
+  mediaType?: string
+  url?: string
+  name?: string
+}
 
+export interface ParsedAttachments {
+  images: ImageContent[]
+  textContext: string
+}
+
+/**
+ * Parse file parts into images (for native vision) and text context
+ * (for inline prompt injection). Images go directly to the model;
+ * text files / PDFs are decoded and wrapped in delimiters.
+ */
+export function parseFileAttachments(parts: FilePart[]): ParsedAttachments {
+  const fileParts = parts.filter((p) => p.type === 'file' && p.url)
+  if (fileParts.length === 0) return { images: [], textContext: '' }
+
+  const images: ImageContent[] = []
   const sections: string[] = []
+
   for (const fp of fileParts) {
     const mediaType = fp.mediaType || 'application/octet-stream'
     const url = fp.url!
     const label = fp.name ? `${fp.name} (${mediaType})` : mediaType
 
-    const isTextBased =
-      mediaType.startsWith('text/') || TEXT_MEDIA_TYPES.has(mediaType)
-
     if (!url.startsWith('data:')) continue
-
-    if (mediaType.startsWith('image/')) {
-      sections.push(
-        `[Attached Image (${label})]: An image was attached. Image content cannot be displayed as text.`,
-      )
-      continue
-    }
 
     const base64Match = url.match(/^data:[^;]*;base64,(.+)$/)
     if (!base64Match) continue
+
+    if (mediaType.startsWith('image/')) {
+      images.push({ type: 'image', data: base64Match[1], mimeType: mediaType })
+      continue
+    }
+
+    const isTextBased =
+      mediaType.startsWith('text/') || TEXT_MEDIA_TYPES.has(mediaType)
 
     try {
       const decoded = Buffer.from(base64Match[1], 'base64').toString('utf-8')
@@ -61,5 +79,10 @@ export function extractFilePartsAsText(
     }
   }
 
-  return sections.join('\n\n')
+  return { images, textContext: sections.join('\n\n') }
+}
+
+/** @deprecated Use parseFileAttachments instead */
+export function extractFilePartsAsText(parts: FilePart[]): string {
+  return parseFileAttachments(parts).textContext
 }

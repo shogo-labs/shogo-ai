@@ -26,15 +26,26 @@ import {
   Building2,
   CheckCircle2,
   Info,
-  Check,
   Zap,
   Crown,
-  ChevronDown,
 } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
-import { useWorkspaceCollection, useDomainHttp } from '../../contexts/domain'
+import { useWorkspaceCollection } from '../../contexts/domain'
+import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { useDomainActions } from '@shogo/shared-app/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
-import { api } from '../../lib/api'
+import {
+  PRO_TIERS,
+  BUSINESS_TIERS,
+  PRO_FEATURES,
+  BUSINESS_FEATURES,
+  ENTERPRISE_FEATURES,
+  BASE_TIER_CREDITS,
+  getTotalCreditsForPlan,
+  formatCredits,
+} from '../../lib/billing-config'
+import { TierSelector } from '../../components/billing/TierSelector'
+import { FeatureList } from '../../components/billing/FeatureList'
 import {
   Card,
   CardContent,
@@ -47,151 +58,13 @@ import {
   cn,
 } from '@shogo/shared-ui/primitives'
 
-const PRO_TIERS = [
-  { credits: 100, monthly: 25, annual: 250 },
-  { credits: 200, monthly: 50, annual: 500 },
-  { credits: 400, monthly: 98, annual: 980 },
-  { credits: 800, monthly: 190, annual: 1900 },
-  { credits: 1200, monthly: 280, annual: 2800 },
-  { credits: 2000, monthly: 460, annual: 4600 },
-  { credits: 3000, monthly: 680, annual: 6800 },
-  { credits: 5000, monthly: 1100, annual: 11000 },
-  { credits: 7500, monthly: 1650, annual: 16500 },
-  { credits: 10000, monthly: 2200, annual: 22000 },
-]
-
-const BUSINESS_TIERS = [
-  { credits: 100, monthly: 50, annual: 500 },
-  { credits: 200, monthly: 100, annual: 1000 },
-  { credits: 400, monthly: 195, annual: 1950 },
-  { credits: 800, monthly: 380, annual: 3800 },
-  { credits: 1200, monthly: 560, annual: 5600 },
-  { credits: 2000, monthly: 920, annual: 9200 },
-  { credits: 3000, monthly: 1350, annual: 13500 },
-  { credits: 5000, monthly: 2200, annual: 22000 },
-  { credits: 7500, monthly: 3200, annual: 32000 },
-  { credits: 10000, monthly: 4200, annual: 42000 },
-]
-
-const PRO_FEATURES = [
-  '5 daily credits (up to 150/month)',
-  'Usage-based Cloud + AI',
-  'Credit rollovers',
-  'Unlimited domains',
-  'Custom domains',
-  'Remove branding',
-  'User roles & permissions',
-]
-
-const BUSINESS_FEATURES = [
-  'Everything in Pro, plus:',
-  'SSO authentication',
-  'Personal Projects',
-  'Opt out of data training',
-  'Design templates',
-  'Priority support',
-]
-
-const ENTERPRISE_FEATURES = [
-  'Everything in Business, plus:',
-  'Dedicated support',
-  'Onboarding services',
-  'Custom connections',
-  'Group-based access control',
-  'SCIM provisioning',
-  'Custom design systems',
-]
-
-const PLAN_CREDITS: Record<string, number> = {
-  free: 50,
-  pro: 100,
-  business: 100,
-  enterprise: 10000,
-}
-const DAILY_CREDITS_VAL = 5
-
-function getTotalCreditsForPlan(planId: string | undefined): number {
-  if (!planId) return (PLAN_CREDITS['free'] || 0) + DAILY_CREDITS_VAL
-  return (PLAN_CREDITS[planId] || 0) + DAILY_CREDITS_VAL
-}
-
-function formatCredits(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
-  return n % 1 === 0 ? String(n) : n.toFixed(2)
-}
-
-// ─── TierSelector ──────────────────────────────────────────
-
-function TierSelector({
-  tiers,
-  selectedIndex,
-  onSelect,
-}: {
-  tiers: typeof PRO_TIERS
-  selectedIndex: number
-  onSelect: (idx: number) => void
-}) {
-  const [open, setOpen] = useState(false)
-  const selected = tiers[selectedIndex]
-
-  return (
-    <View>
-      <Pressable
-        onPress={() => setOpen(!open)}
-        className="flex-row items-center justify-between border border-border rounded-md px-3 py-2.5 bg-background"
-      >
-        <Text className="text-sm text-foreground">
-          {selected.credits.toLocaleString()} credits
-        </Text>
-        <ChevronDown size={16} className="text-muted-foreground" />
-      </Pressable>
-      {open && (
-        <View className="border border-border rounded-md mt-1 bg-card overflow-hidden">
-          {tiers.map((tier, i) => (
-            <Pressable
-              key={tier.credits}
-              onPress={() => { onSelect(i); setOpen(false) }}
-              className={cn(
-                'px-3 py-2 active:bg-muted',
-                i === selectedIndex && 'bg-accent'
-              )}
-            >
-              <Text className={cn(
-                'text-sm',
-                i === selectedIndex ? 'text-foreground font-medium' : 'text-foreground'
-              )}>
-                {tier.credits.toLocaleString()} credits
-              </Text>
-            </Pressable>
-          ))}
-        </View>
-      )}
-    </View>
-  )
-}
-
-// ─── FeatureList ───────────────────────────────────────────
-
-function FeatureList({ features }: { features: string[] }) {
-  return (
-    <View className="gap-2">
-      {features.map((feature) => (
-        <View key={feature} className="flex-row items-start gap-2">
-          <Check size={14} className="text-green-500 mt-0.5" />
-          <Text className="text-sm text-foreground flex-1">{feature}</Text>
-        </View>
-      ))}
-    </View>
-  )
-}
-
 // ─── Main Page ─────────────────────────────────────────────
 
 export default observer(function BillingPage() {
   const router = useRouter()
   const { user, isLoading: isAuthLoading } = useAuth()
   const workspaces = useWorkspaceCollection()
-  const http = useDomainHttp()
+  const actions = useDomainActions()
 
   useEffect(() => {
     if (user?.id && workspaces) {
@@ -199,12 +72,7 @@ export default observer(function BillingPage() {
     }
   }, [user?.id, workspaces])
 
-  let currentWorkspace: any
-  try {
-    currentWorkspace = workspaces?.all?.[0] ?? null
-  } catch {
-    currentWorkspace = null
-  }
+  const currentWorkspace = useActiveWorkspace()
 
   const {
     subscription,

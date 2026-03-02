@@ -16,31 +16,51 @@ bun run typecheck
 
 # Lint all packages
 bun run lint
+```
 
-# Run all dev servers simultaneously
-bun run dev
+### Running the Full Stack Locally
+
+```bash
+# 1. Start infrastructure (Postgres, Redis, MinIO) — requires Docker
+bun run docker:infra
+
+# 2. Run database migrations (first time or after schema changes)
+bun run db:migrate:deploy
+
+# 3. Start all services (MCP :3100, API :8002, Web :8081)
+bun run dev:all
+```
+
+Open **http://localhost:8081** to use the app. The API runs on `:8002` and the
+MCP server on `:3100`. Agent runtimes are spawned by the API on ports starting
+at `:5200`.
+
+Logs are written to `logs/api.log`, `logs/mcp.log`, and `logs/web.log`. To
+check service output or debug issues:
+
+```bash
+tail -f logs/api.log          # API + agent runtime logs
+tail -f logs/mcp.log          # MCP server logs
+grep '\[Composio\]' logs/api.log  # Filter for Composio integration logs
 ```
 
 ### Package-Specific Development
 
 ```bash
-# Universal app (Expo) - Web development (http://localhost:8081)
-bun run web:dev
+# Start all 3 services concurrently (MCP + API + Expo Web)
+bun run dev:all
 
-# Universal app (Expo) - iOS development
-bun run mobile:ios
+# Start only backend services (MCP + API, no frontend)
+bun run dev:backend
 
-# Universal app (Expo) - Android development
-bun run mobile:android
+# Individual services:
+bun run web:dev        # Expo web on http://localhost:8081
+bun run api:dev        # API server on http://localhost:8002 (with --watch)
+bun run mcp:http       # MCP HTTP server on http://localhost:3100
 
-# Universal app (Expo) - Build web bundle
-bun run web:build
-
-# API server development
-bun run api:dev
-
-# MCP server - HTTP transport (for browser/web clients)
-bun run mcp:http
+# Mobile development:
+bun run mobile:ios     # Expo iOS simulator
+bun run mobile:android # Expo Android emulator
 
 # MCP server - Stdio transport (for Claude Code integration)
 bun run mcp:stdio

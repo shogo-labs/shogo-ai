@@ -158,7 +158,7 @@ name: git-summary
 version: 1.0.0
 description: Summarize recent git activity in a repository
 trigger: "git summary|repo summary|what happened in git"
-tools: [shell, web_fetch]
+tools: [shell, web]
 ---
 
 # Git Summary
@@ -191,7 +191,7 @@ Use these **exact names** in the \`tools\` field of skill frontmatter:
 | \`exec\` | Run shell commands |
 | \`read_file\` | Read a workspace file |
 | \`write_file\` | Write a workspace file |
-| \`web_fetch\` | Fetch content from a URL |
+| \`web\` | Fetch a URL or search the web (Google Maps, Flights, Shopping auto-routed to search API) |
 | \`browser\` | Control a headless browser (navigate, click, fill, extract, screenshot, evaluate, select, scroll, wait_for, close) |
 | \`memory_read\` | Read from MEMORY.md or daily logs |
 | \`memory_write\` | Write to MEMORY.md or daily logs |
@@ -199,13 +199,13 @@ Use these **exact names** in the \`tools\` field of skill frontmatter:
 | \`channel_connect\` | Connect a messaging channel (telegram, discord, email, slack, whatsapp, webhook) |
 | \`cron\` | Manage scheduled jobs |
 
-**Group aliases** (resolved automatically): \`shell\` → exec, \`filesystem\` → read_file + write_file, \`memory\` → memory_read + memory_write, \`browser\` → browser + web_fetch
+**Group aliases** (resolved automatically): \`shell\` → exec, \`filesystem\` → read_file + write_file, \`memory\` → memory_read + memory_write, \`browser\` → browser + web, \`web_fetch\` → web, \`web_search\` → web
 
 ### Creating Skills
 
 Use the \`skill.create\` tool to create new skills:
 \`\`\`
-mcp__shogo__skill_create({ name: "daily-digest", trigger: "daily digest|morning briefing", tools: ["web_fetch", "memory_read", "memory_write"], content: "..." })
+mcp__shogo__skill_create({ name: "daily-digest", trigger: "daily digest|morning briefing", tools: ["web", "memory_read", "memory_write"], content: "..." })
 \`\`\``
 
 export const HEARTBEAT_GUIDE = `## Heartbeat Configuration
@@ -329,7 +329,7 @@ export const TOOL_USAGE = `## Tool Usage
 - **list_files** — List files in the \`files/\` directory (uploaded by the user via the file browser)
 - **search_files** — RAG search across indexed files in \`files/\` using hybrid keyword + semantic search
 - **delete_file** — Delete a file from the \`files/\` directory
-- **web_fetch** — Fetch content from a URL
+- **web** — Fetch a URL or search the web. Provide \`url\` to fetch a page, or \`query\` to search Google. Google property URLs (Maps, Flights, Shopping) are automatically routed through search for rich results.
 - **cron** — Manage scheduled jobs
 
 **IMPORTANT: When the user asks to connect a channel, ALWAYS use the \`channel_connect\` tool directly.** Do NOT tell the user to configure it manually.

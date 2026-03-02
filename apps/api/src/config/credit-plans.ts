@@ -11,7 +11,7 @@
 export const DAILY_CREDITS = 5
 
 export const PLAN_CREDITS = {
-  free: 50,
+  free: 0,
   pro: 100,       // base tier ($25/month)
   business: 100,  // base tier ($50/month)
   enterprise: 10000,

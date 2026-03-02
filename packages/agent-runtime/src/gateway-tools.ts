@@ -16,13 +16,17 @@ import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec } from './sandbox-exec'
 import { MemorySearchEngine } from './memory-search'
 import { FileIndexEngine } from './file-index-engine'
-import { MCP_CATALOG } from './mcp-catalog'
-import { connectComposioMCP, isComposioEnabled, searchComposioToolkits, findComposioToolkit } from './composio'
+import { MCP_CATALOG, isPreinstalledMcpId, getPreinstalledPackages } from './mcp-catalog'
+import { initComposioSession, isComposioEnabled, isComposioInitialized, searchComposioToolkits, findComposioToolkit, registerToolkitProxyTools, checkComposioAuth } from './composio'
+import { autoBindPrimaryEntity } from './composio-auto-bind'
 import { getDynamicAppManager, getByPointer } from './dynamic-app-manager'
 import {
   CANVAS_COMPONENT_SCHEMA,
+  BASIC_CANVAS_COMPONENT_SCHEMA,
   VALID_COMPONENT_TYPES,
+  BASIC_VALID_COMPONENT_TYPES,
   getComponentSchema,
+  getBasicComponentSchema,
   lintComponents,
   normalizeComponents,
   type ComponentSchema,
@@ -41,6 +45,7 @@ export interface ToolContext {
   mcpClientManager?: import('./mcp-client').MCPClientManager
   /** Hot-connect a channel at runtime (called by channel_connect tool) */
   connectChannel?: (type: string, config: Record<string, string>) => Promise<void>
+  disconnectChannel?: (type: string) => Promise<void>
   /** Lazily-initialized file index engine for RAG over workspace files */
   fileIndexEngine?: FileIndexEngine
 }
@@ -72,7 +77,7 @@ function isBlockedCommand(command: string): boolean {
 
 function assertWithinWorkspace(workspaceDir: string, filePath: string): string {
   const resolved = resolve(workspaceDir, filePath)
-  if (!resolved.startsWith(workspaceDir) && !resolved.startsWith('/tmp')) {
+  if (!resolved.startsWith(workspaceDir)) {
     throw new Error(`Path outside workspace: ${filePath}`)
   }
   return resolved
@@ -80,7 +85,7 @@ function assertWithinWorkspace(workspaceDir: string, filePath: string): string {
 
 export function textResult(data: any): AgentToolResult<any> {
   return {
-    content: [{ type: 'text', text: typeof data === 'string' ? data : JSON.stringify(data) }],
+    content: [{ type: 'text', text: typeof data === 'string' ? data : JSON.stringify(data, null, 2) }],
     details: data,
   }
 }
@@ -202,76 +207,6 @@ function stripHtmlToText(html: string): string {
   return text
 }
 
-function createWebFetchTool(): AgentTool {
-  return {
-    name: 'web_fetch',
-    description: 'Fetch content from a URL and return it as text. Useful for checking APIs, web pages, or downloading data. Automatically extracts readable text from HTML pages.',
-    label: 'Web Fetch',
-    parameters: Type.Object({
-      url: Type.String({ description: 'URL to fetch' }),
-      maxChars: Type.Optional(Type.Number({ description: 'Maximum characters to return (default: 50000)' })),
-    }),
-    execute: async (_toolCallId, params) => {
-      const { url, maxChars = 50000 } = params as { url: string; maxChars?: number }
-
-      const headers: Record<string, string> = {
-        'User-Agent': BROWSER_USER_AGENT,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,application/json,text/plain;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-      }
-
-      const MAX_ATTEMPTS = 2
-
-      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-        try {
-          const response = await fetch(url, {
-            headers,
-            signal: AbortSignal.timeout(WEB_FETCH_TIMEOUT_MS),
-            redirect: 'follow',
-          })
-
-          if (response.status === 403 || response.status === 429) {
-            if (attempt < MAX_ATTEMPTS) {
-              await new Promise(r => setTimeout(r, 1000))
-              continue
-            }
-            return textResult({
-              error: `HTTP ${response.status}: Access denied or rate limited. The site may block automated requests.`,
-              url,
-              suggestion: 'Try web_search instead to find the information, or try a different source.',
-            })
-          }
-
-          if (!response.ok) {
-            return textResult({ error: `HTTP ${response.status}: ${response.statusText}`, url })
-          }
-
-          const contentType = response.headers.get('content-type') || ''
-          let text = await response.text()
-
-          if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
-            text = stripHtmlToText(text)
-          }
-
-          if (text.length > maxChars) {
-            text = text.substring(0, maxChars) + `\n\n[Truncated at ${maxChars} chars]`
-          }
-
-          return textResult({ content: text, status: response.status, bytes: text.length, url })
-        } catch (err: any) {
-          if (attempt < MAX_ATTEMPTS && (err.name === 'TimeoutError' || err.code === 'ECONNRESET')) {
-            await new Promise(r => setTimeout(r, 500))
-            continue
-          }
-          return textResult({ error: err.message, url })
-        }
-      }
-
-      return textResult({ error: 'All fetch attempts failed', url })
-    },
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Serper.dev Web Search
 // ---------------------------------------------------------------------------
@@ -281,6 +216,7 @@ const SERPER_ENDPOINTS: Record<string, string> = {
   news: 'https://google.serper.dev/news',
   images: 'https://google.serper.dev/images',
   places: 'https://google.serper.dev/places',
+  maps: 'https://google.serper.dev/maps',
   shopping: 'https://google.serper.dev/shopping',
 }
 
@@ -330,7 +266,7 @@ function formatSerperResults(raw: SerperResponse, searchType: string): string {
     parts.push(kgParts.join('\n'))
   }
 
-  if (searchType === 'search' && raw.organic?.length) {
+  if ((searchType === 'search' || searchType === 'maps') && raw.organic?.length) {
     parts.push('**Search Results:**')
     for (const r of raw.organic.slice(0, 10)) {
       const entry = [`${r.position ?? ''}. **${r.title}**`, r.link, r.snippet].filter(Boolean).join('\n   ')
@@ -345,7 +281,7 @@ function formatSerperResults(raw: SerperResponse, searchType: string): string {
     }
   }
 
-  if (searchType === 'places' && raw.places?.length) {
+  if ((searchType === 'places' || searchType === 'maps') && raw.places?.length) {
     parts.push('**Places:**')
     for (const p of raw.places.slice(0, 10)) {
       parts.push(`- **${p.title}** — ${p.address || 'N/A'} (${p.rating ?? '?'}/5, ${p.ratingCount ?? 0} reviews)`)
@@ -373,69 +309,252 @@ function formatSerperResults(raw: SerperResponse, searchType: string): string {
   return parts.join('\n\n') || 'No results found.'
 }
 
-function createWebSearchTool(): AgentTool {
+// ---------------------------------------------------------------------------
+// Google URL → Serper routing
+// ---------------------------------------------------------------------------
+
+interface GoogleUrlRoute {
+  query: string
+  searchType: string
+}
+
+/**
+ * Detects Google property URLs that won't return useful content via raw HTTP
+ * fetch (Maps, Flights, Shopping) and converts them into Serper API queries.
+ */
+function detectGoogleUrl(url: string): GoogleUrlRoute | null {
+  let u: URL
+  try { u = new URL(url) } catch { return null }
+
+  const host = u.hostname.replace('www.', '')
+  if (host !== 'google.com' && !host.endsWith('.google.com')) return null
+
+  const path = u.pathname
+
+  // Maps directions: /maps/dir/ORIGIN/DESTINATION
+  const dirMatch = path.match(/^\/maps\/dir\/([^/]+)\/([^/]+)/)
+  if (dirMatch) {
+    const origin = decodeURIComponent(dirMatch[1]).replace(/\+/g, ' ')
+    const dest = decodeURIComponent(dirMatch[2]).replace(/\+/g, ' ')
+    return { query: `directions from ${origin} to ${dest}`, searchType: 'search' }
+  }
+
+  // Maps place: /maps/place/PLACE
+  const placeMatch = path.match(/^\/maps\/place\/([^/@]+)/)
+  if (placeMatch) {
+    return { query: decodeURIComponent(placeMatch[1]).replace(/\+/g, ' '), searchType: 'places' }
+  }
+
+  // Maps search: /maps/search/QUERY
+  const mapSearchMatch = path.match(/^\/maps\/search\/([^/@]+)/)
+  if (mapSearchMatch) {
+    return { query: decodeURIComponent(mapSearchMatch[1]).replace(/\+/g, ' '), searchType: 'places' }
+  }
+
+  // Maps with ?q= parameter
+  if (path.startsWith('/maps') && u.searchParams.get('q')) {
+    return { query: u.searchParams.get('q')!, searchType: 'places' }
+  }
+
+  // Flights: /travel/flights
+  if (path.startsWith('/travel/flights')) {
+    const q = u.searchParams.get('q')
+    if (q) return { query: q, searchType: 'search' }
+    const tfs = u.searchParams.get('tfs')
+    return { query: tfs ? `flights ${tfs}` : 'flights', searchType: 'search' }
+  }
+
+  // Shopping: /shopping
+  if (path.startsWith('/shopping')) {
+    const q = u.searchParams.get('q') || 'shopping'
+    return { query: q, searchType: 'shopping' }
+  }
+
+  return null
+}
+
+const MIN_USEFUL_CONTENT_LENGTH = 200
+
+// ---------------------------------------------------------------------------
+// Unified Web Tool (fetch + search + smart Google routing)
+// ---------------------------------------------------------------------------
+
+async function serperSearch(
+  query: string,
+  searchType: string,
+  opts: { num?: number; gl?: string; hl?: string } = {},
+): Promise<AgentToolResult<any>> {
+  const directKey = process.env.SERPER_API_KEY
+  const proxyUrl = process.env.TOOLS_PROXY_URL
+  const proxyToken = process.env.AI_PROXY_TOKEN
+
+  const apiKey = directKey || proxyToken
+  if (!apiKey) {
+    return textResult({
+      error: 'SERPER_API_KEY not configured and no proxy available. Web search is unavailable.',
+      suggestion: 'Set SERPER_API_KEY or configure TOOLS_PROXY_URL + AI_PROXY_TOKEN.',
+    })
+  }
+
+  const { num = 10, gl = 'us', hl = 'en' } = opts
+  const endpoint = directKey
+    ? (SERPER_ENDPOINTS[searchType] || SERPER_ENDPOINTS.search)
+    : `${proxyUrl}/serper/${searchType || 'search'}`
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'X-API-KEY': apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ q: query, num, gl, hl }),
+      signal: AbortSignal.timeout(15000),
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '')
+      return textResult({ error: `Serper API error: HTTP ${response.status}`, details: errorText, query })
+    }
+
+    const data = (await response.json()) as SerperResponse
+    const formatted = formatSerperResults(data, searchType)
+
+    return textResult({
+      results: formatted,
+      raw: data,
+      query,
+      searchType,
+      creditsUsed: data.credits,
+    })
+  } catch (err: any) {
+    return textResult({ error: `Web search failed: ${err.message}`, query })
+  }
+}
+
+async function rawFetch(url: string, maxChars: number): Promise<AgentToolResult<any>> {
+  const headers: Record<string, string> = {
+    'User-Agent': BROWSER_USER_AGENT,
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,application/json,text/plain;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+  }
+
+  const MAX_ATTEMPTS = 2
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const response = await fetch(url, {
+        headers,
+        signal: AbortSignal.timeout(WEB_FETCH_TIMEOUT_MS),
+        redirect: 'follow',
+      })
+
+      if (response.status === 403 || response.status === 429) {
+        if (attempt < MAX_ATTEMPTS) {
+          await new Promise(r => setTimeout(r, 1000))
+          continue
+        }
+        return textResult({
+          error: `HTTP ${response.status}: Access denied or rate limited. The site may block automated requests.`,
+          url,
+          suggestion: 'Try again with a query instead of a URL, or try a different source.',
+        })
+      }
+
+      if (!response.ok) {
+        return textResult({ error: `HTTP ${response.status}: ${response.statusText}`, url })
+      }
+
+      const contentType = response.headers.get('content-type') || ''
+      let text = await response.text()
+
+      if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
+        text = stripHtmlToText(text)
+      }
+
+      if (text.length > maxChars) {
+        text = text.substring(0, maxChars) + `\n\n[Truncated at ${maxChars} chars]`
+      }
+
+      return textResult({ content: text, status: response.status, bytes: text.length, url })
+    } catch (err: any) {
+      if (attempt < MAX_ATTEMPTS && (err.name === 'TimeoutError' || err.code === 'ECONNRESET')) {
+        await new Promise(r => setTimeout(r, 500))
+        continue
+      }
+      return textResult({ error: err.message, url })
+    }
+  }
+
+  return textResult({ error: 'All fetch attempts failed', url })
+}
+
+function createWebTool(): AgentTool {
   return {
-    name: 'web_search',
+    name: 'web',
     description:
-      'Search the web using Google via Serper API. Returns structured search results with titles, links, snippets, and rich data (knowledge graph, answer boxes). ' +
-      'Supports search types: "search" (default), "news", "images", "places", "shopping". ' +
-      'For flights, search normally with a query like "flights from LAX to DPS April 20 2026".',
-    label: 'Web Search',
+      'Unified web tool: fetch a URL or search the web via Google (Serper API). ' +
+      'Provide `url` to fetch a page, or `query` to search. Google property URLs (Maps, Flights, Shopping) ' +
+      'are automatically routed through the search API for rich results. ' +
+      'Search types: "search" (default), "news", "images", "places", "maps", "shopping".',
+    label: 'Web',
     parameters: Type.Object({
-      query: Type.String({ description: 'Search query (e.g., "best restaurants in Bali", "flights from LAX to DPS April 2026")' }),
-      searchType: Type.Optional(Type.String({ description: 'Type of search: "search" (default), "news", "images", "places", "shopping"' })),
-      num: Type.Optional(Type.Number({ description: 'Number of results (default: 10, max: 100)' })),
+      url: Type.Optional(Type.String({ description: 'URL to fetch. Google URLs (Maps, Flights, Shopping) are auto-routed to search API.' })),
+      query: Type.Optional(Type.String({ description: 'Search query (e.g., "best restaurants in Bali", "directions from LAX to SFO")' })),
+      searchType: Type.Optional(Type.String({ description: 'Type of search: "search" (default), "news", "images", "places", "maps", "shopping"' })),
+      num: Type.Optional(Type.Number({ description: 'Number of search results (default: 10, max: 100)' })),
       gl: Type.Optional(Type.String({ description: 'Country code for localized results (e.g., "us", "uk", "id")' })),
       hl: Type.Optional(Type.String({ description: 'Language code (e.g., "en", "id", "fr")' })),
+      maxChars: Type.Optional(Type.Number({ description: 'Maximum characters for URL fetch (default: 50000)' })),
     }),
     execute: async (_toolCallId, params) => {
       const {
+        url,
         query,
         searchType = 'search',
         num = 10,
         gl = 'us',
         hl = 'en',
-      } = params as { query: string; searchType?: string; num?: number; gl?: string; hl?: string }
-
-      const apiKey = process.env.SERPER_API_KEY
-      if (!apiKey) {
-        return textResult({
-          error: 'SERPER_API_KEY not configured. Web search is unavailable.',
-          suggestion: 'Set the SERPER_API_KEY environment variable to enable Google search.',
-        })
+        maxChars = 50000,
+      } = params as {
+        url?: string; query?: string; searchType?: string
+        num?: number; gl?: string; hl?: string; maxChars?: number
       }
 
-      const endpoint = SERPER_ENDPOINTS[searchType] || SERPER_ENDPOINTS.search
+      if (!url && !query) {
+        return textResult({ error: 'Provide either `url` (to fetch a page) or `query` (to search the web).' })
+      }
 
-      try {
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'X-API-KEY': apiKey,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ q: query, num, gl, hl }),
-          signal: AbortSignal.timeout(15000),
-        })
-
-        if (!response.ok) {
-          const errorText = await response.text().catch(() => '')
-          return textResult({ error: `Serper API error: HTTP ${response.status}`, details: errorText, query })
+      // If a URL is provided, check for Google property routing first
+      if (url) {
+        const googleRoute = detectGoogleUrl(url)
+        if (googleRoute) {
+          return serperSearch(googleRoute.query, googleRoute.searchType, { num, gl, hl })
         }
 
-        const data = (await response.json()) as SerperResponse
-        const formatted = formatSerperResults(data, searchType)
+        // Raw fetch for non-Google URLs
+        const result = await rawFetch(url, maxChars)
+        const details = result.details
 
-        return textResult({
-          results: formatted,
-          raw: data,
-          query,
-          searchType,
-          creditsUsed: data.credits,
-        })
-      } catch (err: any) {
-        return textResult({ error: `Web search failed: ${err.message}`, query })
+        // If the page returned very little useful content, fallback to Serper
+        if (
+          !details?.error &&
+          typeof details?.content === 'string' &&
+          details.content.trim().length < MIN_USEFUL_CONTENT_LENGTH &&
+          (process.env.SERPER_API_KEY || (process.env.TOOLS_PROXY_URL && process.env.AI_PROXY_TOKEN))
+        ) {
+          const fallbackQuery = query || url
+          const fallback = await serperSearch(fallbackQuery, searchType, { num, gl, hl })
+          fallback.details._note = `Raw fetch returned minimal content (${details.content.trim().length} chars); fell back to search.`
+          fallback.details._originalUrl = url
+          return fallback
+        }
+
+        return result
       }
+
+      // Pure search path
+      return serperSearch(query!, searchType, { num, gl, hl })
     },
   }
 }
@@ -714,6 +833,70 @@ function createSendMessageTool(ctx: ToolContext): AgentTool {
       } catch (err: any) {
         return textResult({ error: `Failed to send: ${err.message}` })
       }
+    },
+  }
+}
+
+function createChannelDisconnectTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'channel_disconnect',
+    description: 'Disconnect a messaging channel and remove it from config.',
+    label: 'Disconnect Channel',
+    parameters: Type.Object({
+      type: Type.String({ description: 'Channel type to disconnect (e.g. "discord")' }),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { type } = params as { type: string }
+
+      if (!ctx.disconnectChannel) {
+        return textResult({ error: 'Channel disconnect not available in this context' })
+      }
+
+      try {
+        await ctx.disconnectChannel(type)
+
+        const configPath = join(ctx.workspaceDir, 'config.json')
+        if (existsSync(configPath)) {
+          try {
+            const fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'))
+            fileConfig.channels = (fileConfig.channels || []).filter((ch: any) => ch.type !== type)
+            writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8')
+          } catch { /* config corrupted, skip */ }
+        }
+
+        return textResult({ ok: true, type, message: `${type} channel disconnected` })
+      } catch (err: any) {
+        return textResult({ error: `Failed to disconnect ${type}: ${err.message}` })
+      }
+    },
+  }
+}
+
+function createChannelListTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'channel_list',
+    description: 'List all configured messaging channels and their connection status.',
+    label: 'List Channels',
+    parameters: Type.Object({}),
+    execute: async () => {
+      const statuses = []
+      for (const [type, adapter] of ctx.channels) {
+        statuses.push(adapter.getStatus())
+      }
+
+      const configPath = join(ctx.workspaceDir, 'config.json')
+      let configured: string[] = []
+      if (existsSync(configPath)) {
+        try {
+          const fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'))
+          configured = (fileConfig.channels || []).map((ch: any) => ch.type)
+        } catch { /* ignore */ }
+      }
+
+      return textResult({
+        connected: statuses,
+        configured,
+      })
     },
   }
 }
@@ -1107,7 +1290,12 @@ function createCanvasActionWaitTool(): AgentTool {
   }
 }
 
-function createCanvasComponentsTool(): AgentTool {
+function createCanvasComponentsTool(options?: { basic?: boolean }): AgentTool {
+  const isBasic = options?.basic ?? false
+  const catalog = isBasic ? BASIC_CANVAS_COMPONENT_SCHEMA : CANVAS_COMPONENT_SCHEMA
+  const validTypes = isBasic ? BASIC_VALID_COMPONENT_TYPES : VALID_COMPONENT_TYPES
+  const lookupSchema = isBasic ? getBasicComponentSchema : getComponentSchema
+
   return {
     name: 'canvas_components',
     description:
@@ -1135,10 +1323,10 @@ function createCanvasComponentsTool(): AgentTool {
         if (!type) {
           return textResult({ error: 'The "type" parameter is required for the "detail" action. Example: { action: "detail", type: "Card" }' })
         }
-        const schema = getComponentSchema(type)
+        const schema = lookupSchema(type)
         if (!schema) {
-          const validTypes = [...VALID_COMPONENT_TYPES].join(', ')
-          return textResult({ error: `Unknown component type "${type}". Valid types: ${validTypes}` })
+          const typeList = [...validTypes].join(', ')
+          return textResult({ error: `Unknown component type "${type}". Valid types: ${typeList}` })
         }
         return textResult({
           component: schema.type,
@@ -1154,7 +1342,7 @@ function createCanvasComponentsTool(): AgentTool {
         if (!q) {
           return textResult({ error: 'The "query" parameter is required for the "search" action. Example: { action: "search", query: "table" }' })
         }
-        const matches = CANVAS_COMPONENT_SCHEMA.filter((s) =>
+        const matches = catalog.filter((s) =>
           s.type.toLowerCase().includes(q) ||
           s.description.toLowerCase().includes(q) ||
           s.category.toLowerCase().includes(q) ||
@@ -1175,7 +1363,7 @@ function createCanvasComponentsTool(): AgentTool {
       }
 
       // Default: list
-      let schemas = CANVAS_COMPONENT_SCHEMA
+      let schemas = catalog as ComponentSchema[]
       if (category) {
         schemas = schemas.filter((s) => s.category === category)
       }
@@ -1224,7 +1412,10 @@ STEP 1: canvas_api_schema — define your model
   }]})
   → Creates endpoints: GET/POST /api/tasks, GET/PATCH/DELETE /api/tasks/:id
 
-STEP 2: canvas_api_seed — add sample data
+STEP 2: Populate data — PREFER real data from MCP/Composio tools or uploaded files.
+  Use mcp_search to find integrations, then canvas_api_seed with the real results.
+  Only use fabricated sample data if the user explicitly requests it or no real source is available.
+  Fallback example (sample data only):
   canvas_api_seed({ surfaceId: "my_app", model: "Task", records: [
     { title: "Buy groceries" }, { title: "Walk the dog", status: "done" }
   ]})
@@ -1316,7 +1507,7 @@ function createCanvasApiSeedTool(): AgentTool {
   return {
     name: 'canvas_api_seed',
     description:
-      'Bulk insert records into a model\'s table. Use after canvas_api_schema to populate initial data. Records can omit the id field (auto-generated). Use upsert=true to update existing records by id.',
+      'Bulk insert records into a model\'s table. Use after canvas_api_schema to populate data. PREFER inserting real data fetched from MCP/Composio tools or uploaded files. Only use fabricated sample data if the user explicitly asks for demo/fake data or no real data source exists. Records can omit the id field (auto-generated). Use upsert=true to update existing records by id.',
     label: 'Seed API Data',
     parameters: Type.Object({
       surfaceId: Type.String({ description: 'Surface ID' }),
@@ -1483,6 +1674,139 @@ RULES:
         if (!defs[key]) delete defs[key]
       }
       const result = manager.registerHooks(surfaceId, model, defs)
+      return textResult(result)
+    },
+  }
+}
+
+function createCanvasApiBindTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'canvas_api_bind',
+    description: `Bind CRUD API routes to installed tools so the canvas can display live data from integrations.
+
+Instead of seeding local data, this creates REST endpoints that proxy directly to tool calls.
+The canvas binds to these endpoints identically to SQLite-backed models.
+
+EXAMPLE — Bind Google Calendar events to the canvas:
+
+1. Install the integration:
+   tool_install({ name: "googlecalendar" })
+
+2. Bind tool operations to CRUD routes:
+   canvas_api_bind({
+     surfaceId: "app",
+     model: "CalendarEvent",
+     fields: [
+       { name: "summary", type: "String" },
+       { name: "start", type: "DateTime" },
+       { name: "end", type: "DateTime" }
+     ],
+     bindings: {
+       list: {
+         tool: "GOOGLECALENDAR_LIST_EVENTS",
+         params: { calendar_id: "primary" },
+         resultPath: "items"
+       },
+       create: {
+         tool: "GOOGLECALENDAR_CREATE_EVENT",
+         paramMap: { summary: "summary", start: "start", end: "end" }
+       }
+     },
+     cache: { enabled: true, ttlSeconds: 60 },
+     dataPath: "/events"
+   })
+   → Creates: GET /api/calendar-events (calls list tool), POST /api/calendar-events (calls create tool)
+   → Data auto-loaded at "/events" for { path: "/events" } bindings
+
+3. Build UI with data binding:
+   { component: "DataList", children: { path: "/events", templateId: "event_card" } }
+
+Use dataPath to auto-load list data into the surface data model (replaces separate canvas_api_query call):
+   canvas_api_bind({ surfaceId: "app", model: "CalendarEvent", ..., dataPath: "/events" })
+   → Data auto-loaded at "/events", ready for { path: "/events" } bindings
+
+BINDING OPERATIONS:
+- list: Fetches all items. Use resultPath to extract the array from the tool response.
+- get: Fetches a single item by ID.
+- create: Creates an item. paramMap maps model field names to tool parameter names.
+- update: Updates an item. Use ":id" in paramMap values to interpolate the route ID.
+- delete: Deletes an item.
+
+Only bind operations the tool actually supports. Read-only tools can use just "list".`,
+    label: 'Bind Tools to API',
+    parameters: Type.Object({
+      surfaceId: Type.String({ description: 'Surface ID (must exist via canvas_create)' }),
+      model: Type.String({ description: 'Model name in PascalCase (e.g. "CalendarEvent", "GitHubIssue")' }),
+      fields: Type.Array(
+        Type.Object({
+          name: Type.String({ description: 'Field name' }),
+          type: Type.Union([
+            Type.Literal('String'), Type.Literal('Int'), Type.Literal('Float'),
+            Type.Literal('Boolean'), Type.Literal('DateTime'), Type.Literal('Json'),
+          ], { description: 'Field type' }),
+        }),
+        { description: 'Field definitions describing the shape of items from the tool' },
+      ),
+      bindings: Type.Object({
+        list: Type.Optional(Type.Object({
+          tool: Type.String({ description: 'Full tool name for listing items' }),
+          params: Type.Optional(Type.Any({ description: 'Static params to pass to the tool' })),
+          resultPath: Type.Optional(Type.String({ description: 'Dot-path to extract items array from result (e.g. "items", "data.events")' })),
+        })),
+        get: Type.Optional(Type.Object({
+          tool: Type.String({ description: 'Full tool name for getting a single item' }),
+          params: Type.Optional(Type.Any()),
+          paramMap: Type.Optional(Type.Any({ description: 'Maps tool params to model fields. Use ":id" for the route ID.' })),
+        })),
+        create: Type.Optional(Type.Object({
+          tool: Type.String({ description: 'Full tool name for creating an item' }),
+          params: Type.Optional(Type.Any()),
+          paramMap: Type.Optional(Type.Any({ description: 'Maps tool params to model field names' })),
+        })),
+        update: Type.Optional(Type.Object({
+          tool: Type.String({ description: 'Full tool name for updating an item' }),
+          params: Type.Optional(Type.Any()),
+          paramMap: Type.Optional(Type.Any({ description: 'Maps tool params to model fields. Use ":id" for the route ID.' })),
+        })),
+        delete: Type.Optional(Type.Object({
+          tool: Type.String({ description: 'Full tool name for deleting an item' }),
+          params: Type.Optional(Type.Any()),
+          paramMap: Type.Optional(Type.Any({ description: 'Maps tool params. Use ":id" for the route ID.' })),
+        })),
+      }, { description: 'Map CRUD operations to tool calls' }),
+      cache: Type.Optional(Type.Object({
+        enabled: Type.Boolean({ description: 'Enable caching for list results (default: false)' }),
+        ttlSeconds: Type.Optional(Type.Number({ description: 'Cache TTL in seconds (default: 60)' })),
+      })),
+      dataPath: Type.Optional(Type.String({ description: 'JSON Pointer path to auto-load list data into the surface data model (e.g. "/events"). Eliminates the need for a separate canvas_api_query call.' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { surfaceId, model, fields, bindings, cache, dataPath } = params as any
+
+      if (!ctx.mcpClientManager) {
+        return textResult({ error: 'Tool manager not available' })
+      }
+
+      const availableTools = ctx.mcpClientManager.getTools().map(t => t.name)
+      const boundTools = [
+        bindings.list?.tool, bindings.get?.tool, bindings.create?.tool,
+        bindings.update?.tool, bindings.delete?.tool,
+      ].filter(Boolean)
+
+      const missing = boundTools.filter((t: string) => !availableTools.includes(t))
+      if (missing.length > 0) {
+        return textResult({ error: `Tool(s) not found: ${missing.join(', ')}. Use tool_list to see available tools.` })
+      }
+
+      const manager = getDynamicAppManager()
+      const result = manager.bindToolApi(surfaceId, {
+        model,
+        fields,
+        bindings,
+        cache,
+        dataPath,
+      }, ctx.mcpClientManager)
+
       return textResult(result)
     },
   }
@@ -2021,23 +2345,11 @@ Rate-limited: max ${MAX_UPDATES_PER_SESSION}/session, ${MAX_UPDATES_PER_DAY}/day
 // MCP Discovery Tools
 // ---------------------------------------------------------------------------
 
-const BLOCKED_MCP_PATTERNS = ['rm ', 'curl.*|.*bash', 'wget.*|.*bash', 'shutdown', 'reboot', 'mkfs', 'dd if=']
-
-function isMcpCommandBlocked(command: string, args: string[]): boolean {
-  const full = `${command} ${args.join(' ')}`.toLowerCase()
-  return BLOCKED_MCP_PATTERNS.some(p => {
-    if (p.includes('.*')) {
-      try { return new RegExp(p, 'i').test(full) } catch { return false }
-    }
-    return full.includes(p)
-  })
-}
-
-function createMcpSearchTool(): AgentTool {
+function createToolSearchTool(): AgentTool {
   return {
-    name: 'mcp_search',
-    description: 'Search for MCP servers and integrations by capability or keyword. Searches the built-in catalog, Composio managed integrations (hundreds of OAuth-based services — no credentials needed), and npm. Composio integrations are preferred when available.',
-    label: 'MCP: Search Registry',
+    name: 'tool_search',
+    description: 'Search for available tools and integrations by capability or keyword. Searches the built-in catalog of preinstalled MCP servers and managed OAuth integrations (hundreds of services — no credentials needed). Managed integrations are preferred when available.',
+    label: 'Search Tools',
     parameters: Type.Object({
       query: Type.String({ description: 'Search query describing the capability you need (e.g. "google calendar", "slack messaging", "postgres database")' }),
       limit: Type.Optional(Type.Number({ description: 'Max results to return (default: 5)' })),
@@ -2059,19 +2371,20 @@ function createMcpSearchTool(): AgentTool {
               name: tk.name,
               id: tk.slug,
               description: `${tk.name} — managed OAuth integration via Composio. No API keys or credentials needed.`,
-              installCommand: `mcp_install({ name: "${tk.slug}" })`,
-              source: 'composio',
+              installCommand: `tool_install({ name: "${tk.slug}" })`,
+              source: 'managed',
               logo: tk.logo,
             })
           }
         } catch { /* Composio API unavailable, continue with other sources */ }
       }
 
-      // 2. Search local MCP catalog
+      // 2. Search preinstalled MCP catalog only
+      const preinstalled = getPreinstalledPackages()
       const queryLower = query.toLowerCase()
       const queryWords = queryLower.split(/\s+/).filter(w => w.length > 2)
       const scored: Array<{ entry: typeof MCP_CATALOG[0]; score: number }> = []
-      for (const entry of MCP_CATALOG) {
+      for (const entry of preinstalled) {
         const haystack = `${entry.id} ${entry.name} ${entry.description} ${entry.category} ${entry.providedTools.join(' ')}`.toLowerCase()
         const idName = `${entry.id} ${entry.name}`.toLowerCase()
         let score = 0
@@ -2091,45 +2404,20 @@ function createMcpSearchTool(): AgentTool {
         results.push({
           name: entry.name,
           id: entry.id,
-          qualifiedName: entry.package.replace(/@latest$/, ''),
           description: entry.description,
-          installCommand: `npx -y ${entry.package}${entry.defaultArgs.length ? ' ' + entry.defaultArgs.join(' ') : ''}`,
-          defaultArgs: entry.defaultArgs.length > 0 ? entry.defaultArgs : undefined,
+          installCommand: `tool_install({ name: "${entry.id}" })`,
           source: 'catalog',
         })
       }
 
-      // 3. Search npm registry for remaining slots
-      const npmSlots = Math.max(limit - results.length, 2)
-      try {
-        const npmRes = await fetch(
-          `https://registry.npmjs.org/-/v1/search?text=mcp-server+${encodeURIComponent(query)}&size=${npmSlots}`,
-          { signal: AbortSignal.timeout(10_000) },
-        )
-        if (npmRes.ok) {
-          const data = await npmRes.json() as any
-          const catalogNames = new Set(results.map(r => r.qualifiedName).filter(Boolean))
-          for (const obj of (data.objects || []).slice(0, npmSlots)) {
-            const pkg = obj.package
-            if (catalogNames.has(pkg.name)) continue
-            results.push({
-              name: pkg.name,
-              description: pkg.description || '',
-              installCommand: `npx -y ${pkg.name}@latest`,
-              source: 'npm',
-            })
-          }
-        }
-      } catch { /* npm unavailable */ }
-
       if (results.length === 0) {
-        return textResult({ query, results: [], message: 'No MCP servers found. Try a different search term.' })
+        return textResult({ query, results: [], message: 'No tools found. Try a different search term.' })
       }
 
-      const composioCount = results.filter(r => r.source === 'composio').length
-      let message = `Found ${results.length} result(s). Use mcp_install to add one.`
-      if (composioCount > 0) {
-        message = `Found ${results.length} result(s). ${composioCount} are Composio managed integrations (no credentials needed) — prefer these. Just call mcp_install with the name.`
+      const managedCount = results.filter(r => r.source === 'managed').length
+      let message = `Found ${results.length} result(s). Use tool_install to add one.`
+      if (managedCount > 0) {
+        message = `Found ${results.length} result(s). ${managedCount} are managed integrations (no credentials needed) — prefer these. Just call tool_install with the name.`
       }
 
       return textResult({ query, results, message })
@@ -2137,37 +2425,145 @@ function createMcpSearchTool(): AgentTool {
   }
 }
 
-function createMcpInstallTool(ctx: ToolContext): AgentTool {
+function formatToolInstallMessage(
+  toolkitName: string,
+  toolCount: number,
+  auth: { status: string; authUrl?: string },
+): string {
+  const base = `"${toolkitName}" installed with ${toolCount} tool(s).`
+  if (auth.status !== 'needs_auth') {
+    return `${base} Auth is active. No manual credentials needed.`
+  }
+  if (auth.authUrl) {
+    return `${base} User needs to authorize — a Connect button is displayed in the chat for them to click. Do NOT include the auth URL in your response; the UI button handles the OAuth popup flow automatically. Tell the user to click the Connect button below.`
+  }
+  return `${base} Auth status: needs_auth. The user may need to authorize via the Tools panel.`
+}
+
+function createToolInstallTool(ctx: ToolContext): AgentTool {
   return {
-    name: 'mcp_install',
-    description: 'Install and start an MCP server or Composio integration, making its tools available immediately. For Composio integrations (Google Calendar, Slack, GitHub, and hundreds more), just provide the name — no command or args needed. For local MCP servers, provide command and args.',
-    label: 'MCP: Install Server',
+    name: 'tool_install',
+    description: `Install and start a tool integration, making its tools available immediately. For managed integrations (Google Calendar, Slack, GitHub, and hundreds more), just provide the name — no command or args needed. For preinstalled MCP servers (fetch, github, postgres, slack, notion, brave-search, airbnb, filesystem), provide the server name.
+
+Managed integrations auto-bind by default: the toolkit's CRUD operations are automatically discovered and deferred to bind to the next canvas you create. No extra parameters needed — just call tool_install({ name: "googlecalendar" }) and then canvas_create.
+
+Pass "autoBind" with surfaceId/dataPath to target a specific canvas. Pass "bind" with explicit config if you already know the tool's response shape (e.g. from a saved skill).`,
+    label: 'Install Tool',
     parameters: Type.Object({
-      name: Type.String({ description: 'Server or integration name (e.g. "googlecalendar", "slack", "postgres"). For Composio integrations, this is all you need.' }),
-      command: Type.Optional(Type.String({ description: 'Command to run a local MCP server (e.g. "npx"). Not needed for Composio integrations.' })),
-      args: Type.Optional(Type.Array(Type.String(), { description: 'Command arguments. Not needed for Composio integrations.' })),
+      name: Type.String({ description: 'Tool or integration name (e.g. "googlecalendar", "slack", "postgres"). Only preinstalled MCP servers and managed integrations are supported.' }),
       env: Type.Optional(Type.Any({ description: 'Environment variables for the server process' })),
+      autoBind: Type.Optional(Type.Object({
+        surfaceId: Type.String({ description: 'Surface ID to bind to (deferred if surface does not exist yet)' }),
+        dataPath: Type.Optional(Type.String({ description: 'JSON Pointer path to auto-load list data (e.g. "/events")' })),
+      }, { description: 'Auto-discover the toolkit\'s CRUD operations and bind to canvas API routes. No prior knowledge needed — schemas are introspected from the Composio API.' })),
+      bind: Type.Optional(Type.Object({
+        surfaceId: Type.String({ description: 'Surface ID to bind to (deferred if surface does not exist yet)' }),
+        model: Type.String({ description: 'Model name in PascalCase (e.g. "CalendarEvent")' }),
+        fields: Type.Array(Type.Object({
+          name: Type.String(),
+          type: Type.Union([
+            Type.Literal('String'), Type.Literal('Int'), Type.Literal('Float'),
+            Type.Literal('Boolean'), Type.Literal('DateTime'), Type.Literal('Json'),
+          ]),
+        })),
+        bindings: Type.Object({
+          list: Type.Optional(Type.Object({
+            tool: Type.String(),
+            params: Type.Optional(Type.Any()),
+            resultPath: Type.Optional(Type.String()),
+          })),
+          get: Type.Optional(Type.Object({ tool: Type.String(), params: Type.Optional(Type.Any()), paramMap: Type.Optional(Type.Any()) })),
+          create: Type.Optional(Type.Object({ tool: Type.String(), params: Type.Optional(Type.Any()), paramMap: Type.Optional(Type.Any()) })),
+          update: Type.Optional(Type.Object({ tool: Type.String(), params: Type.Optional(Type.Any()), paramMap: Type.Optional(Type.Any()) })),
+          delete: Type.Optional(Type.Object({ tool: Type.String(), params: Type.Optional(Type.Any()), paramMap: Type.Optional(Type.Any()) })),
+        }),
+        cache: Type.Optional(Type.Object({
+          enabled: Type.Boolean(),
+          ttlSeconds: Type.Optional(Type.Number()),
+        })),
+        dataPath: Type.Optional(Type.String({ description: 'JSON Pointer path to auto-load list data (e.g. "/events")' })),
+      }, { description: 'Optional: bind installed tools to canvas CRUD API routes. Combines tool_install + canvas_api_bind in one call.' })),
     }),
     execute: async (_id: string, params: any) => {
-      const { name, command, args, env } = params as { name: string; command?: string; args?: string[]; env?: Record<string, string> }
+      const { name, env, bind, autoBind } = params as {
+        name: string; env?: Record<string, string>
+        bind?: any; autoBind?: { surfaceId: string; dataPath?: string }
+      }
 
       if (!ctx.mcpClientManager) {
         return textResult({ error: 'MCP client manager not available' })
       }
 
-      // Check if Composio remote server is already connected
-      if (ctx.mcpClientManager.isRunning('composio') && isComposioEnabled()) {
+      const applyBind = (installResult: Record<string, unknown>) => {
+        if (!bind || !ctx.mcpClientManager) return installResult
+        const manager = getDynamicAppManager()
+        const bindConfig = {
+          model: bind.model,
+          fields: bind.fields,
+          bindings: bind.bindings,
+          cache: bind.cache,
+          dataPath: bind.dataPath,
+        }
+        if (manager.getSurface(bind.surfaceId)) {
+          const bindResult = manager.bindToolApi(bind.surfaceId, bindConfig, ctx.mcpClientManager)
+          return { ...installResult, bind: bindResult }
+        }
+        manager.deferToolBinding(bind.surfaceId, bindConfig, ctx.mcpClientManager)
+        return { ...installResult, bind: { ok: true, deferred: true, surfaceId: bind.surfaceId, message: `Binding deferred — will apply when surface "${bind.surfaceId}" is created.` } }
+      }
+
+      const applyAutoBind = async (installResult: Record<string, unknown>, toolkitSlug: string, isComposio: boolean) => {
+        if (!ctx.mcpClientManager) return installResult
+        if (!autoBind && !isComposio) return installResult
+        try {
+          const result = await autoBindPrimaryEntity(toolkitSlug, {
+            dataPath: autoBind?.dataPath,
+            mcpClient: ctx.mcpClientManager,
+          })
+          if (!result) {
+            return { ...installResult, autoBind: { ok: false, message: `Auto-bind: no bindable entities found for "${toolkitSlug}". Use canvas_api_bind manually after exploring the tools.` } }
+          }
+          const manager = getDynamicAppManager()
+          const surfaceId = autoBind?.surfaceId
+          if (surfaceId && manager.getSurface(surfaceId)) {
+            const bindResult = manager.bindToolApi(surfaceId, result.config, ctx.mcpClientManager)
+            return { ...installResult, autoBind: { ok: true, entity: result.entity, config: result.config, discoveredFrom: result.discoveredFrom, tools: result.tools, ...bindResult } }
+          }
+          manager.deferToolBinding(surfaceId || '*', result.config, ctx.mcpClientManager)
+          return {
+            ...installResult,
+            autoBind: {
+              ok: true, deferred: true,
+              surfaceId: surfaceId || '(next canvas)',
+              entity: result.entity, config: result.config, discoveredFrom: result.discoveredFrom, tools: result.tools,
+              message: surfaceId
+                ? `Auto-bind deferred — "${result.entity}" will bind when surface "${surfaceId}" is created.`
+                : `Auto-bind ready — "${result.entity}" CRUD binding will apply automatically to the next canvas you create.`,
+            },
+          }
+        } catch (err: any) {
+          return { ...installResult, autoBind: { ok: false, error: err.message, message: `Auto-bind failed: ${err.message}. Use canvas_api_bind manually.` } }
+        }
+      }
+
+      // Check if Composio session is already initialized
+      if (isComposioInitialized() && isComposioEnabled()) {
         const composioToolkit = await findComposioToolkit(name)
         if (composioToolkit) {
-          const info = ctx.mcpClientManager.getServerInfo().find(s => s.name === 'composio')
-          return textResult({
+          const proxy = await registerToolkitProxyTools(ctx.mcpClientManager, composioToolkit.slug)
+          const auth = await checkComposioAuth(composioToolkit.slug)
+          let result = applyBind({
             ok: true,
             server: 'composio',
             integration: composioToolkit.slug,
-            toolCount: info?.toolCount || 0,
-            tools: info?.toolNames || [],
-            message: `"${composioToolkit.name}" is available via Composio managed integration (already connected with ${info?.toolCount || 0} tools). Tools are prefixed with "mcp_composio_". Use them now.`,
+            toolCount: proxy.toolCount,
+            tools: proxy.toolNames,
+            authStatus: auth.status,
+            ...(auth.authUrl ? { authUrl: auth.authUrl } : {}),
+            message: formatToolInstallMessage(composioToolkit.name, proxy.toolCount, auth),
           })
+          result = await applyAutoBind(result, composioToolkit.slug, true)
+          return textResult(result)
         }
       }
 
@@ -2182,17 +2578,22 @@ function createMcpInstallTool(ctx: ToolContext): AgentTool {
         if (composioToolkit) {
           try {
             const userId = process.env.USER_ID || 'default'
-            const connected = await connectComposioMCP(ctx.mcpClientManager, userId, ctx.projectId)
-            if (connected) {
-              const info = ctx.mcpClientManager.getServerInfo().find(s => s.name === 'composio')
-              return textResult({
+            const initialized = await initComposioSession(userId, ctx.projectId)
+            if (initialized) {
+              const proxy = await registerToolkitProxyTools(ctx.mcpClientManager, composioToolkit.slug)
+              const auth = await checkComposioAuth(composioToolkit.slug)
+              let result = applyBind({
                 ok: true,
                 server: 'composio',
                 integration: composioToolkit.slug,
-                toolCount: info?.toolCount || 0,
-                tools: info?.toolNames?.map(t => ({ name: t })) || [],
-                message: `Connected "${composioToolkit.name}" via Composio managed OAuth with ${info?.toolCount || 0} tool(s). No manual credentials needed. Tools are prefixed with "mcp_composio_".`,
+                toolCount: proxy.toolCount,
+                tools: proxy.toolNames,
+                authStatus: auth.status,
+                ...(auth.authUrl ? { authUrl: auth.authUrl } : {}),
+                message: formatToolInstallMessage(composioToolkit.name, proxy.toolCount, auth),
               })
+              result = await applyAutoBind(result, composioToolkit.slug, true)
+              return textResult(result)
             }
             return textResult({ error: `Failed to connect "${composioToolkit.name}" via Composio. The integration may not be available.` })
           } catch (err: any) {
@@ -2201,24 +2602,26 @@ function createMcpInstallTool(ctx: ToolContext): AgentTool {
         }
       }
 
-      // Fall back to local process MCP for non-Composio servers
-      if (!command) {
-        return textResult({ error: `Server "${name}" is not a recognized Composio integration and requires a command to run. Provide command and args (e.g. command: "npx", args: ["-y", "package-name"]).` })
-      }
-
-      if (isMcpCommandBlocked(command, args || [])) {
-        return textResult({ error: 'Command blocked for safety reasons' })
+      // Only allow preinstalled MCP servers
+      const catalogEntry = MCP_CATALOG.find(e => e.id === name)
+      if (!catalogEntry || !catalogEntry.preinstalled) {
+        const allowed = getPreinstalledPackages().map(e => e.id).join(', ')
+        return textResult({ error: `"${name}" is not available. Only preinstalled MCP servers are supported: ${allowed}` })
       }
 
       try {
-        const tools = await ctx.mcpClientManager.hotAddServer(name, { command, args, env })
-        return textResult({
+        const tools = await ctx.mcpClientManager.hotAddServer(name, {
+          command: 'npx',
+          args: [catalogEntry.package, ...catalogEntry.defaultArgs],
+          env,
+        })
+        return textResult(applyBind({
           ok: true,
           server: name,
           toolCount: tools.length,
           tools: tools.map(t => ({ name: t.name, description: t.description })),
           message: `Installed "${name}" with ${tools.length} tool(s). They are now available for use.`,
-        })
+        }))
       } catch (err: any) {
         return textResult({ error: `Failed to install "${name}": ${err.message}` })
       }
@@ -2226,13 +2629,13 @@ function createMcpInstallTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createMcpUninstallTool(ctx: ToolContext): AgentTool {
+function createToolUninstallTool(ctx: ToolContext): AgentTool {
   return {
-    name: 'mcp_uninstall',
-    description: 'Stop and remove an installed MCP server. Its tools will no longer be available.',
-    label: 'MCP: Uninstall Server',
+    name: 'tool_uninstall',
+    description: 'Stop and remove an installed tool. Its tools will no longer be available.',
+    label: 'Uninstall Tool',
     parameters: Type.Object({
-      name: Type.String({ description: 'Server name to remove (use mcp_list_installed to see names)' }),
+      name: Type.String({ description: 'Tool name to remove (use tool_list to see names)' }),
     }),
     execute: async (_id: string, params: any) => {
       const name = params.name as string
@@ -2255,20 +2658,20 @@ function createMcpUninstallTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createMcpListInstalledTool(ctx: ToolContext): AgentTool {
+function createToolListTool(ctx: ToolContext): AgentTool {
   return {
-    name: 'mcp_list_installed',
-    description: 'List all currently installed MCP servers and their available tools.',
-    label: 'MCP: List Installed',
+    name: 'tool_list',
+    description: 'List all currently installed tools and their available capabilities.',
+    label: 'List Tools',
     parameters: Type.Object({}),
     execute: async () => {
       if (!ctx.mcpClientManager) {
-        return textResult({ error: 'MCP client manager not available' })
+        return textResult({ error: 'Tool manager not available' })
       }
 
       const servers = ctx.mcpClientManager.getServerInfo()
       if (servers.length === 0) {
-        return textResult({ servers: [], message: 'No MCP servers installed. Use mcp_search to find servers to install.' })
+        return textResult({ servers: [], message: 'No tools installed. Use tool_search to find tools to install.' })
       }
 
       return textResult({
@@ -2292,32 +2695,34 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   shell: ['exec'],
   filesystem: ['read_file', 'write_file'],
   files: ['list_files', 'delete_file', 'search_files', 'read_file', 'write_file'],
-  web_fetch: ['web_fetch'],
-  web_search: ['web_search', 'web_fetch'],
+  web: ['web'],
+  web_fetch: ['web'],
+  web_search: ['web'],
   browser: [
-    'browser',
+    'browser', 'web',
     'mcp_playwright_browser_navigate', 'mcp_playwright_browser_snapshot',
     'mcp_playwright_browser_click', 'mcp_playwright_browser_type',
     'mcp_playwright_browser_screenshot', 'mcp_playwright_browser_close',
   ],
   memory: ['memory_read', 'memory_write', 'memory_search'],
-  messaging: ['send_message'],
+  messaging: ['send_message', 'channel_connect', 'channel_disconnect', 'channel_list'],
   cron: ['cron'],
   canvas: ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_action_wait', 'canvas_components', 'canvas_trigger_action', 'canvas_inspect'],
-  api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks'],
+  api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind'],
   personality: ['personality_update'],
-  mcp_discovery: ['mcp_search', 'mcp_install', 'mcp_uninstall', 'mcp_list_installed'],
+  tool_discovery: ['tool_search', 'tool_install', 'tool_uninstall', 'tool_list'],
+  mcp_discovery: ['tool_search', 'tool_install', 'tool_uninstall', 'tool_list'],
 }
 
 export const ALL_TOOL_NAMES = [
-  'exec', 'read_file', 'write_file', 'web_fetch', 'web_search', 'browser',
+  'exec', 'read_file', 'write_file', 'web', 'browser',
   'list_files', 'delete_file', 'search_files',
-  'memory_read', 'memory_write', 'memory_search', 'send_message', 'channel_connect', 'cron',
+  'memory_read', 'memory_write', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list', 'cron',
   'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_action_wait', 'canvas_components',
   'canvas_trigger_action', 'canvas_inspect',
-  'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks',
+  'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind',
   'personality_update',
-  'mcp_search', 'mcp_install', 'mcp_uninstall', 'mcp_list_installed',
+  'tool_search', 'tool_install', 'tool_uninstall', 'tool_list',
 ] as const
 
 /**
@@ -2567,14 +2972,15 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createListFilesTool(ctx),
     createDeleteFileTool(ctx),
     createSearchFilesTool(ctx),
-    createWebFetchTool(),
-    createWebSearchTool(),
+    createWebTool(),
     createBrowserTool(ctx),
     createMemoryReadTool(ctx),
     createMemoryWriteTool(ctx),
     createMemorySearchTool(ctx),
     createSendMessageTool(ctx),
     createChannelConnectTool(ctx),
+    createChannelDisconnectTool(ctx),
+    createChannelListTool(ctx),
     createCronTool(ctx),
     createCanvasCreateTool(),
     createCanvasUpdateTool(),
@@ -2587,13 +2993,49 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createCanvasApiSeedTool(),
     createCanvasApiQueryTool(),
     createCanvasApiHooksTool(),
+    createCanvasApiBindTool(ctx),
     createCanvasTriggerActionTool(),
     createCanvasInspectTool(),
     createPersonalityUpdateTool(ctx),
-    createMcpSearchTool(),
-    createMcpInstallTool(ctx),
-    createMcpUninstallTool(ctx),
-    createMcpListInstalledTool(ctx),
+    createToolSearchTool(),
+    createToolInstallTool(ctx),
+    createToolUninstallTool(ctx),
+    createToolListTool(ctx),
+  ]
+}
+
+/** Basic agent tools — full non-canvas set + display-only canvas (no mutation tools) */
+export function createBasicTools(ctx: ToolContext): AgentTool[] {
+  return [
+    createExecTool(ctx),
+    createReadFileTool(ctx),
+    createWriteFileTool(ctx),
+    createListFilesTool(ctx),
+    createDeleteFileTool(ctx),
+    createSearchFilesTool(ctx),
+    createWebTool(),
+    createBrowserTool(ctx),
+    createMemoryReadTool(ctx),
+    createMemoryWriteTool(ctx),
+    createMemorySearchTool(ctx),
+    createSendMessageTool(ctx),
+    createChannelConnectTool(ctx),
+    createCronTool(ctx),
+    createCanvasCreateTool(),
+    createCanvasUpdateTool(),
+    createCanvasDataTool(),
+    createCanvasDeleteTool(),
+    createCanvasComponentsTool({ basic: true }),
+    createCanvasApiSchemaTool(),
+    createCanvasApiSeedTool(),
+    createCanvasApiQueryTool(),
+    createCanvasApiBindTool(ctx),
+    createCanvasInspectTool(),
+    createPersonalityUpdateTool(ctx),
+    createToolSearchTool(),
+    createToolInstallTool(ctx),
+    createToolUninstallTool(ctx),
+    createToolListTool(ctx),
   ]
 }
 
@@ -2602,8 +3044,7 @@ export function createHeartbeatTools(ctx: ToolContext): AgentTool[] {
   return [
     createReadFileTool(ctx),
     createWriteFileTool(ctx),
-    createWebFetchTool(),
-    createWebSearchTool(),
+    createWebTool(),
     createBrowserTool(ctx),
     createMemoryReadTool(ctx),
     createMemoryWriteTool(ctx),

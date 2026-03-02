@@ -11,7 +11,7 @@ import {
 import { useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { observer } from 'mobx-react-lite'
-import { Sparkles, ChevronRight } from 'lucide-react-native'
+import { ArrowRight } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Button } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
@@ -22,47 +22,64 @@ import {
 } from '../../contexts/domain'
 import { CompactChatInput } from '../../components/chat/CompactChatInput'
 import { setPendingImageData } from '../../lib/pending-image-store'
+import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { API_URL } from '../../lib/api'
 
-const SUGGESTION_CHIPS = [
-  'Build a customer support agent',
-  'Create a research assistant',
-  'Make a scheduling agent',
-  'Design a data analysis agent',
-]
-
-interface CanvasTemplate {
+interface AgentTemplate {
   id: string
   name: string
   description: string
-  user_request: string
+  category: string
   icon: string
+  tags: string[]
+  settings: any
+  skills: string[]
 }
 
-const HOME_TEMPLATES: CanvasTemplate[] = [
-  { id: 'analytics-dashboard', name: 'Analytics Dashboard', description: 'Revenue charts & top products', user_request: 'Create a sales analytics dashboard with revenue chart and top products', icon: '\u{1F4CA}' },
-  { id: 'task-tracker-crud', name: 'Task Tracker', description: 'Add, complete & delete tasks', user_request: 'Build a task tracker where I can add, complete, and delete tasks', icon: '\u{2705}' },
-  { id: 'crm-pipeline', name: 'CRM Pipeline', description: 'Leads across pipeline stages', user_request: 'Build a CRM pipeline canvas showing leads in 3 stages', icon: '\u{1F91D}' },
-  { id: 'expense-dashboard', name: 'Expense Dashboard', description: 'Spend, budgets & recent expenses', user_request: 'Create an expense tracker dashboard with total spend, budget remaining, and a table of recent expenses', icon: '\u{1F4B0}' },
-  { id: 'support-tickets-crud', name: 'Support Tickets', description: 'Priority levels & status tracking', user_request: 'Build a support ticket management app with CRUD API, priority levels, and status tracking', icon: '\u{1F3AB}' },
-  { id: 'email-dashboard', name: 'Email Dashboard', description: 'Metrics, tabs & email tables', user_request: 'Build an email dashboard with metrics, tabs, and email tables', icon: '\u{1F4E7}' },
-]
+/**
+ * Reads the dark class directly from the DOM and observes mutations.
+ * Avoids relying on React context which MobX observer() can swallow.
+ */
+function useDarkMode() {
+  const [isDark, setIsDark] = useState(() => {
+    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+      return document.documentElement.classList.contains('dark')
+    }
+    return false
+  })
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return
+    setIsDark(document.documentElement.classList.contains('dark'))
+    const obs = new MutationObserver(() => {
+      setIsDark(document.documentElement.classList.contains('dark'))
+    })
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+    return () => obs.disconnect()
+  }, [])
+  return isDark
+}
 
-const GRADIENT_KEYFRAMES = `
-@keyframes gradient-float {
+const GRADIENT_CSS = `
+@keyframes lovable-drift {
   0%, 100% { transform: translate(0, 0) scale(1); }
-  33% { transform: translate(30px, -30px) scale(1.05); }
-  66% { transform: translate(-20px, 20px) scale(0.95); }
+  50% { transform: translate(20px, -10px) scale(1.02); }
 }
-@keyframes gradient-float-reverse {
+@keyframes lovable-drift-alt {
   0%, 100% { transform: translate(0, 0) scale(1); }
-  33% { transform: translate(-25px, 25px) scale(1.03); }
-  66% { transform: translate(15px, -15px) scale(0.97); }
-}
-@keyframes gradient-pulse {
-  0%, 100% { opacity: 0.3; transform: scale(1); }
-  50% { opacity: 0.5; transform: scale(1.1); }
+  50% { transform: translate(-15px, 15px) scale(1.01); }
 }
 `
+
+const TEMPLATE_COLORS: Record<string, string> = {
+  'research-assistant': '#3b82f6',
+  'github-ops': '#f97316',
+  'support-desk': '#8b5cf6',
+  'meeting-prep': '#10b981',
+  'revenue-tracker': '#ec4899',
+  'project-board': '#06b6d4',
+  'incident-commander': '#ef4444',
+  'personal-assistant': '#f59e0b',
+}
 
 function generateProjectNameFromPrompt(prompt: string): string {
   const fillerWords = new Set([
@@ -85,17 +102,22 @@ function generateProjectNameFromPrompt(prompt: string): string {
   return nameWords.map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(" ")
 }
 
-function GradientBackground() {
+function LovableGradient({ isDark }: { isDark: boolean }) {
   if (Platform.OS !== 'web') {
+    const o = isDark ? 0.35 : 1
     return (
       <View className="absolute inset-0 overflow-hidden" pointerEvents="none">
         <View
-          className="absolute w-[400px] h-[400px] rounded-full"
-          style={{ top: '10%', left: '10%', backgroundColor: 'rgba(59, 130, 246, 0.15)' }}
+          className="absolute w-[500px] h-[500px] rounded-full"
+          style={{ top: '-10%', left: '10%', backgroundColor: `rgba(96, 165, 250, ${0.25 * o})` }}
         />
         <View
-          className="absolute w-[300px] h-[300px] rounded-full"
-          style={{ bottom: '5%', right: '5%', backgroundColor: 'rgba(236, 72, 153, 0.1)' }}
+          className="absolute w-[500px] h-[500px] rounded-full"
+          style={{ top: '10%', right: '-10%', backgroundColor: `rgba(244, 114, 182, ${0.25 * o})` }}
+        />
+        <View
+          className="absolute w-[400px] h-[400px] rounded-full"
+          style={{ bottom: '-5%', left: '30%', backgroundColor: `rgba(251, 113, 133, ${0.2 * o})` }}
         />
       </View>
     )
@@ -103,58 +125,50 @@ function GradientBackground() {
 
   return (
     <View className="absolute inset-0 overflow-hidden" pointerEvents="none">
-      <style dangerouslySetInnerHTML={{ __html: GRADIENT_KEYFRAMES }} />
+      <style dangerouslySetInnerHTML={{ __html: GRADIENT_CSS }} />
       <div
         style={{
           position: 'absolute',
-          width: 800,
-          height: 800,
+          width: '80%',
+          height: '110%',
+          top: '-30%',
+          left: '-10%',
           borderRadius: '50%',
-          filter: 'blur(120px)',
-          background: 'radial-gradient(circle, rgba(59,130,246,0.6) 0%, rgba(139,92,246,0.5) 40%, rgba(236,72,153,0.4) 100%)',
-          top: '10%',
-          left: '20%',
-          animation: 'gradient-float 15s ease-in-out infinite',
+          filter: 'blur(60px)',
+          background: isDark
+            ? 'radial-gradient(ellipse, rgba(96,165,250,0.2) 0%, rgba(147,197,253,0.12) 40%, transparent 70%)'
+            : 'radial-gradient(ellipse, rgba(96,165,250,0.55) 0%, rgba(147,197,253,0.35) 40%, transparent 70%)',
+          animation: 'lovable-drift 20s ease-in-out infinite',
         }}
       />
       <div
         style={{
           position: 'absolute',
-          width: 600,
-          height: 600,
+          width: '70%',
+          height: '130%',
+          top: '-20%',
+          right: '-15%',
           borderRadius: '50%',
-          filter: 'blur(100px)',
-          background: 'radial-gradient(circle, rgba(249,115,22,0.5) 0%, rgba(236,72,153,0.5) 50%, rgba(139,92,246,0.3) 100%)',
-          bottom: '5%',
-          right: '10%',
-          animation: 'gradient-float-reverse 18s ease-in-out infinite',
+          filter: 'blur(60px)',
+          background: isDark
+            ? 'radial-gradient(ellipse, rgba(244,114,182,0.22) 0%, rgba(251,113,133,0.18) 30%, rgba(249,115,22,0.12) 60%, transparent 80%)'
+            : 'radial-gradient(ellipse, rgba(244,114,182,0.6) 0%, rgba(251,113,133,0.5) 30%, rgba(249,115,22,0.35) 60%, transparent 80%)',
+          animation: 'lovable-drift-alt 18s ease-in-out infinite',
         }}
       />
       <div
         style={{
           position: 'absolute',
-          width: 500,
-          height: 500,
+          width: '90%',
+          height: '70%',
+          bottom: '-25%',
+          left: '5%',
           borderRadius: '50%',
-          filter: 'blur(100px)',
-          background: 'radial-gradient(circle, rgba(34,211,238,0.3) 0%, rgba(59,130,246,0.3) 100%)',
-          top: '50%',
-          right: '30%',
-          animation: 'gradient-pulse 12s ease-in-out infinite',
-        }}
-      />
-      <div
-        style={{
-          position: 'absolute',
-          width: 400,
-          height: 400,
-          borderRadius: '50%',
-          filter: 'blur(80px)',
-          background: 'radial-gradient(circle, rgba(236,72,153,0.5) 0%, rgba(168,85,247,0.3) 100%)',
-          top: '30%',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          animation: 'gradient-float 20s ease-in-out infinite reverse',
+          filter: 'blur(70px)',
+          background: isDark
+            ? 'radial-gradient(ellipse, rgba(251,113,133,0.2) 0%, rgba(236,72,153,0.15) 25%, rgba(249,115,22,0.1) 50%, transparent 75%)'
+            : 'radial-gradient(ellipse, rgba(251,113,133,0.55) 0%, rgba(236,72,153,0.45) 25%, rgba(249,115,22,0.3) 50%, transparent 75%)',
+          animation: 'lovable-drift 22s ease-in-out infinite reverse',
         }}
       />
     </View>
@@ -165,34 +179,74 @@ function TemplateCard({
   template,
   isLoading,
   onPress,
+  isDark,
 }: {
-  template: CanvasTemplate
+  template: AgentTemplate
   isLoading: boolean
   onPress: () => void
+  isDark: boolean
 }) {
+  const color = TEMPLATE_COLORS[template.id] || '#6366f1'
+
   return (
     <Pressable
       onPress={onPress}
       disabled={isLoading}
       className={cn(
-        'rounded-xl p-4 border border-border/50 bg-card/60',
+        'rounded-2xl overflow-hidden border border-border bg-card',
         isLoading && 'opacity-50'
       )}
+      style={Platform.OS === 'web' ? {
+        boxShadow: isDark
+          ? '0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2)'
+          : '0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)',
+        transition: 'box-shadow 0.2s, transform 0.2s',
+      } as any : {}}
     >
-      <View className="flex-row items-start gap-3">
-        <Text className="text-2xl mt-0.5">{template.icon}</Text>
-        <View className="flex-1">
-          <Text className="text-foreground font-semibold text-[15px] leading-tight">
+      <View
+        style={{
+          height: 180,
+          backgroundColor: isDark ? `${color}15` : `${color}08`,
+          borderBottomWidth: 1,
+          borderBottomColor: isDark ? 'rgba(255,255,255,0.06)' : '#f3f4f6',
+        }}
+        className="items-center justify-center"
+      >
+        <Text style={{ fontSize: 48 }}>{template.icon}</Text>
+        <Text
+          style={{ color, fontSize: 11, fontWeight: '600', marginTop: 8, opacity: 0.7 }}
+        >
+          Preview coming soon
+        </Text>
+      </View>
+
+      <View className="px-4 py-3.5">
+        <View className="flex-row items-center justify-between">
+          <Text className="text-[15px] font-semibold text-card-foreground">
             {template.name}
           </Text>
-          <Text className="text-muted-foreground text-sm mt-1" numberOfLines={2}>
-            {template.description}
-          </Text>
+          <View className="rounded-full px-2.5 py-0.5 bg-muted">
+            <Text className="text-[11px] font-medium text-muted-foreground">
+              {template.tags[0]
+                ? template.tags[0].charAt(0).toUpperCase() + template.tags[0].slice(1)
+                : template.category}
+            </Text>
+          </View>
         </View>
+        <Text
+          className="text-[13px] mt-1 leading-[18px] text-muted-foreground"
+          numberOfLines={2}
+        >
+          {template.description}
+        </Text>
       </View>
+
       {isLoading && (
-        <View className="absolute inset-0 bg-background/60 items-center justify-center rounded-xl">
-          <ActivityIndicator size="small" />
+        <View
+          className="absolute inset-0 items-center justify-center rounded-2xl"
+          style={{ backgroundColor: isDark ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.8)' }}
+        >
+          <ActivityIndicator size="small" color={color} />
         </View>
       )}
     </Pressable>
@@ -205,10 +259,13 @@ const HomeScreen = observer(function HomeScreen() {
   const projects = useProjectCollection()
   const workspaces = useWorkspaceCollection()
   const actions = useDomainActions()
+  const isDark = useDarkMode()
 
   const [prompt, setPrompt] = useState('')
   const [isCreating, setIsCreating] = useState(false)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
+  const [homeTemplates, setHomeTemplates] = useState<AgentTemplate[]>([])
+  const [activeTab, setActiveTab] = useState<'recent' | 'projects' | 'shared' | 'templates'>('recent')
 
   const [workspaceError, setWorkspaceError] = useState(false)
 
@@ -220,11 +277,21 @@ const HomeScreen = observer(function HomeScreen() {
       console.error('[Home] Failed to load workspaces:', err)
       setWorkspaceError(true)
     })
+
+    async function fetchTemplates() {
+      try {
+        const res = await fetch(`${API_URL}/api/agent-templates`)
+        if (!res.ok) return
+        const data = await res.json()
+        setHomeTemplates((data.templates || []).slice(0, 6))
+      } catch (err) {
+        console.error('[Home] Failed to fetch templates:', err)
+      }
+    }
+    fetchTemplates()
   }, [isAuthenticated])
 
-  let currentWorkspace: any
-  try { currentWorkspace = workspaces.all[0] } catch { currentWorkspace = undefined }
-  const workspacesLoading = workspaces.isLoading
+  const currentWorkspace = useActiveWorkspace()
 
   const firstName = useMemo(() => {
     const name = user?.name || 'there'
@@ -236,7 +303,6 @@ const HomeScreen = observer(function HomeScreen() {
     setIsCreating(true)
     try {
       const projectName = generateProjectNameFromPrompt(text)
-
       const newProject = await actions.createProject(
         projectName,
         currentWorkspace.id,
@@ -244,17 +310,14 @@ const HomeScreen = observer(function HomeScreen() {
         user.id,
         'AGENT',
       )
-
       const chatSession = await actions.createChatSession({
         inferredName: `Chat - ${projectName}`,
         contextType: 'project',
         contextId: newProject.id,
       })
-
       if (imageData && imageData.length > 0) {
         setPendingImageData(imageData)
       }
-
       projects.loadAll()
       router.push({
         pathname: '/(app)/projects/[id]',
@@ -272,36 +335,34 @@ const HomeScreen = observer(function HomeScreen() {
     }
   }, [actions, user?.id, currentWorkspace?.id, projects, router])
 
-  const handleTemplatePress = useCallback(async (template: CanvasTemplate) => {
+  const handleTemplatePress = useCallback(async (template: AgentTemplate) => {
     if (!user?.id || !currentWorkspace?.id) {
       Alert.alert('Not ready', 'Still loading your workspace. Please try again in a moment.')
       return
     }
     setLoadingTemplate(template.id)
     try {
-      const projectName = template.name
-
       const newProject = await actions.createProject(
-        projectName,
+        template.name,
         currentWorkspace.id,
-        `Created from ${projectName} canvas template`,
+        template.description,
         user.id,
         'AGENT',
+        template.id,
       )
-
       const chatSession = await actions.createChatSession({
-        inferredName: `Chat - ${projectName}`,
+        inferredName: `Chat - ${template.name}`,
         contextType: 'project',
         contextId: newProject.id,
       })
-
+      const onboardingMessage = `The "${template.name}" template has been installed. Can you describe what's been set up and walk me through how to customize it or connect my own tools?`
       projects.loadAll()
       router.push({
         pathname: '/(app)/projects/[id]',
         params: {
           id: newProject.id,
           chatSessionId: chatSession.id,
-          initialMessage: template.user_request,
+          initialMessage: onboardingMessage,
         },
       } as any)
     } catch (error) {
@@ -316,8 +377,8 @@ const HomeScreen = observer(function HomeScreen() {
     return (
       <SafeAreaView className="flex-1 bg-background">
         <View className="flex-1 items-center justify-center px-6">
-          <Text className="text-foreground text-lg font-semibold mb-2">Welcome to Shogo</Text>
-          <Text className="text-muted-foreground text-center mb-6">
+          <Text className="text-lg font-semibold mb-2 text-foreground">Welcome to Shogo</Text>
+          <Text className="text-center mb-6 text-muted-foreground">
             Build and run AI agents from your phone. Sign in to see your projects.
           </Text>
           <Button size="lg" onPress={() => router.push('/(auth)/sign-in')}>
@@ -328,79 +389,127 @@ const HomeScreen = observer(function HomeScreen() {
     )
   }
 
+  const TAB_ITEMS = [
+    { key: 'recent' as const, label: 'Recently viewed' },
+    { key: 'projects' as const, label: 'My projects' },
+    { key: 'shared' as const, label: 'Shared with me' },
+    { key: 'templates' as const, label: 'Templates' },
+  ]
+
   return (
     <View className="flex-1 bg-background">
       <ScrollView className="flex-1" contentContainerStyle={{ flexGrow: 1 }}>
-        {/* Gradient mesh background */}
-        <GradientBackground />
+        {/* Hero section with gradient */}
+        <View className="relative" style={{ minHeight: 420 }}>
+          <LovableGradient isDark={isDark} />
 
-        {/* Main content */}
-        <View className="relative items-center justify-center p-8" style={{ minHeight: '60%' }}>
-          {/* Greeting */}
-          <Text
-            className="text-3xl sm:text-4xl md:text-5xl font-bold text-center mb-8 text-foreground"
-          >
-            What's on your mind, {firstName}?
-          </Text>
+          <View className="relative items-center justify-center px-6 pt-16 pb-12">
+            <Text
+              className="text-center font-bold mb-2 text-foreground"
+              style={{ fontSize: 36, lineHeight: 44, letterSpacing: -0.5 }}
+            >
+              What's on your mind, {firstName}?
+            </Text>
+            <Text
+              className="text-center mb-8 text-muted-foreground"
+              style={{ fontSize: 16 }}
+            >
+              Build agents by chatting with AI
+            </Text>
 
-          {/* Chat input */}
-          <View className="w-full max-w-2xl">
-            <CompactChatInput
-              onSubmit={handlePromptSubmit}
-              isLoading={isCreating}
-              placeholder="Describe the agent you want to build..."
-              value={prompt}
-              onChange={setPrompt}
-            />
-          </View>
-
-          {/* Suggestion chips */}
-          <View className="mt-6 flex-row flex-wrap justify-center gap-2">
-            {SUGGESTION_CHIPS.map((suggestion) => (
-              <Pressable
-                key={suggestion}
-                onPress={() => setPrompt(suggestion)}
-                className="flex-row items-center gap-1.5 h-8 px-3 rounded-md border border-border bg-card/50 active:bg-card"
-              >
-                <Sparkles size={12} className="text-purple-400" />
-                <Text className="text-xs text-muted-foreground">{suggestion}</Text>
-              </Pressable>
-            ))}
+            <View
+              className="w-full rounded-2xl overflow-hidden bg-card border border-border"
+              style={Platform.OS === 'web' ? {
+                maxWidth: 680,
+                boxShadow: isDark
+                  ? '0 4px 24px rgba(0,0,0,0.4), 0 1px 4px rgba(0,0,0,0.3)'
+                  : '0 4px 24px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.04)',
+              } as any : {
+                maxWidth: 680,
+              }}
+            >
+              <CompactChatInput
+                onSubmit={handlePromptSubmit}
+                isLoading={isCreating}
+                placeholder="Ask Shogo to create..."
+                value={prompt}
+                onChange={setPrompt}
+              />
+            </View>
           </View>
         </View>
 
-        {/* Canvas Templates section */}
-        <View className="border-t border-border py-6 bg-card/30">
-          <View className="flex-row items-center justify-between mb-4 px-6">
-            <Text className="text-sm font-medium text-foreground">Canvas Templates</Text>
+        {/* Bottom section: tab bar + template cards */}
+        <View
+          className="flex-1 rounded-t-3xl bg-card border-t border-border"
+          style={{
+            marginTop: -24,
+            paddingTop: 20,
+          }}
+        >
+          <View className="flex-row items-center justify-between px-6 mb-5">
+            <View className="flex-row items-center gap-1">
+              {TAB_ITEMS.map((tab) => (
+                <Pressable
+                  key={tab.key}
+                  onPress={() => setActiveTab(tab.key)}
+                  className={cn(
+                    'px-3.5 py-2 rounded-lg',
+                    activeTab === tab.key && 'bg-muted',
+                  )}
+                >
+                  <Text
+                    className={cn(
+                      'text-[13px]',
+                      activeTab === tab.key
+                        ? 'text-foreground font-semibold'
+                        : 'text-muted-foreground'
+                    )}
+                  >
+                    {tab.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
             <Pressable
               onPress={() => router.push('/(app)/templates' as any)}
               className="flex-row items-center gap-1 active:opacity-70"
             >
-              <Text className="text-sm text-muted-foreground">Browse all</Text>
-              <ChevronRight size={16} className="text-muted-foreground" />
+              <Text className="text-[13px] font-medium text-foreground">
+                Browse all
+              </Text>
+              <ArrowRight size={14} className="text-foreground" />
             </Pressable>
           </View>
 
-          <View className="px-6 pb-6">
-            <View
-              className="gap-3"
-              style={Platform.OS === 'web' ? {
-                display: 'grid' as any,
-                gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-                maxWidth: 1024,
-                marginHorizontal: 'auto',
-              } as any : {}}
-            >
-              {HOME_TEMPLATES.map((template) => (
-                <TemplateCard
-                  key={template.id}
-                  template={template}
-                  isLoading={loadingTemplate === template.id}
-                  onPress={() => handleTemplatePress(template)}
-                />
-              ))}
-            </View>
+          <View className="px-6 pb-10">
+            {homeTemplates.length > 0 ? (
+              <View
+                className="gap-4"
+                style={Platform.OS === 'web' ? {
+                  display: 'grid' as any,
+                  gridTemplateColumns: 'repeat(3, 1fr)',
+                  gap: 16,
+                  maxWidth: 1100,
+                  marginHorizontal: 'auto',
+                } as any : {}}
+              >
+                {homeTemplates.map((template) => (
+                  <TemplateCard
+                    key={template.id}
+                    template={template}
+                    isLoading={loadingTemplate === template.id}
+                    onPress={() => handleTemplatePress(template)}
+                    isDark={isDark}
+                  />
+                ))}
+              </View>
+            ) : (
+              <View className="items-center py-12">
+                <ActivityIndicator size="small" className="text-muted-foreground" />
+              </View>
+            )}
           </View>
         </View>
       </ScrollView>

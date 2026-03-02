@@ -16,6 +16,7 @@ const mockK8sCustomApi = {
   createNamespacedCustomObject: mock(() => Promise.resolve({})),
   deleteNamespacedCustomObject: mock(() => Promise.resolve({})),
   getNamespacedCustomObject: mock(() => Promise.resolve({})),
+  patchNamespacedCustomObject: mock(() => Promise.resolve({})),
 }
 
 // Mock the Kubernetes client
@@ -52,17 +53,32 @@ const mockRandomUUID = mock(() => `${String(++uuidCounter).padStart(8, '0')}-tes
 global.crypto = { randomUUID: mockRandomUUID } as any
 
 // Mock the prisma client
+const mockPrismaProjectUpdate = mock(() => Promise.resolve({}))
+const mockPrismaProjectUpdateMany = mock(() => Promise.resolve({ count: 0 }))
+const mockPrismaProjectFindFirst = mock(() => Promise.resolve(null))
+const mockPrismaProject = {
+  findUnique: mock(() => Promise.resolve({ workspaceId: 'test-workspace' })),
+  findFirst: mockPrismaProjectFindFirst,
+  update: mockPrismaProjectUpdate,
+  updateMany: mockPrismaProjectUpdateMany,
+}
+const mockPrismaClient = {
+  project: mockPrismaProject,
+  $transaction: mock((fn: (tx: any) => Promise<any>) => fn({ project: mockPrismaProject })),
+}
 mock.module('../prisma', () => ({
-  prisma: {
-    project: {
-      findUnique: mock(() => Promise.resolve({ workspaceId: 'test-workspace' })),
-    },
-  },
+  prisma: mockPrismaClient,
 }))
 
 // Mock AI proxy token generation
 mock.module('../ai-proxy-token', () => ({
   generateProxyToken: mock(() => Promise.resolve('test-proxy-token')),
+}))
+
+// Mock the mergePatchKnativeService from knative-project-manager
+const mockMergePatch = mock(() => Promise.resolve())
+mock.module('../knative-project-manager', () => ({
+  mergePatchKnativeService: mockMergePatch,
 }))
 
 // Mock database service
@@ -81,6 +97,9 @@ describe('WarmPoolController', () => {
     mockK8sCustomApi.createNamespacedCustomObject.mockClear()
     mockK8sCustomApi.deleteNamespacedCustomObject.mockClear()
     mockK8sCustomApi.getNamespacedCustomObject.mockClear()
+    mockK8sCustomApi.patchNamespacedCustomObject.mockClear()
+    mockPrismaProjectUpdate.mockClear()
+    mockMergePatch.mockClear()
     mockFetch.mockClear()
     uuidCounter = 0
 
@@ -467,10 +486,9 @@ describe('WarmPoolController', () => {
       expect(deleteArg?.name ?? deleteArg).toBe('warm-pool-project-stale')
     })
 
-    test('should clean up assigned pods when real service is ready', async () => {
+    test('should NOT clean up assigned (promoted) pods on reconcile', async () => {
       await controller.start()
 
-      // Manually assign a pod
       const mockPod: WarmPodInfo = {
         id: 'test-pod',
         serviceName: 'warm-pool-project-test',
@@ -483,32 +501,13 @@ describe('WarmPoolController', () => {
       await controller.assign(mockPod, 'test-project-123', {})
       expect(controller.isAssigned('test-project-123')).toBe(true)
 
-      // Mock the real Knative service (project-test-project-123) as ready
-      mockK8sCustomApi.getNamespacedCustomObject.mockResolvedValueOnce({
-        status: {
-          conditions: [{ type: 'Ready', status: 'True' }],
-        },
-      })
-
-      // Mock health check for the real service
-      mockFetch.mockImplementation((url: string) => {
-        if (url.includes('project-test-project-123') && url.includes('/ready')) {
-          return Promise.resolve({ ok: true })
-        }
-        if (url.includes('/pool/assign')) {
-          return Promise.resolve({ ok: true, text: () => Promise.resolve('OK') })
-        }
-        return Promise.resolve({ ok: false })
-      })
-
-      // Empty discovery so reconcile doesn't try to add/remove available pods
       mockK8sCustomApi.listNamespacedCustomObject.mockResolvedValueOnce({ items: [] })
 
       await controller.reconcile()
       await new Promise(resolve => setTimeout(resolve, 100))
 
-      // The assigned pod should have been cleaned up
-      expect(controller.isAssigned('test-project-123')).toBe(false)
+      // Promoted pods remain assigned — they are NOT cleaned up
+      expect(controller.isAssigned('test-project-123')).toBe(true)
     })
 
     test('should trigger replenishment after claiming a pod', async () => {
@@ -550,6 +549,139 @@ describe('WarmPoolController', () => {
 
       // Should have tried to create replacement pod(s)
       expect(mockK8sCustomApi.createNamespacedCustomObject).toHaveBeenCalled()
+    })
+  })
+
+  describe('Pod Promotion', () => {
+    test('should patch metadata labels and save DB mapping after assignment', async () => {
+      const mockPod: WarmPodInfo = {
+        id: 'test-pod',
+        serviceName: 'warm-pool-agent-abc123',
+        type: 'agent',
+        url: 'http://warm-pool-agent-abc123.test-namespace.svc.cluster.local',
+        createdAt: Date.now(),
+        ready: true,
+      }
+
+      await controller.assign(mockPod, 'test-project-promote', {
+        PROJECT_ID: 'test-project-promote',
+      })
+
+      // Give async promotion time to run
+      await new Promise(resolve => setTimeout(resolve, 300))
+
+      // Only metadata patch — no spec patch (which would create a new revision
+      // and restart the pod, destroying in-memory state)
+      expect(mockMergePatch).toHaveBeenCalledTimes(1)
+
+      // Metadata annotations + labels (no spec change, no restart)
+      const [_ns1, svc1, metadataPatchBody] = mockMergePatch.mock.calls[0]
+      expect(svc1).toBe('warm-pool-agent-abc123')
+      expect(metadataPatchBody.metadata.annotations['shogo.io/assigned-project']).toBe('test-project-promote')
+      expect(metadataPatchBody.metadata.labels['shogo.io/warm-pool-status']).toBe('promoted')
+
+      // Should have saved DB mapping
+      expect(mockPrismaProjectUpdate).toHaveBeenCalledWith({
+        where: { id: 'test-project-promote' },
+        data: { knativeServiceName: 'warm-pool-agent-abc123' },
+      })
+    })
+
+    test('should skip promoted pods during discovery', async () => {
+      const mockServices = [
+        {
+          metadata: {
+            name: 'warm-pool-project-promoted',
+            labels: {
+              'shogo.io/warm-pool': 'true',
+              'shogo.io/warm-pool-type': 'project',
+              'shogo.io/warm-pool-status': 'promoted',
+            },
+            creationTimestamp: new Date().toISOString(),
+          },
+          status: {
+            conditions: [{ type: 'Ready', status: 'True' }],
+          },
+        },
+        {
+          metadata: {
+            name: 'warm-pool-project-available',
+            labels: {
+              'shogo.io/warm-pool': 'true',
+              'shogo.io/warm-pool-type': 'project',
+              'shogo.io/warm-pool-status': 'available',
+            },
+            creationTimestamp: new Date().toISOString(),
+          },
+          status: {
+            conditions: [{ type: 'Ready', status: 'True' }],
+          },
+        },
+      ]
+
+      mockK8sCustomApi.listNamespacedCustomObject.mockResolvedValueOnce({
+        items: mockServices,
+      })
+
+      await controller.start()
+      await new Promise(resolve => setTimeout(resolve, 100))
+
+      const status = controller.getStatus()
+      // Promoted pod should NOT be counted as available
+      expect(status.available.project).toBe(1)
+    })
+
+    test('should not count promoted pods toward pool target', async () => {
+      const mockServices = [
+        {
+          metadata: {
+            name: 'warm-pool-project-promoted-1',
+            labels: {
+              'shogo.io/warm-pool': 'true',
+              'shogo.io/warm-pool-type': 'project',
+              'shogo.io/warm-pool-status': 'promoted',
+            },
+            creationTimestamp: new Date().toISOString(),
+          },
+          status: {
+            conditions: [{ type: 'Ready', status: 'True' }],
+          },
+        },
+      ]
+
+      mockK8sCustomApi.listNamespacedCustomObject.mockResolvedValueOnce({
+        items: mockServices,
+      })
+
+      await controller.start()
+      await new Promise(resolve => setTimeout(resolve, 200))
+
+      // Even though one pod exists in k8s, it's promoted — pool should still create target pods
+      expect(mockK8sCustomApi.createNamespacedCustomObject).toHaveBeenCalled()
+    })
+
+    test('promotion should NOT patch spec (would restart pod and destroy state)', async () => {
+      const mockPod: WarmPodInfo = {
+        id: 'test-pod',
+        serviceName: 'warm-pool-agent-envtest',
+        type: 'agent',
+        url: 'http://warm-pool-agent-envtest.test-namespace.svc.cluster.local',
+        createdAt: Date.now(),
+        ready: true,
+      }
+
+      await controller.assign(mockPod, 'test-project-envpatch', {
+        PROJECT_ID: 'test-project-envpatch',
+      })
+
+      // Give async promotion time to run
+      await new Promise(resolve => setTimeout(resolve, 300))
+
+      // Only metadata patch — spec must not be touched
+      expect(mockMergePatch).toHaveBeenCalledTimes(1)
+      const [_ns, _svc, patchBody] = mockMergePatch.mock.calls[0]
+      expect(patchBody.metadata).toBeDefined()
+      expect(patchBody.spec).toBeUndefined()
     })
   })
 

@@ -9,6 +9,7 @@
 
 import { existsSync, readFileSync, writeFileSync, readdirSync, unlinkSync, mkdirSync } from 'fs'
 import { join, extname, dirname } from 'path'
+import { isPreinstalledMcpId, getPreinstalledPackages, getCatalogEntry } from '../mcp-catalog'
 
 const AGENT_DIR = process.env.AGENT_DIR || '/app/agent'
 const PROJECT_ID = process.env.PROJECT_ID || 'unknown'
@@ -149,14 +150,15 @@ defineTool({
   },
 })
 
-const VALID_TOOL_GROUPS = ['shell', 'filesystem', 'web_fetch', 'web_search', 'browser', 'memory', 'messaging', 'cron']
-const VALID_TOOL_NAMES = ['exec', 'read_file', 'write_file', 'web_fetch', 'web_search', 'memory_read', 'memory_write', 'send_message', 'cron']
+const VALID_TOOL_GROUPS = ['shell', 'filesystem', 'web', 'web_fetch', 'web_search', 'browser', 'memory', 'messaging', 'cron']
+const VALID_TOOL_NAMES = ['exec', 'read_file', 'write_file', 'web', 'web_fetch', 'web_search', 'memory_read', 'memory_write', 'send_message', 'cron']
 const TOOL_GROUP_TO_NAMES: Record<string, string[]> = {
   shell: ['exec'],
   filesystem: ['read_file', 'write_file'],
-  web_fetch: ['web_fetch'],
-  browser: ['browser', 'web_fetch'],
-  web_search: ['web_search', 'web_fetch'],
+  web: ['web'],
+  web_fetch: ['web'],
+  web_search: ['web'],
+  browser: ['browser', 'web'],
   memory: ['memory_read', 'memory_write'],
   messaging: ['send_message'],
   cron: ['cron'],
@@ -486,18 +488,23 @@ defineTool({
 
 defineTool({
   name: 'mcp_server_configure',
-  description: 'Add or update an MCP server in the agent config. MCP servers provide additional tools (e.g. browser automation via @playwright/mcp). The server will be spawned when the agent starts.',
+  description: `Add a preinstalled MCP server to the agent config. Only preinstalled servers are allowed: ${getPreinstalledPackages().map(e => e.id).join(', ')}. The server will be spawned when the agent starts.`,
   inputSchema: {
     type: 'object',
     properties: {
-      name: { type: 'string', description: 'Server name (e.g. "playwright", "database")' },
-      command: { type: 'string', description: 'Command to start the server (e.g. "npx")' },
-      args: { type: 'array', items: { type: 'string' }, description: 'Command arguments (e.g. ["@playwright/mcp@latest"])' },
+      name: { type: 'string', description: `Server name. Must be one of: ${getPreinstalledPackages().map(e => e.id).join(', ')}` },
       env: { type: 'object', description: 'Optional environment variables for the server' },
     },
-    required: ['name', 'command'],
+    required: ['name'],
   },
   handler: async (input) => {
+    const name = input.name as string
+    if (!isPreinstalledMcpId(name)) {
+      const allowed = getPreinstalledPackages().map(e => e.id).join(', ')
+      return { error: `MCP server "${name}" is not available. Only preinstalled servers are supported: ${allowed}` }
+    }
+
+    const entry = getCatalogEntry(name)!
     const configPath = join(AGENT_DIR, 'config.json')
     let config: Record<string, any> = {}
     if (existsSync(configPath)) {
@@ -505,17 +512,17 @@ defineTool({
     }
 
     config.mcpServers = config.mcpServers || {}
-    config.mcpServers[input.name as string] = {
-      command: input.command,
-      ...(input.args ? { args: input.args } : {}),
+    config.mcpServers[name] = {
+      command: 'npx',
+      args: [entry.package, ...entry.defaultArgs],
       ...(input.env ? { env: input.env } : {}),
     }
 
     writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
     return {
       ok: true,
-      server: input.name,
-      message: `MCP server "${input.name}" configured. Restart the agent to activate.`,
+      server: name,
+      message: `MCP server "${name}" configured. Restart the agent to activate.`,
     }
   },
 })
@@ -682,7 +689,7 @@ defineTool({
 
 defineTool({
   name: 'agent_template_list',
-  description: 'List available agent starter templates. Returns templates grouped by category with descriptions and recommended MCP servers.',
+  description: 'List available agent starter templates. Returns templates grouped by category with descriptions, settings, and skills.',
   inputSchema: { type: 'object', properties: {} },
   handler: async () => {
     return {

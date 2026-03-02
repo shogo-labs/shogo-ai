@@ -216,9 +216,9 @@
       "id": "ephemeral-currency-conversion",
       "source_test": null,
       "user_message": "Convert 1,500 USD to EUR at today's exchange rate.",
-      "conversation_summary": "User asked for a one-off currency conversion — should use web_fetch but not persist",
+      "conversation_summary": "User asked for a one-off currency conversion — should use web but not persist",
       "tools_used": [
-        "web_fetch"
+        "web"
       ],
       "current_memory": "# Memory\n",
       "has_session_context": false,
