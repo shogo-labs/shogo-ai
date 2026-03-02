@@ -50,6 +50,7 @@ import {
   unlinkSync,
   readdirSync,
   statSync,
+  rmSync,
 } from 'fs'
 import {
   initializeS3Sync,
@@ -340,11 +341,21 @@ app.post('/pool/assign', async (c) => {
 
   logTiming(`Pool assignment starting for project ${projectId}`)
 
-  // 1. Update project identity
+  // 1. Clean workspace to prevent cross-project file leakage.
+  // emptyDir should be fresh, but wipe user-data directories defensively.
+  for (const subdir of ['files', 'memory', 'skills']) {
+    const dirPath = join(AGENT_DIR, subdir)
+    if (existsSync(dirPath)) {
+      rmSync(dirPath, { recursive: true, force: true })
+      mkdirSync(dirPath, { recursive: true })
+    }
+  }
+
+  // 2. Update project identity
   currentProjectId = projectId
   process.env.PROJECT_ID = projectId
 
-  // 2. Inject environment variables from the controller
+  // 3. Inject environment variables from the controller
   if (envVars && typeof envVars === 'object') {
     for (const [key, value] of Object.entries(envVars)) {
       if (typeof value === 'string') {
@@ -353,7 +364,7 @@ app.post('/pool/assign', async (c) => {
     }
   }
 
-  // 3. Reconfigure AI proxy with new env (picks up AI_PROXY_TOKEN)
+  // 4. Reconfigure AI proxy with new env (picks up AI_PROXY_TOKEN)
   try {
     aiProxy = configureAIProxy({ logPrefix: 'agent-runtime' })
   } catch (err: any) {
@@ -364,14 +375,14 @@ app.post('/pool/assign', async (c) => {
     Object.assign(process.env, aiProxy.env)
   }
 
-  // 4. Run essential initialization (workspace files, S3 sync, config)
+  // 5. Run essential initialization (workspace files, S3 sync, config)
   try {
     await initializeEssentials()
     poolAssigned = true
     const duration = Date.now() - startTime
     logTiming(`Pool assignment essentials complete for ${projectId} (${duration}ms)`)
 
-    // 5. Start gateway in background — don't block the assign response.
+    // 6. Start gateway in background — don't block the assign response.
     // The pod can serve health, file, and catalog endpoints immediately.
     // Chat/heartbeat endpoints return 503 until gateway is ready.
     startGateway().catch((error) => {
@@ -1927,9 +1938,12 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 // Start Server
 // =============================================================================
 
-if (IS_POOL_MODE) {
+if (IS_POOL_MODE && !poolAssigned) {
   logTiming('Pool mode: skipping project init, server ready for assignment')
 } else {
+  // Runs for both normal (non-pool) startup AND self-assigned cold-start pods.
+  // Self-assigned pods have poolAssigned=true and need full init to restore
+  // their workspace from S3 and start the gateway.
   initialize()
     .then(() => {
       logTiming(`Starting server on port ${PORT}`)

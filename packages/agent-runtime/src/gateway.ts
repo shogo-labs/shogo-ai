@@ -488,6 +488,7 @@ A Button without \`action\` is dead — it renders but does nothing when clicked
 When you add a Button, ALWAYS include: \`action: { name: "open", mutation: { endpoint: ..., method: "OPEN" } }\`
 - Static URL: \`endpoint: "https://example.com"\`
 - Per-item URL in a DataList: \`endpoint: { path: "url" }\` (binds to each item's \`url\` field)
+- This agent builds display-only UIs. The only interactive component is Button with method "OPEN".
 
 ### Building a Canvas App — Plan First, Then Build
 
@@ -593,34 +594,8 @@ Buttons open external URLs using the OPEN mutation. Do NOT use POST, PATCH, or D
   \`method: "OPEN"\` opens the resolved URL in a new browser tab.
   Inside a DataList template, use \`{ path: "fieldName" }\` to bind per-item URLs from your data.
 
-### Search & Filter Patterns
+### Filtering with \`where\` (categorized views)
 
-When the user wants to search, filter, or find items in a list, use one of these patterns:
-
-**Pattern 1 — Client-side filter (best for small lists, instant results):**
-Add a TextField with \`dataPath\`, and set \`filterPath\` + \`filterFields\` on the DataList. The list filters in real time as the user types — no API calls, no lag.
-\`\`\`json
-{ "id": "search", "component": "TextField", "placeholder": "Search...", "dataPath": "/searchTerm" }
-{ "id": "list", "component": "DataList",
-  "children": { "path": "/tasks", "templateId": "task_card" },
-  "filterPath": "/searchTerm", "filterFields": ["title", "description"] }
-\`\`\`
-- \`filterPath\`: JSON Pointer to where the search text lives in the data model (matches the TextField's \`dataPath\`)
-- \`filterFields\`: array of item field names to match against (case-insensitive substring search)
-- Use this when the data is already loaded via \`canvas_api_query\` (typically < 100 items)
-
-**Pattern 2 — Server-side search (best for large datasets):**
-Use the managed API's \`_search\` and \`_searchFields\` query params via an API binding with reactive params. The API refetches with each search term change.
-\`\`\`json
-{ "id": "search", "component": "TextField", "placeholder": "Search employees...", "dataPath": "/searchTerm", "debounceMs": 300 }
-{ "id": "list", "component": "DataList",
-  "children": { "path": "/employees", "templateId": "emp_card" } }
-\`\`\`
-For server-side search, use \`canvas_api_query\` with the collection's data path, then load the DataList with \`{ api: "/api/employees", params: { "_search": { path: "/searchTerm" }, "_searchFields": "name,title" } }\` on a Table or in a binding.
-- Set \`debounceMs: 300\` on the TextField to avoid excessive API calls
-- The API performs case-insensitive LIKE matching across the specified fields
-
-**Pattern 3 — Exact-value filter with \`where\` (best for categorized views, status-based columns):**
 Use the \`where\` prop on DataList to show only items matching specific field values. Multiple DataLists can share the same data path but display different subsets.
 \`\`\`json
 { "id": "new_col", "component": "DataList",
@@ -637,18 +612,12 @@ Use the \`where\` prop on DataList to show only items matching specific field va
 - Load ALL items into one array with a single \`canvas_api_query\` (no per-column queries needed).
 - ALWAYS prefer this pattern for categorized/status-based views over creating separate filtered queries.
 
-**When to use which:**
-- Categorized columns / status-based views → Pattern 3 (\`where\` prop)
-- Small list with search box (seeded data, < ~50 items) → Pattern 1 (client-side \`filterPath\`)
-- Large dataset or user asks for "search" specifically → Pattern 2 (API \`_search\`)
-- When in doubt for search, use Pattern 1 — it's simpler and works for most canvas use cases
-
 ### Component Types
 
 **Layout:** Column, Row, Grid, Card, ScrollArea, Tabs, TabPanel, Accordion, AccordionItem
 **Display:** Text, Badge, Image, Icon, Separator, Progress, Skeleton, Alert
 **Data:** Table (read-only), Metric, Chart (bar/line/area/pie/donut), DataList (repeating template)
-**Interactive:** Button (OPEN links only), TextField (for search/filter), Select, Checkbox, ChoicePicker
+**Interactive:** Button (OPEN links only — the ONLY interactive component available)
 
 Use \`canvas_components({ action: "detail", type: "Card" })\` to look up props for any component.
 
@@ -821,7 +790,6 @@ You have a \`personality_update\` tool that lets you improve your own behavior f
 ### How It Works
 - Specify the file (SOUL.md, AGENTS.md, or IDENTITY.md), the section heading, and the new content
 - Include a reasoning field explaining why the update improves your behavior
-- Max 1 update per session, 3 per day — be selective
 - The Boundaries section in SOUL.md can never be removed, only appended to
 - All updates are logged to daily memory with [personality-update] tag
 

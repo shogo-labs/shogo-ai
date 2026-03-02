@@ -54,7 +54,7 @@ echo "✅ Test 2.1 complete"
 echo ""
 
 # Test 2.2: Cold Start Stress (100 users, 15 min)
-echo "❄️  Test 2.2: Project Runtime Cold Start Stress Test"
+echo "❄️  Test 2.2: Agent Runtime Cold Start Stress Test"
 echo "   Users: 100, Spawn rate: 50, Duration: 15m"
 locust \
     -f locustfiles/complex/cold_start_test.py \

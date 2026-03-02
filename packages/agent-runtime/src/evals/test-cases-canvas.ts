@@ -10,7 +10,7 @@
  */
 
 import type { AgentEval, EvalResult, ValidationPhase } from './types'
-import { usedTool, toolCallCount, responseContains, usedToolSuccessfully, successfulToolCallCount } from './eval-helpers'
+import { usedTool, neverUsedTool, toolCallCount, responseContains, usedToolSuccessfully, successfulToolCallCount } from './eval-helpers'
 import { CICD_PIPELINE_MOCKS } from './tool-mocks'
 
 // ---------------------------------------------------------------------------
@@ -174,6 +174,32 @@ function hasDataListWithFilter(result: EvalResult): boolean {
 function hasSelectComponent(result: EvalResult): boolean {
   const json = JSON.stringify(result.toolCalls.filter(t => t.name === 'canvas_update').map(t => t.input))
   return json.includes('"Select"')
+}
+
+// ---------------------------------------------------------------------------
+// Basic agent display-only helpers
+// ---------------------------------------------------------------------------
+
+const FORBIDDEN_INTERACTIVE_COMPONENTS = ['TextField', 'Select', 'Checkbox', 'ChoicePicker']
+
+/**
+ * True if NO canvas_update call includes any forbidden interactive component
+ * (TextField, Select, Checkbox, ChoicePicker).
+ */
+function noForbiddenInteractiveComponents(result: EvalResult): boolean {
+  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
+  const json = JSON.stringify(updateCalls.map(t => t.input))
+  return FORBIDDEN_INTERACTIVE_COMPONENTS.every(c => !json.includes(`"${c}"`))
+}
+
+/**
+ * True if any Button component in canvas_update uses a non-OPEN mutation method.
+ */
+function hasNonOpenButtonMutation(result: EvalResult): boolean {
+  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
+  const json = JSON.stringify(updateCalls.map(t => t.input))
+  const methodPattern = /"method"\s*:\s*"(POST|PATCH|DELETE)"/i
+  return methodPattern.test(json)
 }
 
 // ---------------------------------------------------------------------------
@@ -3076,5 +3102,71 @@ export const CANVAS_EVALS: AgentEval[] = [
       },
     ],
     antiPatterns: ['No search input', 'DataList missing filterPath'],
+  },
+
+  // ---- Negative: Basic agent must NOT use interactive components ----
+  {
+    id: 'canvas-basic-no-interactive',
+    name: 'Canvas: Notes app must be display-only (no buttons/inputs)',
+    category: 'canvas',
+    level: 2,
+    input: 'Build a simple notes app',
+    requiredAgent: 'basic',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Added components to the canvas',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'no-textfield',
+        description: 'Did NOT use TextField component',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => !hasTextField(r),
+      },
+      {
+        id: 'no-select',
+        description: 'Did NOT use Select component',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => !hasSelectComponent(r),
+      },
+      {
+        id: 'no-forbidden-interactive',
+        description: 'No forbidden interactive components (TextField, Select, Checkbox, ChoicePicker)',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => noForbiddenInteractiveComponents(r),
+      },
+      {
+        id: 'no-crud-mutations',
+        description: 'No POST/PATCH/DELETE mutations on buttons',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => !hasNonOpenButtonMutation(r),
+      },
+      {
+        id: 'no-trigger-action',
+        description: 'Did NOT use canvas_trigger_action (basic agent lacks it)',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => neverUsedTool(r, 'canvas_trigger_action'),
+      },
+    ],
+    antiPatterns: [
+      'Agent used TextField or other form inputs in a display-only canvas',
+      'Agent used POST/PATCH/DELETE mutations in basic agent mode',
+    ],
   },
 ]

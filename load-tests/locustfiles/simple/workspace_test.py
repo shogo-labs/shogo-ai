@@ -56,9 +56,9 @@ class WorkspaceLoadTestUser(FastHttpUser):
         
         # Use v2 API endpoint - session cookie provides authentication
         with self.client.get(
-            "/api/v2/workspaces",
+            "/api/workspaces",
             catch_response=True,
-            name="/api/v2/workspaces [LIST]"
+            name="/api/workspaces [LIST]"
         ) as response:
             if response.status_code == 200:
                 data = response.json()
@@ -90,14 +90,14 @@ class WorkspaceLoadTestUser(FastHttpUser):
         
         # Use v2 API endpoint - authenticated via session cookie
         with self.client.post(
-            "/api/v2/workspaces",
+            "/api/workspaces",
             json={
                 "name": f"Load Test WS {workspace_id}",
                 "slug": f"loadtest-{workspace_id}",
                 "description": "Workspace for load testing"
             },
             catch_response=True,
-            name="/api/v2/workspaces [CREATE]"
+            name="/api/workspaces [CREATE]"
         ) as response:
             if response.status_code in [200, 201]:
                 workspace = response.json()
@@ -126,13 +126,13 @@ class WorkspaceLoadTestUser(FastHttpUser):
         
         # Use v2 API endpoint - authenticated via session cookie
         with self.client.patch(
-            f"/api/v2/workspaces/{workspace_id}",
+            f"/api/workspaces/{workspace_id}",
             json={
                 "name": f"Updated WS {random.randint(1, 1000)}",
                 "description": f"Updated at {random.randint(1, 1000)}"
             },
             catch_response=True,
-            name="/api/v2/workspaces/:id [UPDATE]"
+            name="/api/workspaces/:id [UPDATE]"
         ) as response:
             if response.status_code == 200:
                 response.success()
@@ -158,9 +158,9 @@ class WorkspaceLoadTestUser(FastHttpUser):
         # Use v2 API endpoint - authenticated via session cookie
         # No workspaceId filter - get all user's projects
         with self.client.get(
-            "/api/v2/projects",
+            "/api/projects",
             catch_response=True,
-            name="/api/v2/projects [LIST]"
+            name="/api/projects [LIST]"
         ) as response:
             if response.status_code == 200:
                 data = response.json()
@@ -194,16 +194,15 @@ class WorkspaceLoadTestUser(FastHttpUser):
         
         # Use v2 API endpoint - authenticated via session cookie
         with self.client.post(
-            "/api/v2/projects",
+            "/api/projects",
             json={
                 "name": f"Load Test Project {project_id}",
                 "workspaceId": workspace_id,
+                "type": "AGENT",
                 "description": "Project for load testing",
-                "tier": "starter",  # Valid: starter, pro, enterprise, internal
-                "status": "active"  # Valid: draft, active, archived
             },
             catch_response=True,
-            name="/api/v2/projects [CREATE]"
+            name="/api/projects [CREATE]"
         ) as response:
             if response.status_code in [200, 201]:
                 data = response.json()
@@ -247,9 +246,9 @@ class WorkspaceLoadTestUser(FastHttpUser):
         
         # Use v2 API endpoint - authenticated via session cookie
         with self.client.delete(
-            f"/api/v2/workspaces/{workspace_id}",
+            f"/api/workspaces/{workspace_id}",
             catch_response=True,
-            name="/api/v2/workspaces/:id [DELETE]"
+            name="/api/workspaces/:id [DELETE]"
         ) as response:
             if response.status_code in [200, 204]:
                 response.success()

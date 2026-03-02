@@ -140,7 +140,7 @@ export function InlineToolWidget({
                 Args
               </Text>
               <ScrollView horizontal className="bg-background/50 rounded p-1.5 max-h-32">
-                <Text className="text-[10px] font-mono">
+                <Text className="text-[10px] font-mono text-foreground">
                   {formatJson(tool.args)}
                 </Text>
               </ScrollView>
@@ -153,7 +153,7 @@ export function InlineToolWidget({
                 Result
               </Text>
               <ScrollView horizontal className="bg-background/50 rounded p-1.5 max-h-32">
-                <Text className="text-[10px] font-mono">
+                <Text className="text-[10px] font-mono text-foreground">
                   {formatJson(tool.result)}
                 </Text>
               </ScrollView>

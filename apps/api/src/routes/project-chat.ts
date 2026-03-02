@@ -60,16 +60,27 @@ async function trackUsageFromStream(
   const decoder = new TextDecoder()
   const reader = stream.getReader()
   let buffer = ''
-  let toolCallCount = 0
-  const toolCalls: { toolName: string; args: string }[] = []
   let lastUsage: { promptTokens?: number; completionTokens?: number; totalTokens?: number } | null = null
+
+  // Accumulate tool call data incrementally as stream events arrive.
+  // Keyed by toolCallId so args, result, and duration are captured correctly.
+  interface ToolCallRecord {
+    toolCallId: string
+    toolName: string
+    args: any
+    result: any
+    startedAt: number
+    duration: number | null
+  }
+  const toolCallMap = new Map<string, ToolCallRecord>()
 
   // server-side-persistence: Accumulate ordered parts for DB persistence.
   // We maintain the natural interleaving of text and tool calls so that
   // on page refresh the parts array faithfully reproduces the original order.
   let accumulatedText = ''
-  const toolCallDetails: { toolCallId: string; toolName: string; input: any }[] = []
   const orderedParts: any[] = []
+  // Index into orderedParts by toolCallId so we can back-fill output later
+  const toolPartIndex = new Map<string, any>()
   let currentTextPart: { type: 'text'; text: string } | null = null
   let streamInterrupted = false
 
@@ -138,32 +149,63 @@ async function trackUsageFromStream(
           currentTextPart.text += data.delta
         }
 
-        // Track tool calls (streamSdkToUI emits tool-input-start for each tool invocation)
+        // Track tool calls: create record at start, fill in args/result as they arrive
         if (type === 'tool-input-start' || type === 'tool-call-start' || type === 'tool-call') {
-          toolCallCount++
-          toolCalls.push({
-            toolName: data.toolName || data.name || 'unknown',
-            args: typeof data.args === 'string' ? data.args : JSON.stringify(data.args || data.input || {}),
-          })
+          const toolCallId = data.toolCallId || `tool-${Date.now()}-${toolCallMap.size}`
+          if (!toolCallMap.has(toolCallId)) {
+            toolCallMap.set(toolCallId, {
+              toolCallId,
+              toolName: data.toolName || data.name || 'unknown',
+              args: data.args || data.input || null,
+              result: null,
+              startedAt: Date.now(),
+              duration: null,
+            })
+          }
         }
 
-        // server-side-persistence: Capture finalized tool call details for message parts
+        // Finalized tool input: capture the real args
         if (type === 'tool-input-available') {
-          const toolDetail = {
-            toolCallId: data.toolCallId || `tool-${Date.now()}`,
-            toolName: data.toolName || 'unknown',
-            input: data.input || {},
+          const toolCallId = data.toolCallId || ''
+          const record = toolCallMap.get(toolCallId)
+          if (record) {
+            record.args = data.input ?? record.args
+          } else {
+            toolCallMap.set(toolCallId, {
+              toolCallId,
+              toolName: data.toolName || 'unknown',
+              args: data.input || null,
+              result: null,
+              startedAt: Date.now(),
+              duration: null,
+            })
           }
-          toolCallDetails.push(toolDetail)
+
           currentTextPart = null
-          orderedParts.push({
+          const part = {
             type: 'dynamic-tool',
-            toolCallId: toolDetail.toolCallId,
-            toolName: toolDetail.toolName,
-            input: toolDetail.input,
-            output: { success: true },
+            toolCallId,
+            toolName: data.toolName || toolCallMap.get(toolCallId)?.toolName || 'unknown',
+            input: data.input || {},
+            output: null as any,
             state: 'output-available',
-          })
+          }
+          orderedParts.push(part)
+          toolPartIndex.set(toolCallId, part)
+        }
+
+        // Finalized tool output: capture the real result and compute duration
+        if (type === 'tool-output-available') {
+          const toolCallId = data.toolCallId || ''
+          const record = toolCallMap.get(toolCallId)
+          if (record) {
+            record.result = data.output ?? null
+            record.duration = Date.now() - record.startedAt
+          }
+          const part = toolPartIndex.get(toolCallId)
+          if (part) {
+            part.output = data.output ?? { success: true }
+          }
         }
 
         // Track usage from finish events or dedicated usage events
@@ -192,11 +234,17 @@ async function trackUsageFromStream(
         if (Array.isArray(data)) {
           for (const tc of data) {
             if (tc.toolName || tc.name) {
-              toolCallCount++
-              toolCalls.push({
-                toolName: tc.toolName || tc.name || 'unknown',
-                args: typeof tc.args === 'string' ? tc.args : JSON.stringify(tc.args || {}),
-              })
+              const toolCallId = tc.toolCallId || `legacy-${Date.now()}-${toolCallMap.size}`
+              if (!toolCallMap.has(toolCallId)) {
+                toolCallMap.set(toolCallId, {
+                  toolCallId,
+                  toolName: tc.toolName || tc.name || 'unknown',
+                  args: tc.args || null,
+                  result: null,
+                  startedAt: Date.now(),
+                  duration: null,
+                })
+              }
             }
           }
         }
@@ -217,6 +265,8 @@ async function trackUsageFromStream(
   const outputTokens = lastUsage?.completionTokens || 0
   const totalTokens = lastUsage?.totalTokens || (inputTokens + outputTokens)
 
+  const toolCallCount = toolCallMap.size
+
   console.log(
     `[ProjectChat] 📊 Stream ${streamInterrupted ? 'interrupted' : 'complete'} — tokens: ${totalTokens} (in: ${inputTokens}, out: ${outputTokens}), tool calls: ${toolCallCount}, agent mode: ${agentMode}`
   )
@@ -231,31 +281,10 @@ async function trackUsageFromStream(
     console.log(`[ProjectChat] 💰 Billing session closed — charged ${creditCost} credits for project ${project.id}`)
   }
 
-  // Log tool calls to the database
-  if (toolCalls.length > 0 && chatSessionId) {
-    try {
-      // Ensure the chat session exists
-      const session = await prisma.chatSession.findUnique({ where: { id: chatSessionId } })
-      if (session) {
-        await prisma.toolCallLog.createMany({
-          data: toolCalls.map((tc) => ({
-            chatSessionId,
-            toolName: tc.toolName,
-            args: tc.args,
-            status: 'complete',
-            messageId: '',
-          })),
-        })
-        console.log(`[ProjectChat] 🔧 Logged ${toolCalls.length} tool calls for session ${chatSessionId}`)
-      }
-    } catch (err) {
-      console.error("[ProjectChat] Failed to log tool calls:", err)
-    }
-  }
+  // Persist assistant message first so we have a messageId for tool call logs.
+  let assistantMessageId: string | null = null
 
-  // server-side-persistence: Persist assistant message to database
-  // This ensures messages survive page refreshes and client disconnects.
-  if (chatSessionId && (accumulatedText || toolCallDetails.length > 0)) {
+  if (chatSessionId && (accumulatedText || toolCallMap.size > 0)) {
     try {
       const session = await prisma.chatSession.findUnique({ where: { id: chatSessionId } })
       if (session) {
@@ -266,7 +295,7 @@ async function trackUsageFromStream(
           (p) => !(p.type === 'text' && (!p.text || !p.text.trim()))
         )
 
-        await prisma.chatMessage.create({
+        const message = await prisma.chatMessage.create({
           data: {
             sessionId: chatSessionId,
             role: 'assistant',
@@ -274,10 +303,37 @@ async function trackUsageFromStream(
             parts: parts.length > 0 ? JSON.stringify(parts) : undefined,
           },
         })
-        console.log(`[ProjectChat] 💾 Persisted assistant message (${accumulatedText.length} chars, ${toolCallDetails.length} tool calls${streamInterrupted ? ', partial' : ''}) for session ${chatSessionId}`)
+        assistantMessageId = message.id
+        console.log(`[ProjectChat] 💾 Persisted assistant message (${accumulatedText.length} chars, ${toolCallCount} tool calls${streamInterrupted ? ', partial' : ''}) for session ${chatSessionId}`)
       }
     } catch (err) {
       console.error("[ProjectChat] Failed to persist assistant message:", err)
+    }
+  }
+
+  // Log tool calls with real args, results, duration, and the correct messageId
+  if (toolCallMap.size > 0 && chatSessionId) {
+    try {
+      const session = assistantMessageId
+        ? true
+        : !!(await prisma.chatSession.findUnique({ where: { id: chatSessionId } }))
+
+      if (session) {
+        await prisma.toolCallLog.createMany({
+          data: [...toolCallMap.values()].map((tc) => ({
+            chatSessionId,
+            messageId: assistantMessageId || '',
+            toolName: tc.toolName,
+            args: tc.args != null ? JSON.stringify(tc.args) : undefined,
+            result: tc.result != null ? JSON.stringify(tc.result) : undefined,
+            duration: tc.duration,
+            status: 'complete' as const,
+          })),
+        })
+        console.log(`[ProjectChat] 🔧 Logged ${toolCallMap.size} tool calls for session ${chatSessionId}`)
+      }
+    } catch (err) {
+      console.error("[ProjectChat] Failed to log tool calls:", err)
     }
   }
 }

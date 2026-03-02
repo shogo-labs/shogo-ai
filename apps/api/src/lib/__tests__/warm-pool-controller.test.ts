@@ -54,13 +54,20 @@ global.crypto = { randomUUID: mockRandomUUID } as any
 
 // Mock the prisma client
 const mockPrismaProjectUpdate = mock(() => Promise.resolve({}))
+const mockPrismaProjectUpdateMany = mock(() => Promise.resolve({ count: 0 }))
+const mockPrismaProjectFindFirst = mock(() => Promise.resolve(null))
+const mockPrismaProject = {
+  findUnique: mock(() => Promise.resolve({ workspaceId: 'test-workspace' })),
+  findFirst: mockPrismaProjectFindFirst,
+  update: mockPrismaProjectUpdate,
+  updateMany: mockPrismaProjectUpdateMany,
+}
+const mockPrismaClient = {
+  project: mockPrismaProject,
+  $transaction: mock((fn: (tx: any) => Promise<any>) => fn({ project: mockPrismaProject })),
+}
 mock.module('../prisma', () => ({
-  prisma: {
-    project: {
-      findUnique: mock(() => Promise.resolve({ workspaceId: 'test-workspace' })),
-      update: mockPrismaProjectUpdate,
-    },
-  },
+  prisma: mockPrismaClient,
 }))
 
 // Mock AI proxy token generation
@@ -546,21 +553,7 @@ describe('WarmPoolController', () => {
   })
 
   describe('Pod Promotion', () => {
-    test('should patch annotations and save DB mapping after assignment', async () => {
-      // Mock getNamespacedCustomObject for the spec patch
-      mockK8sCustomApi.getNamespacedCustomObject.mockResolvedValue({
-        spec: {
-          template: {
-            spec: {
-              containers: [{
-                name: 'agent-runtime',
-                env: [{ name: 'PROJECT_ID', value: '__POOL__' }],
-              }],
-            },
-          },
-        },
-      })
-
+    test('should patch metadata labels and save DB mapping after assignment', async () => {
       const mockPod: WarmPodInfo = {
         id: 'test-pod',
         serviceName: 'warm-pool-agent-abc123',
@@ -577,18 +570,15 @@ describe('WarmPoolController', () => {
       // Give async promotion time to run
       await new Promise(resolve => setTimeout(resolve, 300))
 
-      // Both patches should go through mergePatchKnativeService
-      expect(mockMergePatch).toHaveBeenCalledTimes(2)
+      // Only metadata patch — no spec patch (which would create a new revision
+      // and restart the pod, destroying in-memory state)
+      expect(mockMergePatch).toHaveBeenCalledTimes(1)
 
-      // First: metadata annotations + labels (no spec change, no restart)
+      // Metadata annotations + labels (no spec change, no restart)
       const [_ns1, svc1, metadataPatchBody] = mockMergePatch.mock.calls[0]
       expect(svc1).toBe('warm-pool-agent-abc123')
       expect(metadataPatchBody.metadata.annotations['shogo.io/assigned-project']).toBe('test-project-promote')
       expect(metadataPatchBody.metadata.labels['shogo.io/warm-pool-status']).toBe('promoted')
-
-      // Second: spec with ASSIGNED_PROJECT env + min-scale (creates new revision)
-      const [_ns2, _svc2, specPatchBody] = mockMergePatch.mock.calls[1]
-      expect(specPatchBody.spec.template.metadata.annotations['autoscaling.knative.dev/min-scale']).toBe('0')
 
       // Should have saved DB mapping
       expect(mockPrismaProjectUpdate).toHaveBeenCalledWith({
@@ -670,24 +660,7 @@ describe('WarmPoolController', () => {
       expect(mockK8sCustomApi.createNamespacedCustomObject).toHaveBeenCalled()
     })
 
-    test('promotion should patch ASSIGNED_PROJECT env into service spec', async () => {
-      // Mock getNamespacedCustomObject to return a service with existing env
-      mockK8sCustomApi.getNamespacedCustomObject.mockResolvedValue({
-        spec: {
-          template: {
-            spec: {
-              containers: [{
-                name: 'agent-runtime',
-                env: [
-                  { name: 'PROJECT_ID', value: '__POOL__' },
-                  { name: 'WARM_POOL_MODE', value: 'true' },
-                ],
-              }],
-            },
-          },
-        },
-      })
-
+    test('promotion should NOT patch spec (would restart pod and destroy state)', async () => {
       const mockPod: WarmPodInfo = {
         id: 'test-pod',
         serviceName: 'warm-pool-agent-envtest',
@@ -704,15 +677,11 @@ describe('WarmPoolController', () => {
       // Give async promotion time to run
       await new Promise(resolve => setTimeout(resolve, 300))
 
-      // Should have two mergePatch calls: metadata + spec
-      expect(mockMergePatch).toHaveBeenCalledTimes(2)
-
-      // Second patch should contain ASSIGNED_PROJECT in container env
-      const [_ns, _svc, specPatchBody] = mockMergePatch.mock.calls[1]
-      const envVars = specPatchBody.spec.template.spec.containers[0].env
-      const assignedEnv = envVars.find((e: any) => e.name === 'ASSIGNED_PROJECT')
-      expect(assignedEnv).toBeDefined()
-      expect(assignedEnv.value).toBe('test-project-envpatch')
+      // Only metadata patch — spec must not be touched
+      expect(mockMergePatch).toHaveBeenCalledTimes(1)
+      const [_ns, _svc, patchBody] = mockMergePatch.mock.calls[0]
+      expect(patchBody.metadata).toBeDefined()
+      expect(patchBody.spec).toBeUndefined()
     })
   })
 
