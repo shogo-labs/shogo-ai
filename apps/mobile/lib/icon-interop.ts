@@ -17,7 +17,7 @@ import { cssInterop } from 'nativewind'
 import * as LucideIcons from 'lucide-react-native'
 
 for (const [name, component] of Object.entries(LucideIcons)) {
-  if (typeof component === 'function' && /^[A-Z]/.test(name)) {
+  if (component != null && /^[A-Z]/.test(name)) {
     cssInterop(component as any, {
       className: {
         target: 'style',

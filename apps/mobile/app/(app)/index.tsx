@@ -303,18 +303,37 @@ const HomeScreen = observer(function HomeScreen() {
     setIsCreating(true)
     try {
       const projectName = generateProjectNameFromPrompt(text)
-      const newProject = await actions.createProject(
-        projectName,
-        currentWorkspace.id,
-        undefined,
-        user.id,
-        'AGENT',
-      )
-      const chatSession = await actions.createChatSession({
-        inferredName: `Chat - ${projectName}`,
-        contextType: 'project',
-        contextId: newProject.id,
-      })
+
+      let newProject
+      try {
+        newProject = await actions.createProject(
+          projectName,
+          currentWorkspace.id,
+          undefined,
+          user.id,
+          'AGENT',
+        )
+      } catch (err: any) {
+        const detail = err?.message || err?.details?.error?.message || String(err)
+        console.error('[Home] Failed to create project:', detail, err)
+        Alert.alert('Error', `Failed to create project: ${detail}`)
+        return
+      }
+
+      let chatSession
+      try {
+        chatSession = await actions.createChatSession({
+          inferredName: `Chat - ${projectName}`,
+          contextType: 'project',
+          contextId: newProject.id,
+        })
+      } catch (err: any) {
+        const detail = err?.message || err?.details?.error?.message || String(err)
+        console.error('[Home] Failed to create chat session:', detail, err)
+        Alert.alert('Error', `Failed to create chat session: ${detail}`)
+        return
+      }
+
       if (imageData && imageData.length > 0) {
         setPendingImageData(imageData)
       }
@@ -327,9 +346,6 @@ const HomeScreen = observer(function HomeScreen() {
           initialMessage: text,
         },
       } as any)
-    } catch (error) {
-      console.error('[Home] Failed to create project:', error)
-      Alert.alert('Error', 'Failed to create project')
     } finally {
       setIsCreating(false)
     }
