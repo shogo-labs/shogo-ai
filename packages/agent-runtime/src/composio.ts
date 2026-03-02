@@ -269,10 +269,11 @@ export function isComposioInitialized(): boolean {
 }
 
 /**
- * Check if Composio integration is configured (API key present).
+ * Check if Composio integration is configured (direct key or proxy).
  */
 export function isComposioEnabled(): boolean {
-  return !!process.env.COMPOSIO_API_KEY
+  return !!process.env.COMPOSIO_API_KEY ||
+    !!(process.env.TOOLS_PROXY_URL && process.env.AI_PROXY_TOKEN)
 }
 
 /**
