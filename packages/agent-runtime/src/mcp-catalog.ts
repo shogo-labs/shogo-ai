@@ -100,7 +100,6 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['github_create_issue', 'github_list_issues', 'github_create_pr', 'github_search_code', 'github_get_file'],
     icon: '🐙',
     cloudCompatible: true,
-    preinstalled: true,
     authType: 'composio',
     composioToolkit: 'github',
   },
@@ -178,7 +177,6 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['slack_send_message', 'slack_list_channels', 'slack_read_messages', 'slack_search'],
     icon: '💼',
     cloudCompatible: true,
-    preinstalled: true,
     authType: 'composio',
     composioToolkit: 'slack',
   },
@@ -243,7 +241,6 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['notion_search', 'notion_read_page', 'notion_create_page', 'notion_query_database'],
     icon: '📝',
     cloudCompatible: true,
-    preinstalled: true,
     authType: 'composio',
     composioToolkit: 'notion',
   },
@@ -274,7 +271,6 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['brave_web_search', 'brave_local_search'],
     icon: '🦁',
     cloudCompatible: true,
-    preinstalled: true,
   },
   {
     id: 'exa',
@@ -344,6 +340,16 @@ export function getCatalogEntry(id: string): MCPCatalogEntry | undefined {
 /** Get all catalog entries marked for pre-installation */
 export function getPreinstalledPackages(): MCPCatalogEntry[] {
   return MCP_CATALOG.filter((e) => e.preinstalled)
+}
+
+/** Check if a server ID is in the preinstalled whitelist */
+export function isPreinstalledMcpId(id: string): boolean {
+  return MCP_CATALOG.some((e) => e.id === id && e.preinstalled === true)
+}
+
+/** Get the preinstalled catalog entry for a server ID, or undefined if not whitelisted */
+export function getPreinstalledEntry(id: string): MCPCatalogEntry | undefined {
+  return MCP_CATALOG.find((e) => e.id === id && e.preinstalled === true)
 }
 
 /** Get catalog entries filtered by category */

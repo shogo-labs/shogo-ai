@@ -16,6 +16,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { Type } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
+import { isPreinstalledMcpId, getPreinstalledPackages } from './mcp-catalog'
 
 const MAX_MCP_SERVERS = 10
 const MCP_CONNECT_TIMEOUT_MS = 90_000
@@ -211,6 +212,11 @@ export class MCPClientManager {
   }
 
   async startServer(name: string, config: MCPServerConfig): Promise<AgentTool[]> {
+    if (!isPreinstalledMcpId(name)) {
+      const allowed = getPreinstalledPackages().map(e => e.id).join(', ')
+      throw new Error(`MCP server "${name}" is not in the preinstalled whitelist. Allowed servers: ${allowed}`)
+    }
+
     if (this.servers.has(name)) {
       console.warn(`[MCPClient] Server "${name}" already running, skipping`)
       return this.servers.get(name)!.tools
@@ -322,10 +328,20 @@ export class MCPClientManager {
 
     if (entries.length === 0) return allTools
 
-    console.log(`[MCPClient] Starting ${entries.length} MCP server(s)...`)
+    const allowed = entries.filter(([name]) => {
+      if (!isPreinstalledMcpId(name)) {
+        console.warn(`[MCPClient] Skipping non-whitelisted MCP server "${name}" from config.json`)
+        return false
+      }
+      return true
+    })
+
+    if (allowed.length === 0) return allTools
+
+    console.log(`[MCPClient] Starting ${allowed.length} MCP server(s)...`)
 
     const results = await Promise.allSettled(
-      entries.map(async ([name, config]) => {
+      allowed.map(async ([name, config]) => {
         const tools = await this.startServer(name, config)
         return { name, tools }
       })

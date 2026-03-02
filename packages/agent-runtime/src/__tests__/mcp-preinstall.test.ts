@@ -1,8 +1,8 @@
 /**
- * Tests for MCP pre-install resolution.
+ * Tests for MCP pre-install resolution and whitelist enforcement.
  *
- * Verifies that the MCPClientManager correctly detects pre-installed packages
- * and resolves npx commands to direct node invocations.
+ * Verifies that the MCPClientManager correctly detects pre-installed packages,
+ * resolves npx commands to direct node invocations, and rejects non-whitelisted servers.
  */
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test'
@@ -17,6 +17,7 @@ process.env.MCP_PREINSTALL_DIR = TEST_PREINSTALL_DIR
 
 // Dynamic import so env is set first
 const { MCPClientManager } = await import('../mcp-client')
+const { isPreinstalledMcpId, getPreinstalledPackages, getPreinstalledEntry, MCP_CATALOG } = await import('../mcp-catalog')
 
 function setupFakePackage(pkgName: string, binEntry: string | Record<string, string>) {
   const pkgDir = join(TEST_PREINSTALL_DIR, 'node_modules', pkgName)
@@ -151,5 +152,114 @@ describe('MCP pre-install resolution', () => {
     expect(originalConfig.command).toBe('npx')
     expect(originalConfig.args).toEqual(argsCopy)
     expect(resolved).not.toBe(originalConfig)
+  })
+})
+
+describe('MCP whitelist enforcement', () => {
+  test('isPreinstalledMcpId returns true for whitelisted servers', () => {
+    expect(isPreinstalledMcpId('fetch')).toBe(true)
+    expect(isPreinstalledMcpId('postgres')).toBe(true)
+    expect(isPreinstalledMcpId('airbnb')).toBe(true)
+    expect(isPreinstalledMcpId('filesystem')).toBe(true)
+  })
+
+  test('isPreinstalledMcpId returns false for non-whitelisted servers', () => {
+    expect(isPreinstalledMcpId('playwright')).toBe(false)
+    expect(isPreinstalledMcpId('github')).toBe(false)
+    expect(isPreinstalledMcpId('slack')).toBe(false)
+    expect(isPreinstalledMcpId('notion')).toBe(false)
+    expect(isPreinstalledMcpId('brave-search')).toBe(false)
+    expect(isPreinstalledMcpId('gitlab')).toBe(false)
+    expect(isPreinstalledMcpId('linear')).toBe(false)
+    expect(isPreinstalledMcpId('sqlite')).toBe(false)
+    expect(isPreinstalledMcpId('stripe')).toBe(false)
+    expect(isPreinstalledMcpId('exa')).toBe(false)
+    expect(isPreinstalledMcpId('sentry')).toBe(false)
+  })
+
+  test('isPreinstalledMcpId returns false for arbitrary names', () => {
+    expect(isPreinstalledMcpId('malicious-server')).toBe(false)
+    expect(isPreinstalledMcpId('')).toBe(false)
+    expect(isPreinstalledMcpId('custom-mcp')).toBe(false)
+  })
+
+  test('getPreinstalledPackages only returns whitelisted entries', () => {
+    const preinstalled = getPreinstalledPackages()
+    const ids = preinstalled.map(e => e.id)
+
+    expect(ids).toContain('fetch')
+    expect(ids).toContain('postgres')
+    expect(ids).toContain('airbnb')
+    expect(ids).toContain('filesystem')
+
+    expect(ids).not.toContain('playwright')
+    expect(ids).not.toContain('github')
+    expect(ids).not.toContain('slack')
+    expect(ids).not.toContain('notion')
+    expect(ids).not.toContain('brave-search')
+
+    expect(preinstalled.every(e => e.preinstalled === true)).toBe(true)
+  })
+
+  test('getPreinstalledEntry returns entry for whitelisted, undefined for others', () => {
+    const fetchEntry = getPreinstalledEntry('fetch')
+    expect(fetchEntry).toBeDefined()
+    expect(fetchEntry!.id).toBe('fetch')
+    expect(fetchEntry!.preinstalled).toBe(true)
+
+    expect(getPreinstalledEntry('playwright')).toBeUndefined()
+    expect(getPreinstalledEntry('github')).toBeUndefined()
+    expect(getPreinstalledEntry('unknown')).toBeUndefined()
+  })
+
+  test('non-whitelisted catalog entries still exist in MCP_CATALOG', () => {
+    const playwright = MCP_CATALOG.find(e => e.id === 'playwright')
+    expect(playwright).toBeDefined()
+    expect(playwright!.preinstalled).toBeUndefined()
+
+    const github = MCP_CATALOG.find(e => e.id === 'github')
+    expect(github).toBeDefined()
+    expect(github!.preinstalled).toBeUndefined()
+  })
+
+  test('startServer rejects non-whitelisted server', async () => {
+    const manager = new MCPClientManager()
+    manager.setWorkspaceDir(TEST_WORKSPACE_DIR)
+
+    await expect(
+      manager.startServer('playwright', { command: 'npx', args: ['@playwright/mcp@latest'] })
+    ).rejects.toThrow(/not in the preinstalled whitelist/)
+  })
+
+  test('startServer rejects arbitrary server names', async () => {
+    const manager = new MCPClientManager()
+    manager.setWorkspaceDir(TEST_WORKSPACE_DIR)
+
+    await expect(
+      manager.startServer('evil-mcp', { command: 'npx', args: ['evil-package@latest'] })
+    ).rejects.toThrow(/not in the preinstalled whitelist/)
+  })
+
+  test('hotAddServer rejects non-whitelisted server', async () => {
+    const manager = new MCPClientManager()
+    manager.setWorkspaceDir(TEST_WORKSPACE_DIR)
+
+    await expect(
+      manager.hotAddServer('gitlab', { command: 'npx', args: ['@modelcontextprotocol/server-gitlab@latest'] })
+    ).rejects.toThrow(/not in the preinstalled whitelist/)
+  })
+
+  test('startAll skips non-whitelisted entries from config', async () => {
+    const manager = new MCPClientManager()
+    manager.setWorkspaceDir(TEST_WORKSPACE_DIR)
+
+    const configs = {
+      'playwright': { command: 'npx', args: ['@playwright/mcp@latest'] },
+      'custom-bad': { command: 'node', args: ['malicious.js'] },
+    }
+
+    // Should not throw -- just skip and return empty
+    const tools = await manager.startAll(configs)
+    expect(tools).toEqual([])
   })
 })
