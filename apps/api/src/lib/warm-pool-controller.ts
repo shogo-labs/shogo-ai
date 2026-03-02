@@ -184,6 +184,13 @@ export class WarmPoolController {
    */
   private assigned = new Map<string, WarmPodInfo>()
 
+  /**
+   * Service names that have been claimed but not yet passed to assign().
+   * Bridges the gap between claim() firing an async reconcile and assign()
+   * adding the pod to `this.assigned`.
+   */
+  private claimedServiceNames = new Set<string>()
+
   /** Pending warm pod creations to avoid duplicate reconciliation */
   private pendingCreations = new Set<string>()
 
@@ -456,6 +463,7 @@ export class WarmPoolController {
 
     if (oldest && oldestId) {
       this.available.delete(oldestId)
+      this.claimedServiceNames.add(oldest.serviceName)
       const remaining = this.countAvailable(type)
       const target = this.poolSize[type]
       const utilization = 1 - remaining / target
@@ -559,6 +567,7 @@ export class WarmPoolController {
         }
 
         this.assigned.set(projectId, pod)
+        this.claimedServiceNames.delete(pod.serviceName)
         const duration = Date.now() - startTime
         span.setAttribute('assign.duration_ms', duration)
         span.setStatus({ code: SpanStatusCode.OK })
@@ -575,6 +584,7 @@ export class WarmPoolController {
           )
         })
       } catch (err: any) {
+        this.claimedServiceNames.delete(pod.serviceName)
         span.setStatus({ code: SpanStatusCode.ERROR, message: err.message })
         span.recordException(err)
         console.error(
@@ -889,9 +899,11 @@ export class WarmPoolController {
         // Skip pods that are assigned or promoted to a project
         if (status === 'assigned' || status === 'promoted') continue
 
-        // Skip pods that are in the assigned map (claimed but label not yet patched).
-        // Without this check, the reconciler can re-add a claimed pod to `available`
-        // during the window between claim() and the async label patch.
+        // Skip pods that have been claimed or assigned but whose label hasn't
+        // been patched to 'promoted' yet.  claimedServiceNames covers the window
+        // between claim() and assign(); the assigned map covers the window
+        // between assign() and the async label patch.
+        if (this.claimedServiceNames.has(name)) continue
         const isAssigned = [...this.assigned.values()].some(p => p.serviceName === name)
         if (isAssigned) continue
 
