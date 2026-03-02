@@ -11,14 +11,13 @@
  * 2. POST /pool/assign to the warm pod with project-specific config
  * 3. The pod reconfigures itself in-place (loads S3 data, starts gateway, etc.)
  * 4. Return the warm pod URL immediately — user gets instant service
- * 5. Patch the Knative Service annotations to mark the pod as promoted
- *    (enables scale-to-zero and self-assign on future cold starts)
+ * 5. Patch the Knative Service metadata labels to mark the pod as promoted
+ *    (metadata-only — no new revision, no pod restart)
  * 6. Save the service name mapping in the database for routing
  *
- * On cold start (scale-to-zero recovery), the runtime reads the ASSIGNED_PROJECT
- * env var (injected into the Knative Service spec during promotion) and
- * self-configures by fetching config from the API's /api/internal/pod-config
- * endpoint.
+ * On cold start (scale-to-zero recovery or API redeployment), the stale DB
+ * mapping is detected by getProjectPodUrl, cleared, and a fresh warm pod
+ * is assigned.
  *
  * Pool pods run with PROJECT_ID=__POOL__, do generic init (start Hono,
  * pre-warm Claude Code session, load deps into memory), and wait for assignment.
@@ -640,68 +639,15 @@ export class WarmPoolController {
       return
     }
 
-    // Step 2: patch the template spec to set/overwrite ASSIGNED_PROJECT env var
-    // and enable scale-to-zero. This creates a new Revision but does NOT disrupt
-    // the currently running pod.
-    try {
-      const current = await api.getNamespacedCustomObject({
-        group: KNATIVE_GROUP,
-        version: KNATIVE_VERSION,
-        namespace: this.namespace,
-        plural: 'services',
-        name: pod.serviceName,
-      }) as any
+    // NOTE: We intentionally do NOT patch the Knative spec.template here.
+    // Changing the spec creates a new Revision, which replaces the running pod,
+    // destroying the in-memory agent gateway, local workspace files, and canvas
+    // state. The metadata labels/annotations above are sufficient for the warm
+    // pool controller to identify promoted pods. For cold-start recovery after
+    // scale-to-zero, getProjectPodUrl detects the stale mapping and re-assigns
+    // a fresh warm pod.
 
-      const currentTemplate = current.spec?.template
-      const containers = currentTemplate?.spec?.containers || []
-      const container = containers[0]
-      if (container) {
-        const existingEnv = [...(container.env || [])]
-
-        // Always overwrite ASSIGNED_PROJECT so cold-start self-assign uses the
-        // correct project (not a stale one from a previous promotion).
-        const assignedIdx = existingEnv.findIndex((e: any) => e.name === 'ASSIGNED_PROJECT')
-        if (assignedIdx >= 0) {
-          existingEnv[assignedIdx] = { name: 'ASSIGNED_PROJECT', value: projectId }
-        } else {
-          existingEnv.push({ name: 'ASSIGNED_PROJECT', value: projectId })
-        }
-
-        const updatedContainer = { ...container, env: existingEnv }
-
-        const existingAnnotations = currentTemplate?.metadata?.annotations || {}
-        const mergedAnnotations = {
-          ...existingAnnotations,
-          'autoscaling.knative.dev/min-scale': '0',
-        }
-
-        const specPatch = {
-          spec: {
-            template: {
-              metadata: {
-                annotations: mergedAnnotations,
-              },
-              spec: {
-                ...currentTemplate?.spec,
-                containers: [updatedContainer],
-              },
-            },
-          },
-        }
-
-        await mergePatchKnativeService(this.namespace, pod.serviceName, specPatch)
-        console.log(
-          `[WarmPool] Patched spec with ASSIGNED_PROJECT on ${pod.serviceName} (${Date.now() - t0}ms) — new revision created for future cold starts`
-        )
-      }
-    } catch (err: any) {
-      console.error(
-        `[WarmPool] Failed to patch spec on ${pod.serviceName}:`,
-        err.message
-      )
-    }
-
-    // Step 3: save the DB mapping, clearing any stale mapping from a previous
+    // Step 2: save the DB mapping, clearing any stale mapping from a previous
     // project that may have been assigned to this same service name.
     try {
       const { prisma } = await import('./prisma')
