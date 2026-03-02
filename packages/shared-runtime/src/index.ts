@@ -58,3 +58,8 @@ export {
   type Logger,
   type LogLevel,
 } from './logger'
+
+export {
+  checkSelfAssign,
+  type SelfAssignConfig,
+} from './self-assign'
