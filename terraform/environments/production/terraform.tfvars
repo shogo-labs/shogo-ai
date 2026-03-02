@@ -38,6 +38,7 @@ publish_domain = "shogo.one"
 # anthropic_api_key
 # google_client_id
 # google_client_secret
+# serper_api_key
 # composio_api_key
 # composio_project_id
 # gh_app_client_id
