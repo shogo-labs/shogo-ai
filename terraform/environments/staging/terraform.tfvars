@@ -46,6 +46,7 @@ ssl_certificate_domain_preview = "*.staging.shogo.ai" # ACM certificate for prev
 # anthropic_api_key
 # google_client_id
 # google_client_secret
+# serper_api_key
 # composio_api_key
 # composio_project_id
 # gh_app_client_id

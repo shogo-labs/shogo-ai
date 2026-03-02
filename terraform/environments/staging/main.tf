@@ -1006,6 +1006,9 @@ resource "kubernetes_secret" "api_secrets" {
     var.google_client_secret != "" ? {
       GOOGLE_CLIENT_SECRET = var.google_client_secret
     } : {},
+    var.serper_api_key != "" ? {
+      SERPER_API_KEY = var.serper_api_key
+    } : {},
     var.composio_api_key != "" ? {
       COMPOSIO_API_KEY = var.composio_api_key
     } : {},
@@ -1379,6 +1382,12 @@ resource "null_resource" "knative_services" {
                       secretKeyRef:
                         name: api-secrets
                         key: GOOGLE_CLIENT_SECRET
+                        optional: true
+                  - name: SERPER_API_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: api-secrets
+                        key: SERPER_API_KEY
                         optional: true
                   - name: COMPOSIO_API_KEY
                     valueFrom:

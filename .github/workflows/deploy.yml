@@ -399,6 +399,11 @@ jobs:
             SECRET_ARGS+=(--from-literal=GOOGLE_CLIENT_SECRET="${{ secrets.GOOGLE_CLIENT_SECRET }}")
           fi
           
+          # Serper secret (optional - for web search)
+          if [ -n "${{ secrets.SERPER_API_KEY }}" ]; then
+            SECRET_ARGS+=(--from-literal=SERPER_API_KEY="${{ secrets.SERPER_API_KEY }}")
+          fi
+          
           # Composio secrets (optional - for third-party integrations)
           if [ -n "${{ secrets.COMPOSIO_API_KEY }}" ]; then
             SECRET_ARGS+=(--from-literal=COMPOSIO_API_KEY="${{ secrets.COMPOSIO_API_KEY }}")
@@ -667,6 +672,11 @@ jobs:
           fi
           if [ -n "${{ secrets.GOOGLE_CLIENT_SECRET }}" ]; then
             SECRET_ARGS+=(--from-literal=GOOGLE_CLIENT_SECRET="${{ secrets.GOOGLE_CLIENT_SECRET }}")
+          fi
+
+          # Serper secret (optional - for web search)
+          if [ -n "${{ secrets.SERPER_API_KEY }}" ]; then
+            SECRET_ARGS+=(--from-literal=SERPER_API_KEY="${{ secrets.SERPER_API_KEY }}")
           fi
 
           # Composio secrets (optional - for third-party integrations)
