@@ -847,6 +847,53 @@ export function normalizeComponents(
 }
 
 // ---------------------------------------------------------------------------
+// Basic agent schema (display-only — no TextField, Select, Checkbox, ChoicePicker)
+// ---------------------------------------------------------------------------
+
+const BASIC_ACTION_PROP: PropDef = {
+  type: 'object',
+  description: `Action for opening external URLs: { name: "open_link", mutation: { endpoint: "https://example.com" OR { path: "url" }, method: "OPEN" } }
+  method "OPEN" opens the resolved endpoint in a new browser tab. Use this for per-item URLs in a DataList (e.g. Airbnb listing URLs).
+  The ONLY supported method is "OPEN". Do NOT use POST, PATCH, or DELETE.`,
+}
+
+export const BASIC_CANVAS_COMPONENT_SCHEMA: ComponentSchema[] = [
+  ...CANVAS_COMPONENT_SCHEMA.filter((s) =>
+    s.category !== 'interactive'
+  ),
+  {
+    type: 'Button',
+    category: 'interactive',
+    description: `Clickable button for opening external URLs. The ONLY supported method is "OPEN".
+  Example: { name: "view", mutation: { endpoint: "https://example.com", method: "OPEN" } }
+  In a DataList template, bind the URL: mutation: { endpoint: { path: "url" }, method: "OPEN" }
+  method "OPEN" opens the URL in a new browser tab.
+  Do NOT use POST, PATCH, or DELETE — this agent is display-only.`,
+    hasChildren: false,
+    props: {
+      label: str('Button text', { required: true }),
+      text: str('Alias for label'),
+      variant: str('Visual style', { enum: ['default', 'secondary', 'outline', 'ghost', 'link'], default: 'default' }),
+      size: str('Button size', { enum: ['default', 'sm', 'lg', 'icon'], default: 'default' }),
+      disabled: bool('Disable the button'),
+      action: BASIC_ACTION_PROP,
+      className: CLASS_PROP,
+    },
+  },
+]
+
+const basicSchemaByType = new Map<string, ComponentSchema>()
+for (const s of BASIC_CANVAS_COMPONENT_SCHEMA) {
+  basicSchemaByType.set(s.type, s)
+}
+
+export const BASIC_VALID_COMPONENT_TYPES = new Set(BASIC_CANVAS_COMPONENT_SCHEMA.map((s) => s.type))
+
+export function getBasicComponentSchema(type: string): ComponentSchema | undefined {
+  return basicSchemaByType.get(type)
+}
+
+// ---------------------------------------------------------------------------
 // Fuzzy match helper (Levenshtein distance)
 // ---------------------------------------------------------------------------
 

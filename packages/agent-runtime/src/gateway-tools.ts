@@ -22,8 +22,11 @@ import { autoBindPrimaryEntity } from './composio-auto-bind'
 import { getDynamicAppManager, getByPointer } from './dynamic-app-manager'
 import {
   CANVAS_COMPONENT_SCHEMA,
+  BASIC_CANVAS_COMPONENT_SCHEMA,
   VALID_COMPONENT_TYPES,
+  BASIC_VALID_COMPONENT_TYPES,
   getComponentSchema,
+  getBasicComponentSchema,
   lintComponents,
   normalizeComponents,
   type ComponentSchema,
@@ -1281,7 +1284,12 @@ function createCanvasActionWaitTool(): AgentTool {
   }
 }
 
-function createCanvasComponentsTool(): AgentTool {
+function createCanvasComponentsTool(options?: { basic?: boolean }): AgentTool {
+  const isBasic = options?.basic ?? false
+  const catalog = isBasic ? BASIC_CANVAS_COMPONENT_SCHEMA : CANVAS_COMPONENT_SCHEMA
+  const validTypes = isBasic ? BASIC_VALID_COMPONENT_TYPES : VALID_COMPONENT_TYPES
+  const lookupSchema = isBasic ? getBasicComponentSchema : getComponentSchema
+
   return {
     name: 'canvas_components',
     description:
@@ -1309,10 +1317,10 @@ function createCanvasComponentsTool(): AgentTool {
         if (!type) {
           return textResult({ error: 'The "type" parameter is required for the "detail" action. Example: { action: "detail", type: "Card" }' })
         }
-        const schema = getComponentSchema(type)
+        const schema = lookupSchema(type)
         if (!schema) {
-          const validTypes = [...VALID_COMPONENT_TYPES].join(', ')
-          return textResult({ error: `Unknown component type "${type}". Valid types: ${validTypes}` })
+          const typeList = [...validTypes].join(', ')
+          return textResult({ error: `Unknown component type "${type}". Valid types: ${typeList}` })
         }
         return textResult({
           component: schema.type,
@@ -1328,7 +1336,7 @@ function createCanvasComponentsTool(): AgentTool {
         if (!q) {
           return textResult({ error: 'The "query" parameter is required for the "search" action. Example: { action: "search", query: "table" }' })
         }
-        const matches = CANVAS_COMPONENT_SCHEMA.filter((s) =>
+        const matches = catalog.filter((s) =>
           s.type.toLowerCase().includes(q) ||
           s.description.toLowerCase().includes(q) ||
           s.category.toLowerCase().includes(q) ||
@@ -1349,7 +1357,7 @@ function createCanvasComponentsTool(): AgentTool {
       }
 
       // Default: list
-      let schemas = CANVAS_COMPONENT_SCHEMA
+      let schemas = catalog as ComponentSchema[]
       if (category) {
         schemas = schemas.filter((s) => s.category === category)
       }
@@ -3049,7 +3057,7 @@ export function createBasicTools(ctx: ToolContext): AgentTool[] {
     createCanvasUpdateTool(),
     createCanvasDataTool(),
     createCanvasDeleteTool(),
-    createCanvasComponentsTool(),
+    createCanvasComponentsTool({ basic: true }),
     createCanvasApiSchemaTool(),
     createCanvasApiSeedTool(),
     createCanvasApiQueryTool(),
