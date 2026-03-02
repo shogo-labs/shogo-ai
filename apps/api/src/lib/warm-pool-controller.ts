@@ -889,6 +889,12 @@ export class WarmPoolController {
         // Skip pods that are assigned or promoted to a project
         if (status === 'assigned' || status === 'promoted') continue
 
+        // Skip pods that are in the assigned map (claimed but label not yet patched).
+        // Without this check, the reconciler can re-add a claimed pod to `available`
+        // during the window between claim() and the async label patch.
+        const isAssigned = [...this.assigned.values()].some(p => p.serviceName === name)
+        if (isAssigned) continue
+
         // Check readiness from Knative service conditions
         const conditions = service.status?.conditions || []
         const readyCondition = conditions.find((c: any) => c.type === 'Ready')
