@@ -71,7 +71,7 @@ export function MarkdownText({ children }: MarkdownTextProps) {
       value={value}
       styles={baseStyles}
       theme={{ colors }}
-      flatListProps={{ scrollEnabled: false }}
+      flatListProps={{ scrollEnabled: false, style: { backgroundColor: 'transparent' } }}
     />
   )
 }

@@ -347,109 +347,179 @@ interface UserMenuProps {
   onSignOut: () => void
   onNavigate: (href: string) => void
   isSuperAdmin?: boolean
+  isWide?: boolean
+  bottomInset?: number
 }
 
-function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin }: UserMenuProps) {
-  const [isOpen, setIsOpen] = useState(false)
+function UserMenuContent({
+  user,
+  onSignOut,
+  onNavigate,
+  isSuperAdmin,
+  onClose,
+}: UserMenuProps & { onClose: () => void }) {
   const [appearanceOpen, setAppearanceOpen] = useState(false)
   const { theme, setTheme } = useTheme()
 
   return (
-    <Popover
-      placement="top"
-      size="xs"
-      isOpen={isOpen}
-      onOpen={() => setIsOpen(true)}
-      onClose={() => setIsOpen(false)}
-      trigger={(triggerProps) => (
-        <Pressable {...triggerProps} className="rounded-full active:opacity-80">
-          <Avatar
-            fallback={getInitials(user?.name)}
-            src={user?.image}
-            size="sm"
-          />
+    <>
+      {/* User info header */}
+      <View className="px-4 py-3 border-b border-border">
+        <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
+          {user?.name || 'User'}
+        </Text>
+        <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+          {user?.email || ''}
+        </Text>
+      </View>
+
+      {/* Menu items */}
+      <View className="py-1">
+        <Pressable
+          onPress={() => { onNavigate('/(app)/profile'); onClose() }}
+          className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
+        >
+          <User size={18} className="text-muted-foreground" />
+          <Text className="text-sm text-foreground">Profile</Text>
         </Pressable>
-      )}
-    >
-      <PopoverBackdrop />
-      <PopoverContent className="max-w-[224px] p-0">
-        <PopoverBody>
-          {/* User info header */}
-          <View className="px-3 py-2.5 border-b border-border">
-            <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
-              {user?.name || 'User'}
-            </Text>
-            <Text className="text-xs text-muted-foreground" numberOfLines={1}>
-              {user?.email || ''}
-            </Text>
-          </View>
 
-          {/* Menu items */}
-          <View className="py-1">
-            <Pressable
-              onPress={() => { onNavigate('/(app)/profile'); setIsOpen(false) }}
-              className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
-            >
-              <User size={16} className="text-muted-foreground" />
-              <Text className="text-sm text-foreground">Profile</Text>
-            </Pressable>
+        <Pressable
+          onPress={() => setAppearanceOpen(!appearanceOpen)}
+          className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
+        >
+          <Monitor size={18} className="text-muted-foreground" />
+          <Text className="text-sm text-foreground flex-1">Appearance</Text>
+          {appearanceOpen ? (
+            <ChevronDown size={14} className="text-muted-foreground" />
+          ) : (
+            <ChevronRight size={14} className="text-muted-foreground" />
+          )}
+        </Pressable>
 
-            <Pressable
-              onPress={() => setAppearanceOpen(!appearanceOpen)}
-              className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
-            >
-              <Monitor size={16} className="text-muted-foreground" />
-              <Text className="text-sm text-foreground flex-1">Appearance</Text>
-              <ChevronRight size={14} className="text-muted-foreground" />
-            </Pressable>
-
-            {appearanceOpen && (
-              <View className="pl-9 pr-3 py-1">
-                {([
-                  { value: 'light' as const, label: 'Light', Icon: Sun },
-                  { value: 'dark' as const, label: 'Dark', Icon: Moon },
-                  { value: 'system' as const, label: 'System', Icon: Monitor },
-                ] as const).map(({ value, label, Icon }) => (
-                  <Pressable
-                    key={value}
-                    onPress={() => setTheme(value)}
-                    className="flex-row items-center gap-2 py-1.5 active:bg-muted rounded-md px-1"
-                  >
-                    <Icon size={14} className={theme === value ? 'text-primary' : 'text-muted-foreground'} />
-                    <Text className={cn('text-sm flex-1', theme === value ? 'text-primary' : 'text-foreground')}>
-                      {label}
-                    </Text>
-                    {theme === value && <Check size={14} className="text-primary" />}
-                  </Pressable>
-                ))}
-              </View>
-            )}
-
-            {isSuperAdmin && (
+        {appearanceOpen && (
+          <View className="pl-11 pr-4 py-1">
+            {([
+              { value: 'light' as const, label: 'Light', Icon: Sun },
+              { value: 'dark' as const, label: 'Dark', Icon: Moon },
+              { value: 'system' as const, label: 'System', Icon: Monitor },
+            ] as const).map(({ value, label, Icon }) => (
               <Pressable
-                onPress={() => { onNavigate('/(admin)'); setIsOpen(false) }}
-                className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
+                key={value}
+                onPress={() => setTheme(value)}
+                className="flex-row items-center gap-3 py-2.5 active:bg-muted rounded-md px-2"
               >
-                <Shield size={16} className="text-primary" />
-                <Text className="text-sm text-foreground">Super Admin</Text>
+                <Icon size={16} className={theme === value ? 'text-primary' : 'text-muted-foreground'} />
+                <Text className={cn('text-sm flex-1', theme === value ? 'text-primary' : 'text-foreground')}>
+                  {label}
+                </Text>
+                {theme === value && <Check size={16} className="text-primary" />}
               </Pressable>
-            )}
+            ))}
           </View>
+        )}
 
-          <View className="h-px bg-border" />
+        {isSuperAdmin && (
+          <Pressable
+            onPress={() => { onNavigate('/(admin)'); onClose() }}
+            className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
+          >
+            <Shield size={18} className="text-primary" />
+            <Text className="text-sm text-foreground">Super Admin</Text>
+          </Pressable>
+        )}
+      </View>
 
-          <View className="py-1">
-            <Pressable
-              onPress={() => { onSignOut(); setIsOpen(false) }}
-              className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
-            >
-              <LogOut size={16} className="text-muted-foreground" />
-              <Text className="text-sm text-foreground">Sign Out</Text>
-            </Pressable>
-          </View>
-        </PopoverBody>
-      </PopoverContent>
-    </Popover>
+      <View className="h-px bg-border" />
+
+      <View className="py-1">
+        <Pressable
+          onPress={() => { onSignOut(); onClose() }}
+          className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
+        >
+          <LogOut size={18} className="text-muted-foreground" />
+          <Text className="text-sm text-foreground">Sign Out</Text>
+        </Pressable>
+      </View>
+    </>
+  )
+}
+
+function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bottomInset = 0 }: UserMenuProps) {
+  const [isOpen, setIsOpen] = useState(false)
+
+  if (isWide) {
+    return (
+      <Popover
+        placement="top"
+        size="xs"
+        isOpen={isOpen}
+        onOpen={() => setIsOpen(true)}
+        onClose={() => setIsOpen(false)}
+        trigger={(triggerProps) => (
+          <Pressable {...triggerProps} className="rounded-full active:opacity-80">
+            <Avatar
+              fallback={getInitials(user?.name)}
+              src={user?.image}
+              size="sm"
+            />
+          </Pressable>
+        )}
+      >
+        <PopoverBackdrop />
+        <PopoverContent className="max-w-[224px] p-0">
+          <PopoverBody>
+            <UserMenuContent
+              user={user}
+              onSignOut={onSignOut}
+              onNavigate={onNavigate}
+              isSuperAdmin={isSuperAdmin}
+              onClose={() => setIsOpen(false)}
+            />
+          </PopoverBody>
+        </PopoverContent>
+      </Popover>
+    )
+  }
+
+  return (
+    <>
+      <Pressable onPress={() => setIsOpen(true)} className="rounded-full active:opacity-80">
+        <Avatar
+          fallback={getInitials(user?.name)}
+          src={user?.image}
+          size="sm"
+        />
+      </Pressable>
+      <Modal
+        visible={isOpen}
+        transparent
+        animationType="slide"
+        statusBarTranslucent
+        onRequestClose={() => setIsOpen(false)}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 justify-end"
+          onPress={() => setIsOpen(false)}
+        >
+          <Pressable
+            onPress={(e) => e.stopPropagation()}
+            className="bg-card border-t border-border rounded-t-2xl shadow-2xl"
+            style={{ paddingBottom: bottomInset }}
+          >
+            <View className="items-center pt-2 pb-1">
+              <View className="w-10 h-1 rounded-full bg-muted-foreground/30" />
+            </View>
+            <UserMenuContent
+              user={user}
+              onSignOut={onSignOut}
+              onNavigate={onNavigate}
+              isSuperAdmin={isSuperAdmin}
+              onClose={() => setIsOpen(false)}
+            />
+          </Pressable>
+        </Pressable>
+      </Modal>
+    </>
   )
 }
 
@@ -1229,8 +1299,10 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
           <UserMenu
             user={user}
             onSignOut={handleSignOut}
-            onNavigate={(href) => router.push(href as any)}
+            onNavigate={(href) => { router.push(href as any); onNavPress() }}
             isSuperAdmin={isSuperAdmin}
+            isWide={isWide}
+            bottomInset={insets.bottom}
           />
 
           {!collapsed && (
@@ -1254,20 +1326,38 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
         </View>
       </View>
 
-      {/* Inbox Panel — anchored to bottom-left beside sidebar */}
+      {/* Inbox Panel — bottom sheet on mobile, anchored popover on desktop */}
       <Modal
         visible={inboxOpen}
         transparent
-        animationType="none"
+        animationType={isWide ? 'none' : 'slide'}
+        statusBarTranslucent
         onRequestClose={() => setInboxOpen(false)}
       >
         <Pressable
-          className="flex-1"
+          className={cn(
+            'flex-1',
+            isWide ? '' : 'bg-black/50 justify-end'
+          )}
           onPress={() => setInboxOpen(false)}
         >
-          <View
-            className="absolute bottom-16 left-[220px] w-[340px] bg-card border border-border rounded-xl shadow-2xl"
+          <Pressable
+            onPress={(e) => e.stopPropagation()}
+            className={cn(
+              'bg-card border border-border shadow-2xl',
+              isWide
+                ? 'absolute bottom-16 left-[220px] w-[340px] rounded-xl'
+                : 'w-full rounded-t-2xl border-b-0'
+            )}
+            style={!isWide ? { paddingBottom: insets.bottom } : undefined}
           >
+            {/* Drag indicator (mobile only) */}
+            {!isWide && (
+              <View className="items-center pt-2 pb-1">
+                <View className="w-10 h-1 rounded-full bg-muted-foreground/30" />
+              </View>
+            )}
+
             <View className="flex-row items-center justify-between px-4 pt-4 pb-2">
               <Text className="text-base font-semibold text-card-foreground">Inbox</Text>
               <Pressable onPress={() => setInboxOpen(false)} className="p-1 rounded-md active:bg-muted">
@@ -1279,7 +1369,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
               <View className="px-4 pb-5 pt-6 items-center gap-2">
                 <Inbox size={28} className="text-muted-foreground" />
                 <Text className="text-sm font-medium text-card-foreground">No messages or invites pending</Text>
-                <Text className="text-xs text-muted-foreground">
+                <Text className="text-xs text-muted-foreground text-center">
                   Workspace and project invitations will appear here
                 </Text>
               </View>
@@ -1289,60 +1379,58 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
                   Pending invitations
                 </Text>
                 {pendingInvites.map((inv: any) => (
-                  <Pressable key={inv.id} onPress={(e) => e.stopPropagation()}>
-                    <View className="px-4 py-3 border-t border-border">
-                      <View className="flex-row items-center justify-between mb-0.5">
-                        <Text className="text-sm font-medium text-card-foreground">
-                          {inv.workspace?.name || inv.workspaceName || 'Workspace'}
-                        </Text>
-                        <View className="px-1.5 py-0.5 rounded bg-muted">
-                          <Text className="text-[10px] text-muted-foreground capitalize">{inv.role}</Text>
-                        </View>
-                      </View>
-                      <Text className="text-xs text-muted-foreground mb-2.5">Invited to join this workspace</Text>
-                      <View className="flex-row gap-2">
-                        <Pressable
-                          onPress={async () => {
-                            setPendingInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
-                            try {
-                              if (http) {
-                                await http.patch(`/api/invitations/${inv.id}`, { status: 'accepted' })
-                                await http.post('/api/members', {
-                                  userId: user?.id,
-                                  workspaceId: inv.workspaceId,
-                                  role: inv.role,
-                                  isBillingAdmin: false,
-                                })
-                              }
-                            } catch {}
-                            loadInvites()
-                            workspaces.loadAll().catch(() => {})
-                          }}
-                          className="flex-1 h-8 bg-primary rounded-md items-center justify-center"
-                        >
-                          <Text className="text-xs font-medium text-primary-foreground">Accept</Text>
-                        </Pressable>
-                        <Pressable
-                          onPress={async () => {
-                            setPendingInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
-                            try {
-                              if (http) {
-                                await http.patch(`/api/invitations/${inv.id}`, { status: 'declined' })
-                              }
-                            } catch {}
-                            loadInvites()
-                          }}
-                          className="flex-1 h-8 border border-border rounded-md items-center justify-center"
-                        >
-                          <Text className="text-xs font-medium text-card-foreground">Decline</Text>
-                        </Pressable>
+                  <View key={inv.id} className="px-4 py-3 border-t border-border">
+                    <View className="flex-row items-center justify-between mb-0.5">
+                      <Text className="text-sm font-medium text-card-foreground">
+                        {inv.workspace?.name || inv.workspaceName || 'Workspace'}
+                      </Text>
+                      <View className="px-1.5 py-0.5 rounded bg-muted">
+                        <Text className="text-[10px] text-muted-foreground capitalize">{inv.role}</Text>
                       </View>
                     </View>
-                  </Pressable>
+                    <Text className="text-xs text-muted-foreground mb-2.5">Invited to join this workspace</Text>
+                    <View className="flex-row gap-2">
+                      <Pressable
+                        onPress={async () => {
+                          setPendingInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
+                          try {
+                            if (http) {
+                              await http.patch(`/api/invitations/${inv.id}`, { status: 'accepted' })
+                              await http.post('/api/members', {
+                                userId: user?.id,
+                                workspaceId: inv.workspaceId,
+                                role: inv.role,
+                                isBillingAdmin: false,
+                              })
+                            }
+                          } catch {}
+                          loadInvites()
+                          workspaces.loadAll().catch(() => {})
+                        }}
+                        className="flex-1 h-8 bg-primary rounded-md items-center justify-center"
+                      >
+                        <Text className="text-xs font-medium text-primary-foreground">Accept</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={async () => {
+                          setPendingInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
+                          try {
+                            if (http) {
+                              await http.patch(`/api/invitations/${inv.id}`, { status: 'declined' })
+                            }
+                          } catch {}
+                          loadInvites()
+                        }}
+                        className="flex-1 h-8 border border-border rounded-md items-center justify-center"
+                      >
+                        <Text className="text-xs font-medium text-card-foreground">Decline</Text>
+                      </Pressable>
+                    </View>
+                  </View>
                 ))}
               </ScrollView>
             )}
-          </View>
+          </Pressable>
         </Pressable>
       </Modal>
 
