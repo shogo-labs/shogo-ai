@@ -629,9 +629,9 @@ function CanvasPanel({
   if (!surface) {
     return (
       <View className="flex-1">
-        <EditToolbar surfaceId={null} trailing={themePicker} />
         <View className="flex-1 p-3">
           <CanvasThemedContainer>
+            <EditToolbar surfaceId={null} trailing={themePicker} />
             <View className="flex-1 items-center justify-center px-6">
               <View
                 className={cn(
@@ -665,18 +665,18 @@ function CanvasPanel({
 
   return (
     <View className="flex-1">
-      <EditToolbar surfaceId={surfaceId} components={surface.components} trailing={themePicker} />
       <View className="flex-1 flex-row">
         {isEditMode && showTreePanel && (
           <ComponentTreePanel surfaceId={surfaceId} components={surface.components} />
         )}
         <View className="flex-1 p-3">
           <CanvasThemedContainer>
+            <EditToolbar surfaceId={surfaceId} components={surface.components} trailing={themePicker} />
             <ScrollView
-      className="flex-1"
-      contentContainerStyle={{ padding: 16 }}
-      {...(Platform.OS === 'web' ? { dataSet: { thumbnailTarget: '' } } as any : {})}
-    >
+              className="flex-1"
+              contentContainerStyle={{ padding: 16 }}
+              {...(Platform.OS === 'web' ? { dataSet: { thumbnailTarget: '' } } as any : {})}
+            >
               <DynamicAppRenderer
                 surface={surface}
                 agentUrl={agentUrl}
