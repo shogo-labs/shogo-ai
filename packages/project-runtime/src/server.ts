@@ -97,7 +97,7 @@ if (IS_POOL_MODE) {
 
   // Self-assign: if this pod was previously promoted (has ASSIGNED_PROJECT),
   // fetch config from the API and apply it so the pod resumes serving.
-  const { checkSelfAssign } = await import('@shogo/shared-runtime/self-assign')
+  const { checkSelfAssign } = await import('@shogo/shared-runtime')
   const selfAssignConfig = await checkSelfAssign()
   if (selfAssignConfig) {
     logTiming(`[self-assign] Applying config for project ${selfAssignConfig.projectId}`)
