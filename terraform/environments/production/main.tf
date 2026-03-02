@@ -799,15 +799,19 @@ resource "null_resource" "postgres_credentials" {
 
       PROJECTS_ADMIN_URI=$(kubectl get secret projects-pg-superuser -n shogo-system -o jsonpath='{.data.uri}' | base64 -d)
       
-      if [ -n "$PROJECTS_ADMIN_URI" ]; then
-        kubectl create secret generic projects-db-admin \
-          --namespace shogo-system \
-          --from-literal=PROJECTS_DB_ADMIN_URL="$PROJECTS_ADMIN_URI" \
-          --from-literal=PROJECTS_DB_HOST="projects-pg-rw.shogo-system.svc.cluster.local" \
-          --from-literal=PROJECTS_DB_PORT="5432" \
-          --dry-run=client -o yaml | kubectl apply -f -
-        echo "Projects DB admin secret created"
+      if [ -z "$PROJECTS_ADMIN_URI" ]; then
+        echo "ERROR: Could not extract projects-pg URI"
+        exit 1
       fi
+
+      echo "Projects DB admin URI extracted successfully"
+
+      kubectl create secret generic projects-db-admin \
+        --namespace shogo-system \
+        --from-literal=PROJECTS_DB_ADMIN_URL="$PROJECTS_ADMIN_URI" \
+        --from-literal=PROJECTS_DB_HOST="projects-pg-rw.shogo-system.svc.cluster.local" \
+        --from-literal=PROJECTS_DB_PORT="5432" \
+        --dry-run=client -o yaml | kubectl apply -f -
 
       echo "All database secrets created successfully"
     EOT
@@ -1178,6 +1182,30 @@ resource "null_resource" "knative_services" {
                       secretKeyRef:
                         name: api-secrets
                         key: ANTHROPIC_API_KEY
+                        optional: true
+                  - name: GOOGLE_CLIENT_ID
+                    valueFrom:
+                      secretKeyRef:
+                        name: api-secrets
+                        key: GOOGLE_CLIENT_ID
+                        optional: true
+                  - name: GOOGLE_CLIENT_SECRET
+                    valueFrom:
+                      secretKeyRef:
+                        name: api-secrets
+                        key: GOOGLE_CLIENT_SECRET
+                        optional: true
+                  - name: COMPOSIO_API_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: api-secrets
+                        key: COMPOSIO_API_KEY
+                        optional: true
+                  - name: COMPOSIO_PROJECT_ID
+                    valueFrom:
+                      secretKeyRef:
+                        name: api-secrets
+                        key: COMPOSIO_PROJECT_ID
                         optional: true
                   - name: POSTGRES_ENABLED
                     value: "true"

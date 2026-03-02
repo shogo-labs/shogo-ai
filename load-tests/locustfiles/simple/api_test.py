@@ -1,10 +1,8 @@
 """
-Simple API v2 endpoint load test.
+Simple API endpoint load test.
 
-Tests the working v2 API endpoints without authentication.
-This tests the actual endpoints we observed working in production.
-
-- Tests GET endpoints that return data
+Tests the core API endpoints with authentication.
+- Tests GET endpoints that return data (workspaces, projects, templates, etc.)
 - 50-100 concurrent users
 - 10 minute duration
 """
@@ -16,104 +14,146 @@ import random
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
+from locustfiles.common.auth import AuthManager
 
-class APIv2LoadTestUser(FastHttpUser):
-    """User that tests v2 API endpoints (read-only operations)."""
-    
+
+class APILoadTestUser(FastHttpUser):
+    """User that tests core API endpoints (authenticated via session cookies)."""
+
     wait_time = between(2, 5)
-    
+
     def on_start(self):
-        """Initialize user."""
-        # We'll test public/read endpoints that don't require auth
-        # or use a test user token if available
-        self.test_workspace_id = "f48645c0-0cfa-4b1c-ba0b-f792ee07a866"  # From network trace
-        self.test_user_id = "cc47f0d1-436b-49ed-8b05-046c51380e86"  # From network trace
-    
+        """Authenticate user."""
+        self.auth = AuthManager(self.host)
+        self.user_id = random.randint(100000, 999999)
+        self.authenticated = False
+        self.workspaces = []
+
+        result = self.auth.signup(self.client, self.user_id)
+        if result:
+            self.authenticated = True
+            session = self.auth.verify_session(self.client)
+            if not session:
+                self.authenticated = False
+
     @task(10)
     def get_auth_session(self):
-        """Get auth session (public endpoint)."""
+        """Get auth session."""
         with self.client.get(
             "/api/auth/get-session",
             catch_response=True,
-            name="/api/auth/get-session"
+            name="/api/auth/get-session",
         ) as response:
             if response.status_code == 200:
                 response.success()
             else:
                 response.failure(f"Failed: {response.status_code}")
-    
+
     @task(8)
     def get_templates(self):
         """Get templates list."""
         with self.client.get(
             "/api/templates",
             catch_response=True,
-            name="/api/templates"
+            name="/api/templates",
         ) as response:
             if response.status_code == 200:
                 response.success()
             else:
                 response.failure(f"Failed: {response.status_code}")
-    
+
     @task(5)
     def list_workspaces(self):
-        """List workspaces for test user."""
+        """List workspaces for authenticated user."""
+        if not self.authenticated:
+            return
+
         with self.client.get(
-            f"/api/v2/workspaces?userId={self.test_user_id}",
+            "/api/workspaces",
             catch_response=True,
-            name="/api/v2/workspaces"
+            name="/api/workspaces",
         ) as response:
             if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, list):
+                    self.workspaces = data
+                elif isinstance(data, dict) and "items" in data:
+                    self.workspaces = data["items"]
                 response.success()
             else:
                 response.failure(f"Failed: {response.status_code}")
-    
+
     @task(5)
     def list_projects(self):
-        """List projects in workspace."""
+        """List projects."""
+        if not self.authenticated:
+            return
+
         with self.client.get(
-            f"/api/v2/projects?workspaceId={self.test_workspace_id}",
+            "/api/projects",
             catch_response=True,
-            name="/api/v2/projects"
+            name="/api/projects",
         ) as response:
             if response.status_code == 200:
                 response.success()
             else:
                 response.failure(f"Failed: {response.status_code}")
-    
+
     @task(3)
     def list_folders(self):
-        """List folders in workspace."""
+        """List folders."""
+        if not self.authenticated:
+            return
+
         with self.client.get(
-            f"/api/v2/folders?workspaceId={self.test_workspace_id}",
+            "/api/folders",
             catch_response=True,
-            name="/api/v2/folders"
+            name="/api/folders",
         ) as response:
             if response.status_code == 200:
                 response.success()
             else:
                 response.failure(f"Failed: {response.status_code}")
-    
+
     @task(3)
     def list_starred_projects(self):
         """List starred projects."""
+        if not self.authenticated:
+            return
+
         with self.client.get(
-            f"/api/v2/starred-projects?userId={self.test_user_id}",
+            "/api/starred-projects",
             catch_response=True,
-            name="/api/v2/starred-projects"
+            name="/api/starred-projects",
         ) as response:
             if response.status_code == 200:
                 response.success()
             else:
                 response.failure(f"Failed: {response.status_code}")
-    
+
     @task(2)
     def list_members(self):
         """List workspace members."""
+        if not self.authenticated:
+            return
+
         with self.client.get(
-            f"/api/v2/members?userId={self.test_user_id}",
+            "/api/members",
             catch_response=True,
-            name="/api/v2/members"
+            name="/api/members",
+        ) as response:
+            if response.status_code == 200:
+                response.success()
+            else:
+                response.failure(f"Failed: {response.status_code}")
+
+    @task(2)
+    def health_check(self):
+        """API health check (public endpoint)."""
+        with self.client.get(
+            "/api/health",
+            catch_response=True,
+            name="/api/health",
         ) as response:
             if response.status_code == 200:
                 response.success()
@@ -123,14 +163,14 @@ class APIv2LoadTestUser(FastHttpUser):
 
 @events.test_start.add_listener
 def on_test_start(environment, **kwargs):
-    print("🚀 Starting API v2 load test...")
+    print("Starting API load test...")
     print(f"Target: {environment.host}")
 
 
 @events.test_stop.add_listener
 def on_test_stop(environment, **kwargs):
-    print("✅ API v2 load test complete")
-    
+    print("API load test complete")
+
     stats = environment.stats
     print(f"\nRequests: {stats.total.num_requests}")
     print(f"Failures: {stats.total.num_failures}")
