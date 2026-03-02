@@ -768,11 +768,11 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
           </>
         ) : (
           <View className="flex-1 items-center justify-center gap-3">
-            <FileText size={40} className="text-muted-foreground/30" />
+            <FileText size={40} className="text-muted-foreground/50" />
             <Text className="text-sm text-muted-foreground">
               Select a file to view or edit
             </Text>
-            <Text className="text-xs text-muted-foreground/70 text-center px-8">
+            <Text className="text-xs text-muted-foreground text-center px-8">
               Upload .txt, .csv, or .md files. Your agent can search across all files using RAG.
             </Text>
           </View>
