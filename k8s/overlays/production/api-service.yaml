@@ -95,8 +95,6 @@ spec:
               value: "0"
             - name: SYSTEM_NAMESPACE
               value: "shogo-system"
-            - name: MCP_URL
-              value: "http://mcp-workspace-1.shogo-workspaces.svc.cluster.local"
             - name: PROJECT_NAMESPACE
               value: "shogo-workspaces"
             - name: PROJECT_RUNTIME_IMAGE

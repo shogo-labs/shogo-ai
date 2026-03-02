@@ -11,7 +11,7 @@
 #   ./scripts/deploy-staging.sh --skip-build       # Only deploy (no build/push)
 #   ./scripts/deploy-staging.sh --list             # List available containers
 #
-# Available containers: api, web, mcp, project-runtime
+# Available containers: api, web, project-runtime
 # =============================================================================
 
 set -e
@@ -40,7 +40,6 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 declare -A CONTAINERS=(
   ["api"]="apps/api/Dockerfile"
   ["web"]="apps/web/Dockerfile"
-  ["mcp"]="packages/mcp/Dockerfile"
   ["project-runtime"]="packages/project-runtime/Dockerfile"
 )
 
@@ -48,13 +47,12 @@ declare -A CONTAINERS=(
 declare -A IMAGE_NAMES=(
   ["api"]="shogo-api"
   ["web"]="shogo-web"
-  ["mcp"]="shogo-mcp"
   ["project-runtime"]="project-runtime"
 )
 
 # Build arguments for specific containers
 declare -A BUILD_ARGS=(
-  ["web"]="--build-arg VITE_API_URL= --build-arg VITE_MCP_URL= --build-arg VITE_BETTER_AUTH_URL= --build-arg VITE_WORKSPACE=workspace"
+  ["web"]="--build-arg VITE_API_URL= --build-arg VITE_BETTER_AUTH_URL= --build-arg VITE_WORKSPACE=workspace"
 )
 
 # Temp directory for build logs
@@ -214,7 +212,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --list, -l      List available containers"
       echo "  --help, -h      Show this help message"
       echo ""
-      echo "Containers: api, web, mcp, project-runtime"
+      echo "Containers: api, web, project-runtime"
       echo ""
       echo "Environment variables:"
       echo "  AWS_PROFILE     AWS profile to use (default: shogo)"
@@ -242,7 +240,7 @@ done
 
 # Default to all containers if none specified
 if [ ${#CONTAINERS_TO_BUILD[@]} -eq 0 ]; then
-  CONTAINERS_TO_BUILD=("api" "web" "mcp" "project-runtime")
+  CONTAINERS_TO_BUILD=("api" "web" "project-runtime")
 fi
 
 # -----------------------------------------------------------------------------
@@ -360,10 +358,6 @@ if [ "$SKIP_DEPLOY" = false ]; then
         kubectl rollout restart ksvc/studio -n shogo-staging-system 2>/dev/null || \
           log_warn "Could not restart studio service"
         ;;
-      mcp)
-        kubectl rollout restart ksvc/mcp-workspace-1 -n shogo-staging-workspaces 2>/dev/null || \
-          log_warn "Could not restart mcp-workspace-1 service"
-        ;;
       project-runtime)
         log_info "project-runtime: pods are created on-demand by API"
         ;;
@@ -382,10 +376,6 @@ if [ "$SKIP_DEPLOY" = false ]; then
       web)
         kubectl wait --for=condition=Ready ksvc/studio -n shogo-staging-system --timeout=180s 2>/dev/null || \
           log_warn "Timeout waiting for studio service"
-        ;;
-      mcp)
-        kubectl wait --for=condition=Ready ksvc/mcp-workspace-1 -n shogo-staging-workspaces --timeout=180s 2>/dev/null || \
-          log_warn "Timeout waiting for mcp-workspace-1 service"
         ;;
     esac
   done

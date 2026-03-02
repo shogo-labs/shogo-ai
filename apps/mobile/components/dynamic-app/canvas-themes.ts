@@ -5,7 +5,7 @@
  * Each theme provides light + dark variants that override the
  * app's --color-* variables within the canvas boundary.
  *
- * Themes match those from packages/mcp/src/tools/template.copy.ts
+ * Themes match those from packages/project-runtime/src/tools/template.copy.ts
  * (converted from HSL to hex for the mobile app's format).
  */
 

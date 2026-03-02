@@ -81,15 +81,6 @@ export function getMetaStore(env?: IEnvironment) {
  * @returns A new meta-store instance
  *
  * @example
- * // Browser: create meta-store with MCPPersistence
- * const metaStore = createMetaStoreInstance({
- *   services: {
- *     persistence: new MCPPersistence(mcpService),
- *     backendRegistry: createBackendRegistry({ default: 'memory', backends: { memory: new MemoryBackend() } })
- *   }
- * })
- *
- * @example
  * // Node.js: create meta-store with FileSystemPersistence
  * const metaStore = createMetaStoreInstance({
  *   services: {

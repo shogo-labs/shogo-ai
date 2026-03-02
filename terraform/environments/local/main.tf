@@ -56,12 +56,6 @@ variable "web_port" {
   default     = 3000
 }
 
-variable "mcp_port" {
-  description = "Host port for MCP access (via port-forward)"
-  type        = number
-  default     = 3100
-}
-
 variable "anthropic_api_key" {
   description = "Anthropic API key for Claude"
   type        = string
@@ -265,7 +259,6 @@ resource "null_resource" "apply_manifests" {
       file("${path.module}/../../../k8s/base/postgres.yaml"),
       file("${path.module}/../../../k8s/base/redis.yaml"),
       file("${path.module}/../../../k8s/base/minio.yaml"),
-      file("${path.module}/../../../k8s/base/platform-mcp.yaml"),
       file("${path.module}/../../../k8s/base/api.yaml"),
       file("${path.module}/../../../k8s/base/web.yaml"),
     ]))
@@ -287,7 +280,6 @@ resource "null_resource" "apply_manifests" {
       
       # Apply application services (with k3d registry substitution)
       # Note: k3d pods use k3d-shogo-registry:PORT as the internal registry name
-      sed 's|ghcr.io/shogo-ai/shogo-mcp|k3d-shogo-registry:${var.registry_port}/shogo-mcp|g' k8s/base/platform-mcp.yaml | kubectl apply -f -
       sed 's|k3d-shogo-registry:5000|k3d-shogo-registry:${var.registry_port}|g' k8s/base/api.yaml | kubectl apply -f -
       sed 's|k3d-shogo-registry:5000|k3d-shogo-registry:${var.registry_port}|g' k8s/base/web.yaml | kubectl apply -f -
     EOT
@@ -363,7 +355,6 @@ output "port_forward_commands" {
     # Run these commands to access services:
     kubectl -n shogo-system port-forward svc/shogo-web ${var.web_port}:80 &
     kubectl -n shogo-system port-forward svc/shogo-api ${var.api_port}:8002 &
-    kubectl -n shogo-system port-forward svc/platform-mcp ${var.mcp_port}:3100 &
   EOT
 }
 
@@ -371,7 +362,6 @@ output "service_urls" {
   value = {
     web = "http://localhost:${var.web_port}"
     api = "http://localhost:${var.api_port}"
-    mcp = "http://localhost:${var.mcp_port}"
   }
 }
 

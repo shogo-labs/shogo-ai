@@ -3,7 +3,7 @@
 # =============================================================================
 # Usage:
 #   docker compose up -d          # Start all services
-#   docker compose logs -f mcp    # Follow MCP logs
+#   docker compose logs -f api    # Follow API logs
 #   docker compose down           # Stop all services
 #   docker compose down -v        # Stop and remove volumes
 #
@@ -132,100 +132,6 @@ services:
       - shogo-network
 
   # ---------------------------------------------------------------------------
-  # Shogo MCP Server - Workspace 1 (Default - Filesystem Storage)
-  # ---------------------------------------------------------------------------
-  # Uses local .schemas bind mount for development.
-  #
-  # To use S3 storage instead, set these env vars in .env.local:
-  #   SCHEMA_STORAGE=s3
-  #   S3_SCHEMA_BUCKET=shogo-schemas
-  #   S3_ENDPOINT=http://minio:9000
-  #
-  # Or run with S3 profile: docker compose --profile s3 up
-  # ---------------------------------------------------------------------------
-  mcp:
-    build:
-      context: .
-      dockerfile: packages/mcp/Dockerfile
-    ports:
-      - "${MCP_PORT:-3100}:3100"
-    env_file:
-      - path: .env.local
-        required: false
-    environment:
-      MCP_PORT: "3100"
-      NODE_ENV: development
-      # Internal connection to postgres (always port 5432 inside Docker network)
-      DATABASE_URL: postgres://shogo:shogo_dev@postgres:5432/shogo
-      # SCHEMAS_PATH only used for filesystem mode fallback
-      SCHEMAS_PATH: /app/.schemas
-      WORKSPACE_ID: workspace
-      TENANT_ID: tenant-a
-      # S3 config (MinIO in Docker) - SCHEMA_STORAGE comes from .env.local
-      S3_ENDPOINT: http://minio:9000
-      S3_FORCE_PATH_STYLE: "true"
-      AWS_ACCESS_KEY_ID: minioadmin
-      AWS_SECRET_ACCESS_KEY: minioadmin
-    volumes:
-      # Mount local .schemas for filesystem mode
-      - ./.schemas:/app/.schemas
-    depends_on:
-      postgres:
-        condition: service_healthy
-      minio-init:
-        condition: service_completed_successfully
-    healthcheck:
-      test: ["CMD", "sh", "-c", "curl -s -o /dev/null -w '%{http_code}' http://localhost:3100/mcp | grep -q '400\\|200'"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
-    networks:
-      - shogo-network
-
-  # ---------------------------------------------------------------------------
-  # Shogo MCP Server - Workspace 2 (For testing isolation)
-  # ---------------------------------------------------------------------------
-  mcp-workspace-2:
-    build:
-      context: .
-      dockerfile: packages/mcp/Dockerfile
-    ports:
-      - "${MCP_PORT_WS2:-3101}:3100"
-    env_file:
-      - path: .env.local
-        required: false
-    environment:
-      MCP_PORT: "3100"
-      NODE_ENV: development
-      DATABASE_URL: postgres://shogo:shogo_dev@postgres:5432/shogo
-      SCHEMAS_PATH: /app/.schemas
-      WORKSPACE_ID: workspace-2
-      TENANT_ID: tenant-b
-      # S3 config (MinIO in Docker) - SCHEMA_STORAGE comes from .env.local
-      S3_ENDPOINT: http://minio:9000
-      S3_FORCE_PATH_STYLE: "true"
-      AWS_ACCESS_KEY_ID: minioadmin
-      AWS_SECRET_ACCESS_KEY: minioadmin
-    volumes:
-      - ./.schemas:/app/.schemas
-    depends_on:
-      postgres:
-        condition: service_healthy
-      minio-init:
-        condition: service_completed_successfully
-    healthcheck:
-      test: ["CMD", "sh", "-c", "curl -s -o /dev/null -w '%{http_code}' http://localhost:3100/mcp | grep -q '400\\|200'"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
-    networks:
-      - shogo-network
-    profiles:
-      - testing  # Only starts with: docker compose --profile testing up
-
-  # ---------------------------------------------------------------------------
   # Shogo API Server (Control Plane + BetterAuth)
   # ---------------------------------------------------------------------------
   api:
@@ -251,7 +157,6 @@ services:
       # CRITICAL: This is separate to prevent AI agents from modifying platform data
       PROJECTS_DATABASE_URL: postgres://project:project_dev@postgres-projects:5432/projects
       POSTGRES_PROJECTS_PORT: "5433"
-      MCP_URL: http://mcp:3100
       REDIS_URL: redis://redis:6379
       # External URLs (use parameterized ports for browser access)
       VITE_PORT: "${WEB_PORT:-3333}"
@@ -284,8 +189,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
-      mcp:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8002/api/health"]
       interval: 10s
@@ -310,11 +213,8 @@ services:
       DNS_RESOLVER: "127.0.0.11"
       API_UPSTREAM: http://api:8002
       API_HOST: api
-      MCP_UPSTREAM: http://mcp:3100
-      MCP_HOST: mcp
     depends_on:
       - api
-      - mcp
     networks:
       - shogo-network
 
@@ -328,8 +228,6 @@ volumes:
   postgres_projects_data:
   minio_data:
   redis_data:
-  # Note: mcp_schemas_ws1 and mcp_schemas_ws2 volumes removed
-  # Now using bind mount to ./.schemas for development persistence
 
 # =============================================================================
 # Networks

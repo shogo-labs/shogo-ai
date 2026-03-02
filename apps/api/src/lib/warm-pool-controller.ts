@@ -703,6 +703,65 @@ export class WarmPoolController {
 
 
   /**
+   * Evict a project from its current warm pod so the next request
+   * claims a fresh one (with up-to-date env vars and image).
+   *
+   * Steps:
+   *  1. Remove from in-memory assigned map
+   *  2. Clear knativeServiceName in the database
+   *  3. Delete the old Knative Service (async, best-effort)
+   *
+   * The next chat/runtime request triggers getProjectPodUrl() which
+   * claims a new warm pod from the pool.
+   */
+  async evictProject(projectId: string): Promise<{ evicted: boolean; oldService?: string }> {
+    const pod = this.assigned.get(projectId)
+
+    // Clear in-memory state regardless of whether we found it
+    this.assigned.delete(projectId)
+
+    // Clear DB mapping
+    let oldServiceName: string | undefined
+    try {
+      const { prisma } = await import('./prisma')
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { knativeServiceName: true },
+      })
+      oldServiceName = project?.knativeServiceName ?? pod?.serviceName
+      if (project?.knativeServiceName) {
+        await prisma.project.update({
+          where: { id: projectId },
+          data: { knativeServiceName: null },
+        })
+      }
+    } catch (err: any) {
+      console.error(`[WarmPool] evictProject: DB cleanup failed for ${projectId}:`, err.message)
+    }
+
+    // Delete the old Knative Service (best-effort, non-blocking)
+    const serviceToDelete = oldServiceName
+    if (serviceToDelete) {
+      (async () => {
+        try {
+          const api = getCustomApi()
+          await api.deleteNamespacedCustomObject(
+            'serving.knative.dev', 'v1', this.namespace, 'services', serviceToDelete
+          )
+          console.log(`[WarmPool] evictProject: deleted Knative Service ${serviceToDelete}`)
+        } catch (err: any) {
+          if (err.statusCode !== 404) {
+            console.error(`[WarmPool] evictProject: failed to delete ${serviceToDelete}:`, err.message)
+          }
+        }
+      })()
+    }
+
+    console.log(`[WarmPool] evictProject: evicted project ${projectId} from ${oldServiceName || '(not found)'}`)
+    return { evicted: !!oldServiceName, oldService: oldServiceName }
+  }
+
+  /**
    * Get pool status for monitoring/debugging.
    */
   getStatus(): {
@@ -928,6 +987,7 @@ export class WarmPoolController {
       process.env.SHOGO_API_URL ||
       `http://api.${systemNamespace}.svc.cluster.local`
     env.push({ name: 'AI_PROXY_URL', value: `${apiUrl}/api/ai/v1` })
+    env.push({ name: 'TOOLS_PROXY_URL', value: `${apiUrl}/api/tools` })
 
     // OTEL tracing — propagate to warm pool pods so they send traces to SigNoz
     if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {

@@ -319,8 +319,16 @@ export async function fetchComposioToolSchemas(
   toolkitSlug: string,
   options?: { apiKey?: string; important?: boolean; limit?: number },
 ): Promise<ComposioToolSchema[]> {
-  const apiKey = options?.apiKey || process.env.COMPOSIO_API_KEY
-  if (!apiKey) throw new Error('COMPOSIO_API_KEY required')
+  const directKey = options?.apiKey || process.env.COMPOSIO_API_KEY
+  const proxyUrl = process.env.TOOLS_PROXY_URL
+  const proxyToken = process.env.AI_PROXY_TOKEN
+
+  const authKey = directKey || proxyToken
+  if (!authKey) throw new Error('COMPOSIO_API_KEY or TOOLS_PROXY_URL + AI_PROXY_TOKEN required')
+
+  const baseUrl = directKey
+    ? 'https://backend.composio.dev'
+    : `${proxyUrl}/composio`
 
   const params = new URLSearchParams({
     toolkit_slug: toolkitSlug,
@@ -329,8 +337,8 @@ export async function fetchComposioToolSchemas(
   if (options?.important) params.set('important', 'true')
 
   const t0 = performance.now()
-  const res = await fetch(`https://backend.composio.dev/api/v3/tools?${params}`, {
-    headers: { 'x-api-key': apiKey },
+  const res = await fetch(`${baseUrl}/api/v3/tools?${params}`, {
+    headers: { 'x-api-key': authKey },
     signal: AbortSignal.timeout(15_000),
   })
 

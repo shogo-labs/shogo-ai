@@ -83,7 +83,7 @@ Use conventional commits:
 
 ```
 feat(state-api): add MST reference type inference
-fix(mcp): handle missing schema error
+fix(api): handle missing schema error
 docs: update ARCHITECTURE.md
 ```
 
@@ -92,7 +92,6 @@ docs: update ARCHITECTURE.md
 | Path | Purpose |
 |------|---------|
 | `packages/state-api/` | Schema-to-MST transformation |
-| `packages/mcp/` | MCP server (16 tools) |
 | `apps/web/` | React demo app |
 | `.claude/skills/` | AI skill definitions |
 | `docs/` | Documentation |

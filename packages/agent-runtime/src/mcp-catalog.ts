@@ -73,6 +73,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['browser_navigate', 'browser_click', 'browser_fill', 'browser_screenshot', 'browser_evaluate'],
     icon: '🎭',
     cloudCompatible: true,
+    preinstalled: true,
   },
   {
     id: 'fetch',
@@ -100,7 +101,6 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['github_create_issue', 'github_list_issues', 'github_create_pr', 'github_search_code', 'github_get_file'],
     icon: '🐙',
     cloudCompatible: true,
-    preinstalled: true,
     authType: 'composio',
     composioToolkit: 'github',
   },
@@ -166,6 +166,37 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     cloudCompatible: true,
   },
   {
+    id: 'mongodb',
+    name: 'MongoDB',
+    description: 'Query and manage MongoDB databases — run queries, list collections, aggregate data, and manage indexes.',
+    category: 'data',
+    package: 'mongodb-mcp-server@latest',
+    defaultArgs: [],
+    requiredEnv: {
+      MDB_MCP_CONNECTION_STRING: 'MongoDB connection string (e.g. mongodb+srv://user:pass@cluster.mongodb.net/db)',
+    },
+    providedTools: ['mongodb_find', 'mongodb_aggregate', 'mongodb_list_collections', 'mongodb_insert', 'mongodb_update', 'mongodb_delete'],
+    icon: '🍃',
+    cloudCompatible: true,
+    preinstalled: true,
+  },
+  {
+    id: 'discourse',
+    name: 'Discourse',
+    description: 'Interact with Discourse forums — search topics, read posts, list categories, tags, and users.',
+    category: 'communication',
+    package: '@discourse/mcp@latest',
+    defaultArgs: [],
+    requiredEnv: {},
+    optionalEnv: {
+      DISCOURSE_SITE: 'Discourse site URL (e.g. https://forum.example.com)',
+    },
+    providedTools: ['discourse_search', 'discourse_read_topic', 'discourse_read_post', 'discourse_get_user', 'discourse_filter_topics', 'discourse_select_site'],
+    icon: '💬',
+    cloudCompatible: true,
+    preinstalled: true,
+  },
+  {
     id: 'slack',
     name: 'Slack',
     description: 'Read and send Slack messages, manage channels, search conversation history.',
@@ -178,7 +209,6 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['slack_send_message', 'slack_list_channels', 'slack_read_messages', 'slack_search'],
     icon: '💼',
     cloudCompatible: true,
-    preinstalled: true,
     authType: 'composio',
     composioToolkit: 'slack',
   },
@@ -243,7 +273,6 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['notion_search', 'notion_read_page', 'notion_create_page', 'notion_query_database'],
     icon: '📝',
     cloudCompatible: true,
-    preinstalled: true,
     authType: 'composio',
     composioToolkit: 'notion',
   },
@@ -274,7 +303,6 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['brave_web_search', 'brave_local_search'],
     icon: '🦁',
     cloudCompatible: true,
-    preinstalled: true,
   },
   {
     id: 'exa',
@@ -344,6 +372,16 @@ export function getCatalogEntry(id: string): MCPCatalogEntry | undefined {
 /** Get all catalog entries marked for pre-installation */
 export function getPreinstalledPackages(): MCPCatalogEntry[] {
   return MCP_CATALOG.filter((e) => e.preinstalled)
+}
+
+/** Check if a server ID is in the preinstalled whitelist */
+export function isPreinstalledMcpId(id: string): boolean {
+  return MCP_CATALOG.some((e) => e.id === id && e.preinstalled === true)
+}
+
+/** Get the preinstalled catalog entry for a server ID, or undefined if not whitelisted */
+export function getPreinstalledEntry(id: string): MCPCatalogEntry | undefined {
+  return MCP_CATALOG.find((e) => e.id === id && e.preinstalled === true)
 }
 
 /** Get catalog entries filtered by category */

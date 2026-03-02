@@ -31,6 +31,7 @@ import { checkpointRoutes } from './routes/checkpoints'
 import { thumbnailRoutes } from './routes/thumbnail'
 import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
+import { toolsProxyRoutes } from './routes/tools-proxy'
 import { calculateCreditCost } from './lib/credit-cost'
 import { openSession as openBillingSession, closeSession as closeBillingSession } from './lib/proxy-billing-session'
 import { adminRoutes } from './routes/admin'
@@ -53,10 +54,6 @@ import { tracingMiddleware } from './middleware/tracing'
 
 // Runtime manager singleton for project Vite runtimes
 let runtimeManager: IRuntimeManager | null = null
-
-// MCP session management for API → MCP calls
-let mcpSessionId: string | null = null
-const MCP_URL = process.env.MCP_URL || 'http://mcp:3100'
 
 // Environment detection - check if running in Kubernetes
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
@@ -108,59 +105,6 @@ async function verifyProjectAccess(userId: string, projectId: string): Promise<s
     where: { userId, workspaceId: project.workspaceId },
   })
   return member ? project.workspaceId : null
-}
-
-/**
- * Call an MCP tool with proper session handling
- */
-async function callMcpTool(toolName: string, args: Record<string, unknown>): Promise<{ ok: boolean; error?: { code: string; message: string }; data?: any }> {
-  try {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json, text/event-stream',
-    }
-    if (mcpSessionId) {
-      headers['mcp-session-id'] = mcpSessionId
-    }
-
-    const response = await fetch(`${MCP_URL}/mcp`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: Date.now(),
-        method: 'tools/call',
-        params: { name: toolName, arguments: args },
-      }),
-    })
-
-    // Capture session ID from response
-    const responseSessionId = response.headers.get('mcp-session-id')
-    if (responseSessionId) {
-      mcpSessionId = responseSessionId
-    }
-
-    const text = await response.text()
-    
-    // Parse SSE response to get the result
-    for (const line of text.split('\n')) {
-      if (line.startsWith('data: ')) {
-        try {
-          const parsed = JSON.parse(line.slice(6))
-          if (parsed.result?.content?.[0]?.text) {
-            return JSON.parse(parsed.result.content[0].text)
-          }
-          if (parsed.error) {
-            return { ok: false, error: { code: 'MCP_ERROR', message: parsed.error.message || 'Unknown MCP error' } }
-          }
-        } catch { /* skip */ }
-      }
-    }
-
-    return { ok: false, error: { code: 'MCP_ERROR', message: 'No valid response from MCP' } }
-  } catch (err: any) {
-    return { ok: false, error: { code: 'MCP_CALL_FAILED', message: err.message || 'MCP call failed' } }
-  }
 }
 
 /**
@@ -365,47 +309,7 @@ const virtualToolsServer = createSdkMcpServer({
       async (args) => {
         console.log(`${VT_LOG_PREFIX} 🎯 SDK tool handler executing execute:`, args)
 
-        const results: Array<{ op: any; success: boolean; error?: string }> = []
-        const clientOps: any[] = []
-
-        // Process each operation
-        for (const op of args.operations ?? []) {
-          // Check if this is a schema operation that should go to MCP
-          const isSchemaOperation = op.model === 'Schema' || op.domain === 'schema' || (op.domain === 'shogo' && op.model === 'Schema')
-          
-          if (isSchemaOperation && op.action === 'create' && op.data) {
-            // Call MCP schema.set directly and return real result
-            const schemaName = (op.data.name || op.data.id || op.id) as string
-            if (!schemaName) {
-              results.push({ op, success: false, error: 'Schema name is required' })
-              continue
-            }
-
-            console.log(`${VT_LOG_PREFIX} 📋 Calling MCP schema.set for: ${schemaName}`)
-            
-            // Extract schema payload - AI sends { name, schema: { $defs: {...} } }
-            const schemaPayload = op.data.schema || op.data
-            
-            const mcpResult = await callMcpTool('schema.set', {
-              name: schemaName,
-              payload: schemaPayload,
-              workspace: 'workspace',
-            })
-
-            if (mcpResult.ok) {
-              console.log(`${VT_LOG_PREFIX} ✅ MCP schema.set succeeded: ${schemaName}`)
-              results.push({ op, success: true })
-            } else {
-              const errorMsg = mcpResult.error?.message || 'Unknown MCP error'
-              const errorCode = mcpResult.error?.code || 'MCP_ERROR'
-              console.error(`${VT_LOG_PREFIX} ❌ MCP schema.set failed: ${schemaName}`, mcpResult.error)
-              results.push({ op, success: false, error: `[${errorCode}] ${errorMsg}` })
-            }
-          } else {
-            // Non-schema operations go to client for execution
-            clientOps.push(op)
-          }
-        }
+        const clientOps = args.operations ?? []
 
         // Emit event for client-side operations (if any)
         if (clientOps.length > 0) {
@@ -418,21 +322,6 @@ const virtualToolsServer = createSdkMcpServer({
           }
           virtualToolEvents.emit('virtual-tool', event)
           console.log(`${VT_LOG_PREFIX} ✅ Emitted execute virtual tool event for ${clientOps.length} client ops`)
-        }
-
-        // Build response message
-        const schemaResults = results.filter(r => r.op.model === 'Schema' || r.op.domain === 'schema')
-        const failures = schemaResults.filter(r => !r.success)
-        
-        if (failures.length > 0) {
-          // Return error details so AI can see what went wrong
-          const errorMessages = failures.map(f => `- ${f.op.data?.name || 'unknown'}: ${f.error}`).join('\n')
-          return {
-            content: [{
-              type: 'text',
-              text: `Schema operation(s) failed:\n${errorMessages}\n\nPlease ensure the schema uses Enhanced JSON Schema format with a "$defs" object containing model definitions.`
-            }]
-          }
         }
 
         return {
@@ -554,28 +443,6 @@ const ALLOWED_TOOLS = [
   'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
   // Skill and agent tools
   'Skill', 'Task', 'Bash', 'TodoWrite',
-  // Shogo MCP tools - Schema
-  'mcp__shogo__schema_set',
-  'mcp__shogo__schema_get',
-  'mcp__shogo__schema_list',
-  'mcp__shogo__schema_load',
-  // Shogo MCP tools - Store
-  'mcp__shogo__store_create',
-  'mcp__shogo__store_list',
-  'mcp__shogo__store_get',
-  'mcp__shogo__store_update',
-  'mcp__shogo__store_query',
-  'mcp__shogo__store_models',
-  'mcp__shogo__store_delete',
-  // Shogo MCP tools - Views
-  'mcp__shogo__view_execute',
-  'mcp__shogo__view_define',
-  'mcp__shogo__view_project',
-  // Shogo MCP tools - Data & DDL
-  'mcp__shogo__data_load',
-  'mcp__shogo__data_loadAll',
-  'mcp__shogo__ddl_execute',
-  'mcp__shogo__ddl_migrate',
 ]
 
 // Shared hooks for all sessions (emit to module-level EventEmitters)
@@ -661,16 +528,6 @@ function buildSessionOptions(projectId?: string): ExtendedSessionOptions {
     includePartialMessages: true,
     // MCP servers
     mcpServers: {
-      shogo: {
-        command: 'bun',
-        args: ['run', resolve(PROJECT_ROOT, 'packages/mcp/src/server-templates.ts')],
-        env: {
-          ...(projectId && {
-            PROJECT_ID: projectId,
-            PROJECT_DIR: projectDir || resolve(WORKSPACES_DIR, projectId),
-          }),
-        },
-      },
       'virtual-tools': virtualToolsServer,
     },
     // PERF: Keep this list minimal — each tool adds ~550-850 tokens of context
@@ -3043,6 +2900,49 @@ app.get('/api/admin/warm-pool', async (c) => {
   }
 })
 
+// POST /api/admin/warm-pool/evict/:projectId - Evict project from its current pod
+// The next request for this project will claim a fresh warm pod.
+app.post('/api/admin/warm-pool/evict/:projectId', async (c) => {
+  const projectId = c.req.param('projectId')
+  try {
+    const { getWarmPoolController } = await import('./lib/warm-pool-controller')
+    const controller = getWarmPoolController()
+    const result = await controller.evictProject(projectId)
+    return c.json({ ok: true, projectId, ...result })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// POST /api/admin/warm-pool/evict-all - Evict all projects from old pods
+// Useful after deploys to force all projects onto fresh pods.
+app.post('/api/admin/warm-pool/evict-all', async (c) => {
+  try {
+    const { getWarmPoolController } = await import('./lib/warm-pool-controller')
+    const controller = getWarmPoolController()
+    const { prisma } = await import('./lib/prisma')
+
+    const projects = await prisma.project.findMany({
+      where: { knativeServiceName: { not: null } },
+      select: { id: true, knativeServiceName: true },
+    })
+
+    const results: Array<{ projectId: string; oldService: string | null; evicted: boolean }> = []
+    for (const project of projects) {
+      const result = await controller.evictProject(project.id)
+      results.push({
+        projectId: project.id,
+        oldService: project.knativeServiceName,
+        evicted: result.evicted,
+      })
+    }
+
+    return c.json({ ok: true, evicted: results.length, results })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
 // DELETE /api/admin/projects/:projectId - Delete project pod
 app.delete('/api/admin/projects/:projectId', async (c) => {
   const router = projectAdminRoutes()
@@ -4144,6 +4044,11 @@ app.post('/api/webhooks/stripe', async (c) => {
 const aiProxy = aiProxyRoutes()
 app.route('/api', aiProxy)
 
+// Tools passthrough proxy (Composio, Serper, OpenAI embeddings).
+// Uses the same JWT auth as the AI proxy — no raw API keys in agent pods.
+const toolsProxy = toolsProxyRoutes()
+app.route('/api', toolsProxy)
+
 // =============================================================================
 // Domain API routes - For APIPersistence layer
 // =============================================================================
@@ -4213,6 +4118,42 @@ app.use('/api/*', authMiddleware)
 // Unauthenticated requests get 401 Unauthorized
 app.use('/api/*', requireAuth)
 
+// =============================================================================
+// Leave Workspace - Removes the current user's membership from a workspace
+// =============================================================================
+
+app.post('/api/workspaces/:id/leave', async (c) => {
+  const auth = c.get('auth') as any
+  const userId = auth?.userId
+  if (!userId) return c.json({ error: 'Unauthorized' }, 401)
+
+  const workspaceId = c.req.param('id')
+
+  const memberships = await prisma.member.findMany({
+    where: { userId, workspaceId },
+  })
+
+  if (memberships.length === 0) {
+    return c.json({ error: { code: 'not_found', message: 'You are not a member of this workspace.' } }, 404)
+  }
+
+  const wsMembership = memberships.find((m: any) => !m.projectId) || memberships[0]
+
+  if (wsMembership.role === 'owner') {
+    const allWsOwners = await prisma.member.findMany({
+      where: { workspaceId, role: 'owner' },
+      select: { id: true, userId: true, projectId: true },
+    })
+    const otherOwners = allWsOwners.filter((m: any) => m.userId !== userId && !m.projectId)
+    if (otherOwners.length === 0) {
+      return c.json({ error: { code: 'last_owner', message: 'You are the only owner. Transfer ownership to another member before leaving.' } }, 400)
+    }
+  }
+
+  await prisma.member.deleteMany({ where: { userId, workspaceId } })
+
+  return c.json({ ok: true })
+})
 
 // =============================================================================
 // Invite Link Routes (custom, not auto-generated)

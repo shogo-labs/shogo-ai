@@ -41,9 +41,21 @@ ssl_certificate_domain_publish = "*.shogo.one" # ACM certificate for published a
 # Project preview iframes served at preview--{id}.staging.shogo.ai
 ssl_certificate_domain_preview = "*.staging.shogo.ai" # ACM certificate for preview subdomains
 
-# Application Secrets
-better_auth_secret = "shogo-staging-secret-key-must-be-at-least-32-characters-long"
-anthropic_api_key  = "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"
+# Application Secrets — provide via TF_VAR_* env vars or a local .auto.tfvars (gitignored)
+# better_auth_secret
+# anthropic_api_key
+# google_client_id
+# google_client_secret
+# composio_api_key
+# composio_project_id
+# gh_app_client_id
+# gh_app_client_secret
+# gh_app_id
+# gh_app_private_key
+# gh_app_slug
+# gh_app_webhook_secret
+# stripe_secret_key
+# stripe_webhook_secret
 
 # GitHub Actions CI/CD
 github_org  = "CodeGlo"

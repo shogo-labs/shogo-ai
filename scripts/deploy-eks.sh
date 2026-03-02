@@ -87,13 +87,6 @@ echo -e "${YELLOW}Building and pushing images...${NC}"
 
 cd "${PROJECT_ROOT}"
 
-# Build and push MCP
-echo "Building shogo-mcp..."
-docker build -t ${ECR_REGISTRY}/${PROJECT_NAME}/shogo-mcp:latest \
-  -f packages/mcp/Dockerfile .
-docker push ${ECR_REGISTRY}/${PROJECT_NAME}/shogo-mcp:latest
-echo -e "${GREEN}✓${NC} Pushed shogo-mcp"
-
 # Build and push API
 echo "Building shogo-api..."
 docker build -t ${ECR_REGISTRY}/${PROJECT_NAME}/shogo-api:latest \
@@ -106,7 +99,6 @@ echo "Building shogo-web..."
 docker build -t ${ECR_REGISTRY}/${PROJECT_NAME}/shogo-web:latest \
   -f apps/web/Dockerfile \
   --build-arg VITE_API_URL=https://api.${DOMAIN:-localhost} \
-  --build-arg VITE_MCP_URL=https://mcp.${DOMAIN:-localhost} \
   --build-arg VITE_BETTER_AUTH_URL=https://api.${DOMAIN:-localhost} \
   --build-arg VITE_WORKSPACE=workspace .
 docker push ${ECR_REGISTRY}/${PROJECT_NAME}/shogo-web:latest
@@ -126,13 +118,6 @@ kubectl apply -f "${PROJECT_ROOT}/k8s/base/shogo-config.yaml" || echo "Config ma
 kubectl apply -f "${PROJECT_ROOT}/k8s/base/postgres.yaml" 2>/dev/null || true
 kubectl apply -f "${PROJECT_ROOT}/k8s/base/redis.yaml" 2>/dev/null || true
 
-# Deploy platform-mcp (singleton for schema management)
-cat "${PROJECT_ROOT}/k8s/base/platform-mcp.yaml" | \
-  sed "s|ghcr.io/shogo-ai/shogo-mcp:latest|${ECR_REGISTRY}/${PROJECT_NAME}/shogo-mcp:latest|g" | \
-  kubectl apply -f -
-
-echo -e "${GREEN}✓${NC} Deployed platform-mcp"
-
 # Deploy API with updated image reference
 cat "${PROJECT_ROOT}/k8s/base/api.yaml" | \
   sed "s|k3d-shogo-registry:5000/shogo-api:latest|${ECR_REGISTRY}/${PROJECT_NAME}/shogo-api:latest|g" | \
@@ -149,9 +134,7 @@ echo -e "${GREEN}✓${NC} Deployed shogo-web"
 
 # Deploy Knative workspace services (optional - for per-project scaling)
 if [ -f "${PROJECT_ROOT}/k8s/knative/workspace-template.yaml" ]; then
-  cat "${PROJECT_ROOT}/k8s/knative/workspace-template.yaml" | \
-    sed "s|k3d-shogo-registry:5000/shogo-mcp:latest|${ECR_REGISTRY}/${PROJECT_NAME}/shogo-mcp:latest|g" | \
-    kubectl apply -f -
+  kubectl apply -f "${PROJECT_ROOT}/k8s/knative/workspace-template.yaml"
   echo -e "${GREEN}✓${NC} Deployed Knative workspace services"
 fi
 
@@ -162,7 +145,6 @@ echo ""
 # -----------------------------------------------------------------------------
 echo -e "${YELLOW}Waiting for deployments to be ready...${NC}"
 
-kubectl rollout status deployment/platform-mcp -n shogo-system --timeout=300s || true
 kubectl rollout status deployment/shogo-api -n shogo-system --timeout=300s || true
 kubectl rollout status deployment/shogo-web -n shogo-system --timeout=300s || true
 

@@ -22,14 +22,6 @@
       "import": "./src/persistence/s3-sqlite.ts",
       "types": "./src/persistence/s3-sqlite.ts"
     },
-    "./mcp-isolation": {
-      "import": "./src/mcp-isolation/index.ts",
-      "types": "./src/mcp-isolation/index.ts"
-    },
-    "./mcp-isolation/types": {
-      "import": "./src/mcp-isolation/types.ts",
-      "types": "./src/mcp-isolation/types.ts"
-    },
     "./component-builder": {
       "import": "./src/component-builder/index.ts",
       "types": "./src/component-builder/index.ts"

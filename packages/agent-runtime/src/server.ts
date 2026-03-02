@@ -1082,8 +1082,8 @@ app.post('/agent/workspace/reindex', async (c) => {
 })
 
 // Tool catalog and search — powers the "Tools" tab in the web UI
-import { MCP_CATALOG, MCP_CATEGORIES } from './mcp-catalog'
-import { isComposioEnabled, searchComposioToolkits, findComposioToolkit, initComposioSession } from './composio'
+import { MCP_CATALOG, MCP_CATEGORIES, isPreinstalledMcpId, getPreinstalledPackages } from './mcp-catalog'
+import { isComposioEnabled, searchComposioToolkits, findComposioToolkit, initComposioSession, registerToolkitProxyTools } from './composio'
 
 // Agent Templates API — powers the templates gallery
 import { getTemplateSummaries, getAgentTemplateById, TEMPLATE_CATEGORIES } from './agent-templates'
@@ -1161,8 +1161,9 @@ app.post('/agent/mcp-servers/toggle', async (c) => {
   }
 
   const entry = MCP_CATALOG.find((e) => e.id === serverId)
-  if (!entry) {
-    return c.json({ error: `Unknown MCP server: ${serverId}` }, 400)
+  if (!entry || !entry.preinstalled) {
+    const allowed = getPreinstalledPackages().map(e => e.id).join(', ')
+    return c.json({ error: `MCP server "${serverId}" is not available. Only preinstalled servers are supported: ${allowed}` }, 400)
   }
 
   const configPath = join(AGENT_DIR, 'config.json')
@@ -1200,15 +1201,15 @@ app.get('/agent/tools/status', (c) => {
 
   const tools = serverInfo.map((s) => {
     const catalogEntry = MCP_CATALOG.find((e) => e.id === s.name)
-    const isComposio = s.name === 'composio'
+    const isComposioProxy = s.config.command === 'composio-proxy'
     return {
       id: s.name,
       name: catalogEntry?.name || s.name,
-      source: isComposio ? 'managed' as const : (catalogEntry ? 'catalog' as const : 'custom' as const),
+      source: isComposioProxy ? 'managed' as const : (catalogEntry ? 'catalog' as const : 'custom' as const),
       status: 'running' as const,
       toolCount: s.toolCount,
       tools: s.toolNames,
-      composioToolkit: isComposio ? 'composio' : catalogEntry?.composioToolkit,
+      composioToolkit: isComposioProxy ? s.name : catalogEntry?.composioToolkit,
     }
   })
 
@@ -1241,7 +1242,7 @@ app.get('/agent/tools/search', async (c) => {
           name: tk.name,
           description: `${tk.name} — managed OAuth integration. No credentials needed.`,
           source: 'managed',
-          installed: installedNames.has('composio'),
+          installed: installedNames.has(tk.slug.toLowerCase()),
           authType: 'oauth',
           composioToolkit: tk.slug,
           icon: tk.logo,
@@ -1291,11 +1292,9 @@ app.post('/agent/tools/install', async (c) => {
     return c.json({ error: 'Agent gateway not running' }, 503)
   }
 
-  const { id, env, command, args } = await c.req.json() as {
+  const { id, env } = await c.req.json() as {
     id: string
     env?: Record<string, string>
-    command?: string
-    args?: string[]
   }
 
   const mcpMgr = agentGateway.getMcpClientManager()
@@ -1307,7 +1306,14 @@ app.post('/agent/tools/install', async (c) => {
         const userId = process.env.USER_ID || 'default'
         const projectId = process.env.PROJECT_ID || 'default'
         await initComposioSession(userId, projectId)
-        return c.json({ ok: true, id, source: 'managed' })
+        const proxy = await registerToolkitProxyTools(mcpMgr, composioToolkit.slug)
+        return c.json({
+          ok: true,
+          id: composioToolkit.slug.toLowerCase(),
+          source: 'managed',
+          toolCount: proxy.toolCount,
+          tools: proxy.toolNames,
+        })
       } catch (err: any) {
         return c.json({ error: `Failed to connect: ${err.message}` }, 500)
       }
@@ -1315,30 +1321,22 @@ app.post('/agent/tools/install', async (c) => {
   }
 
   const catalogEntry = MCP_CATALOG.find((e) => e.id === id)
-  if (catalogEntry) {
-    try {
-      const serverEnv = env || {}
-      await mcpMgr.hotAddServer(id, {
-        command: command || 'npx',
-        args: args || [catalogEntry.package, ...catalogEntry.defaultArgs],
-        env: Object.keys(serverEnv).length > 0 ? serverEnv : undefined,
-      })
-      return c.json({ ok: true, id, source: 'catalog' })
-    } catch (err: any) {
-      return c.json({ error: `Failed to install: ${err.message}` }, 500)
-    }
+  if (!catalogEntry || !catalogEntry.preinstalled) {
+    const allowed = getPreinstalledPackages().map(e => e.id).join(', ')
+    return c.json({ error: `MCP server "${id}" is not available. Only preinstalled servers are supported: ${allowed}` }, 400)
   }
 
-  if (command) {
-    try {
-      await mcpMgr.hotAddServer(id, { command, args, env })
-      return c.json({ ok: true, id, source: 'custom' })
-    } catch (err: any) {
-      return c.json({ error: `Failed to install: ${err.message}` }, 500)
-    }
+  try {
+    const serverEnv = env || {}
+    await mcpMgr.hotAddServer(id, {
+      command: 'npx',
+      args: [catalogEntry.package, ...catalogEntry.defaultArgs],
+      env: Object.keys(serverEnv).length > 0 ? serverEnv : undefined,
+    })
+    return c.json({ ok: true, id, source: 'catalog' })
+  } catch (err: any) {
+    return c.json({ error: `Failed to install: ${err.message}` }, 500)
   }
-
-  return c.json({ error: `Unknown tool "${id}". Provide command and args for custom tools.` }, 400)
 })
 
 app.delete('/agent/tools/:id', async (c) => {
@@ -1348,6 +1346,11 @@ app.delete('/agent/tools/:id', async (c) => {
 
   const id = c.req.param('id')
   const mcpMgr = agentGateway.getMcpClientManager()
+
+  if (mcpMgr.hasProxyToolGroup(id)) {
+    mcpMgr.removeProxyToolGroup(id)
+    return c.json({ ok: true, removed: id })
+  }
 
   if (!mcpMgr.isRunning(id)) {
     return c.json({ error: `Tool "${id}" is not running` }, 404)

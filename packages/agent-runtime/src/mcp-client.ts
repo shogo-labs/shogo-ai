@@ -16,6 +16,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { Type } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
+import { isPreinstalledMcpId, getPreinstalledPackages } from './mcp-catalog'
 
 const MAX_MCP_SERVERS = 10
 const MCP_CONNECT_TIMEOUT_MS = 90_000
@@ -159,7 +160,7 @@ export interface MCPServerInfo {
 export class MCPClientManager {
   private servers: Map<string, ManagedServer> = new Map()
   private remoteServers: Map<string, ManagedRemoteServer> = new Map()
-  private standaloneProxyTools: AgentTool[] = []
+  private proxyToolGroups: Map<string, AgentTool[]> = new Map()
   private workspaceDir: string | null = null
   private onConfigPersisted: (() => void) | null = null
 
@@ -211,6 +212,11 @@ export class MCPClientManager {
   }
 
   async startServer(name: string, config: MCPServerConfig): Promise<AgentTool[]> {
+    if (!isPreinstalledMcpId(name)) {
+      const allowed = getPreinstalledPackages().map(e => e.id).join(', ')
+      throw new Error(`MCP server "${name}" is not in the preinstalled whitelist. Allowed servers: ${allowed}`)
+    }
+
     if (this.servers.has(name)) {
       console.warn(`[MCPClient] Server "${name}" already running, skipping`)
       return this.servers.get(name)!.tools
@@ -322,10 +328,20 @@ export class MCPClientManager {
 
     if (entries.length === 0) return allTools
 
-    console.log(`[MCPClient] Starting ${entries.length} MCP server(s)...`)
+    const allowed = entries.filter(([name]) => {
+      if (!isPreinstalledMcpId(name)) {
+        console.warn(`[MCPClient] Skipping non-whitelisted MCP server "${name}" from config.json`)
+        return false
+      }
+      return true
+    })
+
+    if (allowed.length === 0) return allTools
+
+    console.log(`[MCPClient] Starting ${allowed.length} MCP server(s)...`)
 
     const results = await Promise.allSettled(
-      entries.map(async ([name, config]) => {
+      allowed.map(async ([name, config]) => {
         const tools = await this.startServer(name, config)
         return { name, tools }
       })
@@ -497,7 +513,9 @@ export class MCPClientManager {
     for (const server of this.remoteServers.values()) {
       tools.push(...server.tools)
     }
-    tools.push(...this.standaloneProxyTools)
+    for (const group of this.proxyToolGroups.values()) {
+      tools.push(...group)
+    }
     return tools
   }
 
@@ -506,7 +524,7 @@ export class MCPClientManager {
   }
 
   isRunning(name: string): boolean {
-    return this.servers.has(name) || this.remoteServers.has(name)
+    return this.servers.has(name) || this.remoteServers.has(name) || this.proxyToolGroups.has(name)
   }
 
   getServerInfo(): MCPServerInfo[] {
@@ -525,6 +543,14 @@ export class MCPClientManager {
         toolCount: server.tools.length,
         toolNames: server.tools.map(t => t.name),
         config: { command: 'remote', args: [server.config.url] },
+      })
+    }
+    for (const [groupName, tools] of this.proxyToolGroups) {
+      info.push({
+        name: groupName,
+        toolCount: tools.length,
+        toolNames: tools.map(t => t.name),
+        config: { command: 'composio-proxy' },
       })
     }
     return info
@@ -553,16 +579,28 @@ export class MCPClientManager {
   }
 
   /**
-   * Register standalone proxy tools (not tied to any MCP server).
-   * Used for Composio proxy tools that route through a private internal connection.
-   * Deduplicates by name.
+   * Register standalone proxy tools under a named group (e.g. a Composio toolkit slug).
+   * Deduplicates by name within the group. If the group already exists, new tools are appended.
    */
-  addProxyTools(tools: AgentTool[]): void {
-    const existingNames = new Set(this.standaloneProxyTools.map(t => t.name))
+  addProxyTools(groupName: string, tools: AgentTool[]): void {
+    const existing = this.proxyToolGroups.get(groupName) || []
+    const existingNames = new Set(existing.map(t => t.name))
     const newTools = tools.filter(t => !existingNames.has(t.name))
     if (newTools.length === 0) return
-    this.standaloneProxyTools.push(...newTools)
-    console.log(`[MCPClient] Added ${newTools.length} standalone proxy tool(s) (total: ${this.standaloneProxyTools.length})`)
+    this.proxyToolGroups.set(groupName, [...existing, ...newTools])
+    const total = Array.from(this.proxyToolGroups.values()).reduce((n, g) => n + g.length, 0)
+    console.log(`[MCPClient] Added ${newTools.length} proxy tool(s) to group "${groupName}" (total across all groups: ${total})`)
+  }
+
+  /**
+   * Remove all proxy tools in a named group.
+   */
+  removeProxyToolGroup(groupName: string): boolean {
+    return this.proxyToolGroups.delete(groupName)
+  }
+
+  hasProxyToolGroup(groupName: string): boolean {
+    return this.proxyToolGroups.has(groupName)
   }
 
   async hotAddServer(name: string, config: MCPServerConfig): Promise<AgentTool[]> {

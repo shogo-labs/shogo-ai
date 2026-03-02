@@ -3,7 +3,7 @@
  * 
  * This file contains the system prompt for the Shogo AI assistant.
  * It can be programmatically updated by DSPy optimization via:
- *   python packages/mcp/src/evals/dspy/export.py --format server
+ *   python packages/agent-runtime/src/evals/dspy/export.py --format server
  * 
  * @generated - Sections marked with [DSPy-Optimized] are auto-generated
  */

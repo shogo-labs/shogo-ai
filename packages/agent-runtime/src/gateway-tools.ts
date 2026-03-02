@@ -16,7 +16,7 @@ import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec } from './sandbox-exec'
 import { MemorySearchEngine } from './memory-search'
 import { FileIndexEngine } from './file-index-engine'
-import { MCP_CATALOG } from './mcp-catalog'
+import { MCP_CATALOG, isPreinstalledMcpId, getPreinstalledPackages } from './mcp-catalog'
 import { initComposioSession, isComposioEnabled, isComposioInitialized, searchComposioToolkits, findComposioToolkit, registerToolkitProxyTools, checkComposioAuth } from './composio'
 import { autoBindPrimaryEntity } from './composio-auto-bind'
 import { getDynamicAppManager, getByPointer } from './dynamic-app-manager'
@@ -384,16 +384,22 @@ async function serperSearch(
   searchType: string,
   opts: { num?: number; gl?: string; hl?: string } = {},
 ): Promise<AgentToolResult<any>> {
-  const apiKey = process.env.SERPER_API_KEY
+  const directKey = process.env.SERPER_API_KEY
+  const proxyUrl = process.env.TOOLS_PROXY_URL
+  const proxyToken = process.env.AI_PROXY_TOKEN
+
+  const apiKey = directKey || proxyToken
   if (!apiKey) {
     return textResult({
-      error: 'SERPER_API_KEY not configured. Web search is unavailable.',
-      suggestion: 'Set the SERPER_API_KEY environment variable to enable Google search.',
+      error: 'SERPER_API_KEY not configured and no proxy available. Web search is unavailable.',
+      suggestion: 'Set SERPER_API_KEY or configure TOOLS_PROXY_URL + AI_PROXY_TOKEN.',
     })
   }
 
   const { num = 10, gl = 'us', hl = 'en' } = opts
-  const endpoint = SERPER_ENDPOINTS[searchType] || SERPER_ENDPOINTS.search
+  const endpoint = directKey
+    ? (SERPER_ENDPOINTS[searchType] || SERPER_ENDPOINTS.search)
+    : `${proxyUrl}/serper/${searchType || 'search'}`
 
   try {
     const response = await fetch(endpoint, {
@@ -535,7 +541,7 @@ function createWebTool(): AgentTool {
           !details?.error &&
           typeof details?.content === 'string' &&
           details.content.trim().length < MIN_USEFUL_CONTENT_LENGTH &&
-          process.env.SERPER_API_KEY
+          (process.env.SERPER_API_KEY || (process.env.TOOLS_PROXY_URL && process.env.AI_PROXY_TOKEN))
         ) {
           const fallbackQuery = query || url
           const fallback = await serperSearch(fallbackQuery, searchType, { num, gl, hl })
@@ -2339,22 +2345,10 @@ Rate-limited: max ${MAX_UPDATES_PER_SESSION}/session, ${MAX_UPDATES_PER_DAY}/day
 // MCP Discovery Tools
 // ---------------------------------------------------------------------------
 
-const BLOCKED_MCP_PATTERNS = ['rm ', 'curl.*|.*bash', 'wget.*|.*bash', 'shutdown', 'reboot', 'mkfs', 'dd if=']
-
-function isMcpCommandBlocked(command: string, args: string[]): boolean {
-  const full = `${command} ${args.join(' ')}`.toLowerCase()
-  return BLOCKED_MCP_PATTERNS.some(p => {
-    if (p.includes('.*')) {
-      try { return new RegExp(p, 'i').test(full) } catch { return false }
-    }
-    return full.includes(p)
-  })
-}
-
 function createToolSearchTool(): AgentTool {
   return {
     name: 'tool_search',
-    description: 'Search for tools and integrations by capability or keyword. Searches the built-in catalog, managed OAuth integrations (hundreds of services — no credentials needed), and npm. Managed integrations are preferred when available.',
+    description: 'Search for available tools and integrations by capability or keyword. Searches the built-in catalog of preinstalled MCP servers and managed OAuth integrations (hundreds of services — no credentials needed). Managed integrations are preferred when available.',
     label: 'Search Tools',
     parameters: Type.Object({
       query: Type.String({ description: 'Search query describing the capability you need (e.g. "google calendar", "slack messaging", "postgres database")' }),
@@ -2385,11 +2379,12 @@ function createToolSearchTool(): AgentTool {
         } catch { /* Composio API unavailable, continue with other sources */ }
       }
 
-      // 2. Search local MCP catalog
+      // 2. Search preinstalled MCP catalog only
+      const preinstalled = getPreinstalledPackages()
       const queryLower = query.toLowerCase()
       const queryWords = queryLower.split(/\s+/).filter(w => w.length > 2)
       const scored: Array<{ entry: typeof MCP_CATALOG[0]; score: number }> = []
-      for (const entry of MCP_CATALOG) {
+      for (const entry of preinstalled) {
         const haystack = `${entry.id} ${entry.name} ${entry.description} ${entry.category} ${entry.providedTools.join(' ')}`.toLowerCase()
         const idName = `${entry.id} ${entry.name}`.toLowerCase()
         let score = 0
@@ -2409,36 +2404,11 @@ function createToolSearchTool(): AgentTool {
         results.push({
           name: entry.name,
           id: entry.id,
-          qualifiedName: entry.package.replace(/@latest$/, ''),
           description: entry.description,
-          installCommand: `npx -y ${entry.package}${entry.defaultArgs.length ? ' ' + entry.defaultArgs.join(' ') : ''}`,
-          defaultArgs: entry.defaultArgs.length > 0 ? entry.defaultArgs : undefined,
+          installCommand: `tool_install({ name: "${entry.id}" })`,
           source: 'catalog',
         })
       }
-
-      // 3. Search npm registry for remaining slots
-      const npmSlots = Math.max(limit - results.length, 2)
-      try {
-        const npmRes = await fetch(
-          `https://registry.npmjs.org/-/v1/search?text=mcp-server+${encodeURIComponent(query)}&size=${npmSlots}`,
-          { signal: AbortSignal.timeout(10_000) },
-        )
-        if (npmRes.ok) {
-          const data = await npmRes.json() as any
-          const catalogNames = new Set(results.map(r => r.qualifiedName).filter(Boolean))
-          for (const obj of (data.objects || []).slice(0, npmSlots)) {
-            const pkg = obj.package
-            if (catalogNames.has(pkg.name)) continue
-            results.push({
-              name: pkg.name,
-              description: pkg.description || '',
-              installCommand: `npx -y ${pkg.name}@latest`,
-              source: 'npm',
-            })
-          }
-        }
-      } catch { /* npm unavailable */ }
 
       if (results.length === 0) {
         return textResult({ query, results: [], message: 'No tools found. Try a different search term.' })
@@ -2473,16 +2443,14 @@ function formatToolInstallMessage(
 function createToolInstallTool(ctx: ToolContext): AgentTool {
   return {
     name: 'tool_install',
-    description: `Install and start a tool integration, making its tools available immediately. For managed integrations (Google Calendar, Slack, GitHub, and hundreds more), just provide the name — no command or args needed. For custom MCP tool servers, provide command and args.
+    description: `Install and start a tool integration, making its tools available immediately. For managed integrations (Google Calendar, Slack, GitHub, and hundreds more), just provide the name — no command or args needed. For preinstalled MCP servers (fetch, github, postgres, slack, notion, brave-search, airbnb, filesystem), provide the server name.
 
 Managed integrations auto-bind by default: the toolkit's CRUD operations are automatically discovered and deferred to bind to the next canvas you create. No extra parameters needed — just call tool_install({ name: "googlecalendar" }) and then canvas_create.
 
 Pass "autoBind" with surfaceId/dataPath to target a specific canvas. Pass "bind" with explicit config if you already know the tool's response shape (e.g. from a saved skill).`,
     label: 'Install Tool',
     parameters: Type.Object({
-      name: Type.String({ description: 'Tool or integration name (e.g. "googlecalendar", "slack", "postgres"). For managed integrations, this is all you need.' }),
-      command: Type.Optional(Type.String({ description: 'Command to run a custom tool server (e.g. "npx"). Not needed for managed integrations.' })),
-      args: Type.Optional(Type.Array(Type.String(), { description: 'Command arguments. Not needed for managed integrations.' })),
+      name: Type.String({ description: 'Tool or integration name (e.g. "googlecalendar", "slack", "postgres"). Only preinstalled MCP servers and managed integrations are supported.' }),
       env: Type.Optional(Type.Any({ description: 'Environment variables for the server process' })),
       autoBind: Type.Optional(Type.Object({
         surfaceId: Type.String({ description: 'Surface ID to bind to (deferred if surface does not exist yet)' }),
@@ -2517,8 +2485,8 @@ Pass "autoBind" with surfaceId/dataPath to target a specific canvas. Pass "bind"
       }, { description: 'Optional: bind installed tools to canvas CRUD API routes. Combines tool_install + canvas_api_bind in one call.' })),
     }),
     execute: async (_id: string, params: any) => {
-      const { name, command, args, env, bind, autoBind } = params as {
-        name: string; command?: string; args?: string[]; env?: Record<string, string>
+      const { name, env, bind, autoBind } = params as {
+        name: string; env?: Record<string, string>
         bind?: any; autoBind?: { surfaceId: string; dataPath?: string }
       }
 
@@ -2546,7 +2514,6 @@ Pass "autoBind" with surfaceId/dataPath to target a specific canvas. Pass "bind"
 
       const applyAutoBind = async (installResult: Record<string, unknown>, toolkitSlug: string, isComposio: boolean) => {
         if (!ctx.mcpClientManager) return installResult
-        // For Composio integrations, auto-bind by default unless explicitly skipped
         if (!autoBind && !isComposio) return installResult
         try {
           const result = await autoBindPrimaryEntity(toolkitSlug, {
@@ -2562,7 +2529,6 @@ Pass "autoBind" with surfaceId/dataPath to target a specific canvas. Pass "bind"
             const bindResult = manager.bindToolApi(surfaceId, result.config, ctx.mcpClientManager)
             return { ...installResult, autoBind: { ok: true, entity: result.entity, config: result.config, discoveredFrom: result.discoveredFrom, tools: result.tools, ...bindResult } }
           }
-          // Defer to specific surface or wildcard (next canvas created)
           manager.deferToolBinding(surfaceId || '*', result.config, ctx.mcpClientManager)
           return {
             ...installResult,
@@ -2636,17 +2602,19 @@ Pass "autoBind" with surfaceId/dataPath to target a specific canvas. Pass "bind"
         }
       }
 
-      // Fall back to local process MCP for non-Composio servers
-      if (!command) {
-        return textResult({ error: `Server "${name}" is not a recognized Composio integration and requires a command to run. Provide command and args (e.g. command: "npx", args: ["-y", "package-name"]).` })
-      }
-
-      if (isMcpCommandBlocked(command, args || [])) {
-        return textResult({ error: 'Command blocked for safety reasons' })
+      // Only allow preinstalled MCP servers
+      const catalogEntry = MCP_CATALOG.find(e => e.id === name)
+      if (!catalogEntry || !catalogEntry.preinstalled) {
+        const allowed = getPreinstalledPackages().map(e => e.id).join(', ')
+        return textResult({ error: `"${name}" is not available. Only preinstalled MCP servers are supported: ${allowed}` })
       }
 
       try {
-        const tools = await ctx.mcpClientManager.hotAddServer(name, { command, args, env })
+        const tools = await ctx.mcpClientManager.hotAddServer(name, {
+          command: 'npx',
+          args: [catalogEntry.package, ...catalogEntry.defaultArgs],
+          env,
+        })
         return textResult(applyBind({
           ok: true,
           server: name,

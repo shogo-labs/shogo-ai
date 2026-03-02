@@ -62,7 +62,6 @@ Go to **Settings > Environments > staging** and configure:
 | Variable Name | Value | Description |
 |---------------|-------|-------------|
 | `VITE_API_URL` | `https://api-staging.shogo.ai` | Staging API endpoint |
-| `VITE_MCP_URL` | `https://mcp-staging.shogo.ai` | Staging MCP endpoint |
 | `VITE_BETTER_AUTH_URL` | `https://api-staging.shogo.ai` | Staging Auth endpoint |
 | `VITE_WORKSPACE` | `workspace-1` | Default workspace ID |
 | `ALLOWED_ORIGINS` | `https://studio-staging.shogo.ai,https://api-staging.shogo.ai` | CORS allowed origins |
@@ -84,7 +83,6 @@ Go to **Settings > Environments > production** and configure:
 | Variable Name | Value | Description |
 |---------------|-------|-------------|
 | `VITE_API_URL` | `https://api.shogo.ai` | Production API endpoint |
-| `VITE_MCP_URL` | `https://mcp.shogo.ai` | Production MCP endpoint |
 | `VITE_BETTER_AUTH_URL` | `https://api.shogo.ai` | Production Auth endpoint |
 | `VITE_WORKSPACE` | `workspace-1` | Default workspace ID |
 | `ALLOWED_ORIGINS` | `https://studio.shogo.ai,https://api.shogo.ai,https://shogo.ai` | CORS allowed origins |
@@ -183,12 +181,10 @@ Additionally, each environment maintains a `<env>-latest` tag for the most recen
 ### Staging Domains
 - **Studio**: `https://studio-staging.shogo.ai`
 - **API**: `https://api-staging.shogo.ai`
-- **MCP**: `https://mcp-staging.shogo.ai`
 
 ### Production Domains
 - **Studio**: `https://studio.shogo.ai`
 - **API**: `https://api.shogo.ai`
-- **MCP**: `https://mcp.shogo.ai`
 
 ## Namespace Isolation
 

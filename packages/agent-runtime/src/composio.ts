@@ -191,14 +191,26 @@ function getComposioClient(): Composio | null {
   if (composioClient) return composioClient
 
   const apiKey = process.env.COMPOSIO_API_KEY
-  if (!apiKey) {
-    console.log('[Composio] COMPOSIO_API_KEY not set, Composio integration disabled')
-    return null
+  const proxyUrl = process.env.TOOLS_PROXY_URL
+  const proxyToken = process.env.AI_PROXY_TOKEN
+
+  if (apiKey) {
+    composioClient = new Composio({ apiKey })
+    console.log('[Composio] Client initialized (direct)')
+    return composioClient
   }
 
-  composioClient = new Composio({ apiKey })
-  console.log('[Composio] Client initialized')
-  return composioClient
+  if (proxyUrl && proxyToken) {
+    composioClient = new Composio({
+      apiKey: proxyToken,
+      baseURL: `${proxyUrl}/composio`,
+    })
+    console.log('[Composio] Client initialized (via proxy)')
+    return composioClient
+  }
+
+  console.log('[Composio] No COMPOSIO_API_KEY or proxy config, Composio integration disabled')
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -257,10 +269,11 @@ export function isComposioInitialized(): boolean {
 }
 
 /**
- * Check if Composio integration is configured (API key present).
+ * Check if Composio integration is configured (direct key or proxy).
  */
 export function isComposioEnabled(): boolean {
-  return !!process.env.COMPOSIO_API_KEY
+  return !!process.env.COMPOSIO_API_KEY ||
+    !!(process.env.TOOLS_PROXY_URL && process.env.AI_PROXY_TOKEN)
 }
 
 /**
@@ -314,7 +327,7 @@ export async function registerToolkitProxyTools(
   }
 
   const proxyTools: AgentTool[] = nonDeprecated.map(schema => createProxyTool(schema))
-  mcpClientManager.addProxyTools(proxyTools)
+  mcpClientManager.addProxyTools(toolkitSlug.toLowerCase(), proxyTools)
 
   const toolNames = proxyTools.map(t => t.name)
   for (const n of toolNames) registeredProxyToolNames.add(n)
