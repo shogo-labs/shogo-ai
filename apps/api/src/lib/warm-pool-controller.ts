@@ -16,8 +16,9 @@
  * 6. Save the service name mapping in the database for routing
  *
  * On cold start (scale-to-zero recovery), the runtime reads the ASSIGNED_PROJECT
- * env var (from Kubernetes Downward API) and self-configures by fetching config
- * from the API's /api/internal/pod-config endpoint.
+ * env var (injected into the Knative Service spec during promotion) and
+ * self-configures by fetching config from the API's /api/internal/pod-config
+ * endpoint.
  *
  * Pool pods run with PROJECT_ID=__POOL__, do generic init (start Hono,
  * pre-warm Claude Code session, load deps into memory), and wait for assignment.
@@ -571,6 +572,7 @@ export class WarmPoolController {
   private async promoteWarmPod(pod: WarmPodInfo, projectId: string): Promise<void> {
     const t0 = Date.now()
     const api = getCustomApi()
+    const { mergePatchKnativeService } = await import('./knative-project-manager')
 
     // First: patch metadata annotations + labels. This does NOT create a new
     // Revision, so the running pod keeps serving without interruption.
@@ -587,14 +589,7 @@ export class WarmPoolController {
     }
 
     try {
-      await api.patchNamespacedCustomObject({
-        group: KNATIVE_GROUP,
-        version: KNATIVE_VERSION,
-        namespace: this.namespace,
-        plural: 'services',
-        name: pod.serviceName,
-        body: metadataPatch,
-      })
+      await mergePatchKnativeService(this.namespace, pod.serviceName, metadataPatch)
       console.log(
         `[WarmPool] Patched metadata on ${pod.serviceName} for ${projectId} (${Date.now() - t0}ms)`
       )
@@ -612,7 +607,6 @@ export class WarmPoolController {
     // When the pod next cold-starts, it boots with the new revision's spec
     // which includes ASSIGNED_PROJECT, enabling self-assign.
     try {
-      // Fetch current service to get existing env vars
       const current = await api.getNamespacedCustomObject({
         group: KNATIVE_GROUP,
         version: KNATIVE_VERSION,
@@ -625,7 +619,6 @@ export class WarmPoolController {
       const container = containers[0]
       if (container) {
         const existingEnv = container.env || []
-        // Add ASSIGNED_PROJECT if not already present
         const hasAssigned = existingEnv.some((e: any) => e.name === 'ASSIGNED_PROJECT')
         if (!hasAssigned) {
           existingEnv.push({ name: 'ASSIGNED_PROJECT', value: projectId })
@@ -649,14 +642,7 @@ export class WarmPoolController {
           },
         }
 
-        await api.patchNamespacedCustomObject({
-          group: KNATIVE_GROUP,
-          version: KNATIVE_VERSION,
-          namespace: this.namespace,
-          plural: 'services',
-          name: pod.serviceName,
-          body: specPatch,
-        })
+        await mergePatchKnativeService(this.namespace, pod.serviceName, specPatch)
         console.log(
           `[WarmPool] Patched spec with ASSIGNED_PROJECT on ${pod.serviceName} (${Date.now() - t0}ms) — new revision created for future cold starts`
         )

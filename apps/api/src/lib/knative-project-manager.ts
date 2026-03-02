@@ -105,6 +105,44 @@ function getCustomApi(): k8s.CustomObjectsApi {
   return k8sCustomApi
 }
 
+/**
+ * Perform a JSON Merge Patch (RFC 7386) on a Knative Service.
+ * The @kubernetes/client-node library defaults to JSON Patch (RFC 6902, array
+ * of operations) for PATCH calls, but we need Merge Patch (plain object).
+ * This helper uses raw fetch with the correct Content-Type header.
+ */
+export async function mergePatchKnativeService(
+  namespace: string,
+  serviceName: string,
+  patch: Record<string, any>,
+): Promise<void> {
+  const kc = getKubeConfig()
+  const cluster = kc.getCurrentCluster()
+  if (!cluster) throw new Error('No current K8s cluster configured')
+
+  const user = kc.getCurrentUser()
+  const url = `${cluster.server}/apis/${KNATIVE_GROUP}/${KNATIVE_VERSION}/namespaces/${namespace}/services/${serviceName}`
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/merge-patch+json',
+    'Accept': 'application/json',
+  }
+  if (user?.token) {
+    headers['Authorization'] = `Bearer ${user.token}`
+  }
+
+  const resp = await fetch(url, {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify(patch),
+  })
+
+  if (!resp.ok) {
+    const body = await resp.text()
+    throw new Error(`Merge-patch failed (${resp.status}): ${body}`)
+  }
+}
+
 function getCoreApi(): k8s.CoreV1Api {
   if (!k8sCoreApi) {
     const kc = getKubeConfig()
@@ -689,7 +727,6 @@ export class KnativeProjectManager {
    */
   async scaleProject(projectId: string, replicas: number): Promise<void> {
     const serviceName = await this.resolveServiceName(projectId)
-    const api = getCustomApi()
     
     const patch = {
       spec: {
@@ -703,14 +740,7 @@ export class KnativeProjectManager {
       },
     }
 
-    await api.patchNamespacedCustomObject({
-      group: KNATIVE_GROUP,
-      version: KNATIVE_VERSION,
-      namespace: this.namespace,
-      plural: "services",
-      name: serviceName,
-      body: patch,
-    })
+    await mergePatchKnativeService(this.namespace, serviceName, patch)
 
     console.log(`[KnativeProjectManager] Scaled project ${projectId} (service: ${serviceName}) to ${replicas} replica(s)`)
   }

@@ -68,6 +68,12 @@ mock.module('../ai-proxy-token', () => ({
   generateProxyToken: mock(() => Promise.resolve('test-proxy-token')),
 }))
 
+// Mock the mergePatchKnativeService from knative-project-manager
+const mockMergePatch = mock(() => Promise.resolve())
+mock.module('../knative-project-manager', () => ({
+  mergePatchKnativeService: mockMergePatch,
+}))
+
 // Mock database service
 mock.module('../../services/database.service', () => ({
   provisionDatabase: mock(() => Promise.resolve({
@@ -86,6 +92,7 @@ describe('WarmPoolController', () => {
     mockK8sCustomApi.getNamespacedCustomObject.mockClear()
     mockK8sCustomApi.patchNamespacedCustomObject.mockClear()
     mockPrismaProjectUpdate.mockClear()
+    mockMergePatch.mockClear()
     mockFetch.mockClear()
     uuidCounter = 0
 
@@ -570,16 +577,18 @@ describe('WarmPoolController', () => {
       // Give async promotion time to run
       await new Promise(resolve => setTimeout(resolve, 300))
 
-      // First patch: metadata annotations + labels (no spec change, no restart)
-      expect(mockK8sCustomApi.patchNamespacedCustomObject).toHaveBeenCalled()
-      const metadataPatch = mockK8sCustomApi.patchNamespacedCustomObject.mock.calls[0][0] as any
-      expect(metadataPatch.name).toBe('warm-pool-agent-abc123')
-      expect(metadataPatch.body.metadata.annotations['shogo.io/assigned-project']).toBe('test-project-promote')
-      expect(metadataPatch.body.metadata.labels['shogo.io/warm-pool-status']).toBe('promoted')
+      // Both patches should go through mergePatchKnativeService
+      expect(mockMergePatch).toHaveBeenCalledTimes(2)
 
-      // Second patch: spec with ASSIGNED_PROJECT env + min-scale (creates new revision)
-      const specPatch = mockK8sCustomApi.patchNamespacedCustomObject.mock.calls[1][0] as any
-      expect(specPatch.body.spec.template.metadata.annotations['autoscaling.knative.dev/min-scale']).toBe('0')
+      // First: metadata annotations + labels (no spec change, no restart)
+      const [_ns1, svc1, metadataPatchBody] = mockMergePatch.mock.calls[0]
+      expect(svc1).toBe('warm-pool-agent-abc123')
+      expect(metadataPatchBody.metadata.annotations['shogo.io/assigned-project']).toBe('test-project-promote')
+      expect(metadataPatchBody.metadata.labels['shogo.io/warm-pool-status']).toBe('promoted')
+
+      // Second: spec with ASSIGNED_PROJECT env + min-scale (creates new revision)
+      const [_ns2, _svc2, specPatchBody] = mockMergePatch.mock.calls[1]
+      expect(specPatchBody.spec.template.metadata.annotations['autoscaling.knative.dev/min-scale']).toBe('0')
 
       // Should have saved DB mapping
       expect(mockPrismaProjectUpdate).toHaveBeenCalledWith({
@@ -695,13 +704,12 @@ describe('WarmPoolController', () => {
       // Give async promotion time to run
       await new Promise(resolve => setTimeout(resolve, 300))
 
-      // Should have two patch calls: metadata + spec
-      const patchCalls = mockK8sCustomApi.patchNamespacedCustomObject.mock.calls
-      expect(patchCalls.length).toBeGreaterThanOrEqual(2)
+      // Should have two mergePatch calls: metadata + spec
+      expect(mockMergePatch).toHaveBeenCalledTimes(2)
 
       // Second patch should contain ASSIGNED_PROJECT in container env
-      const specPatch = (patchCalls[1][0] as any).body
-      const envVars = specPatch.spec.template.spec.containers[0].env
+      const [_ns, _svc, specPatchBody] = mockMergePatch.mock.calls[1]
+      const envVars = specPatchBody.spec.template.spec.containers[0].env
       const assignedEnv = envVars.find((e: any) => e.name === 'ASSIGNED_PROJECT')
       expect(assignedEnv).toBeDefined()
       expect(assignedEnv.value).toBe('test-project-envpatch')
