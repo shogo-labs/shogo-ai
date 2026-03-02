@@ -54,7 +54,7 @@ import { tracingMiddleware } from './middleware/tracing'
 // Runtime manager singleton for project Vite runtimes
 let runtimeManager: IRuntimeManager | null = null
 
-// MCP session management for API → MCP calls (v2)
+// MCP session management for API → MCP calls
 let mcpSessionId: string | null = null
 const MCP_URL = process.env.MCP_URL || 'http://mcp:3100'
 
