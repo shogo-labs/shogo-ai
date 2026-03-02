@@ -208,8 +208,8 @@ export function CanvasThemedContainer({ children }: { children: ReactNode }) {
           flexDirection: 'column',
           overflow: 'hidden',
           borderRadius: 16,
-          border: '1px solid var(--color-border, #e4e4e7)',
-          backgroundColor: vars['--color-background'],
+          border: '1px solid rgb(var(--color-border, 228 228 231))',
+          backgroundColor: `rgb(${vars['--color-background']})`,
         }}
       >
         {children}

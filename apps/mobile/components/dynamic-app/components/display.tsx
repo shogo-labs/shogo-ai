@@ -71,7 +71,7 @@ const BADGE_BG_MAP: Record<string, string> = {
   default: 'bg-primary/15',
   secondary: 'bg-secondary',
   destructive: 'bg-destructive/15',
-  outline: 'bg-muted',
+  outline: 'bg-secondary',
 }
 
 const BADGE_TEXT_MAP: Record<string, string> = {
@@ -185,7 +185,8 @@ export function DynIcon({ name = 'info', size = 'md', color, className }: IconPr
     return <Text className={cn('text-muted-foreground', className)}>?</Text>
   }
   const iconSize = ICON_SIZE_MAP[size] || 20
-  return <IconComp size={iconSize} className={cn(color && (TEXT_COLOR_MAP[color] || `text-${color}`), className)} />
+  const colorClass = color ? (TEXT_COLOR_MAP[color] || `text-${color}`) : 'text-foreground'
+  return <IconComp size={iconSize} className={cn(colorClass, className)} />
 }
 
 interface SeparatorProps {

@@ -1979,7 +1979,7 @@ export const ChatPanel = observer(function ChatPanel({
         )}
 
         {/* Chat Panel — full width on mobile (no resize handle) */}
-        <View className="flex-1 flex-col border-l border-border bg-background">
+        <View className="flex-1 flex-col bg-background">
           {/* Messages with Turn Grouping */}
           <ScrollView
             ref={scrollViewRef}
@@ -2055,7 +2055,7 @@ export const ChatPanel = observer(function ChatPanel({
           )}
 
           {/* Input */}
-          <View className="border-t border-border/40">
+          <View className="bg-transparent">
             <ChatInput
               onSubmit={handleInputSubmit}
               disabled={!currentSessionId}
