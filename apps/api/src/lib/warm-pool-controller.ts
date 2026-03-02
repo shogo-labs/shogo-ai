@@ -522,6 +522,30 @@ export class WarmPoolController {
     }, async (span) => {
       const startTime = Date.now()
       try {
+        // Defensive: check if another project already maps to this service in DB.
+        // This catches collisions from stale state after API restarts.
+        try {
+          const { prisma } = await import('./prisma')
+          const existing = await prisma.project.findFirst({
+            where: {
+              knativeServiceName: pod.serviceName,
+              id: { not: projectId },
+            },
+            select: { id: true, name: true },
+          })
+          if (existing) {
+            console.warn(
+              `[WarmPool] COLLISION GUARD: pod ${pod.serviceName} already mapped to project ${existing.id} (${existing.name}) — clearing stale mapping before assigning to ${projectId}`
+            )
+            await prisma.project.update({
+              where: { id: existing.id },
+              data: { knativeServiceName: null },
+            })
+          }
+        } catch (dbErr: any) {
+          console.error(`[WarmPool] Collision check failed (non-fatal):`, dbErr.message)
+        }
+
         const response = await fetch(`${pod.url}/pool/assign`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -568,14 +592,19 @@ export class WarmPoolController {
    * Promote a warm pod to a permanent project pod.
    * Patches Knative Service annotations (no new Revision) and saves
    * the service name mapping in the database for routing.
+   *
+   * The label patch is the critical gate: if it fails, we skip the DB save
+   * to avoid a state where the pod looks "available" to the reconciler but
+   * has a DB mapping — the root cause of warm-pool collisions.
    */
   private async promoteWarmPod(pod: WarmPodInfo, projectId: string): Promise<void> {
     const t0 = Date.now()
     const api = getCustomApi()
     const { mergePatchKnativeService } = await import('./knative-project-manager')
 
-    // First: patch metadata annotations + labels. This does NOT create a new
-    // Revision, so the running pod keeps serving without interruption.
+    // Step 1 (CRITICAL): patch metadata labels to mark this pod as promoted.
+    // If this fails, bail out entirely — leaving the label as "available" while
+    // saving a DB mapping causes collisions on API restart.
     const metadataPatch = {
       metadata: {
         annotations: {
@@ -595,17 +624,15 @@ export class WarmPoolController {
       )
     } catch (err: any) {
       console.error(
-        `[WarmPool] Failed to patch metadata on ${pod.serviceName}:`,
+        `[WarmPool] CRITICAL: Failed to patch metadata on ${pod.serviceName} for ${projectId} — aborting promotion to prevent collision:`,
         err.message
       )
+      return
     }
 
-    // Second: patch the template spec to add ASSIGNED_PROJECT env var and
-    // enable scale-to-zero. This WILL create a new Revision, but it does
-    // NOT disrupt the currently running pod — Knative routes traffic to the
-    // latest ready revision, and the current pod stays up until it idles out.
-    // When the pod next cold-starts, it boots with the new revision's spec
-    // which includes ASSIGNED_PROJECT, enabling self-assign.
+    // Step 2: patch the template spec to set/overwrite ASSIGNED_PROJECT env var
+    // and enable scale-to-zero. This creates a new Revision but does NOT disrupt
+    // the currently running pod.
     try {
       const current = await api.getNamespacedCustomObject({
         group: KNATIVE_GROUP,
@@ -620,16 +647,18 @@ export class WarmPoolController {
       const container = containers[0]
       if (container) {
         const existingEnv = [...(container.env || [])]
-        const hasAssigned = existingEnv.some((e: any) => e.name === 'ASSIGNED_PROJECT')
-        if (!hasAssigned) {
+
+        // Always overwrite ASSIGNED_PROJECT so cold-start self-assign uses the
+        // correct project (not a stale one from a previous promotion).
+        const assignedIdx = existingEnv.findIndex((e: any) => e.name === 'ASSIGNED_PROJECT')
+        if (assignedIdx >= 0) {
+          existingEnv[assignedIdx] = { name: 'ASSIGNED_PROJECT', value: projectId }
+        } else {
           existingEnv.push({ name: 'ASSIGNED_PROJECT', value: projectId })
         }
 
-        // Merge-patch replaces arrays entirely, so we must include ALL required
-        // container fields. Spread the existing container and override only env.
         const updatedContainer = { ...container, env: existingEnv }
 
-        // Merge existing template annotations with our changes
         const existingAnnotations = currentTemplate?.metadata?.annotations || {}
         const mergedAnnotations = {
           ...existingAnnotations,
@@ -662,13 +691,33 @@ export class WarmPoolController {
       )
     }
 
-    // Save the mapping in the database so routing works across API restarts
+    // Step 3: save the DB mapping, clearing any stale mapping from a previous
+    // project that may have been assigned to this same service name.
     try {
       const { prisma } = await import('./prisma')
-      await prisma.project.update({
-        where: { id: projectId },
-        data: { knativeServiceName: pod.serviceName },
+
+      await prisma.$transaction(async (tx) => {
+        // Clear stale mappings: any OTHER project pointing to this service
+        // is no longer valid — set its knativeServiceName to null.
+        const stale = await tx.project.updateMany({
+          where: {
+            knativeServiceName: pod.serviceName,
+            id: { not: projectId },
+          },
+          data: { knativeServiceName: null },
+        })
+        if (stale.count > 0) {
+          console.warn(
+            `[WarmPool] Cleared stale knativeServiceName from ${stale.count} project(s) that previously mapped to ${pod.serviceName}`
+          )
+        }
+
+        await tx.project.update({
+          where: { id: projectId },
+          data: { knativeServiceName: pod.serviceName },
+        })
       })
+
       console.log(
         `[WarmPool] Saved knativeServiceName=${pod.serviceName} for ${projectId} (${Date.now() - t0}ms)`
       )

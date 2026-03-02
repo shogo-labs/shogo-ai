@@ -54,13 +54,20 @@ global.crypto = { randomUUID: mockRandomUUID } as any
 
 // Mock the prisma client
 const mockPrismaProjectUpdate = mock(() => Promise.resolve({}))
+const mockPrismaProjectUpdateMany = mock(() => Promise.resolve({ count: 0 }))
+const mockPrismaProjectFindFirst = mock(() => Promise.resolve(null))
+const mockPrismaProject = {
+  findUnique: mock(() => Promise.resolve({ workspaceId: 'test-workspace' })),
+  findFirst: mockPrismaProjectFindFirst,
+  update: mockPrismaProjectUpdate,
+  updateMany: mockPrismaProjectUpdateMany,
+}
+const mockPrismaClient = {
+  project: mockPrismaProject,
+  $transaction: mock((fn: (tx: any) => Promise<any>) => fn({ project: mockPrismaProject })),
+}
 mock.module('../prisma', () => ({
-  prisma: {
-    project: {
-      findUnique: mock(() => Promise.resolve({ workspaceId: 'test-workspace' })),
-      update: mockPrismaProjectUpdate,
-    },
-  },
+  prisma: mockPrismaClient,
 }))
 
 // Mock AI proxy token generation
