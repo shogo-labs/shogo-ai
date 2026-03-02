@@ -68,7 +68,7 @@ export const ENTERPRISE_FEATURES = [
 ]
 
 export const PLAN_CREDITS: Record<string, number> = {
-  free: 50,
+  free: 0,
   pro: 100,
   business: 100,
   enterprise: 10000,
