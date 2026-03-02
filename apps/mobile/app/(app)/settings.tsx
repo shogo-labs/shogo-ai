@@ -6,8 +6,6 @@
  * - People: Workspace members
  * - Account: Profile, email, preferences
  * - Billing: Plan & credits
- * - Labs: Experimental features
- * - GitHub: Source control connector
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
@@ -35,8 +33,6 @@ import {
   CreditCard,
   Shield,
   User,
-  FlaskConical,
-  Github,
   ExternalLink,
   Loader2,
   Trash2,
@@ -90,9 +86,9 @@ import {
 
 const DOCS_URL = 'https://docs.shogo.ai'
 
-type TabId = 'workspace' | 'people' | 'account' | 'billing' | 'labs' | 'github'
+type TabId = 'workspace' | 'people' | 'account' | 'billing'
 
-const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'billing', 'labs', 'github']
+const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'billing']
 
 interface NavItem {
   id: TabId
@@ -105,8 +101,6 @@ const MOBILE_NAV_ITEMS: NavItem[] = [
   { id: 'people', label: 'People', icon: Users },
   { id: 'account', label: 'Account', icon: User },
   { id: 'billing', label: 'Plans & Credits', icon: CreditCard },
-  { id: 'labs', label: 'Labs', icon: FlaskConical },
-  { id: 'github', label: 'GitHub', icon: Github },
 ]
 
 function TabBar({
@@ -194,19 +188,6 @@ function SettingsSidebar({
       label: 'Account',
       items: [
         { id: 'account', label: userName || 'Account' },
-      ],
-    },
-    {
-      id: 'labs-standalone',
-      items: [
-        { id: 'labs', label: 'Labs' },
-      ],
-    },
-    {
-      id: 'connectors',
-      label: 'Connectors',
-      items: [
-        { id: 'github', label: 'GitHub' },
       ],
     },
   ]
@@ -1292,121 +1273,6 @@ function BillingTab() {
 }
 
 // ============================================================================
-// LABS TAB
-// ============================================================================
-
-const LABS_BRANCH_SWITCHING_KEY = 'shogo:labs-github-branch-switching'
-
-function LabsTab() {
-  const [githubBranchSwitching, setGithubBranchSwitching] = useState(false)
-
-  useEffect(() => {
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
-      const stored = window.localStorage.getItem(LABS_BRANCH_SWITCHING_KEY)
-      if (stored !== null) setGithubBranchSwitching(stored === 'true')
-    }
-  }, [])
-
-  const handleToggle = useCallback((value: boolean) => {
-    setGithubBranchSwitching(value)
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
-      window.localStorage.setItem(LABS_BRANCH_SWITCHING_KEY, String(value))
-    }
-  }, [])
-
-  return (
-    <View className="gap-8">
-      <View>
-        <Text className="text-xl font-semibold text-foreground">Labs</Text>
-        <Text className="text-sm text-muted-foreground mt-1">
-          These are experimental features that might be modified or removed.
-        </Text>
-      </View>
-
-      <Card>
-        <CardContent className="p-0">
-          <View className="px-6 py-5 flex-row items-center justify-between">
-            <View className="flex-1 mr-4">
-              <Text className="text-sm font-semibold text-foreground">
-                GitHub branch switching
-              </Text>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                Select the branch to make edits to in your GitHub repository.
-              </Text>
-            </View>
-            <Switch
-              checked={githubBranchSwitching}
-              onCheckedChange={handleToggle}
-            />
-          </View>
-        </CardContent>
-      </Card>
-    </View>
-  )
-}
-
-// ============================================================================
-// GITHUB TAB
-// ============================================================================
-
-function GitHubTab() {
-  const [showComingSoon, setShowComingSoon] = useState(false)
-
-  const handleConnect = useCallback(() => {
-    setShowComingSoon(true)
-    setTimeout(() => setShowComingSoon(false), 3000)
-  }, [])
-
-  return (
-    <View className="gap-8">
-      <View>
-        <Text className="text-xl font-semibold text-foreground">GitHub</Text>
-        <Text className="text-sm text-muted-foreground mt-1">
-          Sync your project 2-way with GitHub to collaborate at source.
-        </Text>
-      </View>
-
-      <Card>
-        <CardContent className="p-0">
-          <View className="px-6 py-5 flex-row items-center justify-between">
-            <View className="flex-1 mr-4">
-              <View className="flex-row items-center gap-2">
-                <Text className="text-sm font-semibold text-foreground">
-                  Connected account
-                </Text>
-                <Badge variant="secondary">
-                  <Text className="text-[10px] text-secondary-foreground">
-                    admin
-                  </Text>
-                </Badge>
-              </View>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                Add your GitHub account to manage connected organizations.
-              </Text>
-            </View>
-            <Pressable
-              onPress={handleConnect}
-              className="border border-input bg-background rounded-md h-9 px-3 flex-row items-center justify-center"
-            >
-              <Text className="text-sm font-medium text-foreground">
-                Connect
-              </Text>
-            </Pressable>
-          </View>
-          {showComingSoon && (
-            <View className="px-6 pb-4">
-              <Text className="text-sm text-amber-500">
-                GitHub integration is coming soon.
-              </Text>
-            </View>
-          )}
-        </CardContent>
-      </Card>
-    </View>
-  )
-}
-
-// ============================================================================
 // PEOPLE TAB — Lovable-style workspace member management
 // ============================================================================
 
@@ -2096,8 +1962,6 @@ function SettingsContent({ activeTab }: { activeTab: TabId }) {
       {activeTab === 'people' && <PeopleTab />}
       {activeTab === 'account' && <AccountTab />}
       {activeTab === 'billing' && <BillingTab />}
-      {activeTab === 'labs' && <LabsTab />}
-      {activeTab === 'github' && <GitHubTab />}
     </>
   )
 }
