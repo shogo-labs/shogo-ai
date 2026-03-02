@@ -296,7 +296,7 @@ export class KnativeProjectManager {
     return this.getServiceStatus(serviceName, projectId)
   }
 
-  private async getServiceStatus(serviceName: string, projectId: string): Promise<ProjectPodStatus> {
+  async getServiceStatus(serviceName: string, projectId: string): Promise<ProjectPodStatus> {
     try {
       const api = getCustomApi()
       const response = await api.getNamespacedCustomObject({
@@ -1259,12 +1259,30 @@ export async function getProjectPodUrl(projectId: string): Promise<string> {
         select: { knativeServiceName: true },
       })
       if (projectRecord?.knativeServiceName) {
-        const dbUrl = `http://${projectRecord.knativeServiceName}.${NAMESPACE}.svc.cluster.local`
-        span.setAttribute('resolve.method', 'db_mapping')
-        span.setAttribute('resolve.duration_ms', Date.now() - totalStartTime)
-        span.setStatus({ code: SpanStatusCode.OK })
-        console.log(`[KnativeProjectManager] Project ${projectId} resolved via DB mapping to ${projectRecord.knativeServiceName} (elapsed: ${Date.now() - totalStartTime}ms)`)
-        return dbUrl
+        // Validate the mapped service still exists (it won't survive API redeployments
+        // because warm pool services are ephemeral)
+        const svcStatus = await manager.getServiceStatus(
+          projectRecord.knativeServiceName,
+          projectId,
+        ).catch(() => ({ exists: false, ready: false, url: null, replicas: 0 }) as ProjectPodStatus)
+
+        if (svcStatus.exists) {
+          const dbUrl = `http://${projectRecord.knativeServiceName}.${NAMESPACE}.svc.cluster.local`
+          span.setAttribute('resolve.method', 'db_mapping')
+          span.setAttribute('resolve.duration_ms', Date.now() - totalStartTime)
+          span.setStatus({ code: SpanStatusCode.OK })
+          console.log(`[KnativeProjectManager] Project ${projectId} resolved via DB mapping to ${projectRecord.knativeServiceName} (elapsed: ${Date.now() - totalStartTime}ms)`)
+          return dbUrl
+        }
+
+        // Stale mapping — service no longer exists. Clear it so we don't keep checking.
+        console.warn(`[KnativeProjectManager] Stale DB mapping for ${projectId}: ${projectRecord.knativeServiceName} no longer exists — clearing and re-assigning`)
+        await prisma.project.update({
+          where: { id: projectId },
+          data: { knativeServiceName: null },
+        }).catch((err: any) => {
+          console.error(`[KnativeProjectManager] Failed to clear stale mapping for ${projectId}:`, err.message)
+        })
       }
 
       // 3. Check if a legacy project-{id} Knative Service exists
