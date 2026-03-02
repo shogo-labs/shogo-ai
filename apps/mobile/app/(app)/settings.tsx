@@ -6,7 +6,6 @@
  * - People: Workspace members
  * - Account: Profile, email, preferences
  * - Billing: Plan & credits
- * - Privacy: Visibility, security toggles
  * - Labs: Experimental features
  * - GitHub: Source control connector
  */
@@ -91,9 +90,9 @@ import {
 
 const DOCS_URL = 'https://docs.shogo.ai'
 
-type TabId = 'workspace' | 'people' | 'account' | 'billing' | 'privacy' | 'labs' | 'github'
+type TabId = 'workspace' | 'people' | 'account' | 'billing' | 'labs' | 'github'
 
-const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'billing', 'privacy', 'labs', 'github']
+const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'billing', 'labs', 'github']
 
 interface NavItem {
   id: TabId
@@ -106,7 +105,6 @@ const MOBILE_NAV_ITEMS: NavItem[] = [
   { id: 'people', label: 'People', icon: Users },
   { id: 'account', label: 'Account', icon: User },
   { id: 'billing', label: 'Plans & Credits', icon: CreditCard },
-  { id: 'privacy', label: 'Privacy & Security', icon: Shield },
   { id: 'labs', label: 'Labs', icon: FlaskConical },
   { id: 'github', label: 'GitHub', icon: Github },
 ]
@@ -189,7 +187,6 @@ function SettingsSidebar({
         { id: 'workspace', label: workspaceName || 'Workspace', avatar: (workspaceName?.[0] || 'W').toUpperCase() },
         { id: 'people', label: 'People' },
         { id: 'billing', label: 'Plans & credits' },
-        { id: 'privacy', label: 'Privacy & security' },
       ],
     },
     {
@@ -1295,93 +1292,6 @@ function BillingTab() {
 }
 
 // ============================================================================
-// PRIVACY & SECURITY TAB
-// ============================================================================
-
-function PrivacyTab() {
-  const [mcpServers, setMcpServers] = useState(false)
-  const [dataOptOut, setDataOptOut] = useState(false)
-  const [restrictInvites, setRestrictInvites] = useState(false)
-
-  return (
-    <View className="gap-8">
-      <View>
-        <Text className="text-xl font-semibold text-foreground">
-          Privacy & security
-        </Text>
-        <Text className="text-sm text-muted-foreground mt-1">
-          Control who can access your workspace and how your data is handled.
-        </Text>
-      </View>
-
-      <Card>
-        <CardContent className="p-0">
-          <View className="px-6 py-5 flex-row items-center justify-between">
-            <View className="flex-1 mr-4">
-              <View className="flex-row items-center gap-2">
-                <Text className="text-sm font-semibold text-foreground">
-                  MCP servers access
-                </Text>
-                <Badge className="bg-purple-500/10">
-                  <Text className="text-[10px] text-purple-500">Business</Text>
-                </Badge>
-              </View>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                Enable or disable MCP servers for all workspace members.
-              </Text>
-            </View>
-            <Switch checked={mcpServers} onCheckedChange={setMcpServers} />
-          </View>
-
-          <Separator />
-
-          <View className="px-6 py-5 flex-row items-center justify-between">
-            <View className="flex-1 mr-4">
-              <View className="flex-row items-center gap-2">
-                <Text className="text-sm font-semibold text-foreground">
-                  Data collection opt out
-                </Text>
-                <Badge className="bg-purple-500/10">
-                  <Text className="text-[10px] text-purple-500">Business</Text>
-                </Badge>
-              </View>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                Opt out of data collection for this workspace.
-              </Text>
-            </View>
-            <Switch checked={dataOptOut} onCheckedChange={setDataOptOut} />
-          </View>
-
-          <Separator />
-
-          <View className="px-6 py-5 flex-row items-center justify-between">
-            <View className="flex-1 mr-4">
-              <View className="flex-row items-center gap-2">
-                <Text className="text-sm font-semibold text-foreground">
-                  Restrict workspace invitations
-                </Text>
-                <Badge className="bg-amber-500/10">
-                  <Text className="text-[10px] text-amber-500">
-                    Enterprise
-                  </Text>
-                </Badge>
-              </View>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                When enabled, only admins and owners can invite members.
-              </Text>
-            </View>
-            <Switch
-              checked={restrictInvites}
-              onCheckedChange={setRestrictInvites}
-            />
-          </View>
-        </CardContent>
-      </Card>
-    </View>
-  )
-}
-
-// ============================================================================
 // LABS TAB
 // ============================================================================
 
@@ -2186,7 +2096,6 @@ function SettingsContent({ activeTab }: { activeTab: TabId }) {
       {activeTab === 'people' && <PeopleTab />}
       {activeTab === 'account' && <AccountTab />}
       {activeTab === 'billing' && <BillingTab />}
-      {activeTab === 'privacy' && <PrivacyTab />}
       {activeTab === 'labs' && <LabsTab />}
       {activeTab === 'github' && <GitHubTab />}
     </>
