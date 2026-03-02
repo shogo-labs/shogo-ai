@@ -22,6 +22,7 @@ import {
 } from '../../contexts/domain'
 import { CompactChatInput } from '../../components/chat/CompactChatInput'
 import { setPendingImageData } from '../../lib/pending-image-store'
+import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { API_URL } from '../../lib/api'
 
 interface AgentTemplate {
@@ -290,8 +291,7 @@ const HomeScreen = observer(function HomeScreen() {
     fetchTemplates()
   }, [isAuthenticated])
 
-  let currentWorkspace: any
-  try { currentWorkspace = workspaces.all[0] } catch { currentWorkspace = undefined }
+  const currentWorkspace = useActiveWorkspace()
 
   const firstName = useMemo(() => {
     const name = user?.name || 'there'

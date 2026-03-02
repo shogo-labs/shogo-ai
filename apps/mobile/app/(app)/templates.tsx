@@ -13,11 +13,11 @@ import { observer } from 'mobx-react-lite'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
 import {
-  useWorkspaceCollection,
   useProjectCollection,
   useDomainActions,
 } from '../../contexts/domain'
 import { API_URL } from '../../lib/api'
+import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 
 interface AgentTemplate {
   id: string
@@ -167,7 +167,6 @@ export default observer(function TemplatesPage() {
   const router = useRouter()
   const { user } = useAuth()
   const actions = useDomainActions()
-  const workspaces = useWorkspaceCollection()
   const projects = useProjectCollection()
   const isDark = useDarkMode()
   const [templates, setTemplates] = useState<AgentTemplate[]>([])
@@ -175,7 +174,7 @@ export default observer(function TemplatesPage() {
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
   const [activeFilter, setActiveFilter] = useState('all')
 
-  const currentWorkspace = workspaces.all.length > 0 ? workspaces.all[0] : null
+  const currentWorkspace = useActiveWorkspace()
 
   useEffect(() => {
     async function fetchTemplates() {

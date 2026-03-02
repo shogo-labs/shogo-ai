@@ -6,9 +6,6 @@
  * - People: Workspace members
  * - Account: Profile, email, preferences
  * - Billing: Plan & credits
- * - Privacy: Visibility, security toggles
- * - Labs: Experimental features
- * - GitHub: Source control connector
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
@@ -36,8 +33,6 @@ import {
   CreditCard,
   Shield,
   User,
-  FlaskConical,
-  Github,
   ExternalLink,
   Loader2,
   Trash2,
@@ -63,6 +58,8 @@ import {
   type IDomainStore,
 } from '../../contexts/domain'
 import { useDomainActions } from '@shogo/shared-app/domain'
+import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { setActiveWorkspaceId } from '../../lib/workspace-store'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import {
   PRO_TIERS,
@@ -91,9 +88,9 @@ import {
 
 const DOCS_URL = 'https://docs.shogo.ai'
 
-type TabId = 'workspace' | 'people' | 'account' | 'billing' | 'privacy' | 'labs' | 'github'
+type TabId = 'workspace' | 'people' | 'account' | 'billing'
 
-const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'billing', 'privacy', 'labs', 'github']
+const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'billing']
 
 interface NavItem {
   id: TabId
@@ -106,9 +103,6 @@ const MOBILE_NAV_ITEMS: NavItem[] = [
   { id: 'people', label: 'People', icon: Users },
   { id: 'account', label: 'Account', icon: User },
   { id: 'billing', label: 'Plans & Credits', icon: CreditCard },
-  { id: 'privacy', label: 'Privacy & Security', icon: Shield },
-  { id: 'labs', label: 'Labs', icon: FlaskConical },
-  { id: 'github', label: 'GitHub', icon: Github },
 ]
 
 function TabBar({
@@ -189,7 +183,6 @@ function SettingsSidebar({
         { id: 'workspace', label: workspaceName || 'Workspace', avatar: (workspaceName?.[0] || 'W').toUpperCase() },
         { id: 'people', label: 'People' },
         { id: 'billing', label: 'Plans & credits' },
-        { id: 'privacy', label: 'Privacy & security' },
       ],
     },
     {
@@ -197,19 +190,6 @@ function SettingsSidebar({
       label: 'Account',
       items: [
         { id: 'account', label: userName || 'Account' },
-      ],
-    },
-    {
-      id: 'labs-standalone',
-      items: [
-        { id: 'labs', label: 'Labs' },
-      ],
-    },
-    {
-      id: 'connectors',
-      label: 'Connectors',
-      items: [
-        { id: 'github', label: 'GitHub' },
       ],
     },
   ]
@@ -273,19 +253,22 @@ function SettingsSidebar({
 // WORKSPACE SETTINGS TAB
 // ============================================================================
 
-function WorkspaceSettingsTab() {
+const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
   const router = useRouter()
   const store = useDomain() as IDomainStore
   const actions = useDomainActions()
   const { user } = useAuth()
   const workspaces = useWorkspaceCollection()
   const members = useMemberCollection()
-
-  const currentWorkspace = workspaces.all.length > 0 ? workspaces.all[0] : null
+  const http = useDomainHttp()
+  const currentWorkspace = useActiveWorkspace()
 
   const [name, setName] = useState(currentWorkspace?.name || '')
   const [isSaving, setIsSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
+  const [isLeaveDialogOpen, setIsLeaveDialogOpen] = useState(false)
+  const [isLeaving, setIsLeaving] = useState(false)
+  const [leaveError, setLeaveError] = useState<string | null>(null)
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [deleteConfirmText, setDeleteConfirmText] = useState('')
@@ -317,6 +300,12 @@ function WorkspaceSettingsTab() {
     setName(currentWorkspace?.name || '')
     setSaveStatus('idle')
   }, [currentWorkspace?.name])
+
+  useEffect(() => {
+    if (currentWorkspace?.id) {
+      members.loadAll({ workspaceId: currentWorkspace.id }).catch(() => {})
+    }
+  }, [currentWorkspace?.id])
 
   const handleSave = async () => {
     if (!hasChanges || !isValid || !currentWorkspace?.id) return
@@ -472,10 +461,17 @@ function WorkspaceSettingsTab() {
                 Leave workspace
               </Text>
               <Text className="text-sm text-muted-foreground mt-0.5">
-                You cannot leave your last workspace. Your account must be a member of at least one workspace.
+                Leave this workspace. You will lose access to its projects and data.
               </Text>
             </View>
-            <Button variant="outline" size="sm" disabled>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={workspaces.all.length <= 1 || (isOwner && !workspaceMembers.some(
+                (m: any) => m.role === 'owner' && m.userId !== user?.id
+              ))}
+              onPress={() => setIsLeaveDialogOpen(true)}
+            >
               Leave workspace
             </Button>
           </View>
@@ -509,6 +505,81 @@ function WorkspaceSettingsTab() {
           )}
         </CardContent>
       </Card>
+
+      {/* Leave Workspace Confirmation Modal */}
+      <Modal
+        visible={isLeaveDialogOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => { if (!isLeaving) { setIsLeaveDialogOpen(false); setLeaveError(null) } }}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 justify-center items-center px-6"
+          onPress={() => { if (!isLeaving) { setIsLeaveDialogOpen(false); setLeaveError(null) } }}
+        >
+          <Pressable className="bg-background rounded-xl p-6 w-full max-w-sm gap-4">
+            <View className="flex-row items-center justify-between">
+              <Text className="text-lg font-semibold text-foreground">
+                Leave workspace
+              </Text>
+              <Pressable onPress={() => { if (!isLeaving) { setIsLeaveDialogOpen(false); setLeaveError(null) } }} className="p-1">
+                <X size={20} className="text-muted-foreground" />
+              </Pressable>
+            </View>
+            <Text className="text-sm text-muted-foreground">
+              Are you sure you want to leave "{currentWorkspace?.name}"? You will lose access to all projects and data in this workspace.
+            </Text>
+            {leaveError && (
+              <Text className="text-sm text-destructive">{leaveError}</Text>
+            )}
+            <View className="flex-row gap-2 justify-end">
+              <Button
+                variant="outline"
+                size="sm"
+                onPress={() => { setIsLeaveDialogOpen(false); setLeaveError(null) }}
+                disabled={isLeaving}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={isLeaving}
+                onPress={async () => {
+                  setIsLeaving(true)
+                  setLeaveError(null)
+                  try {
+                    const wsId = currentWorkspace?.id
+                    if (!wsId) {
+                      setLeaveError('Missing workspace information.')
+                      setIsLeaving(false)
+                      return
+                    }
+                    await http.post(`/api/workspaces/${wsId}/leave`)
+                    await workspaces.loadAll()
+                    const remaining = workspaces.all
+                    if (remaining.length > 0) {
+                      setActiveWorkspaceId((remaining[0] as any).id)
+                    }
+                    setIsLeaveDialogOpen(false)
+                    setLeaveError(null)
+                    router.replace('/(app)/projects')
+                  } catch (error: any) {
+                    console.error('[Settings] Failed to leave workspace:', error)
+                    const msg = error?.details?.error?.message
+                      || error?.message
+                      || 'Failed to leave workspace.'
+                    setLeaveError(msg)
+                    setIsLeaving(false)
+                  }
+                }}
+              >
+                {isLeaving ? 'Leaving...' : 'Leave workspace'}
+              </Button>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* Delete Workspace Confirmation Modal */}
       <Modal
@@ -568,7 +639,7 @@ function WorkspaceSettingsTab() {
       </Modal>
     </View>
   )
-}
+})
 
 // ============================================================================
 // ACCOUNT TAB
@@ -1006,8 +1077,7 @@ function AccountTab() {
 function BillingTab() {
   const { user } = useAuth()
   const actions = useDomainActions()
-  const workspaces = useWorkspaceCollection()
-  const currentWorkspace = workspaces.all.length > 0 ? workspaces.all[0] : null
+  const currentWorkspace = useActiveWorkspace()
 
   const {
     subscription,
@@ -1295,208 +1365,6 @@ function BillingTab() {
 }
 
 // ============================================================================
-// PRIVACY & SECURITY TAB
-// ============================================================================
-
-function PrivacyTab() {
-  const [mcpServers, setMcpServers] = useState(false)
-  const [dataOptOut, setDataOptOut] = useState(false)
-  const [restrictInvites, setRestrictInvites] = useState(false)
-
-  return (
-    <View className="gap-8">
-      <View>
-        <Text className="text-xl font-semibold text-foreground">
-          Privacy & security
-        </Text>
-        <Text className="text-sm text-muted-foreground mt-1">
-          Control who can access your workspace and how your data is handled.
-        </Text>
-      </View>
-
-      <Card>
-        <CardContent className="p-0">
-          <View className="px-6 py-5 flex-row items-center justify-between">
-            <View className="flex-1 mr-4">
-              <View className="flex-row items-center gap-2">
-                <Text className="text-sm font-semibold text-foreground">
-                  MCP servers access
-                </Text>
-                <Badge className="bg-purple-500/10">
-                  <Text className="text-[10px] text-purple-500">Business</Text>
-                </Badge>
-              </View>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                Enable or disable MCP servers for all workspace members.
-              </Text>
-            </View>
-            <Switch checked={mcpServers} onCheckedChange={setMcpServers} />
-          </View>
-
-          <Separator />
-
-          <View className="px-6 py-5 flex-row items-center justify-between">
-            <View className="flex-1 mr-4">
-              <View className="flex-row items-center gap-2">
-                <Text className="text-sm font-semibold text-foreground">
-                  Data collection opt out
-                </Text>
-                <Badge className="bg-purple-500/10">
-                  <Text className="text-[10px] text-purple-500">Business</Text>
-                </Badge>
-              </View>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                Opt out of data collection for this workspace.
-              </Text>
-            </View>
-            <Switch checked={dataOptOut} onCheckedChange={setDataOptOut} />
-          </View>
-
-          <Separator />
-
-          <View className="px-6 py-5 flex-row items-center justify-between">
-            <View className="flex-1 mr-4">
-              <View className="flex-row items-center gap-2">
-                <Text className="text-sm font-semibold text-foreground">
-                  Restrict workspace invitations
-                </Text>
-                <Badge className="bg-amber-500/10">
-                  <Text className="text-[10px] text-amber-500">
-                    Enterprise
-                  </Text>
-                </Badge>
-              </View>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                When enabled, only admins and owners can invite members.
-              </Text>
-            </View>
-            <Switch
-              checked={restrictInvites}
-              onCheckedChange={setRestrictInvites}
-            />
-          </View>
-        </CardContent>
-      </Card>
-    </View>
-  )
-}
-
-// ============================================================================
-// LABS TAB
-// ============================================================================
-
-const LABS_BRANCH_SWITCHING_KEY = 'shogo:labs-github-branch-switching'
-
-function LabsTab() {
-  const [githubBranchSwitching, setGithubBranchSwitching] = useState(false)
-
-  useEffect(() => {
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
-      const stored = window.localStorage.getItem(LABS_BRANCH_SWITCHING_KEY)
-      if (stored !== null) setGithubBranchSwitching(stored === 'true')
-    }
-  }, [])
-
-  const handleToggle = useCallback((value: boolean) => {
-    setGithubBranchSwitching(value)
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
-      window.localStorage.setItem(LABS_BRANCH_SWITCHING_KEY, String(value))
-    }
-  }, [])
-
-  return (
-    <View className="gap-8">
-      <View>
-        <Text className="text-xl font-semibold text-foreground">Labs</Text>
-        <Text className="text-sm text-muted-foreground mt-1">
-          These are experimental features that might be modified or removed.
-        </Text>
-      </View>
-
-      <Card>
-        <CardContent className="p-0">
-          <View className="px-6 py-5 flex-row items-center justify-between">
-            <View className="flex-1 mr-4">
-              <Text className="text-sm font-semibold text-foreground">
-                GitHub branch switching
-              </Text>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                Select the branch to make edits to in your GitHub repository.
-              </Text>
-            </View>
-            <Switch
-              checked={githubBranchSwitching}
-              onCheckedChange={handleToggle}
-            />
-          </View>
-        </CardContent>
-      </Card>
-    </View>
-  )
-}
-
-// ============================================================================
-// GITHUB TAB
-// ============================================================================
-
-function GitHubTab() {
-  const [showComingSoon, setShowComingSoon] = useState(false)
-
-  const handleConnect = useCallback(() => {
-    setShowComingSoon(true)
-    setTimeout(() => setShowComingSoon(false), 3000)
-  }, [])
-
-  return (
-    <View className="gap-8">
-      <View>
-        <Text className="text-xl font-semibold text-foreground">GitHub</Text>
-        <Text className="text-sm text-muted-foreground mt-1">
-          Sync your project 2-way with GitHub to collaborate at source.
-        </Text>
-      </View>
-
-      <Card>
-        <CardContent className="p-0">
-          <View className="px-6 py-5 flex-row items-center justify-between">
-            <View className="flex-1 mr-4">
-              <View className="flex-row items-center gap-2">
-                <Text className="text-sm font-semibold text-foreground">
-                  Connected account
-                </Text>
-                <Badge variant="secondary">
-                  <Text className="text-[10px] text-secondary-foreground">
-                    admin
-                  </Text>
-                </Badge>
-              </View>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                Add your GitHub account to manage connected organizations.
-              </Text>
-            </View>
-            <Pressable
-              onPress={handleConnect}
-              className="border border-input bg-background rounded-md h-9 px-3 flex-row items-center justify-center"
-            >
-              <Text className="text-sm font-medium text-foreground">
-                Connect
-              </Text>
-            </Pressable>
-          </View>
-          {showComingSoon && (
-            <View className="px-6 pb-4">
-              <Text className="text-sm text-amber-500">
-                GitHub integration is coming soon.
-              </Text>
-            </View>
-          )}
-        </CardContent>
-      </Card>
-    </View>
-  )
-}
-
-// ============================================================================
 // PEOPLE TAB — Lovable-style workspace member management
 // ============================================================================
 
@@ -1519,13 +1387,14 @@ const ROLE_COLORS: Record<string, string> = {
 type SortField = 'name' | 'role' | 'joinedDate' | 'usage' | 'totalUsage' | 'creditLimit'
 type SortDir = 'asc' | 'desc'
 
-function PeopleTab() {
+const PeopleTab = observer(function PeopleTab() {
   const { user } = useAuth()
   const workspaces = useWorkspaceCollection()
   const members = useMemberCollection()
   const invitations = useInvitationCollection()
   const actions = useDomainActions()
-  const currentWorkspace = workspaces.all.length > 0 ? workspaces.all[0] : null
+  const http = useDomainHttp()
+  const currentWorkspace = useActiveWorkspace()
 
   const [subTab, setSubTab] = useState<PeopleSubTab>('all')
   const [search, setSearch] = useState('')
@@ -1535,55 +1404,96 @@ function PeopleTab() {
   const [sortField, setSortField] = useState<SortField>('name')
   const [sortDir, setSortDir] = useState<SortDir>('asc')
   const [isLoading, setIsLoading] = useState(true)
+  const [menuState, setMenuState] = useState<{ memberId: string; view: 'actions' | 'roles' } | null>(null)
+  const [userMap, setUserMap] = useState<Record<string, { name: string; email: string }>>({})
+  const [receivedInvites, setReceivedInvites] = useState<any[]>([])
 
   const [resolvedWs, setResolvedWs] = useState<{ id: string; name: string } | null>(null)
 
   const loadPeopleData = useCallback(async () => {
+    if (!currentWorkspace?.id) {
+      if (workspaces.all.length === 0) {
+        try { await workspaces.loadAll({}) } catch {}
+      }
+      setIsLoading(false)
+      return
+    }
     setIsLoading(true)
     try {
-      if (workspaces.all.length === 0) {
-        await workspaces.loadAll({})
-      }
-      if (workspaces.all.length === 0) {
-        await new Promise(r => setTimeout(r, 1500))
-        await workspaces.loadAll({})
-      }
-
-      const ws = workspaces.all[0]
-      if (!ws?.id) { setIsLoading(false); return }
+      const ws = currentWorkspace
       setResolvedWs({ id: ws.id, name: ws.name || 'Workspace' })
 
       await members.loadAll({ workspaceId: ws.id })
       await invitations.loadAll({ workspaceId: ws.id })
 
-      if (user?.email) {
-        await invitations.loadAll({ email: user.email })
+      if (http) {
+        try {
+          const res = await http.get<{ ok: boolean; items?: any[] }>(
+            `/api/members?workspaceId=${ws.id}`
+          )
+          if (res.data?.ok && res.data.items) {
+            const map: Record<string, { name: string; email: string }> = {}
+            for (const item of res.data.items) {
+              if (item.user && typeof item.user === 'object' && item.user.id) {
+                map[item.user.id] = {
+                  name: item.user.name || '',
+                  email: item.user.email || '',
+                }
+              }
+            }
+            setUserMap(map)
+          }
+        } catch {}
+
+        if (user?.email) {
+          try {
+            const invRes = await http.get<{ ok: boolean; items?: any[] }>(
+              `/api/invitations?email=${encodeURIComponent(user.email)}`
+            )
+            if (invRes.data?.ok && invRes.data.items) {
+              setReceivedInvites(
+                invRes.data.items.filter((i: any) => i.status === 'pending')
+              )
+            }
+          } catch {}
+        }
       }
     } catch {}
     setIsLoading(false)
-  }, [workspaces, members, invitations, currentWorkspace?.id, user?.email])
+  }, [workspaces, members, invitations, http, currentWorkspace?.id, user?.email])
 
   useEffect(() => { loadPeopleData() }, [loadPeopleData])
 
-  const workspaceMembers = currentWorkspace?.id
-    ? members.all.filter((m: any) => m.workspaceId === currentWorkspace.id && !m.projectId)
-    : []
-  const pendingInvitations = currentWorkspace?.id
-    ? invitations.all.filter((i: any) => i.workspaceId === currentWorkspace.id && i.status === 'pending')
-    : []
-  const receivedInvitations = user?.email
-    ? invitations.all.filter((i: any) => i.email === user.email && i.status === 'pending')
+  const ROLE_PRIORITY: Record<string, number> = { owner: 0, admin: 1, member: 2, viewer: 3 }
+
+  const workspaceMembers = useMemo(() => {
+    if (!currentWorkspace?.id) return []
+    const raw = members.all.filter((m: any) => m.workspaceId === currentWorkspace.id && !m.projectId)
+    const byUser = new Map<string, any>()
+    for (const m of raw) {
+      const existing = byUser.get(m.userId)
+      if (!existing || (ROLE_PRIORITY[m.role] ?? 9) < (ROLE_PRIORITY[existing.role] ?? 9)) {
+        byUser.set(m.userId, m)
+      }
+    }
+    return Array.from(byUser.values())
+  }, [currentWorkspace?.id, members.all])
+  const sentInvitations = currentWorkspace?.id
+    ? invitations.all.filter((i: any) => i.workspaceId === currentWorkspace.id && i.status !== 'cancelled')
     : []
 
   const filteredMembers = useMemo(() => {
     let result = [...workspaceMembers]
     if (search.trim()) {
       const q = search.toLowerCase()
-      result = result.filter((m: any) =>
-        (m.user?.name || '').toLowerCase().includes(q) ||
-        (m.user?.email || '').toLowerCase().includes(q) ||
-        (m.userId || '').toLowerCase().includes(q)
-      )
+      result = result.filter((m: any) => {
+        const u = userMap[m.userId]
+        return (
+          (u?.name || '').toLowerCase().includes(q) ||
+          (u?.email || '').toLowerCase().includes(q) ||
+          (m.userId || '').toLowerCase().includes(q)
+        )
+      })
     }
     if (roleFilter !== 'all') {
       result = result.filter((m: any) => m.role === roleFilter)
@@ -1607,11 +1517,43 @@ function PeopleTab() {
     }
   }
 
-  const handleCancelInvitation = async (invitationId: string) => {
+  const currentUserMembership = workspaceMembers.find((m: any) => m.userId === user?.id)
+  const canManageMembers = currentUserMembership?.role === 'owner' || currentUserMembership?.role === 'admin'
+
+  const handleChangeRole = async (memberId: string, newRole: 'owner' | 'admin' | 'member' | 'viewer') => {
     try {
-      await actions.cancelInvitation(invitationId)
+      await actions.updateMemberRole(memberId, newRole, user?.id || '')
+      setMenuState(null)
+      await loadPeopleData()
     } catch {}
   }
+
+  const handleRemoveMember = useCallback(async (memberId: string) => {
+    const confirmed = Platform.OS === 'web'
+      ? window.confirm('Are you sure you want to remove this member?')
+      : true
+    if (!confirmed) { setMenuState(null); return }
+    try {
+      setMenuState(null)
+      await actions.removeMember(memberId, user?.id || '')
+      await loadPeopleData()
+    } catch {
+      if (Platform.OS === 'web') {
+        window.alert('Failed to remove member. You may not have permission.')
+      }
+    }
+  }, [actions, user?.id, loadPeopleData])
+
+  const handleCancelInvitation = useCallback(async (invitationId: string) => {
+    const confirmed = Platform.OS === 'web'
+      ? window.confirm('Cancel this invitation? The invite link will no longer work.')
+      : true
+    if (!confirmed) return
+    try {
+      await actions.cancelInvitation(invitationId)
+      await loadPeopleData()
+    } catch {}
+  }, [actions, loadPeopleData])
 
   const builderCount = workspaceMembers.length
   const currentMonth = new Date().toLocaleString('default', { month: 'short' })
@@ -1648,7 +1590,11 @@ function PeopleTab() {
         {SUB_TABS.map((tab) => (
           <Pressable
             key={tab.id}
-            onPress={() => setSubTab(tab.id)}
+            onPress={() => {
+              setSubTab(tab.id)
+              setShowRoleFilter(false)
+              setMenuState(null)
+            }}
             className={cn(
               'px-4 py-2.5 mr-1',
               subTab === tab.id
@@ -1672,51 +1618,37 @@ function PeopleTab() {
 
       {/* Controls row */}
       <View className="flex-row items-center gap-2 mb-4 flex-wrap">
-        <View className="flex-row items-center flex-1 min-w-[160px] border border-border rounded-lg px-3 h-9">
-          <Search size={14} className="text-muted-foreground mr-2" />
-          <TextInput
-            value={search}
-            onChangeText={setSearch}
-            placeholder="Search..."
-            className="flex-1 text-sm text-foreground placeholder:text-muted-foreground web:outline-none"
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-        </View>
-
-        <View className="relative">
-          <Pressable
-            onPress={() => setShowRoleFilter(!showRoleFilter)}
-            className="flex-row items-center h-9 px-3 border border-border rounded-lg gap-1.5"
-          >
-            <Text className="text-sm text-foreground">
-              {roleFilter === 'all' ? 'All roles' : ROLE_DISPLAY[roleFilter] || roleFilter}
-            </Text>
-            <ChevronDown size={14} className="text-muted-foreground" />
-          </Pressable>
-          {showRoleFilter && (
-            <View className="absolute top-10 left-0 z-50 bg-background border border-border rounded-lg shadow-lg min-w-[140px]">
-              {[{ value: 'all', label: 'All roles' }, { value: 'owner', label: 'Owner' }, { value: 'admin', label: 'Admin' }, { value: 'member', label: 'Editor' }, { value: 'viewer', label: 'Viewer' }].map((opt) => (
-                <Pressable
-                  key={opt.value}
-                  onPress={() => { setRoleFilter(opt.value); setShowRoleFilter(false) }}
-                  className={cn(
-                    'px-3 py-2',
-                    roleFilter === opt.value && 'bg-accent'
-                  )}
-                >
-                  <Text className={cn('text-sm', roleFilter === opt.value ? 'text-foreground font-medium' : 'text-foreground')}>
-                    {opt.label}
-                  </Text>
-                </Pressable>
-              ))}
+        {subTab === 'all' && (
+          <>
+            <View className="flex-row items-center flex-1 min-w-[160px] border border-border rounded-lg px-3 h-9">
+              <Search size={14} className="text-muted-foreground mr-2" />
+              <TextInput
+                value={search}
+                onChangeText={setSearch}
+                placeholder="Search..."
+                className="flex-1 text-sm text-foreground placeholder:text-muted-foreground web:outline-none"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
             </View>
-          )}
-        </View>
 
-        <Pressable className="h-9 px-3 border border-border rounded-lg items-center justify-center">
-          <Text className="text-sm text-foreground">Export</Text>
-        </Pressable>
+            <Pressable
+              onPress={() => setShowRoleFilter(true)}
+              className="flex-row items-center h-9 px-3 border border-border rounded-lg gap-1.5"
+            >
+              <Text className="text-sm text-foreground">
+                {roleFilter === 'all' ? 'All roles' : ROLE_DISPLAY[roleFilter] || roleFilter}
+              </Text>
+              <ChevronDown size={14} className="text-muted-foreground" />
+            </Pressable>
+
+            <Pressable className="h-9 px-3 border border-border rounded-lg items-center justify-center">
+              <Text className="text-sm text-foreground">Export</Text>
+            </Pressable>
+          </>
+        )}
+
+        {subTab === 'invitations' && <View className="flex-1" />}
 
         <Pressable
           onPress={() => setShowInviteModal(true)}
@@ -1775,13 +1707,14 @@ function PeopleTab() {
                 {filteredMembers.map((member: any) => {
                   const isCurrentUser = member.userId === user?.id
                   const avatarColor = ROLE_COLORS[member.role] || 'bg-primary'
-                  const mName = isCurrentUser ? (user?.name || user?.email) : (member.user?.name || member.user?.email || member.userId)
-                  const mEmail = isCurrentUser ? user?.email : (member.user?.email || member.userId)
+                  const resolved = userMap[member.userId]
+                  const mName = isCurrentUser ? (user?.name || user?.email) : (resolved?.name || resolved?.email || member.userId)
+                  const mEmail = isCurrentUser ? user?.email : (resolved?.email || member.userId)
                   const initial = (mName || 'M')[0]?.toUpperCase()
                   return (
                     <View
                       key={member.id}
-                      className="flex-row items-center px-4 py-3 border-b border-border"
+                      className="flex-row items-center px-4 py-3 border-b border-border overflow-visible"
                     >
                       <View className="flex-row items-center flex-[2] gap-3">
                         <View className={cn('h-8 w-8 rounded-full items-center justify-center', avatarColor)}>
@@ -1803,12 +1736,25 @@ function PeopleTab() {
                       </View>
 
                       <View className="w-24">
-                        <View className="flex-row items-center gap-1">
+                        {canManageMembers && !isCurrentUser ? (
+                          <Pressable
+                            onPress={() => setMenuState(
+                              menuState?.memberId === member.id && menuState?.view === 'roles'
+                                ? null
+                                : { memberId: member.id, view: 'roles' }
+                            )}
+                            className="flex-row items-center gap-1"
+                          >
+                            <Text className="text-sm text-foreground capitalize">
+                              {ROLE_DISPLAY[member.role] || member.role}
+                            </Text>
+                            <ChevronDown size={12} className="text-muted-foreground" />
+                          </Pressable>
+                        ) : (
                           <Text className="text-sm text-foreground capitalize">
                             {ROLE_DISPLAY[member.role] || member.role}
                           </Text>
-                          <ChevronDown size={12} className="text-muted-foreground" />
-                        </View>
+                        )}
                       </View>
 
                       <View className="w-28">
@@ -1831,9 +1777,20 @@ function PeopleTab() {
                         <Text className="text-sm text-foreground">—</Text>
                       </View>
 
-                      <Pressable className="w-8 items-center">
-                        <Text className="text-muted-foreground">···</Text>
-                      </Pressable>
+                      <View className="w-8">
+                        {canManageMembers && !isCurrentUser ? (
+                          <Pressable
+                            onPress={() => setMenuState({ memberId: member.id, view: 'actions' })}
+                            className="items-center"
+                          >
+                            <Text className="text-muted-foreground">···</Text>
+                          </Pressable>
+                        ) : (
+                          <View className="items-center">
+                            <Text className="text-muted-foreground/30">···</Text>
+                          </View>
+                        )}
+                      </View>
                     </View>
                   )
                 })}
@@ -1855,24 +1812,38 @@ function PeopleTab() {
           {/* Received invitations */}
           <View>
             <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 px-1">Received</Text>
-            {receivedInvitations.length === 0 ? (
+            {receivedInvites.length === 0 ? (
               <Card><CardContent className="py-6 items-center"><Text className="text-sm text-muted-foreground">No pending invitations</Text></CardContent></Card>
             ) : (
               <Card>
                 <CardContent className="p-0">
-                  {receivedInvitations.map((inv: any) => (
+                  {receivedInvites.map((inv: any) => (
                     <View key={inv.id} className="p-4 border-b border-border">
                       <View className="flex-row items-center justify-between mb-1">
-                        <Text className="text-base font-semibold text-foreground">{inv.workspace?.name || 'Workspace'}</Text>
-                        <View className="px-2 py-0.5 rounded bg-muted"><Text className="text-xs text-muted-foreground capitalize">{ROLE_DISPLAY[inv.role] || inv.role}</Text></View>
+                        <Text className="text-base font-semibold text-foreground">
+                          {inv.workspace?.name || inv.workspaceName || 'Workspace'}
+                        </Text>
+                        <View className="px-2 py-0.5 rounded bg-muted">
+                          <Text className="text-xs text-muted-foreground capitalize">{ROLE_DISPLAY[inv.role] || inv.role}</Text>
+                        </View>
                       </View>
                       <Text className="text-sm text-muted-foreground mb-3">You've been invited to join this workspace</Text>
                       <View className="flex-row gap-2">
                         <Pressable
                           onPress={async () => {
+                            setReceivedInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
                             try {
-                              await actions.acceptInvitation(inv.id, user?.id || '')
+                              if (http) {
+                                await http.patch(`/api/invitations/${inv.id}`, { status: 'accepted' })
+                                await http.post('/api/members', {
+                                  userId: user?.id,
+                                  workspaceId: inv.workspaceId,
+                                  role: inv.role,
+                                  isBillingAdmin: false,
+                                })
+                              }
                             } catch {}
+                            loadPeopleData()
                           }}
                           className="flex-1 h-10 bg-primary rounded-lg items-center justify-center"
                         >
@@ -1880,9 +1851,13 @@ function PeopleTab() {
                         </Pressable>
                         <Pressable
                           onPress={async () => {
+                            setReceivedInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
                             try {
-                              await actions.declineInvitation(inv.id)
+                              if (http) {
+                                await http.patch(`/api/invitations/${inv.id}`, { status: 'declined' })
+                              }
                             } catch {}
+                            loadPeopleData()
                           }}
                           className="flex-1 h-10 border border-border rounded-lg items-center justify-center"
                         >
@@ -1906,7 +1881,7 @@ function PeopleTab() {
                 <ActivityIndicator size="small" />
                 <Text className="text-sm text-muted-foreground mt-2">Loading...</Text>
               </View>
-            ) : pendingInvitations.length === 0 ? (
+            ) : sentInvitations.length === 0 ? (
               <View className="py-16 items-center px-6">
                 <View className="h-12 w-12 rounded-lg bg-muted/50 items-center justify-center mb-4">
                   <Mail size={24} className="text-muted-foreground/50" />
@@ -1939,15 +1914,25 @@ function PeopleTab() {
                   <View className="w-8" />
                 </View>
 
-                {pendingInvitations.map((inv: any) => {
-                  const isExpired = Date.now() > inv.expiresAt
+                {sentInvitations.map((inv: any) => {
+                  const isExpired = inv.status === 'expired' || Date.now() > inv.expiresAt
+                  const status = isExpired ? 'expired' : (inv.status as string)
+                  const isDimmed = status === 'expired' || status === 'declined'
+                  const badgeVariant = status === 'accepted' ? 'default'
+                    : status === 'declined' ? 'destructive'
+                    : status === 'expired' ? 'outline'
+                    : 'secondary'
+                  const badgeLabel = status === 'accepted' ? 'Accepted'
+                    : status === 'declined' ? 'Declined'
+                    : status === 'expired' ? 'Expired'
+                    : 'Pending'
                   return (
                     <View
                       key={inv.id}
-                      className={cn('flex-row items-center px-4 py-3 border-b border-border', isExpired && 'opacity-60')}
+                      className={cn('flex-row items-center px-4 py-3 border-b border-border', isDimmed && 'opacity-50')}
                     >
                       <View className="flex-[2]">
-                        <Text className={cn('text-sm text-foreground', isExpired && 'line-through')}>{inv.email}</Text>
+                        <Text className={cn('text-sm text-foreground', isDimmed && 'line-through')}>{inv.email}</Text>
                       </View>
                       <View className="w-24">
                         <Text className="text-sm text-foreground capitalize">{ROLE_DISPLAY[inv.role] || inv.role}</Text>
@@ -1958,37 +1943,68 @@ function PeopleTab() {
                         </Text>
                       </View>
                       <View className="w-24">
-                        <Badge variant={isExpired ? 'destructive' : 'secondary'}>
-                          <Text className="text-[10px]">{isExpired ? 'Expired' : 'Pending'}</Text>
+                        <Badge variant={badgeVariant}>
+                          <Text className="text-[10px]">{badgeLabel}</Text>
                         </Badge>
                       </View>
-                      <Pressable
-                        onPress={() => handleCancelInvitation(inv.id)}
-                        className="w-8 items-center"
-                      >
-                        <X size={14} className="text-muted-foreground" />
-                      </Pressable>
+                      <View className="w-8 items-center">
+                        {status === 'pending' && (
+                          <Pressable onPress={() => handleCancelInvitation(inv.id)}>
+                            <X size={14} className="text-muted-foreground" />
+                          </Pressable>
+                        )}
+                      </View>
                     </View>
                   )
                 })}
 
                 <View className="px-4 py-2.5">
                   <Text className="text-xs text-muted-foreground">
-                    Showing 1-{pendingInvitations.length} of {pendingInvitations.length}
+                    Showing 1-{sentInvitations.length} of {sentInvitations.length}
                   </Text>
                 </View>
               </>
-            )}
-            {pendingInvitations.length === 0 && !isLoading && (
-              <View className="px-4 py-2.5 border-t border-border">
-                <Text className="text-xs text-muted-foreground">No results</Text>
-              </View>
             )}
           </CardContent>
         </Card>
           </View>
         </View>
       )}
+
+      {/* Invite Members Modal */}
+      {/* Role Filter Modal */}
+      <Modal
+        visible={showRoleFilter}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowRoleFilter(false)}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 justify-center items-center px-6"
+          onPress={() => setShowRoleFilter(false)}
+        >
+          <Pressable
+            onPress={(e) => e.stopPropagation()}
+            className="bg-background rounded-xl p-5 w-full max-w-xs gap-1"
+          >
+            <Text className="text-base font-semibold text-foreground mb-2">Filter by role</Text>
+            {[{ value: 'all', label: 'All roles' }, { value: 'owner', label: 'Owner' }, { value: 'admin', label: 'Admin' }, { value: 'member', label: 'Editor' }, { value: 'viewer', label: 'Viewer' }].map((opt) => (
+              <Pressable
+                key={opt.value}
+                onPress={() => { setRoleFilter(opt.value); setShowRoleFilter(false) }}
+                className={cn('py-3 border-b border-border', roleFilter === opt.value && 'bg-accent rounded-md px-3')}
+              >
+                <Text className={cn('text-sm', roleFilter === opt.value ? 'text-foreground font-medium' : 'text-foreground')}>
+                  {opt.label}
+                </Text>
+              </Pressable>
+            ))}
+            <Pressable onPress={() => setShowRoleFilter(false)} className="py-2 mt-1">
+              <Text className="text-sm text-muted-foreground text-center">Cancel</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* Invite Members Modal */}
       <InviteMembersModal
@@ -2001,9 +2017,78 @@ function PeopleTab() {
         workspaceName={resolvedWs?.name || currentWorkspace?.name || ''}
         actions={actions}
       />
+
+      {/* Member Action Modal */}
+      <Modal
+        visible={menuState !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMenuState(null)}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 justify-center items-center px-6"
+          onPress={() => setMenuState(null)}
+        >
+          <Pressable
+            onPress={(e) => e.stopPropagation()}
+            className="bg-background rounded-xl p-5 w-full max-w-xs gap-3"
+          >
+            {menuState?.view === 'actions' && (
+              <>
+                <Text className="text-base font-semibold text-foreground mb-1">
+                  Member actions
+                </Text>
+                <Pressable
+                  onPress={() => {
+                    if (menuState) setMenuState({ ...menuState, view: 'roles' })
+                  }}
+                  className="py-3 border-b border-border"
+                >
+                  <Text className="text-sm text-foreground">Change role</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    if (menuState) handleRemoveMember(menuState.memberId)
+                  }}
+                  className="py-3"
+                >
+                  <Text className="text-sm text-destructive">Remove member</Text>
+                </Pressable>
+              </>
+            )}
+            {menuState?.view === 'roles' && (
+              <>
+                <Text className="text-base font-semibold text-foreground mb-1">
+                  Select role
+                </Text>
+                {(['owner', 'admin', 'member', 'viewer'] as const).map((r) => {
+                  const activeMember = workspaceMembers.find((m: any) => m.id === menuState?.memberId)
+                  const isActive = activeMember?.role === r
+                  return (
+                    <Pressable
+                      key={r}
+                      onPress={() => {
+                        if (menuState) handleChangeRole(menuState.memberId, r)
+                      }}
+                      className={cn('py-3 border-b border-border', isActive && 'bg-accent rounded-md px-3')}
+                    >
+                      <Text className={cn('text-sm', isActive ? 'text-foreground font-medium' : 'text-foreground')}>
+                        {ROLE_DISPLAY[r]}
+                      </Text>
+                    </Pressable>
+                  )
+                })}
+              </>
+            )}
+            <Pressable onPress={() => setMenuState(null)} className="py-2 mt-1">
+              <Text className="text-sm text-muted-foreground text-center">Cancel</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   )
-}
+})
 
 function InviteMembersModal({
   visible,
@@ -2186,9 +2271,6 @@ function SettingsContent({ activeTab }: { activeTab: TabId }) {
       {activeTab === 'people' && <PeopleTab />}
       {activeTab === 'account' && <AccountTab />}
       {activeTab === 'billing' && <BillingTab />}
-      {activeTab === 'privacy' && <PrivacyTab />}
-      {activeTab === 'labs' && <LabsTab />}
-      {activeTab === 'github' && <GitHubTab />}
     </>
   )
 }
@@ -2199,8 +2281,7 @@ export default observer(function SettingsPage() {
   const { width } = useWindowDimensions()
   const isWide = width >= 768
   const { user } = useAuth()
-  const workspaces = useWorkspaceCollection()
-  const currentWorkspace = workspaces.all.length > 0 ? workspaces.all[0] : null
+  const currentWorkspace = useActiveWorkspace()
 
   const [activeTab, setActiveTab] = useState<TabId>(
     () => (ALL_TAB_IDS.includes(params.tab as TabId) ? params.tab as TabId : 'workspace')
