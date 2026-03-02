@@ -49,9 +49,15 @@ interface TextProps {
   className?: string
 }
 
+const TEXT_COLOR_MAP: Record<string, string> = {
+  muted: 'text-muted-foreground',
+  accent: 'text-accent-foreground',
+  secondary: 'text-secondary-foreground',
+}
+
 export function DynText({ text = '', variant = 'body', align, color, weight, className }: TextProps) {
   const alignClass = align ? `text-${align}` : ''
-  const colorClass = color ? `text-${color}` : ''
+  const colorClass = color ? (TEXT_COLOR_MAP[color] || `text-${color}`) : ''
   const weightClass = weight ? `font-${weight}` : ''
 
   return (
@@ -62,10 +68,10 @@ export function DynText({ text = '', variant = 'body', align, color, weight, cla
 }
 
 const BADGE_BG_MAP: Record<string, string> = {
-  default: 'bg-primary/15 border-primary/25',
-  secondary: 'bg-muted border-border/50',
-  destructive: 'bg-destructive/15 border-destructive/25',
-  outline: 'border-border bg-transparent',
+  default: 'bg-primary/15',
+  secondary: 'bg-secondary',
+  destructive: 'bg-destructive/15',
+  outline: 'bg-muted',
 }
 
 const BADGE_TEXT_MAP: Record<string, string> = {
@@ -85,7 +91,7 @@ interface BadgeProps {
 export function DynBadge({ text, label, variant = 'default', className }: BadgeProps) {
   return (
     <View className={cn(
-      'flex-row items-center rounded-md px-2.5 py-0.5 border',
+      'flex-row items-center self-start rounded-md px-2.5 py-0.5',
       BADGE_BG_MAP[variant] || BADGE_BG_MAP.default,
       className,
     )}>
@@ -179,7 +185,7 @@ export function DynIcon({ name = 'info', size = 'md', color, className }: IconPr
     return <Text className={cn('text-muted-foreground', className)}>?</Text>
   }
   const iconSize = ICON_SIZE_MAP[size] || 20
-  return <IconComp size={iconSize} className={cn(color && `text-${color}`, className)} />
+  return <IconComp size={iconSize} className={cn(color && (TEXT_COLOR_MAP[color] || `text-${color}`), className)} />
 }
 
 interface SeparatorProps {

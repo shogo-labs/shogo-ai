@@ -5,6 +5,8 @@
  * - Root Column gets gap "lg" if not specified
  * - DataList/Table direct children of root Column auto-wrap in Card
  * - Auto-inject Separators between form and data sections
+ * - Badge outline → secondary (outline is indistinguishable from text inputs)
+ * - Grid label-value Columns get tight gap for visual cohesion
  *
  * These ensure canvases look polished regardless of agent output.
  */
@@ -37,6 +39,16 @@ export function applySmartDefaults(
   // Root Column: auto-wrap naked DataList/Table children in Cards and inject Separators
   if (ctx.isRoot && def.component === 'Column' && Array.isArray(def.children)) {
     def = enhanceRootChildren(def, ctx)
+  }
+
+  // Badge: outline variant is visually identical to text inputs — normalize to secondary
+  if (def.component === 'Badge' && def.variant === 'outline') {
+    def = { ...def, variant: 'secondary' }
+  }
+
+  // Grid: ensure label-value Columns have tight gap
+  if (def.component === 'Grid' && Array.isArray(def.children)) {
+    normalizeGridLabelValueGaps(def, ctx)
   }
 
   return def
@@ -105,6 +117,35 @@ function enhanceRootChildren(
 
   if (arraysEqual(childIds, newChildren)) return def
   return { ...def, children: newChildren }
+}
+
+/**
+ * Detect label-value Column pairs inside Grids and default tight gap
+ * so caption labels sit close to their values.
+ */
+function normalizeGridLabelValueGaps(
+  def: ComponentDefinition,
+  ctx: SmartDefaultsContext,
+): void {
+  const childIds = def.children as string[]
+
+  for (const childId of childIds) {
+    const child = ctx.components.get(childId)
+    if (!child || child.component !== 'Column') continue
+    if (!Array.isArray(child.children) || child.children.length < 2) continue
+    if (child.gap) continue
+
+    const [labelId] = child.children as string[]
+    const label = ctx.components.get(labelId)
+    if (!label) continue
+
+    const isLabelValue = label.component === 'Text' &&
+      (label.variant === 'caption' || label.variant === 'muted' || label.color === 'muted')
+
+    if (isLabelValue) {
+      ctx.components.set(childId, { ...child, gap: 'xs' })
+    }
+  }
 }
 
 function isInteractiveComponent(def: ComponentDefinition, components: Map<string, ComponentDefinition>): boolean {
