@@ -32,6 +32,7 @@ import { SessionManager, type SessionManagerConfig } from './session-manager'
 import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { CronManager, type CronJob } from './cron-manager'
 import { BlockChunker } from './block-chunker'
+import { CanvasStreamParser } from './canvas-stream-parser'
 import { MCPClientManager, type MCPServerConfig } from './mcp-client'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import type { FilePart } from './file-attachment-utils'
@@ -1685,6 +1686,11 @@ export class AgentGateway {
     // tool events into a single render that skips the loading state.
     const toolFlushGates = new Map<string, Promise<void>>()
 
+    // Canvas streaming: track active parsers and which tool calls already
+    // sent their tool-input-start via the streaming path.
+    const canvasParsers = new Map<string, CanvasStreamParser>()
+    const streamedToolCalls = new Set<string>()
+
     try {
       const hookEmitter = this.hookEmitter
       const result = await runAgentLoop({
@@ -1711,15 +1717,51 @@ export class AgentGateway {
             uiWriter.write({ type: 'text-delta', id: uiTextId, delta })
           }
         },
-        onBeforeToolCall: async (toolName, args, toolCallId) => {
+        onToolCallStart: (toolName, toolCallId) => {
           if (uiWriter && uiTextId) {
             uiWriter.write({ type: 'text-end', id: uiTextId })
             uiTextId = null
           }
           if (uiWriter) {
             uiWriter.write({ type: 'tool-input-start', toolCallId, toolName, dynamic: true })
+            streamedToolCalls.add(toolCallId)
+          }
+          if (toolName === 'canvas_update') {
+            const manager = getDynamicAppManager()
+            const parser = new CanvasStreamParser({
+              onSurfaceId: () => {},
+              onComponents: (components) => {
+                const sid = parser.getSurfaceId()
+                if (sid) {
+                  manager.streamPreviewComponents(sid, components as any)
+                }
+              },
+            })
+            canvasParsers.set(toolCallId, parser)
+          }
+        },
+        onToolCallDelta: (toolName, delta, toolCallId) => {
+          if (uiWriter) {
+            uiWriter.write({ type: 'tool-input-delta', toolCallId, inputTextDelta: delta })
+          }
+          const parser = canvasParsers.get(toolCallId)
+          if (parser) {
+            parser.feed(delta)
+          }
+        },
+        onToolCallEnd: (_toolName, toolCallId) => {
+          canvasParsers.delete(toolCallId)
+        },
+        onBeforeToolCall: async (toolName, args, toolCallId) => {
+          if (uiWriter && uiTextId) {
+            uiWriter.write({ type: 'text-end', id: uiTextId })
+            uiTextId = null
+          }
+          if (uiWriter && !streamedToolCalls.has(toolCallId)) {
+            uiWriter.write({ type: 'tool-input-start', toolCallId, toolName, dynamic: true })
             uiWriter.write({ type: 'tool-input-delta', toolCallId, inputTextDelta: JSON.stringify(args) })
           }
+          streamedToolCalls.delete(toolCallId)
           // Store a flush gate that resolves after a short delay, giving
           // the HTTP layer time to deliver the tool-input-start chunk to
           // the client before tool-output-available arrives.
