@@ -1,8 +1,7 @@
 /**
  * Agent Runtime Evaluation Types
  *
- * Modeled after the project-runtime eval framework (packages/mcp/src/evals/types.ts)
- * but adapted for agent-runtime concerns: canvas creation, memory, skills,
+ * Evaluation types for agent-runtime concerns: canvas creation, memory, skills,
  * personality updates, and multi-turn conversations.
  */
 

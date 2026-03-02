@@ -20,7 +20,7 @@ import {
   symlinkSync,
 } from "fs"
 import { execSync } from "child_process"
-import { MONOREPO_ROOT } from "../paths"
+import { MONOREPO_ROOT } from "./paths"
 import { loadTemplates, type TemplateInfo } from "./template.list"
 
 /**
@@ -662,45 +662,21 @@ function updatePackageJson(projectDir: string, projectName: string): void {
 
 /**
  * Convert template to SQLite mode for eval/testing
- * 
- * This modifies:
- * 1. prisma/schema.prisma - change provider to sqlite
- * 2. src/lib/db.ts - use SQLite adapter instead of PostgreSQL
- * 3. package.json - swap @prisma/adapter-pg for @prisma/adapter-libsql
- * 4. .env - set DATABASE_URL to file:./dev.db
- * 5. Regenerate Prisma client for SQLite
- * 
- * Called automatically when SHOGO_EVAL_MODE=true
  */
 function convertToSqliteMode(projectDir: string): void {
-  console.log(`[template.copy] 🧪 Eval mode detected - converting to SQLite for fast testing`)
+  console.log(`[template.copy] Eval mode detected - converting to SQLite for fast testing`)
   
-  // 1. Transform the Prisma schema
   const schemaPath = join(projectDir, "prisma/schema.prisma")
   if (existsSync(schemaPath)) {
     let schema = readFileSync(schemaPath, "utf-8")
-    
-    // Change provider from postgresql to sqlite
-    schema = schema.replace(
-      /provider\s*=\s*"postgresql"/g,
-      'provider = "sqlite"'
-    )
-    
-    // Convert PostgreSQL-specific defaults
-    // uuid() → cuid() (works on both)
+    schema = schema.replace(/provider\s*=\s*"postgresql"/g, 'provider = "sqlite"')
     schema = schema.replace(/@default\(uuid\(\)\)/g, '@default(cuid())')
-    // dbgenerated("gen_random_uuid()") → cuid()
     schema = schema.replace(/@default\(dbgenerated\("gen_random_uuid\(\)"\)\)/g, '@default(cuid())')
-    // auto() → autoincrement() for integer IDs
     schema = schema.replace(/@default\(auto\(\)\)/g, '@default(autoincrement())')
-    // Remove @db.* native type annotations
     schema = schema.replace(/@db\.\w+(\([^)]*\))?/g, '')
-    
     writeFileSync(schemaPath, schema, "utf-8")
-    console.log(`[template.copy] 🧪 Schema converted to SQLite provider`)
   }
   
-  // 2. Replace db.ts with SQLite adapter version
   const dbPath = join(projectDir, "src/lib/db.ts")
   if (existsSync(dbPath)) {
     const sqliteDbCode = `import { PrismaLibSql } from '@prisma/adapter-libsql'
@@ -724,63 +700,41 @@ export const prisma =
 if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma
 `
     writeFileSync(dbPath, sqliteDbCode, "utf-8")
-    console.log(`[template.copy] 🧪 db.ts converted to use SQLite adapter`)
   }
   
-  // 3. Update package.json to use SQLite adapter instead of PostgreSQL
   const pkgPath = join(projectDir, "package.json")
   if (existsSync(pkgPath)) {
     const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"))
-    
-    // Remove PostgreSQL adapter, add SQLite adapter
     if (pkg.dependencies) {
       delete pkg.dependencies['@prisma/adapter-pg']
       pkg.dependencies['@prisma/adapter-libsql'] = '^7.3.0'
     }
-    
     writeFileSync(pkgPath, JSON.stringify(pkg, null, 2), "utf-8")
-    console.log(`[template.copy] 🧪 package.json updated for SQLite`)
   }
   
-  // 4. Set DATABASE_URL for SQLite in .env
   const envPath = join(projectDir, ".env")
   let envContent = existsSync(envPath) ? readFileSync(envPath, "utf-8") : ''
-  
-  // Remove any existing DATABASE_URL
   const lines = envContent.split('\n').filter(line => {
     const trimmed = line.trim()
     return !trimmed.startsWith('DATABASE_URL=') && !trimmed.startsWith('DATABASE_URL ')
   })
-  
-  // Add SQLite DATABASE_URL
   lines.push('DATABASE_URL="file:./dev.db"')
   writeFileSync(envPath, lines.filter(Boolean).join('\n') + '\n', "utf-8")
-  console.log(`[template.copy] 🧪 DATABASE_URL set to SQLite (file:./dev.db)`)
   
-  // 5. Regenerate Prisma client for SQLite
-  // This is critical because the copied template may have pre-generated client for PostgreSQL
   try {
-    console.log(`[template.copy] 🧪 Regenerating Prisma client for SQLite...`)
     execSync('bunx prisma generate', {
       cwd: projectDir,
       env: { ...process.env, DATABASE_URL: 'file:./dev.db' },
       stdio: 'pipe',
       timeout: 60000,
     })
-    console.log(`[template.copy] 🧪 Prisma client regenerated for SQLite`)
   } catch (error: any) {
-    console.warn(`[template.copy] ⚠️ Failed to regenerate Prisma client: ${error.message}`)
+    console.warn(`[template.copy] Failed to regenerate Prisma client: ${error.message}`)
   }
 }
 
 /**
- * Update or remove .env file to ensure DATABASE_URL from environment takes precedence.
- * 
- * Templates have .env files with local dev DATABASE_URLs (e.g., postgres://localhost:5434/todo_app).
- * In K8s, the DATABASE_URL is provided via environment variable (postgres://localhost:5432/project).
- * 
- * This function removes DATABASE_URL from the .env file so the environment variable is used.
- * Other env vars (like ANTHROPIC_API_KEY) are preserved.
+ * Remove DATABASE_URL from .env so the environment variable takes precedence.
  */
 function sanitizeEnvFile(projectDir: string): void {
   const envPath = join(projectDir, ".env")
@@ -790,10 +744,8 @@ function sanitizeEnvFile(projectDir: string): void {
     const content = readFileSync(envPath, "utf-8")
     const lines = content.split('\n')
     
-    // Filter out DATABASE_URL lines (can be multiple formats)
     const filteredLines = lines.filter(line => {
       const trimmed = line.trim()
-      // Skip DATABASE_URL definitions
       if (trimmed.startsWith('DATABASE_URL=') || trimmed.startsWith('DATABASE_URL =')) {
         console.log(`[template.copy] Removing DATABASE_URL from .env (will use environment variable)`)
         return false
@@ -801,9 +753,7 @@ function sanitizeEnvFile(projectDir: string): void {
       return true
     })
     
-    // Write back the filtered content
     writeFileSync(envPath, filteredLines.join('\n'), "utf-8")
-    console.log(`[template.copy] Sanitized .env file - DATABASE_URL will come from environment`)
   } catch (err: any) {
     console.warn(`[template.copy] Warning: Could not sanitize .env file: ${err.message}`)
   }
@@ -811,66 +761,37 @@ function sanitizeEnvFile(projectDir: string): void {
 
 /**
  * Get default output directory for new projects
- * 
- * Priority:
- * 1. PROJECT_DIR env var (Kubernetes runtime - /app/project)
- * 2. PROJECT_ID with workspaces dir (local dev with project context)
- * 3. workspaces/{name} (local dev, new project)
- * 4. current directory (fallback)
- * 
- * NOTE: The name parameter is ONLY used for package.json, NOT for directory creation.
- * Templates always copy to the root of the project directory.
  */
 function getDefaultOutputDir(projectName: string): string {
-  // Log environment variables for debugging
   const projectDir = process.env.PROJECT_DIR
   const projectId = process.env.PROJECT_ID
-  console.log(`[template.copy] 🔍 ENV vars: PROJECT_ID=${projectId || '(not set)'}, PROJECT_DIR=${projectDir || '(not set)'}`)
   
-  // Priority 1: PROJECT_DIR env var (Kubernetes runtime)
-  // This is the correct path in containerized environments
   if (projectDir) {
-    // Create directory if it doesn't exist (might be fresh project)
     if (!existsSync(projectDir)) {
-      console.log(`[template.copy] Creating PROJECT_DIR: ${projectDir}`)
       mkdirSync(projectDir, { recursive: true })
     }
-    console.log(`[template.copy] ✅ Using PROJECT_DIR: ${projectDir}`)
     return projectDir
   }
 
-  // Priority 2: PROJECT_ID with workspaces directory (local dev with project context)
   if (projectId) {
     const workspacesDir = resolve(MONOREPO_ROOT, "workspaces")
-    // Create workspaces dir if needed
     if (!existsSync(workspacesDir)) {
-      console.log(`[template.copy] Creating workspaces dir: ${workspacesDir}`)
       mkdirSync(workspacesDir, { recursive: true })
     }
     const projectPath = resolve(workspacesDir, projectId)
-    // Create project dir if needed
     if (!existsSync(projectPath)) {
-      console.log(`[template.copy] Creating project workspace: ${projectPath}`)
       mkdirSync(projectPath, { recursive: true })
     }
-    console.log(`[template.copy] ✅ Using PROJECT_ID workspace: ${projectPath}`)
     return projectPath
   }
 
-  // Priority 3: workspaces/{projectName} for local development (FALLBACK - should rarely hit this)
-  console.warn(`[template.copy] ⚠️ No PROJECT_ID or PROJECT_DIR set! Using template name as directory (this may cause issues)`)
   const workspacesDir = resolve(MONOREPO_ROOT, "workspaces")
   if (!existsSync(workspacesDir)) {
     mkdirSync(workspacesDir, { recursive: true })
   }
-  const projectPath = resolve(workspacesDir, projectName)
-  console.log(`[template.copy] Using workspaces/${projectName}: ${projectPath}`)
-  return projectPath
+  return resolve(workspacesDir, projectName)
 }
 
-/**
- * Simple timing helper for performance instrumentation
- */
 function createTimer() {
   const start = performance.now()
   const steps: { name: string; durationMs: number }[] = []
@@ -881,7 +802,7 @@ function createTimer() {
       const now = performance.now()
       const duration = now - lastMark
       steps.push({ name, durationMs: Math.round(duration) })
-      console.log(`[template.copy] ⏱️  ${name}: ${Math.round(duration)}ms`)
+      console.log(`[template.copy] ${name}: ${Math.round(duration)}ms`)
       lastMark = now
     },
     total() {
@@ -907,10 +828,9 @@ export async function executeTemplateCopy(
   timings?: { steps: { name: string; durationMs: number }[]; totalMs: number }
 }> {
   const timer = createTimer()
-  console.log(`[template.copy] ⏱️  Starting template copy for "${args.template}"...`)
+  console.log(`[template.copy] Starting template copy for "${args.template}"...`)
   
   try {
-    // Find the template
     const templates = loadTemplates()
     const template = templates.find((t) => t.name === args.template)
     timer.mark('loadTemplates')
@@ -925,18 +845,14 @@ export async function executeTemplateCopy(
       }
     }
 
-    // Determine output directory
     const projectDir = args.output
       ? resolve(args.output)
       : getDefaultOutputDir(args.name)
     timer.mark('determineOutputDir')
 
-    // In project context (PROJECT_ID set), always force overwrite
-    // since we're copying into an existing project workspace
     const isProjectContext = !!process.env.PROJECT_ID
     const shouldForce = args.force || isProjectContext
 
-    // Check if output already exists
     if (existsSync(projectDir) && !args.dryRun) {
       const contents = readdirSync(projectDir)
       if (contents.length > 0 && !shouldForce) {
@@ -951,7 +867,6 @@ export async function executeTemplateCopy(
       }
     }
 
-    // Dry run - just return what would be created
     if (args.dryRun) {
       return {
         ok: true,
@@ -973,9 +888,7 @@ export async function executeTemplateCopy(
       }
     }
 
-    // When force is used (or in project context), remove conflicting directories and files to ensure clean copy
     if (shouldForce && existsSync(projectDir)) {
-      // Remove directories that might conflict
       const dirsToClean = ["src", "prisma", ".tanstack"]
       for (const dir of dirsToClean) {
         const dirPath = join(projectDir, dir)
@@ -984,39 +897,31 @@ export async function executeTemplateCopy(
         }
       }
       
-      // Remove files that might conflict with template files
-      // Templates generate their own HTML, so remove any existing index.html
       const filesToClean = ["index.html"]
       for (const file of filesToClean) {
         const filePath = join(projectDir, file)
         if (existsSync(filePath)) {
           rmSync(filePath, { force: true })
-          console.log(`[template.copy] Removed conflicting file: ${file}`)
         }
       }
     }
     timer.mark('cleanConflictingFiles')
 
-    // Check if this is an archived template (tar.gz)
     const isArchive = template.isArchive || template.path.endsWith('.tar.gz')
     let copiedFiles: string[] = []
     
     if (isArchive) {
-      // Extract tar.gz archive directly to project directory
-      // Archives contain pre-installed node_modules and .output for instant setup
-      console.log(`[template.copy] ⚡ Extracting template archive: ${template.path}`)
+      console.log(`[template.copy] Extracting template archive: ${template.path}`)
       const startTime = performance.now()
       
       try {
-        // Use tar to extract, stripping the top-level directory
         execSync(`tar -xzf "${template.path}" --strip-components=1 -C "${projectDir}"`, {
           stdio: 'pipe',
           timeout: 120000,
         })
         const extractTime = Math.round(performance.now() - startTime)
-        console.log(`[template.copy] ⚡ Template extracted in ${extractTime}ms (with node_modules + .output)`)
+        console.log(`[template.copy] Template extracted in ${extractTime}ms (with node_modules + .output)`)
         
-        // List extracted files (just top-level for summary)
         if (existsSync(projectDir)) {
           copiedFiles = readdirSync(projectDir, { recursive: true })
             .map(f => String(f))
@@ -1034,15 +939,12 @@ export async function executeTemplateCopy(
       }
       timer.mark('extractTemplateArchive')
     } else {
-      // Check if template has pre-installed node_modules (from Docker image)
       const templateNodeModules = join(template.path, "node_modules")
       const hasPreinstalledDeps = existsSync(templateNodeModules)
       
-      // Exclusions - don't copy these
-      // NOTE: If template has pre-installed node_modules, we INCLUDE it for faster setup
       const exclude = [
-        ...(hasPreinstalledDeps ? [] : ["node_modules"]), // Copy node_modules if pre-installed
-        "bun.lock", // Always regenerate lockfile for the target environment
+        ...(hasPreinstalledDeps ? [] : ["node_modules"]),
+        "bun.lock",
         ".git",
         "dev.db",
         "dev.db-journal",
@@ -1052,95 +954,74 @@ export async function executeTemplateCopy(
       ]
       
       if (hasPreinstalledDeps) {
-        console.log(`[template.copy] ⚡ Template has pre-installed node_modules - will copy for faster setup`)
+        console.log(`[template.copy] Template has pre-installed node_modules - will copy for faster setup`)
       }
 
-      // Copy template directory
       copiedFiles = copyDir(template.path, projectDir, exclude)
       timer.mark('copyTemplateFiles')
     }
 
-    // Update package.json with new name
     updatePackageJson(projectDir, args.name)
     timer.mark('updatePackageJson')
 
-    // Merge _template base infrastructure (Tailwind deps, PostCSS, shadcn)
     ensureBaseInfrastructure(projectDir)
     timer.mark('ensureBaseInfrastructure')
 
-    // Handle database configuration based on environment
     if (isEvalMode()) {
-      // Eval mode: Convert to SQLite for fast, isolated testing
       convertToSqliteMode(projectDir)
       timer.mark('convertToSqliteMode')
     } else {
-      // Production/normal mode: Sanitize .env to use environment DATABASE_URL
       sanitizeEnvFile(projectDir)
       timer.mark('sanitizeEnvFile')
     }
 
-    // Apply theme if specified
     if (args.theme) {
       applyThemeToProject(projectDir, args.theme)
       timer.mark('applyTheme')
     }
 
-    // Delete existing dev.db if copied (start fresh)
     const devDbPath = join(projectDir, "prisma", "dev.db")
     if (existsSync(devDbPath)) {
       rmSync(devDbPath, { force: true })
     }
 
-    // Get relative file paths for response
     const relativeFiles = copiedFiles.map((f) =>
       f.replace(projectDir + "/", "")
     )
     
-    // Paths to exclude from the response (build artifacts, caches, generated files)
-    // These are included in archives for fast cold start but aren't useful for LLM to see
     const excludeFromResponse = [
-      'node_modules/',      // Top-level deps
-      'dist/',              // Vite build output
-      '.output/',           // Nitro/Vinxi server output (includes nested node_modules)
-      '.nitro/',            // Nitro types/config
-      '.tanstack/',         // TanStack temp files
-      'bun.lock',           // Lock file
-      '.gitignore',         // Git ignore
+      'node_modules/',
+      'dist/',
+      '.output/',
+      '.nitro/',
+      '.tanstack/',
+      'bun.lock',
+      '.gitignore',
     ]
     
-    // Filter to only meaningful source files for the LLM
     const sourceFiles = relativeFiles.filter((f) => 
       !excludeFromResponse.some(exclude => f.startsWith(exclude) || f === exclude.replace('/', ''))
     )
     timer.mark('filterFiles')
 
-    // Build response with context-aware instructions
-    // Return summary instead of full file list to reduce response size
     const response: any = {
       ok: true,
       projectDir,
       template,
       filesSummary: {
         totalFilesCopied: relativeFiles.length,
-        // Only include meaningful source files in the response (not build artifacts)
         files: sourceFiles,
       },
     }
 
-    // In project context, automatically rebuild and restart the preview server
-    // The /preview/restart endpoint handles: bun install, prisma generate, prisma db push, build, and server start
     if (isProjectContext) {
       const projectId = process.env.PROJECT_ID
       response.projectId = projectId
 
-      // Call the local runtime's restart endpoint
-      // RUNTIME_PORT is set by project-runtime when spawning MCP (defaults to 8080 in K8s)
       const runtimePort = process.env.RUNTIME_PORT || '8080'
 
-      // This will: install deps, run prisma, build the project, and start the Nitro/Vite server
       try {
-        console.log(`[template.copy] ⏱️  Triggering preview restart for project ${projectId} on port ${runtimePort}...`)
-        console.log(`[template.copy] This will run: bun install, prisma generate, prisma db push, vite build, and start server`)
+        console.log(`[template.copy] Triggering preview restart for project ${projectId} on port ${runtimePort}...`)
 
         const restartResponse = await fetch(`http://localhost:${runtimePort}/preview/restart`, {
           method: 'POST',
@@ -1157,24 +1038,18 @@ export async function executeTemplateCopy(
             port: restartResult.port,
             timings: restartResult.timings,
           }
-          console.log(`[template.copy] ⏱️  Setup complete: ${restartResult.mode} mode on port ${restartResult.port}`)
-          if (restartResult.timings) {
-            console.log(`[template.copy] ⏱️  Restart timings: ${JSON.stringify(restartResult.timings)}`)
-          }
         } else {
           const errorData = await restartResponse.json().catch(() => ({})) as { error?: string }
           response.setup = {
             success: false,
             error: errorData.error || `Setup failed with status ${restartResponse.status}`,
           }
-          console.warn(`[template.copy] Setup failed: ${restartResponse.status}`)
         }
       } catch (restartError: any) {
         response.setup = {
           success: false,
           error: `Could not reach runtime server: ${restartError.message}`,
         }
-        console.warn(`[template.copy] Setup error: ${restartError.message}`)
         timer.mark('previewRestartCall (failed)')
       }
       
@@ -1182,62 +1057,46 @@ export async function executeTemplateCopy(
         ? `Template "${template.name}" copied and fully set up. The preview should now show the app.`
         : `Template copied but setup failed: ${response.setup?.error}. Try refreshing the preview.`
     } else if (!args.skipInstall) {
-      // Local development (not in project context) - run install steps here
       const installResults: { step: string; success: boolean; error?: string; durationMs?: number }[] = []
       
-      // Step 1: bun install
       try {
-        console.log("[template.copy] ⏱️  Running bun install...")
         const bunInstallStart = performance.now()
         execSync("bun install", {
           cwd: projectDir,
           stdio: "pipe",
           timeout: 120000,
         })
-        const bunInstallDuration = Math.round(performance.now() - bunInstallStart)
-        installResults.push({ step: "bun install", success: true, durationMs: bunInstallDuration })
-        console.log(`[template.copy] ⏱️  bun install completed in ${bunInstallDuration}ms`)
+        installResults.push({ step: "bun install", success: true, durationMs: Math.round(performance.now() - bunInstallStart) })
       } catch (error: any) {
-        console.error("[template.copy] bun install failed:", error.message)
         installResults.push({ step: "bun install", success: false, error: error.message })
       }
       timer.mark('bunInstall')
 
-      // Step 2: prisma generate (only if bun install succeeded)
       if (installResults[0]?.success) {
         try {
-          console.log("[template.copy] ⏱️  Running prisma generate...")
           const prismaGenStart = performance.now()
           execSync("bunx prisma generate", {
             cwd: projectDir,
             stdio: "pipe",
             timeout: 60000,
           })
-          const prismaGenDuration = Math.round(performance.now() - prismaGenStart)
-          installResults.push({ step: "prisma generate", success: true, durationMs: prismaGenDuration })
-          console.log(`[template.copy] ⏱️  prisma generate completed in ${prismaGenDuration}ms`)
+          installResults.push({ step: "prisma generate", success: true, durationMs: Math.round(performance.now() - prismaGenStart) })
         } catch (error: any) {
-          console.error("[template.copy] prisma generate failed:", error.message)
           installResults.push({ step: "prisma generate", success: false, error: error.message })
         }
         timer.mark('prismaGenerate')
       }
 
-      // Step 3: prisma db push (only if previous steps succeeded)
       if (installResults.every(r => r.success)) {
         try {
-          console.log("[template.copy] ⏱️  Running prisma db push...")
           const prismaPushStart = performance.now()
           execSync("bunx prisma db push", {
             cwd: projectDir,
             stdio: "pipe",
             timeout: 60000,
           })
-          const prismaPushDuration = Math.round(performance.now() - prismaPushStart)
-          installResults.push({ step: "prisma db push", success: true, durationMs: prismaPushDuration })
-          console.log(`[template.copy] ⏱️  prisma db push completed in ${prismaPushDuration}ms`)
+          installResults.push({ step: "prisma db push", success: true, durationMs: Math.round(performance.now() - prismaPushStart) })
         } catch (error: any) {
-          console.error("[template.copy] prisma db push failed:", error.message)
           installResults.push({ step: "prisma db push", success: false, error: error.message })
         }
         timer.mark('prismaDbPush')
@@ -1254,15 +1113,12 @@ export async function executeTemplateCopy(
         : `Template copied but some setup steps failed. Check the install results.`
     }
 
-    // Add timing information to response
     const totalMs = timer.total()
     response.timings = { steps: timer.getSteps(), totalMs }
-    console.log(`[template.copy] ⏱️  TOTAL: ${totalMs}ms`)
 
     return response
   } catch (error: any) {
     const totalMs = timer.total()
-    console.log(`[template.copy] ⏱️  FAILED after ${totalMs}ms: ${error.message}`)
     return {
       ok: false,
       error: {

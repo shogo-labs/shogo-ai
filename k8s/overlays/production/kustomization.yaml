@@ -15,7 +15,6 @@ resources:
   - api-service.yaml
   - web-service.yaml
   - docs-service.yaml
-  - workspace-services.yaml
 
 labels:
   - pairs:
@@ -25,9 +24,6 @@ labels:
     includeSelectors: false
 
 images:
-  - name: shogo-mcp
-    newName: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-mcp
-    newTag: production-latest
   - name: shogo-api
     newName: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-api
     newTag: production-latest

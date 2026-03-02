@@ -5,9 +5,8 @@
  * messages via POST /agent/chat, and collects AgentLoopResult metrics
  * from real tool execution.
  *
- * Architecture mirrors packages/mcp/src/evals/runner.ts — the same
- * "spin up server, send HTTP, parse SSE" pattern — but targets
- * the agent-runtime instead of project-runtime.
+ * Uses a "spin up server, send HTTP, parse SSE" pattern targeting
+ * the agent-runtime.
  */
 
 import type {

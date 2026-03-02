@@ -1,12 +1,5 @@
 {
   "mcpServers": {
-    "shogo": {
-      "command": "bun",
-      "args": [
-        "run",
-        "packages/mcp/src/server.ts"
-      ]
-    },
     "chrome-devtools": {
       "command": "npx",
       "args": [

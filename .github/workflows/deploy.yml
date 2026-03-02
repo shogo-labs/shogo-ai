@@ -51,7 +51,6 @@ jobs:
       namespace_system: ${{ steps.set-env.outputs.namespace_system }}
       namespace_workspaces: ${{ steps.set-env.outputs.namespace_workspaces }}
       domain: ${{ steps.set-env.outputs.domain }}
-      mcp_domain: ${{ steps.set-env.outputs.mcp_domain }}
       docs_domain: ${{ steps.set-env.outputs.docs_domain }}
       multi_region: ${{ steps.set-env.outputs.multi_region }}
     steps:
@@ -84,7 +83,6 @@ jobs:
             echo "namespace_system=shogo-system" >> $GITHUB_OUTPUT
             echo "namespace_workspaces=shogo-workspaces" >> $GITHUB_OUTPUT
             echo "domain=studio.shogo.ai" >> $GITHUB_OUTPUT
-            echo "mcp_domain=mcp.shogo.ai" >> $GITHUB_OUTPUT
             echo "docs_domain=docs.shogo.ai" >> $GITHUB_OUTPUT
             echo "multi_region=true" >> $GITHUB_OUTPUT
           else
@@ -93,7 +91,6 @@ jobs:
             echo "namespace_system=shogo-staging-system" >> $GITHUB_OUTPUT
             echo "namespace_workspaces=shogo-staging-workspaces" >> $GITHUB_OUTPUT
             echo "domain=studio-staging.shogo.ai" >> $GITHUB_OUTPUT
-            echo "mcp_domain=mcp-staging.shogo.ai" >> $GITHUB_OUTPUT
             echo "docs_domain=docs-staging.shogo.ai" >> $GITHUB_OUTPUT
             echo "multi_region=false" >> $GITHUB_OUTPUT
           fi
@@ -107,7 +104,6 @@ jobs:
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
       has_changes: ${{ steps.set-matrix.outputs.has_changes }}
-      mcp_changed: ${{ steps.set-matrix.outputs.mcp_changed }}
       api_changed: ${{ steps.set-matrix.outputs.api_changed }}
       web_changed: ${{ steps.set-matrix.outputs.web_changed }}
       agent_runtime_changed: ${{ steps.set-matrix.outputs.agent_runtime_changed }}
@@ -148,7 +144,6 @@ jobs:
 
           SHARED=$(has_match '^(package\.json|bun\.lock|tsconfig\.base\.json|scripts/)')
           STATE_API=$(has_match '^packages/state-api/')
-          MCP_PKG=$(has_match '^packages/mcp/')
           SDK=$(has_match '^packages/sdk/')
           SHARED_RUNTIME=$(has_match '^packages/shared-runtime/')
           AGENT_RUNTIME_PKG=$(has_match '^packages/agent-runtime/')
@@ -156,18 +151,13 @@ jobs:
           WEB_APP=$(has_match '^(apps/mobile/|packages/domain-stores/|packages/shared-app/|packages/shared-ui/|packages/ui-kit/)')
           DOCS_APP=$(has_match '^apps/docs/')
 
-          MCP_CHANGED=false
-          if [ "$SHARED" = "true" ] || [ "$STATE_API" = "true" ] || [ "$MCP_PKG" = "true" ]; then
-            MCP_CHANGED=true
-          fi
-
           API_CHANGED=false
-          if [ "$SHARED" = "true" ] || [ "$STATE_API" = "true" ] || [ "$MCP_PKG" = "true" ] || [ "$SDK" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$AGENT_RUNTIME_PKG" = "true" ] || [ "$API_APP" = "true" ]; then
+          if [ "$SHARED" = "true" ] || [ "$STATE_API" = "true" ] || [ "$SDK" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$AGENT_RUNTIME_PKG" = "true" ] || [ "$API_APP" = "true" ]; then
             API_CHANGED=true
           fi
 
           WEB_CHANGED=false
-          if [ "$SHARED" = "true" ] || [ "$STATE_API" = "true" ] || [ "$MCP_PKG" = "true" ] || [ "$SDK" = "true" ] || [ "$WEB_APP" = "true" ]; then
+          if [ "$SHARED" = "true" ] || [ "$STATE_API" = "true" ] || [ "$SDK" = "true" ] || [ "$WEB_APP" = "true" ]; then
             WEB_CHANGED=true
           fi
 
@@ -181,7 +171,6 @@ jobs:
             DOCS_CHANGED=true
           fi
 
-          echo "mcp_changed=$MCP_CHANGED" >> $GITHUB_OUTPUT
           echo "api_changed=$API_CHANGED" >> $GITHUB_OUTPUT
           echo "web_changed=$WEB_CHANGED" >> $GITHUB_OUTPUT
           echo "agent_runtime_changed=$AGENT_RUNTIME_CHANGED" >> $GITHUB_OUTPUT
@@ -193,7 +182,6 @@ jobs:
             ENTRIES="$ENTRIES$1"
           }
 
-          [ "$MCP_CHANGED" = "true" ] && add_entry '{"image":"mcp","dockerfile":"packages/mcp/Dockerfile","ecr_name":"shogo-mcp","build_args":""}'
           [ "$API_CHANGED" = "true" ] && add_entry '{"image":"api","dockerfile":"apps/api/Dockerfile","ecr_name":"shogo-api","build_args":"api"}'
           [ "$WEB_CHANGED" = "true" ] && add_entry '{"image":"web","dockerfile":"apps/mobile/Dockerfile","ecr_name":"shogo-web","build_args":"web"}'
           [ "$AGENT_RUNTIME_CHANGED" = "true" ] && add_entry '{"image":"agent-runtime","dockerfile":"packages/agent-runtime/Dockerfile","ecr_name":"agent-runtime","build_args":""}'
@@ -210,7 +198,6 @@ jobs:
 
           echo ""
           echo "📊 Changes detected:"
-          echo "  mcp: $MCP_CHANGED"
           echo "  api: $API_CHANGED"
           echo "  web: $WEB_CHANGED"
           echo "  agent-runtime: $AGENT_RUNTIME_CHANGED"
@@ -339,7 +326,6 @@ jobs:
       NS_SYSTEM: ${{ needs.setup.outputs.namespace_system }}
       NS_WORKSPACES: ${{ needs.setup.outputs.namespace_workspaces }}
       DOMAIN: ${{ needs.setup.outputs.domain }}
-      MCP_DOMAIN: ${{ needs.setup.outputs.mcp_domain }}
       DOCS_DOMAIN: ${{ needs.setup.outputs.docs_domain }}
       IMAGE_TAG: ${{ needs.setup.outputs.environment }}-${{ github.sha }}
 
@@ -445,7 +431,6 @@ jobs:
           }
           echo "web_image=$(get_image studio ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
           echo "api_image=$(get_image api ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
-          echo "mcp_image=$(get_image mcp-workspace-1 ${{ env.NS_WORKSPACES }})" >> $GITHUB_OUTPUT
           echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
 
       - name: Apply Kubernetes manifests
@@ -459,11 +444,9 @@ jobs:
           ECR_REGISTRY: ${{ needs.setup.outputs.ecr_registry }}
           WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
           API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
-          MCP_CHANGED: ${{ needs.detect-changes.outputs.mcp_changed }}
           DOCS_CHANGED: ${{ needs.detect-changes.outputs.docs_changed }}
           PREV_WEB_IMAGE: ${{ steps.save-images.outputs.web_image }}
           PREV_API_IMAGE: ${{ steps.save-images.outputs.api_image }}
-          PREV_MCP_IMAGE: ${{ steps.save-images.outputs.mcp_image }}
           PREV_DOCS_IMAGE: ${{ steps.save-images.outputs.docs_image }}
         run: |
           # Patch a ksvc: use new SHA tag if changed, otherwise restore the
@@ -488,7 +471,6 @@ jobs:
           echo "📦 Updating images for ${{ env.ENVIRONMENT }}"
           patch_ksvc studio       "${{ env.NS_SYSTEM }}"     shogo-web  "$WEB_CHANGED"  "$PREV_WEB_IMAGE"
           patch_ksvc api          "${{ env.NS_SYSTEM }}"     shogo-api  "$API_CHANGED"  "$PREV_API_IMAGE"
-          patch_ksvc mcp-workspace-1 "${{ env.NS_WORKSPACES }}" shogo-mcp  "$MCP_CHANGED"  "$PREV_MCP_IMAGE"
           patch_ksvc docs         "${{ env.NS_SYSTEM }}"     shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
 
       - name: Sync API environment variables
@@ -518,7 +500,6 @@ jobs:
           echo "⏳ Waiting for service rollouts in ${{ env.ENVIRONMENT }}..."
           kubectl wait --for=condition=ready ksvc/studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
           kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
-          kubectl wait --for=condition=ready ksvc/mcp-workspace-1 -n ${{ env.NS_WORKSPACES }} --timeout=300s || true
           kubectl wait --for=condition=ready ksvc/docs -n ${{ env.NS_SYSTEM }} --timeout=300s || true
 
       - name: Restart image prepuller
@@ -587,7 +568,6 @@ jobs:
 
       - name: Summary (Primary Region)
         env:
-          MCP_CHANGED: ${{ needs.detect-changes.outputs.mcp_changed }}
           API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
           WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
           AGENT_RUNTIME_CHANGED: ${{ needs.detect-changes.outputs.agent_runtime_changed }}
@@ -603,7 +583,6 @@ jobs:
           echo "### Services" >> $GITHUB_STEP_SUMMARY
           echo "| Service | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|---------|--------|" >> $GITHUB_STEP_SUMMARY
-          [ "$MCP_CHANGED" = "true" ] && echo "| MCP | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| MCP | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
           [ "$API_CHANGED" = "true" ] && echo "| API | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| API | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
           [ "$WEB_CHANGED" = "true" ] && echo "| Web | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| Web | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
           [ "$AGENT_RUNTIME_CHANGED" = "true" ] && echo "| Agent Runtime | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| Agent Runtime | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
@@ -612,7 +591,6 @@ jobs:
           echo "### Endpoints" >> $GITHUB_STEP_SUMMARY
           echo "- **Studio**: https://${{ env.DOMAIN }}" >> $GITHUB_STEP_SUMMARY
           echo "- **API**: https://${{ env.DOMAIN }}/api" >> $GITHUB_STEP_SUMMARY
-          echo "- **MCP**: https://${{ env.MCP_DOMAIN }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Docs**: https://${{ env.DOCS_DOMAIN }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Cluster (Primary - us-east-1)" >> $GITHUB_STEP_SUMMARY
@@ -719,17 +697,14 @@ jobs:
           }
           echo "web_image=$(get_image studio ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
           echo "api_image=$(get_image api ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
-          echo "mcp_image=$(get_image mcp-workspace-1 ${{ env.NS_WORKSPACES }})" >> $GITHUB_OUTPUT
 
       - name: Deploy Knative services (EU)
         env:
           ECR_REGISTRY: ${{ needs.setup.outputs.ecr_registry }}
           WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
           API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
-          MCP_CHANGED: ${{ needs.detect-changes.outputs.mcp_changed }}
           PREV_WEB_IMAGE: ${{ steps.save-images-eu.outputs.web_image }}
           PREV_API_IMAGE: ${{ steps.save-images-eu.outputs.api_image }}
-          PREV_MCP_IMAGE: ${{ steps.save-images-eu.outputs.mcp_image }}
         run: |
           # ECR images are replicated to eu-west-1 automatically
           # Use the eu-west-1 ECR registry for image references
@@ -753,7 +728,6 @@ jobs:
           echo "Updating images in EU cluster"
           patch_ksvc studio       "${{ env.NS_SYSTEM }}"     shogo-web  "$WEB_CHANGED"  "$PREV_WEB_IMAGE"
           patch_ksvc api          "${{ env.NS_SYSTEM }}"     shogo-api  "$API_CHANGED"  "$PREV_API_IMAGE"
-          patch_ksvc mcp-workspace-1 "${{ env.NS_WORKSPACES }}" shogo-mcp  "$MCP_CHANGED"  "$PREV_MCP_IMAGE"
 
       - name: Sync API environment variables (EU)
         run: |
@@ -781,7 +755,6 @@ jobs:
           echo "Waiting for EU service rollouts..."
           kubectl wait --for=condition=ready ksvc/studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
           kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
-          kubectl wait --for=condition=ready ksvc/mcp-workspace-1 -n ${{ env.NS_WORKSPACES }} --timeout=300s || true
 
       - name: Verify deployment (EU)
         run: |

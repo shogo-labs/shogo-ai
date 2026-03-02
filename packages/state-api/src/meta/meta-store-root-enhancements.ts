@@ -276,7 +276,6 @@ export function createRootStoreEnhancements(RootModel: any) {
        * Isomorphic schema loading action.
        *
        * Loads a schema by name, creating runtime store with persistence composed.
-       * Works identically in Node.js (FileSystemPersistence) and browser (MCPPersistence).
        *
        * Flow:
        * 1. Check if schema already in meta-store

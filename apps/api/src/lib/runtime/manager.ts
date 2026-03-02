@@ -42,7 +42,7 @@ const AGENT_RUNTIME_SERVER = join(__dirname, '..', '..', '..', '..', '..', 'pack
 /**
  * Path to the MCP server (for project-runtime to spawn).
  */
-const MCP_SERVER_PATH = join(__dirname, '..', '..', '..', '..', '..', 'packages', 'mcp', 'src', 'server-templates.ts')
+const MCP_SERVER_PATH = join(__dirname, '..', '..', '..', '..', '..', 'packages', 'project-runtime', 'src', 'mcp-templates.ts')
 
 /** Default configuration values */
 const DEFAULT_CONFIG: IRuntimeConfig = {

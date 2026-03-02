@@ -8,7 +8,7 @@ import { type as t } from "arktype"
 import { FastMCP } from "fastmcp"
 import { resolve } from "path"
 import { readdirSync, readFileSync, existsSync } from "fs"
-import { MONOREPO_ROOT } from "../paths"
+import { MONOREPO_ROOT } from "./paths"
 
 /**
  * Template metadata from template.json

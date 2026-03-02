@@ -35,11 +35,6 @@ spec:
               value: "http://shogo-api.shogo-system.svc.cluster.local:8002"
             - name: API_HOST
               value: "shogo-api.shogo-system.svc.cluster.local"
-            # MCP proxy upstream (platform-mcp singleton in same namespace)
-            - name: MCP_UPSTREAM
-              value: "http://platform-mcp.shogo-system.svc.cluster.local:3100"
-            - name: MCP_HOST
-              value: "platform-mcp.shogo-system.svc.cluster.local"
           readinessProbe:
             httpGet:
               path: /health

@@ -3,8 +3,7 @@
  * Agent Runtime Eval Runner
  *
  * Spins up real agent-runtime server(s) and runs evals against them.
- * Same architecture as packages/mcp/src/evals/run-parallel-servers.ts
- * but targeting agent-runtime instead of project-runtime.
+ * Spins up real servers and runs evals against agent-runtime.
  *
  * Usage:
  *   bun run src/evals/run-eval.ts --track canvas --model haiku

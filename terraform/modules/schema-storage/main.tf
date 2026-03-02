@@ -23,18 +23,6 @@ variable "eks_oidc_provider_url" {
   type        = string
 }
 
-variable "mcp_service_account_namespace" {
-  description = "Kubernetes namespace for MCP service account"
-  type        = string
-  default     = "shogo-workspaces"
-}
-
-variable "mcp_service_account_name" {
-  description = "Kubernetes service account name for MCP pods"
-  type        = string
-  default     = "mcp-sa"
-}
-
 variable "tags" {
   description = "Tags to apply to resources"
   type        = map(string)
@@ -104,57 +92,6 @@ resource "aws_s3_bucket_lifecycle_configuration" "schemas" {
 }
 
 # -----------------------------------------------------------------------------
-# IAM Role for MCP pods (IRSA - IAM Roles for Service Accounts)
-# -----------------------------------------------------------------------------
-resource "aws_iam_role" "mcp_s3_access" {
-  name = "shogo-mcp-s3-access-${var.environment}"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Principal = {
-        Federated = var.eks_oidc_provider_arn
-      }
-      Action = "sts:AssumeRoleWithWebIdentity"
-      Condition = {
-        StringEquals = {
-          "${var.eks_oidc_provider_url}:sub" = "system:serviceaccount:${var.mcp_service_account_namespace}:${var.mcp_service_account_name}"
-          "${var.eks_oidc_provider_url}:aud" = "sts.amazonaws.com"
-        }
-      }
-    }]
-  })
-
-  tags = var.tags
-}
-
-# S3 access policy for MCP pods
-resource "aws_iam_role_policy" "mcp_s3_access" {
-  name = "s3-schema-access"
-  role = aws_iam_role.mcp_s3_access.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "s3:GetObject",
-          "s3:PutObject",
-          "s3:DeleteObject",
-          "s3:ListBucket"
-        ]
-        Resource = [
-          aws_s3_bucket.schemas.arn,
-          "${aws_s3_bucket.schemas.arn}/*"
-        ]
-      }
-    ]
-  })
-}
-
-# -----------------------------------------------------------------------------
 # Outputs
 # -----------------------------------------------------------------------------
 output "bucket_name" {
@@ -167,7 +104,3 @@ output "bucket_arn" {
   value       = aws_s3_bucket.schemas.arn
 }
 
-output "mcp_role_arn" {
-  description = "IAM role ARN for MCP pods to access S3"
-  value       = aws_iam_role.mcp_s3_access.arn
-}

@@ -28,8 +28,6 @@ spec:
               value: "8002"
             - name: NODE_ENV
               value: "production"
-            - name: MCP_URL
-              value: "http://mcp-workspace-1.shogo-workspaces.svc.cluster.local"
             - name: VITE_PORT
               value: "80"
             - name: BETTER_AUTH_URL

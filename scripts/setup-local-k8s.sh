@@ -138,12 +138,6 @@ echo -e "${YELLOW}Building and pushing Shogo images...${NC}"
 
 cd "$PROJECT_ROOT"
 
-# Build MCP image
-echo "Building shogo-mcp..."
-docker build -t localhost:$REGISTRY_PORT/shogo-mcp:latest -f packages/mcp/Dockerfile .
-docker push localhost:$REGISTRY_PORT/shogo-mcp:latest
-echo -e "${GREEN}✓${NC} Built and pushed shogo-mcp"
-
 # Build API image
 echo "Building shogo-api..."
 docker build -t localhost:$REGISTRY_PORT/shogo-api:latest -f apps/api/Dockerfile .
@@ -155,7 +149,6 @@ echo -e "${GREEN}✓${NC} Built and pushed shogo-api"
 echo "Building shogo-web..."
 docker build -t localhost:$REGISTRY_PORT/shogo-web:latest -f apps/web/Dockerfile \
   --build-arg VITE_API_URL=http://localhost:8002 \
-  --build-arg VITE_MCP_URL=http://localhost:3100 \
   --build-arg VITE_BETTER_AUTH_URL=http://localhost:8002 \
   --build-arg VITE_WORKSPACE=workspace \
   .
@@ -172,14 +165,12 @@ echo -e "${YELLOW}Deploying base infrastructure...${NC}"
 # Update image references to use local registry
 sed "s|k3d-shogo-registry:5000|localhost:$REGISTRY_PORT|g" k8s/base/api.yaml > /tmp/api.yaml
 sed "s|k3d-shogo-registry:5000|localhost:$REGISTRY_PORT|g" k8s/base/web.yaml > /tmp/web.yaml
-sed "s|ghcr.io/shogo-ai/shogo-mcp|localhost:$REGISTRY_PORT/shogo-mcp|g" k8s/base/platform-mcp.yaml > /tmp/platform-mcp.yaml
 
 # Apply base resources
 kubectl apply -f k8s/base/postgres.yaml
 kubectl apply -f k8s/base/redis.yaml
 kubectl apply -f k8s/base/minio.yaml
 kubectl apply -f k8s/base/shogo-config.yaml
-kubectl apply -f /tmp/platform-mcp.yaml
 kubectl apply -f /tmp/api.yaml
 kubectl apply -f /tmp/web.yaml
 
@@ -291,18 +282,10 @@ echo ""
 # ---------------------------------------------------------------------------
 echo -e "${YELLOW}Waiting for application pods...${NC}"
 
-kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=platform-mcp -n shogo-system --timeout=120s
 kubectl wait --for=condition=Ready pod -l app=shogo-api -n shogo-system --timeout=120s
 kubectl wait --for=condition=Ready pod -l app=shogo-web -n shogo-system --timeout=120s
 
 echo -e "${GREEN}✓${NC} Application pods ready"
-echo ""
-
-# ---------------------------------------------------------------------------
-# Check MCP logs for schema initialization
-# ---------------------------------------------------------------------------
-echo -e "${YELLOW}Checking MCP schema initialization...${NC}"
-kubectl logs deployment/platform-mcp -n shogo-system --tail=20 | grep -E "created|loaded|error" || true
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -318,12 +301,10 @@ echo ""
 echo "Services (via port-forward):"
 echo "  kubectl -n shogo-system port-forward svc/shogo-web 3000:80 &"
 echo "  kubectl -n shogo-system port-forward svc/shogo-api 8002:8002 &"
-echo "  kubectl -n shogo-system port-forward svc/platform-mcp 3100:3100 &"
 echo ""
 echo "Then access:"
 echo "  - Web:      http://localhost:3000"
 echo "  - API:      http://localhost:8002"
-echo "  - MCP:      http://localhost:3100"
 echo ""
 echo "Set your Anthropic API key:"
 echo "  kubectl -n shogo-system patch secret api-secrets -p '{\"stringData\":{\"ANTHROPIC_API_KEY\":\"sk-ant-...\"}}"
@@ -331,6 +312,5 @@ echo "  kubectl -n shogo-system rollout restart deployment/shogo-api"
 echo ""
 echo "Useful commands:"
 echo "  kubectl get pods -n shogo-system"
-echo "  kubectl logs deployment/platform-mcp -n shogo-system"
 echo "  kubectl logs deployment/shogo-api -n shogo-system"
 echo ""

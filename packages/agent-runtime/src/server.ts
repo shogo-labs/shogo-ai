@@ -1083,7 +1083,7 @@ app.post('/agent/workspace/reindex', async (c) => {
 
 // Tool catalog and search — powers the "Tools" tab in the web UI
 import { MCP_CATALOG, MCP_CATEGORIES, isPreinstalledMcpId, getPreinstalledPackages } from './mcp-catalog'
-import { isComposioEnabled, searchComposioToolkits, findComposioToolkit, initComposioSession } from './composio'
+import { isComposioEnabled, searchComposioToolkits, findComposioToolkit, initComposioSession, registerToolkitProxyTools } from './composio'
 
 // Agent Templates API — powers the templates gallery
 import { getTemplateSummaries, getAgentTemplateById, TEMPLATE_CATEGORIES } from './agent-templates'
@@ -1201,15 +1201,15 @@ app.get('/agent/tools/status', (c) => {
 
   const tools = serverInfo.map((s) => {
     const catalogEntry = MCP_CATALOG.find((e) => e.id === s.name)
-    const isComposio = s.name === 'composio'
+    const isComposioProxy = s.config.command === 'composio-proxy'
     return {
       id: s.name,
       name: catalogEntry?.name || s.name,
-      source: isComposio ? 'managed' as const : (catalogEntry ? 'catalog' as const : 'custom' as const),
+      source: isComposioProxy ? 'managed' as const : (catalogEntry ? 'catalog' as const : 'custom' as const),
       status: 'running' as const,
       toolCount: s.toolCount,
       tools: s.toolNames,
-      composioToolkit: isComposio ? 'composio' : catalogEntry?.composioToolkit,
+      composioToolkit: isComposioProxy ? s.name : catalogEntry?.composioToolkit,
     }
   })
 
@@ -1242,7 +1242,7 @@ app.get('/agent/tools/search', async (c) => {
           name: tk.name,
           description: `${tk.name} — managed OAuth integration. No credentials needed.`,
           source: 'managed',
-          installed: installedNames.has('composio'),
+          installed: installedNames.has(tk.slug.toLowerCase()),
           authType: 'oauth',
           composioToolkit: tk.slug,
           icon: tk.logo,
@@ -1306,7 +1306,14 @@ app.post('/agent/tools/install', async (c) => {
         const userId = process.env.USER_ID || 'default'
         const projectId = process.env.PROJECT_ID || 'default'
         await initComposioSession(userId, projectId)
-        return c.json({ ok: true, id, source: 'managed' })
+        const proxy = await registerToolkitProxyTools(mcpMgr, composioToolkit.slug)
+        return c.json({
+          ok: true,
+          id: composioToolkit.slug.toLowerCase(),
+          source: 'managed',
+          toolCount: proxy.toolCount,
+          tools: proxy.toolNames,
+        })
       } catch (err: any) {
         return c.json({ error: `Failed to connect: ${err.message}` }, 500)
       }
@@ -1339,6 +1346,11 @@ app.delete('/agent/tools/:id', async (c) => {
 
   const id = c.req.param('id')
   const mcpMgr = agentGateway.getMcpClientManager()
+
+  if (mcpMgr.hasProxyToolGroup(id)) {
+    mcpMgr.removeProxyToolGroup(id)
+    return c.json({ ok: true, removed: id })
+  }
 
   if (!mcpMgr.isRunning(id)) {
     return c.json({ error: `Tool "${id}" is not running` }, 404)

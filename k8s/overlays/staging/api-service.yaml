@@ -96,8 +96,6 @@ spec:
               value: "staging"
             - name: NODE_TLS_REJECT_UNAUTHORIZED
               value: "0"
-            - name: MCP_URL
-              value: "http://mcp-workspace-1.shogo-staging-workspaces.svc.cluster.local"
             # Project runtime configuration - namespace for project pods
             # Note: PROJECT_RUNTIME_IMAGE uses floating 'staging-latest' tag updated by CI/CD
             - name: PROJECT_NAMESPACE

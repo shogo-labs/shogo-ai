@@ -14,7 +14,6 @@ registry_port = 5050
 # Port forwarding ports (used with kubectl port-forward)
 api_port = 8002
 web_port = 3000
-mcp_port = 3100
 
 # BetterAuth secret (generate with: openssl rand -base64 32)
 better_auth_secret = "your-generated-secret-here"

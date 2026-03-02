@@ -34,7 +34,6 @@ COPY tsconfig.base.json ./
 
 # Copy package.json files for dependency resolution (cached layer)
 COPY packages/state-api/package.json ./packages/state-api/
-COPY packages/mcp/package.json ./packages/mcp/
 COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY packages/agent-runtime/package.json ./packages/agent-runtime/
 COPY packages/shared-runtime/package.json ./packages/shared-runtime/
@@ -55,7 +54,6 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 
 # Copy source code (this layer invalidates when source changes)
 COPY packages/state-api ./packages/state-api
-COPY packages/mcp ./packages/mcp
 COPY packages/shared-runtime ./packages/shared-runtime
 COPY packages/project-runtime ./packages/project-runtime
 
@@ -63,14 +61,11 @@ COPY packages/project-runtime ./packages/project-runtime
 WORKDIR /app/packages/state-api
 RUN bun build src/index.ts --outdir dist --target node
 
-WORKDIR /app/packages/mcp
-RUN bun run build
-
 # ---------------------------------------------------------------------------
 # Clean per-package node_modules BEFORE the production stage copies.
 # Bun workspaces create symlinked node_modules in each package that resolve
 # back to the workspace root. Docker COPY follows symlinks, so copying
-# packages/mcp/ would pull in ~571MB of duplicated deps. The workspace root
+# packages would pull in duplicated deps. The workspace root
 # node_modules (copied separately) has everything bun needs at runtime.
 # ---------------------------------------------------------------------------
 WORKDIR /app
@@ -91,7 +86,6 @@ COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
 COPY packages/state-api/package.json ./packages/state-api/
-COPY packages/mcp/package.json ./packages/mcp/
 COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY packages/agent-runtime/package.json ./packages/agent-runtime/
 COPY packages/shared-runtime/package.json ./packages/shared-runtime/
@@ -212,7 +206,6 @@ ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 # ---------------------------------------------------------------------------
 COPY --from=deps /app/node_modules ./node_modules
 COPY --chown=appuser:appgroup --from=builder /app/packages/state-api ./packages/state-api
-COPY --chown=appuser:appgroup --from=builder /app/packages/mcp ./packages/mcp
 COPY --chown=appuser:appgroup --from=builder /app/packages/shared-runtime ./packages/shared-runtime
 COPY --chown=appuser:appgroup --from=builder /app/packages/project-runtime ./packages/project-runtime
 COPY --chown=appuser:appgroup --from=builder /app/package.json ./
@@ -251,7 +244,7 @@ ENV NODE_ENV=production
 ENV PORT=8080
 ENV PROJECT_DIR=/app/project
 ENV SCHEMAS_PATH=/app/.schemas
-ENV MCP_SERVER_PATH=/app/packages/mcp/src/server.ts
+ENV MCP_SERVER_PATH=/app/packages/project-runtime/src/mcp-templates.ts
 ENV HOME=/app
 ENV FAST_START_MODE=true
 ENV BUILD_STATUS_FILE=/tmp/build-status

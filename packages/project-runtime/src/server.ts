@@ -72,7 +72,7 @@ let currentProjectId = process.env.PROJECT_ID
 const PROJECT_DIR = process.env.PROJECT_DIR || '/app/project'
 const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
 // MCP server path: resolve from MONOREPO_ROOT for local dev, fallback to Docker path
-const MCP_SERVER_PATH = process.env.MCP_SERVER_PATH || resolve(MONOREPO_ROOT, 'packages/mcp/src/server-templates.ts')
+const MCP_SERVER_PATH = process.env.MCP_SERVER_PATH || resolve(MONOREPO_ROOT, 'packages/project-runtime/src/mcp-templates.ts')
 const PORT = parseInt(process.env.PORT || '8080', 10)
 
 // Fast start mode: server starts before build completes

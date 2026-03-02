@@ -50,13 +50,12 @@ This starts three services concurrently:
 
 | Service | Port | Description |
 |---------|------|-------------|
-| MCP Server | `localhost:3100` | Schema management, persistence |
 | API Server | `localhost:8002` | Hono API, auth, chat proxy, agent runtimes |
 | Web Frontend | `localhost:8081` | Expo web app (React Native for Web) |
 
 Open **http://localhost:8081** in your browser.
 
-Logs are written to `logs/api.log`, `logs/mcp.log`, and `logs/web.log` so you can `tail -f logs/api.log` to debug issues.
+Logs are written to `logs/api.log` and `logs/web.log` so you can `tail -f logs/api.log` to debug issues.
 
 **Environment:** Copy `.env.local.template` to `.env.local` and fill in your API keys (at minimum `ANTHROPIC_API_KEY`). The dev server script will create a minimal `.env.local` for you if one doesn't exist.
 
@@ -65,15 +64,14 @@ Logs are written to `logs/api.log`, `logs/mcp.log`, and `logs/web.log` so you ca
 If you prefer separate terminals:
 
 ```bash
-bun run mcp:http       # Terminal 1 — MCP server on :3100
-bun run api:dev        # Terminal 2 — API server on :8002 (with --watch)
-bun run web:dev        # Terminal 3 — Expo web on :8081
+bun run api:dev        # Terminal 1 — API server on :8002 (with --watch)
+bun run web:dev        # Terminal 2 — Expo web on :8081
 ```
 
 Or run just the backend (no frontend):
 
 ```bash
-bun run dev:backend    # MCP + API only
+bun run dev:backend    # API only
 ```
 
 #### Full Setup with Infrastructure
@@ -122,7 +120,6 @@ Each phase has a dedicated AI skill that captures structured output, enabling tr
 | Package | Description |
 |---------|-------------|
 | [@shogo/state-api](packages/state-api) | Schema-to-MST transformation engine |
-| [@shogo/mcp](packages/mcp) | MCP server for AI integration |
 | [@shogo/agent-runtime](packages/agent-runtime) | Agent gateway, tools, Composio integrations |
 | [@shogo/api](apps/api) | Hono API server, auth, chat proxy |
 | [@shogo/mobile](apps/mobile) | Expo app (React Native for Web + iOS + Android) |
@@ -134,13 +131,11 @@ Each phase has a dedicated AI skill that captures structured output, enabling tr
 
 | Command | Description |
 |---------|-------------|
-| `bun run dev:all` | Start MCP + API + Web concurrently |
-| `bun run dev:backend` | Start MCP + API only (no frontend) |
+| `bun run dev:all` | Start API + Web concurrently |
+| `bun run dev:backend` | Start API only (no frontend) |
 | `bun run dev:start` | Full setup: Docker infra + app services |
 | `bun run api:dev` | API server with hot reload (`:8002`) |
 | `bun run web:dev` | Expo web frontend (`:8081`) |
-| `bun run mcp:http` | MCP HTTP server (`:3100`) |
-| `bun run mcp:stdio` | MCP stdio transport (for Claude Code) |
 
 ### Infrastructure
 
@@ -191,7 +186,6 @@ Schemas define entities, relationships, and constraints. The system generates Mo
 - [Creating Schemas](docs/guides/CREATING_SCHEMAS.md) — Schema design patterns
 
 ### Reference
-- [MCP Tools](docs/api/MCP_TOOLS.md) — All 16 tools documented
 - [State API](docs/api/STATE_API.md) — Core library reference
 - [Enhanced JSON Schema](docs/api/ENHANCED_JSON_SCHEMA.md) — Schema format spec
 
@@ -208,7 +202,6 @@ shogo-ai/
 │   └── mobile/            # Expo app (web + iOS + Android)
 ├── packages/
 │   ├── state-api/         # Schema-to-MST transformation engine
-│   ├── mcp/               # MCP server (schema/store/view tools)
 │   ├── agent-runtime/     # Agent gateway, tool system, Composio
 │   ├── sdk/               # Published SDK (@shogo-ai/sdk)
 │   ├── shared-app/        # Shared app logic (auth, chat, domain)

@@ -17,7 +17,6 @@ COPY tsconfig.base.json ./
 # Copy package.json files for dependency resolution
 # All workspace members must be present for bun install to succeed
 COPY packages/state-api/package.json ./packages/state-api/
-COPY packages/mcp/package.json ./packages/mcp/
 COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY packages/agent-runtime/package.json ./packages/agent-runtime/
 COPY packages/shared-runtime/package.json ./packages/shared-runtime/
@@ -37,7 +36,6 @@ RUN bun install
 
 # Copy source code
 COPY packages/state-api ./packages/state-api
-COPY packages/mcp ./packages/mcp
 COPY packages/project-runtime ./packages/project-runtime
 COPY packages/agent-runtime ./packages/agent-runtime
 COPY packages/shared-runtime ./packages/shared-runtime
@@ -60,10 +58,6 @@ RUN bun run build
 
 # Build state-api (dependency)
 WORKDIR /app/packages/state-api
-RUN bun run build
-
-# Build MCP package
-WORKDIR /app/packages/mcp
 RUN bun run build
 
 # Clean per-package node_modules in packages/* to avoid bun symlink bloat
@@ -98,7 +92,6 @@ RUN addgroup -g 1001 -S appgroup && \
 # Copy built artifacts with --chown (avoids expensive recursive chown layer duplication)
 COPY --chown=appuser:appgroup --from=builder /app/node_modules ./node_modules
 COPY --chown=appuser:appgroup --from=builder /app/packages/state-api ./packages/state-api
-COPY --chown=appuser:appgroup --from=builder /app/packages/mcp ./packages/mcp
 COPY --chown=appuser:appgroup --from=builder /app/packages/project-runtime ./packages/project-runtime
 COPY --chown=appuser:appgroup --from=builder /app/packages/agent-runtime ./packages/agent-runtime
 COPY --chown=appuser:appgroup --from=builder /app/packages/shared-runtime ./packages/shared-runtime
@@ -112,7 +105,6 @@ COPY --chown=appuser:appgroup --from=builder /app/tsconfig.base.json ./
 RUN mkdir -p node_modules/@shogo && \
     ln -sf ../../../packages/shared-runtime node_modules/@shogo/shared-runtime && \
     ln -sf ../../../packages/state-api node_modules/@shogo/state-api && \
-    ln -sf ../../../packages/mcp node_modules/@shogo/mcp && \
     ln -sf ../../../packages/sdk node_modules/@shogo/sdk && \
     ln -sf ../../../packages/project-runtime node_modules/@shogo/project-runtime && \
     ln -sf ../../../packages/agent-runtime node_modules/@shogo/agent-runtime && \
