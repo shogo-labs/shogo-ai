@@ -590,7 +590,7 @@ function WorkspaceSwitcher({
                   </View>
                   {effectiveBalance && (
                     <Text className="text-xs text-muted-foreground">
-                      Daily: {formatCredits(effectiveBalance.dailyCredits)} {'\u00B7'} Monthly: {formatCredits(effectiveBalance.monthlyCredits)}
+                      Daily: {formatCredits(effectiveBalance.dailyCredits)}{resolvedPlanId !== 'free' ? ` \u00B7 Monthly: ${formatCredits(effectiveBalance.monthlyCredits)}` : ''}
                     </Text>
                   )}
                 </View>
