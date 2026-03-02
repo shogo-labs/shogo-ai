@@ -77,7 +77,7 @@ function isBlockedCommand(command: string): boolean {
 
 function assertWithinWorkspace(workspaceDir: string, filePath: string): string {
   const resolved = resolve(workspaceDir, filePath)
-  if (!resolved.startsWith(workspaceDir) && !resolved.startsWith('/tmp')) {
+  if (!resolved.startsWith(workspaceDir)) {
     throw new Error(`Path outside workspace: ${filePath}`)
   }
   return resolved

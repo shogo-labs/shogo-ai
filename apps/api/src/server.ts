@@ -81,6 +81,36 @@ async function getProjectType(projectId: string): Promise<string> {
 }
 
 /**
+ * Extract the authenticated user from the request via Better Auth session.
+ * Returns the userId or null if unauthenticated.
+ */
+async function getAuthUserId(c: any): Promise<string | null> {
+  try {
+    const session = await auth.api.getSession({ headers: c.req.raw.headers })
+    return session?.user?.id ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Verify that a user has access to a project via workspace membership.
+ * Returns the project's workspaceId if access is granted, null otherwise.
+ */
+async function verifyProjectAccess(userId: string, projectId: string): Promise<string | null> {
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { workspaceId: true },
+  })
+  if (!project) return null
+
+  const member = await prisma.member.findFirst({
+    where: { userId, workspaceId: project.workspaceId },
+  })
+  return member ? project.workspaceId : null
+}
+
+/**
  * Call an MCP tool with proper session handling
  */
 async function callMcpTool(toolName: string, args: Record<string, unknown>): Promise<{ ok: boolean; error?: { code: string; message: string }; data?: any }> {
@@ -1277,6 +1307,16 @@ app.get('/api/projects/:projectId/runtime/status', async (c) => {
 //   ?mode=proxy - Return proxy-based preview URL (legacy, default for backwards compat)
 app.get('/api/projects/:projectId/sandbox/url', async (c) => {
   const projectId = c.req.param('projectId')
+
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const wsId = await verifyProjectAccess(userId, projectId)
+  if (!wsId) {
+    return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+  }
+
   const shouldWait = c.req.query('wait') !== 'false' // Default to waiting for backwards compat
   const previewMode = c.req.query('mode') || 'subdomain' // Default to subdomain mode
   
@@ -1530,6 +1570,15 @@ app.all('/api/projects/:projectId/preview', async (c) => {
 // Agent proxy - forwards requests directly to agent-runtime pod without /preview prefix
 app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   const projectId = c.req.param('projectId')
+
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const workspaceId = await verifyProjectAccess(userId, projectId)
+  if (!workspaceId) {
+    return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+  }
 
   if (!isKubernetes()) {
     return c.json({ error: { code: 'not_supported', message: 'Agent proxy only available in Kubernetes' } }, 501)
@@ -2856,8 +2905,25 @@ app.route('/api', githubRouter)
 // Project Chat Proxy Routes (pod-per-project architecture)
 // =============================================================================
 
+// Auth guard shared by all chat proxy routes
+async function requireProjectAuth(c: any): Promise<{ error: Response } | { projectId: string }> {
+  const projectId = c.req.param('projectId')
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return { error: c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401) }
+  }
+  const wsId = await verifyProjectAccess(userId, projectId)
+  if (!wsId) {
+    return { error: c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403) }
+  }
+  return { projectId }
+}
+
 // POST /api/projects/:projectId/chat - Proxy chat to project pod
 app.post('/api/projects/:projectId/chat', async (c) => {
+  const authResult = await requireProjectAuth(c)
+  if ('error' in authResult) return authResult.error
+
   const manager = getRuntimeManager()
   const router = projectChatRoutes({ runtimeManager: manager })
   const url = new URL(c.req.url)
@@ -2872,6 +2938,9 @@ app.post('/api/projects/:projectId/chat', async (c) => {
 
 // GET /api/projects/:projectId/chat/status - Check project runtime status
 app.get('/api/projects/:projectId/chat/status', async (c) => {
+  const authResult = await requireProjectAuth(c)
+  if ('error' in authResult) return authResult.error
+
   const manager = getRuntimeManager()
   const router = projectChatRoutes({ runtimeManager: manager })
   const url = new URL(c.req.url)
@@ -2882,6 +2951,9 @@ app.get('/api/projects/:projectId/chat/status', async (c) => {
 
 // POST /api/projects/:projectId/chat/stop - Stop/interrupt active generation
 app.post('/api/projects/:projectId/chat/stop', async (c) => {
+  const authResult = await requireProjectAuth(c)
+  if ('error' in authResult) return authResult.error
+
   const manager = getRuntimeManager()
   const router = projectChatRoutes({ runtimeManager: manager })
   const url = new URL(c.req.url)
@@ -2896,6 +2968,9 @@ app.post('/api/projects/:projectId/chat/stop', async (c) => {
 
 // POST /api/projects/:projectId/chat/wake - Wake up a scaled-to-zero pod
 app.post('/api/projects/:projectId/chat/wake', async (c) => {
+  const authResult = await requireProjectAuth(c)
+  if ('error' in authResult) return authResult.error
+
   const manager = getRuntimeManager()
   const router = projectChatRoutes({ runtimeManager: manager })
   const url = new URL(c.req.url)
