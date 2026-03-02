@@ -58,6 +58,7 @@ import {
   type IDomainStore,
 } from '../../contexts/domain'
 import { useDomainActions } from '@shogo/shared-app/domain'
+import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import {
   PRO_TIERS,
@@ -258,8 +259,7 @@ function WorkspaceSettingsTab() {
   const { user } = useAuth()
   const workspaces = useWorkspaceCollection()
   const members = useMemberCollection()
-
-  const currentWorkspace = workspaces.all.length > 0 ? workspaces.all[0] : null
+  const currentWorkspace = useActiveWorkspace()
 
   const [name, setName] = useState(currentWorkspace?.name || '')
   const [isSaving, setIsSaving] = useState(false)
@@ -984,8 +984,7 @@ function AccountTab() {
 function BillingTab() {
   const { user } = useAuth()
   const actions = useDomainActions()
-  const workspaces = useWorkspaceCollection()
-  const currentWorkspace = workspaces.all.length > 0 ? workspaces.all[0] : null
+  const currentWorkspace = useActiveWorkspace()
 
   const {
     subscription,
@@ -1301,7 +1300,7 @@ function PeopleTab() {
   const members = useMemberCollection()
   const invitations = useInvitationCollection()
   const actions = useDomainActions()
-  const currentWorkspace = workspaces.all.length > 0 ? workspaces.all[0] : null
+  const currentWorkspace = useActiveWorkspace()
 
   const [subTab, setSubTab] = useState<PeopleSubTab>('all')
   const [search, setSearch] = useState('')
@@ -1325,7 +1324,7 @@ function PeopleTab() {
         await workspaces.loadAll({})
       }
 
-      const ws = workspaces.all[0]
+      const ws = currentWorkspace ?? workspaces.all[0]
       if (!ws?.id) { setIsLoading(false); return }
       setResolvedWs({ id: ws.id, name: ws.name || 'Workspace' })
 
@@ -1972,8 +1971,7 @@ export default observer(function SettingsPage() {
   const { width } = useWindowDimensions()
   const isWide = width >= 768
   const { user } = useAuth()
-  const workspaces = useWorkspaceCollection()
-  const currentWorkspace = workspaces.all.length > 0 ? workspaces.all[0] : null
+  const currentWorkspace = useActiveWorkspace()
 
   const [activeTab, setActiveTab] = useState<TabId>(
     () => (ALL_TAB_IDS.includes(params.tab as TabId) ? params.tab as TabId : 'workspace')

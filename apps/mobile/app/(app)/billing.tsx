@@ -29,6 +29,7 @@ import {
 } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
 import { useWorkspaceCollection } from '../../contexts/domain'
+import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useDomainActions } from '@shogo/shared-app/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import {
@@ -69,12 +70,7 @@ export default observer(function BillingPage() {
     }
   }, [user?.id, workspaces])
 
-  let currentWorkspace: any
-  try {
-    currentWorkspace = workspaces?.all?.[0] ?? null
-  } catch {
-    currentWorkspace = null
-  }
+  const currentWorkspace = useActiveWorkspace()
 
   const {
     subscription,

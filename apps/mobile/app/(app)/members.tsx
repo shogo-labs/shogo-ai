@@ -36,6 +36,7 @@ import {
   useInvitationCollection,
   useDomainActions,
 } from '../../contexts/domain'
+import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 
 type TabId = 'members' | 'pending' | 'my-invitations'
 
@@ -944,7 +945,7 @@ export default observer(function MembersPage() {
     load()
   }, [isAuthenticated, user?.id])
 
-  const currentWorkspace = workspaces.all.length > 0 ? workspaces.all[0] : null
+  const currentWorkspace = useActiveWorkspace()
 
   const currentUserRole = useMemo(() => {
     if (!user?.id || !currentWorkspace) return undefined

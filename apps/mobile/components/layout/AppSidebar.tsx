@@ -75,6 +75,7 @@ import {
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { formatCredits } from '../../lib/billing-config'
 import { api } from '../../lib/api'
+import { getActiveWorkspaceId, setActiveWorkspaceId } from '../../lib/workspace-store'
 
 function getInitials(name: string | null | undefined): string {
   if (!name) return '?'
@@ -861,13 +862,16 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
       const targetWs = params.get('workspace')!
       workspaces.loadAll().then(() => {
         setSelectedWorkspaceId(targetWs)
+        setActiveWorkspaceId(targetWs)
         projects.loadAll({ workspaceId: targetWs }).catch(() => {})
       })
       window.history.replaceState({}, '', '/')
     }
   }, [])
 
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(
+    () => getActiveWorkspaceId()
+  )
 
   let currentWorkspace: any
   try {
@@ -938,6 +942,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const handleSwitchWorkspace = useCallback(
     (workspaceId: string) => {
       setSelectedWorkspaceId(workspaceId)
+      setActiveWorkspaceId(workspaceId)
       projects.loadAll({ workspaceId }).catch(() => {})
     },
     [projects]
