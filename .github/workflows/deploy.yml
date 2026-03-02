@@ -491,6 +491,28 @@ jobs:
           patch_ksvc mcp-workspace-1 "${{ env.NS_WORKSPACES }}" shogo-mcp  "$MCP_CHANGED"  "$PREV_MCP_IMAGE"
           patch_ksvc docs         "${{ env.NS_SYSTEM }}"     shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
 
+      - name: Sync API environment variables
+        run: |
+          EXPECTED_AUTH_URL="https://${{ env.DOMAIN }}"
+
+          # Find the index of BETTER_AUTH_URL in the env array
+          IDX=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o json | \
+            python3 -c "import sys,json; envs=json.load(sys.stdin)['spec']['template']['spec']['containers'][0]['env']; print(next(i for i,e in enumerate(envs) if e['name']=='BETTER_AUTH_URL'))" 2>/dev/null) || true
+
+          if [ -z "$IDX" ]; then
+            echo "⚠️ BETTER_AUTH_URL not found on API ksvc, skipping env sync"
+          else
+            CURRENT=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o jsonpath="{.spec.template.spec.containers[0].env[${IDX}].value}")
+            if [ "$CURRENT" != "$EXPECTED_AUTH_URL" ]; then
+              echo "🔄 Updating BETTER_AUTH_URL: $CURRENT → $EXPECTED_AUTH_URL"
+              kubectl patch ksvc api -n ${{ env.NS_SYSTEM }} --type='json' -p="[
+                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/env/${IDX}/value\", \"value\": \"${EXPECTED_AUTH_URL}\"}
+              ]"
+            else
+              echo "✅ BETTER_AUTH_URL already correct: $CURRENT"
+            fi
+          fi
+
       - name: Wait for rollout
         run: |
           echo "⏳ Waiting for service rollouts in ${{ env.ENVIRONMENT }}..."
@@ -732,6 +754,27 @@ jobs:
           patch_ksvc studio       "${{ env.NS_SYSTEM }}"     shogo-web  "$WEB_CHANGED"  "$PREV_WEB_IMAGE"
           patch_ksvc api          "${{ env.NS_SYSTEM }}"     shogo-api  "$API_CHANGED"  "$PREV_API_IMAGE"
           patch_ksvc mcp-workspace-1 "${{ env.NS_WORKSPACES }}" shogo-mcp  "$MCP_CHANGED"  "$PREV_MCP_IMAGE"
+
+      - name: Sync API environment variables (EU)
+        run: |
+          EXPECTED_AUTH_URL="https://studio.shogo.ai"
+
+          IDX=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o json | \
+            python3 -c "import sys,json; envs=json.load(sys.stdin)['spec']['template']['spec']['containers'][0]['env']; print(next(i for i,e in enumerate(envs) if e['name']=='BETTER_AUTH_URL'))" 2>/dev/null) || true
+
+          if [ -z "$IDX" ]; then
+            echo "BETTER_AUTH_URL not found on API ksvc, skipping env sync"
+          else
+            CURRENT=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o jsonpath="{.spec.template.spec.containers[0].env[${IDX}].value}")
+            if [ "$CURRENT" != "$EXPECTED_AUTH_URL" ]; then
+              echo "Updating BETTER_AUTH_URL: $CURRENT -> $EXPECTED_AUTH_URL"
+              kubectl patch ksvc api -n ${{ env.NS_SYSTEM }} --type='json' -p="[
+                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/env/${IDX}/value\", \"value\": \"${EXPECTED_AUTH_URL}\"}
+              ]"
+            else
+              echo "BETTER_AUTH_URL already correct: $CURRENT"
+            fi
+          fi
 
       - name: Wait for rollout (EU)
         run: |

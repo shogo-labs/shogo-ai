@@ -60,6 +60,7 @@ import {
   Settings,
   Zap,
   Check,
+  Shield,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Avatar } from '@shogo/shared-ui/primitives'
@@ -343,9 +344,10 @@ interface UserMenuProps {
   user: { name?: string | null; email?: string | null; image?: string | null } | null
   onSignOut: () => void
   onNavigate: (href: string) => void
+  isSuperAdmin?: boolean
 }
 
-function UserMenu({ user, onSignOut, onNavigate }: UserMenuProps) {
+function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin }: UserMenuProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [appearanceOpen, setAppearanceOpen] = useState(false)
   const { theme, setTheme } = useTheme()
@@ -419,6 +421,16 @@ function UserMenu({ user, onSignOut, onNavigate }: UserMenuProps) {
                   </Pressable>
                 ))}
               </View>
+            )}
+
+            {isSuperAdmin && (
+              <Pressable
+                onPress={() => { onNavigate('/(admin)'); setIsOpen(false) }}
+                className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
+              >
+                <Shield size={16} className="text-primary" />
+                <Text className="text-sm text-foreground">Super Admin</Text>
+              </Pressable>
             )}
           </View>
 
@@ -837,6 +849,21 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const actions = useDomainActions()
   const http = useDomainHttp()
 
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false)
+
+  useEffect(() => {
+    if (!user?.id || !http) return
+    let cancelled = false
+    api.getMe(http)
+      .then((data) => {
+        if (!cancelled && data?.ok && data.data?.role === 'super_admin') {
+          setIsSuperAdmin(true)
+        }
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [user?.id, http])
+
   useEffect(() => {
     workspaces.loadAll().catch(() => {})
     projects.loadAll().catch(() => {})
@@ -1181,6 +1208,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
             user={user}
             onSignOut={handleSignOut}
             onNavigate={(href) => router.push(href as any)}
+            isSuperAdmin={isSuperAdmin}
           />
 
           {!collapsed && (

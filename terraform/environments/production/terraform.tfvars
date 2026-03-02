@@ -33,8 +33,21 @@ ssl_certificate_domain = "*.shogo.ai"
 publish_domain = "shogo.one"
 # ssl_certificate_domain_publish = "*.shogo.one"
 
-# Application Secrets
-better_auth_secret = "F8sqaFlb/uF++IX7EqIK7jDGhGm0VMVJCp+cvzXL0WyznLac1+fPEUOn3W+xTyPa"
+# Application Secrets — provide via TF_VAR_* env vars or a local .auto.tfvars (gitignored)
+# better_auth_secret
+# anthropic_api_key
+# google_client_id
+# google_client_secret
+# composio_api_key
+# composio_project_id
+# gh_app_client_id
+# gh_app_client_secret
+# gh_app_id
+# gh_app_private_key
+# gh_app_slug
+# gh_app_webhook_secret
+# stripe_secret_key
+# stripe_webhook_secret
 
 # GitHub Actions CI/CD
 github_org  = "CodeGlo"

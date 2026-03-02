@@ -69,6 +69,7 @@ _tmp/
 *.tfstate.*
 # .terraform.lock.hcl - should be committed for version consistency
 tfplan
+*.auto.tfvars
 
 # Kubernetes secrets (managed by GitHub Actions/Terraform, not committed)
 k8s/**/secrets.yaml

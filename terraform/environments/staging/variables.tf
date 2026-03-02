@@ -147,6 +147,7 @@ variable "better_auth_secret" {
   description = "Secret key for BetterAuth (min 32 characters)"
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "anthropic_api_key" {
@@ -154,6 +155,85 @@ variable "anthropic_api_key" {
   type        = string
   sensitive   = true
   default     = "" # Optional - can be managed by GitHub Actions instead
+}
+
+variable "google_client_id" {
+  description = "Google OAuth Client ID for social sign-in"
+  type        = string
+  default     = ""
+}
+
+variable "google_client_secret" {
+  description = "Google OAuth Client Secret for social sign-in"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "composio_api_key" {
+  description = "Composio API key for third-party integrations"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "composio_project_id" {
+  description = "Composio Project ID"
+  type        = string
+  default     = ""
+}
+
+variable "gh_app_client_id" {
+  description = "GitHub App OAuth Client ID"
+  type        = string
+  default     = ""
+}
+
+variable "gh_app_client_secret" {
+  description = "GitHub App OAuth Client Secret"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "gh_app_id" {
+  description = "GitHub App ID"
+  type        = string
+  default     = ""
+}
+
+variable "gh_app_private_key" {
+  description = "GitHub App RSA private key (PEM format)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "gh_app_slug" {
+  description = "GitHub App slug"
+  type        = string
+  default     = ""
+}
+
+variable "gh_app_webhook_secret" {
+  description = "GitHub App webhook secret"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "stripe_secret_key" {
+  description = "Stripe secret API key"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "stripe_webhook_secret" {
+  description = "Stripe webhook signing secret"
+  type        = string
+  sensitive   = true
+  default     = ""
 }
 
 # -----------------------------------------------------------------------------

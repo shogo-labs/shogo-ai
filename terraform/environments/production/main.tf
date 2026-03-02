@@ -861,11 +861,47 @@ resource "kubernetes_secret" "api_secrets" {
   }
 
   data = merge(
-    {
+    var.better_auth_secret != "" ? {
       BETTER_AUTH_SECRET = var.better_auth_secret
-    },
+    } : {},
     var.anthropic_api_key != "" ? {
       ANTHROPIC_API_KEY = var.anthropic_api_key
+    } : {},
+    var.google_client_id != "" ? {
+      GOOGLE_CLIENT_ID = var.google_client_id
+    } : {},
+    var.google_client_secret != "" ? {
+      GOOGLE_CLIENT_SECRET = var.google_client_secret
+    } : {},
+    var.composio_api_key != "" ? {
+      COMPOSIO_API_KEY = var.composio_api_key
+    } : {},
+    var.composio_project_id != "" ? {
+      COMPOSIO_PROJECT_ID = var.composio_project_id
+    } : {},
+    var.gh_app_client_id != "" ? {
+      GH_APP_CLIENT_ID = var.gh_app_client_id
+    } : {},
+    var.gh_app_client_secret != "" ? {
+      GH_APP_CLIENT_SECRET = var.gh_app_client_secret
+    } : {},
+    var.gh_app_id != "" ? {
+      GH_APP_ID = var.gh_app_id
+    } : {},
+    var.gh_app_private_key != "" ? {
+      GH_APP_PRIVATE_KEY = var.gh_app_private_key
+    } : {},
+    var.gh_app_slug != "" ? {
+      GH_APP_SLUG = var.gh_app_slug
+    } : {},
+    var.gh_app_webhook_secret != "" ? {
+      GH_APP_WEBHOOK_SECRET = var.gh_app_webhook_secret
+    } : {},
+    var.stripe_secret_key != "" ? {
+      STRIPE_SECRET_KEY = var.stripe_secret_key
+    } : {},
+    var.stripe_webhook_secret != "" ? {
+      STRIPE_WEBHOOK_SECRET = var.stripe_webhook_secret
     } : {}
   )
 }
