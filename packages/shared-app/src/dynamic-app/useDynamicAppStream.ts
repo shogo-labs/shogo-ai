@@ -186,6 +186,11 @@ export function useDynamicAppStream(agentUrl: string | null, options?: DynamicAp
       setConnected(false)
       setConnecting(false)
 
+      if (initialStateTimerRef.current) {
+        clearTimeout(initialStateTimerRef.current)
+        initialStateTimerRef.current = null
+      }
+
       const attempt = reconnectAttemptRef.current++
       const delay = Math.min(1000 * Math.pow(2, attempt), 30_000)
 

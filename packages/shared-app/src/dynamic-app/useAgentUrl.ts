@@ -45,8 +45,27 @@ export function useAgentUrl(
         })
         if (!res.ok) throw new Error('Failed to get sandbox URL')
         const data = await res.json()
+        let resolved = data.agentUrl || data.url || null
+
+        // The server returns agent URLs relative to itself (localhost).
+        // On mobile devices localhost refers to the device, not the dev
+        // machine, so rewrite the host to match apiBaseUrl.
+        if (resolved) {
+          try {
+            const agentParsed = new URL(resolved)
+            const apiParsed = new URL(apiBaseUrl)
+            if (
+              agentParsed.hostname === 'localhost' &&
+              apiParsed.hostname !== 'localhost'
+            ) {
+              agentParsed.hostname = apiParsed.hostname
+              resolved = agentParsed.origin
+            }
+          } catch {}
+        }
+
         if (!controller.signal.aborted) {
-          setAgentUrl(data.agentUrl || data.url || null)
+          setAgentUrl(resolved)
           setError(null)
         }
       } catch (err: any) {
