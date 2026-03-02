@@ -60,6 +60,7 @@ import {
   Settings,
   Zap,
   Check,
+  Inbox,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Avatar } from '@shogo/shared-ui/primitives'
@@ -838,10 +839,26 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const actions = useDomainActions()
   const http = useDomainHttp()
 
+  const [pendingInvites, setPendingInvites] = useState<any[]>([])
+  const [inboxOpen, setInboxOpen] = useState(false)
+
   useEffect(() => {
     workspaces.loadAll().catch(() => {})
     projects.loadAll().catch(() => {})
   }, [])
+
+  const loadInvites = useCallback(() => {
+    if (!http || !user?.email) return
+    http.get<{ ok: boolean; items?: any[] }>(
+      `/api/invitations?email=${encodeURIComponent(user.email)}`
+    ).then((res) => {
+      if (res.data?.ok && res.data.items) {
+        setPendingInvites(res.data.items.filter((i: any) => i.status === 'pending'))
+      }
+    }).catch(() => {})
+  }, [http, user?.email])
+
+  useEffect(() => { loadInvites() }, [loadInvites])
 
   // Detect return from Stripe checkout: verify payment, provision subscription, reload
   useEffect(() => {
@@ -1189,12 +1206,117 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
           />
 
           {!collapsed && (
-            <View className="flex-1 ml-1">
-              <Text className="text-sm text-foreground" numberOfLines={1}>{user?.name || 'User'}</Text>
-            </View>
+            <>
+              <View className="flex-1 ml-1">
+                <Text className="text-sm text-foreground" numberOfLines={1}>{user?.name || 'User'}</Text>
+              </View>
+              <Pressable
+                onPress={() => setInboxOpen(true)}
+                className="relative p-1.5 rounded-md active:bg-muted"
+              >
+                <Inbox size={18} className="text-muted-foreground" />
+                {pendingInvites.length > 0 && (
+                  <View className="absolute -top-0.5 -right-0.5 h-4 w-4 rounded-full bg-destructive items-center justify-center">
+                    <Text className="text-[9px] font-bold text-white">{pendingInvites.length}</Text>
+                  </View>
+                )}
+              </Pressable>
+            </>
           )}
         </View>
       </View>
+
+      {/* Inbox Panel — anchored to bottom-left beside sidebar */}
+      <Modal
+        visible={inboxOpen}
+        transparent
+        animationType="none"
+        onRequestClose={() => setInboxOpen(false)}
+      >
+        <Pressable
+          className="flex-1"
+          onPress={() => setInboxOpen(false)}
+        >
+          <View
+            className="absolute bottom-16 left-[220px] w-[340px] bg-card border border-border rounded-xl shadow-2xl"
+          >
+            <View className="flex-row items-center justify-between px-4 pt-4 pb-2">
+              <Text className="text-base font-semibold text-card-foreground">Inbox</Text>
+              <Pressable onPress={() => setInboxOpen(false)} className="p-1 rounded-md active:bg-muted">
+                <X size={16} className="text-muted-foreground" />
+              </Pressable>
+            </View>
+
+            {pendingInvites.length === 0 ? (
+              <View className="px-4 pb-5 pt-6 items-center gap-2">
+                <Inbox size={28} className="text-muted-foreground" />
+                <Text className="text-sm font-medium text-card-foreground">No messages or invites pending</Text>
+                <Text className="text-xs text-muted-foreground">
+                  Workspace and project invitations will appear here
+                </Text>
+              </View>
+            ) : (
+              <ScrollView className="max-h-[300px]">
+                <Text className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider px-4 pb-1.5 pt-1">
+                  Pending invitations
+                </Text>
+                {pendingInvites.map((inv: any) => (
+                  <Pressable key={inv.id} onPress={(e) => e.stopPropagation()}>
+                    <View className="px-4 py-3 border-t border-border">
+                      <View className="flex-row items-center justify-between mb-0.5">
+                        <Text className="text-sm font-medium text-card-foreground">
+                          {inv.workspace?.name || inv.workspaceName || 'Workspace'}
+                        </Text>
+                        <View className="px-1.5 py-0.5 rounded bg-muted">
+                          <Text className="text-[10px] text-muted-foreground capitalize">{inv.role}</Text>
+                        </View>
+                      </View>
+                      <Text className="text-xs text-muted-foreground mb-2.5">Invited to join this workspace</Text>
+                      <View className="flex-row gap-2">
+                        <Pressable
+                          onPress={async () => {
+                            setPendingInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
+                            try {
+                              if (http) {
+                                await http.patch(`/api/invitations/${inv.id}`, { status: 'accepted' })
+                                await http.post('/api/members', {
+                                  userId: user?.id,
+                                  workspaceId: inv.workspaceId,
+                                  role: inv.role,
+                                  isBillingAdmin: false,
+                                })
+                              }
+                            } catch {}
+                            loadInvites()
+                            workspaces.loadAll().catch(() => {})
+                          }}
+                          className="flex-1 h-8 bg-primary rounded-md items-center justify-center"
+                        >
+                          <Text className="text-xs font-medium text-primary-foreground">Accept</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={async () => {
+                            setPendingInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
+                            try {
+                              if (http) {
+                                await http.patch(`/api/invitations/${inv.id}`, { status: 'declined' })
+                              }
+                            } catch {}
+                            loadInvites()
+                          }}
+                          className="flex-1 h-8 border border-border rounded-md items-center justify-center"
+                        >
+                          <Text className="text-xs font-medium text-card-foreground">Decline</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            )}
+          </View>
+        </Pressable>
+      </Modal>
 
       {/* Modals (true dialogs that are fine as centered overlays) */}
       <CreateFolderModal
