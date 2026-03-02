@@ -60,19 +60,19 @@ echo ""
 echo "✅ Test 2 complete"
 echo ""
 
-# Test 3: API v2 Public Endpoints
-echo "🔧 Test 3: API v2 Public Endpoints"
+# Test 3: API Endpoints (authenticated)
+echo "🔧 Test 3: API Endpoints"
 echo "   Users: 50, Spawn rate: 10, Duration: 3m"
-echo "   Tests: templates, session endpoints (no auth required)"
+echo "   Tests: templates, workspaces, projects, health"
 locust \
-    -f locustfiles/simple/api_v2_test.py \
+    -f locustfiles/simple/api_test.py \
     --headless \
     --users 50 \
     --spawn-rate 10 \
     --run-time 3m \
     --host "$API_BASE_URL" \
-    --html reports/api_v2_enhanced_report.html \
-    --csv reports/api_v2_enhanced
+    --html reports/api_enhanced_report.html \
+    --csv reports/api_enhanced
 
 echo ""
 echo "✅ Test 3 complete"
@@ -87,6 +87,6 @@ echo "✅ All enhanced tests complete!"
 echo "📊 Reports available in reports/ directory:"
 echo "   - reports/auth_enhanced_report.html"
 echo "   - reports/workspace_enhanced_report.html"
-echo "   - reports/api_v2_enhanced_report.html"
+echo "   - reports/api_enhanced_report.html"
 echo ""
 echo "Total test duration: ~11 minutes"

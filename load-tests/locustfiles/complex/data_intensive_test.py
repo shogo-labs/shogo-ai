@@ -20,50 +20,45 @@ from locustfiles.common.auth import AuthManager
 
 
 class DataIntensiveUser(FastHttpUser):
-    """User performing data-intensive operations."""
-    
+    """User performing data-intensive operations (cookie-based auth)."""
+
     wait_time = between(3, 8)
-    
+
     def on_start(self):
-        """Initialize user."""
+        """Authenticate via cookie-based session."""
         self.auth = AuthManager(self.host)
         self.user_id = random.randint(100000, 999999)
-        
+        self.authenticated = False
+        self.project_id = None
+
         result = self.auth.signup(self.client, self.user_id)
         if result:
-            self.token = result["token"]
-            self.project_id = None
-    
-    def get_headers(self):
-        """Get auth headers."""
-        return {"Authorization": f"Bearer {self.token}"}
-    
+            self.authenticated = True
+
     @task(5)
     def bulk_create(self):
         """Bulk create entities."""
         # TODO: Implement bulk create via MCP
         pass
-    
+
     @task(10)
     def complex_query(self):
         """Execute complex query with joins."""
         # TODO: Implement complex query via MCP
         pass
-    
+
     @task(3)
     def update_with_cascade(self):
         """Update with cascading relations."""
         # TODO: Implement cascading update
         pass
-    
-    # TODO: Add more data-intensive operations
 
 
 @events.test_start.add_listener
 def on_test_start(environment, **kwargs):
-    print("🚀 Starting data-intensive operations test...")
+    print("Starting data-intensive operations test...")
 
 
 @events.test_stop.add_listener
 def on_test_stop(environment, **kwargs):
-    print("✅ Data-intensive operations test complete")
+    print("Data-intensive operations test complete")

@@ -4,22 +4,18 @@ that caused staging failures on 2026-02-20.
 
 Scenario: 10-20 users all arrive within a 2-minute window, each:
 1. Signs up / logs in
-2. Creates a new project (triggers cold start)
-3. Waits for project to become ready (preview URL)
-4. Sends a chat message (triggers AI proxy)
-5. Views the preview (triggers Vite build)
-6. Creates an agent project (triggers agent-runtime cold start)
+2. Creates a new AGENT project (triggers warm pool claim / cold start)
+3. Sends a chat message (triggers AI proxy)
+4. Sends follow-up messages
 
 Key metrics tracked:
-- Project cold start time (time from create to preview ready)
+- Agent cold start time (time from create to first successful chat)
 - Chat response time (time for AI proxy round-trip)
-- Vite build success/failure rate
-- Agent runtime start time
 - Overall error rate under concurrent load
 
 SLOs:
-- Project cold start: < 60s p95
-- Warm start: < 5s p95
+- Agent cold start: < 60s p95
+- Warm start: < 15s p95
 - Chat first-token: < 10s p95
 - Error rate: < 5% (relaxed from normal 1% given cold starts)
 """
@@ -38,9 +34,8 @@ from locustfiles.common.config import config
 
 logger = logging.getLogger(__name__)
 
-# SLO thresholds (milliseconds)
 SLO_COLD_START_P95 = 60_000
-SLO_WARM_START_P95 = 5_000
+SLO_WARM_START_P95 = 15_000
 SLO_CHAT_RESPONSE_P95 = 10_000
 SLO_MAX_ERROR_RATE = 0.05
 
@@ -49,7 +44,7 @@ class DryRunUser(HttpUser):
     """Simulates a company employee during a dry-run demo.
 
     Each user goes through the full onboarding flow:
-    signup -> create project -> wait for ready -> chat -> preview
+    signup -> create agent project -> chat -> follow-up messages
     """
 
     wait_time = between(3, 8)
@@ -70,7 +65,6 @@ class DryRunUser(HttpUser):
             logger.warning(f"User {self.user_id} failed to authenticate")
             return
 
-        # Fetch workspace ID (auto-created on signup)
         with self.client.get(
             "/api/workspaces",
             catch_response=True,
@@ -78,7 +72,7 @@ class DryRunUser(HttpUser):
         ) as response:
             if response.status_code == 200:
                 data = response.json()
-                items = data.get("items", [])
+                items = data.get("items", data if isinstance(data, list) else [])
                 if items:
                     self.workspace_id = items[0]["id"]
                     response.success()
@@ -90,8 +84,8 @@ class DryRunUser(HttpUser):
 
     @task(5)
     @tag("cold-start", "project")
-    def create_project_and_wait(self):
-        """Create a new project and measure cold start time."""
+    def create_agent_project(self):
+        """Create a new agent project and measure cold start time."""
         if not self.authenticated or not self.workspace_id:
             return
 
@@ -102,9 +96,10 @@ class DryRunUser(HttpUser):
             json={
                 "name": f"dry-run-{self.user_id}-{int(time.time())}",
                 "workspaceId": self.workspace_id,
+                "type": "AGENT",
             },
             catch_response=True,
-            name="/api/projects [create]",
+            name="/api/projects [create-agent]",
         ) as response:
             if response.status_code not in (200, 201):
                 response.failure(f"Create failed: {response.status_code}")
@@ -128,171 +123,114 @@ class DryRunUser(HttpUser):
             self.project_ids.append(project_id)
             response.success()
 
-        # Poll for project readiness (cold start measurement)
-        self._wait_for_project_ready(project_id, start)
+        # Send first chat message to trigger runtime start
+        self._send_first_chat(project_id, start)
 
-    def _wait_for_project_ready(self, project_id: str, start_time: float):
-        """Poll the sandbox URL endpoint until project is ready or timeout."""
-        timeout = 120  # 2 minutes
-        poll_interval = 2
-        elapsed = 0
+    def _send_first_chat(self, project_id: str, start_time: float):
+        """Send first chat message and measure cold start + first response."""
+        with self.client.post(
+            f"/api/projects/{project_id}/chat",
+            json={
+                "messages": [
+                    {
+                        "role": "user",
+                        "parts": [{"type": "text", "text": "Build me a support ticket manager with priority levels and status tracking. Throw in some example tickets to start."}],
+                    }
+                ],
+                "agentMode": "basic",
+            },
+            catch_response=True,
+            name="/api/projects/:id/chat [first-message]",
+            timeout=120,
+        ) as response:
+            total_ms = (time.time() - start_time) * 1000
 
-        while elapsed < timeout:
-            with self.client.get(
-                f"/api/projects/{project_id}/sandbox/url",
-                catch_response=True,
-                name="/api/projects/:id/sandbox/url [poll]",
-            ) as response:
-                if response.status_code == 200:
-                    total_ms = (time.time() - start_time) * 1000
-                    # Record cold start as a custom metric
-                    events.request.fire(
-                        request_type="COLD_START",
-                        name="project_cold_start",
-                        response_time=total_ms,
-                        response_length=0,
-                        exception=None,
-                        context={},
-                    )
-                    response.success()
-                    logger.info(
-                        f"Project {project_id} ready in {total_ms:.0f}ms"
-                    )
-                    return
-                elif response.status_code in (503, 202):
-                    response.success()  # Expected during cold start
-                else:
-                    response.failure(f"Poll failed: {response.status_code}")
-                    return
-
-            time.sleep(poll_interval)
-            elapsed += poll_interval
-
-        # Timeout
-        total_ms = (time.time() - start_time) * 1000
-        events.request.fire(
-            request_type="COLD_START",
-            name="project_cold_start_timeout",
-            response_time=total_ms,
-            response_length=0,
-            exception=TimeoutError(f"Project {project_id} not ready after {timeout}s"),
-            context={},
-        )
+            if response.status_code == 200:
+                events.request.fire(
+                    request_type="COLD_START",
+                    name="agent_cold_start",
+                    response_time=total_ms,
+                    response_length=0,
+                    exception=None,
+                    context={},
+                )
+                response.success()
+                logger.info(f"Agent project {project_id} first response in {total_ms:.0f}ms")
+            elif response.status_code == 402:
+                response.success()
+            elif response.status_code == 503:
+                response.failure("503: Agent runtime not ready")
+            elif response.status_code == 504:
+                response.failure("504: Gateway timeout")
+            else:
+                response.failure(f"Chat failed: {response.status_code}")
 
     @task(10)
     @tag("chat", "ai-proxy")
     def send_chat_message(self):
-        """Send a chat message to an existing project (tests AI proxy)."""
+        """Send a chat message to an existing agent project."""
         if not self.authenticated or not self.project_ids:
             return
 
         project_id = random.choice(self.project_ids)
 
         prompts = [
-            "List the files in this project.",
-            "What does the main component do?",
-            "How is routing configured?",
-            "Explain the data model.",
+            "Now add a way to assign tickets to team members. Each ticket should show the assignee.",
+            "Add a category breakdown — show how many tickets are bugs vs feature requests vs questions.",
+            "I want to track my sales pipeline too. Show leads in New, Qualified, and Closed stages with company and deal size.",
+            "Build me an expense tracker with total spend, category breakdown, and a chart of spending over time.",
+            "Show me our recent deployments — which ones passed, which failed, and the trend over the last week.",
+            "I need to track job applicants through our hiring process — who applied, what role, what stage, and rating.",
+            "Add a warning banner that we're at 85% of our monthly budget. Make it stand out.",
         ]
 
         with self.client.post(
             f"/api/projects/{project_id}/chat",
             json={
                 "messages": [
-                    {"role": "user", "content": random.choice(prompts)}
+                    {
+                        "role": "user",
+                        "parts": [{"type": "text", "text": random.choice(prompts)}],
+                    }
                 ],
-                "sessionId": f"loadtest-{self.user_id}-{int(time.time())}",
                 "agentMode": "basic",
             },
             catch_response=True,
             name="/api/projects/:id/chat",
-            timeout=60,
+            timeout=120,
         ) as response:
             if response.status_code == 200:
                 response.success()
             elif response.status_code == 503:
-                response.failure("503: Project pod not ready")
+                response.failure("503: Agent runtime not ready")
             elif response.status_code == 504:
                 response.failure("504: Gateway timeout (AI proxy)")
             elif response.status_code == 402:
-                response.success()  # Credits exhausted, don't count as failure
+                response.success()
             else:
                 response.failure(f"Chat failed: {response.status_code}")
 
-    @task(8)
-    @tag("preview", "vite")
-    def access_preview(self):
-        """Access the preview URL to verify Vite build is working."""
-        if not self.authenticated or not self.project_ids:
-            return
-
-        project_id = random.choice(self.project_ids)
-
-        with self.client.get(
-            f"/api/projects/{project_id}/sandbox/url",
-            catch_response=True,
-            name="/api/projects/:id/sandbox/url",
-        ) as response:
-            if response.status_code == 200:
-                try:
-                    data = response.json()
-                    preview_url = data.get("url", "")
-                    if preview_url:
-                        response.success()
-                    else:
-                        response.failure("No preview URL returned")
-                except Exception:
-                    response.failure("Invalid response format")
-            elif response.status_code == 503:
-                response.failure("503: Build not ready")
-            else:
-                response.failure(f"Preview failed: {response.status_code}")
-
     @task(3)
-    @tag("terminal")
-    def execute_terminal_command(self):
-        """Execute a preset terminal command (tests project runtime responsiveness)."""
-        if not self.authenticated or not self.project_ids:
-            return
-
-        project_id = random.choice(self.project_ids)
-
-        with self.client.post(
-            f"/api/projects/{project_id}/terminal/exec",
-            json={"commandId": "typecheck"},
-            catch_response=True,
-            name="/api/projects/:id/terminal/exec",
-            timeout=60,
-        ) as response:
-            if response.status_code == 200:
-                response.success()
-            elif response.status_code == 404:
-                response.success()  # Project pod may not have workspace dir yet
-            else:
-                response.failure(f"Terminal exec failed: {response.status_code}")
-
-    @task(2)
-    @tag("files")
-    def list_files(self):
-        """List project files (tests basic file proxy)."""
+    @tag("status")
+    def check_runtime_status(self):
+        """Check agent runtime status for a project."""
         if not self.authenticated or not self.project_ids:
             return
 
         project_id = random.choice(self.project_ids)
 
         with self.client.get(
-            f"/api/projects/{project_id}/files",
+            f"/api/projects/{project_id}/chat/status",
             catch_response=True,
-            name="/api/projects/:id/files",
+            name="/api/projects/:id/chat/status",
             timeout=10,
         ) as response:
             if response.status_code == 200:
                 response.success()
             else:
-                response.failure(f"Files failed: {response.status_code}")
+                response.failure(f"Status: {response.status_code}")
 
 
-# Track SLO violations
 slo_violations = {
     "cold_start_exceeded": 0,
     "chat_exceeded": 0,

@@ -5,6 +5,9 @@ Scenario 1.3: MCP Tool Operations
 - Tests schema and data operations via MCP
 - 50-100 concurrent users
 - 10 minute duration
+
+Authentication is cookie-based (Better Auth). The Locust client
+automatically sends session cookies with each request.
 """
 from locust import HttpUser, task, between, events
 from locust.contrib.fasthttp import FastHttpUser
@@ -19,43 +22,39 @@ from locustfiles.common.auth import AuthManager
 
 class MCPLoadTestUser(FastHttpUser):
     """User that performs MCP tool operations."""
-    
+
     wait_time = between(2, 5)
-    
+
     def on_start(self):
         """Authenticate and setup."""
-        # For MCP, we still auth against API
-        self.auth = AuthManager(self.host.replace("mcp", "api"))
+        self.auth = AuthManager(self.host)
         self.user_id = random.randint(100000, 999999)
-        
-        # Note: This assumes MCP URL is passed as --host
-        # In reality, you'd want to configure both URLs
+        self.authenticated = False
+        self.workspace_id = f"ws-{self.user_id}"
+        self.schema_name = "task-management"
+
         result = self.auth.signup(self.client, self.user_id)
         if result:
-            self.token = result["token"]
-            self.workspace_id = f"ws-{self.user_id}"
-            self.schema_name = "task-management"
-    
-    def get_headers(self):
-        """Get auth headers."""
-        return {"Authorization": f"Bearer {self.token}"}
-    
+            self.authenticated = True
+
     def call_mcp_tool(self, tool_name: str, arguments: dict, name: str = None):
-        """Call an MCP tool via JSON-RPC."""
+        """Call an MCP tool via JSON-RPC (session cookie provides auth)."""
+        if not self.authenticated:
+            return None
+
         with self.client.post(
             "/mcp",
-            headers=self.get_headers(),
             json={
                 "jsonrpc": "2.0",
                 "id": random.randint(1, 10000),
                 "method": "tools/call",
                 "params": {
                     "name": tool_name,
-                    "arguments": arguments
-                }
+                    "arguments": arguments,
+                },
             },
             catch_response=True,
-            name=name or f"MCP: {tool_name}"
+            name=name or f"MCP: {tool_name}",
         ) as response:
             if response.status_code == 200:
                 response.success()
@@ -63,16 +62,16 @@ class MCPLoadTestUser(FastHttpUser):
             else:
                 response.failure(f"Failed: {response.status_code}")
                 return None
-    
+
     @task(10)
     def list_schemas(self):
         """List available schemas."""
         self.call_mcp_tool(
             "schema.list",
             {"workspace": self.workspace_id},
-            name="schema.list"
+            name="schema.list",
         )
-    
+
     @task(8)
     def list_models(self):
         """List entity models in schema."""
@@ -80,11 +79,11 @@ class MCPLoadTestUser(FastHttpUser):
             "store.models",
             {
                 "schemaName": self.schema_name,
-                "workspace": self.workspace_id
+                "workspace": self.workspace_id,
             },
-            name="store.models"
+            name="store.models",
         )
-    
+
     @task(5)
     def create_entity(self):
         """Create new entity."""
@@ -98,14 +97,14 @@ class MCPLoadTestUser(FastHttpUser):
                     "title": f"Load Test Task {task_id}",
                     "description": "Task created by load test",
                     "status": random.choice(["todo", "in_progress", "done"]),
-                    "priority": random.choice(["low", "medium", "high"])
+                    "priority": random.choice(["low", "medium", "high"]),
                 },
                 "schemaName": self.schema_name,
-                "workspace": self.workspace_id
+                "workspace": self.workspace_id,
             },
-            name="store.create"
+            name="store.create",
         )
-    
+
     @task(10)
     def list_entities(self):
         """List entities."""
@@ -115,11 +114,11 @@ class MCPLoadTestUser(FastHttpUser):
                 "modelName": "Task",
                 "schemaName": self.schema_name,
                 "workspace": self.workspace_id,
-                "limit": 10
+                "limit": 10,
             },
-            name="store.list"
+            name="store.list",
         )
-    
+
     @task(3)
     def update_entity(self):
         """Update existing entity."""
@@ -130,14 +129,14 @@ class MCPLoadTestUser(FastHttpUser):
                 "modelName": "Task",
                 "id": f"task-{task_id}",
                 "data": {
-                    "status": random.choice(["todo", "in_progress", "done"])
+                    "status": random.choice(["todo", "in_progress", "done"]),
                 },
                 "schemaName": self.schema_name,
-                "workspace": self.workspace_id
+                "workspace": self.workspace_id,
             },
-            name="store.update"
+            name="store.update",
         )
-    
+
     @task(5)
     def execute_view(self):
         """Execute a query/view."""
@@ -146,24 +145,22 @@ class MCPLoadTestUser(FastHttpUser):
             {
                 "viewCode": "store.taskCollection.items",
                 "schemaName": self.schema_name,
-                "workspace": self.workspace_id
+                "workspace": self.workspace_id,
             },
-            name="view.execute"
+            name="view.execute",
         )
 
 
 @events.test_start.add_listener
 def on_test_start(environment, **kwargs):
-    """Runs once at the start of the test."""
-    print("🚀 Starting MCP operations load test...")
+    print("Starting MCP operations load test...")
     print(f"Target: {environment.host}")
 
 
 @events.test_stop.add_listener
 def on_test_stop(environment, **kwargs):
-    """Runs once at the end of the test."""
-    print("✅ MCP operations load test complete")
-    
+    print("MCP operations load test complete")
+
     stats = environment.stats
     print(f"\nRequests: {stats.total.num_requests}")
     print(f"Failures: {stats.total.num_failures}")

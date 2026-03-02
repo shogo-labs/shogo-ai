@@ -69,7 +69,7 @@ if [ $EXIT_CODE -eq 0 ]; then
     echo "🎉 Cookie-based authentication is properly configured."
     echo "   - Session cookies are being set on login/signup"
     echo "   - Cookies are automatically sent with API requests"
-    echo "   - Protected /api/v2/* endpoints accept authenticated requests"
+    echo "   - Protected /api/* endpoints accept authenticated requests"
     exit 0
 else
     echo ""
