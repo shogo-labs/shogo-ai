@@ -96,10 +96,11 @@ function ImageThumbnail({
     <Pressable onPress={handlePress} testID="image-thumbnail">
       <Image
         source={{ uri: url }}
-        className="w-[200px] h-[150px] rounded-md border border-border"
+        className="max-w-[280px] rounded-md"
         resizeMode="contain"
         accessibilityLabel={`Image attachment ${index + 1}`}
         onError={() => setHasError(true)}
+        style={{ width: 280, aspectRatio: 4 / 3 }}
       />
     </Pressable>
   )
