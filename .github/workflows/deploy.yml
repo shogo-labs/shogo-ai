@@ -405,6 +405,22 @@ jobs:
             SECRET_ARGS+=(--from-literal=GH_APP_SLUG="${{ secrets.GH_APP_SLUG }}")
           fi
           
+          # Google OAuth secrets (required for social sign-in)
+          if [ -n "${{ secrets.GOOGLE_CLIENT_ID }}" ]; then
+            SECRET_ARGS+=(--from-literal=GOOGLE_CLIENT_ID="${{ secrets.GOOGLE_CLIENT_ID }}")
+          fi
+          if [ -n "${{ secrets.GOOGLE_CLIENT_SECRET }}" ]; then
+            SECRET_ARGS+=(--from-literal=GOOGLE_CLIENT_SECRET="${{ secrets.GOOGLE_CLIENT_SECRET }}")
+          fi
+          
+          # Composio secrets (optional - for third-party integrations)
+          if [ -n "${{ secrets.COMPOSIO_API_KEY }}" ]; then
+            SECRET_ARGS+=(--from-literal=COMPOSIO_API_KEY="${{ secrets.COMPOSIO_API_KEY }}")
+          fi
+          if [ -n "${{ secrets.COMPOSIO_PROJECT_ID }}" ]; then
+            SECRET_ARGS+=(--from-literal=COMPOSIO_PROJECT_ID="${{ secrets.COMPOSIO_PROJECT_ID }}")
+          fi
+          
           kubectl create secret generic api-secrets \
             --namespace=${{ env.NS_SYSTEM }} \
             "${SECRET_ARGS[@]}" \
@@ -643,6 +659,22 @@ jobs:
           fi
           if [ -n "${{ secrets.STRIPE_WEBHOOK_SECRET }}" ]; then
             SECRET_ARGS+=(--from-literal=STRIPE_WEBHOOK_SECRET="${{ secrets.STRIPE_WEBHOOK_SECRET }}")
+          fi
+
+          # Google OAuth secrets (required for social sign-in)
+          if [ -n "${{ secrets.GOOGLE_CLIENT_ID }}" ]; then
+            SECRET_ARGS+=(--from-literal=GOOGLE_CLIENT_ID="${{ secrets.GOOGLE_CLIENT_ID }}")
+          fi
+          if [ -n "${{ secrets.GOOGLE_CLIENT_SECRET }}" ]; then
+            SECRET_ARGS+=(--from-literal=GOOGLE_CLIENT_SECRET="${{ secrets.GOOGLE_CLIENT_SECRET }}")
+          fi
+
+          # Composio secrets (optional - for third-party integrations)
+          if [ -n "${{ secrets.COMPOSIO_API_KEY }}" ]; then
+            SECRET_ARGS+=(--from-literal=COMPOSIO_API_KEY="${{ secrets.COMPOSIO_API_KEY }}")
+          fi
+          if [ -n "${{ secrets.COMPOSIO_PROJECT_ID }}" ]; then
+            SECRET_ARGS+=(--from-literal=COMPOSIO_PROJECT_ID="${{ secrets.COMPOSIO_PROJECT_ID }}")
           fi
 
           kubectl create secret generic api-secrets \
