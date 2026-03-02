@@ -885,6 +885,7 @@ export class KnativeProjectManager {
     const systemNamespace = process.env.SYSTEM_NAMESPACE || (process.env.NODE_ENV === 'production' ? 'shogo-system' : 'shogo-staging-system')
     const apiUrl = process.env.API_URL || process.env.SHOGO_API_URL || `http://api.${systemNamespace}.svc.cluster.local`
     env.push({ name: "AI_PROXY_URL", value: `${apiUrl}/api/ai/v1` })
+    env.push({ name: "TOOLS_PROXY_URL", value: `${apiUrl}/api/tools` })
 
     let proxyTokenGenerated = false
 
@@ -925,48 +926,9 @@ export class KnativeProjectManager {
       env.push({ name: "BETTER_AUTH_URL", value: process.env.BETTER_AUTH_URL })
     }
 
-    // Inject web search API keys for agent runtime tools (web tool, MCP servers).
-    // Keys are stored in the "agent-tool-secrets" K8s Secret in the workspaces namespace.
-    if (isAgentProject) {
-      env.push(
-        {
-          name: "SERPER_API_KEY",
-          valueFrom: {
-            secretKeyRef: { name: "agent-tool-secrets", key: "SERPER_API_KEY", optional: true },
-          },
-        },
-        {
-          name: "EXA_API_KEY",
-          valueFrom: {
-            secretKeyRef: { name: "agent-tool-secrets", key: "EXA_API_KEY", optional: true },
-          },
-        },
-        {
-          name: "BRAVE_API_KEY",
-          valueFrom: {
-            secretKeyRef: { name: "agent-tool-secrets", key: "BRAVE_API_KEY", optional: true },
-          },
-        },
-        {
-          name: "COMPOSIO_API_KEY",
-          valueFrom: {
-            secretKeyRef: { name: "agent-tool-secrets", key: "COMPOSIO_API_KEY", optional: true },
-          },
-        },
-        {
-          name: "COMPOSIO_PROJECT_ID",
-          valueFrom: {
-            secretKeyRef: { name: "agent-tool-secrets", key: "COMPOSIO_PROJECT_ID", optional: true },
-          },
-        },
-        {
-          name: "OPENAI_API_KEY",
-          valueFrom: {
-            secretKeyRef: { name: "agent-tool-secrets", key: "OPENAI_API_KEY", optional: true },
-          },
-        },
-      )
-    }
+    // Third-party API keys (Composio, Serper, OpenAI embeddings) are NOT
+    // injected into pods. Agents proxy these requests through the API server
+    // via TOOLS_PROXY_URL, which holds the real keys server-side.
 
     // Add PostgreSQL DATABASE_URL for shared CloudNativePG cluster
     // Database is provisioned per-project on the shared projects-pg cluster

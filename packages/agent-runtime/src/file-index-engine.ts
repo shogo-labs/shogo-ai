@@ -76,11 +76,17 @@ export class FileIndexEngine {
       this.vecExtensionLoaded = false
     }
 
-    const apiKey = process.env.OPENAI_API_KEY
-    if (apiKey && this.vecExtensionLoaded) {
+    const directKey = process.env.OPENAI_API_KEY
+    const proxyUrl = process.env.TOOLS_PROXY_URL
+    const proxyToken = process.env.AI_PROXY_TOKEN
+    const effectiveKey = directKey || proxyToken
+
+    if (effectiveKey && this.vecExtensionLoaded) {
       this.openai = new OpenAI({
-        apiKey,
-        baseURL: process.env.OPENAI_BASE_URL || undefined,
+        apiKey: effectiveKey,
+        baseURL: process.env.OPENAI_BASE_URL || (
+          !directKey && proxyUrl ? `${proxyUrl}/openai` : undefined
+        ),
       })
       this.embeddingsEnabled = true
     } else {

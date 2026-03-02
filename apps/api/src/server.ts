@@ -31,6 +31,7 @@ import { checkpointRoutes } from './routes/checkpoints'
 import { thumbnailRoutes } from './routes/thumbnail'
 import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
+import { toolsProxyRoutes } from './routes/tools-proxy'
 import { calculateCreditCost } from './lib/credit-cost'
 import { openSession as openBillingSession, closeSession as closeBillingSession } from './lib/proxy-billing-session'
 import { adminRoutes } from './routes/admin'
@@ -4143,6 +4144,11 @@ app.post('/api/webhooks/stripe', async (c) => {
 // The proxy uses its own project-scoped token authentication.
 const aiProxy = aiProxyRoutes()
 app.route('/api', aiProxy)
+
+// Tools passthrough proxy (Composio, Serper, OpenAI embeddings).
+// Uses the same JWT auth as the AI proxy — no raw API keys in agent pods.
+const toolsProxy = toolsProxyRoutes()
+app.route('/api', toolsProxy)
 
 // =============================================================================
 // Domain API routes - For APIPersistence layer

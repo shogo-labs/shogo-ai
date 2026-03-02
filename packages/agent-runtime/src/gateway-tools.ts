@@ -384,16 +384,22 @@ async function serperSearch(
   searchType: string,
   opts: { num?: number; gl?: string; hl?: string } = {},
 ): Promise<AgentToolResult<any>> {
-  const apiKey = process.env.SERPER_API_KEY
+  const directKey = process.env.SERPER_API_KEY
+  const proxyUrl = process.env.TOOLS_PROXY_URL
+  const proxyToken = process.env.AI_PROXY_TOKEN
+
+  const apiKey = directKey || proxyToken
   if (!apiKey) {
     return textResult({
-      error: 'SERPER_API_KEY not configured. Web search is unavailable.',
-      suggestion: 'Set the SERPER_API_KEY environment variable to enable Google search.',
+      error: 'SERPER_API_KEY not configured and no proxy available. Web search is unavailable.',
+      suggestion: 'Set SERPER_API_KEY or configure TOOLS_PROXY_URL + AI_PROXY_TOKEN.',
     })
   }
 
   const { num = 10, gl = 'us', hl = 'en' } = opts
-  const endpoint = SERPER_ENDPOINTS[searchType] || SERPER_ENDPOINTS.search
+  const endpoint = directKey
+    ? (SERPER_ENDPOINTS[searchType] || SERPER_ENDPOINTS.search)
+    : `${proxyUrl}/serper/${searchType || 'search'}`
 
   try {
     const response = await fetch(endpoint, {
@@ -535,7 +541,7 @@ function createWebTool(): AgentTool {
           !details?.error &&
           typeof details?.content === 'string' &&
           details.content.trim().length < MIN_USEFUL_CONTENT_LENGTH &&
-          process.env.SERPER_API_KEY
+          (process.env.SERPER_API_KEY || (process.env.TOOLS_PROXY_URL && process.env.AI_PROXY_TOKEN))
         ) {
           const fallbackQuery = query || url
           const fallback = await serperSearch(fallbackQuery, searchType, { num, gl, hl })
