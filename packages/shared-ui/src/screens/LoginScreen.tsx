@@ -5,7 +5,7 @@
  * Uses shared-ui primitives backed by React Native.
  */
 
-import React, { useState, useMemo } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import { View, Text, ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform, Pressable } from 'react-native'
 import { Button } from '../primitives/Button'
 import { Card, CardContent } from '../primitives/Card'
@@ -248,9 +248,15 @@ function SignUpForm({ onSignUp, isLoading, error, onClearError }: Pick<LoginScre
   )
 }
 
-export function LoginScreen({ onSignIn, onSignUp, onGoogleSignIn, isLoading, error, onClearError }: LoginScreenProps) {
+export function LoginScreen({ onSignIn, onSignUp, onGoogleSignIn, isLoading, error }: LoginScreenProps) {
   const [activeTab, setActiveTab] = useState<Tab>('signin')
-  const switchTab = (tab: Tab) => { setActiveTab(tab); onClearError?.() }
+  const [dismissed, setDismissed] = useState(false)
+
+  useEffect(() => { if (error) setDismissed(false) }, [error])
+
+  const displayError = dismissed ? null : error
+  const dismissError = () => setDismissed(true)
+  const switchTab = (tab: Tab) => { setActiveTab(tab); setDismissed(true) }
 
   return (
     <KeyboardAvoidingView
@@ -277,8 +283,15 @@ export function LoginScreen({ onSignIn, onSignUp, onGoogleSignIn, isLoading, err
                   onPress={() => switchTab(tab)}
                   className={cn(
                     'flex-1 py-2 rounded-md items-center',
-                    activeTab === tab ? 'bg-card shadow-sm' : '',
+                    activeTab === tab ? 'bg-card' : '',
                   )}
+                  style={activeTab === tab ? {
+                    shadowColor: '#000',
+                    shadowOffset: { width: 0, height: 1 },
+                    shadowOpacity: 0.05,
+                    shadowRadius: 2,
+                    elevation: 1,
+                  } : undefined}
                 >
                   <Text className={cn(
                     'text-sm font-medium',
@@ -291,8 +304,8 @@ export function LoginScreen({ onSignIn, onSignUp, onGoogleSignIn, isLoading, err
             </View>
 
             {activeTab === 'signin'
-              ? <SignInForm onSignIn={onSignIn} isLoading={isLoading} error={error} onClearError={onClearError} />
-              : <SignUpForm onSignUp={onSignUp} isLoading={isLoading} error={error} onClearError={onClearError} />
+              ? <SignInForm onSignIn={onSignIn} isLoading={isLoading} error={displayError} onClearError={dismissError} />
+              : <SignUpForm onSignUp={onSignUp} isLoading={isLoading} error={displayError} onClearError={dismissError} />
             }
 
             {onGoogleSignIn ? (

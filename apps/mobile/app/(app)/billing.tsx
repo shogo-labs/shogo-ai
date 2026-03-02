@@ -30,7 +30,8 @@ import {
   Crown,
 } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
-import { useWorkspaceCollection } from '../../contexts/domain'
+import { useWorkspaceCollection, useDomainHttp } from '../../contexts/domain'
+import { api } from '../../lib/api'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useDomainActions } from '@shogo/shared-app/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
@@ -72,6 +73,7 @@ export default observer(function BillingPage() {
     }
   }, [user?.id, workspaces])
 
+  const http = useDomainHttp()
   const currentWorkspace = useActiveWorkspace()
 
   const {
