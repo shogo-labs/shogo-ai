@@ -59,6 +59,7 @@ import {
 } from '../../contexts/domain'
 import { useDomainActions } from '@shogo/shared-app/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { setActiveWorkspaceId } from '../../lib/workspace-store'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import {
   PRO_TIERS,
@@ -252,18 +253,22 @@ function SettingsSidebar({
 // WORKSPACE SETTINGS TAB
 // ============================================================================
 
-function WorkspaceSettingsTab() {
+const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
   const router = useRouter()
   const store = useDomain() as IDomainStore
   const actions = useDomainActions()
   const { user } = useAuth()
   const workspaces = useWorkspaceCollection()
   const members = useMemberCollection()
+  const http = useDomainHttp()
   const currentWorkspace = useActiveWorkspace()
 
   const [name, setName] = useState(currentWorkspace?.name || '')
   const [isSaving, setIsSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
+  const [isLeaveDialogOpen, setIsLeaveDialogOpen] = useState(false)
+  const [isLeaving, setIsLeaving] = useState(false)
+  const [leaveError, setLeaveError] = useState<string | null>(null)
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [deleteConfirmText, setDeleteConfirmText] = useState('')
@@ -295,6 +300,12 @@ function WorkspaceSettingsTab() {
     setName(currentWorkspace?.name || '')
     setSaveStatus('idle')
   }, [currentWorkspace?.name])
+
+  useEffect(() => {
+    if (currentWorkspace?.id) {
+      members.loadAll({ workspaceId: currentWorkspace.id }).catch(() => {})
+    }
+  }, [currentWorkspace?.id])
 
   const handleSave = async () => {
     if (!hasChanges || !isValid || !currentWorkspace?.id) return
@@ -450,10 +461,17 @@ function WorkspaceSettingsTab() {
                 Leave workspace
               </Text>
               <Text className="text-sm text-muted-foreground mt-0.5">
-                You cannot leave your last workspace. Your account must be a member of at least one workspace.
+                Leave this workspace. You will lose access to its projects and data.
               </Text>
             </View>
-            <Button variant="outline" size="sm" disabled>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={workspaces.all.length <= 1 || (isOwner && !workspaceMembers.some(
+                (m: any) => m.role === 'owner' && m.userId !== user?.id
+              ))}
+              onPress={() => setIsLeaveDialogOpen(true)}
+            >
               Leave workspace
             </Button>
           </View>
@@ -487,6 +505,81 @@ function WorkspaceSettingsTab() {
           )}
         </CardContent>
       </Card>
+
+      {/* Leave Workspace Confirmation Modal */}
+      <Modal
+        visible={isLeaveDialogOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => { if (!isLeaving) { setIsLeaveDialogOpen(false); setLeaveError(null) } }}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 justify-center items-center px-6"
+          onPress={() => { if (!isLeaving) { setIsLeaveDialogOpen(false); setLeaveError(null) } }}
+        >
+          <Pressable className="bg-background rounded-xl p-6 w-full max-w-sm gap-4">
+            <View className="flex-row items-center justify-between">
+              <Text className="text-lg font-semibold text-foreground">
+                Leave workspace
+              </Text>
+              <Pressable onPress={() => { if (!isLeaving) { setIsLeaveDialogOpen(false); setLeaveError(null) } }} className="p-1">
+                <X size={20} className="text-muted-foreground" />
+              </Pressable>
+            </View>
+            <Text className="text-sm text-muted-foreground">
+              Are you sure you want to leave "{currentWorkspace?.name}"? You will lose access to all projects and data in this workspace.
+            </Text>
+            {leaveError && (
+              <Text className="text-sm text-destructive">{leaveError}</Text>
+            )}
+            <View className="flex-row gap-2 justify-end">
+              <Button
+                variant="outline"
+                size="sm"
+                onPress={() => { setIsLeaveDialogOpen(false); setLeaveError(null) }}
+                disabled={isLeaving}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={isLeaving}
+                onPress={async () => {
+                  setIsLeaving(true)
+                  setLeaveError(null)
+                  try {
+                    const wsId = currentWorkspace?.id
+                    if (!wsId) {
+                      setLeaveError('Missing workspace information.')
+                      setIsLeaving(false)
+                      return
+                    }
+                    await http.post(`/api/workspaces/${wsId}/leave`)
+                    await workspaces.loadAll()
+                    const remaining = workspaces.all
+                    if (remaining.length > 0) {
+                      setActiveWorkspaceId((remaining[0] as any).id)
+                    }
+                    setIsLeaveDialogOpen(false)
+                    setLeaveError(null)
+                    router.replace('/(app)/projects')
+                  } catch (error: any) {
+                    console.error('[Settings] Failed to leave workspace:', error)
+                    const msg = error?.details?.error?.message
+                      || error?.message
+                      || 'Failed to leave workspace.'
+                    setLeaveError(msg)
+                    setIsLeaving(false)
+                  }
+                }}
+              >
+                {isLeaving ? 'Leaving...' : 'Leave workspace'}
+              </Button>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* Delete Workspace Confirmation Modal */}
       <Modal
@@ -546,7 +639,7 @@ function WorkspaceSettingsTab() {
       </Modal>
     </View>
   )
-}
+})
 
 // ============================================================================
 // ACCOUNT TAB

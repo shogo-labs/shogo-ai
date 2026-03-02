@@ -4213,6 +4213,42 @@ app.use('/api/*', authMiddleware)
 // Unauthenticated requests get 401 Unauthorized
 app.use('/api/*', requireAuth)
 
+// =============================================================================
+// Leave Workspace - Removes the current user's membership from a workspace
+// =============================================================================
+
+app.post('/api/workspaces/:id/leave', async (c) => {
+  const auth = c.get('auth') as any
+  const userId = auth?.userId
+  if (!userId) return c.json({ error: 'Unauthorized' }, 401)
+
+  const workspaceId = c.req.param('id')
+
+  const memberships = await prisma.member.findMany({
+    where: { userId, workspaceId },
+  })
+
+  if (memberships.length === 0) {
+    return c.json({ error: { code: 'not_found', message: 'You are not a member of this workspace.' } }, 404)
+  }
+
+  const wsMembership = memberships.find((m: any) => !m.projectId) || memberships[0]
+
+  if (wsMembership.role === 'owner') {
+    const allWsOwners = await prisma.member.findMany({
+      where: { workspaceId, role: 'owner' },
+      select: { id: true, userId: true, projectId: true },
+    })
+    const otherOwners = allWsOwners.filter((m: any) => m.userId !== userId && !m.projectId)
+    if (otherOwners.length === 0) {
+      return c.json({ error: { code: 'last_owner', message: 'You are the only owner. Transfer ownership to another member before leaving.' } }, 400)
+    }
+  }
+
+  await prisma.member.deleteMany({ where: { userId, workspaceId } })
+
+  return c.json({ ok: true })
+})
 
 // =============================================================================
 // Invite Link Routes (custom, not auto-generated)
