@@ -541,7 +541,7 @@ function WorkspaceSwitcher({
                 <Text className="text-xs text-foreground">Settings</Text>
               </Pressable>
               <Pressable
-                onPress={() => { onNavigate('/(app)/members'); setIsOpen(false) }}
+                onPress={() => { onNavigate('/(app)/settings?tab=people'); setIsOpen(false) }}
                 className="flex-1 flex-row items-center justify-center gap-1.5 h-8 rounded-md border border-border active:bg-muted"
               >
                 <Users size={14} className="text-muted-foreground" />

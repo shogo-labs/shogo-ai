@@ -1294,12 +1294,13 @@ const ROLE_COLORS: Record<string, string> = {
 type SortField = 'name' | 'role' | 'joinedDate' | 'usage' | 'totalUsage' | 'creditLimit'
 type SortDir = 'asc' | 'desc'
 
-function PeopleTab() {
+const PeopleTab = observer(function PeopleTab() {
   const { user } = useAuth()
   const workspaces = useWorkspaceCollection()
   const members = useMemberCollection()
   const invitations = useInvitationCollection()
   const actions = useDomainActions()
+  const http = useDomainHttp()
   const currentWorkspace = useActiveWorkspace()
 
   const [subTab, setSubTab] = useState<PeopleSubTab>('all')
@@ -1310,55 +1311,96 @@ function PeopleTab() {
   const [sortField, setSortField] = useState<SortField>('name')
   const [sortDir, setSortDir] = useState<SortDir>('asc')
   const [isLoading, setIsLoading] = useState(true)
+  const [menuState, setMenuState] = useState<{ memberId: string; view: 'actions' | 'roles' } | null>(null)
+  const [userMap, setUserMap] = useState<Record<string, { name: string; email: string }>>({})
+  const [receivedInvites, setReceivedInvites] = useState<any[]>([])
 
   const [resolvedWs, setResolvedWs] = useState<{ id: string; name: string } | null>(null)
 
   const loadPeopleData = useCallback(async () => {
+    if (!currentWorkspace?.id) {
+      if (workspaces.all.length === 0) {
+        try { await workspaces.loadAll({}) } catch {}
+      }
+      setIsLoading(false)
+      return
+    }
     setIsLoading(true)
     try {
-      if (workspaces.all.length === 0) {
-        await workspaces.loadAll({})
-      }
-      if (workspaces.all.length === 0) {
-        await new Promise(r => setTimeout(r, 1500))
-        await workspaces.loadAll({})
-      }
-
-      const ws = currentWorkspace ?? workspaces.all[0]
-      if (!ws?.id) { setIsLoading(false); return }
+      const ws = currentWorkspace
       setResolvedWs({ id: ws.id, name: ws.name || 'Workspace' })
 
       await members.loadAll({ workspaceId: ws.id })
       await invitations.loadAll({ workspaceId: ws.id })
 
-      if (user?.email) {
-        await invitations.loadAll({ email: user.email })
+      if (http) {
+        try {
+          const res = await http.get<{ ok: boolean; items?: any[] }>(
+            `/api/members?workspaceId=${ws.id}`
+          )
+          if (res.data?.ok && res.data.items) {
+            const map: Record<string, { name: string; email: string }> = {}
+            for (const item of res.data.items) {
+              if (item.user && typeof item.user === 'object' && item.user.id) {
+                map[item.user.id] = {
+                  name: item.user.name || '',
+                  email: item.user.email || '',
+                }
+              }
+            }
+            setUserMap(map)
+          }
+        } catch {}
+
+        if (user?.email) {
+          try {
+            const invRes = await http.get<{ ok: boolean; items?: any[] }>(
+              `/api/invitations?email=${encodeURIComponent(user.email)}`
+            )
+            if (invRes.data?.ok && invRes.data.items) {
+              setReceivedInvites(
+                invRes.data.items.filter((i: any) => i.status === 'pending')
+              )
+            }
+          } catch {}
+        }
       }
     } catch {}
     setIsLoading(false)
-  }, [workspaces, members, invitations, currentWorkspace?.id, user?.email])
+  }, [workspaces, members, invitations, http, currentWorkspace?.id, user?.email])
 
   useEffect(() => { loadPeopleData() }, [loadPeopleData])
 
-  const workspaceMembers = currentWorkspace?.id
-    ? members.all.filter((m: any) => m.workspaceId === currentWorkspace.id && !m.projectId)
-    : []
-  const pendingInvitations = currentWorkspace?.id
-    ? invitations.all.filter((i: any) => i.workspaceId === currentWorkspace.id && i.status === 'pending')
-    : []
-  const receivedInvitations = user?.email
-    ? invitations.all.filter((i: any) => i.email === user.email && i.status === 'pending')
+  const ROLE_PRIORITY: Record<string, number> = { owner: 0, admin: 1, member: 2, viewer: 3 }
+
+  const workspaceMembers = useMemo(() => {
+    if (!currentWorkspace?.id) return []
+    const raw = members.all.filter((m: any) => m.workspaceId === currentWorkspace.id && !m.projectId)
+    const byUser = new Map<string, any>()
+    for (const m of raw) {
+      const existing = byUser.get(m.userId)
+      if (!existing || (ROLE_PRIORITY[m.role] ?? 9) < (ROLE_PRIORITY[existing.role] ?? 9)) {
+        byUser.set(m.userId, m)
+      }
+    }
+    return Array.from(byUser.values())
+  }, [currentWorkspace?.id, members.all])
+  const sentInvitations = currentWorkspace?.id
+    ? invitations.all.filter((i: any) => i.workspaceId === currentWorkspace.id && i.status !== 'cancelled')
     : []
 
   const filteredMembers = useMemo(() => {
     let result = [...workspaceMembers]
     if (search.trim()) {
       const q = search.toLowerCase()
-      result = result.filter((m: any) =>
-        (m.user?.name || '').toLowerCase().includes(q) ||
-        (m.user?.email || '').toLowerCase().includes(q) ||
-        (m.userId || '').toLowerCase().includes(q)
-      )
+      result = result.filter((m: any) => {
+        const u = userMap[m.userId]
+        return (
+          (u?.name || '').toLowerCase().includes(q) ||
+          (u?.email || '').toLowerCase().includes(q) ||
+          (m.userId || '').toLowerCase().includes(q)
+        )
+      })
     }
     if (roleFilter !== 'all') {
       result = result.filter((m: any) => m.role === roleFilter)
@@ -1382,11 +1424,43 @@ function PeopleTab() {
     }
   }
 
-  const handleCancelInvitation = async (invitationId: string) => {
+  const currentUserMembership = workspaceMembers.find((m: any) => m.userId === user?.id)
+  const canManageMembers = currentUserMembership?.role === 'owner' || currentUserMembership?.role === 'admin'
+
+  const handleChangeRole = async (memberId: string, newRole: 'owner' | 'admin' | 'member' | 'viewer') => {
     try {
-      await actions.cancelInvitation(invitationId)
+      await actions.updateMemberRole(memberId, newRole, user?.id || '')
+      setMenuState(null)
+      await loadPeopleData()
     } catch {}
   }
+
+  const handleRemoveMember = useCallback(async (memberId: string) => {
+    const confirmed = Platform.OS === 'web'
+      ? window.confirm('Are you sure you want to remove this member?')
+      : true
+    if (!confirmed) { setMenuState(null); return }
+    try {
+      setMenuState(null)
+      await actions.removeMember(memberId, user?.id || '')
+      await loadPeopleData()
+    } catch {
+      if (Platform.OS === 'web') {
+        window.alert('Failed to remove member. You may not have permission.')
+      }
+    }
+  }, [actions, user?.id, loadPeopleData])
+
+  const handleCancelInvitation = useCallback(async (invitationId: string) => {
+    const confirmed = Platform.OS === 'web'
+      ? window.confirm('Cancel this invitation? The invite link will no longer work.')
+      : true
+    if (!confirmed) return
+    try {
+      await actions.cancelInvitation(invitationId)
+      await loadPeopleData()
+    } catch {}
+  }, [actions, loadPeopleData])
 
   const builderCount = workspaceMembers.length
   const currentMonth = new Date().toLocaleString('default', { month: 'short' })
@@ -1423,7 +1497,11 @@ function PeopleTab() {
         {SUB_TABS.map((tab) => (
           <Pressable
             key={tab.id}
-            onPress={() => setSubTab(tab.id)}
+            onPress={() => {
+              setSubTab(tab.id)
+              setShowRoleFilter(false)
+              setMenuState(null)
+            }}
             className={cn(
               'px-4 py-2.5 mr-1',
               subTab === tab.id
@@ -1447,51 +1525,37 @@ function PeopleTab() {
 
       {/* Controls row */}
       <View className="flex-row items-center gap-2 mb-4 flex-wrap">
-        <View className="flex-row items-center flex-1 min-w-[160px] border border-border rounded-lg px-3 h-9">
-          <Search size={14} className="text-muted-foreground mr-2" />
-          <TextInput
-            value={search}
-            onChangeText={setSearch}
-            placeholder="Search..."
-            className="flex-1 text-sm text-foreground placeholder:text-muted-foreground web:outline-none"
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-        </View>
-
-        <View className="relative">
-          <Pressable
-            onPress={() => setShowRoleFilter(!showRoleFilter)}
-            className="flex-row items-center h-9 px-3 border border-border rounded-lg gap-1.5"
-          >
-            <Text className="text-sm text-foreground">
-              {roleFilter === 'all' ? 'All roles' : ROLE_DISPLAY[roleFilter] || roleFilter}
-            </Text>
-            <ChevronDown size={14} className="text-muted-foreground" />
-          </Pressable>
-          {showRoleFilter && (
-            <View className="absolute top-10 left-0 z-50 bg-background border border-border rounded-lg shadow-lg min-w-[140px]">
-              {[{ value: 'all', label: 'All roles' }, { value: 'owner', label: 'Owner' }, { value: 'admin', label: 'Admin' }, { value: 'member', label: 'Editor' }, { value: 'viewer', label: 'Viewer' }].map((opt) => (
-                <Pressable
-                  key={opt.value}
-                  onPress={() => { setRoleFilter(opt.value); setShowRoleFilter(false) }}
-                  className={cn(
-                    'px-3 py-2',
-                    roleFilter === opt.value && 'bg-accent'
-                  )}
-                >
-                  <Text className={cn('text-sm', roleFilter === opt.value ? 'text-foreground font-medium' : 'text-foreground')}>
-                    {opt.label}
-                  </Text>
-                </Pressable>
-              ))}
+        {subTab === 'all' && (
+          <>
+            <View className="flex-row items-center flex-1 min-w-[160px] border border-border rounded-lg px-3 h-9">
+              <Search size={14} className="text-muted-foreground mr-2" />
+              <TextInput
+                value={search}
+                onChangeText={setSearch}
+                placeholder="Search..."
+                className="flex-1 text-sm text-foreground placeholder:text-muted-foreground web:outline-none"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
             </View>
-          )}
-        </View>
 
-        <Pressable className="h-9 px-3 border border-border rounded-lg items-center justify-center">
-          <Text className="text-sm text-foreground">Export</Text>
-        </Pressable>
+            <Pressable
+              onPress={() => setShowRoleFilter(true)}
+              className="flex-row items-center h-9 px-3 border border-border rounded-lg gap-1.5"
+            >
+              <Text className="text-sm text-foreground">
+                {roleFilter === 'all' ? 'All roles' : ROLE_DISPLAY[roleFilter] || roleFilter}
+              </Text>
+              <ChevronDown size={14} className="text-muted-foreground" />
+            </Pressable>
+
+            <Pressable className="h-9 px-3 border border-border rounded-lg items-center justify-center">
+              <Text className="text-sm text-foreground">Export</Text>
+            </Pressable>
+          </>
+        )}
+
+        {subTab === 'invitations' && <View className="flex-1" />}
 
         <Pressable
           onPress={() => setShowInviteModal(true)}
@@ -1550,13 +1614,14 @@ function PeopleTab() {
                 {filteredMembers.map((member: any) => {
                   const isCurrentUser = member.userId === user?.id
                   const avatarColor = ROLE_COLORS[member.role] || 'bg-primary'
-                  const mName = isCurrentUser ? (user?.name || user?.email) : (member.user?.name || member.user?.email || member.userId)
-                  const mEmail = isCurrentUser ? user?.email : (member.user?.email || member.userId)
+                  const resolved = userMap[member.userId]
+                  const mName = isCurrentUser ? (user?.name || user?.email) : (resolved?.name || resolved?.email || member.userId)
+                  const mEmail = isCurrentUser ? user?.email : (resolved?.email || member.userId)
                   const initial = (mName || 'M')[0]?.toUpperCase()
                   return (
                     <View
                       key={member.id}
-                      className="flex-row items-center px-4 py-3 border-b border-border"
+                      className="flex-row items-center px-4 py-3 border-b border-border overflow-visible"
                     >
                       <View className="flex-row items-center flex-[2] gap-3">
                         <View className={cn('h-8 w-8 rounded-full items-center justify-center', avatarColor)}>
@@ -1578,12 +1643,25 @@ function PeopleTab() {
                       </View>
 
                       <View className="w-24">
-                        <View className="flex-row items-center gap-1">
+                        {canManageMembers && !isCurrentUser ? (
+                          <Pressable
+                            onPress={() => setMenuState(
+                              menuState?.memberId === member.id && menuState?.view === 'roles'
+                                ? null
+                                : { memberId: member.id, view: 'roles' }
+                            )}
+                            className="flex-row items-center gap-1"
+                          >
+                            <Text className="text-sm text-foreground capitalize">
+                              {ROLE_DISPLAY[member.role] || member.role}
+                            </Text>
+                            <ChevronDown size={12} className="text-muted-foreground" />
+                          </Pressable>
+                        ) : (
                           <Text className="text-sm text-foreground capitalize">
                             {ROLE_DISPLAY[member.role] || member.role}
                           </Text>
-                          <ChevronDown size={12} className="text-muted-foreground" />
-                        </View>
+                        )}
                       </View>
 
                       <View className="w-28">
@@ -1606,9 +1684,20 @@ function PeopleTab() {
                         <Text className="text-sm text-foreground">—</Text>
                       </View>
 
-                      <Pressable className="w-8 items-center">
-                        <Text className="text-muted-foreground">···</Text>
-                      </Pressable>
+                      <View className="w-8">
+                        {canManageMembers && !isCurrentUser ? (
+                          <Pressable
+                            onPress={() => setMenuState({ memberId: member.id, view: 'actions' })}
+                            className="items-center"
+                          >
+                            <Text className="text-muted-foreground">···</Text>
+                          </Pressable>
+                        ) : (
+                          <View className="items-center">
+                            <Text className="text-muted-foreground/30">···</Text>
+                          </View>
+                        )}
+                      </View>
                     </View>
                   )
                 })}
@@ -1630,24 +1719,38 @@ function PeopleTab() {
           {/* Received invitations */}
           <View>
             <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 px-1">Received</Text>
-            {receivedInvitations.length === 0 ? (
+            {receivedInvites.length === 0 ? (
               <Card><CardContent className="py-6 items-center"><Text className="text-sm text-muted-foreground">No pending invitations</Text></CardContent></Card>
             ) : (
               <Card>
                 <CardContent className="p-0">
-                  {receivedInvitations.map((inv: any) => (
+                  {receivedInvites.map((inv: any) => (
                     <View key={inv.id} className="p-4 border-b border-border">
                       <View className="flex-row items-center justify-between mb-1">
-                        <Text className="text-base font-semibold text-foreground">{inv.workspace?.name || 'Workspace'}</Text>
-                        <View className="px-2 py-0.5 rounded bg-muted"><Text className="text-xs text-muted-foreground capitalize">{ROLE_DISPLAY[inv.role] || inv.role}</Text></View>
+                        <Text className="text-base font-semibold text-foreground">
+                          {inv.workspace?.name || inv.workspaceName || 'Workspace'}
+                        </Text>
+                        <View className="px-2 py-0.5 rounded bg-muted">
+                          <Text className="text-xs text-muted-foreground capitalize">{ROLE_DISPLAY[inv.role] || inv.role}</Text>
+                        </View>
                       </View>
                       <Text className="text-sm text-muted-foreground mb-3">You've been invited to join this workspace</Text>
                       <View className="flex-row gap-2">
                         <Pressable
                           onPress={async () => {
+                            setReceivedInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
                             try {
-                              await actions.acceptInvitation(inv.id, user?.id || '')
+                              if (http) {
+                                await http.patch(`/api/invitations/${inv.id}`, { status: 'accepted' })
+                                await http.post('/api/members', {
+                                  userId: user?.id,
+                                  workspaceId: inv.workspaceId,
+                                  role: inv.role,
+                                  isBillingAdmin: false,
+                                })
+                              }
                             } catch {}
+                            loadPeopleData()
                           }}
                           className="flex-1 h-10 bg-primary rounded-lg items-center justify-center"
                         >
@@ -1655,9 +1758,13 @@ function PeopleTab() {
                         </Pressable>
                         <Pressable
                           onPress={async () => {
+                            setReceivedInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
                             try {
-                              await actions.declineInvitation(inv.id)
+                              if (http) {
+                                await http.patch(`/api/invitations/${inv.id}`, { status: 'declined' })
+                              }
                             } catch {}
+                            loadPeopleData()
                           }}
                           className="flex-1 h-10 border border-border rounded-lg items-center justify-center"
                         >
@@ -1681,7 +1788,7 @@ function PeopleTab() {
                 <ActivityIndicator size="small" />
                 <Text className="text-sm text-muted-foreground mt-2">Loading...</Text>
               </View>
-            ) : pendingInvitations.length === 0 ? (
+            ) : sentInvitations.length === 0 ? (
               <View className="py-16 items-center px-6">
                 <View className="h-12 w-12 rounded-lg bg-muted/50 items-center justify-center mb-4">
                   <Mail size={24} className="text-muted-foreground/50" />
@@ -1714,15 +1821,25 @@ function PeopleTab() {
                   <View className="w-8" />
                 </View>
 
-                {pendingInvitations.map((inv: any) => {
-                  const isExpired = Date.now() > inv.expiresAt
+                {sentInvitations.map((inv: any) => {
+                  const isExpired = inv.status === 'expired' || Date.now() > inv.expiresAt
+                  const status = isExpired ? 'expired' : (inv.status as string)
+                  const isDimmed = status === 'expired' || status === 'declined'
+                  const badgeVariant = status === 'accepted' ? 'default'
+                    : status === 'declined' ? 'destructive'
+                    : status === 'expired' ? 'outline'
+                    : 'secondary'
+                  const badgeLabel = status === 'accepted' ? 'Accepted'
+                    : status === 'declined' ? 'Declined'
+                    : status === 'expired' ? 'Expired'
+                    : 'Pending'
                   return (
                     <View
                       key={inv.id}
-                      className={cn('flex-row items-center px-4 py-3 border-b border-border', isExpired && 'opacity-60')}
+                      className={cn('flex-row items-center px-4 py-3 border-b border-border', isDimmed && 'opacity-50')}
                     >
                       <View className="flex-[2]">
-                        <Text className={cn('text-sm text-foreground', isExpired && 'line-through')}>{inv.email}</Text>
+                        <Text className={cn('text-sm text-foreground', isDimmed && 'line-through')}>{inv.email}</Text>
                       </View>
                       <View className="w-24">
                         <Text className="text-sm text-foreground capitalize">{ROLE_DISPLAY[inv.role] || inv.role}</Text>
@@ -1733,37 +1850,68 @@ function PeopleTab() {
                         </Text>
                       </View>
                       <View className="w-24">
-                        <Badge variant={isExpired ? 'destructive' : 'secondary'}>
-                          <Text className="text-[10px]">{isExpired ? 'Expired' : 'Pending'}</Text>
+                        <Badge variant={badgeVariant}>
+                          <Text className="text-[10px]">{badgeLabel}</Text>
                         </Badge>
                       </View>
-                      <Pressable
-                        onPress={() => handleCancelInvitation(inv.id)}
-                        className="w-8 items-center"
-                      >
-                        <X size={14} className="text-muted-foreground" />
-                      </Pressable>
+                      <View className="w-8 items-center">
+                        {status === 'pending' && (
+                          <Pressable onPress={() => handleCancelInvitation(inv.id)}>
+                            <X size={14} className="text-muted-foreground" />
+                          </Pressable>
+                        )}
+                      </View>
                     </View>
                   )
                 })}
 
                 <View className="px-4 py-2.5">
                   <Text className="text-xs text-muted-foreground">
-                    Showing 1-{pendingInvitations.length} of {pendingInvitations.length}
+                    Showing 1-{sentInvitations.length} of {sentInvitations.length}
                   </Text>
                 </View>
               </>
-            )}
-            {pendingInvitations.length === 0 && !isLoading && (
-              <View className="px-4 py-2.5 border-t border-border">
-                <Text className="text-xs text-muted-foreground">No results</Text>
-              </View>
             )}
           </CardContent>
         </Card>
           </View>
         </View>
       )}
+
+      {/* Invite Members Modal */}
+      {/* Role Filter Modal */}
+      <Modal
+        visible={showRoleFilter}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowRoleFilter(false)}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 justify-center items-center px-6"
+          onPress={() => setShowRoleFilter(false)}
+        >
+          <Pressable
+            onPress={(e) => e.stopPropagation()}
+            className="bg-background rounded-xl p-5 w-full max-w-xs gap-1"
+          >
+            <Text className="text-base font-semibold text-foreground mb-2">Filter by role</Text>
+            {[{ value: 'all', label: 'All roles' }, { value: 'owner', label: 'Owner' }, { value: 'admin', label: 'Admin' }, { value: 'member', label: 'Editor' }, { value: 'viewer', label: 'Viewer' }].map((opt) => (
+              <Pressable
+                key={opt.value}
+                onPress={() => { setRoleFilter(opt.value); setShowRoleFilter(false) }}
+                className={cn('py-3 border-b border-border', roleFilter === opt.value && 'bg-accent rounded-md px-3')}
+              >
+                <Text className={cn('text-sm', roleFilter === opt.value ? 'text-foreground font-medium' : 'text-foreground')}>
+                  {opt.label}
+                </Text>
+              </Pressable>
+            ))}
+            <Pressable onPress={() => setShowRoleFilter(false)} className="py-2 mt-1">
+              <Text className="text-sm text-muted-foreground text-center">Cancel</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* Invite Members Modal */}
       <InviteMembersModal
@@ -1776,9 +1924,78 @@ function PeopleTab() {
         workspaceName={resolvedWs?.name || currentWorkspace?.name || ''}
         actions={actions}
       />
+
+      {/* Member Action Modal */}
+      <Modal
+        visible={menuState !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMenuState(null)}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 justify-center items-center px-6"
+          onPress={() => setMenuState(null)}
+        >
+          <Pressable
+            onPress={(e) => e.stopPropagation()}
+            className="bg-background rounded-xl p-5 w-full max-w-xs gap-3"
+          >
+            {menuState?.view === 'actions' && (
+              <>
+                <Text className="text-base font-semibold text-foreground mb-1">
+                  Member actions
+                </Text>
+                <Pressable
+                  onPress={() => {
+                    if (menuState) setMenuState({ ...menuState, view: 'roles' })
+                  }}
+                  className="py-3 border-b border-border"
+                >
+                  <Text className="text-sm text-foreground">Change role</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    if (menuState) handleRemoveMember(menuState.memberId)
+                  }}
+                  className="py-3"
+                >
+                  <Text className="text-sm text-destructive">Remove member</Text>
+                </Pressable>
+              </>
+            )}
+            {menuState?.view === 'roles' && (
+              <>
+                <Text className="text-base font-semibold text-foreground mb-1">
+                  Select role
+                </Text>
+                {(['owner', 'admin', 'member', 'viewer'] as const).map((r) => {
+                  const activeMember = workspaceMembers.find((m: any) => m.id === menuState?.memberId)
+                  const isActive = activeMember?.role === r
+                  return (
+                    <Pressable
+                      key={r}
+                      onPress={() => {
+                        if (menuState) handleChangeRole(menuState.memberId, r)
+                      }}
+                      className={cn('py-3 border-b border-border', isActive && 'bg-accent rounded-md px-3')}
+                    >
+                      <Text className={cn('text-sm', isActive ? 'text-foreground font-medium' : 'text-foreground')}>
+                        {ROLE_DISPLAY[r]}
+                      </Text>
+                    </Pressable>
+                  )
+                })}
+              </>
+            )}
+            <Pressable onPress={() => setMenuState(null)} className="py-2 mt-1">
+              <Text className="text-sm text-muted-foreground text-center">Cancel</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   )
-}
+})
 
 function InviteMembersModal({
   visible,
