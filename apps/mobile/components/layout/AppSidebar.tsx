@@ -73,7 +73,7 @@ import {
   useDomainHttp,
 } from '../../contexts/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
-import { formatCredits } from '../../lib/billing-config'
+import { formatCredits, DAILY_CREDITS } from '../../lib/billing-config'
 import { api } from '../../lib/api'
 import { getActiveWorkspaceId, setActiveWorkspaceId } from '../../lib/workspace-store'
 
@@ -475,8 +475,8 @@ function WorkspaceSwitcher({
   const effectiveBalance = billingData.effectiveBalance
   const creditsTotal = effectiveBalance
     ? Math.max(effectiveBalance.total, 1)
-    : 55
-  const creditsRemaining = effectiveBalance?.total ?? 0
+    : DAILY_CREDITS
+  const creditsRemaining = effectiveBalance?.total ?? DAILY_CREDITS
 
   return (
     <Popover
