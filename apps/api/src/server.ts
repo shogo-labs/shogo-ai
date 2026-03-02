@@ -3044,6 +3044,49 @@ app.get('/api/admin/warm-pool', async (c) => {
   }
 })
 
+// POST /api/admin/warm-pool/evict/:projectId - Evict project from its current pod
+// The next request for this project will claim a fresh warm pod.
+app.post('/api/admin/warm-pool/evict/:projectId', async (c) => {
+  const projectId = c.req.param('projectId')
+  try {
+    const { getWarmPoolController } = await import('./lib/warm-pool-controller')
+    const controller = getWarmPoolController()
+    const result = await controller.evictProject(projectId)
+    return c.json({ ok: true, projectId, ...result })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// POST /api/admin/warm-pool/evict-all - Evict all projects from old pods
+// Useful after deploys to force all projects onto fresh pods.
+app.post('/api/admin/warm-pool/evict-all', async (c) => {
+  try {
+    const { getWarmPoolController } = await import('./lib/warm-pool-controller')
+    const controller = getWarmPoolController()
+    const { prisma } = await import('./lib/prisma')
+
+    const projects = await prisma.project.findMany({
+      where: { knativeServiceName: { not: null } },
+      select: { id: true, knativeServiceName: true },
+    })
+
+    const results: Array<{ projectId: string; oldService: string | null; evicted: boolean }> = []
+    for (const project of projects) {
+      const result = await controller.evictProject(project.id)
+      results.push({
+        projectId: project.id,
+        oldService: project.knativeServiceName,
+        evicted: result.evicted,
+      })
+    }
+
+    return c.json({ ok: true, evicted: results.length, results })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
 // DELETE /api/admin/projects/:projectId - Delete project pod
 app.delete('/api/admin/projects/:projectId', async (c) => {
   const router = projectAdminRoutes()
