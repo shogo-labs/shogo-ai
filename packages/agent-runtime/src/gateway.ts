@@ -790,7 +790,6 @@ You have a \`personality_update\` tool that lets you improve your own behavior f
 ### How It Works
 - Specify the file (SOUL.md, AGENTS.md, or IDENTITY.md), the section heading, and the new content
 - Include a reasoning field explaining why the update improves your behavior
-- Max 1 update per session, 3 per day — be selective
 - The Boundaries section in SOUL.md can never be removed, only appended to
 - All updates are logged to daily memory with [personality-update] tag
 
