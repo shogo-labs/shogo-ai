@@ -117,9 +117,9 @@ export function InlineToolWidget({
         <StateIcon
           className={cn(
             "w-3 h-3",
-            tool.state === "streaming" && "text-exec-streaming",
-            tool.state === "success" && "text-exec-success",
-            tool.state === "error" && "text-exec-error"
+            tool.state === "streaming" && "text-blue-400",
+            tool.state === "success" && "text-green-500",
+            tool.state === "error" && "text-red-500"
           )}
         />
       </Pressable>
@@ -155,11 +155,11 @@ export function InlineToolWidget({
 
           {tool.state === "error" && (
             <View className="gap-0.5">
-              <Text className="text-[9px] font-medium text-exec-error uppercase tracking-wide">
+              <Text className="text-[9px] font-medium text-red-500 uppercase tracking-wide">
                 Error
               </Text>
-              <ScrollView horizontal className="bg-exec-error/10 rounded p-1.5 max-h-32">
-                <Text className="text-[10px] font-mono text-exec-error">
+              <ScrollView horizontal className="bg-red-500/10 rounded p-1.5 max-h-32">
+                <Text className="text-[10px] font-mono text-red-500">
                   {getDisplayableResult() || "No output captured"}
                 </Text>
               </ScrollView>

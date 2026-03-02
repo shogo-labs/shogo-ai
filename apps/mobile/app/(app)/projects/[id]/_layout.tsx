@@ -40,6 +40,7 @@ import type { IDomainStore } from '@shogo/domain-stores'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { useAuth } from '../../../../contexts/auth'
+import { authClient } from '../../../../lib/auth-client'
 import { API_URL, api } from '../../../../lib/api'
 import { consumePendingImageData } from '../../../../lib/pending-image-store'
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
@@ -116,9 +117,24 @@ export default observer(function ProjectLayout() {
     }
   }, [projects?.all])
 
+  // Auth headers for native (Android/iOS) — cookies aren't sent automatically
+  const nativeHeaders = useMemo(() => {
+    if (Platform.OS === 'web') return undefined
+    return (): Record<string, string> => {
+      const cookie = (authClient as any).getCookie()
+      return cookie ? { Cookie: cookie } : {}
+    }
+  }, [])
+
   // Dynamic app canvas (agent projects)
-  const { agentUrl } = useAgentUrl(API_URL!, projectId, { credentials: Platform.OS === 'web' ? 'include' : 'omit' })
-  const { surfaces, connected, dispatchAction, updateLocalData } = useDynamicAppStream(agentUrl)
+  const { agentUrl } = useAgentUrl(API_URL!, projectId, {
+    credentials: Platform.OS === 'web' ? 'include' : 'omit',
+    headers: nativeHeaders,
+  })
+  const { surfaces, connected, dispatchAction, updateLocalData } = useDynamicAppStream(
+    agentUrl,
+    nativeHeaders ? { headers: nativeHeaders } : undefined,
+  )
   const activeSurface = surfaces.size > 0 ? Array.from(surfaces.values())[0] : null
 
   // Canvas action handler
@@ -392,6 +408,7 @@ export default observer(function ProjectLayout() {
           agentUrl={agentUrl}
           onAction={handleCanvasAction}
           onDataChange={updateLocalData}
+          authHeaders={nativeHeaders}
         />
       </EditModeProvider>
     </CanvasThemeProvider>
@@ -525,12 +542,14 @@ function CanvasPanel({
   agentUrl,
   onAction,
   onDataChange,
+  authHeaders,
 }: {
   surface: any | null
   connected: boolean
   agentUrl: string | null
   onAction: (surfaceId: string, name: string, context?: Record<string, unknown>) => void
   onDataChange?: (surfaceId: string, path: string, value: unknown) => void
+  authHeaders?: () => Record<string, string>
 }) {
   const editMode = useEditModeOptional()
   const isEditMode = editMode?.isEditMode ?? false
@@ -600,6 +619,7 @@ function CanvasPanel({
                 agentUrl={agentUrl}
                 onAction={onAction}
                 onDataChange={onDataChange}
+                authHeaders={authHeaders}
               />
             </ScrollView>
           </CanvasThemedContainer>

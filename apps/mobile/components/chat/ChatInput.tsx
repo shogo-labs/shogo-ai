@@ -22,14 +22,9 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
+  Modal,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import {
-  Popover,
-  PopoverBackdrop,
-  PopoverBody,
-  PopoverContent,
-} from "@/components/ui/popover"
 import {
   ArrowUp,
   Plus,
@@ -81,7 +76,7 @@ const AGENT_MODES: AgentModeConfig[] = [
     id: "basic",
     label: "Basic",
     description: "Fast responses, 4x cheaper",
-    icon: <Zap className="h-3.5 w-3.5" size={14} />,
+    icon: <Zap className="h-3.5 w-3.5 text-muted-foreground" size={14} />,
     creditHint: "~0.2 credits",
     requiresPro: false,
   },
@@ -89,7 +84,7 @@ const AGENT_MODES: AgentModeConfig[] = [
     id: "advanced",
     label: "Advanced",
     description: "More capable, better quality",
-    icon: <Rocket className="h-3.5 w-3.5" size={14} />,
+    icon: <Rocket className="h-3.5 w-3.5 text-muted-foreground" size={14} />,
     creditHint: "~0.5-1 credits",
     requiresPro: true,
   },
@@ -634,28 +629,35 @@ export function ChatInput({
             </Pressable>
 
             {/* Agent mode selector */}
-            <Popover
-              placement="top"
-              size="xs"
-              isOpen={agentModeOpen}
-              onOpen={() => setAgentModeOpen(true)}
-              onClose={() => setAgentModeOpen(false)}
-              trigger={(triggerProps) => (
-                <Pressable
-                  {...triggerProps}
-                  disabled={disabled || isStreaming}
-                  className="h-8 flex-row items-center gap-1.5 rounded-full px-3"
-                >
-                  {currentAgentConfig.icon}
-                  <Text className="text-xs text-muted-foreground">
-                    {currentAgentConfig.label}
-                  </Text>
-                </Pressable>
-              )}
+            <Pressable
+              onPress={() => setAgentModeOpen(true)}
+              disabled={disabled || isStreaming}
+              className="h-8 flex-row items-center gap-1.5 rounded-full px-3"
             >
-              <PopoverBackdrop />
-              <PopoverContent className="max-w-[280px] p-0">
-                <PopoverBody>
+              {currentAgentConfig.icon}
+              <Text className="text-xs text-muted-foreground">
+                {currentAgentConfig.label}
+              </Text>
+            </Pressable>
+
+            <Modal
+              visible={agentModeOpen}
+              transparent
+              animationType="fade"
+              onRequestClose={() => setAgentModeOpen(false)}
+            >
+              <Pressable
+                className="flex-1 bg-black/50 justify-end"
+                onPress={() => setAgentModeOpen(false)}
+              >
+                <Pressable
+                  className="bg-card rounded-t-2xl border-t border-border p-4 pb-8"
+                  onPress={(e) => e.stopPropagation()}
+                >
+                  <View className="w-10 h-1 rounded-full bg-muted-foreground/30 self-center mb-4" />
+                  <Text className="text-sm font-semibold text-foreground mb-3 px-1">
+                    Agent Mode
+                  </Text>
                   {AGENT_MODES.map((mode) => {
                     const isLocked = mode.requiresPro && !isPro
                     const isSelected = mode.id === agentMode
@@ -726,9 +728,9 @@ export function ChatInput({
                       </Pressable>
                     )
                   })}
-                </PopoverBody>
-              </PopoverContent>
-            </Popover>
+                </Pressable>
+              </Pressable>
+            </Modal>
           </View>
 
           {/* Right side buttons */}

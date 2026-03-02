@@ -26,7 +26,11 @@ export interface DynamicAppStreamState {
   error: string | null
 }
 
-export function useDynamicAppStream(agentUrl: string | null) {
+export interface DynamicAppStreamOptions {
+  headers?: () => Record<string, string>
+}
+
+export function useDynamicAppStream(agentUrl: string | null, options?: DynamicAppStreamOptions) {
   const [surfaces, setSurfaces] = useState<Map<string, SurfaceState>>(new Map())
   const [connected, setConnected] = useState(false)
   const [connecting, setConnecting] = useState(false)
@@ -135,7 +139,10 @@ export function useDynamicAppStream(agentUrl: string | null) {
     receivedFirstMessage.current = false
 
     const url = `${agentUrl}/agent/dynamic-app/stream`
-    const es = new EventSource(url)
+    const extraHeaders = options?.headers?.()
+    const es: EventSource = extraHeaders
+      ? new (EventSource as any)(url, { headers: extraHeaders })
+      : new EventSource(url)
     eventSourceRef.current = es
 
     if (initialStateTimerRef.current) clearTimeout(initialStateTimerRef.current)
@@ -210,9 +217,10 @@ export function useDynamicAppStream(agentUrl: string | null) {
       if (!agentUrl) return
 
       try {
+        const extraHeaders = options?.headers?.()
         await fetch(`${agentUrl}/agent/dynamic-app/action`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...extraHeaders },
           body: JSON.stringify({
             surfaceId,
             name,
@@ -224,7 +232,7 @@ export function useDynamicAppStream(agentUrl: string | null) {
         console.error('[DynamicApp] Failed to dispatch action:', err)
       }
     },
-    [agentUrl],
+    [agentUrl, options?.headers],
   )
 
   const updateLocalData = useCallback(

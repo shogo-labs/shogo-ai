@@ -10,7 +10,12 @@ import { useState, useEffect, useRef } from 'react'
 export function useAgentUrl(
   apiBaseUrl: string,
   projectId: string | undefined,
-  options?: { credentials?: RequestCredentials; localAgentUrl?: string | null },
+  options?: {
+    credentials?: RequestCredentials
+    localAgentUrl?: string | null
+    headers?: () => Record<string, string>
+    fetch?: typeof globalThis.fetch
+  },
 ) {
   const [agentUrl, setAgentUrl] = useState<string | null>(options?.localAgentUrl ?? null)
   const [error, setError] = useState<string | null>(null)
@@ -29,10 +34,13 @@ export function useAgentUrl(
     const controller = new AbortController()
     abortRef.current = controller
 
+    const doFetch = options?.fetch ?? fetch
+
     ;(async () => {
       try {
-        const res = await fetch(`${apiBaseUrl}/api/projects/${projectId}/sandbox/url`, {
+        const res = await doFetch(`${apiBaseUrl}/api/projects/${projectId}/sandbox/url`, {
           credentials: options?.credentials,
+          headers: options?.headers?.(),
           signal: controller.signal,
         })
         if (!res.ok) throw new Error('Failed to get sandbox URL')

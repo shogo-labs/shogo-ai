@@ -19,6 +19,8 @@ if (Platform.OS !== 'web') {
   }
 
   // Polyfill EventSource for Hermes (used by dynamic app streaming)
+  // Extends the standard API with an optional `headers` property in the options
+  // bag so callers can pass auth cookies on native where browser cookies aren't available.
   if (!('EventSource' in global)) {
     class RNEventSource {
       static CONNECTING = 0
@@ -30,9 +32,11 @@ if (Platform.OS !== 'web') {
       onmessage: ((ev: any) => void) | null = null
       onerror: ((ev: any) => void) | null = null
       private _controller: AbortController | null = null
+      private _headers: Record<string, string> | undefined
 
-      constructor(url: string) {
+      constructor(url: string, options?: { headers?: Record<string, string> }) {
         this.url = url
+        this._headers = options?.headers
         this._connect()
       }
 
@@ -40,7 +44,7 @@ if (Platform.OS !== 'web') {
         this._controller = new AbortController()
         try {
           const res = await fetch(this.url, {
-            headers: { Accept: 'text/event-stream' },
+            headers: { Accept: 'text/event-stream', ...this._headers },
             signal: this._controller.signal,
           })
           if (!res.ok || !res.body) {
