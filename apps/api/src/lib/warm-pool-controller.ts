@@ -974,10 +974,12 @@ export class WarmPoolController {
         projectType = project.type
         if (project.templateId) env.TEMPLATE_ID = project.templateId
         if (project.name) env.AGENT_NAME = project.name
+        const { getProjectOwnerUserId } = await import('./project-user-context')
+        const ownerUserId = await getProjectOwnerUserId(projectId)
         env.AI_PROXY_TOKEN = await generateProxyToken(
           projectId,
           project.workspaceId,
-          'system',
+          ownerUserId,
           7 * 24 * 60 * 60 * 1000
         )
       }

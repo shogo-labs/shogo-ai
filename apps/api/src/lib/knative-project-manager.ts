@@ -898,15 +898,17 @@ export class KnativeProjectManager {
         select: { workspaceId: true },
       })
       if (project) {
+        const { getProjectOwnerUserId } = await import('./project-user-context')
+        const ownerUserId = await getProjectOwnerUserId(projectId)
         const proxyToken = await generateProxyToken(
           projectId,
           project.workspaceId,
-          'system', // System-generated token for the runtime
+          ownerUserId,
           7 * 24 * 60 * 60 * 1000 // 7 days
         )
         env.push({ name: "AI_PROXY_TOKEN", value: proxyToken })
         proxyTokenGenerated = true
-        console.log(`[KnativeProjectManager] Generated AI proxy token for project ${projectId} (no raw API key exposed)`)
+        console.log(`[KnativeProjectManager] Generated AI proxy token for project ${projectId} (owner: ${ownerUserId})`)
       } else {
         console.warn(`[KnativeProjectManager] Project ${projectId} not found, skipping AI proxy token`)
       }
