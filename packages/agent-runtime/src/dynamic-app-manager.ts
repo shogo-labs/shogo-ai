@@ -409,6 +409,16 @@ export class DynamicAppManager {
     mutation?: boolean
     result?: { ok: boolean; status?: number; error?: string; dataPath?: string; itemCount?: number }
   }> {
+    // Handle auto-derived delete from Checkbox/Select/Delete button system
+    if (event.name === '__delete_item__') {
+      const ctx = event.context as { collectionPath?: string; itemId?: string } | undefined
+      if (ctx?.collectionPath && ctx?.itemId) {
+        const result = await this.handleDeleteItem(event.surfaceId, ctx.collectionPath, ctx.itemId)
+        return { handled: true, mutation: true, result }
+      }
+      return { handled: false, mutation: false, result: { ok: false, error: 'Missing collectionPath or itemId in __delete_item__ context' } }
+    }
+
     const mutation = event.context?._mutation as
       | { endpoint: string; method: string; body?: unknown }
       | undefined
@@ -449,6 +459,114 @@ export class DynamicAppManager {
       if (this.actionQueue.length > 100) this.actionQueue.shift()
       return { handled: true, mutation: false }
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Auto-Derived Mutations (Checkbox / Select / Delete button)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Reverse-lookup queryBindings to find the model name and runtime for a given
+   * collection data path (e.g., "/tasks" → model "Task", endpoint "/api/tasks").
+   */
+  private findModelForDataPath(surfaceId: string, collectionPath: string): {
+    modelName: string
+    endpoint: string
+    runtime: ManagedApiRuntime
+  } | null {
+    const surfaceBindings = this.queryBindings.get(surfaceId)
+    if (!surfaceBindings) return null
+
+    const runtime = this.runtimes.get(surfaceId)
+    if (!runtime || !runtime.isReady()) return null
+
+    for (const [modelName, bindings] of surfaceBindings) {
+      for (const binding of bindings) {
+        if (binding.dataPath === collectionPath) {
+          const endpointInfo = runtime.getModelEndpointInfo()
+          const matched = endpointInfo.find(e => e.name === modelName)
+          if (matched) {
+            return { modelName, endpoint: matched.endpoint, runtime }
+          }
+        }
+      }
+    }
+    return null
+  }
+
+  /**
+   * Auto-derive and execute a PATCH mutation from a data model path change.
+   * Called when an interactive component (Checkbox, Select) with dataPath
+   * reports a change with { persist: true }.
+   *
+   * Path format: /collectionPath/index/field (e.g., /tasks/2/completed)
+   */
+  async handleDataChange(
+    surfaceId: string,
+    path: string,
+    value: unknown,
+  ): Promise<{ ok: boolean; error?: string; dataPath?: string }> {
+    const segments = path.replace(/^\//, '').split('/')
+    if (segments.length < 3) {
+      return { ok: false, error: `Path "${path}" too short — expected /collection/index/field` }
+    }
+
+    const collectionPath = `/${segments[0]}`
+    const itemIndex = parseInt(segments[1], 10)
+    const field = segments.slice(2).join('/')
+
+    if (isNaN(itemIndex)) {
+      return { ok: false, error: `Invalid item index "${segments[1]}" in path "${path}"` }
+    }
+
+    const binding = this.findModelForDataPath(surfaceId, collectionPath)
+    if (!binding) {
+      return { ok: false, error: `No API binding found for data path "${collectionPath}"` }
+    }
+
+    const surface = this.surfaces.get(surfaceId)
+    if (!surface) {
+      return { ok: false, error: `Surface "${surfaceId}" not found` }
+    }
+
+    const collection = getByPointer(surface.dataModel, collectionPath)
+    if (!Array.isArray(collection) || itemIndex >= collection.length) {
+      return { ok: false, error: `No item at ${collectionPath}/${itemIndex}` }
+    }
+
+    const item = collection[itemIndex]
+    const itemId = item?.id
+    if (!itemId) {
+      return { ok: false, error: `Item at ${collectionPath}/${itemIndex} has no id field` }
+    }
+
+    const result = await this.executeMutation(surfaceId, binding.runtime, {
+      endpoint: `${binding.endpoint}/${itemId}`,
+      method: 'PATCH',
+      body: { [field]: value },
+    })
+    return result
+  }
+
+  /**
+   * Auto-derive and execute a DELETE mutation for a DataList item.
+   * Called when a Button with deleteAction dispatches __delete_item__.
+   */
+  async handleDeleteItem(
+    surfaceId: string,
+    collectionPath: string,
+    itemId: string,
+  ): Promise<{ ok: boolean; error?: string; dataPath?: string }> {
+    const binding = this.findModelForDataPath(surfaceId, collectionPath)
+    if (!binding) {
+      return { ok: false, error: `No API binding found for data path "${collectionPath}"` }
+    }
+
+    const result = await this.executeMutation(surfaceId, binding.runtime, {
+      endpoint: `${binding.endpoint}/${itemId}`,
+      method: 'DELETE',
+    })
+    return result
   }
 
   /**
@@ -573,9 +691,70 @@ export class DynamicAppManager {
         }
       }
 
+      this.recomputeCollectionSummaries(surfaceId, dataPath, listJson.items)
+
       return { ok: true, dataPath, itemCount: listJson.items.length }
     }
     return { ok: true, dataPath }
+  }
+
+  /**
+   * After a collection is updated, scan the dataModel for summary objects
+   * that reference counts derived from this collection (e.g., total, boolean
+   * field counts, inverse counts) and recompute them automatically.
+   */
+  private recomputeCollectionSummaries(surfaceId: string, collectionPath: string, items: unknown[]): void {
+    const surface = this.surfaces.get(surfaceId)
+    if (!surface) return
+
+    const boolFields = new Map<string, number>()
+    for (const item of items) {
+      if (typeof item !== 'object' || item === null) continue
+      for (const [k, v] of Object.entries(item as Record<string, unknown>)) {
+        if (typeof v === 'boolean') {
+          boolFields.set(k, (boolFields.get(k) ?? 0) + (v ? 1 : 0))
+        }
+      }
+    }
+
+    for (const [key, value] of Object.entries(surface.dataModel)) {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) continue
+      const summary = value as Record<string, unknown>
+      if (typeof summary.total !== 'number') continue
+
+      const updated: Record<string, unknown> = {}
+      let changed = false
+
+      updated.total = items.length
+      if (updated.total !== summary.total) changed = true
+
+      for (const [sumKey, sumVal] of Object.entries(summary)) {
+        if (sumKey === 'total' || typeof sumVal !== 'number') continue
+
+        if (boolFields.has(sumKey)) {
+          const newCount = boolFields.get(sumKey)!
+          updated[sumKey] = newCount
+          if (newCount !== sumVal) changed = true
+        } else {
+          // Check if this is an inverse of a boolean field (e.g., pending = total - completed)
+          for (const [bf, trueCount] of boolFields) {
+            if (bf in summary && typeof summary[bf] === 'number') {
+              const oldInverse = (summary.total as number) - (summary[bf] as number)
+              if (sumVal === oldInverse) {
+                const newInverse = items.length - trueCount
+                updated[sumKey] = newInverse
+                if (newInverse !== sumVal) changed = true
+                break
+              }
+            }
+          }
+        }
+      }
+
+      if (changed) {
+        this.updateData(surfaceId, `/${key}`, { ...summary, ...updated })
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------

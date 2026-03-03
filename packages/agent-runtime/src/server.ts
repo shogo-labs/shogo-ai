@@ -1572,6 +1572,25 @@ app.post('/agent/dynamic-app/action', async (c) => {
   return c.json({ ok: true, event })
 })
 
+app.post('/agent/dynamic-app/data-change', async (c) => {
+  const body = await c.req.json() as { surfaceId?: string; path?: string; value?: unknown }
+  if (!body.surfaceId || !body.path) {
+    return c.json({ error: 'Missing surfaceId or path' }, 400)
+  }
+
+  const manager = getDynamicAppManager()
+  try {
+    const result = await manager.handleDataChange(body.surfaceId, body.path, body.value)
+    if (!result.ok) {
+      return c.json(result, 422)
+    }
+    return c.json(result)
+  } catch (err: any) {
+    console.error('[DynamicApp] data-change failed:', err)
+    return c.json({ ok: false, error: err.message || 'Internal error' }, 500)
+  }
+})
+
 app.post('/agent/dynamic-app/edit', async (c) => {
   const body = await c.req.json() as {
     action: 'update' | 'add' | 'delete' | 'move'

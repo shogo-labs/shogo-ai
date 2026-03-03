@@ -5,7 +5,7 @@
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { View, Pressable, Linking } from 'react-native'
+import { View, Pressable, Linking, Platform } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Button, ButtonText } from '@/components/ui/button'
 
@@ -87,12 +87,14 @@ interface DynButtonProps {
   disabled?: boolean
   href?: string
   action?: ActionDef
+  deleteAction?: boolean
   onAction?: (name: string, context?: Record<string, unknown>) => void
   className?: string
 }
 
-export function DynButton({ label, text, variant = 'default', size = 'default', disabled, href, action, onAction, className }: DynButtonProps) {
-  const isMisconfigured = !href && !action
+export function DynButton({ label, text, variant = 'default', size = 'default', disabled, href, action, deleteAction, onAction, className }: DynButtonProps) {
+  const effectiveVariant = deleteAction && variant === 'default' ? 'destructive' : variant
+  const isMisconfigured = !href && !action && !deleteAction
 
   const handlePress = useCallback(() => {
     if (href) {
@@ -132,16 +134,25 @@ export function DynButton({ label, text, variant = 'default', size = 'default', 
     )
   }
 
+  const effectiveSize = deleteAction ? 'xs' : (BUTTON_SIZE_MAP[size] || 'md')
+
   return (
     <Button
-      action={BUTTON_ACTION_MAP[variant] || 'primary'}
-      variant={BUTTON_VARIANT_MAP[variant] || 'solid'}
-      size={BUTTON_SIZE_MAP[size] || 'md'}
+      action={BUTTON_ACTION_MAP[effectiveVariant] || 'primary'}
+      variant={deleteAction ? 'outline' : (BUTTON_VARIANT_MAP[effectiveVariant] || 'solid')}
+      size={effectiveSize}
       isDisabled={disabled}
       onPress={handlePress}
-      className={cn(BUTTON_CLASS_OVERRIDES[variant] || BUTTON_CLASS_OVERRIDES.default, className)}
+      className={cn(
+        deleteAction
+          ? 'border-destructive/30 rounded-full px-3 h-7 hover:bg-destructive/10 active:bg-destructive/15'
+          : (BUTTON_CLASS_OVERRIDES[effectiveVariant] || BUTTON_CLASS_OVERRIDES.default),
+        className,
+      )}
     >
-      <ButtonText className={BUTTON_TEXT_OVERRIDES[variant] || BUTTON_TEXT_OVERRIDES.default}>
+      <ButtonText className={cn(
+        deleteAction ? 'text-destructive text-xs font-medium' : (BUTTON_TEXT_OVERRIDES[effectiveVariant] || BUTTON_TEXT_OVERRIDES.default),
+      )}>
         {label || text || 'Button'}
       </ButtonText>
     </Button>
@@ -156,7 +167,7 @@ interface DynTextFieldProps {
   disabled?: boolean
   action?: ActionDef
   onAction?: (name: string, context?: Record<string, unknown>) => void
-  onDataChange?: (path: string, value: unknown) => void
+  onDataChange?: (path: string, value: unknown, options?: { persist?: boolean }) => void
   dataPath?: string
   debounceMs?: number
   className?: string
@@ -233,7 +244,7 @@ interface DynSelectProps {
   disabled?: boolean
   action?: ActionDef
   onAction?: (name: string, context?: Record<string, unknown>) => void
-  onDataChange?: (path: string, value: unknown) => void
+  onDataChange?: (path: string, value: unknown, options?: { persist?: boolean }) => void
   dataPath?: string
   className?: string
 }
@@ -241,28 +252,53 @@ interface DynSelectProps {
 export function DynSelect({ label, options = [], value = '', placeholder, disabled, action, onAction, onDataChange, dataPath, className }: DynSelectProps) {
   const handleValueChange = useCallback((newVal: string) => {
     if (dataPath && onDataChange) {
-      onDataChange(dataPath, newVal)
+      onDataChange(dataPath, newVal, { persist: true })
     }
     if (action && onAction) {
       onAction(action.name, { ...action.context, value: newVal })
     }
   }, [action, onAction, dataPath, onDataChange])
 
+  if (Platform.OS === 'web') {
+    return (
+      <View className={cn('flex flex-col gap-1.5', className)}>
+        {label && <Text className="text-sm font-medium text-foreground">{label}</Text>}
+        <WebSelect
+          value={value}
+          options={options}
+          placeholder={placeholder || 'Select...'}
+          disabled={disabled}
+          onChange={handleValueChange}
+        />
+      </View>
+    )
+  }
+
+  const selectedLabel = options.find((o) => o.value === value)?.label
+
   return (
     <View className={cn('flex flex-col gap-1.5', className)}>
-      {label && <Text className="text-sm font-medium">{label}</Text>}
+      {label && <Text className="text-sm font-medium text-foreground">{label}</Text>}
       <Select
         selectedValue={value}
         onValueChange={handleValueChange}
         isDisabled={disabled}
       >
-        <SelectTrigger>
-          <SelectInput placeholder={placeholder || 'Select...'} />
-          <SelectIcon className="mr-3" as={ChevronDown} />
+        <SelectTrigger
+          variant="rounded"
+          size="sm"
+          className="border-border bg-background min-w-[100px] h-7"
+        >
+          <SelectInput
+            placeholder={placeholder || 'Select...'}
+            className="text-xs px-2.5 py-0"
+            value={selectedLabel || value}
+          />
+          <SelectIcon className="mr-2 text-muted-foreground" as={ChevronDown} size="xs" />
         </SelectTrigger>
         <SelectPortal>
           <SelectBackdrop />
-          <SelectContent>
+          <SelectContent className="bg-background border border-border">
             <SelectDragIndicatorWrapper>
               <SelectDragIndicator />
             </SelectDragIndicatorWrapper>
@@ -276,13 +312,69 @@ export function DynSelect({ label, options = [], value = '', placeholder, disabl
   )
 }
 
+function WebSelect({ value, options, placeholder, disabled, onChange }: {
+  value: string
+  options: SelectOption[]
+  placeholder: string
+  disabled?: boolean
+  onChange: (val: string) => void
+}) {
+  const [focused, setFocused] = useState(false)
+  return (
+    <View style={{ position: 'relative', minWidth: 100 } as any}>
+      <select
+        value={value || ''}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        style={{
+          appearance: 'none',
+          WebkitAppearance: 'none',
+          background: 'rgb(var(--color-background))',
+          border: `1px solid ${focused ? 'rgb(var(--color-ring))' : 'rgb(var(--color-border))'}`,
+          borderRadius: 9999,
+          padding: '2px 24px 2px 10px',
+          fontSize: 13,
+          fontWeight: 500,
+          lineHeight: '18px',
+          height: 28,
+          width: '100%',
+          color: 'rgb(var(--color-foreground))',
+          cursor: disabled ? 'not-allowed' : 'pointer',
+          opacity: disabled ? 0.5 : 1,
+          outline: 'none',
+          transition: 'border-color 0.15s ease',
+        }}
+      >
+        {!value && <option value="" disabled>{placeholder}</option>}
+        {options.map((opt) => (
+          <option key={opt.value} value={opt.value}>{opt.label}</option>
+        ))}
+      </select>
+      <View
+        style={{
+          position: 'absolute',
+          right: 8,
+          top: 0,
+          bottom: 0,
+          justifyContent: 'center',
+          pointerEvents: 'none',
+        } as any}
+      >
+        <ChevronDown size={12} className="text-muted-foreground" />
+      </View>
+    </View>
+  )
+}
+
 interface DynCheckboxProps {
   label?: string
   checked?: boolean
   disabled?: boolean
   action?: ActionDef
   onAction?: (name: string, context?: Record<string, unknown>) => void
-  onDataChange?: (path: string, value: unknown) => void
+  onDataChange?: (path: string, value: unknown, options?: { persist?: boolean }) => void
   dataPath?: string
   className?: string
 }
@@ -297,7 +389,7 @@ export function DynCheckbox({ label, checked = false, disabled, action, onAction
   const handleChange = useCallback((isChecked: boolean) => {
     setLocalChecked(isChecked)
     if (dataPath && onDataChange) {
-      onDataChange(dataPath, isChecked)
+      onDataChange(dataPath, isChecked, { persist: true })
     }
     if (action && onAction) {
       onAction(action.name, { ...action.context, checked: isChecked })
@@ -312,7 +404,7 @@ export function DynCheckbox({ label, checked = false, disabled, action, onAction
       isDisabled={disabled}
       className={cn(className)}
     >
-      <CheckboxIndicator>
+      <CheckboxIndicator className="bg-background">
         <CheckboxIcon as={CheckIcon} />
       </CheckboxIndicator>
       {label && <CheckboxLabel>{label}</CheckboxLabel>}
@@ -333,7 +425,7 @@ interface DynChoicePickerProps {
   variant?: 'radio' | 'chip'
   action?: ActionDef
   onAction?: (name: string, context?: Record<string, unknown>) => void
-  onDataChange?: (path: string, value: unknown) => void
+  onDataChange?: (path: string, value: unknown, options?: { persist?: boolean }) => void
   dataPath?: string
   className?: string
 }

@@ -478,26 +478,23 @@ const BASIC_CANVAS_TOOLS_GUIDE = `## Canvas (Dynamic UI)
 
 You have canvas tools that let you build UIs the user can see in real time.
 Use them whenever a visual display would be more helpful than plain text.
-This agent is **display-only** — you fetch and present information. You do NOT create, update, or delete records through buttons.
+This agent supports **display + interactive** components — you can show data AND let users toggle, select, and delete records directly.
 
-⚠️ **THE #1 RULE: Buttons are for external links ONLY.**
-The only mutation method you may use is \`"OPEN"\`, which opens a URL in a new browser tab.
-Do NOT use POST, PATCH, or DELETE mutations. Do NOT add form inputs that feed into mutation bodies.
+⚠️ **THE #1 RULE: Every interactive component (Checkbox, Select, Delete button) MUST be inside a DataList template bound to an API model.**
+The system handles all mutations automatically — you just specify \`dataPath\` and the system auto-derives PATCH/DELETE calls from the data binding.
 
-⚠️ **THE #2 RULE: Every Button MUST have an \`action\` prop.**
-A Button without \`action\` is dead — it renders but does nothing when clicked. This is the most common mistake.
-When you add a Button, ALWAYS include: \`action: { name: "open", mutation: { endpoint: ..., method: "OPEN" } }\`
-- Static URL: \`endpoint: "https://example.com"\`
-- Per-item URL in a DataList: \`endpoint: { path: "url" }\` (binds to each item's \`url\` field)
-- This agent builds display-only UIs. The only interactive component is Button with method "OPEN".
+⚠️ **THE #2 RULE: Every Button MUST have either an \`action\` prop or \`deleteAction: true\`.**
+A Button without \`action\` or \`deleteAction\` is dead — it renders but does nothing when clicked. This is the most common mistake.
+- Open link: \`action: { name: "open", mutation: { endpoint: ..., method: "OPEN" } }\`
+- Delete item: \`deleteAction: true\` (auto-derives DELETE from DataList context)
 
 ### Building a Canvas App — Plan First, Then Build
 
 When the user asks for any visual app, dashboard, or display UI, **ALWAYS start by writing a brief plan** before calling any tools. Output your plan as a message to the user covering:
 
-1. **What you're building** — one sentence summary (e.g. "A sales dashboard with revenue metrics and top products")
+1. **What you're building** — one sentence summary (e.g. "A task manager with checkboxes and priority selectors")
 2. **Data sources** — what data is needed and how you'll get it (API schema + seed, manual canvas_data, or web)
-3. **Component layout** — the component tree structure (e.g. "Column > Grid of Metrics + Card with Chart + Card with Table")
+3. **Component layout** — the component tree structure (e.g. "Column > Metrics + Card with DataList of Checkbox + Text + Select + Delete")
 
 This plan helps you build the right thing the first time and avoids costly delete-and-rebuild cycles. Keep it concise — 3-4 lines, not a full essay.
 
@@ -509,11 +506,10 @@ Then follow ALL steps below:
 **Step 2 (option A): canvas_api_schema + populate data + canvas_api_query** — For structured data with multiple records
   First, define the schema:
   canvas_api_schema({ surfaceId: "my_app", models: [{
-    name: "Product", fields: [
-      { name: "name", type: "String" },
-      { name: "category", type: "String" },
-      { name: "revenue", type: "Float" },
-      { name: "url", type: "String" }
+    name: "Task", fields: [
+      { name: "title", type: "String" },
+      { name: "completed", type: "Boolean" },
+      { name: "priority", type: "String" }
     ]
   }]})
 
@@ -524,19 +520,19 @@ Then follow ALL steps below:
   - ONLY use fabricated sample data if: (a) user explicitly asks for fake/demo data, OR (b) no real data source exists
 
   Fallback — sample data (only when no real source applies):
-  canvas_api_seed({ surfaceId: "my_app", model: "Product", records: [
-    { name: "Widget Pro", category: "Hardware", revenue: 45200, url: "https://example.com/widget-pro" },
-    { name: "Cloud Suite", category: "Software", revenue: 128900, url: "https://example.com/cloud-suite" }
+  canvas_api_seed({ surfaceId: "my_app", model: "Task", records: [
+    { title: "Review PR", completed: false, priority: "high" },
+    { title: "Update docs", completed: true, priority: "low" }
   ]})
 
   Then load into the data model:
-  canvas_api_query({ surfaceId: "my_app", model: "Product", dataPath: "/products" })
-  → Now { path: "/products" } is available for component data binding
+  canvas_api_query({ surfaceId: "my_app", model: "Task", dataPath: "/tasks" })
+  → Now { path: "/tasks" } is available for component data binding
 
 **Step 2 (option B): canvas_data** — For simple or pre-computed data
   canvas_data({ surfaceId: "my_app", data: {
-    "/summary": { revenue: 174100, products: 2, avgOrder: 87050 },
-    "/chartData": [{ label: "Q1", value: 42000 }, { label: "Q2", value: 58000 }]
+    "/summary": { total: 12, completed: 8, pending: 4 },
+    "/chartData": [{ label: "Mon", value: 3 }, { label: "Tue", value: 5 }]
   }})
   → Use this when you don't need a queryable model — just push JSON directly
 
@@ -545,22 +541,21 @@ Then follow ALL steps below:
   canvas_update({ surfaceId: "my_app", components: [
     { id: "root", component: "Column", children: ["header_row", "metrics", "list_card"] },
     { id: "header_row", component: "Row", children: ["title", "status_badge"], align: "center", justify: "between" },
-    { id: "title", component: "Text", text: "Product Catalog", variant: "h2" },
-    { id: "status_badge", component: "Badge", text: "Live", variant: "outline" },
-    { id: "metrics", component: "Grid", columns: 3, children: ["m_revenue", "m_products", "m_avg"] },
-    { id: "m_revenue", component: "Metric", label: "Total Revenue", value: { path: "/summary/revenue" }, unit: "$", trendValue: "+12%" },
-    { id: "m_products", component: "Metric", label: "Products", value: { path: "/summary/products" }, trendValue: "+2" },
-    { id: "m_avg", component: "Metric", label: "Avg Revenue", value: { path: "/summary/avgOrder" }, unit: "$", trendValue: "+8%" },
-    { id: "list_card", component: "Card", child: "product_list", title: "All Products" },
-    { id: "product_list", component: "DataList",
-      children: { path: "/products", templateId: "product_card" }, emptyText: "No products yet" },
-    { id: "product_card", component: "Card", child: "product_row" },
-    { id: "product_row", component: "Row", children: ["product_info", "view_btn"], align: "center", justify: "between" },
-    { id: "product_info", component: "Column", children: ["product_name", "product_category"], gap: "xs" },
-    { id: "product_name", component: "Text", text: { path: "name" }, weight: "medium" },
-    { id: "product_category", component: "Badge", text: { path: "category" } },
-    { id: "view_btn", component: "Button", label: "View Details", variant: "outline", size: "sm",
-      action: { name: "view", mutation: { endpoint: { path: "url" }, method: "OPEN" } } }
+    { id: "title", component: "Text", text: "Task Manager", variant: "h2" },
+    { id: "status_badge", component: "Badge", text: "Active", variant: "outline" },
+    { id: "metrics", component: "Grid", columns: 3, children: ["m_total", "m_done", "m_pending"] },
+    { id: "m_total", component: "Metric", label: "Total Tasks", value: { path: "/summary/total" } },
+    { id: "m_done", component: "Metric", label: "Completed", value: { path: "/summary/completed" }, trendValue: "+3 this week" },
+    { id: "m_pending", component: "Metric", label: "Pending", value: { path: "/summary/pending" } },
+    { id: "list_card", component: "Card", child: "task_list", title: "All Tasks" },
+    { id: "task_list", component: "DataList",
+      children: { path: "/tasks", templateId: "task_row" }, emptyText: "No tasks yet" },
+    { id: "task_row", component: "Row", children: ["task_check", "task_info", "task_priority", "task_delete"], align: "center", justify: "between" },
+    { id: "task_check", component: "Checkbox", checked: { path: "completed" }, dataPath: "completed" },
+    { id: "task_info", component: "Text", text: { path: "title" }, weight: "medium", className: "flex-1" },
+    { id: "task_priority", component: "Select", value: { path: "priority" }, dataPath: "priority",
+      options: [{ label: "Low", value: "low" }, { label: "Medium", value: "medium" }, { label: "High", value: "high" }] },
+    { id: "task_delete", component: "Button", label: "Remove", variant: "destructive", size: "sm", deleteAction: true }
   ]})
 
 **Step 4: Verify** — Use canvas_inspect to confirm the surface looks correct
@@ -588,12 +583,34 @@ Then follow ALL steps below:
 - The template component + its descendants render once per item
 - Use DataList for any list of items. Table is also available for simple read-only tabular data.
 
-**Buttons (External Links Only):**
-Buttons open external URLs using the OPEN mutation. Do NOT use POST, PATCH, or DELETE.
+**Interactive Components (inside DataList templates only):**
+
+Checkbox (toggle a boolean field):
+\`\`\`json
+{ "component": "Checkbox", "checked": { "path": "completed" }, "dataPath": "completed" }
+\`\`\`
+- \`checked\` binds the display; \`dataPath\` tells the system which field to PATCH.
+- When the user toggles, the system auto-sends PATCH { completed: true/false } to the API.
+
+Select (change a field value):
+\`\`\`json
+{ "component": "Select", "value": { "path": "priority" }, "dataPath": "priority",
+  "options": [{ "label": "Low", "value": "low" }, { "label": "High", "value": "high" }] }
+\`\`\`
+- \`value\` binds the display; \`dataPath\` tells the system which field to PATCH.
+- When the user selects a new option, the system auto-sends PATCH { priority: "high" } to the API.
+
+Delete button (remove an item):
+\`\`\`json
+{ "component": "Button", "label": "Remove", "variant": "destructive", "size": "sm", "deleteAction": true }
+\`\`\`
+- When clicked, the system auto-sends DELETE for the current DataList item.
+- No \`action\` prop needed — the renderer derives it from DataList context.
+
+**Buttons (External Links):**
 - Static URL: \`action: { name: "visit", mutation: { endpoint: "https://example.com", method: "OPEN" } }\`
 - Dynamic URL (per-item in DataList): \`action: { name: "view", mutation: { endpoint: { path: "url" }, method: "OPEN" } }\`
   \`method: "OPEN"\` opens the resolved URL in a new browser tab.
-  Inside a DataList template, use \`{ path: "fieldName" }\` to bind per-item URLs from your data.
 
 ### Filtering with \`where\` (categorized views)
 
@@ -618,7 +635,7 @@ Use the \`where\` prop on DataList to show only items matching specific field va
 **Layout:** Column, Row, Grid, Card, ScrollArea, Tabs, TabPanel, Accordion, AccordionItem
 **Display:** Text, Badge, Image, Icon, Separator, Progress, Skeleton, Alert
 **Data:** Table (read-only), Metric, Chart (bar/line/area/pie/donut), DataList (repeating template)
-**Interactive:** Button (OPEN links only — the ONLY interactive component available)
+**Interactive:** Button (OPEN links + delete items), Checkbox (toggle boolean fields), Select (change field values)
 
 Use \`canvas_components({ action: "detail", type: "Card" })\` to look up props for any component.
 
@@ -666,11 +683,13 @@ The renderer auto-formats numbers (commas, compact notation), currency ($ prefix
 
 **Component Richness:**
 - Dashboard/analytics → 12-20 components (Grid of Metrics + Charts + Tables)
+- Interactive apps → 10-18 components (Metrics + DataList with Checkbox/Select/Delete)
 - Display apps → 10-18 components (Metrics + DataList or Table)
 - If your canvas has fewer than 8 components, it probably needs more structure
 
 **Mandatory Patterns:**
 - **Dashboard/analytics request**: Grid of 3-4 Metric components with \`trendValue\` (e.g. "+12%"), at least one Chart, Card-wrapped data sections
+- **Interactive data request**: Metric summary row, DataList with interactive components (Checkbox for booleans, Select for enums, Delete button)
 - **Data display request**: Metric summary row, Card-wrapped DataList or Table
 - **Categorized view request**: Metric summary row (counts per category), Card-wrapped columns in a Grid, each with a DataList using \`where\` prop to filter by field value — load ALL items into one array, use \`where: { "field": "value" }\` per column
 - **Any request with data**: Header Row with title (variant "h2") + context Badge (justify: "between")
@@ -703,6 +722,14 @@ Root Column
   → Card (title: "Details"): Table or DataList
 \`\`\`
 
+**Reference Layout — Interactive Data App:**
+\`\`\`
+Root Column
+  → Row: title (h2) + Badge (justify: between)
+  → Grid (columns: 3): Metric + Metric + Metric (with trendValues)
+  → Card (title: "Items"): DataList with template Rows, each with Checkbox + Text + Select + Delete Button
+\`\`\`
+
 **Reference Layout — Data Display with Links:**
 \`\`\`
 Root Column
@@ -713,11 +740,12 @@ Root Column
 
 ### Rules
 - **ALWAYS plan before building.** Write a brief plan (data sources, layout) before calling any canvas tools. This prevents costly mistakes and rebuilds.
-- **Buttons are for external links only.** Always use \`method: "OPEN"\` — never POST, PATCH, or DELETE.
+- **Interactive components (Checkbox, Select, Delete button) MUST be inside a DataList template** bound to an API model via canvas_api_schema + canvas_api_query. The system handles all mutations automatically.
 - When canvas tools return status: "rendered" or "data_updated", the UI is already live.
 - **NEVER delete and recreate a surface to fix issues.** Use \`canvas_update({ merge: true })\` to patch individual components. Deleting loses all data bindings and causes UI flicker.
 - **Simple state (counters, single values):** Use canvas_data. Do NOT use canvas_api_schema/canvas_api_seed/canvas_api_query unless you need a queryable model with multiple records.
-- Table and DataList are both suitable for displaying lists. Use DataList when you need per-item OPEN link buttons or custom card layouts; use Table for simple tabular data.
+- Table and DataList are both suitable for displaying lists. Use DataList when you need interactive components or custom card layouts; use Table for simple read-only tabular data.
+- **Do NOT use POST, PATCH, or DELETE mutation methods directly.** The system auto-derives mutations from Checkbox/Select/Delete button interactions.
 
 `
 
@@ -743,6 +771,41 @@ These examples show the optimal tool sequence for common canvas requests:
 - Needs API: No (display only)
 - Tools: canvas_create, canvas_update, canvas_data
 - Components: Column, Grid, Metric, Card, Chart, Table, Text, Badge
+
+**Example 4:** "Build a task list where I can check things off"
+- Surface: \`task-manager\`
+- Needs API: Yes (interactive — needs canvas_api_schema for auto-mutations)
+- Tools: canvas_create, canvas_api_schema, canvas_api_seed, canvas_api_query, canvas_update
+- Schema: Task model with \`title: String\`, \`completed: Boolean\`, \`priority: String\`
+- Components: Column, Row, Grid, Metric, Card, DataList, Checkbox, Text, Select, Button (deleteAction)
+- Interactive pattern: Checkbox with dataPath binds to the boolean field; Select with dataPath binds to the enum field; Button with deleteAction removes items. All mutations are auto-derived.
+
+### Reference Component Tree — Interactive Task Manager
+
+This is the FULL component tree for an interactive data app. The renderer auto-applies: root gap "lg", Separator injection, date/number formatting. Interactive components (Checkbox, Select, Delete button) auto-derive API mutations from their \`dataPath\` + the DataList binding.
+
+\`\`\`json
+canvas_update({ surfaceId: "task-manager", components: [
+  { "id": "root", "component": "Column", "children": ["header_row", "metrics", "tasks_card"] },
+  { "id": "header_row", "component": "Row", "children": ["title"], "align": "center", "justify": "between" },
+  { "id": "title", "component": "Text", "text": "Task Manager", "variant": "h2" },
+  { "id": "metrics", "component": "Grid", "columns": 3, "children": ["m_total", "m_done", "m_pending"] },
+  { "id": "m_total", "component": "Metric", "label": "Total", "value": { "path": "/summary/total" } },
+  { "id": "m_done", "component": "Metric", "label": "Completed", "value": { "path": "/summary/completed" }, "trendValue": "+3 this week" },
+  { "id": "m_pending", "component": "Metric", "label": "Pending", "value": { "path": "/summary/pending" } },
+  { "id": "tasks_card", "component": "Card", "title": "All Tasks", "child": "task_list" },
+  { "id": "task_list", "component": "DataList",
+    "children": { "path": "/tasks", "templateId": "task_row" }, "emptyText": "No tasks yet" },
+  { "id": "task_row", "component": "Row", "children": ["task_check", "task_title", "task_priority", "task_delete"], "align": "center", "gap": "sm" },
+  { "id": "task_check", "component": "Checkbox", "checked": { "path": "completed" }, "dataPath": "completed" },
+  { "id": "task_title", "component": "Text", "text": { "path": "title" }, "weight": "medium", "className": "flex-1" },
+  { "id": "task_priority", "component": "Select", "value": { "path": "priority" }, "dataPath": "priority",
+    "options": [{ "label": "Low", "value": "low" }, { "label": "Medium", "value": "medium" }, { "label": "High", "value": "high" }] },
+  { "id": "task_delete", "component": "Button", "label": "Remove", "variant": "destructive", "size": "sm", "deleteAction": true }
+]})
+\`\`\`
+
+Key design patterns: (1) header Row with title + Badge, (2) Grid of Metrics, (3) Card-wrapped DataList with interactive template. Note: Checkbox auto-PATCHes the "completed" field, Select auto-PATCHes the "priority" field, and the Delete button auto-sends DELETE — all derived from the canvas_api_query binding.
 
 ### Reference Component Tree — Well-Designed Sales Dashboard
 
