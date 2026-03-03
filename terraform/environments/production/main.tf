@@ -1285,6 +1285,17 @@ resource "null_resource" "knative_services" {
                     value: "15"
                   - name: WARM_POOL_MAX_AGE_MS
                     value: "3600000"
+                  # OpenTelemetry tracing → SigNoz Cloud
+                  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                    value: "https://${var.signoz_endpoint}"
+                  - name: OTEL_SERVICE_NAME
+                    value: "shogo-api-production"
+                  - name: SIGNOZ_INGESTION_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: signoz-credentials
+                        key: SIGNOZ_INGESTION_KEY
+                        optional: true
                 resources:
                   requests:
                     memory: "512Mi"
