@@ -957,27 +957,16 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
 
   useEffect(() => { loadInvites() }, [loadInvites])
 
-  // Detect return from Stripe checkout: verify payment, provision subscription, reload
+  // Handle ?workspace= param (e.g. after workspace switch or creation)
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return
     const params = new URLSearchParams(window.location.search)
-    const checkout = params.get('checkout')
     const wsId = params.get('workspace')
-    const sessionId = params.get('session_id')
-    if (checkout === 'workspace_created' && wsId && sessionId) {
-      const provision = async () => {
-        try { await api.verifyCheckout(http, sessionId) } catch { /* webhook will handle it */ }
-        // Full reload ensures auth + billing data initialize cleanly
-        window.location.href = `/?workspace=${wsId}`
-      }
-      provision()
-    } else if (params.get('workspace') && !params.get('checkout')) {
-      // After reload: pick up the workspace param, switch to it, clean URL
-      const targetWs = params.get('workspace')!
+    if (wsId && !params.get('checkout')) {
       workspaces.loadAll().then(() => {
-        setSelectedWorkspaceId(targetWs)
-        setActiveWorkspaceId(targetWs)
-        projects.loadAll({ workspaceId: targetWs }).catch(() => {})
+        setSelectedWorkspaceId(wsId)
+        setActiveWorkspaceId(wsId)
+        projects.loadAll({ workspaceId: wsId }).catch(() => {})
       })
       window.history.replaceState({}, '', '/')
     }
@@ -1034,6 +1023,33 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
       .catch(() => {})
     return () => { cancelled = true }
   }, [allWorkspaces.length, http])
+
+  // Detect return from Stripe checkout: verify payment, provision subscription, refetch data
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return
+    const params = new URLSearchParams(window.location.search)
+    const checkout = params.get('checkout')
+    const wsId = params.get('workspace')
+    const sessionId = params.get('session_id')
+    if ((checkout === 'workspace_created' || checkout === 'success') && wsId && sessionId) {
+      const provision = async () => {
+        try { await api.verifyCheckout(http, sessionId) } catch { /* webhook will handle it */ }
+        setSelectedWorkspaceId(wsId)
+        setActiveWorkspaceId(wsId)
+        billingData.refetchSubscription()
+        billingData.refetchCreditLedger()
+        // Refetch workspace plans
+        const ids = allWorkspaces.map((w: any) => w.id)
+        if (ids.length) {
+          api.getWorkspacePlans(http, ids)
+            .then((plans) => setAllPlans(plans))
+            .catch(() => {})
+        }
+        window.history.replaceState({}, '', '/')
+      }
+      provision()
+    }
+  }, [])
 
   const workspacePlan = currentWorkspace?.id ? (allPlans[currentWorkspace.id] ?? null) : null
   const isPaidPlan = billingData.hasActiveSubscription || (workspacePlan?.planId !== 'free' && workspacePlan?.status === 'active')
