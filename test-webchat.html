@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebChat Widget Test Page</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+    }
+    .container {
+      text-align: center;
+      max-width: 600px;
+      padding: 40px 20px;
+    }
+    h1 { font-size: 2.5rem; margin-bottom: 16px; }
+    p { font-size: 1.1rem; opacity: 0.9; line-height: 1.6; margin-bottom: 12px; }
+    .arrow {
+      position: fixed;
+      bottom: 90px;
+      right: 90px;
+      font-size: 2rem;
+      animation: bounce 1.5s infinite;
+    }
+    @keyframes bounce {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-10px); }
+    }
+    .instructions {
+      background: rgba(255,255,255,0.15);
+      backdrop-filter: blur(10px);
+      border-radius: 12px;
+      padding: 24px;
+      margin-top: 24px;
+      text-align: left;
+    }
+    .instructions h3 { margin-bottom: 12px; font-size: 1rem; }
+    .instructions ol { padding-left: 20px; }
+    .instructions li { margin-bottom: 8px; font-size: 0.9rem; opacity: 0.9; }
+    code {
+      background: rgba(0,0,0,0.2);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.85rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>My Website</h1>
+    <p>This is a fake website to test the Shogo WebChat widget.</p>
+    <p>Look for the chat bubble in the bottom-right corner!</p>
+
+    <div class="instructions">
+      <h3>Testing Instructions</h3>
+      <ol>
+        <li>Connect the WebChat channel in your Shogo agent project</li>
+        <li>The chat bubble should appear in the bottom-right corner</li>
+        <li>Click it and send a message to your agent</li>
+        <li>The agent should respond in real-time</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="arrow">👇</div>
+
+  <!--
+    Replace the URL below with your actual agent URL.
+    You can get it from the Channels panel after connecting WebChat.
+    
+    If running locally, it will be something like:
+    http://localhost:8002/api/projects/YOUR_PROJECT_ID/agent-proxy
+    
+    Or the direct agent runtime URL (usually port 5200+).
+  -->
+  <script src="http://localhost:5200/agent/channels/webchat/widget.js"></script>
+</body>
+</html>
