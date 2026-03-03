@@ -113,7 +113,7 @@ export function createDomainActions(store: IDomainStore) {
      */
     updateProject: async (
       projectId: string,
-      changes: { name?: string; description?: string; status?: string }
+      changes: { name?: string; description?: string; status?: string; settings?: Record<string, unknown> }
     ) => {
       return store.projectCollection.update(projectId, changes)
     },

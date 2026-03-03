@@ -1734,6 +1734,12 @@ export class AgentGateway {
                 const sid = parser.getSurfaceId()
                 if (sid) {
                   manager.streamPreviewComponents(sid, components as any)
+                  if (uiWriter) {
+                    uiWriter.write({
+                      type: 'data-canvas-preview',
+                      data: { surfaceId: sid, components },
+                    } as any)
+                  }
                 }
               },
             })

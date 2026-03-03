@@ -157,6 +157,13 @@ export default observer(function ProjectLayout() {
     await actions.moveProjectToFolder(projectId, folderId)
   }, [projectId, actions])
 
+  const handleUpdateCanvasSettings = useCallback(async (themeSettings: Record<string, unknown>) => {
+    if (!projectId) return
+    const merged = { ...(project?.settings ?? {}), ...themeSettings }
+    await actions.updateProject(projectId, { settings: merged })
+    setProject((prev: any) => prev ? { ...prev, settings: merged } : prev)
+  }, [projectId, project?.settings, actions])
+
   const allProjects = useMemo(() => {
     try {
       const items = projects?.all ?? []
@@ -172,7 +179,7 @@ export default observer(function ProjectLayout() {
 
   // Dynamic app canvas (agent projects)
   const { agentUrl } = useAgentUrl(API_URL!, projectId, { credentials: Platform.OS === 'web' ? 'include' : 'omit' })
-  const { surfaces, connected, dispatchAction, updateLocalData, reconnect } = useDynamicAppStream(agentUrl)
+  const { surfaces, connected, dispatchAction, updateLocalData, reconnect, applyMessage } = useDynamicAppStream(agentUrl)
   const activeSurface = surfaces.size > 0 ? Array.from(surfaces.values())[0] : null
 
   // Canvas action handler
@@ -181,6 +188,13 @@ export default observer(function ProjectLayout() {
       dispatchAction(surfaceId, name, context)
     },
     [dispatchAction],
+  )
+
+  const handleCanvasPreview = useCallback(
+    (surfaceId: string, components: any[]) => {
+      applyMessage({ type: 'updateComponents', surfaceId, components })
+    },
+    [applyMessage],
   )
 
   // Auto-capture thumbnail when the agent finishes building the canvas UI (web only).
@@ -433,12 +447,13 @@ export default observer(function ProjectLayout() {
       initialMessage={capturedInitialMessage}
       initialImageData={capturedInitialImageData}
       billingData={billingData}
+      onCanvasPreview={handleCanvasPreview}
       className="flex-1"
     />
   )
 
   const canvasPanel = (
-    <CanvasThemeProvider>
+    <CanvasThemeProvider projectSettings={project?.settings} onUpdateSettings={handleUpdateCanvasSettings}>
       <EditModeProvider agentUrl={agentUrl}>
         <CanvasPanel
           surface={activeSurface}

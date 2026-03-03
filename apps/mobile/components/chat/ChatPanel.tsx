@@ -182,6 +182,8 @@ export interface ChatPanelProps {
   onSelectTheme?: (themeId: string) => void
   onCreateTheme?: () => void
   projectType?: "APP" | "AGENT"
+  /** Called with canvas preview components streamed through the chat channel */
+  onCanvasPreview?: (surfaceId: string, components: any[]) => void
   /** Legacy domain stores (platformFeatures, componentBuilder) — optional on mobile */
   legacyDomains?: {
     platformFeatures?: any
@@ -505,6 +507,7 @@ export const ChatPanel = observer(function ChatPanel({
   onSelectTheme,
   onCreateTheme,
   projectType,
+  onCanvasPreview,
   legacyDomains,
   billingData,
 }: ChatPanelProps) {
@@ -1044,6 +1047,11 @@ export const ChatPanel = observer(function ChatPanel({
             return next
           })
         }
+      }
+
+      if (dataPart.type === "data-canvas-preview") {
+        const { surfaceId, components } = (dataPart as any).data
+        onCanvasPreview?.(surfaceId, components)
       }
     },
     onFinish: async ({ message }) => {
