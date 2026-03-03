@@ -16,7 +16,8 @@
     "build:android": "eas build --platform android --profile preview",
     "build:android:prod": "eas build --platform android --profile production",
     "build:android:local": "eas build --platform android --profile preview --local",
-    "prebuild": "expo prebuild --clean"
+    "prebuild": "expo prebuild --clean",
+    "eas-build-post-install": "cd ../../packages/sdk && bun run build"
   },
   "dependencies": {
     "@ai-sdk/react": "^3.0.99",
