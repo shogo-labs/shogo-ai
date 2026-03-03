@@ -170,6 +170,38 @@ export const api = {
     return res.data
   },
 
+  // ─── Workspace ─────────────────────────────────────────
+
+  async leaveWorkspace(http: HttpClient, workspaceId: string) {
+    const res = await http.post<{ ok: boolean }>(`/api/workspaces/${workspaceId}/leave`)
+    return res.data
+  },
+
+  // ─── Members ──────────────────────────────────────────
+
+  async getWorkspaceMembers(http: HttpClient, workspaceId: string) {
+    const res = await http.get<{ ok: boolean; items?: Array<{ user?: { id: string; name?: string; email?: string } }> }>(
+      `/api/members?workspaceId=${workspaceId}`,
+    )
+    return res.data?.items ?? []
+  },
+
+  // ─── Invitations ──────────────────────────────────────
+
+  async getReceivedInvitations(http: HttpClient, email: string) {
+    const res = await http.get<{ ok: boolean; items?: any[] }>(
+      `/api/invitations?email=${encodeURIComponent(email)}`,
+    )
+    return (res.data?.items ?? []).filter((i: any) => i.status === 'pending')
+  },
+
+  // ─── Account ──────────────────────────────────────────
+
+  async deleteAccount(http: HttpClient, userId: string) {
+    const res = await http.delete<{ ok: boolean }>(`/api/users/${userId}`)
+    return res.data
+  },
+
   // ─── Admin ───────────────────────────────────────────────
 
   async getMe(http: HttpClient) {

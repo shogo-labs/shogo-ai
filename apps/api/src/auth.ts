@@ -16,7 +16,7 @@ import { betterAuth } from "better-auth"
 import { expo } from "@better-auth/expo"
 import { Pool } from "pg"
 import { createPersonalWorkspace } from "./services/workspace.service"
-import { sendWelcomeEmail } from "./services/email.service"
+import { sendWelcomeEmail, sendPasswordResetEmail, sendEmailVerificationEmail } from "./services/email.service"
 
 /**
  * Strip HTML tags and angle brackets from user input.
@@ -124,10 +124,23 @@ export const auth = betterAuth({
     },
   },
 
-  // Email and password authentication - enabled without email verification
   emailAndPassword: {
     enabled: true,
     requireEmailVerification: false,
+    sendResetPassword: async ({ user, url }: { user: { email: string; name?: string | null }; url: string }) => {
+      await sendPasswordResetEmail({
+        to: user.email,
+        name: user.name ?? undefined,
+        resetUrl: url,
+      })
+    },
+    sendVerificationEmail: async ({ user, url }: { user: { email: string; name?: string | null }; url: string }) => {
+      await sendEmailVerificationEmail({
+        to: user.email,
+        name: user.name ?? undefined,
+        verifyUrl: url,
+      })
+    },
   },
 
   // Social providers - Google OAuth
