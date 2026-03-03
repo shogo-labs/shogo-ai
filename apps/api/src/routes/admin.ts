@@ -13,6 +13,7 @@ import { requireSuperAdmin } from '../middleware/super-admin'
 import { authMiddleware, requireAuth } from '../middleware/auth'
 import * as analytics from '../services/analytics.service'
 import type { AnalyticsPeriod } from '../services/analytics.service'
+import { prisma } from '../lib/prisma'
 
 // ============================================================================
 // Admin Analytics Routes
@@ -156,6 +157,93 @@ export function adminRoutes(): Hono {
     } catch (error: any) {
       console.error('[Admin] Usage summary error:', error)
       return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  // --------------------------------------------------------------------------
+  // Infrastructure Metrics (backed by InfraSnapshot table)
+  // --------------------------------------------------------------------------
+
+  /**
+   * GET /analytics/infra-current - Latest snapshot + live warm pool status
+   */
+  router.get('/analytics/infra-current', async (c) => {
+    try {
+      const latest = await prisma.infraSnapshot.findFirst({
+        orderBy: { timestamp: 'desc' },
+      })
+
+      let live = null
+      try {
+        const { getWarmPoolController } = await import('../lib/warm-pool-controller')
+        const controller = getWarmPoolController()
+        const extended = await controller.getExtendedStatus()
+        live = {
+          cluster: extended.cluster,
+          pool: {
+            enabled: extended.enabled,
+            available: extended.available,
+            assigned: extended.assigned,
+            targetSize: extended.targetSize,
+          },
+          gcStats: extended.gcStats,
+        }
+      } catch {
+        // Not running in K8s — live data unavailable
+      }
+
+      return c.json({ ok: true, data: { snapshot: latest, live } })
+    } catch (error: any) {
+      console.error('[Admin] Infra current error:', error)
+      return c.json({ error: { code: 'infra_failed', message: error.message } }, 500)
+    }
+  })
+
+  type InfraPeriod = '1h' | '6h' | '24h' | '7d' | '30d'
+
+  const infraPeriodMs: Record<InfraPeriod, number> = {
+    '1h': 60 * 60 * 1000,
+    '6h': 6 * 60 * 60 * 1000,
+    '24h': 24 * 60 * 60 * 1000,
+    '7d': 7 * 24 * 60 * 60 * 1000,
+    '30d': 30 * 24 * 60 * 60 * 1000,
+  }
+
+  /**
+   * GET /analytics/infra-history - Time-series infrastructure snapshots
+   */
+  router.get('/analytics/infra-history', async (c) => {
+    try {
+      const url = new URL(c.req.url)
+      const period = (url.searchParams.get('period') || '24h') as InfraPeriod
+      const ms = infraPeriodMs[period] ?? infraPeriodMs['24h']
+      const since = new Date(Date.now() - ms)
+
+      const snapshots = await prisma.infraSnapshot.findMany({
+        where: { timestamp: { gte: since } },
+        orderBy: { timestamp: 'asc' },
+        select: {
+          timestamp: true,
+          totalNodes: true,
+          asgDesired: true,
+          totalPodSlots: true,
+          usedPodSlots: true,
+          totalCpuMillis: true,
+          usedCpuMillis: true,
+          warmAvailable: true,
+          warmTarget: true,
+          warmAssigned: true,
+          totalProjects: true,
+          readyProjects: true,
+          runningProjects: true,
+          scaledToZero: true,
+        },
+      })
+
+      return c.json({ ok: true, data: snapshots })
+    } catch (error: any) {
+      console.error('[Admin] Infra history error:', error)
+      return c.json({ error: { code: 'infra_failed', message: error.message } }, 500)
     }
   })
 

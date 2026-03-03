@@ -8,7 +8,7 @@
  * Wraps in DomainProvider since (admin) is a separate route group from (app).
  */
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { View, Text, Pressable, ActivityIndicator, useWindowDimensions } from 'react-native'
 import { Slot, usePathname, useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
@@ -26,7 +26,7 @@ import {
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
 import { DomainProvider, useDomainHttp } from '../../contexts/domain'
-import { api } from '../../lib/api'
+import { api, API_URL } from '../../lib/api'
 
 type UserRole = 'user' | 'super_admin'
 
@@ -74,6 +74,40 @@ function useAdminCheck() {
   }
 }
 
+type HealthStatus = 'healthy' | 'degraded' | 'critical' | 'unknown'
+
+function useInfraHealth(enabled: boolean): HealthStatus {
+  const [status, setStatus] = useState<HealthStatus>('unknown')
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  useEffect(() => {
+    if (!enabled) return
+    const check = async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/admin/analytics/infra-current`, {
+          credentials: 'include',
+        })
+        if (!res.ok) { setStatus('unknown'); return }
+        const json = await res.json()
+        const d = json.data
+        const cluster = d?.live?.cluster ?? d?.snapshot
+        if (!cluster) { setStatus('unknown'); return }
+        const pct = cluster.totalPodSlots > 0
+          ? (cluster.usedPodSlots / cluster.totalPodSlots) * 100
+          : 0
+        setStatus(pct >= 90 ? 'critical' : pct >= 70 ? 'degraded' : 'healthy')
+      } catch {
+        setStatus('unknown')
+      }
+    }
+    check()
+    timerRef.current = setInterval(check, 60_000)
+    return () => { if (timerRef.current) clearInterval(timerRef.current) }
+  }, [enabled])
+
+  return status
+}
+
 function isNavActive(pathname: string, href: string): boolean {
   if (href === '/(admin)') {
     return pathname === '/' || pathname === '' || pathname === '/(admin)' || pathname === '/index'
@@ -82,16 +116,25 @@ function isNavActive(pathname: string, href: string): boolean {
   return pathname.startsWith(clean)
 }
 
+const HEALTH_DOT_COLOR: Record<HealthStatus, string> = {
+  healthy: 'bg-emerald-500',
+  degraded: 'bg-yellow-500',
+  critical: 'bg-red-500',
+  unknown: 'bg-muted-foreground',
+}
+
 function AdminSidebar({
   userName,
   userEmail,
   isDrawer,
   onClose,
+  infraHealth = 'unknown',
 }: {
   userName?: string | null
   userEmail?: string | null
   isDrawer?: boolean
   onClose?: () => void
+  infraHealth?: HealthStatus
 }) {
   const router = useRouter()
   const pathname = usePathname()
@@ -148,12 +191,15 @@ function AdminSidebar({
               />
               <Text
                 className={cn(
-                  'text-sm font-medium',
+                  'text-sm font-medium flex-1',
                   active ? 'text-primary' : 'text-foreground'
                 )}
               >
                 {item.label}
               </Text>
+              {item.label === 'Infrastructure' && infraHealth !== 'unknown' && (
+                <View className={cn('h-2 w-2 rounded-full', HEALTH_DOT_COLOR[infraHealth])} />
+              )}
             </Pressable>
           )
         })}
@@ -242,6 +288,7 @@ function AdminLayoutInner() {
   const { width } = useWindowDimensions()
   const isWide = width >= 900
   const { isSuperAdmin, isPending, isAuthenticated, userEmail, userName } = useAdminCheck()
+  const infraHealth = useInfraHealth(isSuperAdmin)
   const [drawerOpen, setDrawerOpen] = useState(false)
 
   useEffect(() => {
@@ -273,7 +320,7 @@ function AdminLayoutInner() {
     <SafeAreaView className="flex-1 bg-background">
       <View className="flex-1 flex-row">
         {isWide && (
-          <AdminSidebar userName={userName} userEmail={userEmail} />
+          <AdminSidebar userName={userName} userEmail={userEmail} infraHealth={infraHealth} />
         )}
 
         <View className="flex-1">
@@ -295,6 +342,7 @@ function AdminLayoutInner() {
           userEmail={userEmail}
           isDrawer
           onClose={() => setDrawerOpen(false)}
+          infraHealth={infraHealth}
         />
       )}
     </SafeAreaView>

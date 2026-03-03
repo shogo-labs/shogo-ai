@@ -239,3 +239,8 @@ export type Composition = Prisma.CompositionModel
  * 
  */
 export type ComponentSpec = Prisma.ComponentSpecModel
+/**
+ * Model InfraSnapshot
+ * 
+ */
+export type InfraSnapshot = Prisma.InfraSnapshotModel
