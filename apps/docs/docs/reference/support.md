@@ -48,7 +48,7 @@ Response times depend on the nature of the issue and your plan:
 
 | Priority | Description | Target response |
 |----------|-------------|-----------------|
-| Critical | Published app is down or data loss | Within hours |
+| Critical | Agent is down or data loss | Within hours |
 | High | Feature not working, blocking your workflow | Within 1 business day |
 | Medium | Non-urgent issue, question, or suggestion | Within 2 business days |
 | Low | Feature request, general inquiry | Within 5 business days |

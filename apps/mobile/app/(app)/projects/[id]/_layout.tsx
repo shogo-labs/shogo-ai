@@ -158,6 +158,13 @@ export default observer(function ProjectLayout() {
     await actions.moveProjectToFolder(projectId, folderId)
   }, [projectId, actions])
 
+  const handleUpdateCanvasSettings = useCallback(async (themeSettings: Record<string, unknown>) => {
+    if (!projectId) return
+    const merged = { ...(project?.settings ?? {}), ...themeSettings }
+    await actions.updateProject(projectId, { settings: merged })
+    setProject((prev: any) => prev ? { ...prev, settings: merged } : prev)
+  }, [projectId, project?.settings, actions])
+
   const allProjects = useMemo(() => {
     try {
       const items = projects?.all ?? []
@@ -185,7 +192,7 @@ export default observer(function ProjectLayout() {
     credentials: Platform.OS === 'web' ? 'include' : 'omit',
     headers: nativeHeaders,
   })
-  const { surfaces, connected, dispatchAction, updateLocalData, reconnect } = useDynamicAppStream(
+  const { surfaces, connected, dispatchAction, updateLocalData, reconnect, applyMessage } = useDynamicAppStream(
     agentUrl,
     nativeHeaders ? { headers: nativeHeaders } : undefined,
   )
@@ -197,6 +204,13 @@ export default observer(function ProjectLayout() {
       dispatchAction(surfaceId, name, context)
     },
     [dispatchAction],
+  )
+
+  const handleCanvasPreview = useCallback(
+    (surfaceId: string, components: any[]) => {
+      applyMessage({ type: 'updateComponents', surfaceId, components })
+    },
+    [applyMessage],
   )
 
   // Auto-capture thumbnail when the agent finishes building the canvas UI (web only).
@@ -449,12 +463,13 @@ export default observer(function ProjectLayout() {
       initialMessage={capturedInitialMessage}
       initialImageData={capturedInitialImageData}
       billingData={billingData}
+      onCanvasPreview={handleCanvasPreview}
       className="flex-1"
     />
   )
 
   const canvasPanel = (
-    <CanvasThemeProvider>
+    <CanvasThemeProvider projectSettings={project?.settings} onUpdateSettings={handleUpdateCanvasSettings}>
       <EditModeProvider agentUrl={agentUrl}>
         <CanvasPanel
           surface={activeSurface}
@@ -648,9 +663,9 @@ function CanvasPanel({
   if (!surface) {
     return (
       <View className="flex-1">
-        <EditToolbar surfaceId={null} trailing={themePicker} />
         <View className="flex-1 p-3">
           <CanvasThemedContainer>
+            <EditToolbar surfaceId={null} trailing={themePicker} />
             <View className="flex-1 items-center justify-center px-6">
               <View
                 className={cn(
@@ -684,18 +699,18 @@ function CanvasPanel({
 
   return (
     <View className="flex-1">
-      <EditToolbar surfaceId={surfaceId} components={surface.components} trailing={themePicker} />
       <View className="flex-1 flex-row">
         {isEditMode && showTreePanel && (
           <ComponentTreePanel surfaceId={surfaceId} components={surface.components} />
         )}
         <View className="flex-1 p-3">
           <CanvasThemedContainer>
+            <EditToolbar surfaceId={surfaceId} components={surface.components} trailing={themePicker} />
             <ScrollView
-      className="flex-1"
-      contentContainerStyle={{ padding: 16 }}
-      {...(Platform.OS === 'web' ? { dataSet: { thumbnailTarget: '' } } as any : {})}
-    >
+              className="flex-1"
+              contentContainerStyle={{ padding: 16 }}
+              {...(Platform.OS === 'web' ? { dataSet: { thumbnailTarget: '' } } as any : {})}
+            >
               <DynamicAppRenderer
                 surface={surface}
                 agentUrl={agentUrl}

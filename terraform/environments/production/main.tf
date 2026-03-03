@@ -157,7 +157,6 @@ module "ecr" {
   environment  = var.environment
 
   repositories = [
-    "shogo-mcp",
     "shogo-api",
     "shogo-web",
     "shogo-docs",
@@ -873,6 +872,9 @@ resource "kubernetes_secret" "api_secrets" {
     var.google_client_secret != "" ? {
       GOOGLE_CLIENT_SECRET = var.google_client_secret
     } : {},
+    var.serper_api_key != "" ? {
+      SERPER_API_KEY = var.serper_api_key
+    } : {},
     var.composio_api_key != "" ? {
       COMPOSIO_API_KEY = var.composio_api_key
     } : {},
@@ -1142,10 +1144,6 @@ resource "null_resource" "knative_services" {
                     value: "http://api.shogo-system.svc.cluster.local"
                   - name: API_HOST
                     value: "api.shogo-system.svc.cluster.local"
-                  - name: MCP_UPSTREAM
-                    value: "http://mcp-workspace-1.shogo-workspaces.svc.cluster.local"
-                  - name: MCP_HOST
-                    value: "mcp-workspace-1.shogo-workspaces.svc.cluster.local"
                   - name: DNS_RESOLVER
                     value: "kube-dns.kube-system.svc.cluster.local"
                 resources:
@@ -1185,8 +1183,6 @@ resource "null_resource" "knative_services" {
                     value: "8002"
                   - name: NODE_ENV
                     value: "production"
-                  - name: MCP_URL
-                    value: "http://mcp-workspace-1.shogo-workspaces.svc.cluster.local"
                   - name: BETTER_AUTH_URL
                     value: "https://studio.shogo.ai"
                   - name: ALLOWED_ORIGINS
@@ -1230,6 +1226,12 @@ resource "null_resource" "knative_services" {
                       secretKeyRef:
                         name: api-secrets
                         key: GOOGLE_CLIENT_SECRET
+                        optional: true
+                  - name: SERPER_API_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: api-secrets
+                        key: SERPER_API_KEY
                         optional: true
                   - name: COMPOSIO_API_KEY
                     valueFrom:
@@ -1283,6 +1285,17 @@ resource "null_resource" "knative_services" {
                     value: "15"
                   - name: WARM_POOL_MAX_AGE_MS
                     value: "3600000"
+                  # OpenTelemetry tracing → SigNoz Cloud
+                  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                    value: "https://${var.signoz_endpoint}"
+                  - name: OTEL_SERVICE_NAME
+                    value: "shogo-api-production"
+                  - name: SIGNOZ_INGESTION_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: signoz-credentials
+                        key: SIGNOZ_INGESTION_KEY
+                        optional: true
                 resources:
                   requests:
                     memory: "512Mi"
@@ -1290,70 +1303,6 @@ resource "null_resource" "knative_services" {
                   limits:
                     memory: "2Gi"
                     cpu: "500m"
-      EOF
-
-      # Deploy MCP Workspace Service
-      cat <<EOF | kubectl apply -f -
-      apiVersion: serving.knative.dev/v1
-      kind: Service
-      metadata:
-        name: mcp-workspace-1
-        namespace: shogo-workspaces
-        labels:
-          app.kubernetes.io/part-of: shogo
-          environment: production
-      spec:
-        template:
-          metadata:
-            annotations:
-              autoscaling.knative.dev/min-scale: "1"
-              autoscaling.knative.dev/max-scale: "10"
-              autoscaling.knative.dev/target: "100"
-          spec:
-            timeoutSeconds: 300
-            containers:
-              - name: mcp
-                image: ${local.ecr_registry}/shogo/shogo-mcp:${local.image_tag}
-                imagePullPolicy: Always
-                ports:
-                  - containerPort: 8080
-                env:
-                  - name: MCP_PORT
-                    value: "8080"
-                  - name: NODE_ENV
-                    value: "production"
-                  - name: SCHEMAS_PATH
-                    value: "/app/.schemas"
-                  - name: WORKSPACE_ID
-                    value: "workspace-1"
-                  - name: TENANT_ID
-                    value: "production-tenant"
-                  - name: DATABASE_URL
-                    valueFrom:
-                      secretKeyRef:
-                        name: postgres-credentials
-                        key: DATABASE_URL
-                resources:
-                  requests:
-                    memory: "256Mi"
-                    cpu: "100m"
-                  limits:
-                    memory: "512Mi"
-                    cpu: "500m"
-                startupProbe:
-                  tcpSocket:
-                    port: 8080
-                  initialDelaySeconds: 10
-                  periodSeconds: 5
-                  timeoutSeconds: 5
-                  failureThreshold: 12
-                readinessProbe:
-                  tcpSocket:
-                    port: 8080
-                  initialDelaySeconds: 5
-                  periodSeconds: 10
-                  timeoutSeconds: 5
-                  failureThreshold: 3
       EOF
 
       # Deploy Domain Mappings
@@ -1379,23 +1328,11 @@ resource "null_resource" "knative_services" {
           name: api
           kind: Service
           apiVersion: serving.knative.dev/v1
-      ---
-      apiVersion: serving.knative.dev/v1beta1
-      kind: DomainMapping
-      metadata:
-        name: mcp.shogo.ai
-        namespace: shogo-workspaces
-      spec:
-        ref:
-          name: mcp-workspace-1
-          kind: Service
-          apiVersion: serving.knative.dev/v1
       EOF
 
       echo "Waiting for services to be ready..."
       kubectl wait --for=condition=ready ksvc/studio -n shogo-system --timeout=300s || true
       kubectl wait --for=condition=ready ksvc/api -n shogo-system --timeout=300s || true
-      kubectl wait --for=condition=ready ksvc/mcp-workspace-1 -n shogo-workspaces --timeout=300s || true
       
       echo "Knative services deployed successfully"
     EOT

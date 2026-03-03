@@ -124,14 +124,14 @@ export function CanvasThemePicker() {
               right: anchorRect.right,
               zIndex: 9999,
               width: 240,
-              background: 'var(--color-popover, #fff)',
-              border: '1px solid var(--color-border, #e4e4e7)',
+              background: 'rgb(var(--color-popover, 255 255 255))',
+              border: '1px solid rgb(var(--color-border, 228 228 231))',
               borderRadius: 12,
               padding: 12,
               boxShadow: '0 8px 30px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.08)',
             }}
           >
-            <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--color-muted-foreground, #71717a)', marginBottom: 8 }}>
+            <div style={{ fontSize: 11, fontWeight: 500, color: 'rgb(var(--color-muted-foreground, 113 113 122))', marginBottom: 8 }}>
               Color Theme
             </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
@@ -152,7 +152,7 @@ export function CanvasThemePicker() {
                     borderRadius: 8,
                     border: 'none',
                     cursor: 'pointer',
-                    background: themeId === theme.id ? 'var(--color-accent, #f4f4f5)' : 'transparent',
+                    background: themeId === theme.id ? 'rgb(var(--color-accent, 244 244 245))' : 'transparent',
                   }}
                 >
                   <div style={{ position: 'relative', width: 28, height: 28 }}>
@@ -181,7 +181,7 @@ export function CanvasThemePicker() {
                   </div>
                   <span style={{
                     fontSize: 10,
-                    color: themeId === theme.id ? 'var(--color-foreground, #0a0a0a)' : 'var(--color-muted-foreground, #71717a)',
+                    color: themeId === theme.id ? 'rgb(var(--color-foreground, 10 10 10))' : 'rgb(var(--color-muted-foreground, 113 113 122))',
                     fontWeight: themeId === theme.id ? 500 : 400,
                     whiteSpace: 'nowrap',
                   }}>

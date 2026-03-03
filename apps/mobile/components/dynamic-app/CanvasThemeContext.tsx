@@ -7,11 +7,17 @@
  * from the rest of the app.
  */
 
-import { createContext, useContext, useState, useMemo, type ReactNode } from 'react'
+import { createContext, useContext, useState, useMemo, useCallback, useRef, useEffect, type ReactNode } from 'react'
 import { View, Platform } from 'react-native'
 import { useColorScheme } from 'nativewind'
 import { useTheme } from '../../contexts/theme'
 import { CANVAS_THEMES, type CanvasColorScheme, type CanvasThemePreset } from './canvas-themes'
+
+interface CanvasThemeSettings {
+  canvasColorScheme?: CanvasColorScheme
+  canvasThemeId?: string
+}
+
 
 interface CanvasThemeState {
   colorScheme: CanvasColorScheme
@@ -36,17 +42,53 @@ export function useCanvasThemeOptional() {
 
 interface CanvasThemeProviderProps {
   children: ReactNode
+  projectSettings?: Record<string, unknown> | null
+  onUpdateSettings?: (settings: Record<string, unknown>) => void
   defaultThemeId?: string
   defaultColorScheme?: CanvasColorScheme
 }
 
 export function CanvasThemeProvider({
   children,
+  projectSettings,
+  onUpdateSettings,
   defaultThemeId = 'default',
   defaultColorScheme = 'system',
 }: CanvasThemeProviderProps) {
-  const [colorScheme, setColorScheme] = useState<CanvasColorScheme>(defaultColorScheme)
-  const [themeId, setThemeId] = useState(defaultThemeId)
+  const [colorScheme, setColorSchemeRaw] = useState<CanvasColorScheme>(defaultColorScheme)
+  const [themeId, setThemeIdRaw] = useState(defaultThemeId)
+  const hydratedRef = useRef(false)
+
+  useEffect(() => {
+    if (hydratedRef.current) return
+    const s = projectSettings as CanvasThemeSettings | null | undefined
+    if (!s) return
+    hydratedRef.current = true
+    if (s.canvasColorScheme) setColorSchemeRaw(s.canvasColorScheme)
+    if (s.canvasThemeId) setThemeIdRaw(s.canvasThemeId)
+  }, [projectSettings])
+
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const latestRef = useRef({ colorScheme, themeId })
+  latestRef.current = { colorScheme, themeId }
+
+  const persistToDb = useCallback((cs: CanvasColorScheme, tid: string) => {
+    if (!onUpdateSettings) return
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => {
+      onUpdateSettings({ canvasColorScheme: cs, canvasThemeId: tid })
+    }, 500)
+  }, [onUpdateSettings])
+
+  const setColorScheme = useCallback((scheme: CanvasColorScheme) => {
+    setColorSchemeRaw(scheme)
+    persistToDb(scheme, latestRef.current.themeId)
+  }, [persistToDb])
+
+  const setThemeId = useCallback((id: string) => {
+    setThemeIdRaw(id)
+    persistToDb(latestRef.current.colorScheme, id)
+  }, [persistToDb])
 
   const { colorScheme: systemScheme } = useColorScheme()
   const { theme: appTheme } = useTheme()
@@ -208,8 +250,8 @@ export function CanvasThemedContainer({ children }: { children: ReactNode }) {
           flexDirection: 'column',
           overflow: 'hidden',
           borderRadius: 16,
-          border: '1px solid var(--color-border, #e4e4e7)',
-          backgroundColor: vars['--color-background'],
+          border: '1px solid rgb(var(--color-border, 228 228 231))',
+          backgroundColor: `rgb(${vars['--color-background']})`,
         }}
       >
         {children}

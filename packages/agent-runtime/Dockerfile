@@ -23,7 +23,6 @@ COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
 COPY packages/state-api/package.json ./packages/state-api/
-COPY packages/mcp/package.json ./packages/mcp/
 COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY packages/agent-runtime/package.json ./packages/agent-runtime/
 COPY packages/shared-runtime/package.json ./packages/shared-runtime/
@@ -60,7 +59,6 @@ COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
 COPY packages/state-api/package.json ./packages/state-api/
-COPY packages/mcp/package.json ./packages/mcp/
 COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY packages/agent-runtime/package.json ./packages/agent-runtime/
 COPY packages/shared-runtime/package.json ./packages/shared-runtime/
@@ -110,7 +108,6 @@ COPY --chown=appuser:appgroup --from=builder /app/tsconfig.base.json ./
 
 # Workspace member package.jsons needed by bun install for resolution
 COPY --from=builder /app/packages/state-api/package.json ./packages/state-api/
-COPY --from=builder /app/packages/mcp/package.json ./packages/mcp/
 COPY --from=builder /app/packages/project-runtime/package.json ./packages/project-runtime/
 COPY --from=builder /app/packages/sdk/package.json ./packages/sdk/
 COPY --from=builder /app/packages/domain-stores/package.json ./packages/domain-stores/
@@ -138,6 +135,9 @@ RUN mkdir -p /app/mcp-packages && \
       mcp-fetch-node@latest \
       @modelcontextprotocol/server-postgres@latest \
       @modelcontextprotocol/server-filesystem@latest \
+      @playwright/mcp@latest \
+      mongodb-mcp-server@latest \
+      @discourse/mcp@latest \
     && rm -rf /app/mcp-packages/package.json /app/mcp-packages/package-lock.json
 
 RUN mkdir -p /app/agent /app/.schemas /app/.claude && \

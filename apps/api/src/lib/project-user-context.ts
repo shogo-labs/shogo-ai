@@ -6,6 +6,10 @@
  *
  * Both project-chat.ts and ai-proxy.ts run in the same API server process,
  * so an in-memory Map is sufficient. Entries expire after 1 hour of inactivity.
+ *
+ * For durable attribution (survives API restarts / multi-pod), use
+ * {@link getProjectOwnerUserId} which queries the database for the workspace
+ * owner — suitable for embedding in long-lived proxy tokens.
  */
 
 const EXPIRY_MS = 60 * 60 * 1000
@@ -34,4 +38,38 @@ export function getProjectUser(projectId: string): string | undefined {
     return undefined
   }
   return ctx.userId
+}
+
+/**
+ * Look up the workspace owner's userId for a given project via the database.
+ * Falls back to 'system' if the lookup fails (e.g., project not found, DB error).
+ *
+ * Use this when generating long-lived proxy tokens — it's more reliable than
+ * the in-memory map since it survives API restarts and works across replicas.
+ */
+export async function getProjectOwnerUserId(projectId: string): Promise<string> {
+  try {
+    const { prisma } = await import('./prisma')
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: {
+        workspace: {
+          select: {
+            members: {
+              where: { role: 'owner' },
+              select: { userId: true },
+              take: 1,
+            },
+          },
+        },
+      },
+    })
+    const ownerId = project?.workspace?.members?.[0]?.userId
+    if (ownerId) return ownerId
+    console.warn(`[ProjectUserContext] No owner found for project ${projectId}, falling back to 'system'`)
+    return 'system'
+  } catch (err: any) {
+    console.error(`[ProjectUserContext] Failed to look up owner for project ${projectId}:`, err.message)
+    return 'system'
+  }
 }

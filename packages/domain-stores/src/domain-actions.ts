@@ -113,7 +113,7 @@ export function createDomainActions(store: IDomainStore) {
      */
     updateProject: async (
       projectId: string,
-      changes: { name?: string; description?: string; status?: string }
+      changes: { name?: string; description?: string; status?: string; settings?: Record<string, unknown> }
     ) => {
       return store.projectCollection.update(projectId, changes)
     },
@@ -181,35 +181,51 @@ export function createDomainActions(store: IDomainStore) {
     // =========================================================================
 
     /**
-     * Accept an invitation and create membership
+     * Accept an invitation and create membership.
+     * Pass invitationData when the invitation was loaded outside the
+     * collection (e.g. received invitations fetched by email) so the
+     * action has the data needed for membership creation.
      */
-    acceptInvitation: async (invitationId: string, userId: string) => {
-      const invitation = store.invitationCollection.get(invitationId)
+    acceptInvitation: async (
+      invitationId: string,
+      userId: string,
+      invitationData?: { workspaceId: string; role: string; projectId?: string },
+    ) => {
+      // Ensure the invitation is in the local collection
+      let invitation = store.invitationCollection.get(invitationId)
       if (!invitation) {
+        await store.invitationCollection.loadById(invitationId)
+        invitation = store.invitationCollection.get(invitationId)
+      }
+
+      const data = invitation ?? invitationData
+      if (!data) {
         throw new Error("Invitation not found")
       }
 
-      // 1. Update invitation status
       await store.invitationCollection.update(invitationId, {
         status: "accepted",
       })
 
-      // 2. Create membership based on invitation
       await store.memberCollection.create({
         userId,
-        workspaceId: invitation.workspaceId,
-        role: invitation.role as any,
+        workspaceId: data.workspaceId,
+        role: data.role as any,
         isBillingAdmin: false,
-        ...(invitation.projectId ? { projectId: invitation.projectId } : {}),
+        ...(data.projectId ? { projectId: data.projectId } : {}),
       })
 
-      return invitation
+      return data
     },
 
     /**
-     * Decline an invitation
+     * Decline an invitation.
+     * Loads the invitation into the collection first if not already present.
      */
     declineInvitation: async (invitationId: string) => {
+      if (!store.invitationCollection.get(invitationId)) {
+        await store.invitationCollection.loadById(invitationId)
+      }
       return store.invitationCollection.update(invitationId, {
         status: "declined",
       })
@@ -362,18 +378,12 @@ export function createDomainActions(store: IDomainStore) {
     // =========================================================================
 
     /**
-     * Delete workspace with all members
+     * Delete workspace — members, projects, etc. are cascade-deleted by the DB.
+     * Do NOT delete members before the workspace: the API beforeDelete hook
+     * verifies the caller is still an owner/member, so removing your own
+     * membership first causes a 400 "Access denied".
      */
     deleteWorkspaceWithMembers: async (workspaceId: string) => {
-      // Delete all members first
-      const members = store.memberCollection.all.filter(
-        (m: any) => m.workspaceId === workspaceId && !m.projectId
-      )
-      for (const member of members) {
-        await store.memberCollection.delete(member.id)
-      }
-
-      // Then delete workspace
       return store.workspaceCollection.delete(workspaceId)
     },
 

@@ -16,17 +16,17 @@ Every project has a visibility setting that controls who can access it within th
 - **Workspace** — All members of your workspace can see and access the project
 
 :::note
-Project visibility controls access to the project editor and source code. It's separate from [access control for published apps](./access-control), which controls who can visit the live URL.
+Project visibility controls who can access and configure the agent within the workspace.
 :::
 
 ## Sharing with your team
 
 When a project's visibility is set to **Workspace**, all members can:
 
-- View the project on the dashboard
-- Open the project editor
+- View the agent on the dashboard
+- Open the agent workspace
 - Send messages in the chat
-- View the preview, code, and history
+- View the canvas and history
 
 To change project visibility:
 
@@ -66,11 +66,8 @@ Folders are visible to all workspace members.
 
 ## FAQ
 
-**Can people outside my workspace see my projects?**
-No. Project access is limited to workspace members (unless the project is published — see [Publishing](./publishing)).
+**Can people outside my workspace see my agents?**
+No. Agent access is limited to workspace members.
 
-**Can I prevent specific members from seeing a project?**
+**Can I prevent specific members from seeing an agent?**
 Currently, project visibility is either private (only you) or workspace-wide (all members). Fine-grained permissions per member are not yet available.
-
-**Does sharing affect my published app?**
-No. Project sharing and published app access are independent settings. You can share a project with your team for editing while keeping the published app private, or vice versa.

@@ -10,90 +10,95 @@ slug: /getting-started/faq
 
 ### What is Shogo?
 
-Shogo is an AI-powered platform for building web applications. You describe what you want in plain language, and the AI builds it for you. You can preview changes in real time, iterate through conversation, and publish your app to a live URL with one click.
+Shogo is an AI-powered platform for building autonomous AI agents. You describe what you want your agent to do in plain language, and the AI configures it for you. Agents can monitor systems, process messages, run scheduled tasks, remember context, and display results on visual dashboards.
 
 ### Do I need to know how to code?
 
-No. Shogo is designed for non-technical users. You build your app entirely through chat. If you are technical, you can optionally use the built-in code editor and terminal for more control.
+No. You build and configure your agent entirely through chat. The AI handles the technical details — skills, integrations, memory, and heartbeat scheduling.
 
-### What kind of apps can I build?
+### What kind of agents can I build?
 
-You can build a wide range of web applications: task managers, CRMs, booking systems, dashboards, inventory trackers, landing pages, forms, and more. See [What can you build?](./welcome#what-can-you-build) for examples.
+You can build agents that monitor GitHub repos, triage support tickets, research topics, track revenue, manage projects, prepare for meetings, respond to incidents, track habits, and much more. See [What can you build?](./welcome#what-can-you-build) for examples.
 
 ### Is Shogo free?
 
 Yes, there is a free plan that gives you 5 credits per day (up to 150/month). Paid plans are available for users who need more credits. See [Plans and Credits](./plans-and-credits) for details.
 
-## Building apps
+## Building agents
 
-### How do I start a new project?
+### How do I start a new agent?
 
-From your dashboard, click **New Project** to start from scratch, or go to **Templates** to start from a pre-built template. See the [Quick Start guide](./quick-start) for a full walkthrough.
+From your dashboard, type a description in the chat input to start from scratch, or click a template card from the **Templates** tab. See the [Quick Start guide](./quick-start) for a full walkthrough.
 
 ### How does the AI chat work?
 
-The chat panel is on the left side of the project editor. Type a message describing what you want (e.g., "Add a contact form with name, email, and message fields"), and the AI will make the changes to your app. You'll see the results in the live preview instantly.
-
-### Can I undo changes?
-
-Yes. Shogo keeps a history of all changes. You can revert to any previous version from the History panel. See [History and Checkpoints](../features/history-and-checkpoints) for details.
+The chat panel is where you configure your agent. Type a message describing what you want (e.g., "Monitor my GitHub repos and alert me on CI failures"), and the AI will set up the skills, integrations, and heartbeat schedule for you.
 
 ### What are templates?
 
-Templates are pre-built starter apps that give you a head start. Instead of starting from a blank project, you can choose a template (like a Todo App, CRM, or Kanban Board) and customize it through chat. See [Templates](../templates/) for the full list.
+Templates are pre-built agent configurations that give you a head start. Instead of starting from scratch, you can choose a template like Research Assistant, GitHub Ops, or Personal Assistant and customize it through chat. Each template comes with a pre-configured identity, skills, heartbeat schedule, and recommended integrations. See [Templates](../templates/) for the full list.
+
+### What is the heartbeat?
+
+The heartbeat is a scheduled check that makes your agent proactive. Instead of only responding when you message it, your agent wakes up at regular intervals to check for new work — new PRs, support tickets, upcoming meetings, habit reminders, or anything else in its heartbeat checklist.
+
+### What are skills?
+
+Skills are modular capabilities defined as Markdown files. Each skill teaches your agent how to perform a specific task, like researching a topic, triaging a ticket, or running a health check. Templates come with pre-installed skills, and you can create custom skills through chat.
+
+### What is agent memory?
+
+Agents have persistent Markdown-based memory that persists across conversations. Your agent can save important information — research findings, user preferences, tracked topics — and recall it later. Memory is searchable and organized by topic.
 
 ### Can I attach images to my messages?
 
-Yes, you can attach screenshots or design mockups to your chat messages to help the AI understand what you want.
+Yes, you can attach screenshots or reference images to help the AI understand what you want.
 
-## Publishing and sharing
+### What is the canvas?
 
-### How do I publish my app?
+The canvas is a visual dashboard that your agent builds to display information. It can show metrics, charts, tables, status indicators, and more. The canvas is not an interactive application — it displays summaries and dashboards.
 
-Click the **Publish** button in the top-right corner of the project editor. Choose a subdomain, set access permissions, and click **Publish**. Your app will be live at `yoursubdomain.shogo.one`. See [Publishing](../features/publishing) for details.
+## Tools and integrations
 
-### Can I use my own domain?
+### What tools can my agent connect to?
 
-Custom domain support is on the roadmap. Currently, all published apps are available at `yoursubdomain.shogo.one`.
+Agents connect to external tools via Composio, which supports 250+ integrations including GitHub, Slack, Discord, Telegram, Google Calendar, Stripe, Zendesk, Linear, Sentry, Datadog, and more.
 
-### Who can see my published app?
+### How do I connect a tool?
 
-You control this. When publishing, you can choose:
-- **Anyone** — The app is publicly accessible
-- **Authenticated** — Only logged-in users can access it
-- **Private** — Only you and your workspace members can access it
+Open the **Capabilities** tab in your agent project, then switch to the **Tools** sub-tab and search for the tool you want. Tools that use OAuth will open a popup to authenticate. Some tools require API keys, which you enter directly in the form.
 
-### How do I update my published app?
+### How do I connect a channel?
 
-After making changes through chat, click **Publish** again and select **Update**. Your live app will be updated with the latest changes.
+Open the **Channels** tab in your agent project and fill in the credential form for the messaging platform you want (e.g., a Slack Bot Token or Telegram Bot Token).
 
-### Can I unpublish my app?
+### Can my agent send me messages?
 
-Yes. Go to your project settings and click **Unpublish**. The app will no longer be accessible at its URL.
+Yes. Connect a channel like Slack, Discord, or Telegram via the **Channels** tab, and your agent can proactively send you alerts, reminders, and digests.
 
 ## Workspaces and collaboration
 
 ### What is a workspace?
 
-A workspace is a shared space where you and your team can organize projects. Each workspace has its own billing, members, and project list. You can be a member of multiple workspaces.
+A workspace is a shared space where you and your team can organize agents. Each workspace has its own billing, members, and agent list. You can be a member of multiple workspaces.
 
 ### Can I invite team members?
 
-Yes. Go to **Members** in your workspace settings and send invitations by email. Members can be assigned the role of **Owner** or **Member**.
+Yes. Go to **Settings > People** and send invitations by email. Members can be assigned the role of **Owner**, **Admin**, **Editor**, or **Viewer**.
 
-### Can I share a project with someone?
+### Can I share an agent with someone?
 
-Yes. You can share projects within your workspace. Use the sharing settings in your project to control who can view and edit.
+Yes. You can share agents within your workspace. Use the sharing settings to control who can view and edit.
 
 ## Account and billing
 
 ### How do credits work?
 
-Each message you send to the AI costs one credit. Your plan determines how many credits you get each month. See [Plans and Credits](./plans-and-credits) for details.
+Credits are consumed per token based on the AI model used, not a flat rate per message. Simpler interactions cost fewer credits than complex ones. The chat input shows an estimated cost before you send. See [Plans and Credits](./plans-and-credits) for details.
 
 ### What happens when I run out of credits?
 
-You won't be able to send messages to the AI until your credits reset or you upgrade your plan. Your existing projects and published apps are not affected.
+You won't be able to send messages to the AI until your credits reset or you upgrade your plan. Your existing agents continue running (heartbeat and channel processing are not affected).
 
 ### How do I change my plan?
 
@@ -107,16 +112,8 @@ Go to **Settings > Billing** and click on your subscription management link. You
 
 ### What technologies does Shogo use?
 
-Shogo-built apps use modern web technologies including React, TypeScript, and PostgreSQL. However, you don't need to know any of these — the AI handles the technical implementation.
-
-### Is there an SDK for developers?
-
-Yes. The Shogo SDK (`@shogo-ai/sdk`) lets developers integrate Shogo-powered features (authentication, database, email) into their own projects. See the [SDK documentation](../sdk/introduction) for details.
-
-### Is my code exportable?
-
-Your project code is accessible through the built-in code editor. You can view and copy any file in your project.
+Agents run on isolated pods with an AI gateway powered by Claude. The heartbeat system, memory, and skills are all managed by the agent runtime. You don't need to know any of these details — the chat handles everything.
 
 ### Where is my data stored?
 
-Your app data is stored in a PostgreSQL database that is automatically provisioned when you publish. Data is hosted securely on our infrastructure.
+Agent data (memory, configuration, skills) is stored securely on our infrastructure with per-agent isolation.

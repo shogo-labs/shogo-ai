@@ -19,7 +19,7 @@
  * mapping is detected by getProjectPodUrl, cleared, and a fresh warm pod
  * is assigned.
  *
- * Pool pods run with PROJECT_ID=__POOL__, do generic init (start Hono,
+ * Pool pods run with PROJECT_ID=__POOL__, do generic init (start Hono, 
  * pre-warm Claude Code session, load deps into memory), and wait for assignment.
  */
 
@@ -82,6 +82,15 @@ const WARM_POOL_PROJECTS_PER_NODE = parseInt(process.env.WARM_POOL_PROJECTS_PER_
 const WARM_POOL_MIN_AGENTS = parseInt(process.env.WARM_POOL_MIN_AGENTS || '2', 10)
 const WARM_POOL_MIN_PROJECTS = parseInt(process.env.WARM_POOL_MIN_PROJECTS || '0', 10)
 
+// Promoted pod GC: clean up orphaned/idle promoted pods
+const PROMOTED_POD_GC_ENABLED = process.env.PROMOTED_POD_GC_ENABLED !== 'false'
+const PROMOTED_POD_IDLE_TIMEOUT_MS = parseInt(
+  process.env.PROMOTED_POD_IDLE_TIMEOUT_MS || String(30 * 60 * 1000),
+  10
+)
+const PROMOTED_POD_GC_MAX_ORPHANS_PER_CYCLE = 3
+const PROMOTED_POD_GC_MAX_IDLE_EVICTIONS_PER_CYCLE = 2
+
 const POOL_PROJECT_ID = '__POOL__'
 const POOL_LABEL_KEY = 'shogo.io/warm-pool'
 const POOL_TYPE_LABEL_KEY = 'shogo.io/warm-pool-type'
@@ -96,6 +105,21 @@ export interface WarmPodInfo {
   url: string
   createdAt: number
   ready: boolean
+}
+
+export interface PromotedPodInfo {
+  serviceName: string
+  type: RuntimeType
+  projectId: string
+  url: string
+  createdAt: number
+  ready: boolean
+}
+
+export interface GcStats {
+  orphansDeleted: number
+  idleEvictions: number
+  lastGcRun: number | null
 }
 
 export interface WarmPoolConfig {
@@ -192,6 +216,12 @@ export class WarmPoolController {
 
   /** Pending warm pod creations to avoid duplicate reconciliation */
   private pendingCreations = new Set<string>()
+
+  /** Promoted pods discovered during discoverExistingPods(), used by GC and admin API */
+  private promotedPods: PromotedPodInfo[] = []
+
+  /** Cumulative GC statistics for observability */
+  private gcStats: GcStats = { orphansDeleted: 0, idleEvictions: 0, lastGcRun: null }
 
   private started = false
 
@@ -349,9 +379,10 @@ export class WarmPoolController {
       }
     }
 
-    // Promoted pods (assigned) are no longer cleaned up by the reconciler.
-    // They remain as the project's permanent Knative Service with scale-to-zero.
-    // The runtime self-assigns on cold start via /api/internal/pod-config.
+    // GC orphaned and idle promoted pods
+    await this.gcPromotedPods().catch((err) => {
+      console.error('[WarmPool] Promoted pod GC failed (non-fatal):', err.message)
+    })
 
     // Trim excess pods when pool shrinks (e.g., nodes scaled down).
     // Delete oldest excess pods, 2 per type per cycle, to converge to target.
@@ -703,6 +734,65 @@ export class WarmPoolController {
 
 
   /**
+   * Evict a project from its current warm pod so the next request
+   * claims a fresh one (with up-to-date env vars and image).
+   *
+   * Steps:
+   *  1. Remove from in-memory assigned map
+   *  2. Clear knativeServiceName in the database
+   *  3. Delete the old Knative Service (async, best-effort)
+   *
+   * The next chat/runtime request triggers getProjectPodUrl() which
+   * claims a new warm pod from the pool.
+   */
+  async evictProject(projectId: string): Promise<{ evicted: boolean; oldService?: string }> {
+    const pod = this.assigned.get(projectId)
+
+    // Clear in-memory state regardless of whether we found it
+    this.assigned.delete(projectId)
+
+    // Clear DB mapping
+    let oldServiceName: string | undefined
+    try {
+      const { prisma } = await import('./prisma')
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { knativeServiceName: true },
+      })
+      oldServiceName = project?.knativeServiceName ?? pod?.serviceName
+      if (project?.knativeServiceName) {
+        await prisma.project.update({
+          where: { id: projectId },
+          data: { knativeServiceName: null },
+        })
+      }
+    } catch (err: any) {
+      console.error(`[WarmPool] evictProject: DB cleanup failed for ${projectId}:`, err.message)
+    }
+
+    // Delete the old Knative Service (best-effort, non-blocking)
+    const serviceToDelete = oldServiceName
+    if (serviceToDelete) {
+      (async () => {
+        try {
+          const api = getCustomApi()
+          await api.deleteNamespacedCustomObject(
+            'serving.knative.dev', 'v1', this.namespace, 'services', serviceToDelete
+          )
+          console.log(`[WarmPool] evictProject: deleted Knative Service ${serviceToDelete}`)
+        } catch (err: any) {
+          if (err.statusCode !== 404) {
+            console.error(`[WarmPool] evictProject: failed to delete ${serviceToDelete}:`, err.message)
+          }
+        }
+      })()
+    }
+
+    console.log(`[WarmPool] evictProject: evicted project ${projectId} from ${oldServiceName || '(not found)'}`)
+    return { evicted: !!oldServiceName, oldService: oldServiceName }
+  }
+
+  /**
    * Get pool status for monitoring/debugging.
    */
   getStatus(): {
@@ -723,17 +813,130 @@ export class WarmPoolController {
   }
 
   /**
-   * Get extended status including cluster capacity (async).
-   * Used by health/status endpoints for operational visibility.
+   * Get extended status including cluster capacity, promoted pods, and GC stats.
+   * Used by health/status endpoints and admin API for operational visibility.
    */
   async getExtendedStatus() {
     const base = this.getStatus()
     try {
       const capacity = await getCapacitySummary()
-      return { ...base, cluster: capacity }
+      return {
+        ...base,
+        cluster: capacity,
+        promotedPods: this.promotedPods,
+        gcStats: this.gcStats,
+      }
     } catch {
-      return { ...base, cluster: null }
+      return { ...base, cluster: null, promotedPods: this.promotedPods, gcStats: this.gcStats }
     }
+  }
+
+  /**
+   * Get the list of promoted pods (for admin API).
+   */
+  getPromotedPods(): PromotedPodInfo[] {
+    return [...this.promotedPods]
+  }
+
+  /**
+   * Get GC statistics (for admin API).
+   */
+  getGcStats(): GcStats {
+    return { ...this.gcStats }
+  }
+
+  /**
+   * Garbage-collect orphaned and idle promoted pods.
+   *
+   * Phase 1 (orphan GC): For each promoted service, check if the DB
+   * knativeServiceName still maps to it. If not, the service is orphaned
+   * (the project was re-assigned to a newer warm pod) -- delete it.
+   *
+   * Phase 2 (idle detection): For non-orphan promoted pods, probe the
+   * pod's /pool/activity endpoint. If idle longer than the timeout, evict.
+   */
+  async gcPromotedPods(): Promise<{ orphansDeleted: number; idleEvicted: number }> {
+    if (!PROMOTED_POD_GC_ENABLED || this.promotedPods.length === 0) {
+      return { orphansDeleted: 0, idleEvicted: 0 }
+    }
+
+    this.gcStats.lastGcRun = Date.now()
+    let orphansDeleted = 0
+    let idleEvicted = 0
+
+    // Phase 1: Orphan GC via DB batch query
+    try {
+      const { prisma } = await import('./prisma')
+      const serviceNames = this.promotedPods.map((p) => p.serviceName)
+
+      const mappedProjects = await prisma.project.findMany({
+        where: { knativeServiceName: { in: serviceNames } },
+        select: { id: true, knativeServiceName: true, name: true },
+      })
+      const activeServiceNames = new Set(
+        mappedProjects.map((p) => p.knativeServiceName).filter(Boolean)
+      )
+
+      for (const pod of this.promotedPods) {
+        if (orphansDeleted >= PROMOTED_POD_GC_MAX_ORPHANS_PER_CYCLE) break
+        if (activeServiceNames.has(pod.serviceName)) continue
+
+        console.log(
+          `[WarmPool GC] Deleting orphaned promoted pod ${pod.serviceName} (project ${pod.projectId} no longer maps to it)`
+        )
+        this.deleteWarmPodService(pod.serviceName).catch((err) => {
+          console.error(`[WarmPool GC] Failed to delete orphan ${pod.serviceName}:`, err.message)
+        })
+        orphansDeleted++
+        this.gcStats.orphansDeleted++
+      }
+
+      // Phase 2: Idle detection for non-orphan promoted pods
+      const activePods = this.promotedPods.filter((p) =>
+        activeServiceNames.has(p.serviceName)
+      )
+
+      for (const pod of activePods) {
+        if (idleEvicted >= PROMOTED_POD_GC_MAX_IDLE_EVICTIONS_PER_CYCLE) break
+
+        try {
+          const resp = await fetch(`${pod.url}/pool/activity`, {
+            signal: AbortSignal.timeout(5000),
+          })
+          if (resp.ok) {
+            const activity = await resp.json() as { idleSeconds: number }
+            if (activity.idleSeconds * 1000 < PROMOTED_POD_IDLE_TIMEOUT_MS) continue
+            console.log(
+              `[WarmPool GC] Evicting idle promoted pod ${pod.serviceName} for project ${pod.projectId} (idle ${activity.idleSeconds}s, timeout ${PROMOTED_POD_IDLE_TIMEOUT_MS / 1000}s)`
+            )
+          } else {
+            console.log(
+              `[WarmPool GC] Evicting unresponsive promoted pod ${pod.serviceName} for project ${pod.projectId} (status ${resp.status})`
+            )
+          }
+        } catch {
+          console.log(
+            `[WarmPool GC] Evicting unreachable promoted pod ${pod.serviceName} for project ${pod.projectId}`
+          )
+        }
+
+        await this.evictProject(pod.projectId).catch((err) => {
+          console.error(`[WarmPool GC] Failed to evict ${pod.projectId}:`, err.message)
+        })
+        idleEvicted++
+        this.gcStats.idleEvictions++
+      }
+    } catch (err: any) {
+      console.error('[WarmPool GC] GC cycle failed:', err.message)
+    }
+
+    if (orphansDeleted > 0 || idleEvicted > 0) {
+      console.log(
+        `[WarmPool GC] Cycle complete: ${orphansDeleted} orphans deleted, ${idleEvicted} idle evicted (totals: ${this.gcStats.orphansDeleted} orphans, ${this.gcStats.idleEvictions} idle)`
+      )
+    }
+
+    return { orphansDeleted, idleEvicted }
   }
 
   // ===========================================================================
@@ -771,10 +974,12 @@ export class WarmPoolController {
         projectType = project.type
         if (project.templateId) env.TEMPLATE_ID = project.templateId
         if (project.name) env.AGENT_NAME = project.name
+        const { getProjectOwnerUserId } = await import('./project-user-context')
+        const ownerUserId = await getProjectOwnerUserId(projectId)
         env.AI_PROXY_TOKEN = await generateProxyToken(
           projectId,
           project.workspaceId,
-          'system',
+          ownerUserId,
           7 * 24 * 60 * 60 * 1000
         )
       }
@@ -830,6 +1035,7 @@ export class WarmPoolController {
 
       const items = (response as any).items || []
       const discoveredIds = new Set<string>()
+      const newPromotedPods: PromotedPodInfo[] = []
 
       for (const service of items) {
         const name = service.metadata?.name
@@ -842,8 +1048,21 @@ export class WarmPoolController {
         if (!name || !type) continue
         discoveredIds.add(id)
 
-        // Skip pods that are assigned or promoted to a project
-        if (status === 'assigned' || status === 'promoted') continue
+        // Collect promoted pods for GC and admin visibility
+        if (status === 'assigned' || status === 'promoted') {
+          const projectId = labels['shogo.io/project'] || ''
+          const conditions = service.status?.conditions || []
+          const readyCondition = conditions.find((c: any) => c.type === 'Ready')
+          newPromotedPods.push({
+            serviceName: name,
+            type,
+            projectId,
+            url: `http://${name}.${this.namespace}.svc.cluster.local`,
+            createdAt,
+            ready: readyCondition?.status === 'True',
+          })
+          continue
+        }
 
         // Skip pods that have been claimed or assigned but whose label hasn't
         // been patched to 'promoted' yet.  claimedServiceNames covers the window
@@ -900,6 +1119,8 @@ export class WarmPoolController {
           this.available.delete(id)
         }
       }
+
+      this.promotedPods = newPromotedPods
     } catch (err: any) {
       console.error('[WarmPool] Failed to discover existing pods:', err.message)
     }

@@ -327,7 +327,7 @@ export async function registerToolkitProxyTools(
   }
 
   const proxyTools: AgentTool[] = nonDeprecated.map(schema => createProxyTool(schema))
-  mcpClientManager.addProxyTools(proxyTools)
+  mcpClientManager.addProxyTools(toolkitSlug.toLowerCase(), proxyTools)
 
   const toolNames = proxyTools.map(t => t.name)
   for (const n of toolNames) registeredProxyToolNames.add(n)

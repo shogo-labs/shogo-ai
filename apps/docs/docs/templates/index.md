@@ -4,67 +4,38 @@ title: Browse Templates
 slug: /templates
 ---
 
-# Templates
+# Agent Templates
 
-Templates are pre-built starter apps that give you a head start. Instead of building from scratch, pick a template that's close to what you need and customize it through chat.
+Templates are pre-built agent configurations that give you a head start. Instead of building from scratch, pick a template that's close to what you need and customize it through chat.
 
 ## Why start from a template?
 
-- **Save time** — Skip the setup and jump straight to customizing.
-- **Learn by example** — See how a well-structured app is organized.
-- **Proven patterns** — Templates use best practices for common app types.
-- **Fully customizable** — Everything in a template can be changed through chat.
-
-## How to use a template
-
-1. Go to **Templates** in your workspace sidebar.
-2. Browse the available templates and click one to preview it.
-3. Click **Use Template** to create a new project based on it.
-4. Your project opens with the template's app already running in the preview.
-5. Start chatting to customize it — change the design, add features, modify data fields, or completely reshape it to your needs.
-
-:::tip
-Templates are starting points, not constraints. Once you create a project from a template, you can change absolutely anything about it.
-:::
+- **Save time** — Each template comes with a configured identity, skills, heartbeat schedule, and recommended integrations.
+- **Learn by example** — See how skills, memory, and heartbeat work together in a real agent.
+- **Proven patterns** — Templates are built around common agent use cases.
+- **Fully customizable** — Everything can be changed through chat after you start.
 
 ## Available templates
 
-### [Todo App](/templates/todo-app)
-A simple task management app with lists, completion tracking, and due dates. Great for learning how Shogo works.
+| Template | Heartbeat | Canvas | What it does |
+|----------|-----------|--------|-------------|
+| [Research Assistant](/templates/research-assistant) | Every 60 min | Topics table, article list, key takeaways card | Researches tracked topics, delivers daily briefings |
+| [GitHub Ops](/templates/github-ops) | Every 15 min | PR queue table, CI status badges, issues table | Monitors repos for CI failures, PR reviews, critical issues |
+| [Support Desk](/templates/support-desk) | Every 30 min | Ticket volume chart, priority breakdown, SLA status | Triages support tickets, escalates P0s, sends digests |
+| [Meeting Prep](/templates/meeting-prep) | Every 60 min | Upcoming meetings card, attendee notes, action items | Preps briefs before meetings, tracks follow-ups |
+| [Revenue Tracker](/templates/revenue-tracker) | Daily | MRR metric, revenue chart, invoices table | Tracks revenue metrics, flags failed payments |
+| [Project Board](/templates/project-board) | Every 60 min | Sprint progress, velocity chart, tasks table | Tracks sprint status, collects standups, surfaces blockers |
+| [Incident Commander](/templates/incident-commander) | Every 10 min | Service health grid, incidents table, uptime metrics | Monitors service health, pages on-call for outages |
+| [Personal Assistant](/templates/personal-assistant) | Every 60 min | Habits tracker, reminders list, daily agenda | Habit tracking, morning briefings, proactive reminders |
 
-### [CRM](/templates/crm)
-A customer relationship management tool for tracking contacts, companies, deals, and interactions.
+## How templates work
 
-### [Kanban Board](/templates/kanban)
-A visual project management board with drag-and-drop columns for organizing tasks by status.
+When you select a template, Shogo sets up:
 
-### [Inventory Manager](/templates/inventory)
-Track products, stock levels, categories, and suppliers. Includes alerts for low stock.
+1. **Identity files** — `IDENTITY.md` and `SOUL.md` that define your agent's personality and behavior
+2. **Agent instructions** — `AGENTS.md` with detailed behavior rules and canvas strategies
+3. **Heartbeat checklist** — `HEARTBEAT.md` defining what your agent checks on each scheduled run
+4. **Skills** — Pre-installed skill files that teach your agent specific capabilities
+5. **Configuration** — Heartbeat interval, model settings, and quiet hours
 
-### [Expense Tracker](/templates/expense-tracker)
-Record and categorize expenses, set budgets, and view spending breakdowns by category and time period.
-
-### [Booking App](/templates/booking-app)
-An appointment and reservation system with calendar views, service selection, and booking management.
-
-### [Form Builder](/templates/form-builder)
-Create and manage custom forms with various field types. Collect and view submissions.
-
-### [Feedback Form](/templates/feedback-form)
-Collect user feedback, feature requests, and bug reports. View and manage submissions.
-
-### [AI Chat](/templates/ai-chat)
-A conversational AI interface for building chatbot-style applications.
-
-## Choosing the right template
-
-| If you want to build... | Start with... |
-|-------------------------|--------------|
-| Task or project management | [Todo App](/templates/todo-app) or [Kanban Board](/templates/kanban) |
-| Customer or contact tracking | [CRM](/templates/crm) |
-| Product or stock management | [Inventory Manager](/templates/inventory) |
-| Appointment scheduling | [Booking App](/templates/booking-app) |
-| Money and budget tracking | [Expense Tracker](/templates/expense-tracker) |
-| Surveys or data collection | [Form Builder](/templates/form-builder) or [Feedback Form](/templates/feedback-form) |
-| Chatbot or conversational AI | [AI Chat](/templates/ai-chat) |
-| Something else entirely | Start from scratch — or pick the closest template and reshape it |
+After setup, an onboarding message walks you through what's been configured and how to customize it.

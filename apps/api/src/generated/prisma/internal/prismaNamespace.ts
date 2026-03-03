@@ -423,7 +423,8 @@ export const ModelName = {
   RendererBinding: 'RendererBinding',
   LayoutTemplate: 'LayoutTemplate',
   Composition: 'Composition',
-  ComponentSpec: 'ComponentSpec'
+  ComponentSpec: 'ComponentSpec',
+  InfraSnapshot: 'InfraSnapshot'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -439,7 +440,7 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
     omit: GlobalOmitOptions
   }
   meta: {
-    modelProps: "user" | "session" | "account" | "verification" | "workspace" | "project" | "agentConfig" | "projectCheckpoint" | "gitHubConnection" | "starredProject" | "member" | "billingAccount" | "invitation" | "inviteLink" | "folder" | "notification" | "subscription" | "creditLedger" | "usageEvent" | "chatSession" | "chatMessage" | "toolCallLog" | "featureSession" | "requirement" | "designDecision" | "classificationDecision" | "analysisFinding" | "integrationPoint" | "testCase" | "implementationTask" | "taskDependency" | "testSpecification" | "implementationRun" | "taskExecution" | "componentDefinition" | "registry" | "rendererBinding" | "layoutTemplate" | "composition" | "componentSpec"
+    modelProps: "user" | "session" | "account" | "verification" | "workspace" | "project" | "agentConfig" | "projectCheckpoint" | "gitHubConnection" | "starredProject" | "member" | "billingAccount" | "invitation" | "inviteLink" | "folder" | "notification" | "subscription" | "creditLedger" | "usageEvent" | "chatSession" | "chatMessage" | "toolCallLog" | "featureSession" | "requirement" | "designDecision" | "classificationDecision" | "analysisFinding" | "integrationPoint" | "testCase" | "implementationTask" | "taskDependency" | "testSpecification" | "implementationRun" | "taskExecution" | "componentDefinition" | "registry" | "rendererBinding" | "layoutTemplate" | "composition" | "componentSpec" | "infraSnapshot"
     txIsolationLevel: TransactionIsolationLevel
   }
   model: {
@@ -3403,6 +3404,80 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
         }
       }
     }
+    InfraSnapshot: {
+      payload: Prisma.$InfraSnapshotPayload<ExtArgs>
+      fields: Prisma.InfraSnapshotFieldRefs
+      operations: {
+        findUnique: {
+          args: Prisma.InfraSnapshotFindUniqueArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$InfraSnapshotPayload> | null
+        }
+        findUniqueOrThrow: {
+          args: Prisma.InfraSnapshotFindUniqueOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$InfraSnapshotPayload>
+        }
+        findFirst: {
+          args: Prisma.InfraSnapshotFindFirstArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$InfraSnapshotPayload> | null
+        }
+        findFirstOrThrow: {
+          args: Prisma.InfraSnapshotFindFirstOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$InfraSnapshotPayload>
+        }
+        findMany: {
+          args: Prisma.InfraSnapshotFindManyArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$InfraSnapshotPayload>[]
+        }
+        create: {
+          args: Prisma.InfraSnapshotCreateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$InfraSnapshotPayload>
+        }
+        createMany: {
+          args: Prisma.InfraSnapshotCreateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        createManyAndReturn: {
+          args: Prisma.InfraSnapshotCreateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$InfraSnapshotPayload>[]
+        }
+        delete: {
+          args: Prisma.InfraSnapshotDeleteArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$InfraSnapshotPayload>
+        }
+        update: {
+          args: Prisma.InfraSnapshotUpdateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$InfraSnapshotPayload>
+        }
+        deleteMany: {
+          args: Prisma.InfraSnapshotDeleteManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateMany: {
+          args: Prisma.InfraSnapshotUpdateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateManyAndReturn: {
+          args: Prisma.InfraSnapshotUpdateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$InfraSnapshotPayload>[]
+        }
+        upsert: {
+          args: Prisma.InfraSnapshotUpsertArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$InfraSnapshotPayload>
+        }
+        aggregate: {
+          args: Prisma.InfraSnapshotAggregateArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AggregateInfraSnapshot>
+        }
+        groupBy: {
+          args: Prisma.InfraSnapshotGroupByArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.InfraSnapshotGroupByOutputType>[]
+        }
+        count: {
+          args: Prisma.InfraSnapshotCountArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.InfraSnapshotCountAggregateOutputType> | number
+        }
+      }
+    }
   }
 } & {
   other: {
@@ -3535,7 +3610,8 @@ export const ProjectScalarFieldEnum = {
   siteDescription: 'siteDescription',
   thumbnailUrl: 'thumbnailUrl',
   templateId: 'templateId',
-  knativeServiceName: 'knativeServiceName'
+  knativeServiceName: 'knativeServiceName',
+  settings: 'settings'
 } as const
 
 export type ProjectScalarFieldEnum = (typeof ProjectScalarFieldEnum)[keyof typeof ProjectScalarFieldEnum]
@@ -4070,6 +4146,31 @@ export const ComponentSpecScalarFieldEnum = {
 } as const
 
 export type ComponentSpecScalarFieldEnum = (typeof ComponentSpecScalarFieldEnum)[keyof typeof ComponentSpecScalarFieldEnum]
+
+
+export const InfraSnapshotScalarFieldEnum = {
+  id: 'id',
+  timestamp: 'timestamp',
+  totalNodes: 'totalNodes',
+  asgDesired: 'asgDesired',
+  asgMax: 'asgMax',
+  totalPodSlots: 'totalPodSlots',
+  usedPodSlots: 'usedPodSlots',
+  totalCpuMillis: 'totalCpuMillis',
+  usedCpuMillis: 'usedCpuMillis',
+  warmAvailable: 'warmAvailable',
+  warmTarget: 'warmTarget',
+  warmAssigned: 'warmAssigned',
+  coldStarts: 'coldStarts',
+  totalProjects: 'totalProjects',
+  readyProjects: 'readyProjects',
+  runningProjects: 'runningProjects',
+  scaledToZero: 'scaledToZero',
+  orphansDeleted: 'orphansDeleted',
+  idleEvictions: 'idleEvictions'
+} as const
+
+export type InfraSnapshotScalarFieldEnum = (typeof InfraSnapshotScalarFieldEnum)[keyof typeof InfraSnapshotScalarFieldEnum]
 
 
 export const SortOrder = {
@@ -4785,6 +4886,7 @@ export type GlobalOmitConfig = {
   layoutTemplate?: Prisma.LayoutTemplateOmit
   composition?: Prisma.CompositionOmit
   componentSpec?: Prisma.ComponentSpecOmit
+  infraSnapshot?: Prisma.InfraSnapshotOmit
 }
 
 /* Types for Logging */

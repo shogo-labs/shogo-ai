@@ -6,7 +6,7 @@ slug: /getting-started/quick-start
 
 # Quick Start
 
-Create your first app in Shogo in just a few minutes. This guide walks you through every step — from signing up to publishing a live app.
+Create your first AI agent in Shogo in just a few minutes. This guide walks you through every step — from signing up to having a running agent.
 
 ## Step 1: Create your account
 
@@ -15,78 +15,83 @@ Create your first app in Shogo in just a few minutes. This guide walks you throu
 3. You'll be taken to your dashboard.
 
 :::tip Free to start
-Shogo's free plan gives you 5 credits per day (up to 150 per month) — enough to explore and build your first app.
+Shogo's free plan gives you 5 credits per day (up to 150 per month) — enough to explore and build your first agent.
 :::
 
 ## Step 2: Create a workspace
 
-A workspace is where your projects live. Think of it like a folder that can be shared with team members.
+A workspace is where your agents live. Think of it like a folder that can be shared with team members.
 
 1. After signing up, you'll be prompted to create your first workspace.
-2. Give it a name (like "My Projects" or your company name).
+2. Give it a name (like "My Agents" or your company name).
 3. Click **Create**.
 
-## Step 3: Start a new project
+## Step 3: Start a new agent
 
 You have two options:
 
 ### Option A: Start from a template (recommended)
 
-1. Click **Templates** in the sidebar.
-2. Browse the available templates — Todo App, CRM, Kanban Board, Expense Tracker, and more.
-3. Click on a template to preview it, then click **Use Template**.
-4. Your project opens with a working app already built. You can customize it from here.
+Your dashboard shows a **Templates** tab with agent templates you can start from:
+
+1. Browse the available templates on your dashboard:
+   - **Research Assistant** — web research and daily briefings
+   - **GitHub Ops** — PR triage and CI monitoring
+   - **Support Desk** — ticket triage and escalation
+   - **Meeting Prep** — calendar events and attendee research
+   - **Revenue Tracker** — financial dashboards and invoice management
+   - **Project Board** — sprint tracking and velocity metrics
+   - **Incident Commander** — service health monitoring and alerting
+   - **Personal Assistant** — habits, reminders, and daily check-ins
+2. Click a template card to create your agent. It opens with a pre-configured identity, skills, and heartbeat schedule. You can customize everything from here.
 
 ### Option B: Start from scratch
 
-1. Click **New Project** on your dashboard.
-2. Give your project a name.
-3. You'll see an empty project with a chat panel on the left and a preview panel on the right.
+1. Type a description of the agent you want in the chat input at the top of your dashboard.
+2. Shogo creates a new agent and opens the chat panel where you can continue configuring it.
 
-## Step 4: Build with AI chat
+## Step 4: Configure your agent through chat
 
-The chat panel is where the magic happens. Type a message describing what you want, and the AI will build it for you.
+The chat panel is where you shape your agent. Type messages describing what you want, and the AI will configure your agent for you.
 
 **Example prompts to try:**
 
-> "Create a task manager with a list of tasks, a form to add new tasks, and the ability to mark tasks as complete."
+> "Set up a heartbeat that checks my GitHub repos every 30 minutes and alerts me on CI failures."
 
-> "Add a navigation bar at the top with links to Home, Tasks, and Settings."
+> "Add a skill that researches a topic across multiple sources and builds a summary dashboard."
 
-> "Change the color scheme to use blue and white."
+> "Build a dashboard showing open PRs, CI status, and issue count."
 
-> "Add a search bar that filters the task list as I type."
+> "Track my daily habits: exercise, reading, and meditation. Send me a morning check-in."
 
-Each message you send uses one credit. The AI will respond by making changes to your app, which you can see immediately in the preview.
+Credits are consumed per token based on the AI model used — simpler requests cost less than complex ones. The chat input shows an estimated cost before you send. The AI will configure your agent's identity, skills, memory, and integrations based on your instructions.
 
-## Step 5: Preview your app
+## Step 5: Connect tools and channels
 
-The right side of the screen shows a live preview of your app. As the AI makes changes, you'll see them appear in real time.
+Your agent project has dedicated panels for connecting tools and channels. Open your agent and look at the tabs on the right side: **Canvas**, **Files**, **Capabilities**, **Channels**, **Monitor**.
 
-**Preview controls:**
+### Tools and skills (Capabilities panel)
 
-- **Desktop / Tablet / Mobile** — Switch between viewport sizes to see how your app looks on different devices.
-- **Route navigation** — If your app has multiple pages, use the URL bar at the top of the preview to navigate between them.
-- **Refresh** — Click the refresh button to reload the preview if needed.
+The **Capabilities** tab has two sub-tabs: **Skills** and **Tools**.
 
-## Step 6: Publish your app
+- **Skills** — View the skills the AI has configured for your agent. Skills are created and modified through chat, but you can browse them here.
+- **Tools** — Search for and connect external tools like GitHub, Google Calendar, Stripe, Zendesk, Linear, and more. Tools that use OAuth will open a popup to authenticate. Some tools require API keys, which you enter directly in the form.
 
-When you're happy with your app:
+### Channels (Channels panel)
 
-1. Click the **Publish** button in the top-right corner.
-2. Choose a subdomain — this will be your app's URL (e.g., `my-task-manager.shogo.one`).
-3. Set who can access it: **Anyone**, **Authenticated users**, or **Private**.
-4. Click **Publish**.
+Open the **Channels** tab to connect messaging platforms like Slack, Discord, or Telegram. Each channel has a credential form where you enter the required tokens or keys (e.g., a Slack Bot Token or Telegram Bot Token).
 
-Your app is now live! Share the URL with anyone.
+## Step 6: Configure the heartbeat
 
-:::info Updating your published app
-After publishing, you can keep making changes through chat. When you're ready to push updates live, click **Publish** again and select **Update**.
-:::
+The heartbeat is what makes your agent proactive. When enabled, your agent wakes up on a schedule to check for work — new tickets, CI failures, upcoming meetings, habit reminders, and anything else defined in its heartbeat checklist.
+
+- **Templates** come with the heartbeat already enabled and a pre-configured interval (e.g., every 15 minutes for GitHub Ops, hourly for Research Assistant).
+- **From-scratch agents** start with the heartbeat disabled. Ask the AI to enable it: "Enable the heartbeat and check for new PRs every 30 minutes."
+
+You can adjust the interval, quiet hours, and heartbeat checklist anytime through chat.
 
 ## What's next?
 
-- **[Chat with AI](../features/chat-with-ai)** — Learn how to write better prompts and get the most from the AI agent.
-- **[Templates](../templates/)** — Explore all available starter templates.
-- **[Prompting basics](../prompting/basics)** — Master the art of describing what you want.
-- **[Publishing](../features/publishing)** — Learn more about publishing, subdomains, and access control.
+- **[Chat with AI](../features/chat-with-ai)** — Learn how to configure your agent effectively.
+- **[Templates](../templates/)** — Explore all 8 agent templates in detail.
+- **[Prompting basics](../prompting/basics)** — Tips for describing what you want your agent to do.

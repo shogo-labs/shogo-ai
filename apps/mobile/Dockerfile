@@ -3,7 +3,7 @@
 # =============================================================================
 # Multi-stage build:
 # 1. Install workspace deps with Bun, build with Expo/Metro (requires Node)
-# 2. Serve static files with Nginx (reverse proxy for /api and /mcp)
+# 2. Serve static files with Nginx (reverse proxy for /api)
 # =============================================================================
 
 FROM node:22-alpine AS builder
@@ -25,7 +25,6 @@ COPY tsconfig.base.json ./
 
 # Copy all workspace member package.json files for dependency resolution
 COPY packages/state-api/package.json ./packages/state-api/
-COPY packages/mcp/package.json ./packages/mcp/
 COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY packages/agent-runtime/package.json ./packages/agent-runtime/
 COPY packages/shared-runtime/package.json ./packages/shared-runtime/
@@ -50,7 +49,6 @@ COPY packages/shared-ui ./packages/shared-ui
 COPY packages/ui-kit ./packages/ui-kit
 COPY packages/sdk ./packages/sdk
 COPY packages/state-api ./packages/state-api
-COPY packages/mcp ./packages/mcp
 
 # Copy the mobile app source
 COPY apps/mobile ./apps/mobile
@@ -70,8 +68,6 @@ FROM nginx:alpine
 
 ENV API_UPSTREAM=http://shogo-api.shogo-system.svc.cluster.local:8002
 ENV API_HOST=shogo-api.shogo-system.svc.cluster.local
-ENV MCP_UPSTREAM=http://platform-mcp.shogo-system.svc.cluster.local:3100
-ENV MCP_HOST=platform-mcp.shogo-system.svc.cluster.local
 ENV DNS_RESOLVER=kube-dns.kube-system.svc.cluster.local
 
 # Copy built static files
@@ -82,4 +78,4 @@ COPY apps/mobile/nginx.conf /etc/nginx/nginx.conf.template
 
 EXPOSE 80
 
-CMD ["/bin/sh", "-c", "envsubst '${API_UPSTREAM} ${API_HOST} ${MCP_UPSTREAM} ${MCP_HOST} ${DNS_RESOLVER}' < /etc/nginx/nginx.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]
+CMD ["/bin/sh", "-c", "envsubst '${API_UPSTREAM} ${API_HOST} ${DNS_RESOLVER}' < /etc/nginx/nginx.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]

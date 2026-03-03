@@ -541,6 +541,12 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       const sessionHeader = c.req.header("X-Session-Id")
       if (sessionHeader) headers["X-Session-Id"] = sessionHeader
 
+      // Forward the real user ID so the runtime can include it in AI proxy calls.
+      // This bridges the gap when the proxy token only has a generic userId.
+      if (billingUserId && billingUserId !== 'system') {
+        headers["X-Billing-User-Id"] = billingUserId
+      }
+
       // Retry configuration for transient errors during cold starts.
       // Uses exponential backoff: 500ms, 1s, 2s, 4s, 4s... (capped at 4s)
       // Max 30 retries (~45 seconds total) with explicit 120s fetch timeout

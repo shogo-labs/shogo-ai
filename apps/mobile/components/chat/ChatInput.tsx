@@ -377,7 +377,7 @@ export function ChatInput({
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === "ios" ? "padding" : "height"}
-      className="p-3"
+      className="p-3 pt-0"
     >
       {/* File previews */}
       {pendingFiles.length > 0 && (

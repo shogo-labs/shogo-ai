@@ -40,8 +40,6 @@ spec:
               value: "8002"
             - name: NODE_ENV
               value: "production"
-            - name: MCP_URL
-              value: "http://mcp-workspace-1.shogo-workspaces.svc.cluster.local"
             - name: BETTER_AUTH_URL
               value: "https://api.shogo.ai"
             - name: REDIS_URL

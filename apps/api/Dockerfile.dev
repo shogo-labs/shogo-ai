@@ -37,7 +37,6 @@ COPY prisma ./prisma
 
 # Copy package.json files for dependency resolution
 COPY packages/state-api/package.json ./packages/state-api/
-COPY packages/mcp/package.json ./packages/mcp/
 COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY packages/agent-runtime/package.json ./packages/agent-runtime/
 COPY packages/shared-runtime/package.json ./packages/shared-runtime/
@@ -60,7 +59,6 @@ RUN bunx prisma generate
 
 # Copy source code (will be overridden by volume mounts in dev mode)
 COPY packages/state-api ./packages/state-api
-COPY packages/mcp ./packages/mcp
 COPY packages/project-runtime ./packages/project-runtime
 COPY apps/api ./apps/api
 

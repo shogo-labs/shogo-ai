@@ -73,7 +73,6 @@ output "domains" {
   value = {
     api     = "api-staging.shogo.ai"
     studio  = "studio-staging.shogo.ai"
-    mcp     = "mcp-staging.shogo.ai"
     preview = "*.staging.shogo.ai" # preview--{projectId}.staging.shogo.ai
   }
 }

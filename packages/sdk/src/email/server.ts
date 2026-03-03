@@ -43,8 +43,8 @@ import { SesProvider } from './providers/ses.js'
 import { createProviderFromEnv } from './providers/index.js'
 import {
   EmailTemplateRegistry,
-  createTemplateRegistry,
 } from './templates.js'
+import { createShogoTemplateRegistry } from './templates/index.js'
 
 /**
  * Options for creating an email service
@@ -208,9 +208,9 @@ export function createEmail(options: CreateEmailOptions = {}): IEmailService {
     throw EmailError.configMissing('defaultFrom (or EMAIL_FROM env var)')
   }
 
-  // Create template registry
+  // Create template registry with Shogo-branded templates
   const templates = includeBuiltins
-    ? createTemplateRegistry()
+    ? createShogoTemplateRegistry()
     : new EmailTemplateRegistry()
 
   return new EmailService(provider, templates, from)

@@ -128,7 +128,7 @@ services:
       PROJECT_ID: test-project-123
       PROJECT_DIR: /app/project
       SCHEMAS_PATH: /app/.schemas
-      MCP_SERVER_PATH: /app/packages/mcp/src/server.ts
+      MCP_SERVER_PATH: /app/packages/project-runtime/src/mcp-templates.ts
       PORT: "8080"
       NODE_ENV: development
       # PostgreSQL Sidecar connection

@@ -31,7 +31,6 @@ case "${1:-start}" in
     echo "📍 Access points:"
     echo "   Web:      http://localhost:5173"
     echo "   API:      http://localhost:8002"
-    echo "   MCP:      http://localhost:3100"
     echo "   Postgres: localhost:5432"
     echo "   Redis:    localhost:6379"
     echo "   MinIO:    http://localhost:9001 (console)"
@@ -59,7 +58,6 @@ case "${1:-start}" in
     echo "   bun run dev        # Start all apps with turbo"
     echo "   bun run web:dev    # Start web only"
     echo "   bun run api:dev    # Start API only"
-    echo "   bun run mcp:http   # Start MCP only"
     echo ""
     ;;
   stop)
@@ -85,7 +83,7 @@ case "${1:-start}" in
     echo "🔥 Resetting Shogo development environment (removing node_modules)..."
     docker-compose -f "$COMPOSE_FILE" down -v
     echo "Removing node_modules volumes..."
-    docker volume rm shogo-mcp-node-modules-dev shogo-api-node-modules-dev shogo-web-node-modules-dev shogo-state-api-node-modules-dev shogo-web-app-node-modules-dev 2>/dev/null || true
+    docker volume rm shogo-api-node-modules-dev shogo-web-node-modules-dev shogo-state-api-node-modules-dev shogo-web-app-node-modules-dev 2>/dev/null || true
     echo ""
     echo "✅ Environment reset. Run './scripts/docker-dev.sh start' to rebuild."
     ;;

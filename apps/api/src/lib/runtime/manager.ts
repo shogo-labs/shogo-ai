@@ -42,7 +42,7 @@ const AGENT_RUNTIME_SERVER = join(__dirname, '..', '..', '..', '..', '..', 'pack
 /**
  * Path to the MCP server (for project-runtime to spawn).
  */
-const MCP_SERVER_PATH = join(__dirname, '..', '..', '..', '..', '..', 'packages', 'mcp', 'src', 'server-templates.ts')
+const MCP_SERVER_PATH = join(__dirname, '..', '..', '..', '..', '..', 'packages', 'project-runtime', 'src', 'mcp-templates.ts')
 
 /** Default configuration values */
 const DEFAULT_CONFIG: IRuntimeConfig = {
@@ -653,9 +653,11 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 
         try {
           const { generateProxyToken } = await import('../ai-proxy-token')
+          const { getProjectOwnerUserId } = await import('../project-user-context')
           const workspaceId = await this.getProjectWorkspaceId(projectId) || 'local-dev'
-          runtimeEnv.AI_PROXY_TOKEN = await generateProxyToken(projectId, workspaceId, 'system', 7 * 24 * 60 * 60 * 1000)
-          console.log(`[RuntimeManager] Generated AI proxy token for ${projectId} (workspace: ${workspaceId})`)
+          const ownerUserId = await getProjectOwnerUserId(projectId)
+          runtimeEnv.AI_PROXY_TOKEN = await generateProxyToken(projectId, workspaceId, ownerUserId, 7 * 24 * 60 * 60 * 1000)
+          console.log(`[RuntimeManager] Generated AI proxy token for ${projectId} (workspace: ${workspaceId}, owner: ${ownerUserId})`)
         } catch (err: any) {
           console.error(`[RuntimeManager] Failed to generate proxy token for ${projectId}: ${err.message}`)
           console.error(`[RuntimeManager] Runtime will start without AI proxy — LLM calls will fail`)

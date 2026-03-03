@@ -710,6 +710,9 @@ async function recordUsage(
     const billingModel = proxyModelToBillingModel(model)
     const creditCost = calculateCreditCost(totalTokens, billingModel)
     const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
+    if (billingUserId === 'system') {
+      console.warn(`[AI Proxy] ⚠️ No real userId for project ${tokenPayload.projectId} — billing as 'system'. Token userId: ${tokenPayload.userId}`)
+    }
 
     const result = await billingService.consumeCredits(
       tokenPayload.workspaceId,

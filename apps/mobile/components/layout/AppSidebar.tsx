@@ -946,13 +946,9 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
 
   const loadInvites = useCallback(() => {
     if (!http || !user?.email) return
-    http.get<{ ok: boolean; items?: any[] }>(
-      `/api/invitations?email=${encodeURIComponent(user.email)}`
-    ).then((res) => {
-      if (res.data?.ok && res.data.items) {
-        setPendingInvites(res.data.items.filter((i: any) => i.status === 'pending'))
-      }
-    }).catch(() => {})
+    api.getReceivedInvitations(http, user.email)
+      .then(setPendingInvites)
+      .catch(() => {})
   }, [http, user?.email])
 
   useEffect(() => { loadInvites() }, [loadInvites])
@@ -1377,54 +1373,50 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
                   Pending invitations
                 </Text>
                 {pendingInvites.map((inv: any) => (
-                  <View key={inv.id} className="px-4 py-3 border-t border-border">
-                    <View className="flex-row items-center justify-between mb-0.5">
-                      <Text className="text-sm font-medium text-card-foreground">
-                        {inv.workspace?.name || inv.workspaceName || 'Workspace'}
-                      </Text>
-                      <View className="px-1.5 py-0.5 rounded bg-muted">
-                        <Text className="text-[10px] text-muted-foreground capitalize">{inv.role}</Text>
+                  <Pressable key={inv.id} onPress={(e) => e.stopPropagation()}>
+                    <View className="px-4 py-3 border-t border-border">
+                      <View className="flex-row items-center justify-between mb-0.5">
+                        <Text className="text-sm font-medium text-card-foreground">
+                          {inv.workspace?.name || inv.workspaceName || 'Workspace'}
+                        </Text>
+                        <View className="px-1.5 py-0.5 rounded bg-muted">
+                          <Text className="text-[10px] text-muted-foreground capitalize">{inv.role}</Text>
+                        </View>
                       </View>
-                    </View>
-                    <Text className="text-xs text-muted-foreground mb-2.5">Invited to join this workspace</Text>
-                    <View className="flex-row gap-2">
-                      <Pressable
-                        onPress={async () => {
-                          setPendingInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
-                          try {
-                            if (http) {
-                              await http.patch(`/api/invitations/${inv.id}`, { status: 'accepted' })
-                              await http.post('/api/members', {
-                                userId: user?.id,
+                      <Text className="text-xs text-muted-foreground mb-2.5">Invited to join this workspace</Text>
+                      <View className="flex-row gap-2">
+                        <Pressable
+                          onPress={async () => {
+                            try {
+                              await actions.acceptInvitation(inv.id, user?.id || '', {
                                 workspaceId: inv.workspaceId,
                                 role: inv.role,
-                                isBillingAdmin: false,
+                                projectId: inv.projectId,
                               })
-                            }
-                          } catch {}
-                          loadInvites()
-                          workspaces.loadAll().catch(() => {})
-                        }}
-                        className="flex-1 h-8 bg-primary rounded-md items-center justify-center"
-                      >
-                        <Text className="text-xs font-medium text-primary-foreground">Accept</Text>
-                      </Pressable>
-                      <Pressable
-                        onPress={async () => {
-                          setPendingInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
-                          try {
-                            if (http) {
-                              await http.patch(`/api/invitations/${inv.id}`, { status: 'declined' })
-                            }
-                          } catch {}
-                          loadInvites()
-                        }}
-                        className="flex-1 h-8 border border-border rounded-md items-center justify-center"
-                      >
-                        <Text className="text-xs font-medium text-card-foreground">Decline</Text>
-                      </Pressable>
+                              setPendingInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
+                            } catch {}
+                            loadInvites()
+                            workspaces.loadAll().catch(() => {})
+                          }}
+                          className="flex-1 h-8 bg-primary rounded-md items-center justify-center"
+                        >
+                          <Text className="text-xs font-medium text-primary-foreground">Accept</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={async () => {
+                            try {
+                              await actions.declineInvitation(inv.id)
+                              setPendingInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
+                            } catch {}
+                            loadInvites()
+                          }}
+                          className="flex-1 h-8 border border-border rounded-md items-center justify-center"
+                        >
+                          <Text className="text-xs font-medium text-card-foreground">Decline</Text>
+                        </Pressable>
+                      </View>
                     </View>
-                  </View>
+                  </Pressable>
                 ))}
               </ScrollView>
             )}

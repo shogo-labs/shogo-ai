@@ -90,7 +90,8 @@ export const ModelName = {
   RendererBinding: 'RendererBinding',
   LayoutTemplate: 'LayoutTemplate',
   Composition: 'Composition',
-  ComponentSpec: 'ComponentSpec'
+  ComponentSpec: 'ComponentSpec',
+  InfraSnapshot: 'InfraSnapshot'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -202,7 +203,8 @@ export const ProjectScalarFieldEnum = {
   siteDescription: 'siteDescription',
   thumbnailUrl: 'thumbnailUrl',
   templateId: 'templateId',
-  knativeServiceName: 'knativeServiceName'
+  knativeServiceName: 'knativeServiceName',
+  settings: 'settings'
 } as const
 
 export type ProjectScalarFieldEnum = (typeof ProjectScalarFieldEnum)[keyof typeof ProjectScalarFieldEnum]
@@ -737,6 +739,31 @@ export const ComponentSpecScalarFieldEnum = {
 } as const
 
 export type ComponentSpecScalarFieldEnum = (typeof ComponentSpecScalarFieldEnum)[keyof typeof ComponentSpecScalarFieldEnum]
+
+
+export const InfraSnapshotScalarFieldEnum = {
+  id: 'id',
+  timestamp: 'timestamp',
+  totalNodes: 'totalNodes',
+  asgDesired: 'asgDesired',
+  asgMax: 'asgMax',
+  totalPodSlots: 'totalPodSlots',
+  usedPodSlots: 'usedPodSlots',
+  totalCpuMillis: 'totalCpuMillis',
+  usedCpuMillis: 'usedCpuMillis',
+  warmAvailable: 'warmAvailable',
+  warmTarget: 'warmTarget',
+  warmAssigned: 'warmAssigned',
+  coldStarts: 'coldStarts',
+  totalProjects: 'totalProjects',
+  readyProjects: 'readyProjects',
+  runningProjects: 'runningProjects',
+  scaledToZero: 'scaledToZero',
+  orphansDeleted: 'orphansDeleted',
+  idleEvictions: 'idleEvictions'
+} as const
+
+export type InfraSnapshotScalarFieldEnum = (typeof InfraSnapshotScalarFieldEnum)[keyof typeof InfraSnapshotScalarFieldEnum]
 
 
 export const SortOrder = {

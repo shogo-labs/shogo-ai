@@ -149,6 +149,7 @@ model Project {
   thumbnailUrl       String?
   templateId         String?
   knativeServiceName String?
+  settings           Json?
 
   // Relations
   workspace        Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -1095,4 +1096,37 @@ enum ComponentSpecStatus {
   draft
   approved
   implemented
+}
+
+// ============================================================================
+// Infrastructure Metrics
+// ============================================================================
+
+model InfraSnapshot {
+  id             String   @id @default(uuid())
+  timestamp      DateTime @default(now())
+
+  totalNodes     Int
+  asgDesired     Int
+  asgMax         Int
+  totalPodSlots  Int
+  usedPodSlots   Int
+  totalCpuMillis Int
+  usedCpuMillis  Int
+
+  warmAvailable  Int
+  warmTarget     Int
+  warmAssigned   Int
+  coldStarts     Int @default(0)
+
+  totalProjects  Int
+  readyProjects  Int
+  runningProjects Int
+  scaledToZero   Int
+
+  orphansDeleted Int @default(0)
+  idleEvictions  Int @default(0)
+
+  @@index([timestamp])
+  @@map("infra_snapshots")
 }

@@ -3,57 +3,57 @@
 @tailwind utilities;
 
 :root {
-  --color-background: #ffffff;
-  --color-foreground: #0a0a0a;
-  --color-card: #ffffff;
-  --color-card-foreground: #0a0a0a;
-  --color-popover: #ffffff;
-  --color-popover-foreground: #0a0a0a;
-  --color-primary: #2563eb;
-  --color-primary-foreground: #ffffff;
-  --color-secondary: #f4f4f5;
-  --color-secondary-foreground: #18181b;
-  --color-muted: #f4f4f5;
-  --color-muted-foreground: #71717a;
-  --color-accent: #f4f4f5;
-  --color-accent-foreground: #18181b;
-  --color-destructive: #dc2626;
-  --color-destructive-foreground: #ffffff;
-  --color-border: #e4e4e7;
-  --color-input: #e4e4e7;
-  --color-ring: #2563eb;
+  --color-background: 255 255 255;
+  --color-foreground: 10 10 10;
+  --color-card: 255 255 255;
+  --color-card-foreground: 10 10 10;
+  --color-popover: 255 255 255;
+  --color-popover-foreground: 10 10 10;
+  --color-primary: 37 99 235;
+  --color-primary-foreground: 255 255 255;
+  --color-secondary: 244 244 245;
+  --color-secondary-foreground: 24 24 27;
+  --color-muted: 244 244 245;
+  --color-muted-foreground: 113 113 122;
+  --color-accent: 244 244 245;
+  --color-accent-foreground: 24 24 27;
+  --color-destructive: 220 38 38;
+  --color-destructive-foreground: 255 255 255;
+  --color-border: 228 228 231;
+  --color-input: 228 228 231;
+  --color-ring: 37 99 235;
 
   /* M3 surface container progression — each depth gets progressively darker */
-  --color-surface-0: #ffffff;
-  --color-surface-1: #f7f7f8;
-  --color-surface-2: #f0f0f1;
-  --color-surface-3: #eaeaeb;
+  --color-surface-0: 255 255 255;
+  --color-surface-1: 247 247 248;
+  --color-surface-2: 240 240 241;
+  --color-surface-3: 234 234 235;
 }
 
 .dark {
-  --color-background: #121212;
-  --color-foreground: rgba(255, 255, 255, 0.87);
-  --color-card: #1e1e1e;
-  --color-card-foreground: rgba(255, 255, 255, 0.87);
-  --color-popover: #1e1e1e;
-  --color-popover-foreground: rgba(255, 255, 255, 0.87);
-  --color-primary: #2196f3;
-  --color-primary-foreground: #ffffff;
-  --color-secondary: #333333;
-  --color-secondary-foreground: #ffffff;
-  --color-muted: #2a2a2a;
-  --color-muted-foreground: rgba(255, 255, 255, 0.6);
-  --color-accent: #333333;
-  --color-accent-foreground: #ffffff;
-  --color-destructive: #dc2626;
-  --color-destructive-foreground: #ffffff;
-  --color-border: #333333;
-  --color-input: #333333;
-  --color-ring: #2196f3;
+  --color-background: 18 18 18;
+  --color-foreground: 222 222 222;
+  --color-card: 30 30 30;
+  --color-card-foreground: 222 222 222;
+  --color-popover: 30 30 30;
+  --color-popover-foreground: 222 222 222;
+  --color-primary: 33 150 243;
+  --color-primary-foreground: 255 255 255;
+  --color-secondary: 51 51 51;
+  --color-secondary-foreground: 255 255 255;
+  --color-muted: 42 42 42;
+  --color-muted-foreground: 163 163 163;
+  --color-accent: 51 51 51;
+  --color-accent-foreground: 255 255 255;
+  --color-destructive: 220 38 38;
+  --color-destructive-foreground: 255 255 255;
+  --color-border: 51 51 51;
+  --color-input: 51 51 51;
+  --color-ring: 33 150 243;
 
   /* M3 surface container progression — each depth gets progressively lighter */
-  --color-surface-0: #1e1e1e;
-  --color-surface-1: #252526;
-  --color-surface-2: #2c2c2d;
-  --color-surface-3: #343435;
+  --color-surface-0: 30 30 30;
+  --color-surface-1: 37 37 38;
+  --color-surface-2: 44 44 45;
+  --color-surface-3: 52 52 53;
 }

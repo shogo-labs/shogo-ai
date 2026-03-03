@@ -170,6 +170,13 @@ variable "google_client_secret" {
   default     = ""
 }
 
+variable "serper_api_key" {
+  description = "Serper.dev API key for web search"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "composio_api_key" {
   description = "Composio API key for third-party integrations"
   type        = string

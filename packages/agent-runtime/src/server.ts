@@ -86,6 +86,9 @@ const PORT = parseInt(process.env.PORT || '8080', 10)
 
 const IS_POOL_MODE = currentProjectId === POOL_PROJECT_ID || process.env.WARM_POOL_MODE === 'true'
 let poolAssigned = false
+let poolAssignedAt: number | null = null
+let lastRequestAt: number = Date.now()
+const INTERNAL_PATHS = new Set(['/health', '/ready', '/pool/activity', '/pool/assign'])
 
 if (!currentProjectId) {
   console.error(
@@ -109,6 +112,7 @@ if (IS_POOL_MODE) {
       if (typeof value === 'string') process.env[key] = value
     }
     poolAssigned = true
+    poolAssignedAt = Date.now()
     logTiming(`[self-assign] Self-assigned to ${selfAssignConfig.projectId}`)
   }
 } else {
@@ -258,6 +262,14 @@ const app = new Hono()
 
 app.use('*', cors({ origin: '*' }))
 
+// Track last external HTTP request for idle detection (excludes internal probes)
+app.use('*', async (c, next) => {
+  if (!INTERNAL_PATHS.has(c.req.path)) {
+    lastRequestAt = Date.now()
+  }
+  await next()
+})
+
 // Register WhatsApp webhook routes (must be before any auth middleware)
 import('./channels/whatsapp').then(({ WhatsAppAdapter }) => {
   WhatsAppAdapter.registerWebhookRoutes(app)
@@ -317,6 +329,27 @@ app.get('/health', (c) =>
 // Readiness probe
 app.get('/ready', (c) => {
   return c.json({ ready: true })
+})
+
+// Activity probe for promoted pod GC — uses HTTP request activity, not just chat sessions
+app.get('/pool/activity', (c) => {
+  const sm = agentGateway?.getSessionManager()
+  const stats = sm?.getAllStats() ?? []
+  const now = Date.now()
+  const lastSessionActivity = stats.reduce(
+    (max: number, s) => Math.max(max, now - (s.idleSeconds ?? 0) * 1000),
+    poolAssignedAt ?? SERVER_START_TIME
+  )
+  const lastActivity = Math.max(lastRequestAt, lastSessionActivity)
+  return c.json({
+    projectId: currentProjectId,
+    lastActivityAt: lastActivity,
+    idleSeconds: Math.floor((now - lastActivity) / 1000),
+    activeSessions: stats.length,
+    lastRequestAt,
+    lastSessionActivityAt: lastSessionActivity,
+    poolAssigned: poolAssigned,
+  })
 })
 
 // =============================================================================
@@ -379,6 +412,7 @@ app.post('/pool/assign', async (c) => {
   try {
     await initializeEssentials()
     poolAssigned = true
+    poolAssignedAt = Date.now()
     const duration = Date.now() - startTime
     logTiming(`Pool assignment essentials complete for ${projectId} (${duration}ms)`)
 
@@ -1083,7 +1117,7 @@ app.post('/agent/workspace/reindex', async (c) => {
 
 // Tool catalog and search — powers the "Tools" tab in the web UI
 import { MCP_CATALOG, MCP_CATEGORIES, isPreinstalledMcpId, getPreinstalledPackages } from './mcp-catalog'
-import { isComposioEnabled, searchComposioToolkits, findComposioToolkit, initComposioSession } from './composio'
+import { isComposioEnabled, searchComposioToolkits, findComposioToolkit, initComposioSession, registerToolkitProxyTools } from './composio'
 
 // Agent Templates API — powers the templates gallery
 import { getTemplateSummaries, getAgentTemplateById, TEMPLATE_CATEGORIES } from './agent-templates'
@@ -1201,15 +1235,15 @@ app.get('/agent/tools/status', (c) => {
 
   const tools = serverInfo.map((s) => {
     const catalogEntry = MCP_CATALOG.find((e) => e.id === s.name)
-    const isComposio = s.name === 'composio'
+    const isComposioProxy = s.config.command === 'composio-proxy'
     return {
       id: s.name,
       name: catalogEntry?.name || s.name,
-      source: isComposio ? 'managed' as const : (catalogEntry ? 'catalog' as const : 'custom' as const),
+      source: isComposioProxy ? 'managed' as const : (catalogEntry ? 'catalog' as const : 'custom' as const),
       status: 'running' as const,
       toolCount: s.toolCount,
       tools: s.toolNames,
-      composioToolkit: isComposio ? 'composio' : catalogEntry?.composioToolkit,
+      composioToolkit: isComposioProxy ? s.name : catalogEntry?.composioToolkit,
     }
   })
 
@@ -1242,7 +1276,7 @@ app.get('/agent/tools/search', async (c) => {
           name: tk.name,
           description: `${tk.name} — managed OAuth integration. No credentials needed.`,
           source: 'managed',
-          installed: installedNames.has('composio'),
+          installed: installedNames.has(tk.slug.toLowerCase()),
           authType: 'oauth',
           composioToolkit: tk.slug,
           icon: tk.logo,
@@ -1306,7 +1340,14 @@ app.post('/agent/tools/install', async (c) => {
         const userId = process.env.USER_ID || 'default'
         const projectId = process.env.PROJECT_ID || 'default'
         await initComposioSession(userId, projectId)
-        return c.json({ ok: true, id, source: 'managed' })
+        const proxy = await registerToolkitProxyTools(mcpMgr, composioToolkit.slug)
+        return c.json({
+          ok: true,
+          id: composioToolkit.slug.toLowerCase(),
+          source: 'managed',
+          toolCount: proxy.toolCount,
+          tools: proxy.toolNames,
+        })
       } catch (err: any) {
         return c.json({ error: `Failed to connect: ${err.message}` }, 500)
       }
@@ -1339,6 +1380,11 @@ app.delete('/agent/tools/:id', async (c) => {
 
   const id = c.req.param('id')
   const mcpMgr = agentGateway.getMcpClientManager()
+
+  if (mcpMgr.hasProxyToolGroup(id)) {
+    mcpMgr.removeProxyToolGroup(id)
+    return c.json({ ok: true, removed: id })
+  }
 
   if (!mcpMgr.isRunning(id)) {
     return c.json({ error: `Tool "${id}" is not running` }, 404)
@@ -1471,9 +1517,10 @@ app.get('/agent/dynamic-app/stream', (c) => {
   return new Response(stream, {
     headers: {
       'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
+      'Cache-Control': 'no-cache, no-transform',
       'Connection': 'keep-alive',
       'Access-Control-Allow-Origin': '*',
+      'X-Accel-Buffering': 'no',
     },
   })
 })

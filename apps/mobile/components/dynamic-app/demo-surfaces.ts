@@ -6,6 +6,7 @@
  */
 
 import type { SurfaceState, ComponentDefinition } from './types'
+import mauiVacationData from './fixtures/maui-vacation.json'
 
 function buildSurface(
   surfaceId: string,
@@ -921,10 +922,23 @@ export const DRIVE_TIME_LAX_SURFACE = buildSurface(
 )
 
 // ---------------------------------------------------------------------------
+// Maui Luxury Vacation — Imported from staging project 40d1fd55
+// Multi-tab dashboard: accommodations + restaurants + activities with DataList
+// ---------------------------------------------------------------------------
+
+export const MAUI_VACATION_SURFACE = buildSurface(
+  'maui-luxury-vacation',
+  'Maui Luxury Vacation Dashboard',
+  mauiVacationData.components as ComponentDefinition[],
+  mauiVacationData.dataModel as Record<string, unknown>,
+)
+
+// ---------------------------------------------------------------------------
 // All demos indexed by name
 // ---------------------------------------------------------------------------
 
 export const DEMO_SURFACES: Record<string, { label: string; surface: SurfaceState }> = {
+  maui: { label: 'Maui Vacation', surface: MAUI_VACATION_SURFACE },
   drive_lax: { label: 'Drive to LAX', surface: DRIVE_TIME_LAX_SURFACE },
   expenses: { label: 'Expense Tracker', surface: EXPENSE_TRACKER_SURFACE },
   habits: { label: 'Habit Tracker', surface: HABIT_TRACKER_SURFACE },

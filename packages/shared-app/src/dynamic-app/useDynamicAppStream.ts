@@ -62,18 +62,26 @@ export function useDynamicAppStream(agentUrl: string | null, options?: DynamicAp
           break
         }
         case 'updateComponents': {
-          const surface = next.get(msg.surfaceId)
-          if (surface) {
-            const updatedComponents = new Map(surface.components)
-            for (const comp of msg.components) {
-              updatedComponents.set(comp.id, comp)
-            }
-            next.set(msg.surfaceId, {
-              ...surface,
-              components: updatedComponents,
+          let surface = next.get(msg.surfaceId)
+          if (!surface) {
+            surface = {
+              surfaceId: msg.surfaceId,
+              components: new Map(),
+              dataModel: {},
+              createdAt: now,
               updatedAt: now,
-            })
+            }
+            next.set(msg.surfaceId, surface)
           }
+          const updatedComponents = new Map(surface.components)
+          for (const comp of msg.components) {
+            updatedComponents.set(comp.id, comp)
+          }
+          next.set(msg.surfaceId, {
+            ...surface,
+            components: updatedComponents,
+            updatedAt: now,
+          })
           break
         }
         case 'updateData': {
@@ -275,5 +283,5 @@ export function useDynamicAppStream(agentUrl: string | null, options?: DynamicAp
     connect()
   }, [connect])
 
-  return { surfaces, connected, connecting, error, dispatchAction, updateLocalData, reconnect }
+  return { surfaces, connected, connecting, error, dispatchAction, updateLocalData, reconnect, applyMessage }
 }

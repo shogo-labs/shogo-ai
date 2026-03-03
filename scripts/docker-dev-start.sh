@@ -18,7 +18,6 @@
 #     - MinIO (S3 storage)       - localhost:9000 (console: 9001)
 #
 #   Native bun (app services with HMR):
-#     - MCP Server               - localhost:3100
 #     - API Server               - localhost:8002
 #     - Web Frontend (Expo Web)  - localhost:8081
 #
@@ -118,7 +117,6 @@ ANTHROPIC_API_KEY=
 # Port configuration
 VITE_PORT=5173
 API_PORT=8002
-MCP_PORT=3100
 
 # Database (Docker PostgreSQL)
 DATABASE_URL=postgres://shogo:shogo_dev@localhost:5432/shogo
@@ -130,11 +128,6 @@ REDIS_URL=redis://localhost:6379
 # Authentication
 BETTER_AUTH_SECRET=shogo-local-dev-secret-32-chars-minimum-ok
 BETTER_AUTH_URL=http://localhost:8002
-
-# MCP Configuration
-SCHEMAS_PATH=.schemas
-WORKSPACE_ID=workspace
-TENANT_ID=tenant-a
 
 # CORS (Expo web runs on :8081, any localhost is allowed in dev mode)
 ALLOWED_ORIGINS=http://localhost:8081,http://localhost:5173,http://localhost:3000
@@ -245,9 +238,8 @@ if [ -n "$INFRA_ONLY" ]; then
     echo -e "    MinIO Console:          localhost:9001 (minioadmin/minioadmin)"
     echo ""
     echo -e "  ${YELLOW}To start app services manually:${NC}"
-    echo -e "    Terminal 1: bun run mcp:http"
-    echo -e "    Terminal 2: bun run api:dev"
-    echo -e "    Terminal 3: bun run web:dev"
+    echo -e "    Terminal 1: bun run api:dev"
+    echo -e "    Terminal 2: bun run web:dev"
     echo ""
     exit 0
 fi
@@ -258,7 +250,7 @@ fi
 echo ""
 echo -e "${BLUE}Starting app services (native bun with HMR)...${NC}"
 echo ""
-echo -e "${CYAN}Opening 3 terminal windows for app services...${NC}"
+echo -e "${CYAN}Opening 2 terminal windows for app services...${NC}"
 echo ""
 
 # Check if we're on macOS and can use osascript
@@ -268,14 +260,11 @@ if [[ "$OSTYPE" == "darwin"* ]] && command -v osascript &> /dev/null; then
 tell application "Terminal"
     activate
     
-    -- MCP Server
-    do script "cd '$PROJECT_ROOT' && echo '🔌 Starting MCP Server on port 3100...' && bun run mcp:http"
-    
     -- API Server  
-    do script "cd '$PROJECT_ROOT' && echo '🚀 Starting API Server on port 8002...' && sleep 2 && bun run api:dev"
+    do script "cd '$PROJECT_ROOT' && echo '🚀 Starting API Server on port 8002...' && bun run api:dev"
     
     -- Web Frontend (Expo Web)
-    do script "cd '$PROJECT_ROOT' && echo '🌐 Starting Expo Web on port 8081...' && sleep 3 && bun run web:dev"
+    do script "cd '$PROJECT_ROOT' && echo '🌐 Starting Expo Web on port 8081...' && sleep 2 && bun run web:dev"
 end tell
 EOF
     
@@ -284,13 +273,10 @@ else
     # Not macOS or osascript not available - print manual instructions
     echo -e "${YELLOW}Please start these services in separate terminals:${NC}"
     echo ""
-    echo -e "  ${CYAN}Terminal 1 (MCP):${NC}"
-    echo -e "    cd $PROJECT_ROOT && bun run mcp:http"
-    echo ""
-    echo -e "  ${CYAN}Terminal 2 (API):${NC}"
+    echo -e "  ${CYAN}Terminal 1 (API):${NC}"
     echo -e "    cd $PROJECT_ROOT && bun run api:dev"
     echo ""
-    echo -e "  ${CYAN}Terminal 3 (Web):${NC}"
+    echo -e "  ${CYAN}Terminal 2 (Web):${NC}"
     echo -e "    cd $PROJECT_ROOT && bun run web:dev"
     echo ""
 fi
@@ -303,7 +289,6 @@ echo ""
 echo -e "  ${CYAN}App Services (with HMR):${NC}"
 echo -e "    Web UI:      ${BLUE}http://localhost:8081${NC}"
 echo -e "    API Server:  http://localhost:8002"
-echo -e "    MCP Server:  http://localhost:3100"
 echo ""
 echo -e "  ${CYAN}Infrastructure (Docker):${NC}"
 echo -e "    PostgreSQL:  localhost:5432 / 5433"

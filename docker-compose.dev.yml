@@ -13,7 +13,6 @@
 # Port Reference:
 #   - Web UI:    http://localhost:5173 (with HMR)
 #   - API:       http://localhost:8002
-#   - MCP:       http://localhost:3100
 #   - Postgres:  localhost:5432
 #   - MinIO:     localhost:9000 (console: 9001)
 #   - Redis:     localhost:6379
@@ -23,47 +22,12 @@
 #
 # This override:
 #   - Mounts source code for live editing
-#   - Uses watch mode for api and mcp (auto-restart on file changes)
+#   - Uses watch mode for api (auto-restart on file changes)
 #   - Uses Vite dev server for web (HMR with WebSocket)
 #   - Project preview works via RuntimeManager (no separate container needed)
 # =============================================================================
 
 services:
-  # ---------------------------------------------------------------------------
-  # MCP Server - Development with hot reloading
-  # ---------------------------------------------------------------------------
-  # Strategy: Mount entire project, use anonymous volume to preserve node_modules
-  # ---------------------------------------------------------------------------
-  mcp:
-    build:
-      context: .
-      dockerfile: packages/mcp/Dockerfile.dev
-    volumes:
-      - .:/app
-      # Preserve all node_modules from container build (bun workspaces structure)
-      - /app/node_modules
-      - /app/packages/state-api/node_modules
-      - /app/packages/mcp/node_modules
-    environment:
-      NODE_ENV: development
-    command: ["bun", "--watch", "src/server-http.ts"]
-
-  # ---------------------------------------------------------------------------
-  # MCP Server Workspace 2 - Development with hot reloading
-  # ---------------------------------------------------------------------------
-  mcp-workspace-2:
-    build:
-      context: .
-      dockerfile: packages/mcp/Dockerfile.dev
-    volumes:
-      - .:/app
-      - /app/node_modules
-      - /app/packages/state-api/node_modules
-      - /app/packages/mcp/node_modules
-    environment:
-      NODE_ENV: development
-    command: ["bun", "--watch", "src/server-http.ts"]
-
   # ---------------------------------------------------------------------------
   # API Server - Development with hot reloading
   # ---------------------------------------------------------------------------
@@ -78,7 +42,6 @@ services:
       - .:/app
       - /app/node_modules
       - /app/packages/state-api/node_modules
-      - /app/packages/mcp/node_modules
       - /app/packages/project-runtime/node_modules
       - /app/apps/api/node_modules
       # Persist workspaces for project files

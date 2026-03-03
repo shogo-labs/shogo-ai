@@ -36,7 +36,6 @@ BASE_POSTGRES_PORT=5432
 BASE_REDIS_PORT=6379
 BASE_MINIO_API_PORT=9000
 BASE_MINIO_CONSOLE_PORT=9001
-BASE_MCP_PORT=3100
 BASE_API_PORT=8002
 BASE_WEB_PORT=3000
 BASE_VITE_RUNTIME_PORT=5200
@@ -187,7 +186,6 @@ generate_env_local() {
     local redis_port=$((BASE_REDIS_PORT + offset))
     local minio_api_port=$((BASE_MINIO_API_PORT + offset))
     local minio_console_port=$((BASE_MINIO_CONSOLE_PORT + offset))
-    local mcp_port=$((BASE_MCP_PORT + offset))
     local api_port=$((BASE_API_PORT + offset))
     local web_port=$((BASE_WEB_PORT + offset))
     local vite_runtime_base=$((BASE_VITE_RUNTIME_PORT + offset))
@@ -218,7 +216,6 @@ POSTGRES_PORT=$postgres_port
 REDIS_PORT=$redis_port
 MINIO_API_PORT=$minio_api_port
 MINIO_CONSOLE_PORT=$minio_console_port
-MCP_PORT=$mcp_port
 API_PORT=$api_port
 WEB_PORT=$web_port
 VITE_RUNTIME_BASE=$vite_runtime_base
@@ -228,8 +225,6 @@ VITE_DEV_PORT=$vite_dev_port
 # =============================================================================
 # SERVICE URLs (for local development outside Docker)
 # =============================================================================
-MCP_URL=http://localhost:$mcp_port
-VITE_MCP_URL=http://localhost:$mcp_port
 VITE_API_URL=http://localhost:$api_port
 VITE_BETTER_AUTH_URL=http://localhost:$api_port
 
@@ -329,7 +324,6 @@ main() {
     echo "  COMPOSE_PROJECT_NAME: shogo-$(sanitize_branch_name "$branch")"
     echo "  Web:    http://localhost:$((BASE_WEB_PORT + offset))"
     echo "  API:    http://localhost:$((BASE_API_PORT + offset))"
-    echo "  MCP:    http://localhost:$((BASE_MCP_PORT + offset))"
     echo "  MinIO:  http://localhost:$((BASE_MINIO_CONSOLE_PORT + offset))"
     echo ""
     echo "  To start Docker: docker compose up --build"

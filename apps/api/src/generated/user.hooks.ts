@@ -60,9 +60,8 @@ async function isSuperAdmin(ctx: HookContext): Promise<boolean> {
   return user?.role === 'super_admin'
 }
 
-/**
- * Default User hooks (customize as needed)
- */
+import { sendAccountDeletedEmail } from "../services/email.service"
+
 export const userHooks: UserHooks = {
   /**
    * Restrict listing users - only return users in shared workspaces.
@@ -229,6 +228,23 @@ export const userHooks: UserHooks = {
       }
     }
 
+    // Stash user data for afterDelete email
+    const user = await ctx.prisma.user.findUnique({
+      where: { id },
+      select: { email: true, name: true },
+    })
+    if (user) (ctx as any)._deletedUser = user
+
     return { ok: true }
+  },
+
+  afterDelete: async (id, ctx) => {
+    const user = (ctx as any)._deletedUser
+    if (!user?.email) return
+
+    sendAccountDeletedEmail({
+      to: user.email,
+      name: user.name,
+    }).catch((err) => console.error('[Email] account-deleted failed:', err))
   },
 }

@@ -184,7 +184,6 @@ module "vpc" {
 #   environment  = var.environment
 #
 #   repositories = [
-#     "shogo-mcp",
 #     "shogo-api",
 #     "shogo-web"
 #   ]
@@ -1007,6 +1006,9 @@ resource "kubernetes_secret" "api_secrets" {
     var.google_client_secret != "" ? {
       GOOGLE_CLIENT_SECRET = var.google_client_secret
     } : {},
+    var.serper_api_key != "" ? {
+      SERPER_API_KEY = var.serper_api_key
+    } : {},
     var.composio_api_key != "" ? {
       COMPOSIO_API_KEY = var.composio_api_key
     } : {},
@@ -1295,10 +1297,6 @@ resource "null_resource" "knative_services" {
                     value: "http://api.shogo-staging-system.svc.cluster.local"
                   - name: API_HOST
                     value: "api.shogo-staging-system.svc.cluster.local"
-                  - name: MCP_UPSTREAM
-                    value: "http://mcp-workspace-1.shogo-staging-workspaces.svc.cluster.local"
-                  - name: MCP_HOST
-                    value: "mcp-workspace-1.shogo-staging-workspaces.svc.cluster.local"
                   - name: DNS_RESOLVER
                     value: "kube-dns.kube-system.svc.cluster.local"
                 resources:
@@ -1340,8 +1338,6 @@ resource "null_resource" "knative_services" {
                     value: "staging"
                   - name: NODE_TLS_REJECT_UNAUTHORIZED
                     value: "0"
-                  - name: MCP_URL
-                    value: "http://mcp-workspace-1.shogo-staging-workspaces.svc.cluster.local"
                   - name: BETTER_AUTH_URL
                     value: "https://studio-staging.shogo.ai"
                   - name: ALLOWED_ORIGINS
@@ -1387,6 +1383,12 @@ resource "null_resource" "knative_services" {
                         name: api-secrets
                         key: GOOGLE_CLIENT_SECRET
                         optional: true
+                  - name: SERPER_API_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: api-secrets
+                        key: SERPER_API_KEY
+                        optional: true
                   - name: COMPOSIO_API_KEY
                     valueFrom:
                       secretKeyRef:
@@ -1429,9 +1431,9 @@ resource "null_resource" "knative_services" {
                   # Warm pool sizing — scales with cluster node count
                   # 2 nodes idle → 20 warm agents. Pre-scale to 5 nodes → 50 agents.
                   - name: WARM_POOL_AGENTS_PER_NODE
-                    value: "10"
+                    value: "0"
                   - name: WARM_POOL_MIN_AGENTS
-                    value: "2"
+                    value: "5"
                   # Karpenter handles workspace node provisioning — proactive scaler defers to it
                   - name: KARPENTER_ENABLED
                     value: "true"
@@ -1446,6 +1448,11 @@ resource "null_resource" "knative_services" {
                     value: "15"
                   - name: WARM_POOL_MAX_AGE_MS
                     value: "3600000"
+                  # Promoted pod GC — clean up orphaned/idle promoted pods
+                  - name: PROMOTED_POD_GC_ENABLED
+                    value: "true"
+                  - name: PROMOTED_POD_IDLE_TIMEOUT_MS
+                    value: "1800000"
                   # OpenTelemetry tracing → SigNoz Cloud
                   - name: OTEL_EXPORTER_OTLP_ENDPOINT
                     value: "https://${var.signoz_endpoint}"
@@ -1466,88 +1473,6 @@ resource "null_resource" "knative_services" {
                     cpu: "500m"
       EOF
 
-      # Deploy MCP Workspace Service
-      # IMPORTANT: min-scale: 1 keeps pod always running to preserve meta-store state.
-      # Scaling to zero loses all loaded schemas, causing query failures.
-      cat <<EOF | kubectl apply -f -
-      apiVersion: serving.knative.dev/v1
-      kind: Service
-      metadata:
-        name: mcp-workspace-1
-        namespace: shogo-staging-workspaces
-        labels:
-          app.kubernetes.io/part-of: shogo
-          environment: staging
-      spec:
-        template:
-          metadata:
-            annotations:
-              # Keep at least 1 pod running to preserve meta-store state
-              autoscaling.knative.dev/min-scale: "1"
-              autoscaling.knative.dev/max-scale: "3"
-              autoscaling.knative.dev/target: "100"
-          spec:
-            timeoutSeconds: 300
-            containers:
-              - name: mcp
-                image: ${local.ecr_registry}/shogo/shogo-mcp:${local.image_tag}
-                imagePullPolicy: Always
-                ports:
-                  - containerPort: 8080
-                env:
-                  - name: MCP_PORT
-                    value: "8080"
-                  - name: NODE_ENV
-                    value: "staging"
-                  - name: NODE_TLS_REJECT_UNAUTHORIZED
-                    value: "0"
-                  - name: SCHEMAS_PATH
-                    value: "/app/.schemas"
-                  - name: WORKSPACE_ID
-                    value: "workspace-1"
-                  - name: TENANT_ID
-                    value: "staging-tenant"
-                  - name: DATABASE_URL
-                    valueFrom:
-                      secretKeyRef:
-                        name: postgres-credentials
-                        key: DATABASE_URL
-                  # OpenTelemetry tracing → SigNoz Cloud
-                  - name: OTEL_EXPORTER_OTLP_ENDPOINT
-                    value: "https://${var.signoz_endpoint}"
-                  - name: OTEL_SERVICE_NAME
-                    value: "shogo-mcp-staging"
-                  - name: SIGNOZ_INGESTION_KEY
-                    valueFrom:
-                      secretKeyRef:
-                        name: signoz-credentials
-                        key: SIGNOZ_INGESTION_KEY
-                        optional: true
-                resources:
-                  requests:
-                    memory: "256Mi"
-                    cpu: "100m"
-                  limits:
-                    memory: "512Mi"
-                    cpu: "500m"
-                # Startup probe: TCP check on main MCP port
-                startupProbe:
-                  tcpSocket:
-                    port: 8080
-                  initialDelaySeconds: 10
-                  periodSeconds: 5
-                  timeoutSeconds: 5
-                  failureThreshold: 12
-                # Readiness probe: TCP check ensures MCP server is listening
-                readinessProbe:
-                  tcpSocket:
-                    port: 8080
-                  initialDelaySeconds: 5
-                  periodSeconds: 10
-                  timeoutSeconds: 5
-                  failureThreshold: 3
-      EOF
-
       # Deploy Domain Mappings
       cat <<EOF | kubectl apply -f -
       apiVersion: serving.knative.dev/v1beta1
@@ -1560,17 +1485,6 @@ resource "null_resource" "knative_services" {
           name: studio
           kind: Service
           apiVersion: serving.knative.dev/v1
-      ---
-      apiVersion: serving.knative.dev/v1beta1
-      kind: DomainMapping
-      metadata:
-        name: mcp-staging.shogo.ai
-        namespace: shogo-staging-workspaces
-      spec:
-        ref:
-          name: mcp-workspace-1
-          kind: Service
-          apiVersion: serving.knative.dev/v1
       EOF
 
       # NOTE: Image pre-puller DaemonSet is deployed via kustomize overlay
@@ -1581,7 +1495,6 @@ resource "null_resource" "knative_services" {
       echo "Waiting for services to be ready..."
       kubectl wait --for=condition=ready ksvc/studio -n shogo-staging-system --timeout=300s || true
       kubectl wait --for=condition=ready ksvc/api -n shogo-staging-system --timeout=300s || true
-      kubectl wait --for=condition=ready ksvc/mcp-workspace-1 -n shogo-staging-workspaces --timeout=300s || true
       
       echo "Knative services deployed successfully"
     EOT
@@ -1685,7 +1598,6 @@ resource "kubernetes_secret" "publish_config" {
 #
 #   eks_cluster_arns    = [module.eks.cluster_arn]
 #   ecr_repository_arns = [
-#     "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/shogo/shogo-mcp",
 #     "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/shogo/shogo-api",
 #     "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/shogo/shogo-web"
 #   ]

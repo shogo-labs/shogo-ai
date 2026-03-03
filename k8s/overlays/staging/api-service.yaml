@@ -24,6 +24,9 @@ rules:
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
 ---
 # Bind the ClusterRole to the API service account
 apiVersion: rbac.authorization.k8s.io/v1
@@ -96,8 +99,6 @@ spec:
               value: "staging"
             - name: NODE_TLS_REJECT_UNAUTHORIZED
               value: "0"
-            - name: MCP_URL
-              value: "http://mcp-workspace-1.shogo-staging-workspaces.svc.cluster.local"
             # Project runtime configuration - namespace for project pods
             # Note: PROJECT_RUNTIME_IMAGE uses floating 'staging-latest' tag updated by CI/CD
             - name: PROJECT_NAMESPACE
@@ -247,9 +248,15 @@ spec:
             - name: WARM_POOL_PROJECT_SIZE
               value: "0"
             - name: WARM_POOL_AGENTS_PER_NODE
-              value: "10"
+              value: "0"
+            - name: WARM_POOL_MIN_AGENTS
+              value: "5"
             - name: WARM_POOL_MAX_AGE_MS
               value: "3600000"
+            - name: PROMOTED_POD_GC_ENABLED
+              value: "true"
+            - name: PROMOTED_POD_IDLE_TIMEOUT_MS
+              value: "1800000"
           resources:
             requests:
               memory: "256Mi"
