@@ -112,8 +112,10 @@ export class WebChatAdapter implements ChannelAdapter {
       clearTimeout(pending.timer)
       pending.resolve(content)
       this.pendingResponses.delete(channelId)
+      return
     }
 
+    // Only use SSE for messages that don't have a pending HTTP response
     const sessionId = this.extractSessionId(channelId)
     const sseWriter = this.sseClients.get(sessionId)
     if (sseWriter) {

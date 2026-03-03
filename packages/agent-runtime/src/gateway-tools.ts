@@ -2885,12 +2885,13 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
   return {
     name: 'channel_connect',
     description:
-      'Connect a messaging channel (telegram, discord, email, slack, whatsapp, or webhook). ' +
-      'Saves the config and hot-connects the channel immediately.',
+      'Connect a messaging channel (telegram, discord, email, slack, whatsapp, webhook, teams, or webchat). ' +
+      'Saves the config and hot-connects the channel immediately. ' +
+      'For webchat: creates an embeddable chat widget for any website — no external accounts needed.',
     label: 'Connect Channel',
     parameters: Type.Object({
       type: Type.String({
-        description: 'Channel type: telegram, discord, email, slack, whatsapp, or webhook',
+        description: 'Channel type: telegram, discord, email, slack, whatsapp, webhook, teams, or webchat',
       }),
       config: Type.Record(Type.String(), Type.String(), {
         description:
@@ -2899,7 +2900,8 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
           'For email: { imapHost, smtpHost, username, password }. ' +
           'For slack: { botToken: "xoxb-...", appToken: "xapp-..." }. ' +
           'For whatsapp: { accessToken, phoneNumberId, verifyToken }. ' +
-          'For teams: { appId, appPassword, botName? }.',
+          'For teams: { appId, appPassword, botName? }. ' +
+          'For webchat: { title?, subtitle?, primaryColor?, position?, welcomeMessage?, avatarUrl?, allowedOrigins? } — all fields optional.',
       }),
     }),
     execute: async (_toolCallId, params) => {
@@ -2908,7 +2910,7 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
         config: Record<string, string>
       }
 
-      const validTypes = ['telegram', 'discord', 'email', 'slack', 'whatsapp', 'webhook', 'teams']
+      const validTypes = ['telegram', 'discord', 'email', 'slack', 'whatsapp', 'webhook', 'teams', 'webchat']
       if (!validTypes.includes(type)) {
         return textResult({ error: `Invalid channel type: ${type}. Must be one of: ${validTypes.join(', ')}` })
       }
@@ -2936,6 +2938,26 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
       if (ctx.connectChannel) {
         try {
           await ctx.connectChannel(type, channelConfig)
+
+          if (type === 'webchat') {
+            const port = process.env.PORT || '8080'
+            const widgetUrl = `http://localhost:${port}/agent/channels/webchat/widget.js`
+            return textResult({
+              ok: true,
+              message: [
+                'WebChat channel connected and live!',
+                '',
+                'Tell the user to add this single script tag before the closing </body> tag on their website:',
+                '',
+                `<script src="${widgetUrl}"></script>`,
+                '',
+                'A chat bubble will appear on their page. Visitors can click it to chat with the agent. No other setup needed.',
+                'The user can also find the embed snippet in the Channels panel.',
+              ].join('\n'),
+              embedSnippet: `<script src="${widgetUrl}"></script>`,
+            })
+          }
+
           return textResult({
             ok: true,
             message: `${type} channel connected and live. ` +

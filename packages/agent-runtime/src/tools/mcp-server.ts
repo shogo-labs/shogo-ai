@@ -404,6 +404,25 @@ defineTool({
         signal: AbortSignal.timeout(10_000),
       })
       if (res.ok) {
+        if (input.type === 'webchat') {
+          const localWidgetUrl = `http://localhost:${port}/agent/channels/webchat/widget.js`
+          return {
+            ok: true,
+            message: [
+              `WebChat channel connected and live!`,
+              ``,
+              `Tell the user to add this single script tag before the closing </body> tag on their website:`,
+              ``,
+              `<script src="${localWidgetUrl}"></script>`,
+              ``,
+              `A chat bubble will appear on the page. Visitors click it to chat with the agent directly. No other setup, libraries, or accounts needed.`,
+              ``,
+              `The user can also find the embed snippet in the Channels panel.`,
+            ].join('\n'),
+            embedSnippet: `<script src="${localWidgetUrl}"></script>`,
+            widgetUrl: localWidgetUrl,
+          }
+        }
         return {
           ok: true,
           message: `${input.type} channel connected and live.`,
