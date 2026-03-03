@@ -1207,11 +1207,27 @@ export async function getProjectPodUrl(projectId: string): Promise<string> {
       const warmPool = getWarmPoolController()
       const warmUrl = warmPool.getAssignedUrl(projectId)
       if (warmUrl) {
-        span.setAttribute('resolve.method', 'warm_pool_assigned')
-        span.setAttribute('resolve.duration_ms', Date.now() - totalStartTime)
-        span.setStatus({ code: SpanStatusCode.OK })
-        console.log(`[KnativeProjectManager] Project ${projectId} served by warm pool (elapsed: ${Date.now() - totalStartTime}ms)`)
-        return warmUrl
+        // Quick health probe to avoid returning stale URLs for dead pods
+        try {
+          const probe = await fetch(`${warmUrl}/health`, {
+            method: 'GET',
+            signal: AbortSignal.timeout(2000),
+          })
+          if (probe.ok) {
+            span.setAttribute('resolve.method', 'warm_pool_assigned')
+            span.setAttribute('resolve.duration_ms', Date.now() - totalStartTime)
+            span.setStatus({ code: SpanStatusCode.OK })
+            console.log(`[KnativeProjectManager] Project ${projectId} served by warm pool (elapsed: ${Date.now() - totalStartTime}ms)`)
+            return warmUrl
+          }
+          console.warn(`[KnativeProjectManager] Warm pool pod for ${projectId} unhealthy (status ${probe.status}) — evicting and re-resolving`)
+        } catch (probeErr: any) {
+          console.warn(`[KnativeProjectManager] Warm pool pod for ${projectId} unreachable (${probeErr.code || probeErr.message}) — evicting and re-resolving`)
+        }
+        // Pod is dead/unreachable — evict so we don't keep hitting a stale entry
+        warmPool.evictProject(projectId).catch((err: any) => {
+          console.error(`[KnativeProjectManager] Failed to evict stale warm pod for ${projectId}:`, err.message)
+        })
       }
 
       // 2. Check database for a saved knativeServiceName (promoted warm pod)
