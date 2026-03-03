@@ -8,28 +8,6 @@ slug: /tips-and-tricks/troubleshooting
 
 Common issues and how to resolve them.
 
-## Preview issues
-
-### Preview not loading
-
-**Try these steps in order:**
-1. Click the **Refresh** button in the preview panel.
-2. Wait a few seconds — the app may still be building.
-3. Check the chat for error messages from the AI.
-4. Try switching to a different view tab and back to Preview.
-
-### Preview shows old content
-
-The preview auto-updates after each AI change. If it seems stuck:
-1. Click **Refresh** in the preview.
-2. If using multiple pages, navigate to the home route (`/`) and back.
-
-### Layout looks broken
-
-> "The layout on [page] is broken — elements are overlapping / misaligned. Can you fix the spacing, padding, and make sure the layout works correctly?"
-
-If the issue persists, revert to the last working version and try describing the desired layout differently.
-
 ## Chat issues
 
 ### AI not responding
@@ -45,62 +23,53 @@ If the AI changed something you didn't ask it to:
 2. Re-send your request with more specific constraints:
    > "Only change [specific thing]. Don't modify [specific other thing]."
 
-### AI seems confused about the project
+### AI seems confused about the agent
 
 If the AI is making changes that don't make sense:
 1. Start a new chat session by refreshing.
-2. Provide context about what the app is and what you're working on:
-   > "This is a [type of app]. I'm working on the [page] page. I need you to [specific request]."
+2. Provide context about what the agent is and what you're working on:
+   > "This is a [type of agent]. I'm working on configuring [specific feature]. I need you to [specific request]."
 
-## Publishing issues
+## Heartbeat issues
 
-### Publish fails
+### Heartbeat not running
 
-If publishing gives an error:
-1. Check the chat for build error messages.
-2. Ask the AI to investigate:
-   > "I'm getting an error when trying to publish. Can you check if there are any build issues and fix them?"
-3. Try making a small change and publishing again.
+1. Check that the heartbeat is enabled in the agent's configuration.
+2. Verify the interval is set correctly.
+3. Ask the AI: "Can you check if the heartbeat is enabled and show me the current schedule?"
 
-### Published app doesn't match preview
+### Heartbeat running but not doing anything useful
 
-The published app should match your preview. If it doesn't:
-1. Make sure you published after your latest changes (click **Update**).
-2. Clear your browser cache or try an incognito/private window.
-3. Wait a moment — there may be a brief delay while the update propagates.
+1. Check the HEARTBEAT.md file to see what tasks are defined.
+2. Ask the AI: "What does my agent check on each heartbeat? Can you list the tasks?"
+3. If the checklist is empty, describe what you want checked.
 
-### Published app has errors
+## Integration issues
 
-1. Go back to the project editor.
-2. Test the issue in the preview.
-3. Ask the AI to fix it:
-   > "On the published app at [URL], [describe the issue]. Can you fix it?"
-4. After fixing, click **Publish > Update** to push the fix live.
+### Tool not connecting
 
-## Data issues
+1. Open the **Capabilities > Tools** tab and try disconnecting and reconnecting the tool.
+2. For OAuth tools, make sure you completed the authentication in the popup window.
+3. For API key tools, verify the key is correct and has the required permissions.
 
-### Data not showing up
+### Alerts not being sent
 
-> "The [table/list] on [page] is showing empty even though I've added data. Can you check if the data is being loaded correctly?"
+1. Open the **Channels** tab and verify the channel is connected with valid credentials.
+2. Check that the agent has something to alert about — it may be working but finding nothing.
+3. Verify quiet hours aren't blocking alerts: "What are the current quiet hours?"
 
-### Data disappeared
+## Canvas issues
 
-Your data is preserved even after changes. If data seems missing:
-1. Check that you're looking at the right collection in the Database panel.
-2. Check if filters are hiding the data.
-3. Ask the AI: "Can you list all records in the [collection] and show me what data is stored?"
+### Dashboard showing stale data
 
-## Design issues
+1. The canvas updates when the agent runs (heartbeat or chat interaction).
+2. Ask the AI: "Can you refresh the dashboard data?"
+3. Check if the heartbeat is running — stale data often means the heartbeat stopped.
 
-### App looks different on mobile
+### Dashboard layout not right
 
-Use the viewport switcher in the preview to check mobile view regularly. If layout is broken on mobile:
-
-> "The [page] looks broken on mobile. Can you make it responsive — stack elements vertically, make buttons full-width, and ensure everything fits the screen?"
-
-### Inconsistent styling
-
-> "The styling is inconsistent across pages — different fonts, spacing, and colors. Can you standardize the design? Use the same font, color palette, and spacing everywhere."
+Describe what you want specifically:
+> "The dashboard KPIs are too small. Make them larger with trend arrows. Move the chart above the table."
 
 ## Getting help
 

@@ -6,48 +6,48 @@ slug: /prompting/troubleshooting-with-prompts
 
 # Troubleshooting with Prompts
 
-Sometimes the AI doesn't get it right the first time, or things break as your app grows. This guide helps you get back on track.
+Sometimes the AI doesn't get it right the first time, or things need adjustment as your agent grows. This guide helps you get back on track.
 
 ## When the result isn't what you expected
 
 ### Be more specific about what's wrong
 
 Instead of:
-> "This doesn't look right. Fix it."
+> "This isn't right. Fix it."
 
 Try:
-> "The contact form is showing the fields in a single row, but I want them stacked vertically. Each field should be on its own line with a label above it."
+> "The heartbeat is checking GitHub every 30 minutes, but I want it to check every 15 minutes. Also, it's alerting on all branches — I only want alerts for main and staging."
 
-The more precisely you describe the gap between what you see and what you want, the better the fix.
+The more precisely you describe the gap between what you have and what you want, the better the fix.
 
 ### Show, don't just tell
 
-Attach a screenshot of the current state and describe what's different from your expectations:
+Attach a screenshot if the canvas dashboard doesn't look right:
 
-> "Here's what the page looks like now [attach screenshot]. The sidebar is overlapping the main content on mobile. I want the sidebar to collapse into a hamburger menu on screens smaller than tablet size."
+> "Here's what the dashboard looks like now [attach screenshot]. The KPI cards are too small and the chart is missing the revenue trend line. I want larger cards with trend arrows and a line chart showing the last 90 days."
 
 ## When something breaks
 
 ### Describe the problem clearly
 
 Use this format:
-> "On [which page], when I [what action I take], [what happens]. I expected [what should happen]."
+> "When my agent [does what], [what happens]. I expected [what should happen]."
 
 **Example:**
-> "On the Checkout page, when I click 'Place Order' with items in the cart, nothing happens. I expected it to show an order confirmation screen and clear the cart."
+> "When the heartbeat runs, the agent checks GitHub but doesn't send Slack alerts for CI failures. I expected it to post to #incidents whenever a build fails on main."
 
 ### Ask the AI to investigate
 
-> "The search feature on the Products page stopped working. It was working before I asked you to add the category filter. Can you investigate what happened?"
+> "The heartbeat stopped sending morning digests. It was working before I added the new GitHub monitoring skill. Can you investigate what happened?"
 
-> "Something broke on the Dashboard — the stats cards are showing 'undefined' instead of numbers. Can you check what's wrong?"
+> "My agent's canvas dashboard is showing stale data. The metrics haven't updated in 24 hours. Can you check what's wrong?"
 
 ### Revert if needed
 
-If the AI's changes made things worse, don't keep layering fixes. Revert to a working version first:
+If changes made things worse, don't keep layering fixes. Revert to a working version first:
 
-1. Open the **History** panel.
-2. Find the last version where things worked.
+1. Open the **session picker** in the chat panel.
+2. Find the last session where things worked.
 3. Revert to that version.
 4. Try a different approach to your request.
 
@@ -57,9 +57,9 @@ See [History and Checkpoints](../features/history-and-checkpoints) for details o
 
 Sometimes the AI might repeatedly try to fix something without success. Signs of this:
 
-- The same error keeps appearing after multiple fix attempts
+- The same issue keeps appearing after multiple fix attempts
 - Changes seem to undo each other
-- The preview keeps breaking in different ways
+- Configuration keeps breaking in different ways
 
 **What to do:**
 
@@ -70,46 +70,44 @@ Sometimes the AI might repeatedly try to fix something without success. Signs of
 **Example:**
 
 Instead of:
-> "Add a complex multi-step wizard form with validation, file uploads, and dynamic fields."
+> "Set up a complex incident response system with multi-source correlation, escalation chains, and automated runbooks."
 
 Try:
-> "Add a simple form with three steps. Step 1: Name and email. Step 2: Choose a plan. Step 3: Confirm and submit. Let's start with just the basic step navigation."
+> "Start with a simple health check that pings three URLs every 10 minutes. If any return non-200, alert me on Slack. Let's get that working first."
 
 Then add complexity incrementally.
 
 ## Common issues and how to fix them
 
-### Layout problems
+### Heartbeat not running
 
-> "The layout is broken — elements are overlapping. Can you fix the spacing and make sure everything has proper padding and margins?"
+> "My agent's heartbeat doesn't seem to be running. Can you check the heartbeat configuration and make sure it's enabled with the right interval?"
 
-> "The page looks fine on desktop but is broken on mobile. Can you make it responsive so it stacks vertically on small screens?"
+### Integrations not connecting
 
-### Missing data
+> "I connected GitHub through the Capabilities panel but the integration isn't working. Can you check the connection status?"
 
-> "The table is showing empty. Can you check if the data is being loaded correctly? Also, add some sample data so I can see how it should look."
+### Canvas dashboard showing stale data
 
-### Buttons that don't work
+> "The dashboard metrics haven't updated since yesterday. Can you check if the heartbeat is refreshing the canvas data?"
 
-> "The 'Save' button on the profile page doesn't do anything when I click it. Can you connect it so it actually saves the form data?"
+### Alerts not sending
 
-### Styling inconsistencies
-
-> "The cards on the Products page have different font sizes and spacing. Can you make them all consistent — same font, same padding, same height?"
+> "The agent detects issues but doesn't send Slack alerts. Can you verify the channel connection and alert configuration?"
 
 ## The "fresh start" approach
 
 If a feature is really not working, sometimes the best approach is to ask the AI to start that specific part over:
 
-> "The booking calendar feature isn't working well. Can you remove it completely and rebuild it from scratch? Here's what I need: [clear description]."
+> "The ticket triage skill isn't working well. Can you remove it and rebuild it from scratch? Here's what I need: [clear description]."
 
-This is better than trying to patch broken code repeatedly.
+This is better than trying to patch broken configuration repeatedly.
 
 ## Asking for help
 
 Remember, you can always ask the AI for guidance:
 
-> "I'm not sure what's going wrong. Can you look at the current state of the app and tell me if you see any issues?"
+> "I'm not sure what's going wrong. Can you check the current agent configuration and tell me if you see any issues?"
 
 > "I've tried to fix this three times. Can you suggest a different approach?"
 
@@ -118,13 +116,13 @@ Remember, you can always ask the AI for guidance:
 ## Prevention tips
 
 :::tip Build incrementally
-The #1 way to avoid problems is to build one feature at a time and test it before moving on. Most issues come from trying to do too much at once.
+The best way to avoid problems is to configure one feature at a time and verify it before moving on. Most issues come from trying to do too much at once.
 :::
 
 :::tip Test as you go
-After each change, interact with the preview. Click buttons, fill in forms, navigate between pages. Catch issues early when they're easy to fix.
+After each change, check that your agent's behavior matches your expectations. Verify heartbeat runs, check that alerts arrive, and review canvas dashboards.
 :::
 
 :::tip Save before experiments
-Before trying something ambitious, make sure you have a recent checkpoint or know how to revert. See [History and Checkpoints](../features/history-and-checkpoints).
+Before trying something ambitious, make sure you have a recent checkpoint. See [History and Checkpoints](../features/history-and-checkpoints).
 :::

@@ -6,17 +6,18 @@ slug: /getting-started/plans-and-credits
 
 # Plans and Credits
 
-Shogo uses a credit-based system. Each message you send to the AI costs credits, and your plan determines how many credits you get each month.
+Shogo uses a credit-based system. Credits are consumed when you interact with the AI, and your plan determines how many credits you get.
 
 ## How credits work
 
-- **Every message** you send to the AI agent uses **one credit**.
-- Credits reset each billing period (monthly).
-- You can check your remaining credits in the top bar of the dashboard or in **Settings > Billing**.
-- When you run out of credits, you can upgrade your plan or wait for the next reset.
+- Credits are charged **per token** based on the AI model used, not a flat rate per message.
+- Simpler interactions cost fewer credits (~0.2), while longer conversations cost more (~0.5–1+).
+- The chat input shows an estimated credit cost before you send.
+- Free plan credits reset daily. Paid plan credits are allocated monthly.
+- You can check your remaining credits in the sidebar or in **Settings > Billing**.
 
 :::tip
-You don't use credits when browsing the dashboard, viewing your preview, or navigating your project. Credits are only used when you send a message to the AI.
+You don't use credits when browsing the dashboard, viewing the canvas, or navigating your workspace. Credits are only consumed when the AI processes a message.
 :::
 
 ## Available plans
@@ -24,10 +25,9 @@ You don't use credits when browsing the dashboard, viewing your preview, or navi
 ### Free
 
 - **5 credits per day** (up to 150 per month)
-- Create unlimited projects
-- Publish to `yourapp.shogo.one`
+- Create unlimited agents
 - Access to all templates
-- Perfect for exploring Shogo and building small projects
+- Perfect for exploring Shogo and building your first agents
 
 ### Pro
 
@@ -63,9 +63,8 @@ Annual billing is available for all paid plans. Contact us for annual pricing de
 
 ## Managing your subscription
 
-1. Go to **Settings** in the sidebar.
-2. Click **Billing**.
-3. Here you can:
+1. Go to **Settings** in the sidebar and open the **Billing** tab.
+2. Here you can:
    - View your current plan and credit balance
    - See your usage history
    - Upgrade or downgrade your plan
@@ -74,7 +73,7 @@ Annual billing is available for all paid plans. Contact us for annual pricing de
 ## Frequently asked questions
 
 **What happens when I run out of credits?**
-You won't be able to send messages to the AI until your credits reset or you upgrade. Your projects, published apps, and data are never affected.
+You won't be able to send messages to the AI until your credits reset or you upgrade. Your existing agents continue running (heartbeat and channel processing are not affected).
 
 **Can I buy extra credits?**
 Upgrading to a higher tier is the best way to get more credits. Plans can be changed at any time.

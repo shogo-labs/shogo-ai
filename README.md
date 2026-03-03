@@ -1,22 +1,10 @@
 # Shogo AI
 
-> AI-first app builder. Build anything with English.
+> AI-first agent builder. Build autonomous AI agents through conversation.
 
-A schema-first development platform where AI agents guide you from natural language intent to working applications. Describe what you need, iterate through conversation, and deploy—with schemas as the single source of truth throughout.
+A platform for building personal AI agents that monitor systems, process messages across platforms, run scheduled tasks, remember context, and execute modular skills — all configured through natural language.
 
 ## Quick Start
-
-### For App Builders
-
-Use AI-powered skills to build applications through guided conversation:
-
-1. Open an AI coding assistant in this repository
-2. Describe what you want to build
-3. Follow the 5-phase guided process
-
-The system captures your intent, generates schemas, creates implementation specs, and produces TDD-ready code.
-
-→ See the [App Builder Guide](docs/SKILL_USER_GUIDE.md)
 
 ### Local Development
 
@@ -84,36 +72,36 @@ bun run dev:start      # Starts Docker infra + app services
 
 → See [Getting Started](docs/GETTING_STARTED.md) and [Architecture](docs/ARCHITECTURE.md)
 
-## The Pipeline
+## Agent Templates
 
-```mermaid
-graph LR
-    A[Describe Intent] --> B[Discovery]
-    B --> C[Schema Design]
-    C --> D[Implementation Spec]
-    D --> E[Code Generation]
-    E --> F[Documentation]
+Shogo ships with 8 purpose-built agent templates:
 
-    style A fill:#e1f5fe
-    style F fill:#c8e6c9
-```
-
-Each phase has a dedicated AI skill that captures structured output, enabling traceability from requirements to code.
+| Template | Description |
+|----------|-------------|
+| Research Assistant | Web research, synthesis, canvas dashboards, daily briefings |
+| GitHub Ops | PR triage, CI monitoring, issue tracking dashboards |
+| Support Desk | Ticket triage, KPIs, Zendesk/Linear integration |
+| Meeting Prep | Calendar events, attendee research, prep documents |
+| Revenue Tracker | Revenue metrics, invoice management, Stripe integration |
+| Project Board | Sprint board, task tracking, velocity metrics |
+| Incident Commander | Service health monitoring, error correlation, alerting |
+| Personal Assistant | Habit tracking, reminders, daily check-ins |
 
 ## Why Shogo AI?
 
 | Traditional Approach | Shogo AI |
 |---------------------|----------|
-| Code generators disconnect after generation | Schemas remain live, queryable, modifiable |
-| Low-code platforms limit customization | Full code access, fully extensible |
-| Separate tools for design, code, docs | Single pipeline from intent to deployment |
-| Manual sync between spec and implementation | Schema is the source of truth |
+| Agents require heavy boilerplate | Templates + conversation-driven configuration |
+| Manual integration wiring | Composio auto-bind for 250+ tools |
+| No persistent state | Markdown memory + heartbeat scheduling |
+| Isolated automations | Canvas dashboards with live data |
 
 **Core differentiators:**
-- **Schemas as living entities** — not build artifacts, but runtime-queryable state
-- **Isomorphic execution** — same models run on client, server, and edge
-- **AI-native design** — agents use the same APIs as developers
-- **Full provenance** — trace any code back to the requirement that created it
+- **Conversation-first** — configure agents through chat, not code
+- **Persistent memory** — agents remember context across sessions
+- **Heartbeat system** — agents proactively check for work on a schedule
+- **Canvas dashboards** — visual dashboards and summaries, not static text
+- **Composio integrations** — connect GitHub, Slack, Stripe, and 250+ tools via OAuth
 
 ## Packages
 
@@ -123,7 +111,6 @@ Each phase has a dedicated AI skill that captures structured output, enabling tr
 | [@shogo/agent-runtime](packages/agent-runtime) | Agent gateway, tools, Composio integrations |
 | [@shogo/api](apps/api) | Hono API server, auth, chat proxy |
 | [@shogo/mobile](apps/mobile) | Expo app (React Native for Web + iOS + Android) |
-| [@shogo-ai/sdk](packages/sdk) | Published SDK for Shogo apps |
 
 ## Commands
 
@@ -158,40 +145,14 @@ Each phase has a dedicated AI skill that captures structured output, enabling tr
 | `bun run typecheck` | Type check all packages |
 | `bun run lint` | Lint all packages |
 
-## How It Works
-
-Shogo AI uses a **schema-first architecture** where Enhanced JSON Schemas drive everything:
-
-```
-Enhanced JSON Schema
-        ↓
-   MST Models (reactive state trees)
-        ↓
-   Runtime Stores (with persistence, validation)
-        ↓
-   UI Projections (forms, tables, views)
-```
-
-Schemas define entities, relationships, and constraints. The system generates MobX-State-Tree models with full type safety, then projects these into UI components. Changes to the schema automatically propagate through the entire stack.
-
 ## Documentation
 
-### Concepts
-- [Architecture](docs/ARCHITECTURE.md) — System design and patterns
-- [Core Concepts](docs/CONCEPTS.md) — Key abstractions explained
-
 ### Guides
-- [App Builder Guide](docs/SKILL_USER_GUIDE.md) — Using the 5-phase pipeline
 - [Getting Started](docs/GETTING_STARTED.md) — Developer setup
-- [Creating Schemas](docs/guides/CREATING_SCHEMAS.md) — Schema design patterns
-
-### Reference
-- [State API](docs/api/STATE_API.md) — Core library reference
-- [Enhanced JSON Schema](docs/api/ENHANCED_JSON_SCHEMA.md) — Schema format spec
+- [Architecture](docs/ARCHITECTURE.md) — System design and patterns
 
 ### Contributing
 - [Contributing Guide](CONTRIBUTING.md) — How to contribute
-- [Extending Shogo AI](docs/EXTENDING.md) — Adding new capabilities
 
 ## Project Structure
 
@@ -203,7 +164,6 @@ shogo-ai/
 ├── packages/
 │   ├── state-api/         # Schema-to-MST transformation engine
 │   ├── agent-runtime/     # Agent gateway, tool system, Composio
-│   ├── sdk/               # Published SDK (@shogo-ai/sdk)
 │   ├── shared-app/        # Shared app logic (auth, chat, domain)
 │   └── domain-store/      # Domain CRUD stores
 ├── prisma/                # Database schema & migrations

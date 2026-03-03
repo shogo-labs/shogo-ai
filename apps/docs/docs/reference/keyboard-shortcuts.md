@@ -21,7 +21,7 @@ The command palette (`Cmd + K` / `Ctrl + K`) gives you quick access to:
 
 - **Search projects** — Find any project by name
 - **Navigate** — Jump to any page in the app
-- **Quick actions** — Common actions like creating a new project
+- **Quick actions** — Common actions like creating a new agent
 
 ### How to use it
 
@@ -31,22 +31,19 @@ The command palette (`Cmd + K` / `Ctrl + K`) gives you quick access to:
 4. Press `Enter` to select.
 5. Press `Escape` to close.
 
-## Code editor shortcuts
+## Files panel shortcuts
 
-When using the built-in code editor, standard editor shortcuts are available:
+When editing workspace files (like AGENTS.md, skills, etc.) in the **Files** tab, standard text editing shortcuts are available:
 
 | Action | Mac | Windows / Linux |
 |--------|-----|-----------------|
-| Save file | `Cmd + S` | `Ctrl + S` |
 | Undo | `Cmd + Z` | `Ctrl + Z` |
 | Redo | `Cmd + Shift + Z` | `Ctrl + Shift + Z` |
 | Find | `Cmd + F` | `Ctrl + F` |
-| Find and replace | `Cmd + H` | `Ctrl + H` |
 | Select all | `Cmd + A` | `Ctrl + A` |
 | Copy | `Cmd + C` | `Ctrl + C` |
 | Paste | `Cmd + V` | `Ctrl + V` |
-| Cut | `Cmd + X` | `Ctrl + X` |
 
 :::note
-Code editor shortcuts only apply when the code editor panel is active. Most users build entirely through chat and don't need the code editor.
+Most users configure their agent entirely through chat and don't need to edit workspace files directly.
 :::

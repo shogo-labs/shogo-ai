@@ -111,8 +111,9 @@ cd packages/sdk && bun run test:e2e
        │   ├── @shogo/shared-ui (Gluestack v3 universal components)
        │   ├── @shogo/shared-app (shared hooks, domain logic, auth)
        │   └── @shogo/ui-kit (theme, routing utilities)
-       ├── @shogo/project-runtime (isolated project pods + template MCP tools)
-       └── @shogo-ai/sdk (Vite + Hono SDK, publishable)
+       ├── @shogo/agent-runtime (agent gateway, heartbeat, channels, skills, Composio)
+       ├── @shogo/project-runtime (isolated project pods - not active this release)
+       └── @shogo-ai/sdk (Vite + Hono SDK - not active this release)
 ```
 
 ### Transformation Pipeline
@@ -174,7 +175,7 @@ const store = RootStoreModel.create({}, {
 - `app/(auth)/` — Auth routes (sign-in, sign-up)
 - `app/(admin)/` — Admin routes (dashboard, users, workspaces, analytics)
 - `components/chat/` — Chat panel and message rendering
-- `components/dynamic-app/` — Dynamic app renderer (canvas)
+- `components/dynamic-app/` — Canvas renderer (agent dashboards)
 - `components/layout/` — Responsive app shell (sidebar, header)
 - `components/ui/` — Gluestack v3 universal components
 - `contexts/` — Auth and domain providers
@@ -186,11 +187,7 @@ const store = RootStoreModel.create({}, {
 
 ## Claude Skills
 
-AI skills are defined in `.claude/skills/`. Key skills:
-- `view-builder` — Guide through view/component building flows
-- `view-builder-spec` — Capture component specifications
-- `view-builder-implementation` — Implement components from approved specs
-- `component-builder-evolution` — UI evolution via dynamic renderer binding
+AI skills are defined in `.claude/skills/`.
 
 ## Testing Patterns
 
