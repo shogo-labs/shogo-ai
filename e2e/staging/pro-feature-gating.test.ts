@@ -34,7 +34,7 @@ async function signUpAndUpgrade(page: Page) {
 
   // Upgrade to Pro
   await page.goto("/billing")
-  await page.waitForSelector("text=Plans & credits", { timeout: 10_000 })
+  await page.waitForSelector("text=Billing", { timeout: 10_000 })
   await page.getByText("Upgrade to Pro").last().click()
   await page.waitForSelector("text=Subscribe to Pro", { timeout: 15_000 })
 
@@ -69,7 +69,7 @@ test.describe("Pro Feature Gating", () => {
 
   test("billing page shows Pro plan status", async () => {
     await page.goto("/billing")
-    await page.waitForSelector("text=Plans & credits", { timeout: 10_000 })
+    await page.waitForSelector("text=Billing", { timeout: 10_000 })
 
     await expect(page.getByText("You're on Pro Plan")).toBeVisible()
     await expect(page.getByText("Change Plan")).toBeVisible()
@@ -126,7 +126,7 @@ test.describe("Pro Feature Gating", () => {
 
   test("Manage button opens Stripe customer portal", async () => {
     await page.goto("/billing")
-    await page.waitForSelector("text=Plans & credits", { timeout: 10_000 })
+    await page.waitForSelector("text=Billing", { timeout: 10_000 })
 
     await page.getByText("Manage", { exact: true }).click()
 

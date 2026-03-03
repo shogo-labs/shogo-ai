@@ -1162,6 +1162,21 @@ app.post('/agent/bundled-skills/install', async (c) => {
   return c.json({ ok: true, installed: name })
 })
 
+app.get('/agent/skills/:name', (c) => {
+  const name = c.req.param('name')
+  if (!name || name.includes('/') || name.includes('..')) {
+    return c.json({ error: 'Invalid skill name' }, 400)
+  }
+
+  const filePath = join(AGENT_DIR, 'skills', `${name}.md`)
+  if (!existsSync(filePath)) {
+    return c.json({ error: `Skill "${name}" not found` }, 404)
+  }
+
+  const raw = readFileSync(filePath, 'utf-8')
+  return c.json({ name, content: raw })
+})
+
 app.delete('/agent/skills/:name', (c) => {
   const name = c.req.param('name')
   if (!name || name.includes('/') || name.includes('..')) {

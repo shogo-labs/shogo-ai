@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { View, Text, Pressable, ScrollView, ActivityIndicator } from 'react-native'
-import { Zap, RefreshCw, BookOpen, Download, Check, Trash2, Plus } from 'lucide-react-native'
+import { Zap, RefreshCw, BookOpen, Download, Check, Trash2, Plus, ChevronDown, ChevronRight } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 
 interface Skill {
@@ -15,6 +15,7 @@ interface BundledSkill {
   description: string
   trigger: string
   tools: string[]
+  content?: string
 }
 
 interface SkillsPanelProps {
@@ -31,6 +32,35 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
   const [showLibrary, setShowLibrary] = useState(false)
   const [installing, setInstalling] = useState<string | null>(null)
   const [removing, setRemoving] = useState<string | null>(null)
+  const [expandedSkill, setExpandedSkill] = useState<string | null>(null)
+  const [skillContent, setSkillContent] = useState<Record<string, string>>({})
+  const [loadingContent, setLoadingContent] = useState<string | null>(null)
+
+  const toggleSkillDetail = useCallback(
+    async (skillName: string) => {
+      if (expandedSkill === skillName) {
+        setExpandedSkill(null)
+        return
+      }
+      setExpandedSkill(skillName)
+      if (skillContent[skillName] || !agentUrl) return
+      setLoadingContent(skillName)
+      try {
+        const res = await fetch(
+          `${agentUrl}/agent/skills/${encodeURIComponent(skillName)}`,
+        )
+        if (res.ok) {
+          const data = await res.json()
+          setSkillContent((prev) => ({ ...prev, [skillName]: data.content }))
+        }
+      } catch {
+        // silently fail — card just won't show content
+      } finally {
+        setLoadingContent(null)
+      }
+    },
+    [agentUrl, expandedSkill, skillContent],
+  )
 
   const loadSkills = useCallback(async () => {
     if (!agentUrl) return
@@ -179,62 +209,97 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                 <Text className="text-sm text-muted-foreground">No bundled skills available</Text>
               </View>
             ) : (
-              availableBundled.map((skill) => (
-                <View key={skill.name} className="border border-border rounded-lg p-3">
-                  <View className="flex-row items-start justify-between gap-2">
-                    <View className="flex-1">
-                      <Text className="text-sm font-medium text-foreground">{skill.name}</Text>
-                      {skill.description ? (
-                        <Text className="text-xs text-muted-foreground mt-0.5">
-                          {skill.description}
-                        </Text>
-                      ) : null}
-                    </View>
+              availableBundled.map((skill) => {
+                const isExpanded = expandedSkill === `bundled:${skill.name}`
+                return (
+                  <View key={skill.name} className="border border-border rounded-lg">
                     <Pressable
-                      onPress={() => handleInstall(skill.name)}
-                      disabled={installing === skill.name}
-                      className={cn(
-                        'flex-row items-center gap-1 px-2 py-1 rounded-md',
-                        installing === skill.name ? 'bg-muted' : 'bg-primary active:bg-primary/80',
-                      )}
+                      onPress={() =>
+                        setExpandedSkill(
+                          isExpanded ? null : `bundled:${skill.name}`,
+                        )
+                      }
+                      className="p-3 active:bg-muted/50"
                     >
-                      <Download
-                        size={12}
-                        className={installing === skill.name ? 'text-muted-foreground' : 'text-primary-foreground'}
-                      />
-                      <Text
-                        className={cn(
-                          'text-xs',
-                          installing === skill.name ? 'text-muted-foreground' : 'text-primary-foreground',
-                        )}
-                      >
-                        {installing === skill.name ? 'Installing...' : 'Install'}
-                      </Text>
+                      <View className="flex-row items-start justify-between gap-2">
+                        <View className="flex-row items-center gap-1.5 flex-1">
+                          {isExpanded ? (
+                            <ChevronDown size={14} className="text-muted-foreground" />
+                          ) : (
+                            <ChevronRight size={14} className="text-muted-foreground" />
+                          )}
+                          <View className="flex-1">
+                            <Text className="text-sm font-medium text-foreground">{skill.name}</Text>
+                            {skill.description ? (
+                              <Text className="text-xs text-muted-foreground mt-0.5">
+                                {skill.description}
+                              </Text>
+                            ) : null}
+                          </View>
+                        </View>
+                        <Pressable
+                          onPress={(e) => {
+                            e.stopPropagation()
+                            handleInstall(skill.name)
+                          }}
+                          disabled={installing === skill.name}
+                          className={cn(
+                            'flex-row items-center gap-1 px-2 py-1 rounded-md',
+                            installing === skill.name ? 'bg-muted' : 'bg-primary active:bg-primary/80',
+                          )}
+                        >
+                          <Download
+                            size={12}
+                            className={installing === skill.name ? 'text-muted-foreground' : 'text-primary-foreground'}
+                          />
+                          <Text
+                            className={cn(
+                              'text-xs',
+                              installing === skill.name ? 'text-muted-foreground' : 'text-primary-foreground',
+                            )}
+                          >
+                            {installing === skill.name ? 'Installing...' : 'Install'}
+                          </Text>
+                        </Pressable>
+                      </View>
+
+                      {skill.trigger ? (
+                        <View className="flex-row flex-wrap gap-1 mt-2 ml-5">
+                          {skill.trigger.split('|').map((t, i) => (
+                            <View key={i} className="px-1.5 py-0.5 bg-primary/10 rounded">
+                              <Text className="text-primary text-[10px]">{t.trim()}</Text>
+                            </View>
+                          ))}
+                        </View>
+                      ) : null}
+
+                      {skill.tools?.length > 0 ? (
+                        <View className="flex-row flex-wrap gap-1 mt-1.5 ml-5">
+                          {skill.tools.map((tool) => (
+                            <View key={tool} className="px-1.5 py-0.5 bg-muted rounded">
+                              <Text className="text-muted-foreground text-[10px]">{tool}</Text>
+                            </View>
+                          ))}
+                        </View>
+                      ) : null}
                     </Pressable>
+
+                    {isExpanded && skill.content ? (
+                      <View className="px-3 pb-3 border-t border-border">
+                        <ScrollView
+                          className="mt-2 bg-muted/30 rounded-md p-3"
+                          style={{ maxHeight: 300 }}
+                        >
+                          <Text className="text-xs text-foreground font-mono" selectable>
+                            {skill.content}
+                          </Text>
+                        </ScrollView>
+                      </View>
+                    ) : null}
                   </View>
-
-                  {skill.trigger ? (
-                    <View className="flex-row flex-wrap gap-1 mt-2">
-                      {skill.trigger.split('|').map((t, i) => (
-                        <View key={i} className="px-1.5 py-0.5 bg-primary/10 rounded">
-                          <Text className="text-primary text-[10px]">{t.trim()}</Text>
-                        </View>
-                      ))}
-                    </View>
-                  ) : null}
-
-                  {skill.tools?.length > 0 ? (
-                    <View className="flex-row flex-wrap gap-1 mt-1.5">
-                      {skill.tools.map((tool) => (
-                        <View key={tool} className="px-1.5 py-0.5 bg-muted rounded">
-                          <Text className="text-muted-foreground text-[10px]">{tool}</Text>
-                        </View>
-                      ))}
-                    </View>
-                  ) : null}
-                </View>
-              ))
-            )}
+                )
+              }))
+            }
 
             {bundledSkills.filter((s) => installedNames.has(s.name)).length > 0 && (
               <View className="mt-4">
@@ -274,38 +339,82 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
           </View>
         ) : (
           <View className="gap-3">
-            {skills.map((skill) => (
-              <View key={skill.file} className="border border-border rounded-lg p-3">
-                <View className="flex-row items-start justify-between gap-2">
-                  <View className="flex-1">
-                    <Text className="text-sm font-medium text-foreground">{skill.name}</Text>
-                    {skill.description ? (
-                      <Text className="text-xs text-muted-foreground mt-0.5">
-                        {skill.description}
-                      </Text>
-                    ) : null}
-                  </View>
-                  <Pressable
-                    onPress={() => handleRemove(skill.name)}
-                    disabled={removing === skill.name}
-                    className="p-1 rounded-md active:bg-destructive/10"
-                    style={removing === skill.name ? { opacity: 0.5 } : undefined}
-                  >
-                    <Trash2 size={14} className="text-muted-foreground" />
-                  </Pressable>
-                </View>
+            {skills.map((skill) => {
+              const isExpanded = expandedSkill === skill.name
+              const content = skillContent[skill.name]
+              const isLoadingThis = loadingContent === skill.name
 
-                {skill.trigger ? (
-                  <View className="flex-row flex-wrap gap-1 mt-2">
-                    {skill.trigger.split('|').map((t, i) => (
-                      <View key={i} className="px-1.5 py-0.5 bg-primary/10 rounded">
-                        <Text className="text-primary text-[10px]">{t.trim()}</Text>
+              return (
+                <View key={skill.file} className="border border-border rounded-lg">
+                  <Pressable
+                    onPress={() => toggleSkillDetail(skill.name)}
+                    className="p-3 active:bg-muted/50"
+                  >
+                    <View className="flex-row items-start justify-between gap-2">
+                      <View className="flex-row items-center gap-1.5 flex-1">
+                        {isExpanded ? (
+                          <ChevronDown size={14} className="text-muted-foreground" />
+                        ) : (
+                          <ChevronRight size={14} className="text-muted-foreground" />
+                        )}
+                        <View className="flex-1">
+                          <Text className="text-sm font-medium text-foreground">{skill.name}</Text>
+                          {skill.description ? (
+                            <Text className="text-xs text-muted-foreground mt-0.5">
+                              {skill.description}
+                            </Text>
+                          ) : null}
+                        </View>
                       </View>
-                    ))}
-                  </View>
-                ) : null}
-              </View>
-            ))}
+                      <Pressable
+                        onPress={(e) => {
+                          e.stopPropagation()
+                          handleRemove(skill.name)
+                        }}
+                        disabled={removing === skill.name}
+                        className="p-1 rounded-md active:bg-destructive/10"
+                        style={removing === skill.name ? { opacity: 0.5 } : undefined}
+                      >
+                        <Trash2 size={14} className="text-muted-foreground" />
+                      </Pressable>
+                    </View>
+
+                    {skill.trigger ? (
+                      <View className="flex-row flex-wrap gap-1 mt-2 ml-5">
+                        {skill.trigger.split('|').map((t, i) => (
+                          <View key={i} className="px-1.5 py-0.5 bg-primary/10 rounded">
+                            <Text className="text-primary text-[10px]">{t.trim()}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    ) : null}
+                  </Pressable>
+
+                  {isExpanded && (
+                    <View className="px-3 pb-3 border-t border-border">
+                      {isLoadingThis ? (
+                        <View className="items-center py-4">
+                          <ActivityIndicator size="small" />
+                        </View>
+                      ) : content ? (
+                        <ScrollView
+                          className="mt-2 bg-muted/30 rounded-md p-3"
+                          style={{ maxHeight: 300 }}
+                        >
+                          <Text className="text-xs text-foreground font-mono" selectable>
+                            {content}
+                          </Text>
+                        </ScrollView>
+                      ) : (
+                        <Text className="text-xs text-muted-foreground mt-2">
+                          Could not load skill content.
+                        </Text>
+                      )}
+                    </View>
+                  )}
+                </View>
+              )
+            })}
 
             {availableBundled.length > 0 && (
               <View className="pt-2 border-t border-border">
