@@ -25,6 +25,10 @@ async function collectSnapshot(prisma: PrismaClient): Promise<void> {
     const controller = getWarmPoolController()
     const extended = await controller.getExtendedStatus()
 
+    if (!extended.cluster) {
+      console.warn('[InfraCollector] cluster data is null — getCapacitySummary() likely failed (check RBAC: pods list permission)')
+    }
+
     let projectStats = { total: 0, ready: 0, running: 0, scaled_to_zero: 0 }
     try {
       const { getKnativeProjectManager } = await import('./knative-project-manager')
@@ -36,8 +40,8 @@ async function collectSnapshot(prisma: PrismaClient): Promise<void> {
         running: projects.filter((p: any) => p.status.replicas > 0).length,
         scaled_to_zero: projects.filter((p: any) => p.status.replicas === 0).length,
       }
-    } catch {
-      // Knative manager may not be available — use zeros
+    } catch (err: any) {
+      console.warn('[InfraCollector] Failed to list Knative projects:', err.message)
     }
 
     const warmAvail =

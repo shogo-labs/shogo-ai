@@ -24,6 +24,9 @@ rules:
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
 ---
 # Bind the ClusterRole to the API service account
 apiVersion: rbac.authorization.k8s.io/v1
