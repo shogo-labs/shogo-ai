@@ -1431,9 +1431,9 @@ resource "null_resource" "knative_services" {
                   # Warm pool sizing — scales with cluster node count
                   # 2 nodes idle → 20 warm agents. Pre-scale to 5 nodes → 50 agents.
                   - name: WARM_POOL_AGENTS_PER_NODE
-                    value: "10"
+                    value: "0"
                   - name: WARM_POOL_MIN_AGENTS
-                    value: "2"
+                    value: "5"
                   # Karpenter handles workspace node provisioning — proactive scaler defers to it
                   - name: KARPENTER_ENABLED
                     value: "true"
