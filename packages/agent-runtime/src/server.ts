@@ -314,6 +314,15 @@ import('./channels/teams').then(({ TeamsAdapter }) => {
   })
 }).catch(() => { /* Teams adapter not available */ })
 
+// Register WebChat embeddable widget routes
+import('./channels/webchat').then(({ WebChatAdapter }) => {
+  WebChatAdapter.registerRoutes(app, () => {
+    if (!agentGateway) return null
+    const adapter = agentGateway.getChannel('webchat')
+    return adapter && adapter.getStatus().connected ? adapter as any : null
+  })
+}).catch(() => { /* WebChat adapter not available */ })
+
 // Health check
 app.get('/health', (c) =>
   c.json({

@@ -2062,6 +2062,11 @@ export class AgentGateway {
         adapter = new TeamsAdapter(config)
         break
       }
+      case 'webchat': {
+        const { WebChatAdapter } = await import('./channels/webchat')
+        adapter = new WebChatAdapter()
+        break
+      }
       default:
         throw new Error(`Unknown channel type: ${type}`)
     }
