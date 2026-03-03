@@ -149,6 +149,7 @@ model Project {
   thumbnailUrl       String?
   templateId         String?
   knativeServiceName String?
+  settings           Json?
 
   // Relations
   workspace        Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)

@@ -14,6 +14,7 @@ import {
   ActivityIndicator,
   Image,
   RefreshControl,
+  useWindowDimensions,
 } from 'react-native'
 import {
   Users,
@@ -836,6 +837,9 @@ function UsageTableSection({
 // =============================================================================
 
 export default function AdminAnalyticsPage() {
+  const { width } = useWindowDimensions()
+  const isWide = width >= 900
+
   const [period, setPeriod] = useState<AnalyticsPeriod>('30d')
   const [logPage, setLogPage] = useState(1)
   const [refreshing, setRefreshing] = useState(false)
@@ -891,14 +895,22 @@ export default function AdminAnalyticsPage() {
   return (
     <ScrollView
       className="flex-1 bg-background"
-      contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
+      contentContainerStyle={{
+        padding: isWide ? 32 : 16,
+        paddingBottom: 40,
+        maxWidth: isWide ? 1200 : undefined,
+        width: '100%',
+        alignSelf: 'center' as const,
+      }}
       showsVerticalScrollIndicator={false}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
     >
       {/* Header */}
       <View className="flex-row items-center justify-between mb-4">
         <View>
-          <Text className="text-lg font-bold text-foreground">Analytics</Text>
+          <Text className={cn('font-bold text-foreground', isWide ? 'text-2xl' : 'text-lg')}>
+            Analytics
+          </Text>
           <Text className="text-xs text-muted-foreground">
             Comprehensive platform analytics and insights
           </Text>
@@ -937,10 +949,14 @@ export default function AdminAnalyticsPage() {
         <ChatAnalyticsSection data={chatStats.data} loading={chatStats.loading} />
       </View>
 
-      {/* Growth + Usage breakdown side by side on wider screens, stacked on narrow */}
-      <View className="gap-4">
-        <GrowthSection data={growth.data} loading={growth.loading} />
-        <UsageBreakdownSection data={usage.data} loading={usage.loading} />
+      {/* Growth + Usage breakdown: side-by-side on desktop, stacked on mobile */}
+      <View className={cn('gap-4', isWide && 'flex-row')}>
+        <View className={cn(isWide && 'flex-1')}>
+          <GrowthSection data={growth.data} loading={growth.loading} />
+        </View>
+        <View className={cn(isWide && 'flex-1')}>
+          <UsageBreakdownSection data={usage.data} loading={usage.loading} />
+        </View>
       </View>
     </ScrollView>
   )

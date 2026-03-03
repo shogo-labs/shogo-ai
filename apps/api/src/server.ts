@@ -17,6 +17,7 @@ import { auth } from './auth'
 import { getPriceId } from './config/stripe-prices'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
 import * as billingService from './services/billing.service'
+import { sendPlanUpgradedEmail, sendPaymentReceiptEmail, sendPaymentFailedEmail } from './services/email.service'
 import * as workspaceService from './services/workspace.service'
 import { publishRoutes } from './routes/publish'
 import { runtimeRoutes } from './routes/runtime'
@@ -1445,7 +1446,8 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     const { getProjectPodUrl } = await import('./lib/knative-project-manager')
     const podUrl = await getProjectPodUrl(projectId)
     const path = c.req.path.replace(`/api/projects/${projectId}/agent-proxy`, '') || '/'
-    const targetUrl = `${podUrl}${path}`
+    const qs = new URL(c.req.url).search
+    const targetUrl = `${podUrl}${path}${qs}`
 
     console.log(`[AgentProxy] Proxying ${c.req.method} ${path} to ${targetUrl}`)
 
@@ -1471,6 +1473,12 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     responseHeaders.set('access-control-allow-origin', '*')
     responseHeaders.set('access-control-allow-methods', 'GET, POST, PUT, DELETE, OPTIONS')
     responseHeaders.set('access-control-allow-headers', '*')
+
+    const responseContentType = response.headers.get('content-type') || ''
+    if (responseContentType.includes('text/event-stream') || responseContentType.includes('text/plain')) {
+      responseHeaders.set('X-Accel-Buffering', 'no')
+      responseHeaders.set('Cache-Control', 'no-cache, no-transform')
+    }
 
     return new Response(response.body, { status: response.status, headers: responseHeaders })
   } catch (error: any) {
@@ -2889,14 +2897,88 @@ app.post('/api/admin/projects/:projectId/warmup', async (c) => {
   return router.fetch(newReq)
 })
 
-// GET /api/admin/warm-pool - Get warm pool status
+// GET /api/admin/warm-pool - Extended warm pool status with promoted pods and GC stats
 app.get('/api/admin/warm-pool', async (c) => {
   try {
     const { getWarmPoolController } = await import('./lib/warm-pool-controller')
     const controller = getWarmPoolController()
-    return c.json(controller.getStatus())
+    const extended = await controller.getExtendedStatus()
+
+    // Enrich promoted pods with project names from DB
+    const promotedPods = controller.getPromotedPods()
+    let enrichedPods = promotedPods.map((p) => ({
+      ...p,
+      projectName: null as string | null,
+      idleSeconds: null as number | null,
+    }))
+
+    try {
+      const { prisma } = await import('./lib/prisma')
+      const projectIds = [...new Set(promotedPods.map((p) => p.projectId).filter(Boolean))]
+      if (projectIds.length > 0) {
+        const projects = await prisma.project.findMany({
+          where: { id: { in: projectIds } },
+          select: { id: true, name: true },
+        })
+        const nameMap = new Map(projects.map((p) => [p.id, p.name]))
+        enrichedPods = enrichedPods.map((p) => ({
+          ...p,
+          projectName: nameMap.get(p.projectId) ?? null,
+        }))
+      }
+    } catch { /* non-fatal */ }
+
+    // Probe promoted pods for activity (parallel, 3s timeout)
+    const probeResults = await Promise.allSettled(
+      enrichedPods.map(async (pod) => {
+        try {
+          const resp = await fetch(`${pod.url}/pool/activity`, {
+            signal: AbortSignal.timeout(3000),
+          })
+          if (resp.ok) {
+            const data = await resp.json() as { idleSeconds: number }
+            return { serviceName: pod.serviceName, idleSeconds: data.idleSeconds }
+          }
+        } catch { /* pod unreachable */ }
+        return { serviceName: pod.serviceName, idleSeconds: null }
+      })
+    )
+    const idleMap = new Map<string, number | null>()
+    for (const result of probeResults) {
+      if (result.status === 'fulfilled') {
+        idleMap.set(result.value.serviceName, result.value.idleSeconds)
+      }
+    }
+    enrichedPods = enrichedPods.map((p) => ({
+      ...p,
+      idleSeconds: idleMap.get(p.serviceName) ?? null,
+    }))
+
+    return c.json({
+      pool: {
+        enabled: extended.enabled,
+        available: extended.available,
+        assigned: extended.assigned,
+        targetSize: extended.targetSize,
+      },
+      cluster: extended.cluster,
+      promotedPods: enrichedPods,
+      gcStats: extended.gcStats,
+    })
   } catch (err: any) {
     return c.json({ enabled: false, error: err.message })
+  }
+})
+
+// POST /api/admin/warm-pool/gc - Manually trigger promoted pod GC
+app.post('/api/admin/warm-pool/gc', async (c) => {
+  try {
+    const { getWarmPoolController } = await import('./lib/warm-pool-controller')
+    const controller = getWarmPoolController()
+    const result = await controller.gcPromotedPods()
+    return c.json({ ok: true, ...result })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
   }
 })
 
@@ -4018,8 +4100,89 @@ app.post('/api/webhooks/stripe', async (c) => {
 
             await billingService.allocateMonthlyCredits(workspaceId, planId)
             console.log('[Webhook] Subscription created + credits allocated for workspace:', workspaceId, 'plan:', planId)
+
+            // Send plan-upgraded email to workspace owner
+            try {
+              const workspace = await prisma.workspace.findUnique({
+                where: { id: workspaceId },
+                include: { members: { where: { role: 'owner' }, include: { user: { select: { email: true } } } } },
+              })
+              const ownerEmail = workspace?.members?.[0]?.user?.email
+              if (ownerEmail) {
+                const planLabel = planId.charAt(0).toUpperCase() + planId.slice(1)
+                const baseUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'
+                sendPlanUpgradedEmail({
+                  to: ownerEmail,
+                  workspaceName: workspace!.name,
+                  planName: planLabel,
+                  billingInterval: billingInterval === 'annual' ? 'Annual' : 'Monthly',
+                  dashboardUrl: `${baseUrl}/settings?tab=billing`,
+                }).catch((err) => console.error('[Webhook] plan-upgraded email failed:', err))
+              }
+            } catch (emailErr: any) {
+              console.error('[Webhook] plan-upgraded email lookup failed:', emailErr.message)
+            }
           } catch (err: any) {
             console.error('[Webhook] Failed to create subscription:', err.message)
+          }
+        }
+        break
+      }
+      case 'invoice.payment_succeeded': {
+        const invoice = event.data.object as Stripe.Invoice & { subscription?: string | null }
+        const customerId = typeof invoice.customer === 'string' ? invoice.customer : (invoice.customer as any)?.id
+        if (customerId && invoice.subscription) {
+          try {
+            const sub = await stripe!.subscriptions.retrieve(invoice.subscription)
+            const wsId = sub.metadata?.workspaceId
+            if (wsId) {
+              const workspace = await prisma.workspace.findUnique({ where: { id: wsId }, include: { members: { where: { role: 'owner' }, include: { user: { select: { email: true } } } } } })
+              const ownerEmail = workspace?.members?.[0]?.user?.email
+              if (ownerEmail) {
+                const planLabel = (sub.metadata?.planId || 'Pro').charAt(0).toUpperCase() + (sub.metadata?.planId || 'pro').slice(1)
+                const baseUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'
+                sendPaymentReceiptEmail({
+                  to: ownerEmail,
+                  workspaceName: workspace!.name,
+                  planName: planLabel,
+                  amount: ((invoice.amount_paid || 0) / 100).toFixed(2),
+                  currency: (invoice.currency || 'usd') === 'usd' ? '$' : invoice.currency?.toUpperCase() || '$',
+                  invoiceDate: new Date((invoice.created || 0) * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+                  ...(invoice.hosted_invoice_url ? { invoiceUrl: invoice.hosted_invoice_url } : {}),
+                }).catch((err) => console.error('[Webhook] payment-receipt email failed:', err))
+              }
+            }
+          } catch (err: any) {
+            console.error('[Webhook] payment-receipt lookup failed:', err.message)
+          }
+        }
+        break
+      }
+      case 'invoice.payment_failed': {
+        const invoice = event.data.object as Stripe.Invoice & { subscription?: string | null }
+        const customerId = typeof invoice.customer === 'string' ? invoice.customer : (invoice.customer as any)?.id
+        if (customerId && invoice.subscription) {
+          try {
+            const sub = await stripe!.subscriptions.retrieve(invoice.subscription)
+            const wsId = sub.metadata?.workspaceId
+            if (wsId) {
+              const workspace = await prisma.workspace.findUnique({ where: { id: wsId }, include: { members: { where: { role: 'owner' }, include: { user: { select: { email: true } } } } } })
+              const ownerEmail = workspace?.members?.[0]?.user?.email
+              if (ownerEmail) {
+                const planLabel = (sub.metadata?.planId || 'Pro').charAt(0).toUpperCase() + (sub.metadata?.planId || 'pro').slice(1)
+                const baseUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'
+                sendPaymentFailedEmail({
+                  to: ownerEmail,
+                  workspaceName: workspace!.name,
+                  planName: planLabel,
+                  amount: ((invoice.amount_due || 0) / 100).toFixed(2),
+                  currency: (invoice.currency || 'usd') === 'usd' ? '$' : invoice.currency?.toUpperCase() || '$',
+                  retryUrl: `${baseUrl}/settings?tab=billing`,
+                }).catch((err) => console.error('[Webhook] payment-failed email failed:', err))
+              }
+            }
+          } catch (err: any) {
+            console.error('[Webhook] payment-failed lookup failed:', err.message)
           }
         }
         break

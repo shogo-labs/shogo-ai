@@ -60,12 +60,36 @@ function surfaceProgression(base: string, light: boolean): Pick<CanvasThemeVaria
   }
 }
 
+function hexToRgb(hex: string): string {
+  return `${parseInt(hex.slice(1, 3), 16)} ${parseInt(hex.slice(3, 5), 16)} ${parseInt(hex.slice(5, 7), 16)}`
+}
+
 function adjustBrightness(hex: string, amount: number): string {
   const r = parseInt(hex.slice(1, 3), 16)
   const g = parseInt(hex.slice(3, 5), 16)
   const b = parseInt(hex.slice(5, 7), 16)
   const clamp = (v: number) => Math.max(0, Math.min(255, Math.round(v + amount * 255)))
-  return `#${clamp(r).toString(16).padStart(2, '0')}${clamp(g).toString(16).padStart(2, '0')}${clamp(b).toString(16).padStart(2, '0')}`
+  return `${clamp(r)} ${clamp(g)} ${clamp(b)}`
+}
+
+function toRgbTheme(theme: Record<string, string>): CanvasThemeVariant {
+  const result: Record<string, string> = {}
+  for (const [key, value] of Object.entries(theme)) {
+    if (value.startsWith('#')) {
+      result[key] = hexToRgb(value)
+    } else if (value.startsWith('rgba(')) {
+      const m = value.match(/rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)/)
+      if (m) {
+        const alpha = parseFloat(m[4])
+        result[key] = `${Math.round(parseInt(m[1]) * alpha)} ${Math.round(parseInt(m[2]) * alpha)} ${Math.round(parseInt(m[3]) * alpha)}`
+      } else {
+        result[key] = value
+      }
+    } else {
+      result[key] = value
+    }
+  }
+  return result as unknown as CanvasThemeVariant
 }
 
 export const CANVAS_THEMES: CanvasThemePreset[] = [
@@ -73,7 +97,7 @@ export const CANVAS_THEMES: CanvasThemePreset[] = [
     id: 'default',
     label: 'Default',
     swatch: '#2563eb',
-    light: {
+    light: toRgbTheme({
       '--color-background': '#ffffff',
       '--color-foreground': '#0a0a0a',
       '--color-card': '#ffffff',
@@ -94,8 +118,8 @@ export const CANVAS_THEMES: CanvasThemePreset[] = [
       '--color-input': '#e4e4e7',
       '--color-ring': '#2563eb',
       ...surfaceProgression('#ffffff', true),
-    },
-    dark: {
+    }),
+    dark: toRgbTheme({
       '--color-background': '#121212',
       '--color-foreground': 'rgba(255, 255, 255, 0.87)',
       '--color-card': '#1e1e1e',
@@ -116,13 +140,13 @@ export const CANVAS_THEMES: CanvasThemePreset[] = [
       '--color-input': '#333333',
       '--color-ring': '#2196f3',
       ...surfaceProgression('#1e1e1e', false),
-    },
+    }),
   },
   {
     id: 'lavender',
     label: 'Lavender',
     swatch: '#7c3aed',
-    light: {
+    light: toRgbTheme({
       '--color-background': '#f9f5ff',
       '--color-foreground': '#1a0d2e',
       '--color-card': '#ffffff',
@@ -143,8 +167,8 @@ export const CANVAS_THEMES: CanvasThemePreset[] = [
       '--color-input': '#ddd6fe',
       '--color-ring': '#7c3aed',
       ...surfaceProgression('#ffffff', true),
-    },
-    dark: {
+    }),
+    dark: toRgbTheme({
       '--color-background': '#0f0720',
       '--color-foreground': '#f5f3ff',
       '--color-card': '#1a0f2e',
@@ -165,13 +189,13 @@ export const CANVAS_THEMES: CanvasThemePreset[] = [
       '--color-input': '#2e1a4a',
       '--color-ring': '#8b5cf6',
       ...surfaceProgression('#1a0f2e', false),
-    },
+    }),
   },
   {
     id: 'glacier',
     label: 'Glacier',
     swatch: '#06b6d4',
-    light: {
+    light: toRgbTheme({
       '--color-background': '#f0f9ff',
       '--color-foreground': '#0c1929',
       '--color-card': '#ffffff',
@@ -192,8 +216,8 @@ export const CANVAS_THEMES: CanvasThemePreset[] = [
       '--color-input': '#bae6fd',
       '--color-ring': '#06b6d4',
       ...surfaceProgression('#ffffff', true),
-    },
-    dark: {
+    }),
+    dark: toRgbTheme({
       '--color-background': '#0a1628',
       '--color-foreground': '#f0f9ff',
       '--color-card': '#0f2137',
@@ -214,13 +238,13 @@ export const CANVAS_THEMES: CanvasThemePreset[] = [
       '--color-input': '#1e3a5f',
       '--color-ring': '#06b6d4',
       ...surfaceProgression('#0f2137', false),
-    },
+    }),
   },
   {
     id: 'harvest',
     label: 'Harvest',
     swatch: '#f97316',
-    light: {
+    light: toRgbTheme({
       '--color-background': '#fffbf5',
       '--color-foreground': '#1c1210',
       '--color-card': '#ffffff',
@@ -241,8 +265,8 @@ export const CANVAS_THEMES: CanvasThemePreset[] = [
       '--color-input': '#fed7aa',
       '--color-ring': '#f97316',
       ...surfaceProgression('#ffffff', true),
-    },
-    dark: {
+    }),
+    dark: toRgbTheme({
       '--color-background': '#120e0a',
       '--color-foreground': '#fffbf5',
       '--color-card': '#1c1612',
@@ -263,13 +287,13 @@ export const CANVAS_THEMES: CanvasThemePreset[] = [
       '--color-input': '#2e2118',
       '--color-ring': '#f97316',
       ...surfaceProgression('#1c1612', false),
-    },
+    }),
   },
   {
     id: 'orchid',
     label: 'Orchid',
     swatch: '#ec4899',
-    light: {
+    light: toRgbTheme({
       '--color-background': '#fdf2f8',
       '--color-foreground': '#1a0b14',
       '--color-card': '#ffffff',
@@ -290,8 +314,8 @@ export const CANVAS_THEMES: CanvasThemePreset[] = [
       '--color-input': '#fbcfe8',
       '--color-ring': '#ec4899',
       ...surfaceProgression('#ffffff', true),
-    },
-    dark: {
+    }),
+    dark: toRgbTheme({
       '--color-background': '#110613',
       '--color-foreground': '#fdf2f8',
       '--color-card': '#1f0c1e',
@@ -312,13 +336,13 @@ export const CANVAS_THEMES: CanvasThemePreset[] = [
       '--color-input': '#3b1532',
       '--color-ring': '#ec4899',
       ...surfaceProgression('#1f0c1e', false),
-    },
+    }),
   },
   {
     id: 'solar',
     label: 'Solar',
     swatch: '#eab308',
-    light: {
+    light: toRgbTheme({
       '--color-background': '#fefce8',
       '--color-foreground': '#1c1210',
       '--color-card': '#ffffff',
@@ -339,8 +363,8 @@ export const CANVAS_THEMES: CanvasThemePreset[] = [
       '--color-input': '#fde68a',
       '--color-ring': '#eab308',
       ...surfaceProgression('#ffffff', true),
-    },
-    dark: {
+    }),
+    dark: toRgbTheme({
       '--color-background': '#120e0a',
       '--color-foreground': '#fefce8',
       '--color-card': '#1c1612',
@@ -361,13 +385,13 @@ export const CANVAS_THEMES: CanvasThemePreset[] = [
       '--color-input': '#2e2518',
       '--color-ring': '#eab308',
       ...surfaceProgression('#1c1612', false),
-    },
+    }),
   },
   {
     id: 'tide',
     label: 'Tide',
     swatch: '#14b8a6',
-    light: {
+    light: toRgbTheme({
       '--color-background': '#f0fdfa',
       '--color-foreground': '#0a1a18',
       '--color-card': '#ffffff',
@@ -388,8 +412,8 @@ export const CANVAS_THEMES: CanvasThemePreset[] = [
       '--color-input': '#99f6e4',
       '--color-ring': '#14b8a6',
       ...surfaceProgression('#ffffff', true),
-    },
-    dark: {
+    }),
+    dark: toRgbTheme({
       '--color-background': '#071210',
       '--color-foreground': '#f0fdfa',
       '--color-card': '#0d1f1c',
@@ -410,13 +434,13 @@ export const CANVAS_THEMES: CanvasThemePreset[] = [
       '--color-input': '#1a3833',
       '--color-ring': '#14b8a6',
       ...surfaceProgression('#0d1f1c', false),
-    },
+    }),
   },
   {
     id: 'verdant',
     label: 'Verdant',
     swatch: '#22c55e',
-    light: {
+    light: toRgbTheme({
       '--color-background': '#f0fdf4',
       '--color-foreground': '#0a1a10',
       '--color-card': '#ffffff',
@@ -437,8 +461,8 @@ export const CANVAS_THEMES: CanvasThemePreset[] = [
       '--color-input': '#bbf7d0',
       '--color-ring': '#22c55e',
       ...surfaceProgression('#ffffff', true),
-    },
-    dark: {
+    }),
+    dark: toRgbTheme({
       '--color-background': '#071208',
       '--color-foreground': '#f0fdf4',
       '--color-card': '#0d1f12',
@@ -459,13 +483,13 @@ export const CANVAS_THEMES: CanvasThemePreset[] = [
       '--color-input': '#1a3822',
       '--color-ring': '#22c55e',
       ...surfaceProgression('#0d1f12', false),
-    },
+    }),
   },
   {
     id: 'obsidian',
     label: 'Obsidian',
     swatch: '#64748b',
-    light: {
+    light: toRgbTheme({
       '--color-background': '#f1f5f9',
       '--color-foreground': '#0f172a',
       '--color-card': '#ffffff',
@@ -486,8 +510,8 @@ export const CANVAS_THEMES: CanvasThemePreset[] = [
       '--color-input': '#cbd5e1',
       '--color-ring': '#475569',
       ...surfaceProgression('#ffffff', true),
-    },
-    dark: {
+    }),
+    dark: toRgbTheme({
       '--color-background': '#0a0a0f',
       '--color-foreground': '#f1f5f9',
       '--color-card': '#141420',
@@ -508,7 +532,7 @@ export const CANVAS_THEMES: CanvasThemePreset[] = [
       '--color-input': '#1e1e2e',
       '--color-ring': '#94a3b8',
       ...surfaceProgression('#141420', false),
-    },
+    }),
   },
 ]
 

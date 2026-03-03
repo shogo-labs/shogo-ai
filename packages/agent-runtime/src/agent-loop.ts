@@ -66,6 +66,12 @@ export interface AgentLoopOptions {
   onAfterToolCall?: (toolName: string, args: any, result: any, isError: boolean, toolCallId: string) => Promise<void>
   /** Called when the agent loop completes */
   onAgentEnd?: (result: AgentLoopResult) => Promise<void>
+  /** Called when the LLM starts generating a tool call */
+  onToolCallStart?: (toolName: string, toolCallId: string) => void
+  /** Called with incremental JSON fragments as the LLM generates tool call arguments */
+  onToolCallDelta?: (toolName: string, delta: string, toolCallId: string) => void
+  /** Called when the LLM finishes generating a tool call (before execution) */
+  onToolCallEnd?: (toolName: string, toolCallId: string) => void
   /** Loop detection config. Pass false to disable. */
   loopDetection?: Partial<LoopDetectorConfig> | false
   /** Custom stream function (for testing — replaces Pi's streamSimple) */
@@ -110,6 +116,9 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     onBeforeToolCall,
     onAfterToolCall,
     onAgentEnd,
+    onToolCallStart,
+    onToolCallDelta,
+    onToolCallEnd,
   } = options
 
   const model = resolveModel(provider, modelId)
@@ -120,6 +129,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
 
   const toolCalls: ToolCallRecord[] = []
   const pendingArgs = new Map<string, any>()
+  const streamingToolCalls = new Map<number, { name: string; id: string }>()
   let iterations = 0
   let loopBreak: LoopDetectorResult | undefined
   let abortTriggered = false
@@ -141,11 +151,30 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
 
   agent.subscribe(async (event: AgentEvent) => {
     switch (event.type) {
-      case 'message_update':
-        if (onTextDelta && event.assistantMessageEvent.type === 'text_delta') {
-          onTextDelta(event.assistantMessageEvent.delta)
+      case 'message_update': {
+        const ame = event.assistantMessageEvent
+        if (ame.type === 'text_delta') {
+          onTextDelta?.(ame.delta)
+        } else if (ame.type === 'toolcall_start') {
+          const tc = ame.partial.content[ame.contentIndex]
+          if (tc && tc.type === 'toolCall') {
+            streamingToolCalls.set(ame.contentIndex, { name: tc.name, id: tc.id })
+            onToolCallStart?.(tc.name, tc.id)
+          }
+        } else if (ame.type === 'toolcall_delta') {
+          const info = streamingToolCalls.get(ame.contentIndex)
+          if (info) {
+            onToolCallDelta?.(info.name, ame.delta, info.id)
+          }
+        } else if (ame.type === 'toolcall_end') {
+          const info = streamingToolCalls.get(ame.contentIndex)
+          if (info) {
+            onToolCallEnd?.(info.name, info.id)
+            streamingToolCalls.delete(ame.contentIndex)
+          }
         }
         break
+      }
 
       case 'tool_execution_start':
         pendingArgs.set(event.toolCallId, event.args)

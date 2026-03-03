@@ -60,6 +60,7 @@ import {
 import { useDomainActions } from '@shogo/shared-app/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { setActiveWorkspaceId } from '../../lib/workspace-store'
+import { api } from '../../lib/api'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import {
   PRO_TIERS,
@@ -327,7 +328,7 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
     if (!currentWorkspace?.id || !isDeleteConfirmed) return
     setIsDeleting(true)
     try {
-      await actions.deleteWorkspaceWithMembers(currentWorkspace.id)
+      await actions.deleteWorkspace(currentWorkspace.id)
       setIsDeleteDialogOpen(false)
       router.replace('/(app)')
     } catch (error) {
@@ -550,12 +551,12 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
                   setLeaveError(null)
                   try {
                     const wsId = currentWorkspace?.id
-                    if (!wsId) {
+                    if (!wsId || !http) {
                       setLeaveError('Missing workspace information.')
                       setIsLeaving(false)
                       return
                     }
-                    await http.post(`/api/workspaces/${wsId}/leave`)
+                    await api.leaveWorkspace(http, wsId)
                     await workspaces.loadAll()
                     const remaining = workspaces.all
                     if (remaining.length > 0) {
@@ -708,7 +709,7 @@ function AccountTab() {
     if (deleteConfirmText !== 'DELETE' || !user?.id || !http) return
     setIsDeleting(true)
     try {
-      await http.delete(`/api/users/${user.id}`)
+      await api.deleteAccount(http, user.id)
       await signOut()
       router.replace('/(auth)/sign-in')
     } catch (error) {
@@ -1428,33 +1429,23 @@ const PeopleTab = observer(function PeopleTab() {
 
       if (http) {
         try {
-          const res = await http.get<{ ok: boolean; items?: any[] }>(
-            `/api/members?workspaceId=${ws.id}`
-          )
-          if (res.data?.ok && res.data.items) {
-            const map: Record<string, { name: string; email: string }> = {}
-            for (const item of res.data.items) {
-              if (item.user && typeof item.user === 'object' && item.user.id) {
-                map[item.user.id] = {
-                  name: item.user.name || '',
-                  email: item.user.email || '',
-                }
+          const items = await api.getWorkspaceMembers(http, ws.id)
+          const map: Record<string, { name: string; email: string }> = {}
+          for (const item of items) {
+            if (item.user && typeof item.user === 'object' && item.user.id) {
+              map[item.user.id] = {
+                name: item.user.name || '',
+                email: item.user.email || '',
               }
             }
-            setUserMap(map)
           }
+          setUserMap(map)
         } catch {}
 
         if (user?.email) {
           try {
-            const invRes = await http.get<{ ok: boolean; items?: any[] }>(
-              `/api/invitations?email=${encodeURIComponent(user.email)}`
-            )
-            if (invRes.data?.ok && invRes.data.items) {
-              setReceivedInvites(
-                invRes.data.items.filter((i: any) => i.status === 'pending')
-              )
-            }
+            const pending = await api.getReceivedInvitations(http, user.email)
+            setReceivedInvites(pending)
           } catch {}
         }
       }
@@ -1831,17 +1822,13 @@ const PeopleTab = observer(function PeopleTab() {
                       <View className="flex-row gap-2">
                         <Pressable
                           onPress={async () => {
-                            setReceivedInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
                             try {
-                              if (http) {
-                                await http.patch(`/api/invitations/${inv.id}`, { status: 'accepted' })
-                                await http.post('/api/members', {
-                                  userId: user?.id,
-                                  workspaceId: inv.workspaceId,
-                                  role: inv.role,
-                                  isBillingAdmin: false,
-                                })
-                              }
+                              await actions.acceptInvitation(inv.id, user?.id || '', {
+                                workspaceId: inv.workspaceId,
+                                role: inv.role,
+                                projectId: inv.projectId,
+                              })
+                              setReceivedInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
                             } catch {}
                             loadPeopleData()
                           }}
@@ -1851,11 +1838,9 @@ const PeopleTab = observer(function PeopleTab() {
                         </Pressable>
                         <Pressable
                           onPress={async () => {
-                            setReceivedInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
                             try {
-                              if (http) {
-                                await http.patch(`/api/invitations/${inv.id}`, { status: 'declined' })
-                              }
+                              await actions.declineInvitation(inv.id)
+                              setReceivedInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
                             } catch {}
                             loadPeopleData()
                           }}

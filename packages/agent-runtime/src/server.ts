@@ -86,6 +86,7 @@ const PORT = parseInt(process.env.PORT || '8080', 10)
 
 const IS_POOL_MODE = currentProjectId === POOL_PROJECT_ID || process.env.WARM_POOL_MODE === 'true'
 let poolAssigned = false
+let poolAssignedAt: number | null = null
 
 if (!currentProjectId) {
   console.error(
@@ -109,6 +110,7 @@ if (IS_POOL_MODE) {
       if (typeof value === 'string') process.env[key] = value
     }
     poolAssigned = true
+    poolAssignedAt = Date.now()
     logTiming(`[self-assign] Self-assigned to ${selfAssignConfig.projectId}`)
   }
 } else {
@@ -319,6 +321,23 @@ app.get('/ready', (c) => {
   return c.json({ ready: true })
 })
 
+// Activity probe for promoted pod GC
+app.get('/pool/activity', (c) => {
+  const sm = agentGateway?.getSessionManager()
+  const stats = sm?.getAllStats() ?? []
+  const now = Date.now()
+  const lastActivity = stats.reduce(
+    (max: number, s) => Math.max(max, now - (s.idleSeconds ?? 0) * 1000),
+    poolAssignedAt ?? SERVER_START_TIME
+  )
+  return c.json({
+    projectId: currentProjectId,
+    lastActivityAt: lastActivity,
+    idleSeconds: Math.floor((now - lastActivity) / 1000),
+    poolAssigned: poolAssigned,
+  })
+})
+
 // =============================================================================
 // Warm Pool Assignment Endpoint
 // =============================================================================
@@ -379,6 +398,7 @@ app.post('/pool/assign', async (c) => {
   try {
     await initializeEssentials()
     poolAssigned = true
+    poolAssignedAt = Date.now()
     const duration = Date.now() - startTime
     logTiming(`Pool assignment essentials complete for ${projectId} (${duration}ms)`)
 
@@ -1483,9 +1503,10 @@ app.get('/agent/dynamic-app/stream', (c) => {
   return new Response(stream, {
     headers: {
       'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
+      'Cache-Control': 'no-cache, no-transform',
       'Connection': 'keep-alive',
       'Access-Control-Allow-Origin': '*',
+      'X-Accel-Buffering': 'no',
     },
   })
 })

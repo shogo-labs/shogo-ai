@@ -164,6 +164,35 @@ export class DynamicAppManager {
     }
   }
 
+  /**
+   * Stream preview components during tool-call generation.
+   * Lazily creates the surface if it doesn't exist yet (handles parallel
+   * canvas_create + canvas_update). Skips validation and disk persistence —
+   * the final tool execution reconciles the full state.
+   */
+  streamPreviewComponents(surfaceId: string, components: ComponentDefinition[]): void {
+    let surface = this.surfaces.get(surfaceId)
+    if (!surface) {
+      const now = new Date().toISOString()
+      surface = {
+        surfaceId,
+        components: new Map(),
+        dataModel: {},
+        createdAt: now,
+        updatedAt: now,
+      }
+      this.surfaces.set(surfaceId, surface)
+      this.broadcast({ type: 'createSurface', surfaceId })
+    }
+
+    for (const comp of components) {
+      surface.components.set(comp.id, comp)
+    }
+    surface.updatedAt = new Date().toISOString()
+
+    this.broadcast({ type: 'updateComponents', surfaceId, components })
+  }
+
   updateData(surfaceId: string, path: string | undefined, value: unknown): Record<string, unknown> {
     const surface = this.surfaces.get(surfaceId)
     if (!surface) {

@@ -37,7 +37,7 @@ export function EditToolbar({ surfaceId, components, trailing }: EditToolbarProp
 
   return (
     <>
-      <View testID="edit-toolbar" className="flex-row items-center border-b border-border bg-background px-3 py-1.5 gap-2">
+      <View testID="edit-toolbar" className="flex-row items-center border-b border-border/50 bg-surface-1 px-3 py-1.5 gap-2">
         <Pressable
           testID="edit-mode-toggle"
           onPress={toggleEditMode}

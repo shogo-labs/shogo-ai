@@ -1431,9 +1431,9 @@ resource "null_resource" "knative_services" {
                   # Warm pool sizing — scales with cluster node count
                   # 2 nodes idle → 20 warm agents. Pre-scale to 5 nodes → 50 agents.
                   - name: WARM_POOL_AGENTS_PER_NODE
-                    value: "10"
+                    value: "0"
                   - name: WARM_POOL_MIN_AGENTS
-                    value: "2"
+                    value: "5"
                   # Karpenter handles workspace node provisioning — proactive scaler defers to it
                   - name: KARPENTER_ENABLED
                     value: "true"
@@ -1448,6 +1448,11 @@ resource "null_resource" "knative_services" {
                     value: "15"
                   - name: WARM_POOL_MAX_AGE_MS
                     value: "3600000"
+                  # Promoted pod GC — clean up orphaned/idle promoted pods
+                  - name: PROMOTED_POD_GC_ENABLED
+                    value: "true"
+                  - name: PROMOTED_POD_IDLE_TIMEOUT_MS
+                    value: "1800000"
                   # OpenTelemetry tracing → SigNoz Cloud
                   - name: OTEL_EXPORTER_OTLP_ENDPOINT
                     value: "https://${var.signoz_endpoint}"

@@ -876,13 +876,9 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
 
   const loadInvites = useCallback(() => {
     if (!http || !user?.email) return
-    http.get<{ ok: boolean; items?: any[] }>(
-      `/api/invitations?email=${encodeURIComponent(user.email)}`
-    ).then((res) => {
-      if (res.data?.ok && res.data.items) {
-        setPendingInvites(res.data.items.filter((i: any) => i.status === 'pending'))
-      }
-    }).catch(() => {})
+    api.getReceivedInvitations(http, user.email)
+      .then(setPendingInvites)
+      .catch(() => {})
   }, [http, user?.email])
 
   useEffect(() => { loadInvites() }, [loadInvites])
@@ -1303,17 +1299,13 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
                       <View className="flex-row gap-2">
                         <Pressable
                           onPress={async () => {
-                            setPendingInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
                             try {
-                              if (http) {
-                                await http.patch(`/api/invitations/${inv.id}`, { status: 'accepted' })
-                                await http.post('/api/members', {
-                                  userId: user?.id,
-                                  workspaceId: inv.workspaceId,
-                                  role: inv.role,
-                                  isBillingAdmin: false,
-                                })
-                              }
+                              await actions.acceptInvitation(inv.id, user?.id || '', {
+                                workspaceId: inv.workspaceId,
+                                role: inv.role,
+                                projectId: inv.projectId,
+                              })
+                              setPendingInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
                             } catch {}
                             loadInvites()
                             workspaces.loadAll().catch(() => {})
@@ -1324,11 +1316,9 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
                         </Pressable>
                         <Pressable
                           onPress={async () => {
-                            setPendingInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
                             try {
-                              if (http) {
-                                await http.patch(`/api/invitations/${inv.id}`, { status: 'declined' })
-                              }
+                              await actions.declineInvitation(inv.id)
+                              setPendingInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
                             } catch {}
                             loadInvites()
                           }}

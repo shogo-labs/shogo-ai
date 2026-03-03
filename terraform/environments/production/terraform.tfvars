@@ -54,5 +54,19 @@ publish_domain = "shogo.one"
 github_org  = "CodeGlo"
 github_repo = "shogo-ai"
 
-# SigNoz (disabled for now - enable when needed)
-enable_signoz = false
+# SigNoz K8s infrastructure monitoring
+enable_signoz = true
+
+# SigNoz Cloud endpoint (US region)
+signoz_endpoint = "ingest.us.signoz.cloud:443"
+
+# SigNoz Cloud ingestion key
+signoz_ingestion_key = "lGsY7yWnJpyjvfUnWFaBCUarhjSjxSunI0Xv"
+
+# Namespace for SigNoz collectors
+signoz_namespace = "signoz"
+
+# Feature toggles
+signoz_enable_logs    = true
+signoz_enable_events  = true
+signoz_enable_metrics = true

@@ -47,6 +47,8 @@ export interface MemberHooks {
   afterDelete?: (id: string, ctx: HookContext) => Promise<void>
 }
 
+import { sendMemberJoinedEmail, sendMemberRemovedEmail } from "../services/email.service"
+
 const userInclude = {
   user: {
     select: { id: true, name: true, email: true, image: true },
@@ -100,6 +102,37 @@ export const memberHooks: MemberHooks = {
         where: { workspace: { members: { some: { userId } } } },
         include: userInclude,
       },
+    }
+  },
+
+  afterCreate: async (record, ctx) => {
+    if (!record.workspaceId || record.projectId) return
+
+    try {
+      const [user, workspace, owners] = await Promise.all([
+        ctx.prisma.user.findUnique({ where: { id: record.userId }, select: { name: true, email: true } }),
+        ctx.prisma.workspace.findUnique({ where: { id: record.workspaceId }, select: { name: true } }),
+        ctx.prisma.member.findMany({
+          where: { workspaceId: record.workspaceId, role: 'owner', projectId: null, userId: { not: record.userId } },
+          include: { user: { select: { email: true } } },
+        }),
+      ])
+      if (!user || !workspace) return
+
+      const baseUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'
+      for (const owner of owners) {
+        if (!owner.user?.email) continue
+        sendMemberJoinedEmail({
+          to: owner.user.email,
+          memberName: user.name || user.email,
+          memberEmail: user.email,
+          workspaceName: workspace.name,
+          role: record.role || 'member',
+          dashboardUrl: `${baseUrl}/settings?tab=people`,
+        }).catch((err) => console.error('[Email] member-joined failed:', err))
+      }
+    } catch (err) {
+      console.error('[Email] afterCreate hook error:', err)
     }
   },
 
@@ -245,8 +278,11 @@ export const memberHooks: MemberHooks = {
 
     const member = await ctx.prisma.member.findUnique({
       where: { id },
-      include: { workspace: { include: { members: true } } },
+      include: { workspace: { include: { members: true } }, user: { select: { email: true, name: true } } },
     })
+
+    // Stash for afterDelete email
+    if (member) (ctx as any)._deletedMember = member
     if (!member) {
       return { ok: false, error: { code: "not_found", message: "Member not found" } }
     }
@@ -283,5 +319,22 @@ export const memberHooks: MemberHooks = {
     }
 
     return { ok: true }
+  },
+
+  afterDelete: async (id, ctx) => {
+    const member = (ctx as any)._deletedMember
+    if (!member?.user?.email || !member.workspaceId || member.projectId) return
+
+    // Don't email if user removed themselves (e.g. leaving workspace)
+    if (member.userId === ctx.userId) return
+
+    try {
+      sendMemberRemovedEmail({
+        to: member.user.email,
+        workspaceName: member.workspace?.name || 'a workspace',
+      }).catch((err) => console.error('[Email] member-removed failed:', err))
+    } catch (err) {
+      console.error('[Email] afterDelete hook error:', err)
+    }
   },
 }
