@@ -117,6 +117,10 @@ export default function AdminLayout() {
           name="analytics"
           options={{ title: 'Analytics' }}
         />
+        <Stack.Screen
+          name="infrastructure"
+          options={{ title: 'Infrastructure' }}
+        />
       </Stack>
     </SafeAreaView>
   )

@@ -1448,6 +1448,11 @@ resource "null_resource" "knative_services" {
                     value: "15"
                   - name: WARM_POOL_MAX_AGE_MS
                     value: "3600000"
+                  # Promoted pod GC — clean up orphaned/idle promoted pods
+                  - name: PROMOTED_POD_GC_ENABLED
+                    value: "true"
+                  - name: PROMOTED_POD_IDLE_TIMEOUT_MS
+                    value: "1800000"
                   # OpenTelemetry tracing → SigNoz Cloud
                   - name: OTEL_EXPORTER_OTLP_ENDPOINT
                     value: "https://${var.signoz_endpoint}"

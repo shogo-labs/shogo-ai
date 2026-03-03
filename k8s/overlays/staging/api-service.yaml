@@ -250,6 +250,10 @@ spec:
               value: "5"
             - name: WARM_POOL_MAX_AGE_MS
               value: "3600000"
+            - name: PROMOTED_POD_GC_ENABLED
+              value: "true"
+            - name: PROMOTED_POD_IDLE_TIMEOUT_MS
+              value: "1800000"
           resources:
             requests:
               memory: "256Mi"

@@ -2896,14 +2896,88 @@ app.post('/api/admin/projects/:projectId/warmup', async (c) => {
   return router.fetch(newReq)
 })
 
-// GET /api/admin/warm-pool - Get warm pool status
+// GET /api/admin/warm-pool - Extended warm pool status with promoted pods and GC stats
 app.get('/api/admin/warm-pool', async (c) => {
   try {
     const { getWarmPoolController } = await import('./lib/warm-pool-controller')
     const controller = getWarmPoolController()
-    return c.json(controller.getStatus())
+    const extended = await controller.getExtendedStatus()
+
+    // Enrich promoted pods with project names from DB
+    const promotedPods = controller.getPromotedPods()
+    let enrichedPods = promotedPods.map((p) => ({
+      ...p,
+      projectName: null as string | null,
+      idleSeconds: null as number | null,
+    }))
+
+    try {
+      const { prisma } = await import('./lib/prisma')
+      const projectIds = [...new Set(promotedPods.map((p) => p.projectId).filter(Boolean))]
+      if (projectIds.length > 0) {
+        const projects = await prisma.project.findMany({
+          where: { id: { in: projectIds } },
+          select: { id: true, name: true },
+        })
+        const nameMap = new Map(projects.map((p) => [p.id, p.name]))
+        enrichedPods = enrichedPods.map((p) => ({
+          ...p,
+          projectName: nameMap.get(p.projectId) ?? null,
+        }))
+      }
+    } catch { /* non-fatal */ }
+
+    // Probe promoted pods for activity (parallel, 3s timeout)
+    const probeResults = await Promise.allSettled(
+      enrichedPods.map(async (pod) => {
+        try {
+          const resp = await fetch(`${pod.url}/pool/activity`, {
+            signal: AbortSignal.timeout(3000),
+          })
+          if (resp.ok) {
+            const data = await resp.json() as { idleSeconds: number }
+            return { serviceName: pod.serviceName, idleSeconds: data.idleSeconds }
+          }
+        } catch { /* pod unreachable */ }
+        return { serviceName: pod.serviceName, idleSeconds: null }
+      })
+    )
+    const idleMap = new Map<string, number | null>()
+    for (const result of probeResults) {
+      if (result.status === 'fulfilled') {
+        idleMap.set(result.value.serviceName, result.value.idleSeconds)
+      }
+    }
+    enrichedPods = enrichedPods.map((p) => ({
+      ...p,
+      idleSeconds: idleMap.get(p.serviceName) ?? null,
+    }))
+
+    return c.json({
+      pool: {
+        enabled: extended.enabled,
+        available: extended.available,
+        assigned: extended.assigned,
+        targetSize: extended.targetSize,
+      },
+      cluster: extended.cluster,
+      promotedPods: enrichedPods,
+      gcStats: extended.gcStats,
+    })
   } catch (err: any) {
     return c.json({ enabled: false, error: err.message })
+  }
+})
+
+// POST /api/admin/warm-pool/gc - Manually trigger promoted pod GC
+app.post('/api/admin/warm-pool/gc', async (c) => {
+  try {
+    const { getWarmPoolController } = await import('./lib/warm-pool-controller')
+    const controller = getWarmPoolController()
+    const result = await controller.gcPromotedPods()
+    return c.json({ ok: true, ...result })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
   }
 })
 

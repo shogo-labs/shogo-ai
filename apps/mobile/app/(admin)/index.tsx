@@ -25,6 +25,7 @@ import {
   CalendarDays,
   ArrowLeft,
   Shield,
+  Server,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../lib/api'
@@ -246,6 +247,7 @@ const NAV_ITEMS = [
   { href: '/(admin)/users', icon: Users, label: 'Users', description: 'Manage platform users' },
   { href: '/(admin)/workspaces', icon: Building2, label: 'Workspaces', description: 'Browse workspaces' },
   { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics', description: 'Detailed analytics' },
+  { href: '/(admin)/infrastructure', icon: Server, label: 'Infrastructure', description: 'Warm pool, nodes, pods' },
 ] as const
 
 export default function AdminDashboard() {
