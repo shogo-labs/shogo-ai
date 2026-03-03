@@ -87,6 +87,8 @@ const PORT = parseInt(process.env.PORT || '8080', 10)
 const IS_POOL_MODE = currentProjectId === POOL_PROJECT_ID || process.env.WARM_POOL_MODE === 'true'
 let poolAssigned = false
 let poolAssignedAt: number | null = null
+let lastRequestAt: number = Date.now()
+const INTERNAL_PATHS = new Set(['/health', '/ready', '/pool/activity', '/pool/assign'])
 
 if (!currentProjectId) {
   console.error(
@@ -260,6 +262,14 @@ const app = new Hono()
 
 app.use('*', cors({ origin: '*' }))
 
+// Track last external HTTP request for idle detection (excludes internal probes)
+app.use('*', async (c, next) => {
+  if (!INTERNAL_PATHS.has(c.req.path)) {
+    lastRequestAt = Date.now()
+  }
+  await next()
+})
+
 // Register WhatsApp webhook routes (must be before any auth middleware)
 import('./channels/whatsapp').then(({ WhatsAppAdapter }) => {
   WhatsAppAdapter.registerWebhookRoutes(app)
@@ -321,19 +331,23 @@ app.get('/ready', (c) => {
   return c.json({ ready: true })
 })
 
-// Activity probe for promoted pod GC
+// Activity probe for promoted pod GC — uses HTTP request activity, not just chat sessions
 app.get('/pool/activity', (c) => {
   const sm = agentGateway?.getSessionManager()
   const stats = sm?.getAllStats() ?? []
   const now = Date.now()
-  const lastActivity = stats.reduce(
+  const lastSessionActivity = stats.reduce(
     (max: number, s) => Math.max(max, now - (s.idleSeconds ?? 0) * 1000),
     poolAssignedAt ?? SERVER_START_TIME
   )
+  const lastActivity = Math.max(lastRequestAt, lastSessionActivity)
   return c.json({
     projectId: currentProjectId,
     lastActivityAt: lastActivity,
     idleSeconds: Math.floor((now - lastActivity) / 1000),
+    activeSessions: stats.length,
+    lastRequestAt,
+    lastSessionActivityAt: lastSessionActivity,
     poolAssigned: poolAssigned,
   })
 })

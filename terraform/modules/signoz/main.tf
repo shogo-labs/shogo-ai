@@ -147,7 +147,8 @@ resource "helm_release" "signoz_k8s_infra" {
   # Wait for namespace to be created (Terraform handles this gracefully even if count=0)
   depends_on = [kubernetes_namespace.signoz]
 
-  # Timeout for installation (metrics collection can take time to initialize)
+  # DaemonSet agents may stay Pending on nodes without capacity — don't block
+  wait    = false
   timeout = 600
 
   # Automatically create namespace if it doesn't exist (fallback)
