@@ -11,6 +11,7 @@ import {
   ActivityIndicator,
   RefreshControl,
   Alert,
+  useWindowDimensions,
 } from 'react-native'
 import {
   Server,
@@ -262,11 +263,152 @@ function MiniTimeline({ history }: { history: HistoryPoint[] }) {
   )
 }
 
+function GcEventLog({ gcLog }: { gcLog: Array<{ time: number; orphans: number; idle: number }> }) {
+  if (gcLog.length === 0) return null
+
+  return (
+    <View className="bg-card border border-border rounded-xl p-4">
+      <Text className="text-sm font-medium text-foreground mb-2">GC Events</Text>
+      {gcLog.map((entry, i) => (
+        <View key={i} className="flex-row items-center gap-2 py-1">
+          <Text className="text-[10px] text-muted-foreground w-16">
+            {new Date(entry.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+          </Text>
+          <Text className="text-xs text-foreground">
+            {entry.orphans} orphans, {entry.idle} idle evicted
+          </Text>
+        </View>
+      ))}
+    </View>
+  )
+}
+
+function WarmPoolSummary({
+  pool,
+  gc,
+}: {
+  pool: PoolStatus | undefined
+  gc: GcStats | undefined
+}) {
+  return (
+    <View className="bg-card border border-border rounded-xl p-4">
+      <Text className="text-sm font-medium text-foreground mb-2">Warm Pool Summary</Text>
+      <View className="flex-row gap-4">
+        <View className="flex-1">
+          <Text className="text-xs text-muted-foreground mb-1">Agents</Text>
+          <Text className="text-lg font-bold text-green-400">
+            {pool?.available.agent ?? 0}
+            <Text className="text-xs text-muted-foreground font-normal">
+              {' '}/ {pool?.targetSize.agent ?? 0} target
+            </Text>
+          </Text>
+        </View>
+        <View className="flex-1">
+          <Text className="text-xs text-muted-foreground mb-1">Projects</Text>
+          <Text className="text-lg font-bold text-blue-400">
+            {pool?.available.project ?? 0}
+            <Text className="text-xs text-muted-foreground font-normal">
+              {' '}/ {pool?.targetSize.project ?? 0} target
+            </Text>
+          </Text>
+        </View>
+      </View>
+      {gc?.lastGcRun && (
+        <Text className="text-[10px] text-muted-foreground mt-2">
+          Last GC: {new Date(gc.lastGcRun).toLocaleTimeString()}
+        </Text>
+      )}
+    </View>
+  )
+}
+
+function PromotedPodTable({
+  promoted,
+  idlePods,
+  evicting,
+  onEvict,
+}: {
+  promoted: PromotedPod[]
+  idlePods: PromotedPod[]
+  evicting: string | null
+  onEvict: (projectId: string, projectName: string | null) => void
+}) {
+  return (
+    <View className="bg-card border border-border rounded-xl overflow-hidden">
+      <View className="flex-row items-center justify-between px-4 py-3 border-b border-border">
+        <Text className="text-sm font-medium text-foreground">
+          Promoted Pods ({promoted.length})
+        </Text>
+      </View>
+
+      {promoted.length === 0 ? (
+        <View className="p-4 items-center">
+          <CheckCircle size={20} className="text-green-400 mb-2" />
+          <Text className="text-xs text-muted-foreground">No promoted pods</Text>
+        </View>
+      ) : (
+        promoted.map((pod) => (
+          <View
+            key={pod.serviceName}
+            className={cn('px-4 py-3 border-b border-border/50', idleBg(pod.idleSeconds))}
+          >
+            <View className="flex-row items-center justify-between mb-1">
+              <View className="flex-1 mr-2">
+                <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
+                  {pod.projectName || pod.projectId.slice(0, 8)}
+                </Text>
+                <Text className="text-[10px] text-muted-foreground" numberOfLines={1}>
+                  {pod.serviceName}
+                </Text>
+              </View>
+              <Pressable
+                onPress={() => onEvict(pod.projectId, pod.projectName)}
+                disabled={evicting === pod.projectId}
+                className="px-2 py-1 bg-red-500/10 border border-red-500/20 rounded-md"
+              >
+                {evicting === pod.projectId ? (
+                  <ActivityIndicator size="small" />
+                ) : (
+                  <Text className="text-[10px] text-red-400 font-medium">Evict</Text>
+                )}
+              </Pressable>
+            </View>
+            <View className="flex-row items-center gap-3">
+              <View className="flex-row items-center gap-1">
+                <Clock size={10} className={idleColor(pod.idleSeconds)} />
+                <Text className={cn('text-[10px]', idleColor(pod.idleSeconds))}>
+                  {formatIdleTime(pod.idleSeconds)}
+                </Text>
+              </View>
+              <View className="flex-row items-center gap-1">
+                {pod.ready ? (
+                  <CheckCircle size={10} className="text-green-400" />
+                ) : (
+                  <AlertTriangle size={10} className="text-yellow-400" />
+                )}
+                <Text className="text-[10px] text-muted-foreground">
+                  {pod.ready ? 'Ready' : 'Not ready'}
+                </Text>
+              </View>
+              <Text className="text-[10px] text-muted-foreground">
+                Age: {formatAge(pod.createdAt)}
+              </Text>
+            </View>
+          </View>
+        ))
+      )}
+    </View>
+  )
+}
+
 // =============================================================================
 // Main Page
 // =============================================================================
 
 export default function InfrastructurePage() {
+  const { width } = useWindowDimensions()
+  const isWide = width >= 900
+
   const [data, setData] = useState<WarmPoolData | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -360,15 +502,23 @@ export default function InfrastructurePage() {
   return (
     <ScrollView
       className="flex-1 bg-background"
-      contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
+      contentContainerStyle={{
+        padding: isWide ? 32 : 16,
+        paddingBottom: 40,
+        maxWidth: isWide ? 1200 : undefined,
+        width: '100%',
+        alignSelf: 'center' as const,
+      }}
       showsVerticalScrollIndicator={false}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
     >
       {/* Header */}
       <View className="flex-row items-center justify-between mb-4">
         <View className="flex-row items-center gap-2">
-          <Server size={18} className="text-primary" />
-          <Text className="text-xl font-bold text-foreground">Infrastructure</Text>
+          <Server size={isWide ? 22 : 18} className="text-primary" />
+          <Text className={cn('font-bold text-foreground', isWide ? 'text-2xl' : 'text-xl')}>
+            Infrastructure
+          </Text>
         </View>
         <View className="flex-row items-center gap-2">
           <Pressable
@@ -444,122 +594,31 @@ export default function InfrastructurePage() {
         </View>
       )}
 
-      {/* Timeline */}
-      <View className="mb-4">
-        <MiniTimeline history={history} />
-      </View>
-
-      {/* GC Event Log */}
-      {gcLog.length > 0 && (
-        <View className="bg-card border border-border rounded-xl p-4 mb-4">
-          <Text className="text-sm font-medium text-foreground mb-2">GC Events</Text>
-          {gcLog.map((entry, i) => (
-            <View key={i} className="flex-row items-center gap-2 py-1">
-              <Text className="text-[10px] text-muted-foreground w-16">
-                {new Date(entry.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-              </Text>
-              <Text className="text-xs text-foreground">
-                {entry.orphans} orphans, {entry.idle} idle evicted
-              </Text>
-            </View>
-          ))}
+      {/* Timeline + GC Events: side-by-side on desktop */}
+      <View className={cn('gap-4 mb-4', isWide && 'flex-row')}>
+        <View className={cn(isWide && 'flex-1')}>
+          <MiniTimeline history={history} />
         </View>
-      )}
-
-      {/* Promoted Pod Table */}
-      <View className="bg-card border border-border rounded-xl overflow-hidden mb-4">
-        <View className="flex-row items-center justify-between px-4 py-3 border-b border-border">
-          <Text className="text-sm font-medium text-foreground">
-            Promoted Pods ({promoted.length})
-          </Text>
-        </View>
-
-        {promoted.length === 0 ? (
-          <View className="p-4 items-center">
-            <CheckCircle size={20} className="text-green-400 mb-2" />
-            <Text className="text-xs text-muted-foreground">No promoted pods</Text>
+        {gcLog.length > 0 && (
+          <View className={cn(isWide && 'flex-1')}>
+            <GcEventLog gcLog={gcLog} />
           </View>
-        ) : (
-          promoted.map((pod) => (
-            <View
-              key={pod.serviceName}
-              className={cn('px-4 py-3 border-b border-border/50', idleBg(pod.idleSeconds))}
-            >
-              <View className="flex-row items-center justify-between mb-1">
-                <View className="flex-1 mr-2">
-                  <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
-                    {pod.projectName || pod.projectId.slice(0, 8)}
-                  </Text>
-                  <Text className="text-[10px] text-muted-foreground" numberOfLines={1}>
-                    {pod.serviceName}
-                  </Text>
-                </View>
-                <Pressable
-                  onPress={() => onEvict(pod.projectId, pod.projectName)}
-                  disabled={evicting === pod.projectId}
-                  className="px-2 py-1 bg-red-500/10 border border-red-500/20 rounded-md"
-                >
-                  {evicting === pod.projectId ? (
-                    <ActivityIndicator size="small" />
-                  ) : (
-                    <Text className="text-[10px] text-red-400 font-medium">Evict</Text>
-                  )}
-                </Pressable>
-              </View>
-              <View className="flex-row items-center gap-3">
-                <View className="flex-row items-center gap-1">
-                  <Clock size={10} className={idleColor(pod.idleSeconds)} />
-                  <Text className={cn('text-[10px]', idleColor(pod.idleSeconds))}>
-                    {formatIdleTime(pod.idleSeconds)}
-                  </Text>
-                </View>
-                <View className="flex-row items-center gap-1">
-                  {pod.ready ? (
-                    <CheckCircle size={10} className="text-green-400" />
-                  ) : (
-                    <AlertTriangle size={10} className="text-yellow-400" />
-                  )}
-                  <Text className="text-[10px] text-muted-foreground">
-                    {pod.ready ? 'Ready' : 'Not ready'}
-                  </Text>
-                </View>
-                <Text className="text-[10px] text-muted-foreground">
-                  Age: {formatAge(pod.createdAt)}
-                </Text>
-              </View>
-            </View>
-          ))
         )}
       </View>
 
-      {/* Available Warm Pool Pods */}
-      <View className="bg-card border border-border rounded-xl p-4 mb-4">
-        <Text className="text-sm font-medium text-foreground mb-2">Warm Pool Summary</Text>
-        <View className="flex-row gap-4">
-          <View className="flex-1">
-            <Text className="text-xs text-muted-foreground mb-1">Agents</Text>
-            <Text className="text-lg font-bold text-green-400">
-              {pool?.available.agent ?? 0}
-              <Text className="text-xs text-muted-foreground font-normal">
-                {' '}/ {pool?.targetSize.agent ?? 0} target
-              </Text>
-            </Text>
-          </View>
-          <View className="flex-1">
-            <Text className="text-xs text-muted-foreground mb-1">Projects</Text>
-            <Text className="text-lg font-bold text-blue-400">
-              {pool?.available.project ?? 0}
-              <Text className="text-xs text-muted-foreground font-normal">
-                {' '}/ {pool?.targetSize.project ?? 0} target
-              </Text>
-            </Text>
-          </View>
+      {/* Warm Pool Summary + Promoted Pods: side-by-side on desktop */}
+      <View className={cn('gap-4', isWide && 'flex-row')}>
+        <View className={cn(isWide && 'w-[340px]')}>
+          <WarmPoolSummary pool={pool} gc={gc} />
         </View>
-        {gc?.lastGcRun && (
-          <Text className="text-[10px] text-muted-foreground mt-2">
-            Last GC: {new Date(gc.lastGcRun).toLocaleTimeString()}
-          </Text>
-        )}
+        <View className={cn(isWide && 'flex-1')}>
+          <PromotedPodTable
+            promoted={promoted}
+            idlePods={idlePods}
+            evicting={evicting}
+            onEvict={onEvict}
+          />
+        </View>
       </View>
     </ScrollView>
   )

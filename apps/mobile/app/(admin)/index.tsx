@@ -1,7 +1,5 @@
 /**
- * Admin Dashboard - Main overview page with key metrics, navigation, and charts.
- *
- * Converted from apps/web/src/components/admin/pages/AdminDashboard.tsx
+ * Admin Dashboard - Main overview page with key metrics and charts.
  */
 
 import { useState, useEffect, useCallback } from 'react'
@@ -10,22 +8,17 @@ import {
   Text,
   ScrollView,
   Pressable,
-  ActivityIndicator,
   RefreshControl,
+  useWindowDimensions,
 } from 'react-native'
-import { useRouter } from 'expo-router'
 import {
   Users,
   Building2,
   FolderKanban,
   MessageSquare,
-  BarChart3,
-  ChevronRight,
   Calendar,
   CalendarDays,
-  ArrowLeft,
-  Shield,
-  Server,
+  TrendingUp,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../lib/api'
@@ -112,21 +105,25 @@ function StatCard({
   value,
   icon: Icon,
   subtitle,
+  accent = 'bg-primary/10',
+  iconColor = 'text-primary',
 }: {
   label: string
   value: number | undefined
   icon: React.ComponentType<{ size?: number; className?: string }>
   subtitle?: string
+  accent?: string
+  iconColor?: string
 }) {
   return (
-    <View className="flex-1 rounded-xl border border-border bg-card p-4 min-w-[140px]">
-      <View className="flex-row items-center justify-between mb-2">
-        <Text className="text-xs font-medium text-muted-foreground">{label}</Text>
-        <View className="h-7 w-7 rounded-lg bg-primary/10 items-center justify-center">
-          <Icon size={14} className="text-primary" />
+    <View className="flex-1 min-w-[160px] rounded-xl border border-border bg-card p-4">
+      <View className="flex-row items-center justify-between mb-3">
+        <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{label}</Text>
+        <View className={cn('h-8 w-8 rounded-lg items-center justify-center', accent)}>
+          <Icon size={16} className={iconColor} />
         </View>
       </View>
-      <Text className="text-2xl font-bold text-foreground tracking-tight">
+      <Text className="text-3xl font-bold text-foreground tracking-tight">
         {value !== undefined ? value.toLocaleString() : '—'}
       </Text>
       {subtitle && (
@@ -136,14 +133,14 @@ function StatCard({
   )
 }
 
-function ActiveUsersCard({ data, loading }: { data: ActiveUsersData | null; loading: boolean }) {
+function ActiveUsersCard({ data, loading, isWide }: { data: ActiveUsersData | null; loading: boolean; isWide: boolean }) {
   if (loading) {
     return (
-      <View className="rounded-xl border border-border bg-card p-4">
+      <View className="rounded-xl border border-border bg-card p-5">
         <View className="h-4 w-32 bg-muted rounded mb-4" />
         <View className="flex-row gap-3">
           {[1, 2, 3].map((i) => (
-            <View key={i} className="flex-1 h-16 bg-muted/50 rounded-lg" />
+            <View key={i} className="flex-1 h-20 bg-muted/50 rounded-lg" />
           ))}
         </View>
       </View>
@@ -151,27 +148,27 @@ function ActiveUsersCard({ data, loading }: { data: ActiveUsersData | null; load
   }
 
   const metrics = [
-    { label: 'Daily Active', value: data?.dau, icon: Users },
-    { label: 'Weekly Active', value: data?.wau, icon: Calendar },
-    { label: 'Monthly Active', value: data?.mau, icon: CalendarDays },
+    { label: 'Daily Active', value: data?.dau, icon: Users, color: 'text-blue-500', bg: 'bg-blue-500/10' },
+    { label: 'Weekly Active', value: data?.wau, icon: Calendar, color: 'text-emerald-500', bg: 'bg-emerald-500/10' },
+    { label: 'Monthly Active', value: data?.mau, icon: CalendarDays, color: 'text-purple-500', bg: 'bg-purple-500/10' },
   ]
 
   return (
-    <View className="rounded-xl border border-border bg-card p-4">
-      <Text className="text-sm font-semibold text-foreground mb-3">Active Users</Text>
-      <View className="flex-row gap-3">
+    <View className="rounded-xl border border-border bg-card p-5">
+      <Text className="text-sm font-semibold text-foreground mb-4">Active Users</Text>
+      <View className={cn('gap-3', isWide ? 'flex-row' : 'flex-row')}>
         {metrics.map((m) => {
           const Icon = m.icon
           return (
-            <View key={m.label} className="flex-1 flex-row items-center gap-2 p-3 rounded-lg bg-muted/50">
-              <View className="h-9 w-9 rounded-lg bg-primary/10 items-center justify-center">
-                <Icon size={18} className="text-primary" />
+            <View key={m.label} className="flex-1 flex-row items-center gap-3 p-4 rounded-xl bg-muted/30 border border-border/50">
+              <View className={cn('h-11 w-11 rounded-xl items-center justify-center', m.bg)}>
+                <Icon size={20} className={m.color} />
               </View>
               <View>
-                <Text className="text-lg font-bold text-foreground">
+                <Text className="text-2xl font-bold text-foreground">
                   {m.value !== undefined ? m.value.toLocaleString() : '—'}
                 </Text>
-                <Text className="text-[10px] text-muted-foreground">{m.label}</Text>
+                <Text className="text-xs text-muted-foreground">{m.label}</Text>
               </View>
             </View>
           )
@@ -184,7 +181,7 @@ function ActiveUsersCard({ data, loading }: { data: ActiveUsersData | null; load
 function GrowthSummary({ data, loading }: { data: GrowthDataPoint[] | null; loading: boolean }) {
   if (loading) {
     return (
-      <View className="rounded-xl border border-border bg-card p-4">
+      <View className="rounded-xl border border-border bg-card p-5">
         <View className="h-4 w-32 bg-muted rounded mb-4" />
         <View className="h-40 bg-muted/50 rounded" />
       </View>
@@ -193,8 +190,11 @@ function GrowthSummary({ data, loading }: { data: GrowthDataPoint[] | null; load
 
   if (!data || data.length === 0) {
     return (
-      <View className="rounded-xl border border-border bg-card p-4">
-        <Text className="text-sm font-semibold text-foreground mb-3">Growth Trends</Text>
+      <View className="rounded-xl border border-border bg-card p-5">
+        <View className="flex-row items-center gap-2 mb-3">
+          <TrendingUp size={16} className="text-foreground" />
+          <Text className="text-sm font-semibold text-foreground">Growth Trends</Text>
+        </View>
         <View className="h-32 items-center justify-center">
           <Text className="text-sm text-muted-foreground">No growth data available</Text>
         </View>
@@ -207,32 +207,35 @@ function GrowthSummary({ data, loading }: { data: GrowthDataPoint[] | null; load
   const metrics = [
     { label: 'Users', current: latest.users, start: earliest.users, color: 'bg-primary' },
     { label: 'Workspaces', current: latest.workspaces, start: earliest.workspaces, color: 'bg-blue-500' },
-    { label: 'Projects', current: latest.projects, start: earliest.projects, color: 'bg-green-500' },
+    { label: 'Projects', current: latest.projects, start: earliest.projects, color: 'bg-emerald-500' },
   ]
 
   const maxVal = Math.max(...data.map((d) => Math.max(d.users, d.workspaces, d.projects)), 1)
 
   return (
-    <View className="rounded-xl border border-border bg-card p-4">
-      <Text className="text-sm font-semibold text-foreground mb-3">Growth Trends</Text>
-      <View className="gap-3">
+    <View className="rounded-xl border border-border bg-card p-5">
+      <View className="flex-row items-center gap-2 mb-4">
+        <TrendingUp size={16} className="text-foreground" />
+        <Text className="text-sm font-semibold text-foreground">Growth Trends</Text>
+      </View>
+      <View className="gap-4">
         {metrics.map((m) => {
           const growth = m.start > 0 ? (((m.current - m.start) / m.start) * 100).toFixed(0) : '—'
           const barWidth = Math.max((m.current / maxVal) * 100, 5)
           return (
-            <View key={m.label} className="gap-1">
+            <View key={m.label} className="gap-1.5">
               <View className="flex-row items-center justify-between">
-                <Text className="text-xs font-medium text-foreground">{m.label}</Text>
+                <Text className="text-sm font-medium text-foreground">{m.label}</Text>
                 <View className="flex-row items-center gap-2">
                   <Text className="text-sm font-bold text-foreground">
                     {m.current.toLocaleString()}
                   </Text>
                   {growth !== '—' && (
-                    <Text className="text-xs text-green-500">+{growth}%</Text>
+                    <Text className="text-xs font-medium text-green-500">+{growth}%</Text>
                   )}
                 </View>
               </View>
-              <View className="h-2 bg-muted rounded-full overflow-hidden">
+              <View className="h-2.5 bg-muted rounded-full overflow-hidden">
                 <View className={cn('h-full rounded-full', m.color)} style={{ width: `${barWidth}%` }} />
               </View>
             </View>
@@ -243,15 +246,9 @@ function GrowthSummary({ data, loading }: { data: GrowthDataPoint[] | null; load
   )
 }
 
-const NAV_ITEMS = [
-  { href: '/(admin)/users', icon: Users, label: 'Users', description: 'Manage platform users' },
-  { href: '/(admin)/workspaces', icon: Building2, label: 'Workspaces', description: 'Browse workspaces' },
-  { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics', description: 'Detailed analytics' },
-  { href: '/(admin)/infrastructure', icon: Server, label: 'Infrastructure', description: 'Warm pool, nodes, pods' },
-] as const
-
 export default function AdminDashboard() {
-  const router = useRouter()
+  const { width } = useWindowDimensions()
+  const isWide = width >= 900
   const [period, setPeriod] = useState<AnalyticsPeriod>('30d')
   const [refreshing, setRefreshing] = useState(false)
 
@@ -297,109 +294,83 @@ export default function AdminDashboard() {
   return (
     <ScrollView
       className="flex-1 bg-background"
-      contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
+      contentContainerStyle={{
+        padding: isWide ? 32 : 16,
+        paddingBottom: 40,
+        maxWidth: 1200,
+      }}
       showsVerticalScrollIndicator={false}
       refreshControl={
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
       }
     >
       {/* Header */}
-      <View className="flex-row items-center justify-between mb-4">
-        <View className="flex-row items-center gap-2">
-          <Shield size={18} className="text-primary" />
-          <View>
-            <Text className="text-xl font-bold text-foreground">Dashboard</Text>
-            <Text className="text-xs text-muted-foreground">
-              Platform overview and key metrics
-            </Text>
-          </View>
+      <View className="flex-row items-center justify-between mb-6">
+        <View>
+          <Text className={cn('font-bold text-foreground', isWide ? 'text-2xl' : 'text-xl')}>
+            Dashboard
+          </Text>
+          <Text className="text-sm text-muted-foreground mt-0.5">
+            Platform overview and key metrics
+          </Text>
         </View>
-      </View>
-
-      {/* Period selector */}
-      <View className="mb-4">
         <PeriodSelector value={period} onChange={setPeriod} />
       </View>
 
-      {/* Overview cards */}
+      {/* Overview stat cards */}
       {overview.loading ? (
-        <View className="flex-row flex-wrap gap-3 mb-4">
+        <View className="flex-row flex-wrap gap-3 mb-6">
           {[1, 2, 3, 4].map((i) => (
-            <View key={i} className="flex-1 min-w-[140px] rounded-xl border border-border bg-card p-4">
-              <View className="h-3 w-16 bg-muted rounded mb-2" />
-              <View className="h-6 w-12 bg-muted rounded" />
+            <View key={i} className="flex-1 min-w-[160px] rounded-xl border border-border bg-card p-4">
+              <View className="h-3 w-16 bg-muted rounded mb-3" />
+              <View className="h-7 w-14 bg-muted rounded" />
             </View>
           ))}
         </View>
       ) : (
-        <View className="flex-row flex-wrap gap-3 mb-4">
+        <View className="flex-row flex-wrap gap-3 mb-6">
           <StatCard
             label="Total Users"
             value={overview.data?.totalUsers}
             icon={Users}
             subtitle={overview.data?.newUsersLast30d ? `+${overview.data.newUsersLast30d} last 30d` : undefined}
+            accent="bg-blue-500/10"
+            iconColor="text-blue-500"
           />
           <StatCard
             label="Workspaces"
             value={overview.data?.totalWorkspaces}
             icon={Building2}
+            accent="bg-purple-500/10"
+            iconColor="text-purple-500"
           />
           <StatCard
             label="Projects"
             value={overview.data?.totalProjects}
             icon={FolderKanban}
+            accent="bg-emerald-500/10"
+            iconColor="text-emerald-500"
           />
           <StatCard
             label="Chat Sessions"
             value={overview.data?.totalChatSessions}
             icon={MessageSquare}
-            subtitle={overview.data?.activeUsersLast30d ? `${overview.data.activeUsersLast30d} active` : undefined}
+            subtitle={overview.data?.activeUsersLast30d ? `${overview.data.activeUsersLast30d} active users` : undefined}
+            accent="bg-orange-500/10"
+            iconColor="text-orange-500"
           />
         </View>
       )}
 
       {/* Active users */}
-      <View className="mb-4">
-        <ActiveUsersCard data={activeUsers.data} loading={activeUsers.loading} />
+      <View className="mb-6">
+        <ActiveUsersCard data={activeUsers.data} loading={activeUsers.loading} isWide={isWide} />
       </View>
 
       {/* Growth summary */}
-      <View className="mb-4">
+      <View className="mb-6">
         <GrowthSummary data={growth.data} loading={growth.loading} />
       </View>
-
-      {/* Quick navigation */}
-      <View className="gap-2 mb-4">
-        <Text className="text-sm font-semibold text-foreground mb-1">Quick Access</Text>
-        {NAV_ITEMS.map((item) => {
-          const Icon = item.icon
-          return (
-            <Pressable
-              key={item.href}
-              onPress={() => router.push(item.href as any)}
-              className="flex-row items-center gap-3 p-4 rounded-xl border border-border bg-card active:bg-muted/50"
-            >
-              <View className="h-10 w-10 rounded-lg bg-primary/10 items-center justify-center">
-                <Icon size={20} className="text-primary" />
-              </View>
-              <View className="flex-1">
-                <Text className="text-sm font-semibold text-foreground">{item.label}</Text>
-                <Text className="text-xs text-muted-foreground">{item.description}</Text>
-              </View>
-              <ChevronRight size={16} className="text-muted-foreground" />
-            </Pressable>
-          )
-        })}
-      </View>
-
-      {/* Back to app */}
-      <Pressable
-        onPress={() => router.replace('/(app)')}
-        className="flex-row items-center justify-center gap-2 p-3 rounded-lg border border-border"
-      >
-        <ArrowLeft size={16} className="text-muted-foreground" />
-        <Text className="text-sm text-muted-foreground">Back to App</Text>
-      </Pressable>
     </ScrollView>
   )
 }
