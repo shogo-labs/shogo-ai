@@ -6,9 +6,13 @@
  * - Create new checkpoints
  * - Rollback to previous checkpoints
  * - Get checkpoint diffs
+ *
+ * Uses the SDK HttpClient (via useSDKHttp) for all API calls, ensuring
+ * correct base URL and auth in both dev and production.
  */
 
-import { useState, useEffect, useCallback, useMemo } from "react"
+import { useState, useEffect, useCallback } from "react"
+import { useSDKHttp } from "../domain"
 
 /**
  * Checkpoint data from the API
@@ -64,48 +68,49 @@ export interface CheckpointDiff {
  * Return type for useCheckpoints hook
  */
 export interface CheckpointsState {
-  /** List of checkpoints for the project */
   checkpoints: Checkpoint[]
-  /** Git status for the project */
   gitStatus: GitStatus | null
-  /** Whether data is loading */
   isLoading: boolean
-  /** Whether a mutation is in progress */
   isMutating: boolean
-  /** Error state */
   error: Error | null
-  /** Create a new checkpoint */
   createCheckpoint: (options: {
     message: string
     name?: string
     description?: string
     includeDatabase?: boolean
   }) => Promise<Checkpoint | null>
-  /** Rollback to a checkpoint */
   rollback: (checkpointId: string, includeDatabase?: boolean) => Promise<boolean>
-  /** Get diff for a checkpoint */
   getDiff: (checkpointId: string) => Promise<CheckpointDiff | null>
-  /** Refetch checkpoints */
   refetch: () => void
+}
+
+interface CheckpointsApiResponse {
+  ok?: boolean
+  checkpoints?: Array<Checkpoint & { message?: string }>
+  hasMore?: boolean
+}
+
+interface CheckpointCreateResponse {
+  ok?: boolean
+  checkpoint?: Checkpoint
+}
+
+interface GitStatusResponse extends GitStatus {
+  ok?: boolean
 }
 
 /**
  * Hook for managing project checkpoints (version control).
  *
- * @param projectId - The project to manage checkpoints for
- *
  * @example
  * ```tsx
- * const { checkpoints, createCheckpoint, rollback, isLoading } = useCheckpoints(projectId)
- *
- * // Create a checkpoint
+ * const { checkpoints, createCheckpoint, rollback } = useCheckpoints(projectId)
  * await createCheckpoint({ message: "Added authentication" })
- *
- * // Rollback to a previous checkpoint
  * await rollback(checkpointId)
  * ```
  */
 export function useCheckpoints(projectId: string | undefined): CheckpointsState {
+  const http = useSDKHttp()
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([])
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null)
   const [isLoading, setIsLoading] = useState(false)
@@ -113,7 +118,6 @@ export function useCheckpoints(projectId: string | undefined): CheckpointsState 
   const [error, setError] = useState<Error | null>(null)
   const [refetchCounter, setRefetchCounter] = useState(0)
 
-  // Fetch checkpoints
   useEffect(() => {
     if (!projectId) {
       setCheckpoints([])
@@ -128,51 +132,40 @@ export function useCheckpoints(projectId: string | undefined): CheckpointsState 
       setError(null)
 
       try {
-        // Fetch checkpoints and git status in parallel
-        const [checkpointsRes, statusRes] = await Promise.all([
-          fetch(`/api/projects/${projectId}/checkpoints`),
-          fetch(`/api/projects/${projectId}/git/status`),
+        const [checkpointsRes, statusRes] = await Promise.allSettled([
+          http.get<CheckpointsApiResponse>(`/api/projects/${projectId}/checkpoints`),
+          http.get<GitStatusResponse>(`/api/projects/${projectId}/git/status`),
         ])
 
         if (cancelled) return
 
-        if (checkpointsRes.ok) {
-          const data: any = await checkpointsRes.json()
-          const mappedCheckpoints = (data.checkpoints || []).map((cp: any) => ({
+        if (checkpointsRes.status === "fulfilled" && checkpointsRes.value.data?.checkpoints) {
+          const mapped = checkpointsRes.value.data.checkpoints.map((cp) => ({
             ...cp,
             commitMessage: cp.message || cp.commitMessage,
           }))
-          setCheckpoints(mappedCheckpoints)
+          setCheckpoints(mapped)
         } else {
-          // Checkpoints endpoint may not exist if no git repo yet
           setCheckpoints([])
         }
 
-        if (statusRes.ok) {
-          const data: any = await statusRes.json()
-          setGitStatus(data as GitStatus)
+        if (statusRes.status === "fulfilled" && statusRes.value.data) {
+          setGitStatus(statusRes.value.data as GitStatus)
         } else {
           setGitStatus(null)
         }
       } catch (err) {
         if (cancelled) return
-        console.error("[useCheckpoints] Error fetching checkpoints:", err)
         setError(err instanceof Error ? err : new Error("Failed to fetch checkpoints"))
       } finally {
-        if (!cancelled) {
-          setIsLoading(false)
-        }
+        if (!cancelled) setIsLoading(false)
       }
     }
 
     fetchCheckpoints()
+    return () => { cancelled = true }
+  }, [projectId, http, refetchCounter])
 
-    return () => {
-      cancelled = true
-    }
-  }, [projectId, refetchCounter])
-
-  // Create checkpoint
   const createCheckpoint = useCallback(
     async (options: {
       message: string
@@ -186,32 +179,27 @@ export function useCheckpoints(projectId: string | undefined): CheckpointsState 
       setError(null)
 
       try {
-        const response = await fetch(`/api/projects/${projectId}/checkpoints`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(options),
-        })
+        const res = await http.post<CheckpointCreateResponse>(
+          `/api/projects/${projectId}/checkpoints`,
+          options
+        )
 
-        if (!response.ok) {
-          const errorData: any = await response.json()
-          throw new Error(errorData.error?.message || "Failed to create checkpoint")
+        if (!res.data?.ok || !res.data.checkpoint) {
+          throw new Error("Failed to create checkpoint")
         }
 
-        const data: any = await response.json()
-        setCheckpoints((prev) => [data.checkpoint, ...prev])
-        return data.checkpoint
+        setCheckpoints((prev) => [res.data!.checkpoint!, ...prev])
+        return res.data.checkpoint
       } catch (err) {
-        console.error("[useCheckpoints] Error creating checkpoint:", err)
         setError(err instanceof Error ? err : new Error("Failed to create checkpoint"))
         return null
       } finally {
         setIsMutating(false)
       }
     },
-    [projectId]
+    [projectId, http]
   )
 
-  // Rollback to checkpoint
   const rollback = useCallback(
     async (checkpointId: string, includeDatabase?: boolean): Promise<boolean> => {
       if (!projectId) return false
@@ -220,60 +208,43 @@ export function useCheckpoints(projectId: string | undefined): CheckpointsState 
       setError(null)
 
       try {
-        const response = await fetch(
+        const res = await http.post<{ ok?: boolean }>(
           `/api/projects/${projectId}/checkpoints/${checkpointId}/rollback`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ includeDatabase }),
-          }
+          { includeDatabase }
         )
 
-        if (!response.ok) {
-          const errorData: any = await response.json()
-          throw new Error(errorData.error?.message || "Failed to rollback")
+        if (!res.data?.ok) {
+          throw new Error("Failed to rollback")
         }
 
-        // Refetch checkpoints after rollback
         setRefetchCounter((c) => c + 1)
-        
         return true
       } catch (err) {
-        console.error("[useCheckpoints] Error rolling back:", err)
         setError(err instanceof Error ? err : new Error("Failed to rollback"))
         return false
       } finally {
         setIsMutating(false)
       }
     },
-    [projectId]
+    [projectId, http]
   )
 
-  // Get diff for checkpoint
   const getDiff = useCallback(
     async (checkpointId: string): Promise<CheckpointDiff | null> => {
       if (!projectId) return null
 
       try {
-        const response = await fetch(
+        const res = await http.get<CheckpointDiff>(
           `/api/projects/${projectId}/checkpoints/${checkpointId}/diff`
         )
-
-        if (!response.ok) {
-          return null
-        }
-
-        const data: any = await response.json()
-        return data as CheckpointDiff
-      } catch (err) {
-        console.error("[useCheckpoints] Error getting diff:", err)
+        return res.data ?? null
+      } catch {
         return null
       }
     },
-    [projectId]
+    [projectId, http]
   )
 
-  // Refetch function
   const refetch = useCallback(() => {
     setRefetchCounter((c) => c + 1)
   }, [])

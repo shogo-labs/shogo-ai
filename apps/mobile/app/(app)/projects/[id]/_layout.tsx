@@ -197,6 +197,10 @@ export default observer(function ProjectLayout() {
     [applyMessage],
   )
 
+  const handleEditReset = useCallback(() => {
+    applyMessage({ type: 'clearAll' })
+  }, [applyMessage])
+
   // Auto-capture thumbnail when the agent finishes building the canvas UI (web only).
   const thumbnailCapturedRef = useRef(false)
   const hasCanvasUI = activeSurface && activeSurface.components.size > 0 && activeSurface.components.has('root')
@@ -448,6 +452,7 @@ export default observer(function ProjectLayout() {
       initialImageData={capturedInitialImageData}
       billingData={billingData}
       onCanvasPreview={handleCanvasPreview}
+      onEditReset={handleEditReset}
       className="flex-1"
     />
   )

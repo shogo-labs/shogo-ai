@@ -19,6 +19,7 @@ export interface TurnListProps {
   activeSubagents?: SubagentProgress[]
   recentTools?: RecentTool[]
   subagentToolCalls?: ToolCallData[]
+  onEditMessage?: (messageId: string, newContent: string) => void
   className?: string
 }
 
@@ -29,6 +30,7 @@ export function TurnList({
   activeSubagents = [],
   recentTools = [],
   subagentToolCalls,
+  onEditMessage,
   className,
 }: TurnListProps) {
   const turns = useTurnGrouping(messages, isStreaming, subagentToolCalls)
@@ -42,6 +44,8 @@ export function TurnList({
           phase={phase}
           activeSubagents={index === turns.length - 1 ? activeSubagents : []}
           recentTools={index === turns.length - 1 ? recentTools : []}
+          onEditMessage={onEditMessage}
+          isStreaming={isStreaming}
         />
       ))}
     </View>

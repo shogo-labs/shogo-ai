@@ -3,12 +3,13 @@
  *
  * Container for a complete conversation turn (user message + tool calls + assistant response).
  * Renders tool calls interleaved within assistant content.
+ * Supports inline message editing (ChatGPT/Cursor-style).
  */
 
-import { useState, useCallback } from "react"
-import { View, Text, Pressable } from "react-native"
+import { useState, useCallback, useRef, useEffect } from "react"
+import { View, Text, Pressable, TextInput, Platform, type NativeSyntheticEvent, type TextInputKeyPressEventData } from "react-native"
 import * as Clipboard from "expo-clipboard"
-import { Copy, Check } from "lucide-react-native"
+import { Copy, Check, Pencil, X, ArrowUp } from "lucide-react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { usePhaseColor } from "@/hooks/usePhaseColor"
 import type { ConversationTurn } from "./types"
@@ -24,6 +25,8 @@ export interface TurnGroupProps {
   activeSubagents?: SubagentProgress[]
   recentTools?: RecentTool[]
   showToolTimeline?: boolean
+  onEditMessage?: (messageId: string, newContent: string) => void
+  isStreaming?: boolean
   className?: string
 }
 
@@ -59,15 +62,118 @@ function CopyButton({ text, className }: { text: string; className?: string }) {
   )
 }
 
+function EditableUserMessage({
+  messageId,
+  originalText,
+  onSubmit,
+  onCancel,
+}: {
+  messageId: string
+  originalText: string
+  onSubmit: (messageId: string, newContent: string) => void
+  onCancel: () => void
+}) {
+  const [editText, setEditText] = useState(originalText)
+  const inputRef = useRef<TextInput>(null)
+
+  useEffect(() => {
+    setTimeout(() => inputRef.current?.focus(), 100)
+  }, [])
+
+  const handleSubmit = useCallback(() => {
+    const trimmed = editText.trim()
+    if (trimmed) {
+      onSubmit(messageId, trimmed)
+    } else {
+      onCancel()
+    }
+  }, [editText, messageId, onSubmit, onCancel])
+
+  return (
+    <View className="max-w-[85%] ml-auto gap-2">
+      <View className="rounded-xl border border-primary/40 bg-muted/50 overflow-hidden">
+        <TextInput
+          ref={inputRef}
+          value={editText}
+          onChangeText={setEditText}
+          multiline
+          className="px-3 py-2 text-xs text-foreground min-h-[40px] max-h-[200px] outline-none"
+          textAlignVertical="top"
+          onKeyPress={(e: NativeSyntheticEvent<TextInputKeyPressEventData>) => {
+            const nativeEvent = e.nativeEvent as TextInputKeyPressEventData & { shiftKey?: boolean }
+            if (Platform.OS === "web" && nativeEvent.key === "Enter" && !nativeEvent.shiftKey) {
+              e.preventDefault?.()
+              handleSubmit()
+            }
+          }}
+        />
+      </View>
+      <View className="flex-row justify-end gap-2">
+        <Pressable
+          onPress={onCancel}
+          className="flex-row items-center gap-1.5 rounded-lg border border-border px-3 py-1.5"
+        >
+          <X className="h-3 w-3 text-muted-foreground" size={12} />
+          <Text className="text-xs text-muted-foreground font-medium">
+            Cancel
+          </Text>
+        </Pressable>
+        <Pressable
+          onPress={handleSubmit}
+          disabled={!editText.trim()}
+          className={cn(
+            "flex-row items-center gap-1.5 rounded-lg px-3 py-1.5 bg-primary",
+            !editText.trim() && "opacity-50"
+          )}
+        >
+          <ArrowUp className="h-3 w-3 text-primary-foreground" size={12} />
+          <Text className="text-xs text-primary-foreground font-medium">
+            Send
+          </Text>
+        </Pressable>
+      </View>
+    </View>
+  )
+}
+
 export function TurnGroup({
   turn,
   phase,
   activeSubagents = [],
   recentTools = [],
   showToolTimeline = false,
+  onEditMessage,
+  isStreaming = false,
   className,
 }: TurnGroupProps) {
   const colors = usePhaseColor(phase || "")
+  const [isEditing, setIsEditing] = useState(false)
+  const [isHovered, setIsHovered] = useState(false)
+
+  const canEdit = !!onEditMessage && !isStreaming && !!turn.userMessage
+
+  const handleStartEdit = useCallback(() => {
+    if (canEdit) setIsEditing(true)
+  }, [canEdit])
+
+  const handleCancelEdit = useCallback(() => {
+    setIsEditing(false)
+  }, [])
+
+  const handleSubmitEdit = useCallback(
+    (messageId: string, newContent: string) => {
+      onEditMessage?.(messageId, newContent)
+    },
+    [onEditMessage]
+  )
+
+  const hoverHandlers: Record<string, () => void> =
+    Platform.OS === "web" && canEdit
+      ? {
+          onMouseEnter: () => setIsHovered(true),
+          onMouseLeave: () => setIsHovered(false),
+        }
+      : {}
 
   return (
     <View
@@ -80,10 +186,36 @@ export function TurnGroup({
       {/* User message */}
       {turn.userMessage && (
         <View className="gap-0.5">
-          <MessageContent message={turn.userMessage} />
-          <View className="flex-row justify-end">
-            <CopyButton text={extractTextContent(turn.userMessage)} />
-          </View>
+          {isEditing ? (
+            <EditableUserMessage
+              messageId={turn.userMessage.id}
+              originalText={extractTextContent(turn.userMessage)}
+              onSubmit={handleSubmitEdit}
+              onCancel={handleCancelEdit}
+            />
+          ) : (
+            <View {...hoverHandlers}>
+              <MessageContent message={turn.userMessage} />
+              <View className="flex-row justify-end items-center gap-0.5">
+                {canEdit && (
+                  <Pressable
+                    onPress={handleStartEdit}
+                    className={cn(
+                      "items-center justify-center rounded-md p-1",
+                      Platform.OS === "web" && !isHovered && "opacity-0"
+                    )}
+                    accessibilityLabel="Edit message"
+                  >
+                    <Pencil
+                      className="h-3.5 w-3.5 text-muted-foreground"
+                      size={14}
+                    />
+                  </Pressable>
+                )}
+                <CopyButton text={extractTextContent(turn.userMessage)} />
+              </View>
+            </View>
+          )}
         </View>
       )}
 

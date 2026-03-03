@@ -42,6 +42,7 @@ import {
 } from "@shogo/shared-app/chat"
 import { useChatTransportConfig } from "@shogo/shared-app/chat"
 import { useSDKDomains, useDomainActions } from "@shogo/shared-app/domain"
+import { useCheckpoints } from "@shogo/shared-app"
 import { cn } from "@shogo/shared-ui/primitives"
 import { API_URL } from "../../lib/api"
 import { authClient } from "../../lib/auth-client"
@@ -184,6 +185,8 @@ export interface ChatPanelProps {
   projectType?: "APP" | "AGENT"
   /** Called with canvas preview components streamed through the chat channel */
   onCanvasPreview?: (surfaceId: string, components: any[]) => void
+  /** Called when user edits a message — parent should reset canvas/runtime state */
+  onEditReset?: () => void
   /** Legacy domain stores (platformFeatures, componentBuilder) — optional on mobile */
   legacyDomains?: {
     platformFeatures?: any
@@ -508,11 +511,15 @@ export const ChatPanel = observer(function ChatPanel({
   onCreateTheme,
   projectType,
   onCanvasPreview,
+  onEditReset,
   legacyDomains,
   billingData,
 }: ChatPanelProps) {
   const { studioChat } = useSDKDomains()
   const actions = useDomainActions()
+  const { createCheckpoint, rollback: rollbackCheckpoint } = useCheckpoints(projectId)
+
+  const preMessageCheckpointsRef = useRef<string[]>([])
 
   const platformFeatures = legacyDomains?.platformFeatures
   const componentBuilder = legacyDomains?.componentBuilder
@@ -1690,6 +1697,14 @@ export const ChatPanel = observer(function ChatPanel({
         })
       })
 
+      // Auto-checkpoint: snapshot project state before the agent makes changes
+      const cp = await createCheckpoint({
+        message: `Pre-message: ${trimmedContent.slice(0, 80)}`,
+      })
+      if (cp?.id) {
+        preMessageCheckpointsRef.current.push(cp.id)
+      }
+
       isSendingMessageRef.current = true
 
       actions
@@ -1750,6 +1765,7 @@ export const ChatPanel = observer(function ChatPanel({
       projectId,
       agentMode,
       actions,
+      createCheckpoint,
     ]
   )
 
@@ -1796,6 +1812,7 @@ export const ChatPanel = observer(function ChatPanel({
       setMessageQueue([])
       isProcessingQueueRef.current = false
     }
+    preMessageCheckpointsRef.current = []
   }, [currentSessionId])
 
   const handleRemoveQueuedMessage = useCallback((messageId: string) => {
@@ -1923,6 +1940,78 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [messages, sendMessage, setMessages])
 
+  // Edit message: revert files, clear canvas/agent context, delete messages, resend
+  const handleEditMessage = useCallback(
+    async (messageId: string, newContent: string) => {
+      if (!currentSessionId || isStreaming) return
+      if (!newContent.trim()) return
+
+      const messageIndex = messages.findIndex((m) => m.id === messageId)
+      if (messageIndex === -1) return
+
+      setMessages(messages.slice(0, messageIndex))
+      setMessageQueue([])
+      isSendingMessageRef.current = true
+
+      try {
+        // 1. Rollback project files to pre-message checkpoint
+        const userMsgCountBeforeEdit = messages
+          .slice(0, messageIndex + 1)
+          .filter((m) => m.role === "user").length
+        const checkpointIdx = userMsgCountBeforeEdit - 1
+        const checkpointId = preMessageCheckpointsRef.current[checkpointIdx]
+
+        if (checkpointId) {
+          const success = await rollbackCheckpoint(checkpointId)
+          if (success) {
+            preMessageCheckpointsRef.current = preMessageCheckpointsRef.current.slice(0, checkpointIdx)
+          }
+        }
+
+        // 2. Wipe agent context so next message starts a fresh session
+        ccSessionIdRef.current = undefined
+        setCcSessionId(undefined)
+        if (currentSessionId) {
+          studioChat.chatSessionCollection
+            .update(currentSessionId, { claudeCodeSessionId: undefined })
+            .catch(() => {})
+        }
+
+        // 3. Clear canvas surfaces + refresh file tree
+        onEditReset?.()
+        onFilesChanged?.(["*"])
+
+        // 4. Delete chat messages from DB
+        try {
+          await studioChat.chatMessageCollection.loadAll({ sessionId: currentSessionId })
+        } catch {
+          // Continue with existing store data
+        }
+
+        const allPersisted = studioChat.chatMessageCollection.all
+          .filter((msg: any) => msg.sessionId === currentSessionId)
+          .sort((a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0))
+
+        let cutoffIdx = allPersisted.findIndex((m: any) => m.id === messageId)
+        if (cutoffIdx === -1) {
+          cutoffIdx = Math.min(messageIndex, allPersisted.length)
+        }
+
+        await Promise.allSettled(
+          allPersisted.slice(cutoffIdx).map((msg: any) =>
+            studioChat.chatMessageCollection.delete(msg.id)
+          )
+        )
+      } catch (err) {
+        console.warn("[ChatPanel] Error during edit cleanup:", err)
+      }
+
+      // 5. Send the edited message (keeps isSendingMessageRef true throughout)
+      await sendMessageInternal(newContent.trim())
+    },
+    [currentSessionId, isStreaming, messages, setMessages, sendMessageInternal, studioChat, rollbackCheckpoint, onFilesChanged, onEditReset]
+  )
+
   const messageListMessages = messages.map((msg) => ({
     id: msg.id,
     role: msg.role as "user" | "assistant",
@@ -2010,6 +2099,7 @@ export const ChatPanel = observer(function ChatPanel({
                 }
                 recentTools={recentTools as RecentToolType[]}
                 subagentToolCalls={accumulatedSubagentTools}
+                onEditMessage={handleEditMessage}
               />
             ) : !isStreaming && !isInitialLoadComplete && currentSessionId ? (
               <View className="flex-col items-center justify-center flex-1 gap-3">
