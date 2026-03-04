@@ -1452,7 +1452,7 @@ resource "null_resource" "knative_services" {
                   - name: PROMOTED_POD_GC_ENABLED
                     value: "true"
                   - name: PROMOTED_POD_IDLE_TIMEOUT_MS
-                    value: "1800000"
+                    value: "600000"
                   # OpenTelemetry tracing → SigNoz Cloud
                   - name: OTEL_EXPORTER_OTLP_ENDPOINT
                     value: "https://${var.signoz_endpoint}"

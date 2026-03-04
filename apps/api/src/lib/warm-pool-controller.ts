@@ -1240,7 +1240,7 @@ export class WarmPoolController {
                 ports: [{ containerPort: 8080, name: 'http1' }],
                 env,
                 resources: {
-                  requests: { memory: '512Mi', cpu: '200m' },
+                  requests: { memory: '256Mi', cpu: '200m' },
                   limits: { memory: '2Gi', cpu: '1000m' },
                 },
                 volumeMounts: [{ name: 'project-data', mountPath: workDir }],

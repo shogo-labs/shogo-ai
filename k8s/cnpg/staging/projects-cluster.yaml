@@ -17,6 +17,10 @@ spec:
   # Single instance for staging (no HA replica needed)
   instances: 1
 
+  # Disable auto-created PDBs so Karpenter can drain nodes.
+  # With a single instance there is no failover target anyway.
+  enablePDB: false
+
   # PostgreSQL configuration - tuned for many small databases
   postgresql:
     parameters:

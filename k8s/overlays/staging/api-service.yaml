@@ -256,7 +256,7 @@ spec:
             - name: PROMOTED_POD_GC_ENABLED
               value: "true"
             - name: PROMOTED_POD_IDLE_TIMEOUT_MS
-              value: "1800000"
+              value: "600000"
           resources:
             requests:
               memory: "256Mi"
