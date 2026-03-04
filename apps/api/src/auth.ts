@@ -154,6 +154,9 @@ export const auth = betterAuth({
   trustedOrigins: (request) => {
     const origins = [...getAllowedOrigins(), 'shogo://']
     if (process.env.NODE_ENV !== 'production') {
+      // Expo web dev server
+      origins.push('http://localhost:8081')
+
       const reqOrigin = request?.headers?.get?.('origin')
       if (reqOrigin?.startsWith('http://localhost:') && !origins.includes(reqOrigin)) {
         origins.push(reqOrigin)

@@ -81,9 +81,15 @@ export function AuthProvider({ authClient, children }: AuthProviderProps) {
   }, [authClient])
 
   const handleSignInWithGoogle = useCallback(() => {
+    let callbackURL = '/'
+    if (typeof window !== 'undefined' && window.location?.protocol?.startsWith('http')) {
+      const { protocol, hostname, port } = window.location
+      const host = /^192\.168\./.test(hostname) ? 'localhost' : hostname
+      callbackURL = `${protocol}//${host}${port ? `:${port}` : ''}/`
+    }
     ;(authClient as any).signIn.social({
       provider: 'google',
-      callbackURL: typeof window !== 'undefined' ? window.location.origin : '/',
+      callbackURL,
     })
   }, [authClient])
 
