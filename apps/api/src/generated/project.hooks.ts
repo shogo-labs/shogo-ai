@@ -66,7 +66,8 @@ async function isSuperAdmin(ctx: HookContext): Promise<boolean> {
 export const projectHooks: ProjectHooks = {
   /**
    * Filter projects to only those the user has access to via workspace membership.
-   * Super admins can see all projects.
+   * Super admins can view any specific workspace's projects, but unscoped lists
+   * still filter by their own memberships so the app remains usable.
    * Include workspace and folder in list responses.
    */
   beforeList: async (ctx) => {
@@ -78,31 +79,21 @@ export const projectHooks: ProjectHooks = {
       }
     }
 
-    // Super admins can see all projects
-    if (await isSuperAdmin(ctx)) {
-      const workspaceId = ctx.query.workspaceId
-      return {
-        ok: true,
-        data: {
-          where: workspaceId ? { workspaceId } : {},
-          include: { workspace: true, folder: true },
-        },
-      }
-    }
-
-    // Filter by workspaceId if provided, otherwise show all accessible projects
+    const superAdmin = await isSuperAdmin(ctx)
     const workspaceId = ctx.query.workspaceId
 
     if (workspaceId) {
-      // Verify user has access to this workspace
-      const membership = await ctx.prisma.member.findFirst({
-        where: { userId, workspaceId },
-      })
+      // Super admins can view any workspace; normal users need membership
+      if (!superAdmin) {
+        const membership = await ctx.prisma.member.findFirst({
+          where: { userId, workspaceId },
+        })
 
-      if (!membership) {
-        return {
-          ok: false,
-          error: { code: "forbidden", message: "Access denied to this workspace" },
+        if (!membership) {
+          return {
+            ok: false,
+            error: { code: "forbidden", message: "Access denied to this workspace" },
+          }
         }
       }
 
@@ -115,9 +106,7 @@ export const projectHooks: ProjectHooks = {
       }
     }
 
-    // No workspaceId provided - return projects user can access:
-    // 1. Projects from workspaces they're a member of
-    // 2. Projects they're directly invited to
+    // No workspaceId — scope to the user's own memberships (even for super admins)
     return {
       ok: true,
       data: {
@@ -180,7 +169,8 @@ export const projectHooks: ProjectHooks = {
   },
 
   /**
-   * Verify user can create projects in the target workspace
+   * Verify user can create projects in the target workspace.
+   * Super admins can create in any workspace.
    */
   beforeCreate: async (input, ctx) => {
     const userId = ctx.userId
@@ -199,15 +189,17 @@ export const projectHooks: ProjectHooks = {
       }
     }
 
-    // Verify user has access to create in this workspace (member or higher)
-    const membership = await ctx.prisma.member.findFirst({
-      where: { userId, workspaceId },
-    })
+    // Super admins can create in any workspace
+    if (!(await isSuperAdmin(ctx))) {
+      const membership = await ctx.prisma.member.findFirst({
+        where: { userId, workspaceId },
+      })
 
-    if (!membership) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied to this workspace" },
+      if (!membership) {
+        return {
+          ok: false,
+          error: { code: "forbidden", message: "Access denied to this workspace" },
+        }
       }
     }
 
@@ -257,7 +249,8 @@ export const projectHooks: ProjectHooks = {
   },
 
   /**
-   * Verify user has access to update the project (workspace member or project editor+)
+   * Verify user has access to update the project (workspace member or project editor+).
+   * Super admins can update any project.
    */
   beforeUpdate: async (id, input, ctx) => {
     const userId = ctx.userId
@@ -267,6 +260,8 @@ export const projectHooks: ProjectHooks = {
         error: { code: "unauthorized", message: "Authentication required" },
       }
     }
+
+    if (await isSuperAdmin(ctx)) return { ok: true }
 
     const project = await ctx.prisma.project.findUnique({
       where: { id },
@@ -295,7 +290,8 @@ export const projectHooks: ProjectHooks = {
   },
 
   /**
-   * Verify user has access to delete the project (workspace admin+ or project admin+)
+   * Verify user has access to delete the project (workspace admin+ or project admin+).
+   * Super admins can delete any project.
    */
   beforeDelete: async (id, ctx) => {
     const userId = ctx.userId
@@ -305,6 +301,8 @@ export const projectHooks: ProjectHooks = {
         error: { code: "unauthorized", message: "Authentication required" },
       }
     }
+
+    if (await isSuperAdmin(ctx)) return { ok: true }
 
     const project = await ctx.prisma.project.findUnique({
       where: { id },
