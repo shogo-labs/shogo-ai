@@ -62,10 +62,10 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-list-installed',
-        description: 'Used tool_list to check servers',
+        description: 'Used tool_search to check available servers',
         points: 40,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_list'),
+        validate: (r) => usedTool(r, 'tool_search'),
       },
       {
         id: 'mentions-playwright',
@@ -236,10 +236,10 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-list-installed',
-        description: 'Used tool_list to check what\'s running',
+        description: 'Used tool_search to check what\'s available',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_list'),
+        validate: (r) => usedTool(r, 'tool_search'),
       },
       {
         id: 'used-mcp-uninstall',

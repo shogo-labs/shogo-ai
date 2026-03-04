@@ -1795,7 +1795,7 @@ Only bind operations the tool actually supports. Read-only tools can use just "l
 
       const missing = boundTools.filter((t: string) => !availableTools.includes(t))
       if (missing.length > 0) {
-        return textResult({ error: `Tool(s) not found: ${missing.join(', ')}. Use tool_list to see available tools.` })
+        return textResult({ error: `Tool(s) not found: ${missing.join(', ')}. Use tool_search to find available tools.` })
       }
 
       const manager = getDynamicAppManager()
@@ -2635,7 +2635,7 @@ function createToolUninstallTool(ctx: ToolContext): AgentTool {
     description: 'Stop and remove an installed tool. Its tools will no longer be available.',
     label: 'Uninstall Tool',
     parameters: Type.Object({
-      name: Type.String({ description: 'Tool name to remove (use tool_list to see names)' }),
+      name: Type.String({ description: 'Tool name to remove (use tool_search to find names)' }),
     }),
     execute: async (_id: string, params: any) => {
       const name = params.name as string
@@ -2654,31 +2654,6 @@ function createToolUninstallTool(ctx: ToolContext): AgentTool {
       } catch (err: any) {
         return textResult({ error: `Failed to remove "${name}": ${err.message}` })
       }
-    },
-  }
-}
-
-function createToolListTool(ctx: ToolContext): AgentTool {
-  return {
-    name: 'tool_list',
-    description: 'List all currently installed tools and their available capabilities.',
-    label: 'List Tools',
-    parameters: Type.Object({}),
-    execute: async () => {
-      if (!ctx.mcpClientManager) {
-        return textResult({ error: 'Tool manager not available' })
-      }
-
-      const servers = ctx.mcpClientManager.getServerInfo()
-      if (servers.length === 0) {
-        return textResult({ servers: [], message: 'No tools installed. Use tool_search to find tools to install.' })
-      }
-
-      return textResult({
-        servers: servers.map(s => ({ name: s.name, toolCount: s.toolCount, tools: s.toolNames })),
-        totalServers: servers.length,
-        totalTools: servers.reduce((sum, s) => sum + s.toolCount, 0),
-      })
     },
   }
 }
@@ -2710,8 +2685,8 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   canvas: ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_action_wait', 'canvas_components', 'canvas_trigger_action', 'canvas_inspect'],
   api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind'],
   personality: ['personality_update'],
-  tool_discovery: ['tool_search', 'tool_install', 'tool_uninstall', 'tool_list'],
-  mcp_discovery: ['tool_search', 'tool_install', 'tool_uninstall', 'tool_list'],
+  tool_discovery: ['tool_search', 'tool_install', 'tool_uninstall'],
+  mcp_discovery: ['tool_search', 'tool_install', 'tool_uninstall'],
 }
 
 export const ALL_TOOL_NAMES = [
@@ -2722,7 +2697,7 @@ export const ALL_TOOL_NAMES = [
   'canvas_trigger_action', 'canvas_inspect',
   'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind',
   'personality_update',
-  'tool_search', 'tool_install', 'tool_uninstall', 'tool_list',
+  'tool_search', 'tool_install', 'tool_uninstall',
 ] as const
 
 /**
@@ -3022,7 +2997,6 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createToolSearchTool(),
     createToolInstallTool(ctx),
     createToolUninstallTool(ctx),
-    createToolListTool(ctx),
   ]
 }
 
@@ -3057,7 +3031,6 @@ export function createBasicTools(ctx: ToolContext): AgentTool[] {
     createToolSearchTool(),
     createToolInstallTool(ctx),
     createToolUninstallTool(ctx),
-    createToolListTool(ctx),
   ]
 }
 

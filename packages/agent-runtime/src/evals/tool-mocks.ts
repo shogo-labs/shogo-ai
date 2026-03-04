@@ -155,12 +155,6 @@ export const COMPETITIVE_INTEL_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const GITHUB_TRIAGE_MOCKS: ToolMockMap = {
-  tool_list: {
-    type: 'static',
-    description: 'List all currently installed MCP servers and their available tools.',
-    paramKeys: [],
-    response: { servers: [], totalServers: 0, totalTools: 0 },
-  },
   tool_search: {
     type: 'static',
     description: 'Search for MCP servers by capability or keyword.',
@@ -384,15 +378,6 @@ export const MEETING_PREP_MOCKS: ToolMockMap = {
       message: 'Installed googlecalendar with 1 tool(s). Auth is active — connected and ready.',
     },
   },
-  tool_list: {
-    type: 'static',
-    description: 'List installed MCP servers.',
-    paramKeys: [],
-    response: {
-      servers: [{ name: 'composio', toolCount: 1, tools: ['GOOGLECALENDAR_FIND_EVENT'] }],
-      totalServers: 1, totalTools: 1,
-    },
-  },
   GOOGLECALENDAR_FIND_EVENT: {
     type: 'static',
     description: 'List events from Google Calendar. Returns an array of calendar events with summary, start/end times, attendees, location, and description.',
@@ -541,12 +526,6 @@ const PR_PATTERN_SPEC: ToolMockSpec = {
 }
 
 export const PR_REVIEW_MOCKS: ToolMockMap = {
-  tool_list: {
-    type: 'static',
-    description: 'List installed tools.',
-    paramKeys: [],
-    response: { servers: [], totalServers: 0, totalTools: 0 },
-  },
   tool_search: {
     type: 'static',
     description: 'Search for tools by capability or keyword.',
@@ -593,18 +572,6 @@ export const PR_REVIEW_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const MCP_LIST_INSTALLED_MOCKS: ToolMockMap = {
-  tool_list: {
-    type: 'static',
-    description: 'List all currently installed MCP servers and their available tools.',
-    paramKeys: [],
-    response: {
-      servers: [
-        { name: 'playwright', toolCount: 6, tools: ['mcp_playwright_browser_navigate', 'mcp_playwright_browser_snapshot', 'mcp_playwright_browser_click', 'mcp_playwright_browser_type', 'mcp_playwright_browser_take_screenshot', 'mcp_playwright_browser_close'] },
-      ],
-      totalServers: 1,
-      totalTools: 6,
-    },
-  },
 }
 
 // ---------------------------------------------------------------------------
@@ -630,12 +597,6 @@ export const MCP_SEARCH_BASIC_MOCKS: ToolMockMap = {
       },
     ],
     default: { query: 'unknown', results: [], message: 'No MCP servers found. Try a different search term.' },
-  },
-  tool_list: {
-    type: 'static',
-    description: 'List all currently installed MCP servers and their available tools.',
-    paramKeys: [],
-    response: { servers: [], totalServers: 0, totalTools: 0 },
   },
 }
 
@@ -679,12 +640,6 @@ export const MCP_INSTALL_AND_USE_MOCKS: ToolMockMap = {
     paramKeys: ['path'],
     response: { entries: [{ name: 'report.csv', type: 'file', size: 2048 }, { name: 'data', type: 'directory' }] },
   },
-  tool_list: {
-    type: 'static',
-    description: 'List all currently installed MCP servers and their available tools.',
-    paramKeys: [],
-    response: { servers: [], totalServers: 0, totalTools: 0 },
-  },
 }
 
 // ---------------------------------------------------------------------------
@@ -692,19 +647,6 @@ export const MCP_INSTALL_AND_USE_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const MCP_UNINSTALL_MOCKS: ToolMockMap = {
-  tool_list: {
-    type: 'static',
-    description: 'List all currently installed MCP servers and their available tools.',
-    paramKeys: [],
-    response: {
-      servers: [
-        { name: 'slack', toolCount: 3, tools: ['mcp_slack_send_message', 'mcp_slack_list_channels', 'mcp_slack_read_channel'] },
-        { name: 'postgres', toolCount: 2, tools: ['mcp_postgres_query', 'mcp_postgres_list_tables'] },
-      ],
-      totalServers: 2,
-      totalTools: 5,
-    },
-  },
   tool_uninstall: {
     type: 'static',
     description: 'Stop and remove an installed MCP server.',
@@ -750,12 +692,6 @@ export const MCP_SELF_EXTEND_FIGMA_MOCKS: ToolMockMap = {
       message: 'Installed "figma" with 4 tool(s). They are now available for use.',
     },
   },
-  tool_list: {
-    type: 'static',
-    description: 'List all currently installed MCP servers and their available tools.',
-    paramKeys: [],
-    response: { servers: [], totalServers: 0, totalTools: 0 },
-  },
 }
 
 // ---------------------------------------------------------------------------
@@ -792,12 +728,6 @@ export const MCP_SELF_EXTEND_DATABASE_MOCKS: ToolMockMap = {
       ],
       message: 'Installed "postgres" with 3 tool(s). They are now available for use.',
     },
-  },
-  tool_list: {
-    type: 'static',
-    description: 'List all currently installed MCP servers and their available tools.',
-    paramKeys: [],
-    response: { servers: [], totalServers: 0, totalTools: 0 },
   },
 }
 
@@ -881,12 +811,6 @@ export const MCP_MULTI_SERVER_MOCKS: ToolMockMap = {
     paramKeys: ['channel', 'text'],
     response: { ok: true, channel: '#engineering', ts: '1740200000.000100' },
   },
-  tool_list: {
-    type: 'static',
-    description: 'List all currently installed MCP servers and their available tools.',
-    paramKeys: [],
-    response: { servers: [], totalServers: 0, totalTools: 0 },
-  },
 }
 
 // ---------------------------------------------------------------------------
@@ -932,12 +856,6 @@ export const MCP_DISCOVERY_PERSONALITY_MOCKS: ToolMockMap = {
       { id: 'LIN-102', title: 'Fix dashboard loading speed', status: 'Todo', assignee: 'bob', priority: 'Urgent' },
       { id: 'LIN-103', title: 'Add export to CSV feature', status: 'Todo', assignee: null, priority: 'Medium' },
     ],
-  },
-  tool_list: {
-    type: 'static',
-    description: 'List all currently installed MCP servers and their available tools.',
-    paramKeys: [],
-    response: { servers: [], totalServers: 0, totalTools: 0 },
   },
 }
 
@@ -1036,18 +954,6 @@ export const INVESTOR_MEETING_PREP_MOCKS: ToolMockMap = {
     ],
     default: { content: 'No information found.', status: 404, bytes: 20, url: 'https://unknown.com' },
   },
-  tool_list: {
-    type: 'static',
-    description: 'List installed MCP servers.',
-    paramKeys: [],
-    response: {
-      servers: [
-        { name: 'composio', toolCount: 2, tools: ['GOOGLECALENDAR_FIND_EVENT', 'GOOGLECALENDAR_GET_EVENT'] },
-        { name: 'postgres', toolCount: 3, tools: ['mcp_postgres_query', 'mcp_postgres_list_tables', 'mcp_postgres_describe_table'] },
-      ],
-      totalServers: 2, totalTools: 5,
-    },
-  },
 }
 
 // ---------------------------------------------------------------------------
@@ -1114,20 +1020,6 @@ export const PRODUCTION_INCIDENT_MOCKS: ToolMockMap = {
     description: 'Send a message to a Slack channel.',
     paramKeys: ['channel', 'text'],
     response: { ok: true, channel: '#incidents', ts: '1740237060.000100' },
-  },
-  tool_list: {
-    type: 'static',
-    description: 'List installed MCP servers.',
-    paramKeys: [],
-    response: {
-      servers: [
-        { name: 'composio', toolCount: 2, tools: ['SENTRY_LIST_ISSUES', 'SENTRY_GET_ISSUE'] },
-        { name: 'composio', toolCount: 3, tools: ['GITHUB_LIST_RECENT_DEPLOYS', 'GITHUB_LIST_PULL_REQUESTS', 'GITHUB_GET_COMMIT'] },
-        { name: 'composio', toolCount: 2, tools: ['DATADOG_QUERY_METRICS', 'DATADOG_LIST_MONITORS'] },
-        { name: 'composio', toolCount: 2, tools: ['SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL', 'SLACK_LIST_CHANNELS'] },
-      ],
-      totalServers: 4, totalTools: 9,
-    },
   },
 }
 
@@ -1244,19 +1136,6 @@ export const SUPPORT_TICKET_TRIAGE_MOCKS: ToolMockMap = {
     paramKeys: ['channel', 'text'],
     response: { ok: true, channel: '#engineering', ts: '1740240000.000200' },
   },
-  tool_list: {
-    type: 'static',
-    description: 'List installed MCP servers.',
-    paramKeys: [],
-    response: {
-      servers: [
-        { name: 'composio', toolCount: 2, tools: ['ZENDESK_LIST_TICKETS', 'ZENDESK_GET_TICKET'] },
-        { name: 'composio', toolCount: 3, tools: ['LINEAR_CREATE_ISSUE', 'LINEAR_LIST_ISSUES', 'LINEAR_UPDATE_ISSUE'] },
-        { name: 'composio', toolCount: 2, tools: ['SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL', 'SLACK_LIST_CHANNELS'] },
-      ],
-      totalServers: 3, totalTools: 7,
-    },
-  },
 }
 
 // ---------------------------------------------------------------------------
@@ -1354,19 +1233,6 @@ export const TEAM_ONBOARDING_MOCKS: ToolMockMap = {
       { match: { title: 'meet' }, response: { id: 'PLT-204', url: 'https://linear.app/acme/issue/PLT-204', status: 'Todo', created: true } },
     ],
     default: { id: 'PLT-200', url: 'https://linear.app/acme/issue/PLT-200', status: 'Todo', created: true },
-  },
-  tool_list: {
-    type: 'static',
-    description: 'List installed MCP servers.',
-    paramKeys: [],
-    response: {
-      servers: [
-        { name: 'composio', toolCount: 3, tools: ['GITHUB_ADD_MEMBER_TO_ORG', 'GITHUB_LIST_REPOS', 'GITHUB_CREATE_ISSUE'] },
-        { name: 'composio', toolCount: 3, tools: ['SLACK_INVITE_USER_TO_WORKSPACE', 'SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL', 'SLACK_LIST_CHANNELS'] },
-        { name: 'composio', toolCount: 3, tools: ['LINEAR_CREATE_ISSUE', 'LINEAR_LIST_ISSUES', 'LINEAR_UPDATE_ISSUE'] },
-      ],
-      totalServers: 3, totalTools: 9,
-    },
   },
 }
 
@@ -1512,19 +1378,6 @@ export const BUSINESS_DASHBOARD_MOCKS: ToolMockMap = {
       ],
     },
   },
-  tool_list: {
-    type: 'static',
-    description: 'List installed MCP servers.',
-    paramKeys: [],
-    response: {
-      servers: [
-        { name: 'composio', toolCount: 2, tools: ['STRIPE_GET_BALANCE', 'STRIPE_LIST_PAYMENTS'] },
-        { name: 'postgres', toolCount: 1, tools: ['mcp_postgres_query'] },
-        { name: 'composio', toolCount: 1, tools: ['GITHUB_LIST_PULL_REQUESTS'] },
-      ],
-      totalServers: 3, totalTools: 4,
-    },
-  },
 }
 
 // ---------------------------------------------------------------------------
@@ -1601,12 +1454,6 @@ export const AIRBNB_VACATION_PLANNER_MOCKS: ToolMockMap = {
       },
     ],
     default: { id: 'unknown', name: 'Listing', description: 'A listing in Ubud.', url: 'https://www.airbnb.com/rooms/unknown' },
-  },
-  tool_list: {
-    type: 'static',
-    description: 'List all currently installed MCP servers and their available tools.',
-    paramKeys: [],
-    response: { servers: [], totalServers: 0, totalTools: 0 },
   },
 }
 
@@ -1685,12 +1532,6 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS: {
       successful: true,
     },
   },
-  tool_list: {
-    type: 'static',
-    description: 'List all currently installed MCP servers and their available tools.',
-    paramKeys: [],
-    response: { servers: [], totalServers: 0, totalTools: 0 },
-  },
 }
 
 // ---------------------------------------------------------------------------
@@ -1740,11 +1581,6 @@ GITHUB_LIST_ISSUES: {
       successful: true,
     },
   },
-  tool_list: {
-    type: 'static',
-    paramKeys: [],
-    response: { servers: [], totalServers: 0, totalTools: 0 },
-  },
 }
 
 // ---------------------------------------------------------------------------
@@ -1789,11 +1625,6 @@ GMAIL_SEND_EMAIL: {
     paramKeys: ['to', 'subject', 'body'],
     hidden: true,
     response: { error: 'Not authenticated. User must complete OAuth first.' },
-  },
-  tool_list: {
-    type: 'static',
-    paramKeys: [],
-    response: { servers: [], totalServers: 0, totalTools: 0 },
   },
 }
 
@@ -1843,11 +1674,6 @@ GMAIL_FETCH_EMAILS: {
     paramKeys: ['query', 'max_results'],
     hidden: true,
     response: { data: [], successful: true },
-  },
-  tool_list: {
-    type: 'static',
-    paramKeys: [],
-    response: { servers: [], totalServers: 0, totalTools: 0 },
   },
 }
 
@@ -1909,11 +1735,6 @@ GITHUB_LIST_PULL_REQUESTS: {
     type: 'static',
     paramKeys: ['path'],
     response: { error: 'File not found' },
-  },
-  tool_list: {
-    type: 'static',
-    paramKeys: [],
-    response: { servers: [], totalServers: 0, totalTools: 0 },
   },
 }
 
@@ -1978,11 +1799,6 @@ export const AIRBNB_SKILL_SAVE_MOCKS: ToolMockMap = {
     paramKeys: ['path'],
     response: { error: 'File not found' },
   },
-  tool_list: {
-    type: 'static',
-    paramKeys: [],
-    response: { servers: [], totalServers: 0, totalTools: 0 },
-  },
 }
 
 // ---------------------------------------------------------------------------
@@ -2017,16 +1833,6 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS: {
       tools: ['GOOGLECALENDAR_CREATE_EVENT', 'GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS'],
       authStatus: 'active',
       message: 'Installed googlecalendar with 2 tool(s). Auth is active.',
-    },
-  },
-  tool_list: {
-    type: 'static',
-    paramKeys: [],
-    response: {
-      servers: [
-        { name: 'composio', toolCount: 2, tools: ['GOOGLECALENDAR_CREATE_EVENT', 'GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS'] },
-      ],
-      totalServers: 1, totalTools: 2,
     },
   },
 }
@@ -2148,11 +1954,6 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS: {
     hidden: true,
     response: { data: { items: [], total_events: 0 }, successful: true },
   },
-  tool_list: {
-    type: 'static',
-    paramKeys: [],
-    response: { servers: [], totalServers: 0, totalTools: 0 },
-  },
 }
 
 // ---------------------------------------------------------------------------
@@ -2214,12 +2015,6 @@ GITHUB_LIST_ISSUES: {
       },
       successful: true,
     },
-  },
-  tool_list: {
-    type: 'static',
-    description: 'List all currently installed MCP servers and their available tools.',
-    paramKeys: [],
-    response: { servers: [], totalServers: 0, totalTools: 0 },
   },
 }
 
@@ -2354,12 +2149,6 @@ export const REAL_DATA_GOOGLE_SHEETS_MOCKS: ToolMockMap = {
       successful: true,
     },
   },
-  tool_list: {
-    type: 'static',
-    description: 'List all currently installed MCP servers and their available tools.',
-    paramKeys: [],
-    response: { servers: [], totalServers: 0, totalTools: 0 },
-  },
 }
 
 // ---------------------------------------------------------------------------
@@ -2373,12 +2162,6 @@ export const GENERIC_CRUD_NO_REAL_DATA_MOCKS: ToolMockMap = {
     description: 'Search for MCP servers by capability or keyword.',
     paramKeys: ['query', 'limit'],
     response: { query: 'unknown', results: [], message: 'No integrations found.' },
-  },
-  tool_list: {
-    type: 'static',
-    description: 'List all currently installed MCP servers and their available tools.',
-    paramKeys: [],
-    response: { servers: [], totalServers: 0, totalTools: 0 },
   },
 }
 
@@ -2452,12 +2235,6 @@ export const UNIFIED_SEARCH_MIXED_MOCKS: ToolMockMap = {
       },
     ],
     default: { error: 'Unknown tool' },
-  },
-  tool_list: {
-    type: 'static',
-    description: 'List all currently installed tools and their available capabilities.',
-    paramKeys: [],
-    response: { servers: [], totalServers: 0, totalTools: 0 },
   },
 }
 
@@ -2556,12 +2333,6 @@ SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL: {
     hidden: true,
     response: { data: { ok: true, message: 'Message sent successfully.' }, successful: true },
   },
-  tool_list: {
-    type: 'static',
-    description: 'List all currently installed tools.',
-    paramKeys: [],
-    response: { servers: [], totalServers: 0, totalTools: 0 },
-  },
 }
 
 // ---------------------------------------------------------------------------
@@ -2571,18 +2342,6 @@ SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL: {
 // ---------------------------------------------------------------------------
 
 export const CANVAS_API_BIND_MOCKS: ToolMockMap = {
-  tool_list: {
-    type: 'static',
-    description: 'List all currently installed tools.',
-    paramKeys: [],
-    response: {
-      servers: [
-        { name: 'composio', toolCount: 4, tools: ['GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS', 'GOOGLECALENDAR_CREATE_EVENT', 'GOOGLECALENDAR_GET_EVENT', 'GOOGLECALENDAR_DELETE_EVENT'] },
-      ],
-      totalServers: 1,
-      totalTools: 4,
-    },
-  },
   tool_search: {
     type: 'static',
     description: 'Search for tools by capability or keyword.',
@@ -2708,12 +2467,6 @@ GITHUB_LIST_ISSUES: {
       message: 'Bound GitHubIssue CRUD to GitHub tools. Data auto-loaded at "/issues".',
     },
   },
-  tool_list: {
-    type: 'static',
-    description: 'List all currently installed tools.',
-    paramKeys: [],
-    response: { servers: [], totalServers: 0, totalTools: 0 },
-  },
 }
 
 // ---------------------------------------------------------------------------
@@ -2767,12 +2520,6 @@ export const TOOL_BIND_AT_INSTALL_MOCKS: ToolMockMap = {
     description: 'Update canvas components.',
     paramKeys: ['surfaceId', 'components'],
     response: { ok: true, surfaceId: 'app', status: 'rendered', componentsUpdated: 5 },
-  },
-  tool_list: {
-    type: 'static',
-    description: 'List all currently installed tools.',
-    paramKeys: [],
-    response: { servers: [], totalServers: 0, totalTools: 0 },
   },
 }
 
@@ -2991,11 +2738,6 @@ export const LUXURY_BALI_TRIP_PLANNER_MOCKS: ToolMockMap = {
     ],
     default: { id: 'unknown', name: 'Luxury Villa', description: 'A luxury villa in Bali.', url: 'https://www.airbnb.com/rooms/unknown' },
   },
-  tool_list: {
-    type: 'static',
-    paramKeys: [],
-    response: { servers: [], totalServers: 0, totalTools: 0 },
-  },
 }
 
 // ---------------------------------------------------------------------------
@@ -3018,12 +2760,6 @@ const BUILTIN_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const CICD_PIPELINE_MOCKS: ToolMockMap = {
-  tool_list: {
-    type: 'static',
-    description: 'List all currently installed MCP servers and their available tools.',
-    paramKeys: [],
-    response: { servers: [], totalServers: 0, totalTools: 0 },
-  },
   tool_search: {
     type: 'pattern',
     description: 'Search for MCP servers by capability or keyword.',

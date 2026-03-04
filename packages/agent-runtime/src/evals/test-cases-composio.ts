@@ -179,16 +179,6 @@ export const COMPOSIO_EVALS: AgentEval[] = [
     maxScore: 100,
     toolMocks: {
       ...COMPOSIO_GOOGLE_CALENDAR_MOCKS,
-      tool_list: {
-        type: 'static',
-        paramKeys: [],
-        response: {
-          servers: [
-            { name: 'composio', toolCount: 4, tools: ['GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS', 'GOOGLECALENDAR_LIST_CALENDARS', 'GOOGLECALENDAR_EVENTS_LIST', 'GOOGLECALENDAR_CREATE_EVENT'] },
-          ],
-          totalServers: 1, totalTools: 4,
-        },
-      },
     },
     workspaceFiles: {
       'skills/google-calendar.md': `---

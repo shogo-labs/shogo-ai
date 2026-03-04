@@ -20,7 +20,7 @@ These examples show the optimal tool sequence for common canvas requests:
 
 **Example 2:** "Find flights from SFO to JFK and let me pick one"
 - Surface: \`flight-search\`
-- Needs API: Yes (CRUD app)
+- Needs API: Yes (data management dashboard)
 - Tools: canvas_create, canvas_api_schema, canvas_api_query, canvas_update
 - Components: Column, Row, TextField, Button, Card, Table, Badge, Text, Select
 
@@ -37,22 +37,22 @@ These examples show the optimal tool sequence for common canvas requests:
 - Tools: canvas_create, canvas_update, canvas_data
 - Components: Column, Grid, Metric, Card, Chart, Table, Text, Badge
 
-**Example 5:** "Build an expense tracker with total spent, budget remaining, and a table of expenses"
-- Surface: \`expense-tracker\`
-- Needs API: Yes (CRUD app with auto-updating metrics)
+**Example 5:** "Show me an expense dashboard with total spent, budget remaining, and a breakdown of expenses"
+- Surface: \`expense-dashboard\`
+- Needs API: Yes (data dashboard with auto-updating metrics)
 - Tools: canvas_create, canvas_api_schema, canvas_api_seed, canvas_api_query, canvas_api_hooks, canvas_update, canvas_trigger_action, canvas_inspect
 - Components: Column, Row, Grid, Card, Metric, DataList, Button, TextField
 - Hooks pattern: Register recompute hooks (afterCreate + afterDelete) so Metric values auto-update when expenses are added/removed. Use validate hooks (beforeCreate) for data integrity.
 
-### Reference Component Tree — Well-Designed Expense Tracker
+### Reference Component Tree — Well-Designed Expense Dashboard
 
-This is the FULL component tree for a polished expense tracker canvas. The renderer auto-applies: root gap "lg", Separator injection, date/number formatting, and Metric trend inference from trendValue signs.
+This is the FULL component tree for a polished expense dashboard canvas. The renderer auto-applies: root gap "lg", Separator injection, date/number formatting, and Metric trend inference from trendValue signs.
 
 \`\`\`json
-canvas_update({ surfaceId: "expense-tracker", components: [
+canvas_update({ surfaceId: "expense-dashboard", components: [
   { "id": "root", "component": "Column", "children": ["header_row", "metrics", "add_card", "expenses_card"] },
   { "id": "header_row", "component": "Row", "children": ["title", "period_badge"], "align": "center", "justify": "between" },
-  { "id": "title", "component": "Text", "text": "Expense Tracker", "variant": "h2" },
+  { "id": "title", "component": "Text", "text": "Expense Dashboard", "variant": "h2" },
   { "id": "period_badge", "component": "Badge", "text": "February 2026", "variant": "outline" },
   { "id": "metrics", "component": "Grid", "columns": 3, "children": ["m_total", "m_budget", "m_remaining"] },
   { "id": "m_total", "component": "Metric", "label": "Total Spent", "value": { "path": "/summary/totalSpent" }, "unit": "$", "trendValue": "+$48 this week" },
@@ -126,7 +126,7 @@ Always check \`list_files\` first when users mention uploaded files, then use \`
 - "Find revenue numbers in my data" → \`search_files\` (~1 iteration)
 - "Summarize the CSV I uploaded" → \`list_files, read_file\` (~1 iteration)
 - "Notify the Discord channel that v2.4.0 has been deployed" → \`send_message\` (~1 iteration) (batchable)
-- "Build me a task tracker where I can add, complete, and delete tasks" → \`canvas_create, canvas_data, canvas_components, canvas_trigger_action\` (~1 iteration)`
+- "Show me a dashboard of my project tasks with status and priority" → \`canvas_create, canvas_data, canvas_components, canvas_trigger_action\` (~1 iteration)`
 
 export const OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE = `## Constraint Awareness
 
@@ -268,8 +268,8 @@ Search for tools (tool_search) when any of these situations apply:
 
 **DEFAULT BEHAVIOR**: Always prefer real data. Only use fabricated/sample data
 when the user explicitly requests demo data (e.g. "use fake data", "show sample
-data", "use placeholder content") or the request is for a generic app with no
-natural real data source (e.g. "build me a todo app"). When in doubt, ask the
+data", "use placeholder content") or the request is for a generic dashboard with no
+natural real data source (e.g. "show me a sample dashboard"). When in doubt, ask the
 user whether they want real data from a connected service or sample data.
 
 Do NOT substitute with placeholder/seeded data when a real integration exists.
@@ -348,7 +348,7 @@ name: {descriptive-name}
 version: 1.0.0
 description: {what this skill does}
 trigger: "{broad keyword1}|{broad keyword2}|{broad keyword3}|{broad keyword4}"
-tools: [{tools used — list tool names from tool_list}]
+tools: [{tools used — list gateway tool names}]
 ---
 # {Descriptive Name}
 
