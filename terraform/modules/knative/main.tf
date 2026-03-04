@@ -303,6 +303,20 @@ resource "null_resource" "knative_pdb_patches" {
         -p '{"spec":{"minAvailable":null,"maxUnavailable":1}}' || true
       kubectl patch pdb 3scale-kourier-gateway-pdb -n kourier-system --type merge \
         -p '{"spec":{"minAvailable":null,"maxUnavailable":1}}' || true
+
+      # Scale net-kourier-controller resources for large service counts.
+      # Each Knative service creates an ingress route; at 1000+ services the
+      # default 500Mi/1 CPU is insufficient and causes OOMKills or liveness failures.
+      kubectl set resources -n knative-serving deployment/net-kourier-controller \
+        -c controller \
+        --limits=cpu=2,memory=2Gi \
+        --requests=cpu=500m,memory=512Mi || true
+
+      # Increase liveness probe tolerance so the controller can prime all
+      # ingresses before being killed (default 6 failures * 10s = 60s is
+      # too short for 1000+ ingresses).
+      kubectl patch deployment net-kourier-controller -n knative-serving --type=json \
+        -p='[{"op":"replace","path":"/spec/template/spec/containers/0/livenessProbe/failureThreshold","value":30},{"op":"replace","path":"/spec/template/spec/containers/0/livenessProbe/initialDelaySeconds","value":30}]' || true
     EOT
   }
 }

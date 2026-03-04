@@ -88,8 +88,13 @@ const PROMOTED_POD_IDLE_TIMEOUT_MS = parseInt(
   process.env.PROMOTED_POD_IDLE_TIMEOUT_MS || String(30 * 60 * 1000),
   10
 )
-const PROMOTED_POD_GC_MAX_ORPHANS_PER_CYCLE = 3
-const PROMOTED_POD_GC_MAX_IDLE_EVICTIONS_PER_CYCLE = 2
+const PROMOTED_POD_GC_MAX_ORPHANS_PER_CYCLE = 20
+const PROMOTED_POD_GC_MAX_IDLE_EVICTIONS_PER_CYCLE = 10
+
+// Full-namespace GC: sweep ALL Knative services (not just warm-pool-labeled)
+// and delete ones that have no matching project in the DB.
+const NAMESPACE_GC_INTERVAL_CYCLES = parseInt(process.env.NAMESPACE_GC_INTERVAL_CYCLES || '10', 10) // every N reconcile cycles
+const NAMESPACE_GC_MAX_DELETIONS_PER_CYCLE = 50
 
 const POOL_PROJECT_ID = '__POOL__'
 const POOL_LABEL_KEY = 'shogo.io/warm-pool'
@@ -119,7 +124,9 @@ export interface PromotedPodInfo {
 export interface GcStats {
   orphansDeleted: number
   idleEvictions: number
+  namespaceServicesDeleted: number
   lastGcRun: number | null
+  lastNamespaceGcRun: number | null
 }
 
 export interface WarmPoolConfig {
@@ -229,9 +236,12 @@ export class WarmPoolController {
   private promotedPods: PromotedPodInfo[] = []
 
   /** Cumulative GC statistics for observability */
-  private gcStats: GcStats = { orphansDeleted: 0, idleEvictions: 0, lastGcRun: null }
+  private gcStats: GcStats = { orphansDeleted: 0, idleEvictions: 0, namespaceServicesDeleted: 0, lastGcRun: null, lastNamespaceGcRun: null }
 
   private started = false
+
+  /** Cycle counter for scheduling periodic namespace-wide GC */
+  private reconcileCycleCount = 0
 
   /** Burst detection: timer for rapid replenishment after multiple claims */
   private burstReconcileTimer: ReturnType<typeof setTimeout> | null = null
@@ -365,6 +375,7 @@ export class WarmPoolController {
    */
   async reconcile(): Promise<void> {
     if (!this.started) return
+    this.reconcileCycleCount++
 
     // Adjust pool size based on cluster node count
     await this.adjustPoolSizeForNodes()
@@ -393,10 +404,18 @@ export class WarmPoolController {
       }
     }
 
-    // GC orphaned and idle promoted pods
+    // GC orphaned and idle promoted pods (warm-pool-labeled services only)
     await this.gcPromotedPods().catch((err) => {
       console.error('[WarmPool] Promoted pod GC failed (non-fatal):', err.message)
     })
+
+    // Full namespace GC: sweep ALL Knative services (including cold-start projects)
+    // Runs every N cycles to avoid hammering the K8s API on every 30s reconcile
+    if (this.reconcileCycleCount % NAMESPACE_GC_INTERVAL_CYCLES === 0) {
+      await this.gcOrphanedServices().catch((err) => {
+        console.error('[WarmPool] Namespace GC failed (non-fatal):', err.message)
+      })
+    }
 
     // Trim excess pods when pool shrinks (e.g., nodes scaled down).
     // Delete oldest excess pods, 2 per type per cycle, to converge to target.
@@ -1050,6 +1069,149 @@ export class WarmPoolController {
     }
 
     return { orphansDeleted, idleEvicted }
+  }
+
+  /**
+   * Full-namespace GC: sweep ALL Knative services in the workspaces namespace
+   * and aggressively delete services that are no longer needed.
+   *
+   * Two categories of deletions:
+   *   1. Orphans — no matching project in DB (load test leftovers, deleted projects)
+   *   2. Scaled-to-zero — project exists but pod is inactive. The warm pool provides
+   *      a faster return-visit experience than Knative scale-from-zero, so keeping
+   *      these services around only wastes Kourier/Envoy route capacity.
+   *
+   * When deleting a scaled-to-zero service with a DB mapping, we clear the
+   * knativeServiceName so getProjectPodUrl() claims a warm pod on next visit.
+   *
+   * Runs every NAMESPACE_GC_INTERVAL_CYCLES reconcile cycles (~5 min at 30s interval).
+   */
+  async gcOrphanedServices(): Promise<number> {
+    this.gcStats.lastNamespaceGcRun = Date.now()
+    let deleted = 0
+
+    try {
+      const api = getCustomApi()
+      const response = await api.listNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: KNATIVE_VERSION,
+        namespace: this.namespace,
+        plural: 'services',
+        labelSelector: 'app.kubernetes.io/part-of=shogo',
+      })
+
+      const allServices = (response as any).items || []
+
+      const candidateServices: {
+        name: string
+        projectId: string | null
+        replicas: number
+      }[] = []
+
+      for (const svc of allServices) {
+        const name: string = svc.metadata?.name
+        if (!name) continue
+
+        // Skip services managed by the warm pool (available, claimed, or assigned)
+        if (this.available.has(name)) continue
+        if (this.claimedServiceNames.has(name)) continue
+        if ([...this.assigned.values()].some((p) => p.serviceName === name)) continue
+        // Skip system services
+        if (name === 'mcp-workspace-1') continue
+
+        const labels = svc.metadata?.labels || {}
+        const status = svc.status || {}
+
+        // Skip warm pool pods that are still in "available" status
+        if (name.startsWith('warm-pool-') && labels[POOL_STATUS_LABEL_KEY] === 'available') continue
+
+        let projectId: string | null = null
+        if (labels['shogo.io/project']) {
+          projectId = labels['shogo.io/project']
+        } else if (name.startsWith('project-')) {
+          projectId = name.replace('project-', '')
+        }
+
+        const replicas = status.actualReplicas ?? 0
+
+        candidateServices.push({ name, projectId, replicas })
+      }
+
+      if (candidateServices.length === 0) return 0
+
+      const { prisma } = await import('./prisma')
+
+      const serviceNames = candidateServices.map((s) => s.name)
+      const projectIds = candidateServices.map((s) => s.projectId).filter(Boolean) as string[]
+
+      const mappedProjects = await prisma.project.findMany({
+        where: {
+          OR: [
+            { knativeServiceName: { in: serviceNames } },
+            ...(projectIds.length > 0 ? [{ id: { in: projectIds } }] : []),
+          ],
+        },
+        select: { id: true, knativeServiceName: true },
+      })
+
+      const activeServiceNames = new Set(
+        mappedProjects.map((p) => p.knativeServiceName).filter(Boolean)
+      )
+      const activeProjectIds = new Set(mappedProjects.map((p) => p.id))
+
+      // Collect DB mappings to clear for scaled-to-zero services
+      const dbMappingsToClear: string[] = []
+
+      for (const svc of candidateServices) {
+        if (deleted >= NAMESPACE_GC_MAX_DELETIONS_PER_CYCLE) break
+
+        const isOrphan = !activeServiceNames.has(svc.name) &&
+                         !(svc.projectId && activeProjectIds.has(svc.projectId))
+        const isScaledToZero = svc.replicas === 0
+
+        if (isOrphan) {
+          console.log(
+            `[WarmPool GC:namespace] Deleting orphaned service ${svc.name} (project ${svc.projectId || 'unknown'} not in DB)`
+          )
+        } else if (isScaledToZero) {
+          console.log(
+            `[WarmPool GC:namespace] Deleting scaled-to-zero service ${svc.name} (project ${svc.projectId || 'unknown'} — warm pool will handle next visit)`
+          )
+          if (activeServiceNames.has(svc.name)) {
+            dbMappingsToClear.push(svc.name)
+          }
+        } else {
+          // Service is running (replicas > 0) and has a valid DB mapping — leave it
+          continue
+        }
+
+        this.deleteWarmPodService(svc.name).catch((err) => {
+          console.error(`[WarmPool GC:namespace] Failed to delete ${svc.name}:`, err.message)
+        })
+        deleted++
+        this.gcStats.namespaceServicesDeleted++
+      }
+
+      // Clear DB mappings for deleted services so getProjectPodUrl() claims warm pods
+      if (dbMappingsToClear.length > 0) {
+        await prisma.project.updateMany({
+          where: { knativeServiceName: { in: dbMappingsToClear } },
+          data: { knativeServiceName: null },
+        }).catch((err: any) => {
+          console.error(`[WarmPool GC:namespace] Failed to clear ${dbMappingsToClear.length} DB mappings:`, err.message)
+        })
+      }
+
+      if (deleted > 0) {
+        console.log(
+          `[WarmPool GC:namespace] Cycle complete: ${deleted} services deleted (total: ${this.gcStats.namespaceServicesDeleted}, remaining: ${allServices.length - deleted})`
+        )
+      }
+    } catch (err: any) {
+      console.error('[WarmPool GC:namespace] Failed:', err.message)
+    }
+
+    return deleted
   }
 
   // ===========================================================================
