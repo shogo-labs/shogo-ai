@@ -16,7 +16,10 @@ import {
   ExternalLink,
   ChevronDown,
   ChevronRight,
+  Copy,
+  Check,
 } from 'lucide-react-native'
+import * as Clipboard from 'expo-clipboard'
 
 interface ChannelInfo {
   type: string
@@ -114,6 +117,20 @@ const CHANNEL_DEFS: Record<string, ChannelDef> = {
     setupLabel: 'Azure App Registrations',
     fields: [],
   },
+  webchat: {
+    name: 'WebChat Widget',
+    emoji: '🌐',
+    setupUrl: '',
+    setupLabel: '',
+    description: 'Embeddable chat widget for any website',
+    fields: [
+      { key: 'title', label: 'Chat Title (optional)', placeholder: 'Chat with us', secret: false },
+      { key: 'welcomeMessage', label: 'Welcome Message (optional)', placeholder: 'Hi! How can I help you today?', secret: false },
+      { key: 'primaryColor', label: 'Theme Color (optional)', placeholder: '#6366f1', secret: false },
+      { key: 'position', label: 'Position (optional)', placeholder: 'bottom-right or bottom-left', secret: false },
+      { key: 'allowedOrigins', label: 'Allowed Origins (optional)', placeholder: '* (all) or https://example.com', secret: false },
+    ],
+  },
 }
 
 export function ChannelsPanel({ projectId, agentUrl, visible }: ChannelsPanelProps) {
@@ -125,6 +142,7 @@ export function ChannelsPanel({ projectId, agentUrl, visible }: ChannelsPanelPro
   const [connecting, setConnecting] = useState<string | null>(null)
   const [disconnecting, setDisconnecting] = useState<string | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
+  const [copiedSnippet, setCopiedSnippet] = useState(false)
 
   const loadChannels = useCallback(async () => {
     if (!agentUrl) return
@@ -329,6 +347,49 @@ export function ChannelsPanel({ projectId, agentUrl, visible }: ChannelsPanelPro
                     ) : null}
                   </Pressable>
 
+                  {/* WebChat embed snippet (shown when connected) */}
+                  {type === 'webchat' && isConnected && agentUrl && (
+                    <View className="px-3 pb-3 border-t border-border">
+                      <View className="mt-3 gap-2">
+                        <Text className="text-[11px] font-medium text-foreground">
+                          Embed on your website
+                        </Text>
+                        <Text className="text-[10px] text-muted-foreground">
+                          Copy this snippet and paste it before the closing {'</body>'} tag:
+                        </Text>
+                        <View className="bg-muted/50 rounded-md p-2.5 border border-border">
+                          <Text
+                            className="text-[10px] text-foreground font-mono"
+                            selectable
+                          >
+                            {`<script src="${agentUrl}/agent/channels/webchat/widget.js"></script>`}
+                          </Text>
+                        </View>
+                        <Pressable
+                          onPress={async () => {
+                            const snippet = `<script src="${agentUrl}/agent/channels/webchat/widget.js"></script>`
+                            await Clipboard.setStringAsync(snippet)
+                            setCopiedSnippet(true)
+                            setTimeout(() => setCopiedSnippet(false), 2000)
+                          }}
+                          className="flex-row items-center gap-1.5 self-start px-2.5 py-1.5 border border-border rounded-md active:bg-muted"
+                        >
+                          {copiedSnippet ? (
+                            <>
+                              <Check size={12} className="text-emerald-500" />
+                              <Text className="text-[10px] text-emerald-500">Copied!</Text>
+                            </>
+                          ) : (
+                            <>
+                              <Copy size={12} className="text-muted-foreground" />
+                              <Text className="text-[10px] text-muted-foreground">Copy snippet</Text>
+                            </>
+                          )}
+                        </Pressable>
+                      </View>
+                    </View>
+                  )}
+
                   {/* Expandable config form */}
                   {isExpanded && !isConnected && hasForm && (
                     <View className="px-3 pb-3 border-t border-border">
@@ -398,7 +459,7 @@ export function ChannelsPanel({ projectId, agentUrl, visible }: ChannelsPanelPro
             <Text className="text-xs text-muted-foreground mt-4">
               Or ask the builder AI to connect channels. For example: "Connect my Telegram
               bot", "Set up Discord", "Connect WhatsApp", "Add Slack", "Set up a webhook
-              channel", or "Set up Microsoft Teams".
+              channel", "Set up Microsoft Teams", or "Add a webchat widget to my website".
             </Text>
           </View>
         )}

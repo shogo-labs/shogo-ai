@@ -76,9 +76,6 @@ If a payment fails, you'll receive a notification. Your plan remains active for 
 **Can I get a refund?**
 Contact support for refund requests. Refund eligibility depends on the circumstances.
 
-**Do I get charged when I publish?**
-No. Publishing is included with your plan at no extra cost. You only spend credits when sending messages to the AI.
-
 **Can different workspace members be on different plans?**
 No. Plans are workspace-level. All members share the workspace's credit pool.
 

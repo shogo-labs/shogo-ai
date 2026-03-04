@@ -1,5 +1,6 @@
 /**
- * Admin Infrastructure - Warm pool, cluster nodes, promoted pods, and GC status.
+ * Admin Infrastructure - Warm pool, cluster nodes, promoted pods, GC status,
+ * and persistent historical charts backed by InfraSnapshot data.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react'
@@ -78,11 +79,31 @@ interface WarmPoolData {
   gcStats: GcStats
 }
 
-interface HistoryPoint {
-  time: number
-  nodes: number
-  availableAgents: number
-  promotedCount: number
+interface InfraHistoryPoint {
+  timestamp: string
+  totalNodes: number
+  asgDesired: number
+  totalPodSlots: number
+  usedPodSlots: number
+  totalCpuMillis: number
+  usedCpuMillis: number
+  warmAvailable: number
+  warmTarget: number
+  warmAssigned: number
+  totalProjects: number
+  readyProjects: number
+  runningProjects: number
+  scaledToZero: number
+}
+
+type HistoryPeriod = '1h' | '6h' | '24h' | '7d' | '30d'
+
+const HISTORY_PERIOD_LABELS: Record<HistoryPeriod, string> = {
+  '1h': '1h',
+  '6h': '6h',
+  '24h': '24h',
+  '7d': '7d',
+  '30d': '30d',
 }
 
 // =============================================================================
@@ -94,6 +115,19 @@ async function fetchWarmPool(): Promise<WarmPoolData | null> {
     const res = await fetch(`${API_BASE}/warm-pool`, { credentials: 'include' })
     if (!res.ok) return null
     return await res.json()
+  } catch {
+    return null
+  }
+}
+
+async function fetchInfraHistory(period: HistoryPeriod): Promise<InfraHistoryPoint[] | null> {
+  try {
+    const res = await fetch(`${API_BASE}/analytics/infra-history?period=${period}`, {
+      credentials: 'include',
+    })
+    if (!res.ok) return null
+    const json = await res.json()
+    return json.data ?? null
   } catch {
     return null
   }
@@ -164,7 +198,7 @@ function idleBg(seconds: number | null): string {
 // Components
 // =============================================================================
 
-function StatCard({
+function InfraStatCard({
   label,
   value,
   subtitle,
@@ -209,55 +243,109 @@ function UtilizationBar({ label, used, total, unit = '' }: { label: string; used
   )
 }
 
-function MiniTimeline({ history }: { history: HistoryPoint[] }) {
-  if (history.length < 2) {
+function HistoryPeriodSelector({
+  value,
+  onChange,
+}: {
+  value: HistoryPeriod
+  onChange: (p: HistoryPeriod) => void
+}) {
+  return (
+    <View className="flex-row items-center bg-muted rounded-lg p-0.5 gap-0.5">
+      {(Object.keys(HISTORY_PERIOD_LABELS) as HistoryPeriod[]).map((p) => (
+        <Pressable
+          key={p}
+          onPress={() => onChange(p)}
+          className={cn(
+            'px-2.5 py-1 rounded-md',
+            value === p ? 'bg-background shadow-sm' : ''
+          )}
+        >
+          <Text
+            className={cn(
+              'text-xs font-medium',
+              value === p ? 'text-foreground' : 'text-muted-foreground'
+            )}
+          >
+            {HISTORY_PERIOD_LABELS[p]}
+          </Text>
+        </Pressable>
+      ))}
+    </View>
+  )
+}
+
+function InfraHistoryChart({
+  data,
+  loading,
+}: {
+  data: InfraHistoryPoint[] | null
+  loading: boolean
+}) {
+  if (loading) {
     return (
-      <View className="bg-card border border-border rounded-xl p-4">
-        <Text className="text-sm font-medium text-foreground mb-2">Session Timeline</Text>
-        <Text className="text-xs text-muted-foreground">Collecting data points...</Text>
+      <View className="h-40 items-center justify-center">
+        <ActivityIndicator size="small" />
       </View>
     )
   }
 
-  const maxNodes = Math.max(...history.map((h) => h.nodes), 1)
-  const maxPromoted = Math.max(...history.map((h) => h.promotedCount), 1)
-  const barCount = Math.min(history.length, 20)
-  const points = history.slice(-barCount)
+  if (!data || data.length < 2) {
+    return (
+      <View className="h-32 items-center justify-center">
+        <Text className="text-sm text-muted-foreground">
+          {data?.length === 1 ? 'Collecting more data points...' : 'No historical data yet — snapshots collected every 60s'}
+        </Text>
+      </View>
+    )
+  }
+
+  const barCount = Math.min(data.length, 80)
+  const step = Math.max(1, Math.floor(data.length / barCount))
+  const sampled = data.filter((_, i) => i % step === 0)
+
+  const maxNodes = Math.max(...sampled.map((d) => d.totalNodes), 1)
+  const maxPods = Math.max(...sampled.map((d) => d.runningProjects), 1)
+  const maxWarm = Math.max(...sampled.map((d) => d.warmAvailable), 1)
+  const maxVal = Math.max(maxNodes, maxPods, maxWarm, 1)
 
   return (
-    <View className="bg-card border border-border rounded-xl p-4">
-      <Text className="text-sm font-medium text-foreground mb-3">Session Timeline</Text>
-      <View className="mb-2">
-        <Text className="text-xs text-muted-foreground mb-1">Nodes</Text>
-        <View className="flex-row items-end gap-1 h-8">
-          {points.map((p, i) => (
-            <View
-              key={i}
-              className="flex-1 bg-blue-500 rounded-sm"
-              style={{ height: `${(p.nodes / maxNodes) * 100}%`, minHeight: 2 }}
-            />
-          ))}
-        </View>
+    <View>
+      <View className="flex-row items-end gap-px" style={{ height: 100 }}>
+        {sampled.map((point, i) => {
+          const nodeH = (point.totalNodes / maxVal) * 100
+          const podH = (point.runningProjects / maxVal) * 100
+          const warmH = (point.warmAvailable / maxVal) * 100
+          return (
+            <View key={i} className="flex-1 flex-row items-end gap-px" style={{ height: 100 }}>
+              <View className="flex-1 bg-blue-500/70 rounded-t-sm" style={{ height: Math.max(nodeH, 2) }} />
+              <View className="flex-1 bg-emerald-500/70 rounded-t-sm" style={{ height: Math.max(podH, 2) }} />
+              <View className="flex-1 bg-amber-500/70 rounded-t-sm" style={{ height: Math.max(warmH, 2) }} />
+            </View>
+          )
+        })}
       </View>
-      <View>
-        <Text className="text-xs text-muted-foreground mb-1">Promoted Pods</Text>
-        <View className="flex-row items-end gap-1 h-8">
-          {points.map((p, i) => (
-            <View
-              key={i}
-              className="flex-1 bg-orange-500 rounded-sm"
-              style={{ height: `${(p.promotedCount / maxPromoted) * 100}%`, minHeight: 2 }}
-            />
-          ))}
-        </View>
-      </View>
-      <View className="flex-row justify-between mt-1">
+      <View className="flex-row justify-between mt-2">
         <Text className="text-[10px] text-muted-foreground">
-          {new Date(points[0].time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          {new Date(sampled[0]?.timestamp).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
         </Text>
         <Text className="text-[10px] text-muted-foreground">
-          {new Date(points[points.length - 1].time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          {new Date(sampled[sampled.length - 1]?.timestamp).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
         </Text>
+      </View>
+      <View className="flex-row items-center gap-4 mt-3">
+        <View className="flex-row items-center gap-1.5">
+          <View className="h-2.5 w-2.5 rounded-full bg-blue-500" />
+          <Text className="text-[11px] text-muted-foreground">Nodes ({sampled[sampled.length - 1]?.totalNodes})</Text>
+        </View>
+        <View className="flex-row items-center gap-1.5">
+          <View className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
+          <Text className="text-[11px] text-muted-foreground">Running Pods ({sampled[sampled.length - 1]?.runningProjects})</Text>
+        </View>
+        <View className="flex-row items-center gap-1.5">
+          <View className="h-2.5 w-2.5 rounded-full bg-amber-500" />
+          <Text className="text-[11px] text-muted-foreground">Warm Available ({sampled[sampled.length - 1]?.warmAvailable})</Text>
+        </View>
       </View>
     </View>
   )
@@ -414,40 +502,43 @@ export default function InfrastructurePage() {
   const [refreshing, setRefreshing] = useState(false)
   const [gcRunning, setGcRunning] = useState(false)
   const [evicting, setEvicting] = useState<string | null>(null)
-  const [history, setHistory] = useState<HistoryPoint[]>([])
   const [gcLog, setGcLog] = useState<Array<{ time: number; orphans: number; idle: number }>>([])
+
+  const [historyPeriod, setHistoryPeriod] = useState<HistoryPeriod>('24h')
+  const [historyData, setHistoryData] = useState<InfraHistoryPoint[] | null>(null)
+  const [historyLoading, setHistoryLoading] = useState(true)
+
   const autoRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  const loadData = useCallback(async () => {
+  const loadLiveData = useCallback(async () => {
     const result = await fetchWarmPool()
-    if (result) {
-      setData(result)
-      setHistory((prev) => {
-        const point: HistoryPoint = {
-          time: Date.now(),
-          nodes: result.cluster?.totalNodes ?? 0,
-          availableAgents: result.pool.available.agent,
-          promotedCount: result.promotedPods.length,
-        }
-        const next = [...prev, point]
-        return next.length > 120 ? next.slice(-120) : next
-      })
-    }
+    if (result) setData(result)
     return result
   }, [])
 
+  const loadHistory = useCallback(async () => {
+    setHistoryLoading(true)
+    const result = await fetchInfraHistory(historyPeriod)
+    setHistoryData(result)
+    setHistoryLoading(false)
+  }, [historyPeriod])
+
   useEffect(() => {
     setLoading(true)
-    loadData().finally(() => setLoading(false))
-    autoRefreshRef.current = setInterval(loadData, AUTO_REFRESH_INTERVAL)
+    Promise.all([loadLiveData(), loadHistory()]).finally(() => setLoading(false))
+    autoRefreshRef.current = setInterval(loadLiveData, AUTO_REFRESH_INTERVAL)
     return () => {
       if (autoRefreshRef.current) clearInterval(autoRefreshRef.current)
     }
-  }, [loadData])
+  }, [loadLiveData, loadHistory])
+
+  useEffect(() => {
+    loadHistory()
+  }, [historyPeriod, loadHistory])
 
   const onRefresh = async () => {
     setRefreshing(true)
-    await loadData()
+    await Promise.all([loadLiveData(), loadHistory()])
     setRefreshing(false)
   }
 
@@ -460,7 +551,7 @@ export default function InfrastructurePage() {
         ...prev.slice(0, 19),
       ])
     }
-    await loadData()
+    await loadLiveData()
     setGcRunning(false)
   }
 
@@ -476,7 +567,7 @@ export default function InfrastructurePage() {
           onPress: async () => {
             setEvicting(projectId)
             await evictPod(projectId)
-            await loadData()
+            await loadLiveData()
             setEvicting(null)
           },
         },
@@ -546,28 +637,28 @@ export default function InfrastructurePage() {
 
       {/* Stat Cards */}
       <View className="flex-row flex-wrap gap-2 mb-4">
-        <StatCard
+        <InfraStatCard
           label="Nodes"
           value={cluster?.totalNodes ?? '—'}
           subtitle={`ASG ${cluster?.asgDesired ?? '?'}/${cluster?.asgMax ?? '?'}`}
           icon={HardDrive}
           color="text-blue-400"
         />
-        <StatCard
+        <InfraStatCard
           label="Warm Agents"
           value={`${pool?.available.agent ?? 0}/${pool?.targetSize.agent ?? 0}`}
           subtitle={pool?.enabled ? 'Pool active' : 'Pool disabled'}
           icon={Box}
           color="text-green-400"
         />
-        <StatCard
+        <InfraStatCard
           label="Promoted"
           value={promoted.length}
           subtitle={`${idlePods.length} idle >10m`}
           icon={Activity}
           color="text-orange-400"
         />
-        <StatCard
+        <InfraStatCard
           label="GC Total"
           value={(gc?.orphansDeleted ?? 0) + (gc?.idleEvictions ?? 0)}
           subtitle={`${gc?.orphansDeleted ?? 0} orphans, ${gc?.idleEvictions ?? 0} idle`}
@@ -594,10 +685,19 @@ export default function InfrastructurePage() {
         </View>
       )}
 
-      {/* Timeline + GC Events: side-by-side on desktop */}
+      {/* Historical Charts (DB-backed) */}
+      <View className="bg-card border border-border rounded-xl p-4 mb-4">
+        <View className="flex-row items-center justify-between mb-3">
+          <Text className="text-sm font-medium text-foreground">Historical Metrics</Text>
+          <HistoryPeriodSelector value={historyPeriod} onChange={setHistoryPeriod} />
+        </View>
+        <InfraHistoryChart data={historyData} loading={historyLoading} />
+      </View>
+
+      {/* GC Events + Warm Pool Summary: side-by-side on desktop */}
       <View className={cn('gap-4 mb-4', isWide && 'flex-row')}>
         <View className={cn(isWide && 'flex-1')}>
-          <MiniTimeline history={history} />
+          <WarmPoolSummary pool={pool} gc={gc} />
         </View>
         {gcLog.length > 0 && (
           <View className={cn(isWide && 'flex-1')}>
@@ -606,19 +706,14 @@ export default function InfrastructurePage() {
         )}
       </View>
 
-      {/* Warm Pool Summary + Promoted Pods: side-by-side on desktop */}
-      <View className={cn('gap-4', isWide && 'flex-row')}>
-        <View className={cn(isWide && 'w-[340px]')}>
-          <WarmPoolSummary pool={pool} gc={gc} />
-        </View>
-        <View className={cn(isWide && 'flex-1')}>
-          <PromotedPodTable
-            promoted={promoted}
-            idlePods={idlePods}
-            evicting={evicting}
-            onEvict={onEvict}
-          />
-        </View>
+      {/* Promoted Pods */}
+      <View>
+        <PromotedPodTable
+          promoted={promoted}
+          idlePods={idlePods}
+          evicting={evicting}
+          onEvict={onEvict}
+        />
       </View>
     </ScrollView>
   )

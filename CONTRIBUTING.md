@@ -92,7 +92,7 @@ docs: update ARCHITECTURE.md
 | Path | Purpose |
 |------|---------|
 | `packages/state-api/` | Schema-to-MST transformation |
-| `apps/web/` | React demo app |
+| `apps/mobile/` | Expo app (web + iOS + Android) |
 | `.claude/skills/` | AI skill definitions |
 | `docs/` | Documentation |
 

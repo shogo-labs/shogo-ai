@@ -87,6 +87,8 @@ const PORT = parseInt(process.env.PORT || '8080', 10)
 const IS_POOL_MODE = currentProjectId === POOL_PROJECT_ID || process.env.WARM_POOL_MODE === 'true'
 let poolAssigned = false
 let poolAssignedAt: number | null = null
+let lastRequestAt: number = Date.now()
+const INTERNAL_PATHS = new Set(['/health', '/ready', '/pool/activity', '/pool/assign'])
 
 if (!currentProjectId) {
   console.error(
@@ -212,6 +214,9 @@ function writeAgentConfigFiles(): void {
 let agentGateway: AgentGateway | null = null
 let s3SyncInstance: import('@shogo/shared-runtime').S3Sync | null = null
 
+let gatewayReadyResolve: (() => void) | null = null
+let gatewayReadyPromise: Promise<void> | null = null
+
 // =============================================================================
 // Stream Keep-Alive Utility
 // =============================================================================
@@ -260,6 +265,14 @@ const app = new Hono()
 
 app.use('*', cors({ origin: '*' }))
 
+// Track last external HTTP request for idle detection (excludes internal probes)
+app.use('*', async (c, next) => {
+  if (!INTERNAL_PATHS.has(c.req.path)) {
+    lastRequestAt = Date.now()
+  }
+  await next()
+})
+
 // Register WhatsApp webhook routes (must be before any auth middleware)
 import('./channels/whatsapp').then(({ WhatsAppAdapter }) => {
   WhatsAppAdapter.registerWebhookRoutes(app)
@@ -304,6 +317,15 @@ import('./channels/teams').then(({ TeamsAdapter }) => {
   })
 }).catch(() => { /* Teams adapter not available */ })
 
+// Register WebChat embeddable widget routes
+import('./channels/webchat').then(({ WebChatAdapter }) => {
+  WebChatAdapter.registerRoutes(app, () => {
+    if (!agentGateway) return null
+    const adapter = agentGateway.getChannel('webchat')
+    return adapter && adapter.getStatus().connected ? adapter as any : null
+  })
+}).catch(() => { /* WebChat adapter not available */ })
+
 // Health check
 app.get('/health', (c) =>
   c.json({
@@ -321,19 +343,23 @@ app.get('/ready', (c) => {
   return c.json({ ready: true })
 })
 
-// Activity probe for promoted pod GC
+// Activity probe for promoted pod GC — uses HTTP request activity, not just chat sessions
 app.get('/pool/activity', (c) => {
   const sm = agentGateway?.getSessionManager()
   const stats = sm?.getAllStats() ?? []
   const now = Date.now()
-  const lastActivity = stats.reduce(
+  const lastSessionActivity = stats.reduce(
     (max: number, s) => Math.max(max, now - (s.idleSeconds ?? 0) * 1000),
     poolAssignedAt ?? SERVER_START_TIME
   )
+  const lastActivity = Math.max(lastRequestAt, lastSessionActivity)
   return c.json({
     projectId: currentProjectId,
     lastActivityAt: lastActivity,
     idleSeconds: Math.floor((now - lastActivity) / 1000),
+    activeSessions: stats.length,
+    lastRequestAt,
+    lastSessionActivityAt: lastSessionActivity,
     poolAssigned: poolAssigned,
   })
 })
@@ -514,8 +540,20 @@ app.post('/agent/channels/disconnect', async (c) => {
 // Accepts AI SDK v3 format: { messages: [{ role, parts: [{ type: 'text', text }] }] }
 // Returns an AI SDK UI message stream so the frontend can use useChat().
 app.post('/agent/chat', async (c) => {
-  if (!agentGateway) {
-    return c.json({ error: 'Agent gateway not running' }, 503)
+  if (!agentGateway || gatewayReadyPromise) {
+    if (gatewayReadyPromise) {
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Gateway startup timeout')), 30_000)
+      )
+      try {
+        await Promise.race([gatewayReadyPromise, timeout])
+      } catch {
+        return c.json({ error: 'Agent gateway still starting, please retry' }, 503)
+      }
+    }
+    if (!agentGateway) {
+      return c.json({ error: 'Agent gateway not running' }, 503)
+    }
   }
 
   const body = await c.req.json()
@@ -600,6 +638,8 @@ app.post('/agent/chat', async (c) => {
     agentGateway!.setUserTimezone(body.timezone)
   }
 
+  const chatUserId = c.req.header('X-User-Id') || body.userId || undefined
+
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
       try {
@@ -607,6 +647,7 @@ app.post('/agent/chat', async (c) => {
         await agentGateway!.processChatMessageStream(userText || '', writer, {
           modelOverride,
           fileParts: userFileParts.length > 0 ? userFileParts : undefined,
+          userId: chatUserId,
         })
 
         const usage = agentGateway!.consumeLastTurnUsage()
@@ -1148,6 +1189,21 @@ app.post('/agent/bundled-skills/install', async (c) => {
   return c.json({ ok: true, installed: name })
 })
 
+app.get('/agent/skills/:name', (c) => {
+  const name = c.req.param('name')
+  if (!name || name.includes('/') || name.includes('..')) {
+    return c.json({ error: 'Invalid skill name' }, 400)
+  }
+
+  const filePath = join(AGENT_DIR, 'skills', `${name}.md`)
+  if (!existsSync(filePath)) {
+    return c.json({ error: `Skill "${name}" not found` }, 404)
+  }
+
+  const raw = readFileSync(filePath, 'utf-8')
+  return c.json({ name, content: raw })
+})
+
 app.delete('/agent/skills/:name', (c) => {
   const name = c.req.param('name')
   if (!name || name.includes('/') || name.includes('..')) {
@@ -1534,6 +1590,25 @@ app.post('/agent/dynamic-app/action', async (c) => {
   return c.json({ ok: true, event })
 })
 
+app.post('/agent/dynamic-app/data-change', async (c) => {
+  const body = await c.req.json() as { surfaceId?: string; path?: string; value?: unknown }
+  if (!body.surfaceId || !body.path) {
+    return c.json({ error: 'Missing surfaceId or path' }, 400)
+  }
+
+  const manager = getDynamicAppManager()
+  try {
+    const result = await manager.handleDataChange(body.surfaceId, body.path, body.value)
+    if (!result.ok) {
+      return c.json(result, 422)
+    }
+    return c.json(result)
+  } catch (err: any) {
+    console.error('[DynamicApp] data-change failed:', err)
+    return c.json({ ok: false, error: err.message || 'Internal error' }, 500)
+  }
+})
+
 app.post('/agent/dynamic-app/edit', async (c) => {
   const body = await c.req.json() as {
     action: 'update' | 'add' | 'delete' | 'move'
@@ -1899,6 +1974,8 @@ async function initializeEssentials(): Promise<void> {
 async function startGateway(): Promise<void> {
   logTiming('Starting agent gateway...')
 
+  gatewayReadyPromise = new Promise<void>((resolve) => { gatewayReadyResolve = resolve })
+
   agentGateway = new AgentGateway(AGENT_DIR, currentProjectId!)
   agentGateway.setLogCallback((line) => {
     consoleLogs.push(line)
@@ -1912,6 +1989,9 @@ async function startGateway(): Promise<void> {
   }
 
   await agentGateway.start()
+  gatewayReadyResolve?.()
+  gatewayReadyResolve = null
+  gatewayReadyPromise = null
   logTiming('Agent gateway started')
 }
 

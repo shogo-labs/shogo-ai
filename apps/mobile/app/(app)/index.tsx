@@ -12,12 +12,14 @@ import { useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { observer } from 'mobx-react-lite'
 import { ArrowRight } from 'lucide-react-native'
+import { ProjectCard } from '../../components/home/ProjectCard'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Button } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
 import {
   useProjectCollection,
   useWorkspaceCollection,
+  useMemberCollection,
   useDomainActions,
 } from '../../contexts/domain'
 import { CompactChatInput } from '../../components/chat/CompactChatInput'
@@ -69,6 +71,7 @@ const GRADIENT_CSS = `
   50% { transform: translate(-15px, 15px) scale(1.01); }
 }
 `
+
 
 const TEMPLATE_COLORS: Record<string, string> = {
   'research-assistant': '#3b82f6',
@@ -258,6 +261,7 @@ const HomeScreen = observer(function HomeScreen() {
   const { user, isAuthenticated } = useAuth()
   const projects = useProjectCollection()
   const workspaces = useWorkspaceCollection()
+  const membersColl = useMemberCollection()
   const actions = useDomainActions()
   const isDark = useDarkMode()
 
@@ -265,7 +269,7 @@ const HomeScreen = observer(function HomeScreen() {
   const [isCreating, setIsCreating] = useState(false)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
   const [homeTemplates, setHomeTemplates] = useState<AgentTemplate[]>([])
-  const [activeTab, setActiveTab] = useState<'recent' | 'projects' | 'shared' | 'templates'>('recent')
+  const [activeTab, setActiveTab] = useState<'projects' | 'shared' | 'templates'>('templates')
 
   const [workspaceError, setWorkspaceError] = useState(false)
 
@@ -277,6 +281,9 @@ const HomeScreen = observer(function HomeScreen() {
       console.error('[Home] Failed to load workspaces:', err)
       setWorkspaceError(true)
     })
+    if (user?.id) {
+      membersColl.loadAll({ userId: user.id }).catch(() => {})
+    }
 
     async function fetchTemplates() {
       try {
@@ -289,9 +296,46 @@ const HomeScreen = observer(function HomeScreen() {
       }
     }
     fetchTemplates()
-  }, [isAuthenticated])
+  }, [isAuthenticated, user?.id])
 
   const currentWorkspace = useActiveWorkspace()
+
+  const myProjects = useMemo(() => {
+    try {
+      return [...(projects?.all ?? [])]
+        .sort((a: any, b: any) => {
+          const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0
+          const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0
+          return bTime - aTime
+        })
+    } catch {
+      return []
+    }
+  }, [projects?.all])
+
+  const sharedProjects = useMemo(() => {
+    if (!user?.id) return []
+    try {
+      const userMembers = membersColl.all.filter((m: any) => m.userId === user.id)
+      const sharedWsIds = new Set(
+        workspaces.all
+          .filter((ws: any) => {
+            const membership = userMembers.find((m: any) => m.workspaceId === ws.id)
+            return membership && membership.role !== 'owner'
+          })
+          .map((ws: any) => ws.id)
+      )
+      return [...(projects?.all ?? [])]
+        .filter((p: any) => sharedWsIds.has(p.workspaceId))
+        .sort((a: any, b: any) => {
+          const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0
+          const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0
+          return bTime - aTime
+        })
+    } catch {
+      return []
+    }
+  }, [user?.id, projects?.all, membersColl.all, workspaces.all])
 
   const firstName = useMemo(() => {
     const name = user?.name || 'there'
@@ -390,10 +434,9 @@ const HomeScreen = observer(function HomeScreen() {
   }
 
   const TAB_ITEMS = [
-    { key: 'recent' as const, label: 'Recently viewed' },
+    { key: 'templates' as const, label: 'Templates' },
     { key: 'projects' as const, label: 'My projects' },
     { key: 'shared' as const, label: 'Shared with me' },
-    { key: 'templates' as const, label: 'Templates' },
   ]
 
   return (
@@ -472,43 +515,121 @@ const HomeScreen = observer(function HomeScreen() {
               ))}
             </View>
 
-            <Pressable
-              onPress={() => router.push('/(app)/templates' as any)}
-              className="flex-row items-center gap-1 active:opacity-70"
-            >
-              <Text className="text-[13px] font-medium text-foreground">
-                Browse all
-              </Text>
-              <ArrowRight size={14} className="text-foreground" />
-            </Pressable>
+            {activeTab === 'templates' && (
+              <Pressable
+                onPress={() => router.push('/(app)/templates' as any)}
+                className="flex-row items-center gap-1 active:opacity-70"
+              >
+                <Text className="text-[13px] font-medium text-foreground">
+                  Browse all
+                </Text>
+                <ArrowRight size={14} className="text-foreground" />
+              </Pressable>
+            )}
+            {activeTab === 'shared' && (
+              <Pressable
+                onPress={() => router.push('/(app)/shared' as any)}
+                className="flex-row items-center gap-1 active:opacity-70"
+              >
+                <Text className="text-[13px] font-medium text-foreground">
+                  View all
+                </Text>
+                <ArrowRight size={14} className="text-foreground" />
+              </Pressable>
+            )}
           </View>
 
           <View className="px-6 pb-10">
-            {homeTemplates.length > 0 ? (
-              <View
-                className="gap-4"
-                style={Platform.OS === 'web' ? {
-                  display: 'grid' as any,
-                  gridTemplateColumns: 'repeat(3, 1fr)',
-                  gap: 16,
-                  maxWidth: 1100,
-                  marginHorizontal: 'auto',
-                } as any : {}}
-              >
-                {homeTemplates.map((template) => (
-                  <TemplateCard
-                    key={template.id}
-                    template={template}
-                    isLoading={loadingTemplate === template.id}
-                    onPress={() => handleTemplatePress(template)}
-                    isDark={isDark}
-                  />
-                ))}
-              </View>
-            ) : (
-              <View className="items-center py-12">
-                <ActivityIndicator size="small" className="text-muted-foreground" />
-              </View>
+            {activeTab === 'templates' && (
+              homeTemplates.length > 0 ? (
+                <View
+                  className="gap-4"
+                  style={Platform.OS === 'web' ? {
+                    display: 'grid' as any,
+                    gridTemplateColumns: 'repeat(3, 1fr)',
+                    gap: 16,
+                    maxWidth: 1100,
+                    marginHorizontal: 'auto',
+                  } as any : {}}
+                >
+                  {homeTemplates.map((template) => (
+                    <TemplateCard
+                      key={template.id}
+                      template={template}
+                      isLoading={loadingTemplate === template.id}
+                      onPress={() => handleTemplatePress(template)}
+                      isDark={isDark}
+                    />
+                  ))}
+                </View>
+              ) : (
+                <View className="items-center py-12">
+                  <ActivityIndicator size="small" className="text-muted-foreground" />
+                </View>
+              )
+            )}
+
+            {activeTab === 'projects' && (
+              myProjects.length > 0 ? (
+                <View
+                  className="gap-4"
+                  style={Platform.OS === 'web' ? {
+                    display: 'grid' as any,
+                    gridTemplateColumns: 'repeat(3, 1fr)',
+                    gap: 16,
+                    maxWidth: 1100,
+                    marginHorizontal: 'auto',
+                  } as any : {}}
+                >
+                  {myProjects.map((project: any) => (
+                    <ProjectCard
+                      key={project.id}
+                      name={project.name || 'Untitled'}
+                      description={project.description}
+                      updatedAt={project.updatedAt}
+                      createdAt={project.createdAt}
+                      onPress={() => router.push(`/(app)/projects/${project.id}`)}
+                      isDark={isDark}
+                    />
+                  ))}
+                </View>
+              ) : (
+                <View className="items-center py-12">
+                  <Text className="text-muted-foreground text-sm">No projects yet — create one above!</Text>
+                </View>
+              )
+            )}
+
+            {activeTab === 'shared' && (
+              sharedProjects.length > 0 ? (
+                <View
+                  className="gap-4"
+                  style={Platform.OS === 'web' ? {
+                    display: 'grid' as any,
+                    gridTemplateColumns: 'repeat(3, 1fr)',
+                    gap: 16,
+                    maxWidth: 1100,
+                    marginHorizontal: 'auto',
+                  } as any : {}}
+                >
+                  {sharedProjects.map((project: any) => (
+                    <ProjectCard
+                      key={project.id}
+                      name={project.name || 'Untitled'}
+                      description={project.description}
+                      updatedAt={project.updatedAt}
+                      createdAt={project.createdAt}
+                      onPress={() => router.push(`/(app)/projects/${project.id}`)}
+                      isDark={isDark}
+                      badge="Shared"
+                    />
+                  ))}
+                </View>
+              ) : (
+                <View className="items-center py-12">
+                  <Text className="text-muted-foreground text-sm">No shared projects</Text>
+                </View>
+              )
             )}
           </View>
         </View>

@@ -6,63 +6,76 @@ slug: /getting-started/welcome
 
 # Welcome to Shogo
 
-**Shogo is an AI-powered platform that lets you build, preview, and publish web applications by describing what you want in plain language — no coding required.**
+**Shogo is an AI-powered platform for building autonomous AI agents through conversation. Describe what you want your agent to do, and Shogo handles the rest.**
 
-You chat with an AI assistant, and Shogo turns your ideas into a real, working app. Whether you're building a project tracker, a CRM, an online booking system, or an internal tool for your team, Shogo handles the technical details so you can focus on your vision.
+You chat with an AI assistant to configure your agent's identity, skills, memory, and integrations. Your agent runs as a long-lived process that can monitor systems, process messages, execute scheduled tasks, and display results on a visual canvas.
 
 ## Why use Shogo?
 
-### Build apps by chatting
+### Build agents by chatting
 
-Describe what you want in everyday language. Shogo's AI agent understands your intent and builds it for you — pages, features, data, and all.
+Describe your agent's purpose in everyday language. Shogo configures the identity, skills, heartbeat schedule, and connected tools for you.
 
-### See results instantly
+### Agents that act on their own
 
-Every change appears in a live preview right next to your chat. You can see your app take shape in real time, on desktop, tablet, or mobile views.
+Your agent doesn't just respond to messages — it proactively checks for work on a schedule using the heartbeat system. Monitor repos, triage tickets, send daily briefings, and more.
 
-### Publish with one click
+### Connect to 250+ tools
 
-When your app is ready, publish it to a live URL (like `yourapp.shogo.one`) that anyone can visit. Update it anytime.
+Integrate with GitHub, Slack, Stripe, Google Calendar, Zendesk, Linear, Sentry, and hundreds more via Composio. Connect tools through the **Capabilities** panel with OAuth or API keys.
 
 ### Start from templates
 
-Choose from 9+ starter templates — a todo app, CRM, kanban board, booking system, and more — so you don't have to start from scratch.
+Choose from 8 purpose-built agent templates — a research assistant, GitHub ops monitor, support desk, and more — so you don't have to start from scratch.
 
-### Bring your own code (optional)
+### Visual dashboards on canvas
 
-If you're technical, you can drop into the built-in code editor, terminal, and database panel. But you never have to — the chat handles everything.
+Your agent builds canvas dashboards with metrics, charts, tables, and status indicators to present information clearly.
 
 ## Who is Shogo for?
 
-**Entrepreneurs and founders** — Launch an MVP or test a product idea without hiring a developer.
+**Developers and engineering teams** — Monitor CI/CD, triage PRs, track incidents, and automate DevOps workflows.
 
-**Small business owners** — Build internal tools, booking systems, inventory trackers, or customer portals.
+**Founders and operators** — Track revenue, manage support tickets, prepare for meetings, and stay on top of projects.
 
-**Creators and makers** — Turn side project ideas into real apps you can share with the world.
+**Researchers and analysts** — Monitor topics across the web, synthesize findings, and get daily briefings.
 
-**Product and marketing teams** — Build landing pages, dashboards, and lightweight tools without waiting on engineering.
-
-**Agencies** — Rapidly prototype and deliver client projects.
-
-**Developers** — Quickly scaffold apps, then extend them with the built-in editor or the Shogo SDK.
+**Anyone who wants a personal AI assistant** — Track habits, manage reminders, and get proactive daily check-ins.
 
 ## What can you build?
 
-- **SaaS and business apps** — Dashboards, admin panels, subscription tools
-- **Internal tools** — Workflow trackers, operational dashboards, team utilities
-- **Marketplaces and booking apps** — Booking systems, storefronts, scheduling tools
-- **CRMs and project managers** — Customer tracking, task management, kanban boards
-- **Content and community apps** — Feedback forms, surveys, content platforms
-- **Websites and landing pages** — Company sites, campaign pages, portfolios
+- **Monitoring agents** — Service health checks, CI status, GitHub repo watching
+- **Support agents** — Ticket triage, SLA tracking, escalation alerts
+- **Research agents** — Web research, topic tracking, daily digests
+- **Project management agents** — Sprint boards, velocity tracking, standup collection
+- **Financial agents** — Revenue dashboards, invoice management, payment alerts
+- **Personal productivity agents** — Habit tracking, reminders, meeting prep
 
-## How Shogo fits into your workflow
+## How Shogo works
 
-1. **Describe** what you want to build in a chat message
-2. **Review** the live preview as the AI builds your app
-3. **Iterate** — ask for changes, add features, fix issues through conversation
-4. **Publish** your app to a live URL with one click
-5. **Update** anytime by chatting and republishing
+1. **Describe** what kind of agent you want, or pick a template
+2. **Configure** your agent's skills, heartbeat, and connected tools through chat
+3. **Connect** channels like Slack, Telegram, or Discord via the **Channels** panel
+4. **Enable** the heartbeat so your agent checks for work on a schedule
+5. **Iterate** — refine your agent's behavior anytime by chatting
+
+### Under the hood
+
+When you chat with your agent, the AI reads and writes a set of [workspace files](/concepts/workspace-files) — Markdown files that define the agent's identity, behavior rules, memory, heartbeat checklist, and skills. The agent runtime reads these files and runs accordingly.
+
+```mermaid
+flowchart TD
+  chat["You chat with the AI"] --> files["Workspace files\nAGENTS.md · SOUL.md · HEARTBEAT.md\nMEMORY.md · skills/"]
+  files --> runtime["Agent runtime"]
+  runtime --> heartbeat["Heartbeat\n(scheduled checks)"]
+  runtime --> channels["Channels\n(Slack, Telegram, Discord)"]
+  runtime --> canvas["Canvas\n(visual dashboard)"]
+  heartbeat --> channels
+  heartbeat --> canvas
+```
+
+The chat configures the workspace files. The runtime acts on them.
 
 ---
 
-**Ready to get started?** Head to the [Quick Start guide](./quick-start) to create your first app in minutes.
+**Ready to get started?** Head to the [Quick Start guide](./quick-start) to create your first agent in minutes.

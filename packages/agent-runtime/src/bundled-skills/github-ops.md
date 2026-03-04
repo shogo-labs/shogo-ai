@@ -3,14 +3,14 @@ name: github-ops
 version: 2.0.0
 description: Monitor GitHub repos — fetch PRs, issues, CI status via Composio and display on canvas
 trigger: "check github|repo status|ci status|pr review|open prs|pull requests"
-tools: [tool_list, tool_install, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, memory_write, send_message]
+tools: [tool_search, tool_install, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, memory_write, send_message]
 ---
 
 # GitHub Ops
 
 When triggered, check GitHub repos and build a triage dashboard:
 
-1. **Connect** — Check if GitHub integration is installed via `tool_list`. If not:
+1. **Connect** — Check if GitHub integration is installed via `tool_search`. If not:
    - `tool_install({ name: "github" })` to connect via Composio OAuth
 2. **Fetch** — Once connected, call:
    - `GITHUB_LIST_PULL_REQUESTS` for open PRs across configured repos

@@ -3,14 +3,14 @@ name: meeting-prep-v2
 version: 2.0.0
 description: Prepare for meetings — pull calendar events, research attendees, build prep canvas
 trigger: "prep for meeting|meeting prep|prepare for|brief me on|upcoming meetings|what meetings"
-tools: [tool_list, tool_install, web, canvas_create, canvas_update, memory_read, memory_write]
+tools: [tool_search, tool_install, web, canvas_create, canvas_update, memory_read, memory_write]
 ---
 
 # Meeting Prep
 
 When preparing for meetings:
 
-1. **Connect calendar** — Check if Google Calendar is installed via `tool_list`. If not:
+1. **Connect calendar** — Check if Google Calendar is installed via `tool_search`. If not:
    - `tool_install({ name: "googlecalendar" })` to connect via Composio OAuth
 2. **Fetch events** — Call `GOOGLECALENDAR_FIND_EVENT` for today's/upcoming meetings
 3. **Research attendees** — For each external attendee:

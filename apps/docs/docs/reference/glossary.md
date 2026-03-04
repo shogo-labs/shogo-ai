@@ -10,120 +10,90 @@ Plain-language definitions of terms you may encounter while using Shogo.
 
 ## Shogo concepts
 
-### AI agent
-The artificial intelligence system that builds your app based on your chat messages. When you describe what you want, the AI agent writes the code and creates the features.
+### Agent
+An autonomous AI process you build in Shogo. Agents can monitor systems, process messages, run scheduled tasks, remember context, and display results on a canvas dashboard. Each agent runs in an isolated pod.
+
+### AGENTS.md
+A workspace file that defines your agent's core behavior rules, canvas strategy, heartbeat behavior, and recommended integrations.
+
+### Canvas
+A visual dashboard that your agent builds to display information. The canvas shows metrics, charts, tables, status indicators, and more. It is not an interactive application — it presents summaries and dashboards.
+
+### Channel
+A messaging platform connected to your agent (Slack, Discord, Telegram, etc.). Channels let your agent send proactive alerts and receive messages from users.
 
 ### Chat panel
-The left side of the project editor where you type messages to the AI agent. This is the primary way you build and modify your app.
+The left side of the agent workspace where you type messages to configure and interact with your agent. This is the primary way you build and modify your agent.
 
 ### Checkpoint
-A saved snapshot of your project at a specific point in time. You can create checkpoints manually or they're created automatically when you publish. Checkpoints let you go back to a known good state.
+A saved snapshot of your agent at a specific point in time. Checkpoints let you go back to a known good state. You can create them manually or they're created automatically at key moments.
 
-### Collection
-A group of related records in your database. For example, a "Customers" collection stores all customer records. Also sometimes called a "table" or "model."
+### Composio
+The integration platform that connects your agent to 250+ external tools. When you connect GitHub, Slack, Stripe, etc. through the Capabilities panel, it uses Composio under the hood. Some tools use OAuth, others require API keys.
 
 ### Credit
-The unit of usage in Shogo. Each message you send to the AI costs one credit. Your plan determines how many credits you get per month.
+The unit of usage in Shogo. Credits are consumed per token based on the AI model used — simpler interactions cost less than complex ones. Your plan determines how many credits you get.
 
 ### Dashboard
-The main page of your workspace where you can see all your projects, access templates, and manage your account.
+The main page of your workspace. Has a chat input at the top for creating new agents, and tabs for **Templates**, **My projects**, and **Shared with me**.
 
-### Live preview
-The right side of the project editor that shows your running app in real time. Changes appear here as the AI builds them.
+### Heartbeat
+A scheduled check that makes your agent proactive. On each heartbeat cycle, the agent wakes up and runs through its HEARTBEAT.md checklist — checking for new PRs, tickets, calendar events, or whatever it's configured to monitor. The interval is configurable (e.g., every 10 minutes, hourly, daily).
+
+### HEARTBEAT.md
+A workspace file that defines what your agent checks on each scheduled heartbeat run. It contains a checklist of tasks like "Check CI status" or "Scan for new tickets."
+
+### IDENTITY.md
+A workspace file that defines your agent's name, emoji, and tagline. This shapes how the agent presents itself.
+
+### Memory
+Persistent Markdown-based storage that your agent uses to remember information across conversations. Agents can save research findings, user preferences, tracked topics, and more. Memory is searchable and organized by topic.
 
 ### Project
-An individual app you're building in Shogo. Each project has its own code, data, and chat history. Projects live inside workspaces.
+An agent you're building in Shogo. Each project has its own configuration, chat history, and workspace files. Projects live inside workspaces.
 
-### Publish / Publishing
-The process of deploying your app to a live URL that anyone can visit. Published apps are hosted at `yoursubdomain.shogo.one`.
+### Quiet hours
+A time window during which your agent suppresses non-urgent alerts. Critical alerts (like service outages) can still break through quiet hours depending on configuration.
 
-### Schema
-A definition of what your data looks like — what fields a record has and what type each field is. For example, a "Contact" schema might define fields for name (text), email (text), and phone (text). You don't create schemas directly — the AI creates them when you describe your data needs.
+### Skill
+A modular capability defined as a Markdown file. Each skill teaches your agent how to perform a specific task, like researching a topic, triaging a ticket, or running a health check. Skills are configured through chat and can be viewed in the **Skills** sub-tab of the Capabilities panel.
 
-### Subdomain
-The unique part of your published app's URL. In `my-crm.shogo.one`, "my-crm" is the subdomain. You choose this when you publish.
+### SOUL.md
+A workspace file that defines your agent's personality, tone, and behavioral boundaries. It shapes how the agent communicates and what guardrails it follows.
 
 ### Template
-A pre-built starter app that you can use as a starting point for your project. Templates include working code, data models, and UI — ready to be customized.
+A pre-built agent configuration that you can use as a starting point. Templates include configured identity, skills, heartbeat schedule, and recommended integrations. See [Templates](../templates/).
 
-### Viewport
-The visible area of your app in the preview. You can switch between desktop, tablet, and mobile viewports to see how your app looks on different screen sizes.
+### USER.md
+A workspace file where your agent stores information about you — your name, timezone, preferences, and other context that helps it serve you better.
 
 ### Workspace
-A shared space that contains projects and members. Workspaces have their own billing, credit pool, and team. You can belong to multiple workspaces.
+A shared space that contains agents and members. Workspaces have their own billing, credit pool, and team. You can belong to multiple workspaces.
 
 ## General technology terms
 
 ### API (Application Programming Interface)
-A way for different software systems to communicate with each other. The Shogo SDK uses APIs behind the scenes to connect your app to authentication, database, and email services.
+A way for different software systems to communicate with each other. Your agent uses APIs to connect with external tools like GitHub, Slack, and Stripe.
 
 ### Authentication
-The process of verifying a user's identity — typically through login with email and password. Authentication answers the question "who are you?"
-
-### Backend
-The behind-the-scenes part of an app that handles data storage, user accounts, and business logic. In Shogo, the backend is managed for you automatically.
-
-### Browser
-A program used to access websites, like Chrome, Safari, Firefox, or Edge. Your published Shogo apps run in browsers.
+The process of verifying identity — typically through login with email and password, or OAuth with an external service.
 
 ### CRUD
-An acronym for Create, Read, Update, Delete — the four basic operations you can perform on data. Most apps are built around CRUD operations.
-
-### Database
-A system for storing and organizing data. When your app saves information (like tasks, contacts, or orders), it goes into a database. Shogo uses PostgreSQL databases.
-
-### Deploy / Deployment
-The process of making an app available on the internet. In Shogo, this happens when you click "Publish."
-
-### Frontend
-The visible part of an app that users interact with — buttons, forms, text, images, and navigation. Everything you see in the preview is the frontend.
-
-### HTTPS
-A secure protocol for transferring data on the web. All Shogo apps use HTTPS, meaning data is encrypted between the user's browser and the server.
+An acronym for Create, Read, Update, Delete — the four basic data operations. Canvas dashboards can include CRUD tables for managing data like tickets, tasks, or invoices.
 
 ### OAuth
-A method that lets users sign in to your app using their existing accounts on services like Google or GitHub, instead of creating a new username and password.
+A method that lets your agent securely connect to external services (GitHub, Slack, Google, etc.) using your existing accounts, without sharing passwords.
 
-### PostgreSQL
-A popular open-source database system. Shogo uses PostgreSQL to store your app's data. You don't need to know how PostgreSQL works — Shogo manages it for you.
-
-### Responsive design
-An approach to building apps that look good and work well on all screen sizes — from phones to tablets to desktop computers.
-
-### SDK (Software Development Kit)
-A set of tools and code that developers can use to build apps with specific capabilities. The Shogo SDK lets developers add Shogo-powered authentication, database, and email to their own projects.
-
-### URL
-A web address like `https://my-app.shogo.one`. URLs are how people access websites and apps on the internet.
-
-## UI elements
-
-### Button
-A clickable element that performs an action when clicked, like "Submit", "Save", or "Sign In."
+## Canvas elements
 
 ### Card
-A rectangular container used to display related information together — like a product card showing an image, name, and price.
+A rectangular container on the canvas used to display related information together — like a meeting prep card or a research summary.
 
-### Dropdown
-A menu that appears when you click a button or field, showing a list of options to choose from.
+### Chart
+A visual data representation on the canvas, like a line chart for revenue trends or a bar chart for ticket volume.
 
-### Form
-A collection of input fields where users enter data — like a contact form with fields for name, email, and message.
-
-### Modal / Dialog
-A window that pops up in front of the main content, usually to confirm an action or show additional information.
-
-### Navigation bar (Nav bar)
-A bar at the top or side of the app containing links to different pages.
-
-### Sidebar
-A vertical navigation panel on the left or right side of the page, containing links or tools.
+### KPI / Metric
+A key performance indicator displayed on the canvas as a prominent number with optional trend indicator — like "MRR: $12,500 (+8%)."
 
 ### Table
-A grid of rows and columns for displaying data, like a spreadsheet. Each row is a record and each column is a field.
-
-### Toast / Notification
-A brief message that appears (usually in a corner of the screen) to inform you of something — like "Saved successfully!" — and disappears after a few seconds.
-
-### Tooltip
-A small text popup that appears when you hover over an element, providing additional context or explanation.
+A grid of rows and columns on the canvas for displaying structured data, like a list of open PRs or support tickets.

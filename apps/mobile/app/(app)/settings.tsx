@@ -103,7 +103,7 @@ const MOBILE_NAV_ITEMS: NavItem[] = [
   { id: 'workspace', label: 'Workspace', icon: Building2 },
   { id: 'people', label: 'People', icon: Users },
   { id: 'account', label: 'Account', icon: User },
-  { id: 'billing', label: 'Plans & Credits', icon: CreditCard },
+  { id: 'billing', label: 'Billing', icon: CreditCard },
 ]
 
 function TabBar({
@@ -183,7 +183,7 @@ function SettingsSidebar({
       items: [
         { id: 'workspace', label: workspaceName || 'Workspace', avatar: (workspaceName?.[0] || 'W').toUpperCase() },
         { id: 'people', label: 'People' },
-        { id: 'billing', label: 'Plans & credits' },
+        { id: 'billing', label: 'Billing' },
       ],
     },
     {
@@ -1164,7 +1164,7 @@ function BillingTab() {
     <View className="gap-8">
       {/* Header */}
       <View>
-        <Text className="text-xl font-semibold text-foreground">Plans & credits</Text>
+        <Text className="text-xl font-semibold text-foreground">Billing</Text>
         <Text className="text-sm text-muted-foreground mt-1">
           Manage your subscription plan and credit balance.
         </Text>

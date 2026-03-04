@@ -37,7 +37,7 @@ async function signUp(page: Page) {
 
 async function navigateToBilling(page: Page) {
   await page.goto("/billing")
-  await page.waitForSelector("text=Plans & credits", { timeout: 10_000 })
+  await page.waitForSelector("text=Billing", { timeout: 10_000 })
 }
 
 async function fillStripeCheckout(

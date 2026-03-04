@@ -83,20 +83,18 @@ export const workspaceHooks: WorkspaceHooks = {
       }
     }
 
-    // Super admins can see all workspaces
+    // Super admins can view any user's workspaces when an explicit userId is provided.
+    // Without a filter, scope to their own memberships so the app stays usable.
     if (await isSuperAdmin(ctx)) {
-      // If a userId filter is provided, scope to that user's workspaces
-      if (requestedUserId) {
-        return {
-          ok: true,
-          data: {
-            where: {
-              members: { some: { userId: requestedUserId } },
-            },
+      const targetUserId = requestedUserId || currentUserId
+      return {
+        ok: true,
+        data: {
+          where: {
+            members: { some: { userId: targetUserId } },
           },
-        }
+        },
       }
-      return { ok: true, data: { where: {} } }
     }
 
     // Force filter by current user only - security check

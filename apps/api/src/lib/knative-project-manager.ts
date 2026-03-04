@@ -898,15 +898,17 @@ export class KnativeProjectManager {
         select: { workspaceId: true },
       })
       if (project) {
+        const { getProjectOwnerUserId } = await import('./project-user-context')
+        const ownerUserId = await getProjectOwnerUserId(projectId)
         const proxyToken = await generateProxyToken(
           projectId,
           project.workspaceId,
-          'system', // System-generated token for the runtime
+          ownerUserId,
           7 * 24 * 60 * 60 * 1000 // 7 days
         )
         env.push({ name: "AI_PROXY_TOKEN", value: proxyToken })
         proxyTokenGenerated = true
-        console.log(`[KnativeProjectManager] Generated AI proxy token for project ${projectId} (no raw API key exposed)`)
+        console.log(`[KnativeProjectManager] Generated AI proxy token for project ${projectId} (owner: ${ownerUserId})`)
       } else {
         console.warn(`[KnativeProjectManager] Project ${projectId} not found, skipping AI proxy token`)
       }
@@ -1207,11 +1209,27 @@ export async function getProjectPodUrl(projectId: string): Promise<string> {
       const warmPool = getWarmPoolController()
       const warmUrl = warmPool.getAssignedUrl(projectId)
       if (warmUrl) {
-        span.setAttribute('resolve.method', 'warm_pool_assigned')
-        span.setAttribute('resolve.duration_ms', Date.now() - totalStartTime)
-        span.setStatus({ code: SpanStatusCode.OK })
-        console.log(`[KnativeProjectManager] Project ${projectId} served by warm pool (elapsed: ${Date.now() - totalStartTime}ms)`)
-        return warmUrl
+        // Quick health probe to avoid returning stale URLs for dead pods
+        try {
+          const probe = await fetch(`${warmUrl}/health`, {
+            method: 'GET',
+            signal: AbortSignal.timeout(2000),
+          })
+          if (probe.ok) {
+            span.setAttribute('resolve.method', 'warm_pool_assigned')
+            span.setAttribute('resolve.duration_ms', Date.now() - totalStartTime)
+            span.setStatus({ code: SpanStatusCode.OK })
+            console.log(`[KnativeProjectManager] Project ${projectId} served by warm pool (elapsed: ${Date.now() - totalStartTime}ms)`)
+            return warmUrl
+          }
+          console.warn(`[KnativeProjectManager] Warm pool pod for ${projectId} unhealthy (status ${probe.status}) — evicting and re-resolving`)
+        } catch (probeErr: any) {
+          console.warn(`[KnativeProjectManager] Warm pool pod for ${projectId} unreachable (${probeErr.code || probeErr.message}) — evicting and re-resolving`)
+        }
+        // Pod is dead/unreachable — evict so we don't keep hitting a stale entry
+        warmPool.evictProject(projectId).catch((err: any) => {
+          console.error(`[KnativeProjectManager] Failed to evict stale warm pod for ${projectId}:`, err.message)
+        })
       }
 
       // 2. Check database for a saved knativeServiceName (promoted warm pod)

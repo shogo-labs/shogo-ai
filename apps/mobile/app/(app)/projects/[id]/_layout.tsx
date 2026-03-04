@@ -617,7 +617,7 @@ function CanvasPanel({
   connected: boolean
   agentUrl: string | null
   onAction: (surfaceId: string, name: string, context?: Record<string, unknown>) => void
-  onDataChange?: (surfaceId: string, path: string, value: unknown) => void
+  onDataChange?: (surfaceId: string, path: string, value: unknown, options?: { persist?: boolean }) => void
   onRefresh?: () => void
 }) {
   const editMode = useEditModeOptional()

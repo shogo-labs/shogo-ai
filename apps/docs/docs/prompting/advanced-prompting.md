@@ -6,92 +6,86 @@ slug: /prompting/advanced-prompting
 
 # Advanced Prompting
 
-Once you're comfortable with the basics, these techniques will help you build faster and get more precise results.
+Once you're comfortable with the basics, these techniques will help you configure agents faster and get more precise results.
 
 ## Iterative refinement
 
 Building with AI is a conversation, not a one-shot request. The best results come from an iterative approach:
 
-1. **Start broad** — Describe the overall feature or page you want.
-2. **Review the result** — Look at the preview carefully.
+1. **Start broad** — Describe the overall agent purpose or feature you want.
+2. **Review the result** — Check what was configured.
 3. **Refine in follow-ups** — Ask for specific adjustments.
 
 **Example sequence:**
 
-> "Create a pricing page with three plan cards: Free, Pro, and Business."
+> "Set up this agent to monitor my GitHub repos and alert on issues."
 
-*Review: The layout is good but the cards need more detail.*
+*Review: The heartbeat is checking repos but only looking at PRs.*
 
-> "Add a list of features to each card. Free should have 5 features, Pro should have 10, and Business should have 15. Add a 'Most Popular' badge to the Pro card."
+> "Also check CI status on every heartbeat. Alert immediately on any build failures on the main branch."
 
-*Review: Looking better, but the design needs work.*
+*Review: Good, but alerts are too noisy.*
 
-> "Make the Pro card slightly larger than the others and give it a blue border. Add a gradient background to the header of each card."
+> "Only alert on failures for the main and staging branches. Ignore feature branches. Batch PR updates into a daily digest."
 
-Each step builds on the last, giving you fine-grained control over the result.
+Each step builds on the last, giving you fine-grained control.
 
 ## Setting constraints
 
 Tell the AI what *not* to do, as well as what to do. This prevents unintended side effects.
 
-> "Add a footer to every page with copyright info and social links. Don't change the header or navigation — those are working correctly."
+> "Update the heartbeat to check every 10 minutes instead of 30. Don't change any of the existing skills or integrations."
 
-> "Update the color scheme to use green instead of blue. Only change the accent colors — keep the text colors and background the same."
+> "Add a revenue tracking skill. Don't modify the existing support desk behavior."
 
-> "Add form validation to the signup page. Don't modify the login page."
+> "Change the alert channel to #ops-alerts. Keep the daily digest going to #general."
 
-## Describing complex layouts
+## Describing complex dashboards
 
-For detailed layouts, describe the structure in sections:
+For detailed canvas dashboards, describe the structure in sections:
 
-> "Create a Dashboard page with this layout:
-> - **Top bar**: Welcome message with the user's name on the left, and a notification bell and profile icon on the right.
-> - **Stats row**: Four stat cards showing Total Orders, Revenue, Customers, and Products. Each card has a number and a small trend indicator.
-> - **Main area**: Two columns. Left column (wider) has a line chart showing weekly revenue. Right column has a list of recent orders with customer name, amount, and status."
+> "Build a dashboard with this layout:
+> - **Top row**: Four KPI cards showing MRR, Active Customers, Churn Rate, and Support Tickets.
+> - **Middle section**: A line chart showing weekly revenue trend for the last 3 months.
+> - **Bottom section**: Two tables side by side. Left table shows recent payments (customer, amount, date, status). Right table shows open support tickets (subject, priority, age)."
 
-The AI handles multi-section layouts well when you describe each section clearly.
+The AI handles multi-section dashboards well when you describe each section clearly.
 
 ## Using roles and scenarios
 
-Describe who uses the feature and in what context:
+Describe who receives what and in what context:
 
-> "As an admin, I want to see a list of all users with the ability to edit or deactivate accounts. Regular users should not see this page — redirect them to the dashboard if they try to access it."
+> "Send P0 alerts to both the #incidents Slack channel and directly to the on-call engineer via Telegram. Send P1 alerts only to #incidents. Batch P2 and below into a daily digest to #engineering."
 
-> "When a customer fills out the contact form, they should see a thank-you message. The admin should see the submission appear in the Admin Dashboard."
+> "Morning check-in should go to me on Telegram. Team standup summary should go to #standup on Slack."
 
 ## Asking the AI to explain
 
-You can ask the AI to describe what it did or to help you understand something:
+You can ask the AI to describe what's configured or help you plan:
 
-> "What changes did you just make? Can you explain them?"
+> "What skills does my agent have right now? List them with what they do."
 
-> "I want to add a notification system. Can you walk me through the different ways to approach this before we start building?"
+> "I want to add incident response capabilities. Can you walk me through what that would involve before we start configuring?"
 
-> "What data tables does my app have right now? List them with their fields."
+> "What integrations is my agent connected to? Which ones are active?"
 
-This is especially useful when you're picking up a project after some time away.
+This is especially useful when you're picking up an agent after some time away.
 
-## Providing reference and context
+## Referencing existing behavior
 
-### Reference existing parts of your app
+> "The heartbeat check for GitHub is working great. Set up a similar check for our GitLab repos using the same alert rules."
 
-> "Make the Settings page follow the same layout as the Dashboard — same header, same sidebar, same card style."
-
-> "The product cards on the Shop page look great. Use the same card style for the Team Members section on the About page."
-
-### Describe the user experience
-
-> "When a new user signs up, the flow should be: Registration form → Welcome screen explaining the app → Redirect to the Dashboard. Each step should feel smooth and guided."
+> "Use the same escalation priority system from the support desk for incident alerts."
 
 ## Multi-step features
 
-For complex features, lay out the plan first:
+For complex capabilities, lay out the plan first:
 
-> "I want to build an invoice system. Here's what I need:
-> 1. A list of all invoices with filters for status (Draft, Sent, Paid, Overdue)
-> 2. A form to create new invoices with client name, line items, amounts, and due date
-> 3. An invoice detail page that shows all the info and can be printed
-> 4. The ability to mark an invoice as Sent or Paid
+> "I want to add meeting prep capabilities. Here's what I need:
+> 1. Connect Google Calendar to pull my schedule
+> 2. Research external attendees by looking up their company websites
+> 3. Build a prep document canvas for each meeting with agenda and background
+> 4. Track action items after meetings with owners and deadlines
 >
 > Let's start with step 1."
 
@@ -99,19 +93,19 @@ Then work through each step in order, verifying as you go.
 
 ## Credit-efficient prompting
 
-Since each message costs a credit, make your prompts count:
+Since credits are based on token usage, longer and more complex interactions cost more:
 
-- **Combine related small changes** — "Change the header to blue, center the logo, and increase the font size of the navigation links" is better than three separate messages.
+- **Combine related small changes** — "Change the heartbeat to every 10 minutes, add the staging branch to CI monitoring, and update quiet hours to 11pm-6am" is more efficient than three separate messages.
 - **Be clear the first time** — Spending a moment thinking about your prompt saves credits on back-and-forth corrections.
-- **Use follow-ups wisely** — "Also add..." is often more efficient than describing the whole feature again.
+- **Use follow-ups wisely** — "Also add..." is often more efficient than describing the whole configuration again.
 
 ## Summary
 
 | Technique | When to use |
 |-----------|-------------|
-| Iterative refinement | Building any feature — start broad, then refine |
-| Setting constraints | When you want changes to be scoped to specific areas |
-| Describing complex layouts | Multi-section pages with specific structure |
-| Using roles and scenarios | Apps with different user types |
-| Asking for explanations | Understanding what was built or planning next steps |
-| Multi-step features | Large features that need to be built incrementally |
+| Iterative refinement | Configuring any feature — start broad, then refine |
+| Setting constraints | When you want changes scoped to specific areas |
+| Describing complex dashboards | Canvas layouts with multiple sections |
+| Using roles and scenarios | Agents with different alert targets |
+| Asking for explanations | Understanding current config or planning next steps |
+| Multi-step features | Large capabilities that need to be built incrementally |

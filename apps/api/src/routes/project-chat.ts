@@ -11,12 +11,14 @@
  */
 
 import { Hono } from "hono"
+import { resolve } from "path"
 import { trace, SpanStatusCode } from "@opentelemetry/api"
 import { getProjectPodUrl } from "../lib/knative-project-manager"
 
 import { prisma } from "../lib/prisma"
 import type { IRuntimeManager } from "../lib/runtime"
 import * as billingService from "../services/billing.service"
+import * as checkpointService from "../services/checkpoint.service"
 import { setProjectUser } from "../lib/project-user-context"
 import { openSession, closeSession } from "../lib/proxy-billing-session"
 
@@ -34,6 +36,25 @@ export interface ProjectChatRoutesConfig {
    * Local runtime manager (used in non-K8s environments).
    */
   runtimeManager?: IRuntimeManager
+}
+
+const PROJECT_ROOT = resolve(__dirname, '../../../..')
+const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
+
+const FILE_MODIFYING_TOOLS = new Set([
+  'write_file', 'exec',
+  'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete',
+  'canvas_api_schema', 'canvas_api_seed', 'canvas_api_hooks', 'canvas_api_bind',
+  'tool_install',
+])
+
+function hasFileModifyingTools(toolCallMap: Map<string, { toolName: string }>): boolean {
+  for (const tc of toolCallMap.values()) {
+    if (FILE_MODIFYING_TOOLS.has(tc.toolName) || tc.toolName.startsWith('mcp_')) {
+      return true
+    }
+  }
+  return false
 }
 
 // =============================================================================
@@ -336,6 +357,20 @@ async function trackUsageFromStream(
       console.error("[ProjectChat] Failed to log tool calls:", err)
     }
   }
+
+  // Auto-checkpoint: create a git snapshot when the agent modified files
+  if (hasFileModifyingTools(toolCallMap) && !streamInterrupted) {
+    const workspacePath = resolve(WORKSPACES_DIR, project.id)
+    const toolNames = [...new Set([...toolCallMap.values()].map(tc => tc.toolName))].join(', ')
+    checkpointService.createCheckpoint({
+      projectId: project.id,
+      workspacePath,
+      message: `AI: ${toolNames} (${toolCallMap.size} tool calls)`,
+      isAutomatic: true,
+    }).catch((err) => {
+      console.warn('[ProjectChat] Auto-checkpoint failed (non-blocking):', err.message)
+    })
+  }
 }
 
 // =============================================================================
@@ -524,6 +559,29 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         setProjectUser(projectId, billingUserId)
       }
 
+      // Validate the claimed user ID against workspace membership.
+      // Only forward a trusted X-User-Id if the user is actually a member
+      // of the project's workspace — prevents header spoofing.
+      let verifiedUserId: string | undefined
+      if (billingUserId && billingUserId !== 'system') {
+        try {
+          const member = await prisma.member.findFirst({
+            where: {
+              userId: billingUserId,
+              workspaceId: project.workspaceId,
+            },
+            select: { id: true },
+          })
+          if (member) {
+            verifiedUserId = billingUserId
+          } else {
+            console.warn(`[ProjectChat] User ${billingUserId} is not a member of workspace ${project.workspaceId} — ignoring for Composio context`)
+          }
+        } catch (err: any) {
+          console.error(`[ProjectChat] Failed to verify user membership:`, err.message)
+        }
+      }
+
       // Open a billing session so the AI proxy accumulates tokens across
       // all API calls in the agentic loop instead of charging per-call.
       // The session is closed in trackUsageFromStream after the stream ends.
@@ -540,6 +598,18 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
 
       const sessionHeader = c.req.header("X-Session-Id")
       if (sessionHeader) headers["X-Session-Id"] = sessionHeader
+
+      // Forward the real user ID so the runtime can include it in AI proxy calls.
+      // This bridges the gap when the proxy token only has a generic userId.
+      if (billingUserId && billingUserId !== 'system') {
+        headers["X-Billing-User-Id"] = billingUserId
+      }
+
+      // Forward verified user ID for per-user integrations (e.g. Composio OAuth).
+      // Only set after validating workspace membership above.
+      if (verifiedUserId) {
+        headers["X-User-Id"] = verifiedUserId
+      }
 
       // Retry configuration for transient errors during cold starts.
       // Uses exponential backoff: 500ms, 1s, 2s, 4s, 4s... (capped at 4s)

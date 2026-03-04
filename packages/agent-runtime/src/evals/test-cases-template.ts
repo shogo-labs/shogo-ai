@@ -94,8 +94,8 @@ export const TEMPLATE_EVALS: AgentEval[] = [
     input: 'The "GitHub Ops" template has been installed. Can you describe what\'s been set up and walk me through how to customize it or connect my own tools?',
     workspaceFiles: {
       ...getTemplateFiles('github-ops'),
-      'skills/github-ops.md': '---\nname: github-ops\nversion: 2.0.0\ndescription: Monitor GitHub repos via Composio\ntrigger: "check github|repo status|ci status"\ntools: [tool_list, tool_install, canvas_create, canvas_update, send_message]\n---\n# GitHub Ops\nCheck GitHub repos and build a triage dashboard.',
-      'skills/pr-review.md': '---\nname: pr-review\nversion: 2.0.0\ndescription: Review pull requests\ntrigger: "review pr|code review"\ntools: [tool_list, tool_install, canvas_create]\n---\n# PR Review\nFetch diff, analyze, post feedback.',
+      'skills/github-ops.md': '---\nname: github-ops\nversion: 2.0.0\ndescription: Monitor GitHub repos via Composio\ntrigger: "check github|repo status|ci status"\ntools: [tool_search, tool_install, canvas_create, canvas_update, send_message]\n---\n# GitHub Ops\nCheck GitHub repos and build a triage dashboard.',
+      'skills/pr-review.md': '---\nname: pr-review\nversion: 2.0.0\ndescription: Review pull requests\ntrigger: "review pr|code review"\ntools: [tool_search, tool_install, canvas_create]\n---\n# PR Review\nFetch diff, analyze, post feedback.',
     },
     maxScore: 100,
     validationCriteria: [
@@ -208,16 +208,16 @@ export const TEMPLATE_EVALS: AgentEval[] = [
     input: 'Check the status of my repos — are there any open PRs or CI failures?',
     workspaceFiles: {
       ...getTemplateFiles('github-ops'),
-      'skills/github-ops.md': '---\nname: github-ops\nversion: 2.0.0\ndescription: Monitor GitHub repos via Composio\ntrigger: "check github|repo status|ci status|pr review|open prs|pull requests"\ntools: [tool_list, tool_install, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, memory_write, send_message]\n---\n# GitHub Ops\n1. Check if GitHub integration is installed (tool_list). If not: tool_install({ name: "github" })\n2. Fetch open PRs and issues\n3. Build or update canvas dashboard\n4. Alert on stale PRs',
+      'skills/github-ops.md': '---\nname: github-ops\nversion: 2.0.0\ndescription: Monitor GitHub repos via Composio\ntrigger: "check github|repo status|ci status|pr review|open prs|pull requests"\ntools: [tool_search, tool_install, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, memory_write, send_message]\n---\n# GitHub Ops\n1. Search for GitHub integration (tool_search). If not installed: tool_install({ name: "github" })\n2. Fetch open PRs and issues\n3. Build or update canvas dashboard\n4. Alert on stale PRs',
     },
     maxScore: 100,
     validationCriteria: [
       {
         id: 'checked-tools',
-        description: 'Agent checked available integrations (tool_list)',
+        description: 'Agent searched for integrations (tool_search)',
         points: 30,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_list'),
+        validate: (r) => usedTool(r, 'tool_search'),
       },
       {
         id: 'tried-install-github',
@@ -262,16 +262,16 @@ export const TEMPLATE_EVALS: AgentEval[] = [
     workspaceFiles: {
       ...getTemplateFiles('incident-commander'),
       'skills/health-check.md': '---\nname: health-check\nversion: 2.0.0\ndescription: Check service health endpoints\ntrigger: "health check|service status|is it up"\ntools: [web, canvas_create, canvas_update, memory_write, send_message]\n---\n# Health Check\n1. Check health endpoints\n2. Build status page\n3. Alert on failures',
-      'skills/incident-triage.md': '---\nname: incident-triage\nversion: 2.0.0\ndescription: Investigate production incidents\ntrigger: "incident|something broke|production issue|outage|error spike"\ntools: [tool_list, tool_install, web, canvas_create, canvas_update, memory_write, send_message]\n---\n# Incident Triage\n1. Check Sentry, GitHub, Datadog\n2. Correlate timing\n3. Build incident timeline canvas',
+      'skills/incident-triage.md': '---\nname: incident-triage\nversion: 2.0.0\ndescription: Investigate production incidents\ntrigger: "incident|something broke|production issue|outage|error spike"\ntools: [tool_search, tool_install, web, canvas_create, canvas_update, memory_write, send_message]\n---\n# Incident Triage\n1. Check Sentry, GitHub, Datadog\n2. Correlate timing\n3. Build incident timeline canvas',
     },
     maxScore: 100,
     validationCriteria: [
       {
         id: 'investigates',
-        description: 'Agent actively investigates (uses web or tool_list)',
+        description: 'Agent actively investigates (uses web or tool_search)',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'web') || usedTool(r, 'tool_list'),
+        validate: (r) => usedTool(r, 'web') || usedTool(r, 'tool_search'),
       },
       {
         id: 'uses-canvas',
@@ -363,7 +363,7 @@ export const TEMPLATE_EVALS: AgentEval[] = [
     input: 'The "Support Desk" template has been installed. Can you describe what\'s been set up and walk me through how to customize it or connect my own tools?',
     workspaceFiles: {
       ...getTemplateFiles('support-desk'),
-      'skills/ticket-triage.md': '---\nname: ticket-triage\nversion: 2.0.0\ndescription: Triage support tickets\ntrigger: "triage tickets|support tickets"\ntools: [tool_list, tool_search, tool_install, canvas_create]\n---\n# Ticket Triage\nPull and triage support tickets.',
+      'skills/ticket-triage.md': '---\nname: ticket-triage\nversion: 2.0.0\ndescription: Triage support tickets\ntrigger: "triage tickets|support tickets"\ntools: [tool_search, tool_install, canvas_create]\n---\n# Ticket Triage\nPull and triage support tickets.',
       'skills/escalation-alert.md': '---\nname: escalation-alert\nversion: 2.0.0\ndescription: Escalate urgent issues\ntrigger: "escalate|urgent|p0"\ntools: [send_message, memory_write]\n---\n# Escalation Alert\nEscalate critical issues to team.',
     },
     maxScore: 100,

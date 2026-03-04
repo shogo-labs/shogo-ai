@@ -1,7 +1,7 @@
 /**
  * Unified Tool System Eval Test Cases
  *
- * Tests the unified tool_search / tool_install / tool_uninstall / tool_list
+ * Tests the unified tool_search / tool_install / tool_uninstall
  * interface that abstracts Composio (managed OAuth) and catalog (local MCP)
  * sources behind a single agent-facing API.
  *
@@ -429,12 +429,6 @@ export const TOOL_SYSTEM_EVALS: AgentEval[] = [
           },
         ],
         default: { error: 'Unknown tool' },
-      },
-      tool_list: {
-        type: 'static',
-        description: 'List installed tools.',
-        paramKeys: [],
-        response: { servers: [], totalServers: 0, totalTools: 0 },
       },
     },
     validationCriteria: [

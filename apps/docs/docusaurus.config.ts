@@ -4,7 +4,7 @@ import type * as Preset from "@docusaurus/preset-classic";
 
 const config: Config = {
   title: "Shogo Documentation",
-  tagline: "Build apps with AI — no coding required",
+  tagline: "Build AI agents through conversation",
   favicon: "img/favicon.ico",
 
   url: "https://docs.shogo.ai",
@@ -94,14 +94,13 @@ const config: Config = {
           items: [
             { label: "Getting Started", to: "/getting-started/welcome" },
             { label: "Features", to: "/features/chat-with-ai" },
-            { label: "Templates", to: "/templates" },
+            { label: "Agent Templates", to: "/templates" },
             { label: "Prompting Guide", to: "/prompting/basics" },
           ],
         },
         {
           title: "Resources",
           items: [
-            { label: "SDK", to: "/sdk/introduction" },
             { label: "Tips & Tricks", to: "/tips-and-tricks/best-practices" },
             { label: "Glossary", to: "/reference/glossary" },
             { label: "Changelog", to: "/changelog" },
@@ -110,7 +109,7 @@ const config: Config = {
         {
           title: "Product",
           items: [
-            { label: "Shogo App", href: "https://shogo.dev" },
+            { label: "Shogo", href: "https://shogo.dev" },
             { label: "Plans & Pricing", to: "/getting-started/plans-and-credits" },
             { label: "FAQ", to: "/getting-started/faq" },
           ],

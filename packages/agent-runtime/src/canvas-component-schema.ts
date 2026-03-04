@@ -847,14 +847,14 @@ export function normalizeComponents(
 }
 
 // ---------------------------------------------------------------------------
-// Basic agent schema (display-only — no TextField, Select, Checkbox, ChoicePicker)
+// Basic agent schema (display + interactive: Checkbox, Select, Delete button)
 // ---------------------------------------------------------------------------
 
 const BASIC_ACTION_PROP: PropDef = {
   type: 'object',
   description: `Action for opening external URLs: { name: "open_link", mutation: { endpoint: "https://example.com" OR { path: "url" }, method: "OPEN" } }
   method "OPEN" opens the resolved endpoint in a new browser tab. Use this for per-item URLs in a DataList (e.g. Airbnb listing URLs).
-  The ONLY supported method is "OPEN". Do NOT use POST, PATCH, or DELETE.`,
+  The ONLY supported method is "OPEN". Do NOT use POST, PATCH, or DELETE — those are handled automatically by Checkbox, Select, and deleteAction.`,
 }
 
 export const BASIC_CANVAS_COMPONENT_SCHEMA: ComponentSchema[] = [
@@ -864,19 +864,54 @@ export const BASIC_CANVAS_COMPONENT_SCHEMA: ComponentSchema[] = [
   {
     type: 'Button',
     category: 'interactive',
-    description: `Clickable button for opening external URLs. The ONLY supported method is "OPEN".
-  Example: { name: "view", mutation: { endpoint: "https://example.com", method: "OPEN" } }
-  In a DataList template, bind the URL: mutation: { endpoint: { path: "url" }, method: "OPEN" }
-  method "OPEN" opens the URL in a new browser tab.
-  Do NOT use POST, PATCH, or DELETE — this agent is display-only.`,
+    description: `Clickable button. Two modes:
+  1. Open external URL: action: { name: "view", mutation: { endpoint: "https://..." OR { path: "url" }, method: "OPEN" } }
+  2. Delete DataList item: set deleteAction: true (the system handles the DELETE automatically).
+  In a DataList, bind per-item URLs with { path: "url" } in the endpoint.`,
     hasChildren: false,
     props: {
       label: str('Button text', { required: true }),
       text: str('Alias for label'),
-      variant: str('Visual style', { enum: ['default', 'secondary', 'outline', 'ghost', 'link'], default: 'default' }),
+      variant: str('Visual style', { enum: ['default', 'secondary', 'destructive', 'outline', 'ghost', 'link'], default: 'default' }),
       size: str('Button size', { enum: ['default', 'sm', 'lg', 'icon'], default: 'default' }),
       disabled: bool('Disable the button'),
       action: BASIC_ACTION_PROP,
+      deleteAction: bool('When true, clicking deletes the current DataList item from the API. No mutation config needed — the system auto-derives the DELETE.'),
+      className: CLASS_PROP,
+    },
+  },
+  {
+    type: 'Checkbox',
+    category: 'interactive',
+    description: `Toggle a boolean field on an API model record. Place inside a DataList template bound to an API model.
+  The system auto-PATCHes the API record when toggled — no mutation config needed.
+  Example: { component: "Checkbox", checked: { path: "completed" }, dataPath: "completed" }`,
+    hasChildren: false,
+    props: {
+      label: str('Checkbox label'),
+      checked: bool('Bound boolean value — use { path: "fieldName" } for data binding'),
+      dataPath: str('Field name to toggle (e.g. "completed"). Auto-included in the PATCH body.', { required: true }),
+      disabled: bool('Disable the checkbox'),
+      className: CLASS_PROP,
+    },
+  },
+  {
+    type: 'Select',
+    category: 'interactive',
+    description: `Dropdown to change a field value on an API model record. Place inside a DataList template bound to an API model.
+  The system auto-PATCHes the API record when changed — no mutation config needed.
+  Example: { component: "Select", value: { path: "priority" }, dataPath: "priority", options: [{ label: "Low", value: "low" }, { label: "High", value: "high" }] }`,
+    hasChildren: false,
+    props: {
+      label: str('Field label'),
+      options: arr('Options: [{ label, value }]', {
+        label: str('Display text', { required: true }),
+        value: str('Option value', { required: true }),
+      }),
+      value: str('Current value — use { path: "fieldName" } for data binding'),
+      placeholder: str('Placeholder option text'),
+      dataPath: str('Field name to update (e.g. "priority"). Auto-included in the PATCH body.', { required: true }),
+      disabled: bool('Disable the select'),
       className: CLASS_PROP,
     },
   },

@@ -90,6 +90,12 @@ const CHANNEL_INFO: Record<string, { name: string; icon: string; setupUrl: strin
     icon: '🟦',
     setupUrl: 'https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade',
   },
+  webchat: {
+    name: 'WebChat Widget',
+    icon: '🌐',
+    setupUrl: '',
+    description: 'Embeddable chat widget for any website',
+  },
 }
 
 function timeAgo(isoString: string): string {
@@ -371,6 +377,79 @@ function WebhookDetails({
   )
 }
 
+function WebChatDetails({ baseUrl }: { baseUrl: string }) {
+  const [copiedField, setCopiedField] = useState<string | null>(null)
+  const widgetUrl = `${baseUrl}/agent/channels/webchat/widget.js`
+  const embedSnippet = `<script src="${widgetUrl}"></script>`
+
+  const copyToClipboard = (text: string, field: string) => {
+    navigator.clipboard.writeText(text)
+    setCopiedField(field)
+    setTimeout(() => setCopiedField(null), 2000)
+  }
+
+  return (
+    <div className="space-y-3 mt-3">
+      <div className="bg-muted/50 rounded-lg p-3 space-y-2">
+        <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+          Embed on Your Website
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          Copy this snippet and paste it before the closing <code>&lt;/body&gt;</code> tag on any page:
+        </p>
+        <div className="flex items-center gap-2">
+          <code className="flex-1 text-xs bg-background rounded px-2 py-1.5 font-mono text-foreground break-all border">
+            {embedSnippet}
+          </code>
+          <button
+            onClick={() => copyToClipboard(embedSnippet, 'snippet')}
+            className="p-1.5 rounded hover:bg-muted text-muted-foreground shrink-0"
+            title="Copy snippet"
+          >
+            {copiedField === 'snippet' ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-muted/50 rounded-lg p-3 space-y-2">
+        <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+          Widget Script URL
+        </div>
+        <div className="flex items-center gap-2">
+          <code className="flex-1 text-xs bg-background rounded px-2 py-1.5 font-mono text-foreground break-all border">
+            {widgetUrl}
+          </code>
+          <button
+            onClick={() => copyToClipboard(widgetUrl, 'url')}
+            className="p-1.5 rounded hover:bg-muted text-muted-foreground shrink-0"
+            title="Copy URL"
+          >
+            {copiedField === 'url' ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-muted/50 rounded-lg p-3 space-y-2">
+        <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+          Test It
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          Open the widget health check to verify it's running:
+        </p>
+        <a
+          href={`${baseUrl}/agent/channels/webchat/health`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1.5 text-xs text-primary hover:underline"
+        >
+          <ExternalLink className="h-3 w-3" />
+          Health Check
+        </a>
+      </div>
+    </div>
+  )
+}
+
 export function AgentChannelsPanel({ projectId, visible, agentUrl }: AgentChannelsPanelProps) {
   const [channels, setChannels] = useState<ChannelInfo[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -396,7 +475,13 @@ export function AgentChannelsPanel({ projectId, visible, agentUrl }: AgentChanne
         const webhookConnected = (data.channels || []).some(
           (c: ChannelInfo) => c.type === 'webhook' && c.connected
         )
-        if (webhookConnected) {
+        const webchatConnected = (data.channels || []).some(
+          (c: ChannelInfo) => c.type === 'webchat' && c.connected
+        )
+        if (webchatConnected) {
+          setExpandedChannel('webchat')
+          hasAutoExpanded.current = true
+        } else if (webhookConnected) {
           setExpandedChannel('webhook')
           hasAutoExpanded.current = true
         }
@@ -445,7 +530,7 @@ export function AgentChannelsPanel({ projectId, visible, agentUrl }: AgentChanne
                 {channels.map((ch, i) => {
                   const info = CHANNEL_INFO[ch.type] || { name: ch.type, icon: '📡' }
                   const isExpanded = expandedChannel === ch.type
-                  const hasDetails = ch.type === 'webhook'
+                  const hasDetails = ch.type === 'webhook' || ch.type === 'webchat'
 
                   return (
                     <div key={i} className="border rounded-lg overflow-hidden">
@@ -469,6 +554,11 @@ export function AgentChannelsPanel({ projectId, visible, agentUrl }: AgentChanne
                               {(ch.metadata as any)?.messageCount || 0} messages &bull; Click to expand
                             </div>
                           )}
+                          {ch.type === 'webchat' && ch.connected && !isExpanded && (
+                            <div className="text-[11px] text-muted-foreground mt-0.5">
+                              {(ch.metadata as any)?.activeSessions || 0} sessions &bull; Click for embed code
+                            </div>
+                          )}
                         </div>
                         <div className="flex items-center gap-1.5">
                           {ch.connected ? (
@@ -487,6 +577,11 @@ export function AgentChannelsPanel({ projectId, visible, agentUrl }: AgentChanne
                       {isExpanded && ch.type === 'webhook' && agentBaseUrl && (
                         <div className="border-t px-3 pb-3">
                           <WebhookDetails channel={ch} baseUrl={agentBaseUrl} />
+                        </div>
+                      )}
+                      {isExpanded && ch.type === 'webchat' && agentBaseUrl && (
+                        <div className="border-t px-3 pb-3">
+                          <WebChatDetails baseUrl={agentBaseUrl} />
                         </div>
                       )}
                     </div>
@@ -528,7 +623,7 @@ export function AgentChannelsPanel({ projectId, visible, agentUrl }: AgentChanne
             </div>
 
             <div className="text-xs text-muted-foreground mt-4">
-              Use the builder AI chat to connect channels. For example: &quot;Connect my Telegram bot&quot;, &quot;Set up Discord&quot;, &quot;Connect WhatsApp&quot;, &quot;Add Slack&quot;, or &quot;Set up a webhook channel&quot;, or &quot;Set up Microsoft Teams&quot;.
+              Use the builder AI chat to connect channels. For example: &quot;Connect my Telegram bot&quot;, &quot;Set up Discord&quot;, &quot;Connect WhatsApp&quot;, &quot;Add Slack&quot;, &quot;Set up a webhook channel&quot;, &quot;Set up Microsoft Teams&quot;, or &quot;Add a webchat widget to my website&quot;.
             </div>
           </div>
         )}

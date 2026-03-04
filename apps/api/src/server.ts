@@ -4589,6 +4589,13 @@ if (isKubernetes()) {
     } catch (err: any) {
       console.error('[WarmPool] Failed to start warm pool controller (non-fatal):', err.message)
     }
+
+    try {
+      const { startInfraMetricsCollector } = await import('./lib/infra-metrics-collector')
+      startInfraMetricsCollector(prisma)
+    } catch (err: any) {
+      console.error('[InfraCollector] Failed to start (non-fatal):', err.message)
+    }
   }, 2000)
 }
 

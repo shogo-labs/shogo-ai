@@ -30,7 +30,7 @@ interface RendererProps {
   surface: SurfaceState
   agentUrl: string | null
   onAction: (surfaceId: string, name: string, context?: Record<string, unknown>) => void
-  onDataChange?: (surfaceId: string, path: string, value: unknown) => void
+  onDataChange?: (surfaceId: string, path: string, value: unknown, options?: { persist?: boolean }) => void
 }
 
 export function DynamicAppRenderer({ surface, agentUrl, onAction, onDataChange }: RendererProps) {
@@ -44,9 +44,9 @@ export function DynamicAppRenderer({ surface, agentUrl, onAction, onDataChange }
   )
 
   const handleDataChange = useCallback(
-    (path: string, value: unknown) => {
+    (path: string, value: unknown, options?: { persist?: boolean }) => {
       if (onDataChange) {
-        onDataChange(surface.surfaceId, path, value)
+        onDataChange(surface.surfaceId, path, value, options)
       }
     },
     [surface.surfaceId, onDataChange],
@@ -87,7 +87,7 @@ interface ComponentNodeProps {
   components: Map<string, ComponentDefinition>
   dataModel: Record<string, unknown>
   onAction: (name: string, context?: Record<string, unknown>) => void
-  onDataChange?: (path: string, value: unknown) => void
+  onDataChange?: (path: string, value: unknown, options?: { persist?: boolean }) => void
   apiDataSource: ApiDataSourceResult
   scopeData?: Record<string, unknown>
   scopePath?: string
@@ -124,10 +124,39 @@ function ComponentNode({ definition, components, dataModel, onAction, onDataChan
     }
   }
 
+  // Auto-inject __delete_item__ action for delete buttons inside DataList scopes
+  if (resolvedProps.deleteAction && scopeData && scopePath) {
+    const itemId = (scopeData as any).id
+    if (itemId) {
+      const lastSlash = scopePath.lastIndexOf('/')
+      const collectionPath = lastSlash > 0 ? scopePath.substring(0, lastSlash) : scopePath
+      resolvedProps = {
+        ...resolvedProps,
+        action: {
+          name: '__delete_item__',
+          context: { collectionPath, itemId: String(itemId) },
+        },
+      }
+    }
+  }
+
   const suppressActions = editMode?.isEditMode
   const noopAction = useCallback(() => {}, [])
   const effectiveOnAction = suppressActions ? noopAction : onAction
   const effectiveOnDataChange = suppressActions ? undefined : onDataChange
+
+  // Scope-aware onDataChange that joins scopePath for DataList items
+  const scopedOnDataChange = useCallback(
+    (path: string, value: unknown, options?: { persist?: boolean }) => {
+      if (!effectiveOnDataChange) return
+      if (scopePath && !path.startsWith('/')) {
+        effectiveOnDataChange(`${scopePath}/${path}`, value, options)
+      } else {
+        effectiveOnDataChange(path, value, options)
+      }
+    },
+    [effectiveOnDataChange, scopePath],
+  )
 
   const children = useRenderedChildren(enhancedDefinition, components, dataModel, effectiveOnAction, effectiveOnDataChange, apiDataSource, scopeData, scopePath, definition.component)
 
@@ -137,7 +166,7 @@ function ComponentNode({ definition, components, dataModel, onAction, onDataChan
     <Component
       {...resolvedProps}
       onAction={effectiveOnAction}
-      onDataChange={effectiveOnDataChange}
+      onDataChange={scopedOnDataChange}
     >
       {children}
     </Component>
@@ -242,7 +271,7 @@ function useRenderedChildren(
   components: Map<string, ComponentDefinition>,
   dataModel: Record<string, unknown>,
   onAction: (name: string, context?: Record<string, unknown>) => void,
-  onDataChange: ((path: string, value: unknown) => void) | undefined,
+  onDataChange: ((path: string, value: unknown, options?: { persist?: boolean }) => void) | undefined,
   apiDataSource: ApiDataSourceResult,
   scopeData?: Record<string, unknown>,
   scopePath?: string,
@@ -354,7 +383,7 @@ interface MultiSurfaceRendererProps {
   surfaces: Map<string, SurfaceState>
   agentUrl: string | null
   onAction: (surfaceId: string, name: string, context?: Record<string, unknown>) => void
-  onDataChange?: (surfaceId: string, path: string, value: unknown) => void
+  onDataChange?: (surfaceId: string, path: string, value: unknown, options?: { persist?: boolean }) => void
 }
 
 export function MultiSurfaceRenderer({ surfaces, agentUrl, onAction, onDataChange }: MultiSurfaceRendererProps) {
