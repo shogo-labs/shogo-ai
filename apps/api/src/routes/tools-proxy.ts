@@ -56,6 +56,12 @@ const FORWARDED_SKIP_HEADERS = new Set([
   'upgrade',
 ])
 
+const RESPONSE_SKIP_HEADERS = new Set([
+  ...FORWARDED_SKIP_HEADERS,
+  'content-encoding',
+  'content-length',
+])
+
 // =============================================================================
 // JWT extraction
 // =============================================================================
@@ -114,7 +120,7 @@ async function forwardRequest(
   const responseHeaders = new Headers()
   upstream.headers.forEach((value, key) => {
     const lower = key.toLowerCase()
-    if (FORWARDED_SKIP_HEADERS.has(lower)) return
+    if (RESPONSE_SKIP_HEADERS.has(lower)) return
     responseHeaders.set(key, value)
   })
 
