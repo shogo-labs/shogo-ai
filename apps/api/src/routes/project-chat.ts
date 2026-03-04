@@ -559,6 +559,29 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         setProjectUser(projectId, billingUserId)
       }
 
+      // Validate the claimed user ID against workspace membership.
+      // Only forward a trusted X-User-Id if the user is actually a member
+      // of the project's workspace — prevents header spoofing.
+      let verifiedUserId: string | undefined
+      if (billingUserId && billingUserId !== 'system') {
+        try {
+          const member = await prisma.member.findFirst({
+            where: {
+              userId: billingUserId,
+              workspaceId: project.workspaceId,
+            },
+            select: { id: true },
+          })
+          if (member) {
+            verifiedUserId = billingUserId
+          } else {
+            console.warn(`[ProjectChat] User ${billingUserId} is not a member of workspace ${project.workspaceId} — ignoring for Composio context`)
+          }
+        } catch (err: any) {
+          console.error(`[ProjectChat] Failed to verify user membership:`, err.message)
+        }
+      }
+
       // Open a billing session so the AI proxy accumulates tokens across
       // all API calls in the agentic loop instead of charging per-call.
       // The session is closed in trackUsageFromStream after the stream ends.
@@ -580,6 +603,12 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // This bridges the gap when the proxy token only has a generic userId.
       if (billingUserId && billingUserId !== 'system') {
         headers["X-Billing-User-Id"] = billingUserId
+      }
+
+      // Forward verified user ID for per-user integrations (e.g. Composio OAuth).
+      // Only set after validating workspace membership above.
+      if (verifiedUserId) {
+        headers["X-User-Id"] = verifiedUserId
       }
 
       // Retry configuration for transient errors during cold starts.

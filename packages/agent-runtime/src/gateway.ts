@@ -1530,12 +1530,17 @@ export class AgentGateway {
   async processChatMessageStream(
     text: string,
     writer: { write(chunk: Record<string, any>): void },
-    options?: { modelOverride?: string; fileParts?: FilePart[] },
+    options?: { modelOverride?: string; fileParts?: FilePart[]; userId?: string },
   ): Promise<void> {
     if (options?.modelOverride) {
       const session = this.sessionManager.getOrCreate('chat')
       session.modelOverride = options.modelOverride
     }
+
+    if (options?.userId && isComposioEnabled()) {
+      await initComposioSession(options.userId, this.projectId)
+    }
+
     this.emitLog(`Chat message received (stream): "${text.substring(0, 100)}"`)
 
     let images: ImageContent[] | undefined
@@ -2006,6 +2011,11 @@ export class AgentGateway {
       'When users mention dates without a year, default to the current or next occurrence (never a past date).',
     ].join('\n'))
 
+    const installedToolsContext = this.buildInstalledToolsContext()
+    if (installedToolsContext) {
+      parts.push(installedToolsContext)
+    }
+
     const uploadedFilesContext = this.buildUploadedFilesContext()
     if (uploadedFilesContext) {
       parts.push(uploadedFilesContext)
@@ -2030,6 +2040,35 @@ export class AgentGateway {
     parts.push(this.promptOverrides.get('mcp_discovery_guide') ?? OPTIMIZED_MCP_DISCOVERY_GUIDE)
 
     return parts.join('\n\n---\n\n')
+  }
+
+  /**
+   * Build a context section listing currently installed tool integrations.
+   * Included in the system prompt so the agent knows what's available
+   * and can use installed tools directly without needing to discover them.
+   */
+  private buildInstalledToolsContext(): string | null {
+    const servers = this.mcpClientManager.getServerInfo()
+    if (servers.length === 0) return null
+
+    const lines = [
+      '## Installed Tools',
+      '',
+      'The following tool integrations are currently installed and available:',
+      '',
+    ]
+
+    for (const server of servers) {
+      const toolList = server.toolNames.length <= 8
+        ? server.toolNames.join(', ')
+        : server.toolNames.slice(0, 8).join(', ') + `, ... (+${server.toolNames.length - 8} more)`
+      lines.push(`- **${server.name}** (${server.toolCount} tools): ${toolList}`)
+    }
+
+    lines.push('')
+    lines.push('Use these tools directly — no need to search or install them. Use `tool_uninstall` to remove any you no longer need.')
+
+    return lines.join('\n')
   }
 
   /**

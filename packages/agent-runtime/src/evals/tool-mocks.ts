@@ -572,6 +572,20 @@ export const PR_REVIEW_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const MCP_LIST_INSTALLED_MOCKS: ToolMockMap = {
+  tool_search: {
+    type: 'static',
+    description: 'Search for available tools by capability or keyword.',
+    paramKeys: ['query'],
+    response: {
+      query: 'integrations',
+      results: [
+        { name: 'Playwright Browser', qualifiedName: '@anthropic/mcp-server-playwright', description: 'Browser automation — navigate, click, fill forms, take screenshots.', installCommand: 'npx -y @anthropic/mcp-server-playwright', source: 'catalog' },
+        { name: 'PostgreSQL', qualifiedName: '@anthropic/mcp-server-postgres', description: 'Query PostgreSQL databases.', installCommand: 'npx -y @anthropic/mcp-server-postgres', source: 'catalog' },
+        { name: 'Google Calendar', qualifiedName: 'googlecalendar', description: 'List, create, update calendar events.', source: 'managed' },
+      ],
+      message: 'Found 3 available integrations.',
+    },
+  },
 }
 
 // ---------------------------------------------------------------------------

@@ -229,29 +229,23 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
     level: 2,
     conversationHistory: [
       { role: 'user', content: 'What integrations do I have set up right now?' },
+      { role: 'assistant', content: 'You currently have **Slack** installed with 5 tools: SLACK_SEND_MESSAGE, SLACK_LIST_CHANNELS, SLACK_READ_MESSAGES, SLACK_SET_TOPIC, SLACK_LIST_USERS.' },
     ],
     input: 'OK, I don\'t use Slack anymore. Remove that one please.',
     maxScore: 100,
     toolMocks: MCP_UNINSTALL_MOCKS,
     validationCriteria: [
       {
-        id: 'used-list-installed',
-        description: 'Used tool_search to check what\'s available',
-        points: 15,
-        phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_search'),
-      },
-      {
         id: 'used-mcp-uninstall',
         description: 'Used tool_uninstall to remove the server',
-        points: 40,
+        points: 50,
         phase: 'intention',
         validate: (r) => usedTool(r, 'tool_uninstall'),
       },
       {
         id: 'uninstalled-slack',
         description: 'Uninstalled the slack server specifically',
-        points: 20,
+        points: 25,
         phase: 'execution',
         validate: (r) => toolCallsJson(r).includes('slack'),
       },

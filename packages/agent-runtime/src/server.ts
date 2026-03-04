@@ -623,6 +623,8 @@ app.post('/agent/chat', async (c) => {
     agentGateway!.setUserTimezone(body.timezone)
   }
 
+  const chatUserId = c.req.header('X-User-Id') || body.userId || undefined
+
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
       try {
@@ -630,6 +632,7 @@ app.post('/agent/chat', async (c) => {
         await agentGateway!.processChatMessageStream(userText || '', writer, {
           modelOverride,
           fileParts: userFileParts.length > 0 ? userFileParts : undefined,
+          userId: chatUserId,
         })
 
         const usage = agentGateway!.consumeLastTurnUsage()
