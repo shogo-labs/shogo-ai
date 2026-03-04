@@ -250,7 +250,7 @@ spec:
             - name: WARM_POOL_AGENTS_PER_NODE
               value: "0"
             - name: WARM_POOL_MIN_AGENTS
-              value: "5"
+              value: "10"
             - name: WARM_POOL_MAX_AGE_MS
               value: "3600000"
             - name: PROMOTED_POD_GC_ENABLED

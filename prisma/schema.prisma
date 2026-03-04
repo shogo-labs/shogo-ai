@@ -1099,6 +1099,19 @@ enum ComponentSpecStatus {
 }
 
 // ============================================================================
+// Platform Settings (runtime-configurable by super admins)
+// ============================================================================
+
+model PlatformSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+
+  @@map("platform_settings")
+}
+
+// ============================================================================
 // Infrastructure Metrics
 // ============================================================================
 
@@ -1113,6 +1126,7 @@ model InfraSnapshot {
   usedPodSlots   Int
   totalCpuMillis Int
   usedCpuMillis  Int
+  limitCpuMillis Int      @default(0)
 
   warmAvailable  Int
   warmTarget     Int

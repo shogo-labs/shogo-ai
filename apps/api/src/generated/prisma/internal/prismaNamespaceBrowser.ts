@@ -91,6 +91,7 @@ export const ModelName = {
   LayoutTemplate: 'LayoutTemplate',
   Composition: 'Composition',
   ComponentSpec: 'ComponentSpec',
+  PlatformSetting: 'PlatformSetting',
   InfraSnapshot: 'InfraSnapshot'
 } as const
 
@@ -741,6 +742,16 @@ export const ComponentSpecScalarFieldEnum = {
 export type ComponentSpecScalarFieldEnum = (typeof ComponentSpecScalarFieldEnum)[keyof typeof ComponentSpecScalarFieldEnum]
 
 
+export const PlatformSettingScalarFieldEnum = {
+  key: 'key',
+  value: 'value',
+  updatedAt: 'updatedAt',
+  updatedBy: 'updatedBy'
+} as const
+
+export type PlatformSettingScalarFieldEnum = (typeof PlatformSettingScalarFieldEnum)[keyof typeof PlatformSettingScalarFieldEnum]
+
+
 export const InfraSnapshotScalarFieldEnum = {
   id: 'id',
   timestamp: 'timestamp',
@@ -751,6 +762,7 @@ export const InfraSnapshotScalarFieldEnum = {
   usedPodSlots: 'usedPodSlots',
   totalCpuMillis: 'totalCpuMillis',
   usedCpuMillis: 'usedCpuMillis',
+  limitCpuMillis: 'limitCpuMillis',
   warmAvailable: 'warmAvailable',
   warmTarget: 'warmTarget',
   warmAssigned: 'warmAssigned',

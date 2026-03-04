@@ -198,6 +198,14 @@ export class WarmPoolController {
   private maxPodAgeMs: number
   private reconcileTimer: ReturnType<typeof setInterval> | null = null
 
+  // Mutable config (can be updated at runtime via updateConfig)
+  private _minAgents: number
+  private _minProjects: number
+  private _agentsPerNode: number
+  private _projectsPerNode: number
+  private _idleTimeoutMs: number
+  private _gcEnabled: boolean
+
   /** Available (unassigned) warm pods, keyed by a unique id */
   private available = new Map<string, WarmPodInfo>()
 
@@ -230,9 +238,15 @@ export class WarmPoolController {
 
   constructor(config: WarmPoolConfig = {}) {
     this.namespace = config.namespace || NAMESPACE
+    this._minAgents = config.agentPoolSize ?? WARM_POOL_MIN_AGENTS
+    this._minProjects = config.projectPoolSize ?? WARM_POOL_MIN_PROJECTS
+    this._agentsPerNode = WARM_POOL_AGENTS_PER_NODE
+    this._projectsPerNode = WARM_POOL_PROJECTS_PER_NODE
+    this._idleTimeoutMs = PROMOTED_POD_IDLE_TIMEOUT_MS
+    this._gcEnabled = PROMOTED_POD_GC_ENABLED
     this.poolSize = {
-      project: config.projectPoolSize ?? WARM_POOL_MIN_PROJECTS,
-      agent: config.agentPoolSize ?? WARM_POOL_MIN_AGENTS,
+      project: this._minProjects,
+      agent: this._minAgents,
     }
     this.reconcileIntervalMs = config.reconcileIntervalMs ?? WARM_POOL_RECONCILE_INTERVAL
     this.maxPodAgeMs = config.maxPodAgeMs ?? WARM_POOL_MAX_AGE_MS
@@ -302,12 +316,12 @@ export class WarmPoolController {
       const prevProject = this.poolSize.project
       const prevAgent = this.poolSize.agent
 
-      this.poolSize.project = Math.max(WARM_POOL_MIN_PROJECTS, nodeCount * WARM_POOL_PROJECTS_PER_NODE)
-      this.poolSize.agent = Math.max(WARM_POOL_MIN_AGENTS, nodeCount * WARM_POOL_AGENTS_PER_NODE)
+      this.poolSize.project = Math.max(this._minProjects, nodeCount * this._projectsPerNode)
+      this.poolSize.agent = Math.max(this._minAgents, nodeCount * this._agentsPerNode)
 
       if (this.poolSize.project !== prevProject || this.poolSize.agent !== prevAgent) {
         console.log(
-          `[WarmPool] Node-based sizing: ${nodeCount} nodes → project:${this.poolSize.project} (${WARM_POOL_PROJECTS_PER_NODE}/node), agent:${this.poolSize.agent} (${WARM_POOL_AGENTS_PER_NODE}/node)`
+          `[WarmPool] Node-based sizing: ${nodeCount} nodes → project:${this.poolSize.project} (${this._projectsPerNode}/node), agent:${this.poolSize.agent} (${this._agentsPerNode}/node)`
         )
       }
     } catch (err: any) {
@@ -813,6 +827,105 @@ export class WarmPoolController {
   }
 
   /**
+   * Get the current runtime config (for admin API reads).
+   */
+  getConfig(): {
+    warmPoolMinAgents: number
+    warmPoolMinProjects: number
+    warmPoolAgentsPerNode: number
+    warmPoolProjectsPerNode: number
+    reconcileIntervalMs: number
+    maxPodAgeMs: number
+    promotedPodIdleTimeoutMs: number
+    promotedPodGcEnabled: boolean
+  } {
+    return {
+      warmPoolMinAgents: this._minAgents,
+      warmPoolMinProjects: this._minProjects,
+      warmPoolAgentsPerNode: this._agentsPerNode,
+      warmPoolProjectsPerNode: this._projectsPerNode,
+      reconcileIntervalMs: this.reconcileIntervalMs,
+      maxPodAgeMs: this.maxPodAgeMs,
+      promotedPodIdleTimeoutMs: this._idleTimeoutMs,
+      promotedPodGcEnabled: this._gcEnabled,
+    }
+  }
+
+  /**
+   * Update runtime config. Partial updates supported — only provided fields change.
+   * Restarts the reconcile timer if the interval changes.
+   */
+  updateConfig(patch: {
+    warmPoolMinAgents?: number
+    warmPoolMinProjects?: number
+    warmPoolAgentsPerNode?: number
+    warmPoolProjectsPerNode?: number
+    reconcileIntervalMs?: number
+    maxPodAgeMs?: number
+    promotedPodIdleTimeoutMs?: number
+    promotedPodGcEnabled?: boolean
+  }): void {
+    const changes: string[] = []
+
+    if (patch.warmPoolMinAgents !== undefined && patch.warmPoolMinAgents !== this._minAgents) {
+      this._minAgents = patch.warmPoolMinAgents
+      changes.push(`minAgents=${patch.warmPoolMinAgents}`)
+    }
+    if (patch.warmPoolMinProjects !== undefined && patch.warmPoolMinProjects !== this._minProjects) {
+      this._minProjects = patch.warmPoolMinProjects
+      changes.push(`minProjects=${patch.warmPoolMinProjects}`)
+    }
+    if (patch.warmPoolAgentsPerNode !== undefined && patch.warmPoolAgentsPerNode !== this._agentsPerNode) {
+      this._agentsPerNode = patch.warmPoolAgentsPerNode
+      changes.push(`agentsPerNode=${patch.warmPoolAgentsPerNode}`)
+    }
+    if (patch.warmPoolProjectsPerNode !== undefined && patch.warmPoolProjectsPerNode !== this._projectsPerNode) {
+      this._projectsPerNode = patch.warmPoolProjectsPerNode
+      changes.push(`projectsPerNode=${patch.warmPoolProjectsPerNode}`)
+    }
+    if (patch.maxPodAgeMs !== undefined && patch.maxPodAgeMs !== this.maxPodAgeMs) {
+      this.maxPodAgeMs = patch.maxPodAgeMs
+      changes.push(`maxPodAgeMs=${patch.maxPodAgeMs}`)
+    }
+    if (patch.promotedPodIdleTimeoutMs !== undefined && patch.promotedPodIdleTimeoutMs !== this._idleTimeoutMs) {
+      this._idleTimeoutMs = patch.promotedPodIdleTimeoutMs
+      changes.push(`idleTimeoutMs=${patch.promotedPodIdleTimeoutMs}`)
+    }
+    if (patch.promotedPodGcEnabled !== undefined && patch.promotedPodGcEnabled !== this._gcEnabled) {
+      this._gcEnabled = patch.promotedPodGcEnabled
+      changes.push(`gcEnabled=${patch.promotedPodGcEnabled}`)
+    }
+
+    // Recalculate pool size immediately with new min values
+    this.poolSize.agent = Math.max(this._minAgents, this.poolSize.agent)
+    this.poolSize.project = Math.max(this._minProjects, this.poolSize.project)
+
+    // Restart timer if interval changed
+    if (patch.reconcileIntervalMs !== undefined && patch.reconcileIntervalMs !== this.reconcileIntervalMs) {
+      this.reconcileIntervalMs = patch.reconcileIntervalMs
+      changes.push(`reconcileIntervalMs=${patch.reconcileIntervalMs}`)
+      if (this.reconcileTimer && this.started) {
+        clearInterval(this.reconcileTimer)
+        this.reconcileTimer = setInterval(() => {
+          this.reconcile().catch((err) => {
+            console.error('[WarmPool] Reconciliation error:', err.message)
+          })
+        }, this.reconcileIntervalMs)
+      }
+    }
+
+    if (changes.length > 0) {
+      console.log(`[WarmPool] Config updated: ${changes.join(', ')}`)
+      // Trigger immediate reconcile to apply new settings
+      if (this.started) {
+        this.reconcile().catch((err) => {
+          console.error('[WarmPool] Post-config reconciliation error:', err.message)
+        })
+      }
+    }
+  }
+
+  /**
    * Get extended status including cluster capacity, promoted pods, and GC stats.
    * Used by health/status endpoints and admin API for operational visibility.
    */
@@ -856,7 +969,7 @@ export class WarmPoolController {
    * pod's /pool/activity endpoint. If idle longer than the timeout, evict.
    */
   async gcPromotedPods(): Promise<{ orphansDeleted: number; idleEvicted: number }> {
-    if (!PROMOTED_POD_GC_ENABLED || this.promotedPods.length === 0) {
+    if (!this._gcEnabled || this.promotedPods.length === 0) {
       return { orphansDeleted: 0, idleEvicted: 0 }
     }
 
@@ -905,9 +1018,9 @@ export class WarmPoolController {
           })
           if (resp.ok) {
             const activity = await resp.json() as { idleSeconds: number }
-            if (activity.idleSeconds * 1000 < PROMOTED_POD_IDLE_TIMEOUT_MS) continue
+            if (activity.idleSeconds * 1000 < this._idleTimeoutMs) continue
             console.log(
-              `[WarmPool GC] Evicting idle promoted pod ${pod.serviceName} for project ${pod.projectId} (idle ${activity.idleSeconds}s, timeout ${PROMOTED_POD_IDLE_TIMEOUT_MS / 1000}s)`
+              `[WarmPool GC] Evicting idle promoted pod ${pod.serviceName} for project ${pod.projectId} (idle ${activity.idleSeconds}s, timeout ${this._idleTimeoutMs / 1000}s)`
             )
           } else {
             console.log(
@@ -1343,11 +1456,46 @@ export function getWarmPoolController(): WarmPoolController {
 }
 
 /**
+ * Load persisted infrastructure settings from the DB and apply to the controller.
+ */
+async function loadPersistedSettings(controller: WarmPoolController): Promise<void> {
+  try {
+    const { prisma } = await import('./prisma')
+    const settings = await prisma.platformSetting.findMany({
+      where: { key: { startsWith: 'infra.' } },
+    })
+
+    if (settings.length === 0) return
+
+    const patch: Record<string, any> = {}
+    for (const s of settings) {
+      const key = s.key.replace('infra.', '')
+      if (key === 'promotedPodGcEnabled') {
+        patch[key] = s.value === 'true'
+      } else {
+        const val = parseInt(s.value, 10)
+        if (Number.isFinite(val) && val >= 0) {
+          patch[key] = val
+        }
+      }
+    }
+
+    if (Object.keys(patch).length > 0) {
+      controller.updateConfig(patch)
+      console.log(`[WarmPool] Loaded ${Object.keys(patch).length} persisted settings from DB`)
+    }
+  } catch (err: any) {
+    console.warn('[WarmPool] Failed to load persisted settings (non-fatal):', err.message)
+  }
+}
+
+/**
  * Initialize and start the warm pool controller.
  * Call this at API server startup (in Kubernetes only).
  */
 export async function startWarmPool(): Promise<WarmPoolController> {
   const controller = getWarmPoolController()
+  await loadPersistedSettings(controller)
   await controller.start()
   return controller
 }

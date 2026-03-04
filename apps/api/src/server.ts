@@ -3025,6 +3025,83 @@ app.post('/api/admin/warm-pool/evict-all', async (c) => {
   }
 })
 
+// =============================================================================
+// Infrastructure Settings (runtime-configurable, persisted to DB)
+// =============================================================================
+
+const INFRA_SETTINGS_KEYS = [
+  'warmPoolMinAgents',
+  'warmPoolMinProjects',
+  'warmPoolAgentsPerNode',
+  'warmPoolProjectsPerNode',
+  'reconcileIntervalMs',
+  'maxPodAgeMs',
+  'promotedPodIdleTimeoutMs',
+  'promotedPodGcEnabled',
+] as const
+
+// GET /api/admin/settings/infrastructure - Read current infra config
+app.get('/api/admin/settings/infrastructure', async (c) => {
+  try {
+    const { getWarmPoolController } = await import('./lib/warm-pool-controller')
+    const controller = getWarmPoolController()
+    return c.json(controller.getConfig())
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// PATCH /api/admin/settings/infrastructure - Update infra config at runtime
+app.patch('/api/admin/settings/infrastructure', async (c) => {
+  try {
+    const body = await c.req.json()
+
+    // Validate: only allow known keys, with type checks
+    const patch: Record<string, any> = {}
+    for (const key of INFRA_SETTINGS_KEYS) {
+      if (body[key] === undefined) continue
+      if (key === 'promotedPodGcEnabled') {
+        if (typeof body[key] !== 'boolean') {
+          return c.json({ error: `${key} must be a boolean` }, 400)
+        }
+        patch[key] = body[key]
+      } else {
+        const val = Number(body[key])
+        if (!Number.isFinite(val) || val < 0) {
+          return c.json({ error: `${key} must be a non-negative number` }, 400)
+        }
+        patch[key] = Math.round(val)
+      }
+    }
+
+    if (Object.keys(patch).length === 0) {
+      return c.json({ error: 'No valid settings provided' }, 400)
+    }
+
+    // Apply to controller
+    const { getWarmPoolController } = await import('./lib/warm-pool-controller')
+    const controller = getWarmPoolController()
+    controller.updateConfig(patch)
+
+    // Persist each setting to DB
+    const { prisma } = await import('./lib/prisma')
+    const auth = c.get('auth') as any
+    const userId = auth?.user?.id || 'unknown'
+
+    for (const [key, value] of Object.entries(patch)) {
+      await prisma.platformSetting.upsert({
+        where: { key: `infra.${key}` },
+        create: { key: `infra.${key}`, value: String(value), updatedBy: userId },
+        update: { value: String(value), updatedBy: userId },
+      })
+    }
+
+    return c.json({ ok: true, applied: patch, config: controller.getConfig() })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
 // DELETE /api/admin/projects/:projectId - Delete project pod
 app.delete('/api/admin/projects/:projectId', async (c) => {
   const router = projectAdminRoutes()

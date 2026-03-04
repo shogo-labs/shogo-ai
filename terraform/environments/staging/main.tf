@@ -1433,7 +1433,7 @@ resource "null_resource" "knative_services" {
                   - name: WARM_POOL_AGENTS_PER_NODE
                     value: "0"
                   - name: WARM_POOL_MIN_AGENTS
-                    value: "5"
+                    value: "10"
                   # Karpenter handles workspace node provisioning — proactive scaler defers to it
                   - name: KARPENTER_ENABLED
                     value: "true"
