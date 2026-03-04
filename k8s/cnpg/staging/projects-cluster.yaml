@@ -91,6 +91,8 @@ spec:
       memory: "2Gi"
       cpu: "1000m"
 
-  # Affinity: spread across nodes for HA
+  # Pin to managed node group — never schedule on ephemeral Karpenter nodes
   affinity:
+    nodeSelector:
+      eks.amazonaws.com/nodegroup: shogo-staging-main
     topologyKey: kubernetes.io/hostname

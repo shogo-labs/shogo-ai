@@ -211,6 +211,10 @@ module "eks" {
   # Enable secondary node group for additional capacity (matching deployed config)
   enable_secondary_node_group = var.enable_secondary_node_group
 
+  # Disable ASG warm pool — Karpenter handles node scaling with K8s-aware draining.
+  # The warm pool caused an outage by stopping instances that had DB pods on them.
+  enable_asg_warm_pool = false
+
   # Enable Karpenter for workspace autoscaling
   enable_karpenter = true
 
@@ -1483,6 +1487,19 @@ resource "null_resource" "knative_services" {
       spec:
         ref:
           name: studio
+          kind: Service
+          apiVersion: serving.knative.dev/v1
+      EOF
+
+      cat <<EOF | kubectl apply -f -
+      apiVersion: serving.knative.dev/v1beta1
+      kind: DomainMapping
+      metadata:
+        name: api-staging.shogo.ai
+        namespace: shogo-staging-system
+      spec:
+        ref:
+          name: api
           kind: Service
           apiVersion: serving.knative.dev/v1
       EOF

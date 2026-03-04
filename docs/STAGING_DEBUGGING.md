@@ -264,11 +264,13 @@ kubectl delete pods -n shogo-staging-workspaces -l serving.knative.dev/service=<
 
 ## 8. Domains
 
-| Service | URL |
-|---|---|
-| Studio | https://studio-staging.shogo.ai |
-| API | https://api-staging.shogo.ai |
-| Docs | https://docs-staging.shogo.ai |
+| Service | URL | Notes |
+|---|---|---|
+| Studio (app) | https://studio-staging.shogo.ai | Primary user-facing domain; app makes API calls to this origin |
+| API (external) | https://api-staging.shogo.ai | For load tests, curl debugging, webhooks; not used by the frontend |
+| Docs | https://docs-staging.shogo.ai | |
+
+> **How routing works:** The studio app makes all API calls to its own origin (`/api/*`). Internally, Knative routes these to the API service. The `api-staging.shogo.ai` DomainMapping exists for external access (load tests, curl, webhooks) and is defined in Terraform alongside the studio DomainMapping.
 
 ## 9. Common Gotchas
 

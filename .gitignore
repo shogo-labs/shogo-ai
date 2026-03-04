@@ -118,3 +118,4 @@ tests/
 
 *.webm
 test-results/
+load-tests/results/
