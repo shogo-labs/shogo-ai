@@ -214,6 +214,9 @@ function writeAgentConfigFiles(): void {
 let agentGateway: AgentGateway | null = null
 let s3SyncInstance: import('@shogo/shared-runtime').S3Sync | null = null
 
+let gatewayReadyResolve: (() => void) | null = null
+let gatewayReadyPromise: Promise<void> | null = null
+
 // =============================================================================
 // Stream Keep-Alive Utility
 // =============================================================================
@@ -537,8 +540,20 @@ app.post('/agent/channels/disconnect', async (c) => {
 // Accepts AI SDK v3 format: { messages: [{ role, parts: [{ type: 'text', text }] }] }
 // Returns an AI SDK UI message stream so the frontend can use useChat().
 app.post('/agent/chat', async (c) => {
-  if (!agentGateway) {
-    return c.json({ error: 'Agent gateway not running' }, 503)
+  if (!agentGateway || gatewayReadyPromise) {
+    if (gatewayReadyPromise) {
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Gateway startup timeout')), 30_000)
+      )
+      try {
+        await Promise.race([gatewayReadyPromise, timeout])
+      } catch {
+        return c.json({ error: 'Agent gateway still starting, please retry' }, 503)
+      }
+    }
+    if (!agentGateway) {
+      return c.json({ error: 'Agent gateway not running' }, 503)
+    }
   }
 
   const body = await c.req.json()
@@ -1959,6 +1974,8 @@ async function initializeEssentials(): Promise<void> {
 async function startGateway(): Promise<void> {
   logTiming('Starting agent gateway...')
 
+  gatewayReadyPromise = new Promise<void>((resolve) => { gatewayReadyResolve = resolve })
+
   agentGateway = new AgentGateway(AGENT_DIR, currentProjectId!)
   agentGateway.setLogCallback((line) => {
     consoleLogs.push(line)
@@ -1972,6 +1989,9 @@ async function startGateway(): Promise<void> {
   }
 
   await agentGateway.start()
+  gatewayReadyResolve?.()
+  gatewayReadyResolve = null
+  gatewayReadyPromise = null
   logTiming('Agent gateway started')
 }
 

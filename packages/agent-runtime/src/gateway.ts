@@ -1114,14 +1114,10 @@ export class AgentGateway {
       }
     }
 
-    // Initialize Composio session for managed OAuth integrations
+    // Composio session init is deferred to per-request (processChatMessageStream)
+    // so it uses the real authenticated user ID, not a static default.
     if (isComposioEnabled()) {
-      try {
-        const userId = process.env.USER_ID || 'default'
-        await initComposioSession(userId, this.projectId)
-      } catch (error: any) {
-        console.error('[AgentGateway] Composio session init error:', error.message)
-      }
+      console.log('[AgentGateway] Composio enabled — session will init on first chat request with user context')
     }
 
     // Initialize session persistence and restore sessions
