@@ -15,25 +15,12 @@ import { useAuth } from '../../contexts/auth'
 import {
   useProjectCollection,
   useDomainActions,
+  useDomainHttp,
 } from '../../contexts/domain'
-import { API_URL } from '../../lib/api'
+import { api, type AgentTemplateSummary } from '../../lib/api'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 
-interface AgentTemplate {
-  id: string
-  name: string
-  description: string
-  category: string
-  icon: string
-  tags: string[]
-  settings: {
-    heartbeatInterval: number
-    heartbeatEnabled: boolean
-    modelProvider: string
-    modelName: string
-  }
-  skills: string[]
-}
+type AgentTemplate = AgentTemplateSummary
 
 /**
  * Reads the dark class directly from the DOM and observes mutations.
@@ -67,6 +54,11 @@ const TEMPLATE_COLORS: Record<string, string> = {
   'project-board': '#06b6d4',
   'incident-commander': '#ef4444',
   'personal-assistant': '#f59e0b',
+  'email-slack-alert': '#e11d48',
+  'dev-activity': '#2563eb',
+  'standup-generator': '#16a34a',
+  'slack-monitor': '#7c3aed',
+  'git-insights': '#0d9488',
 }
 
 const FILTER_TABS = [
@@ -166,6 +158,7 @@ function TemplateCard({
 export default observer(function TemplatesPage() {
   const router = useRouter()
   const { user } = useAuth()
+  const http = useDomainHttp()
   const actions = useDomainActions()
   const projects = useProjectCollection()
   const isDark = useDarkMode()
@@ -179,10 +172,8 @@ export default observer(function TemplatesPage() {
   useEffect(() => {
     async function fetchTemplates() {
       try {
-        const res = await fetch(`${API_URL}/api/agent-templates`)
-        if (!res.ok) throw new Error('Failed to fetch templates')
-        const data = await res.json()
-        setTemplates(data.templates || [])
+        const data = await api.getAgentTemplates(http)
+        setTemplates(data)
       } catch (err) {
         console.error('[TemplatesPage] Failed to fetch templates:', err)
       } finally {
@@ -190,7 +181,7 @@ export default observer(function TemplatesPage() {
       }
     }
     fetchTemplates()
-  }, [])
+  }, [http])
 
   const handleTemplatePress = useCallback(
     async (template: AgentTemplate) => {

@@ -202,10 +202,33 @@ export const api = {
     return res.data
   },
 
+  // ─── Templates ─────────────────────────────────────────────
+
+  async getAgentTemplates(http: HttpClient) {
+    const res = await http.get<{ templates: AgentTemplateSummary[] }>('/api/agent-templates')
+    return res.data?.templates ?? []
+  },
+
   // ─── Admin ───────────────────────────────────────────────
 
   async getMe(http: HttpClient) {
     const res = await http.get<{ ok: boolean; data?: { role?: string } }>('/api/me')
     return res.data
   },
+}
+
+export interface AgentTemplateSummary {
+  id: string
+  name: string
+  description: string
+  category: string
+  icon: string
+  tags: string[]
+  settings: {
+    heartbeatInterval: number
+    heartbeatEnabled: boolean
+    modelProvider: string
+    modelName: string
+  }
+  skills: string[]
 }
