@@ -1141,7 +1141,7 @@ app.post('/agent/workspace/reindex', async (c) => {
 })
 
 // Tool catalog and search — powers the "Tools" tab in the web UI
-import { MCP_CATALOG, MCP_CATEGORIES, isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPackages } from './mcp-catalog'
+import { MCP_CATALOG, MCP_CATEGORIES, isMcpServerAllowed, getPreinstalledPackages } from './mcp-catalog'
 import { isComposioEnabled, searchComposioToolkits, findComposioToolkit, initComposioSession, registerToolkitProxyTools } from './composio'
 
 // Agent Templates API — powers the templates gallery
