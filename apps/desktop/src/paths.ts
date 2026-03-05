@@ -38,7 +38,7 @@ export function getApiDir(): string {
   if (IS_DEV) {
     return path.resolve(__dirname, '..', '..', 'api')
   }
-  return path.join(process.resourcesPath!, 'api')
+  return path.join(process.resourcesPath!, 'apps', 'api')
 }
 
 export function getWebDir(): string {

@@ -1,12 +1,23 @@
 import type { ForgeConfig } from '@electron-forge/cli'
+import fs from 'fs'
+
+const hasIcon = fs.existsSync('./resources/icon.icns') || fs.existsSync('./resources/icon.ico')
 
 const config: ForgeConfig = {
   packagerConfig: {
     name: 'Shogo',
-    icon: './resources/icon',
+    ...(hasIcon ? { icon: './resources/icon' } : {}),
     asar: true,
     extraResource: [
       './resources/bun',
+      './resources/web',
+      './resources/apps',
+      './resources/packages',
+      './resources/node_modules',
+      './resources/prisma',
+      './resources/package.json',
+      './resources/tsconfig.base.json',
+      './resources/prisma.config.local.ts',
     ],
     ignore: [
       /^\/src/,
