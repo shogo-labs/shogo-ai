@@ -120,7 +120,7 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
   return result
 }
 
-const UNGROUPABLE_TOOLS = new Set(["AskUserQuestion", "TodoWrite"])
+const UNGROUPABLE_TOOLS = new Set(["AskUserQuestion", "TodoWrite", "tool_install"])
 const MIN_GROUP_SIZE = 2
 
 function groupConsecutiveParts(parts: MessagePart[]): GroupedMessagePart[] {
