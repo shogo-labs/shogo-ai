@@ -113,7 +113,7 @@ async function createPrismaClient(): Promise<PrismaClient> {
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
   })
-  const adapter = new PrismaPg({ pool })
+  const adapter = new PrismaPg(pool)
   return new PrismaClient({ adapter, log: [...logConfig] })
 }
 
