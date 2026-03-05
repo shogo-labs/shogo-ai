@@ -116,7 +116,13 @@ jobs:
           ls -la
 
       - name: Install monorepo dependencies
-        run: bun install
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = "win32" ]; then
+            bun install --linker=isolated
+          else
+            bun install
+          fi
 
       - name: Build workspace packages
         shell: bash

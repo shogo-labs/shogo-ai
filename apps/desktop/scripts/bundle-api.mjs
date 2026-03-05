@@ -173,8 +173,12 @@ function main() {
 
   // --- Install dependencies ---
   if (!skipInstall) {
-    console.log('[7/7] Installing dependencies (bun install)...')
-    execSync('bun install', {
+    const isWindows = process.platform === 'win32'
+    const installCmd = isWindows
+      ? 'bun install --linker=isolated'
+      : 'bun install'
+    console.log(`[7/7] Installing dependencies (${installCmd})...`)
+    execSync(installCmd, {
       cwd: RESOURCES_DIR,
       stdio: 'inherit',
       env: { ...process.env, NODE_ENV: 'production' },

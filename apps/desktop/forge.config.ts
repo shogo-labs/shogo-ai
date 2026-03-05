@@ -38,10 +38,8 @@ const config: ForgeConfig = {
       },
     },
     {
-      name: '@electron-forge/maker-squirrel',
-      config: {
-        name: 'Shogo',
-      },
+      name: 'electron-forge-maker-nsis',
+      config: {},
     },
   ],
 }
