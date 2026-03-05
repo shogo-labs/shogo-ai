@@ -40,6 +40,9 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      - name: Build workspace packages
+        run: cd packages/sdk && bun run build
+
       - name: Build web
         run: bun run web:build
         env:
