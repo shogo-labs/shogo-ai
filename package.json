@@ -47,6 +47,11 @@
     "docs:build": "bun run --cwd apps/docs build",
     "test:e2e:staging": "npx playwright test --config e2e/playwright.config.ts",
     "test:e2e:staging:ui": "npx playwright test --config e2e/playwright.config.ts --ui",
+    "test:channels": "bun test e2e/channels/",
+    "test:channels:status": "bun test e2e/channels/agent-status.integration.test.ts",
+    "test:channels:webchat": "bun test e2e/channels/webchat.integration.test.ts",
+    "test:channels:webhook": "bun test e2e/channels/webhook.integration.test.ts",
+    "test:channels:external": "bun test e2e/channels/external-channels.integration.test.ts",
     "postinstall": "[ -f scripts/patch-claude-sdk.ts ] && bun scripts/patch-claude-sdk.ts || true"
   },
   "devDependencies": {
