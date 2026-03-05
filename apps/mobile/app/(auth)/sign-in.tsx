@@ -4,7 +4,6 @@ import { usePlatformConfig } from '../../lib/platform-config'
 import { LoginScreen } from '@shogo/shared-ui/screens'
 
 export default function SignInScreen() {
-  const router = useRouter()
   const { signIn, signUp, signInWithGoogle, isLoading, error, clearError } = useAuth()
   const { features } = usePlatformConfig()
 
