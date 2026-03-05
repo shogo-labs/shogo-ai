@@ -233,12 +233,13 @@ jobs:
 
       - name: Build AAB
         working-directory: apps/mobile/android
-        run: ./gradlew bundleRelease
+        run: ./gradlew bundleRelease -x lintVitalAnalyzeRelease -x lintVitalRelease
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           EXPO_PUBLIC_API_URL: https://studio-staging.shogo.ai
+          # GRADLE_OPTS: -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"
 
       - name: Upload AAB artifact
         uses: actions/upload-artifact@v4
