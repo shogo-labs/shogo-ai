@@ -16,7 +16,7 @@ import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec } from './sandbox-exec'
 import { MemorySearchEngine } from './memory-search'
 import { FileIndexEngine } from './file-index-engine'
-import { MCP_CATALOG, isPreinstalledMcpId, getPreinstalledPackages } from './mcp-catalog'
+import { MCP_CATALOG, isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPackages } from './mcp-catalog'
 import { initComposioSession, isComposioEnabled, isComposioInitialized, searchComposioToolkits, findComposioToolkit, registerToolkitProxyTools, checkComposioAuth } from './composio'
 import { autoBindPrimaryEntity } from './composio-auto-bind'
 import { getDynamicAppManager, getByPointer } from './dynamic-app-manager'
@@ -2348,7 +2348,9 @@ Rate-limited: max ${MAX_UPDATES_PER_SESSION}/session, ${MAX_UPDATES_PER_DAY}/day
 function createToolSearchTool(): AgentTool {
   return {
     name: 'tool_search',
-    description: 'Search for available tools and integrations by capability or keyword. Searches the built-in catalog of preinstalled MCP servers and managed OAuth integrations (hundreds of services — no credentials needed). Managed integrations are preferred when available.',
+    description: process.env.SHOGO_LOCAL_MODE === 'true'
+      ? 'Search for available tools and integrations by capability or keyword. Searches the full MCP server catalog and managed OAuth integrations. Managed integrations are preferred when available.'
+      : 'Search for available tools and integrations by capability or keyword. Searches the built-in catalog of preinstalled MCP servers and managed OAuth integrations (hundreds of services — no credentials needed). Managed integrations are preferred when available.',
     label: 'Search Tools',
     parameters: Type.Object({
       query: Type.String({ description: 'Search query describing the capability you need (e.g. "google calendar", "slack messaging", "postgres database")' }),
@@ -2379,12 +2381,12 @@ function createToolSearchTool(): AgentTool {
         } catch { /* Composio API unavailable, continue with other sources */ }
       }
 
-      // 2. Search preinstalled MCP catalog only
-      const preinstalled = getPreinstalledPackages()
+      // 2. Search MCP catalog (all entries in local mode, preinstalled only in cloud)
+      const searchableCatalog = process.env.SHOGO_LOCAL_MODE === 'true' ? MCP_CATALOG : getPreinstalledPackages()
       const queryLower = query.toLowerCase()
       const queryWords = queryLower.split(/\s+/).filter(w => w.length > 2)
       const scored: Array<{ entry: typeof MCP_CATALOG[0]; score: number }> = []
-      for (const entry of preinstalled) {
+      for (const entry of searchableCatalog) {
         const haystack = `${entry.id} ${entry.name} ${entry.description} ${entry.category} ${entry.providedTools.join(' ')}`.toLowerCase()
         const idName = `${entry.id} ${entry.name}`.toLowerCase()
         let score = 0
@@ -2443,14 +2445,20 @@ function formatToolInstallMessage(
 function createToolInstallTool(ctx: ToolContext): AgentTool {
   return {
     name: 'tool_install',
-    description: `Install and start a tool integration, making its tools available immediately. For managed integrations (Google Calendar, Slack, GitHub, and hundreds more), just provide the name — no command or args needed. For preinstalled MCP servers (fetch, github, postgres, slack, notion, brave-search, airbnb, filesystem), provide the server name.
+    description: process.env.SHOGO_LOCAL_MODE === 'true'
+      ? `Install and start a tool integration, making its tools available immediately. Any MCP server from the catalog can be used: ${MCP_CATALOG.map(e => e.id).join(', ')}. For managed integrations (Google Calendar, Slack, GitHub, and hundreds more), just provide the name — no command or args needed.
+
+Managed integrations auto-bind by default: the toolkit's CRUD operations are automatically discovered and deferred to bind to the next canvas you create. No extra parameters needed — just call tool_install({ name: "googlecalendar" }) and then canvas_create.
+
+Pass "autoBind" with surfaceId/dataPath to target a specific canvas. Pass "bind" with explicit config if you already know the tool's response shape (e.g. from a saved skill).`
+      : `Install and start a tool integration, making its tools available immediately. For managed integrations (Google Calendar, Slack, GitHub, and hundreds more), just provide the name — no command or args needed. For preinstalled MCP servers (fetch, github, postgres, slack, notion, brave-search, airbnb, filesystem), provide the server name.
 
 Managed integrations auto-bind by default: the toolkit's CRUD operations are automatically discovered and deferred to bind to the next canvas you create. No extra parameters needed — just call tool_install({ name: "googlecalendar" }) and then canvas_create.
 
 Pass "autoBind" with surfaceId/dataPath to target a specific canvas. Pass "bind" with explicit config if you already know the tool's response shape (e.g. from a saved skill).`,
     label: 'Install Tool',
     parameters: Type.Object({
-      name: Type.String({ description: 'Tool or integration name (e.g. "googlecalendar", "slack", "postgres"). Only preinstalled MCP servers and managed integrations are supported.' }),
+      name: Type.String({ description: process.env.SHOGO_LOCAL_MODE === 'true' ? 'Tool or integration name (e.g. "googlecalendar", "slack", "postgres"). Any catalog MCP server or managed integration is supported.' : 'Tool or integration name (e.g. "googlecalendar", "slack", "postgres"). Only preinstalled MCP servers and managed integrations are supported.' }),
       env: Type.Optional(Type.Any({ description: 'Environment variables for the server process' })),
       autoBind: Type.Optional(Type.Object({
         surfaceId: Type.String({ description: 'Surface ID to bind to (deferred if surface does not exist yet)' }),
@@ -2602,9 +2610,8 @@ Pass "autoBind" with surfaceId/dataPath to target a specific canvas. Pass "bind"
         }
       }
 
-      // Only allow preinstalled MCP servers
       const catalogEntry = MCP_CATALOG.find(e => e.id === name)
-      if (!catalogEntry || !catalogEntry.preinstalled) {
+      if (!isMcpServerAllowed(name) || !catalogEntry) {
         const allowed = getPreinstalledPackages().map(e => e.id).join(', ')
         return textResult({ error: `"${name}" is not available. Only preinstalled MCP servers are supported: ${allowed}` })
       }

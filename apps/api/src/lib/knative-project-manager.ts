@@ -455,6 +455,51 @@ export class KnativeProjectManager {
   }
 
   /**
+   * List all Knative services in the namespace (both project-runtime and agent-runtime).
+   * Used by the infra metrics collector to count all running pods.
+   */
+  async listAllServices(): Promise<ProjectPodInfo[]> {
+    try {
+      const api = getCustomApi()
+      const response = await api.listNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: KNATIVE_VERSION,
+        namespace: this.namespace,
+        plural: "services",
+        labelSelector: "app.kubernetes.io/part-of=shogo",
+      })
+
+      const items = (response as any).items || []
+      const services: ProjectPodInfo[] = []
+
+      for (const service of items) {
+        const projectId = service.metadata?.labels?.["shogo.io/project"] || service.metadata?.name || ''
+        const status = service.status || {}
+        const conditions = status.conditions || []
+        const readyCondition = conditions.find((c: any) => c.type === "Ready")
+
+        services.push({
+          projectId,
+          name: service.metadata?.name,
+          status: {
+            exists: true,
+            ready: readyCondition?.status === "True",
+            url: status.url || '',
+            replicas: status.actualReplicas || 0,
+            message: readyCondition?.message,
+            createdAt: service.metadata?.creationTimestamp,
+          },
+        })
+      }
+
+      return services
+    } catch (error: any) {
+      console.error("[KnativeProjectManager] Failed to list all services:", error)
+      throw error
+    }
+  }
+
+  /**
    * Create a Knative Service for a project.
    * Also creates the PVC for project storage if it doesn't exist.
    *

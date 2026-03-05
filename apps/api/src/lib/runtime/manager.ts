@@ -92,18 +92,30 @@ export class RuntimeManager implements IRuntimeManager {
 
   /**
    * Kill any process running on the specified port.
-   * Uses lsof to find the PID and kills it.
+   * Cross-platform: uses lsof on macOS/Linux, netstat on Windows.
    *
-   * IMPORTANT: Excludes the current process (and its parent) to avoid
+   * Excludes the current process (and its parent) to avoid
    * the API server killing itself when it has connections to the port.
    */
   private killProcessOnPort(port: number): void {
     try {
-      // Find PID using lsof (works on macOS and Linux)
-      const result = execSync(`lsof -ti :${port} 2>/dev/null || true`, { encoding: 'utf-8' })
-      const pids = result.trim().split('\n').filter(pid => pid.length > 0)
+      const isWindows = process.platform === 'win32'
+      let pids: string[] = []
 
-      // Never kill ourselves or our parent process
+      if (isWindows) {
+        const result = execSync(
+          `netstat -ano | findstr :${port} | findstr LISTENING`,
+          { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+        ).trim()
+        pids = result.split('\n')
+          .map(line => line.trim().split(/\s+/).pop() || '')
+          .filter(pid => pid.length > 0 && pid !== '0')
+        pids = [...new Set(pids)]
+      } else {
+        const result = execSync(`lsof -ti :${port} 2>/dev/null || true`, { encoding: 'utf-8' })
+        pids = result.trim().split('\n').filter(pid => pid.length > 0)
+      }
+
       const selfPid = String(process.pid)
       const parentPid = String(process.ppid)
       const safePids = pids.filter(pid => pid !== selfPid && pid !== parentPid)
@@ -115,15 +127,22 @@ export class RuntimeManager implements IRuntimeManager {
       for (const pid of safePids) {
         try {
           console.log(`[RuntimeManager] Killing stale process ${pid} on port ${port}`)
-          execSync(`kill -9 ${pid} 2>/dev/null || true`)
+          if (isWindows) {
+            execSync(`taskkill /F /PID ${pid} 2>nul`, { stdio: 'pipe' })
+          } else {
+            execSync(`kill -9 ${pid} 2>/dev/null || true`)
+          }
         } catch {
           // Process might have already exited
         }
       }
       
       if (safePids.length > 0) {
-        // Give the OS a moment to release the port
-        execSync('sleep 0.5')
+        if (isWindows) {
+          execSync('timeout /t 1 /nobreak >nul 2>&1', { stdio: 'pipe' })
+        } else {
+          execSync('sleep 0.5')
+        }
       }
     } catch (err) {
       console.warn(`[RuntimeManager] Failed to kill process on port ${port}:`, err)
@@ -662,6 +681,10 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           console.error(`[RuntimeManager] Failed to generate proxy token for ${projectId}: ${err.message}`)
           console.error(`[RuntimeManager] Runtime will start without AI proxy — LLM calls will fail`)
         }
+
+        // Tools proxy URL — enables file-index-engine embeddings and other tool
+        // requests to route through the API server (same as Kubernetes managers do).
+        runtimeEnv.TOOLS_PROXY_URL = `http://localhost:${apiPort}/api`
 
         // Strip the raw platform API key so the child process cannot bypass the proxy.
         delete runtimeEnv.ANTHROPIC_API_KEY

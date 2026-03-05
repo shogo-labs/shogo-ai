@@ -16,7 +16,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { Type } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
-import { isPreinstalledMcpId, getPreinstalledPackages } from './mcp-catalog'
+import { isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPackages } from './mcp-catalog'
 
 const MAX_MCP_SERVERS = 10
 const MCP_CONNECT_TIMEOUT_MS = 90_000
@@ -212,7 +212,7 @@ export class MCPClientManager {
   }
 
   async startServer(name: string, config: MCPServerConfig): Promise<AgentTool[]> {
-    if (!isPreinstalledMcpId(name)) {
+    if (!isMcpServerAllowed(name)) {
       const allowed = getPreinstalledPackages().map(e => e.id).join(', ')
       throw new Error(`MCP server "${name}" is not in the preinstalled whitelist. Allowed servers: ${allowed}`)
     }
@@ -329,7 +329,7 @@ export class MCPClientManager {
     if (entries.length === 0) return allTools
 
     const allowed = entries.filter(([name]) => {
-      if (!isPreinstalledMcpId(name)) {
+      if (!isMcpServerAllowed(name)) {
         console.warn(`[MCPClient] Skipping non-whitelisted MCP server "${name}" from config.json`)
         return false
       }

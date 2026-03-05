@@ -15,25 +15,12 @@ import { useAuth } from '../../contexts/auth'
 import {
   useProjectCollection,
   useDomainActions,
+  useDomainHttp,
 } from '../../contexts/domain'
-import { API_URL } from '../../lib/api'
+import { api, type AgentTemplateSummary } from '../../lib/api'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 
-interface AgentTemplate {
-  id: string
-  name: string
-  description: string
-  category: string
-  icon: string
-  tags: string[]
-  settings: {
-    heartbeatInterval: number
-    heartbeatEnabled: boolean
-    modelProvider: string
-    modelName: string
-  }
-  skills: string[]
-}
+type AgentTemplate = AgentTemplateSummary
 
 /**
  * Reads the dark class directly from the DOM and observes mutations.
@@ -67,13 +54,29 @@ const TEMPLATE_COLORS: Record<string, string> = {
   'project-board': '#06b6d4',
   'incident-commander': '#ef4444',
   'personal-assistant': '#f59e0b',
+  'sales-pipeline': '#eab308',
+  'social-media-manager': '#a855f7',
+  'release-manager': '#22d3ee',
+  'hiring-pipeline': '#14b8a6',
+  'newsletter-curator': '#f472b6',
+  'competitor-intel': '#6366f1',
+  'api-health-monitor': '#e11d48',
+  'expense-manager': '#84cc16',
+  'fitness-coach': '#f97316',
+  'daily-journal': '#8b5cf6',
+  'market-watch': '#0ea5e9',
+  'code-review-assistant': '#10b981',
+  'client-onboarding': '#d946ef',
+  'travel-planner': '#06b6d4',
 }
 
 const FILTER_TABS = [
   { key: 'all', label: 'All Templates', icon: '⊞' },
-  { key: 'research', label: 'Research', icon: '📚' },
-  { key: 'development', label: 'Development', icon: '🐙' },
+  { key: 'sales', label: 'Sales', icon: '🏆' },
+  { key: 'marketing', label: 'Marketing', icon: '📣' },
   { key: 'business', label: 'Business', icon: '💼' },
+  { key: 'development', label: 'Development', icon: '🐙' },
+  { key: 'research', label: 'Research', icon: '📚' },
   { key: 'operations', label: 'DevOps', icon: '🚨' },
   { key: 'personal', label: 'Personal', icon: '⚡' },
 ]
@@ -166,6 +169,7 @@ function TemplateCard({
 export default observer(function TemplatesPage() {
   const router = useRouter()
   const { user } = useAuth()
+  const http = useDomainHttp()
   const actions = useDomainActions()
   const projects = useProjectCollection()
   const isDark = useDarkMode()
@@ -179,10 +183,8 @@ export default observer(function TemplatesPage() {
   useEffect(() => {
     async function fetchTemplates() {
       try {
-        const res = await fetch(`${API_URL}/api/agent-templates`)
-        if (!res.ok) throw new Error('Failed to fetch templates')
-        const data = await res.json()
-        setTemplates(data.templates || [])
+        const data = await api.getAgentTemplates(http)
+        setTemplates(data)
       } catch (err) {
         console.error('[TemplatesPage] Failed to fetch templates:', err)
       } finally {
@@ -190,7 +192,7 @@ export default observer(function TemplatesPage() {
       }
     }
     fetchTemplates()
-  }, [])
+  }, [http])
 
   const handleTemplatePress = useCallback(
     async (template: AgentTemplate) => {

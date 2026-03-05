@@ -630,9 +630,7 @@ app.post('/agent/chat', async (c) => {
   }
 
   const agentMode = body.agentMode as 'basic' | 'advanced' | undefined
-  const modelOverride = agentMode === 'basic' ? 'claude-haiku-4-5'
-    : agentMode === 'advanced' ? 'claude-sonnet-4-5'
-    : undefined
+  const modelOverride = agentMode || undefined
 
   if (body.timezone && typeof body.timezone === 'string') {
     agentGateway!.setUserTimezone(body.timezone)
@@ -1143,7 +1141,7 @@ app.post('/agent/workspace/reindex', async (c) => {
 })
 
 // Tool catalog and search — powers the "Tools" tab in the web UI
-import { MCP_CATALOG, MCP_CATEGORIES, isPreinstalledMcpId, getPreinstalledPackages } from './mcp-catalog'
+import { MCP_CATALOG, MCP_CATEGORIES, isMcpServerAllowed, getPreinstalledPackages } from './mcp-catalog'
 import { isComposioEnabled, searchComposioToolkits, findComposioToolkit, initComposioSession, registerToolkitProxyTools } from './composio'
 
 // Agent Templates API — powers the templates gallery
@@ -1237,7 +1235,7 @@ app.post('/agent/mcp-servers/toggle', async (c) => {
   }
 
   const entry = MCP_CATALOG.find((e) => e.id === serverId)
-  if (!entry || !entry.preinstalled) {
+  if (!entry || !isMcpServerAllowed(serverId)) {
     const allowed = getPreinstalledPackages().map(e => e.id).join(', ')
     return c.json({ error: `MCP server "${serverId}" is not available. Only preinstalled servers are supported: ${allowed}` }, 400)
   }
@@ -1397,7 +1395,7 @@ app.post('/agent/tools/install', async (c) => {
   }
 
   const catalogEntry = MCP_CATALOG.find((e) => e.id === id)
-  if (!catalogEntry || !catalogEntry.preinstalled) {
+  if (!catalogEntry || !isMcpServerAllowed(id)) {
     const allowed = getPreinstalledPackages().map(e => e.id).join(', ')
     return c.json({ error: `MCP server "${id}" is not available. Only preinstalled servers are supported: ${allowed}` }, 400)
   }

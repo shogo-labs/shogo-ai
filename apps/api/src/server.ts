@@ -676,12 +676,13 @@ app.use('/*', cors({
   origin: (origin) => {
     // Allow requests with no origin (mobile apps, curl, React Native on Android/iOS)
     if (!origin) return `http://localhost:${VITE_PORT}`
-    // In dev mode, allow any localhost origin (for playwright, vite, etc.)
-    if (process.env.NODE_ENV !== 'production' && origin?.startsWith('http://localhost:')) {
+    const isDevOrLocal = process.env.NODE_ENV !== 'production' || process.env.SHOGO_LOCAL_MODE === 'true'
+    // In dev/local mode, allow any localhost origin, custom protocols, and null origins (Electron custom scheme)
+    if (isDevOrLocal && (origin === 'null' || origin?.startsWith('http://localhost:') || origin?.startsWith('shogo://'))) {
       return origin
     }
-    // Allow local network origins in dev (React Native on physical devices)
-    if (process.env.NODE_ENV !== 'production' && /^http:\/\/192\.168\.\d+\.\d+/.test(origin)) {
+    // Allow local network origins in dev/local (React Native on physical devices)
+    if (isDevOrLocal && /^http:\/\/192\.168\.\d+\.\d+/.test(origin)) {
       return origin
     }
     // Check if origin is in allowed list
@@ -696,6 +697,147 @@ app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
 
 // Health check
 app.get('/api/health', (c) => c.json({ ok: true }))
+app.get('/health', (c) => c.json({ ok: true }))
+
+// Platform config (tells frontend about local mode, enabled features, etc.)
+app.get('/api/config', (c) => {
+  const localMode = process.env.SHOGO_LOCAL_MODE === 'true'
+  return c.json({
+    localMode,
+    features: {
+      billing: !localMode,
+      admin: !localMode,
+      oauth: !localMode,
+      analytics: !localMode,
+      publishing: !localMode,
+    },
+  })
+})
+
+// ── Local mode: API key management ──────────────────────────────────────────
+if (process.env.SHOGO_LOCAL_MODE === 'true') {
+  const localDb = prisma as any
+
+  app.get('/api/local/api-keys', async (c) => {
+    try {
+      const rows = await localDb.localConfig.findMany({
+        where: { key: { in: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'] } },
+      })
+      const keys: Record<string, string> = {}
+      for (const row of rows) {
+        keys[row.key] = row.value.slice(0, 8) + '...' + row.value.slice(-4)
+      }
+      return c.json({ ok: true, keys })
+    } catch {
+      return c.json({ ok: true, keys: {} })
+    }
+  })
+
+  app.put('/api/local/api-keys', async (c) => {
+    const body = await c.req.json<{ anthropicApiKey?: string; openaiApiKey?: string }>()
+
+    const upserts: Promise<any>[] = []
+    if (body.anthropicApiKey !== undefined) {
+      if (body.anthropicApiKey) {
+        upserts.push(
+          localDb.localConfig.upsert({
+            where: { key: 'ANTHROPIC_API_KEY' },
+            update: { value: body.anthropicApiKey },
+            create: { key: 'ANTHROPIC_API_KEY', value: body.anthropicApiKey },
+          })
+        )
+        process.env.ANTHROPIC_API_KEY = body.anthropicApiKey
+      } else {
+        upserts.push(localDb.localConfig.deleteMany({ where: { key: 'ANTHROPIC_API_KEY' } }))
+        delete process.env.ANTHROPIC_API_KEY
+      }
+    }
+    if (body.openaiApiKey !== undefined) {
+      if (body.openaiApiKey) {
+        upserts.push(
+          localDb.localConfig.upsert({
+            where: { key: 'OPENAI_API_KEY' },
+            update: { value: body.openaiApiKey },
+            create: { key: 'OPENAI_API_KEY', value: body.openaiApiKey },
+          })
+        )
+        process.env.OPENAI_API_KEY = body.openaiApiKey
+      } else {
+        upserts.push(localDb.localConfig.deleteMany({ where: { key: 'OPENAI_API_KEY' } }))
+        delete process.env.OPENAI_API_KEY
+      }
+    }
+    await Promise.all(upserts)
+
+    return c.json({ ok: true })
+  })
+
+  // ── Local mode: LLM provider configuration ──────────────────────────────
+  const LLM_CONFIG_KEYS = [
+    'LOCAL_LLM_BASE_URL',
+    'LOCAL_LLM_BASIC_MODEL',
+    'LOCAL_LLM_ADVANCED_MODEL',
+    'LOCAL_EMBEDDING_MODEL',
+    'LOCAL_EMBEDDING_DIMENSIONS',
+  ]
+
+  app.get('/api/local/llm-config', async (c) => {
+    try {
+      const rows = await localDb.localConfig.findMany({
+        where: { key: { in: LLM_CONFIG_KEYS } },
+      })
+      const config: Record<string, string> = {}
+      for (const row of rows) config[row.key] = row.value
+      return c.json({ ok: true, config })
+    } catch {
+      return c.json({ ok: true, config: {} })
+    }
+  })
+
+  app.put('/api/local/llm-config', async (c) => {
+    const body = await c.req.json<Record<string, string | null>>()
+    const ops: Promise<any>[] = []
+    for (const [key, value] of Object.entries(body)) {
+      if (!LLM_CONFIG_KEYS.includes(key)) continue
+      if (value) {
+        ops.push(
+          localDb.localConfig.upsert({
+            where: { key },
+            update: { value },
+            create: { key, value },
+          })
+        )
+        process.env[key] = value
+      } else {
+        ops.push(localDb.localConfig.deleteMany({ where: { key } }))
+        delete process.env[key]
+      }
+    }
+    await Promise.all(ops)
+    return c.json({ ok: true })
+  })
+
+  // ── Local mode: model discovery ────────────────────────────────────────
+  app.get('/api/local/models', async (c) => {
+    const baseUrl = c.req.query('baseUrl') || process.env.LOCAL_LLM_BASE_URL
+    if (!baseUrl) {
+      return c.json({ ok: false, error: 'No LLM base URL configured. Set LOCAL_LLM_BASE_URL first.', models: [] })
+    }
+    try {
+      const res = await fetch(`${baseUrl.replace(/\/$/, '')}/v1/models`, {
+        signal: AbortSignal.timeout(5000),
+      })
+      if (!res.ok) {
+        return c.json({ ok: false, error: `LLM server returned ${res.status}`, models: [] })
+      }
+      const data = await res.json() as { data?: Array<{ id: string; object?: string }> }
+      const models = (data.data || []).map((m) => ({ id: m.id, name: m.id }))
+      return c.json({ ok: true, models })
+    } catch (err: any) {
+      return c.json({ ok: false, error: `Cannot reach LLM server: ${err.message}`, models: [] })
+    }
+  })
+}
 
 // Agent template catalog — public, no auth required
 app.route('/api', agentTemplateRoutes())
@@ -3025,6 +3167,83 @@ app.post('/api/admin/warm-pool/evict-all', async (c) => {
   }
 })
 
+// =============================================================================
+// Infrastructure Settings (runtime-configurable, persisted to DB)
+// =============================================================================
+
+const INFRA_SETTINGS_KEYS = [
+  'warmPoolMinAgents',
+  'warmPoolMinProjects',
+  'warmPoolAgentsPerNode',
+  'warmPoolProjectsPerNode',
+  'reconcileIntervalMs',
+  'maxPodAgeMs',
+  'promotedPodIdleTimeoutMs',
+  'promotedPodGcEnabled',
+] as const
+
+// GET /api/admin/settings/infrastructure - Read current infra config
+app.get('/api/admin/settings/infrastructure', async (c) => {
+  try {
+    const { getWarmPoolController } = await import('./lib/warm-pool-controller')
+    const controller = getWarmPoolController()
+    return c.json(controller.getConfig())
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// PATCH /api/admin/settings/infrastructure - Update infra config at runtime
+app.patch('/api/admin/settings/infrastructure', async (c) => {
+  try {
+    const body = await c.req.json()
+
+    // Validate: only allow known keys, with type checks
+    const patch: Record<string, any> = {}
+    for (const key of INFRA_SETTINGS_KEYS) {
+      if (body[key] === undefined) continue
+      if (key === 'promotedPodGcEnabled') {
+        if (typeof body[key] !== 'boolean') {
+          return c.json({ error: `${key} must be a boolean` }, 400)
+        }
+        patch[key] = body[key]
+      } else {
+        const val = Number(body[key])
+        if (!Number.isFinite(val) || val < 0) {
+          return c.json({ error: `${key} must be a non-negative number` }, 400)
+        }
+        patch[key] = Math.round(val)
+      }
+    }
+
+    if (Object.keys(patch).length === 0) {
+      return c.json({ error: 'No valid settings provided' }, 400)
+    }
+
+    // Apply to controller
+    const { getWarmPoolController } = await import('./lib/warm-pool-controller')
+    const controller = getWarmPoolController()
+    controller.updateConfig(patch)
+
+    // Persist each setting to DB
+    const { prisma } = await import('./lib/prisma')
+    const auth = c.get('auth') as any
+    const userId = auth?.user?.id || 'unknown'
+
+    for (const [key, value] of Object.entries(patch)) {
+      await prisma.platformSetting.upsert({
+        where: { key: `infra.${key}` },
+        create: { key: `infra.${key}`, value: String(value), updatedBy: userId },
+        update: { value: String(value), updatedBy: userId },
+      })
+    }
+
+    return c.json({ ok: true, applied: patch, config: controller.getConfig() })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
 // DELETE /api/admin/projects/:projectId - Delete project pod
 app.delete('/api/admin/projects/:projectId', async (c) => {
   const router = projectAdminRoutes()
@@ -4555,13 +4774,53 @@ console.log(`   AI Proxy Health: GET  http://localhost:${API_PORT}/api/ai/proxy/
 console.log(`   CORS origin: http://localhost:${VITE_PORT}`)
 console.log(`   AI Providers: Anthropic=${!!process.env.ANTHROPIC_API_KEY}, OpenAI=${!!process.env.OPENAI_API_KEY}`)
 
+// Local mode: restore saved API keys + auto-seed
+if (process.env.SHOGO_LOCAL_MODE === 'true') {
+  setTimeout(async () => {
+    try {
+      const savedConfig = await (prisma as any).localConfig.findMany({})
+      for (const row of savedConfig) {
+        if (!process.env[row.key]) {
+          process.env[row.key] = row.value
+          console.log(`[LocalMode] Restored ${row.key} from local config`)
+        }
+      }
+    } catch (err: any) {
+      console.log('[LocalMode] Could not restore API keys (table may not exist yet):', err.message)
+    }
+
+    try {
+      const existingUser = await prisma.user.findFirst()
+      if (!existingUser) {
+        console.log('[LocalMode] First launch detected — creating default user and workspace...')
+        const res = await fetch(`http://localhost:${API_PORT}/api/auth/sign-up/email`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: 'local@shogo.local',
+            password: 'shogo-local',
+            name: 'Local User',
+          }),
+        })
+        if (!res.ok) throw new Error(`Sign-up failed: ${res.status}`)
+        const { user } = await res.json() as { user: { id: string } }
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { emailVerified: true, role: 'super_admin' },
+        })
+        console.log('[LocalMode] Default user created: local@shogo.local / shogo-local')
+      }
+    } catch (err: any) {
+      console.error('[LocalMode] Auto-seed failed (non-fatal):', err.message)
+    }
+  }, 1000)
+}
+
 export default {
   port: API_PORT,
-  hostname: "0.0.0.0", // Bind to all interfaces for Docker/Kubernetes
+  hostname: "0.0.0.0",
   fetch: app.fetch,
-  // Increase idle timeout for long-running subagent operations
-  // Default is 10 seconds which is too short for Claude Code tool execution
-  idleTimeout: 120, // 2 minutes
+  idleTimeout: 120,
 }
 
 // Pre-warm Claude Code after server is listening.

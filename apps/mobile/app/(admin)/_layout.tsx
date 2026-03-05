@@ -18,6 +18,7 @@ import {
   Building2,
   BarChart3,
   Server,
+  Settings,
   ArrowLeft,
   Shield,
   Menu,
@@ -27,16 +28,19 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
 import { DomainProvider, useDomainHttp } from '../../contexts/domain'
 import { api, API_URL } from '../../lib/api'
+import { usePlatformConfig } from '../../lib/platform-config'
 
 type UserRole = 'user' | 'super_admin'
 
-const NAV_ITEMS = [
+const BASE_NAV_ITEMS = [
   { href: '/(admin)', icon: LayoutDashboard, label: 'Dashboard' },
   { href: '/(admin)/users', icon: Users, label: 'Users' },
   { href: '/(admin)/workspaces', icon: Building2, label: 'Workspaces' },
   { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics' },
   { href: '/(admin)/infrastructure', icon: Server, label: 'Infrastructure' },
 ] as const
+
+const LOCAL_NAV_ITEM = { href: '/(admin)/settings' as const, icon: Settings, label: 'AI Settings' }
 
 function useAdminCheck() {
   const { user, isAuthenticated, isLoading: authLoading } = useAuth()
@@ -138,6 +142,8 @@ function AdminSidebar({
 }) {
   const router = useRouter()
   const pathname = usePathname()
+  const { features } = usePlatformConfig()
+  const NAV_ITEMS = features.billing ? BASE_NAV_ITEMS : [...BASE_NAV_ITEMS, LOCAL_NAV_ITEM]
 
   const handleNav = useCallback((href: string) => {
     router.push(href as any)

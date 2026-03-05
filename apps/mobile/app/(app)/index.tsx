@@ -21,11 +21,12 @@ import {
   useWorkspaceCollection,
   useMemberCollection,
   useDomainActions,
+  useDomainHttp,
 } from '../../contexts/domain'
 import { CompactChatInput } from '../../components/chat/CompactChatInput'
 import { setPendingImageData } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
-import { API_URL } from '../../lib/api'
+import { api } from '../../lib/api'
 
 interface AgentTemplate {
   id: string
@@ -262,6 +263,7 @@ const HomeScreen = observer(function HomeScreen() {
   const projects = useProjectCollection()
   const workspaces = useWorkspaceCollection()
   const membersColl = useMemberCollection()
+  const http = useDomainHttp()
   const actions = useDomainActions()
   const isDark = useDarkMode()
 
@@ -287,16 +289,14 @@ const HomeScreen = observer(function HomeScreen() {
 
     async function fetchTemplates() {
       try {
-        const res = await fetch(`${API_URL}/api/agent-templates`)
-        if (!res.ok) return
-        const data = await res.json()
-        setHomeTemplates((data.templates || []).slice(0, 6))
+        const data = await api.getAgentTemplates(http)
+        setHomeTemplates(data.slice(0, 6))
       } catch (err) {
         console.error('[Home] Failed to fetch templates:', err)
       }
     }
     fetchTemplates()
-  }, [isAuthenticated, user?.id])
+  }, [isAuthenticated, user?.id, http])
 
   const currentWorkspace = useActiveWorkspace()
 

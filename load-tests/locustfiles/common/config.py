@@ -6,7 +6,12 @@ load_dotenv()
 
 
 class Config:
-    """Load test configuration."""
+    """Load test configuration.
+    
+    Uses api-staging.shogo.ai for direct API access (bypasses studio proxy).
+    The app frontend uses studio-staging.shogo.ai with same-origin /api/* calls,
+    but load tests hit the API DomainMapping directly for accurate latency measurement.
+    """
     
     # Target URLs
     API_BASE_URL = os.getenv("API_BASE_URL", "https://api-staging.shogo.ai")

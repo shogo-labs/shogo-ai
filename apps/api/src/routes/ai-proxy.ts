@@ -68,7 +68,7 @@ interface ChatCompletionRequest {
 }
 
 /** Supported model providers */
-type Provider = 'anthropic' | 'openai'
+type Provider = 'anthropic' | 'openai' | 'local'
 
 /** Model routing configuration */
 interface ModelConfig {
@@ -196,6 +196,15 @@ MODEL_REGISTRY['claude-haiku'] = MODEL_REGISTRY['claude-haiku-4-5-20251001']
  * Supports exact matches and prefix matching (e.g., "claude-3" matches the first claude-3.x model).
  */
 function resolveModel(model: string): ModelConfig | null {
+  // Agent mode aliases — resolve via resolveAgentModel (handles local vs cloud)
+  if (model === 'basic' || model === 'advanced') {
+    const { resolvedModel, isLocal } = resolveAgentModel(model)
+    if (isLocal) {
+      return { provider: 'local', apiModel: resolvedModel, displayName: model }
+    }
+    return resolveModel(resolvedModel)
+  }
+
   // Exact match
   if (MODEL_REGISTRY[model]) {
     return MODEL_REGISTRY[model]
@@ -236,9 +245,38 @@ function getProviderApiKey(provider: Provider): string | null {
       return process.env.ANTHROPIC_API_KEY || null
     case 'openai':
       return process.env.OPENAI_API_KEY || null
+    case 'local':
+      return 'local'
     default:
       return null
   }
+}
+
+/**
+ * Resolve 'basic' / 'advanced' agent modes to actual model names.
+ * The proxy is the single source of truth for model resolution.
+ *
+ * When LOCAL_LLM_BASE_URL is set: use admin-configured local models.
+ * Otherwise: use default Claude models.
+ */
+function resolveAgentModel(model: string): { resolvedModel: string; isLocal: boolean } {
+  const localBaseUrl = process.env.LOCAL_LLM_BASE_URL
+  if (localBaseUrl) {
+    if (model === 'basic') {
+      return { resolvedModel: process.env.LOCAL_LLM_BASIC_MODEL || 'llama3', isLocal: true }
+    }
+    if (model === 'advanced') {
+      return { resolvedModel: process.env.LOCAL_LLM_ADVANCED_MODEL || 'llama3', isLocal: true }
+    }
+    return { resolvedModel: model, isLocal: true }
+  }
+  if (model === 'basic') {
+    return { resolvedModel: 'claude-haiku-4-5', isLocal: false }
+  }
+  if (model === 'advanced') {
+    return { resolvedModel: 'claude-sonnet-4-5', isLocal: false }
+  }
+  return { resolvedModel: model, isLocal: false }
 }
 
 // =============================================================================
@@ -308,7 +346,7 @@ function convertToAnthropicFormat(request: ChatCompletionRequest) {
 /**
  * Convert Anthropic non-streaming response to OpenAI format.
  */
-function convertAnthropicToOpenAI(anthropicResponse: any, model: string) {
+function convertAnthropicResponseToOpenAI(anthropicResponse: any, model: string) {
   const content = anthropicResponse.content || []
   const textParts = content.filter((c: any) => c.type === 'text')
   const toolParts = content.filter((c: any) => c.type === 'tool_use')
@@ -362,6 +400,171 @@ function mapAnthropicStopReason(reason: string | undefined): string {
     default:
       return 'stop'
   }
+}
+
+// =============================================================================
+// Anthropic <-> OpenAI Format Conversion (for local LLM providers)
+// =============================================================================
+
+function convertAnthropicRequestToOpenAIMessages(anthropicReq: any): any[] {
+  const messages: any[] = []
+  if (anthropicReq.system) {
+    const systemText = typeof anthropicReq.system === 'string'
+      ? anthropicReq.system
+      : anthropicReq.system.map((b: any) => b.text || '').join('\n')
+    messages.push({ role: 'system', content: systemText })
+  }
+  for (const msg of anthropicReq.messages || []) {
+    if (msg.role === 'user' || msg.role === 'assistant') {
+      if (typeof msg.content === 'string') {
+        messages.push({ role: msg.role, content: msg.content })
+      } else if (Array.isArray(msg.content)) {
+        const textParts = msg.content
+          .filter((b: any) => b.type === 'text')
+          .map((b: any) => b.text)
+          .join('\n')
+        if (textParts) {
+          messages.push({ role: msg.role, content: textParts })
+        }
+        for (const block of msg.content) {
+          if (block.type === 'tool_use') {
+            messages.push({
+              role: 'assistant',
+              content: null,
+              tool_calls: [{
+                id: block.id,
+                type: 'function',
+                function: { name: block.name, arguments: JSON.stringify(block.input) },
+              }],
+            })
+          }
+          if (block.type === 'tool_result') {
+            const resultContent = typeof block.content === 'string'
+              ? block.content
+              : (block.content || []).map((c: any) => c.text || '').join('\n')
+            messages.push({
+              role: 'tool',
+              tool_call_id: block.tool_use_id,
+              content: resultContent,
+            })
+          }
+        }
+      }
+    }
+  }
+  return messages
+}
+
+function convertOpenAIResponseToAnthropic(openaiResp: any, model: string): any {
+  const choice = openaiResp.choices?.[0]
+  const content: any[] = []
+  if (choice?.message?.content) {
+    content.push({ type: 'text', text: choice.message.content })
+  }
+  if (choice?.message?.tool_calls) {
+    for (const tc of choice.message.tool_calls) {
+      content.push({
+        type: 'tool_use',
+        id: tc.id || `toolu_${Date.now()}`,
+        name: tc.function.name,
+        input: JSON.parse(tc.function.arguments || '{}'),
+      })
+    }
+  }
+  return {
+    id: openaiResp.id || `msg_${Date.now()}`,
+    type: 'message',
+    role: 'assistant',
+    content,
+    model,
+    stop_reason: choice?.finish_reason === 'tool_calls' ? 'tool_use' : 'end_turn',
+    usage: {
+      input_tokens: openaiResp.usage?.prompt_tokens || 0,
+      output_tokens: openaiResp.usage?.completion_tokens || 0,
+    },
+  }
+}
+
+function convertOpenAIStreamToAnthropicStream(body: ReadableStream<Uint8Array>, model: string): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder()
+  const decoder = new TextDecoder()
+  let sseBuffer = ''
+  let contentIndex = 0
+
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(
+        `event: message_start\ndata: ${JSON.stringify({
+          type: 'message_start',
+          message: {
+            id: `msg_${Date.now()}`,
+            type: 'message',
+            role: 'assistant',
+            content: [],
+            model,
+            usage: { input_tokens: 0, output_tokens: 0 },
+          },
+        })}\n\n`
+      ))
+      controller.enqueue(encoder.encode(
+        `event: content_block_start\ndata: ${JSON.stringify({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        })}\n\n`
+      ))
+    },
+    async pull(controller) {
+      const reader = body.getReader()
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          sseBuffer += decoder.decode(value, { stream: true })
+          const lines = sseBuffer.split('\n')
+          sseBuffer = lines.pop() || ''
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            const data = line.slice(6).trim()
+            if (data === '[DONE]') {
+              controller.enqueue(encoder.encode(
+                `event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`
+              ))
+              controller.enqueue(encoder.encode(
+                `event: message_delta\ndata: ${JSON.stringify({
+                  type: 'message_delta',
+                  delta: { stop_reason: 'end_turn' },
+                  usage: { output_tokens: contentIndex },
+                })}\n\n`
+              ))
+              controller.enqueue(encoder.encode(
+                `event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`
+              ))
+              controller.close()
+              return
+            }
+            try {
+              const chunk = JSON.parse(data)
+              const delta = chunk.choices?.[0]?.delta
+              if (delta?.content) {
+                contentIndex += delta.content.length
+                controller.enqueue(encoder.encode(
+                  `event: content_block_delta\ndata: ${JSON.stringify({
+                    type: 'content_block_delta',
+                    index: 0,
+                    delta: { type: 'text_delta', text: delta.content },
+                  })}\n\n`
+                ))
+              }
+            } catch { /* ignore malformed chunks */ }
+          }
+        }
+        controller.close()
+      } catch (err) {
+        controller.error(err)
+      }
+    },
+  })
 }
 
 /**
@@ -600,27 +803,42 @@ async function proxyAnthropicNonStream(
   }
 
   const anthropicResponse = await response.json()
-  return convertAnthropicToOpenAI(anthropicResponse, request.model)
+  return convertAnthropicResponseToOpenAI(anthropicResponse, request.model)
 }
 
 // =============================================================================
 // OpenAI Proxy (pass-through)
 // =============================================================================
 
+function getOpenAICompatibleBaseUrl(modelConfig: ModelConfig): string {
+  if (modelConfig.provider === 'local' && process.env.LOCAL_LLM_BASE_URL) {
+    return `${process.env.LOCAL_LLM_BASE_URL.replace(/\/$/, '')}/v1/chat/completions`
+  }
+  return 'https://api.openai.com/v1/chat/completions'
+}
+
+function getOpenAICompatibleHeaders(apiKey: string, modelConfig: ModelConfig): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (modelConfig.provider !== 'local') {
+    headers['Authorization'] = `Bearer ${apiKey}`
+  }
+  return headers
+}
+
 /**
- * Proxy a streaming request to OpenAI (pass-through, already OpenAI format).
+ * Proxy a streaming request to an OpenAI-compatible endpoint (OpenAI, Ollama, LM Studio).
  */
 async function proxyOpenAIStream(
   request: ChatCompletionRequest,
   apiKey: string,
   modelConfig: ModelConfig
 ): Promise<Response> {
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+  const url = getOpenAICompatibleBaseUrl(modelConfig)
+  const headers = getOpenAICompatibleHeaders(apiKey, modelConfig)
+
+  const response = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
+    headers,
     body: JSON.stringify({
       ...request,
       model: modelConfig.apiModel,
@@ -630,7 +848,7 @@ async function proxyOpenAIStream(
 
   if (!response.ok) {
     const errorText = await response.text()
-    throw new Error(`OpenAI API error (${response.status}): ${errorText}`)
+    throw new Error(`${modelConfig.provider} API error (${response.status}): ${errorText}`)
   }
 
   return new Response(response.body, {
@@ -638,26 +856,26 @@ async function proxyOpenAIStream(
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
-      'X-Proxy-Provider': 'openai',
+      'X-Proxy-Provider': modelConfig.provider,
       'X-Proxy-Model': modelConfig.apiModel,
     },
   })
 }
 
 /**
- * Proxy a non-streaming request to OpenAI (pass-through).
+ * Proxy a non-streaming request to an OpenAI-compatible endpoint.
  */
 async function proxyOpenAINonStream(
   request: ChatCompletionRequest,
   apiKey: string,
   modelConfig: ModelConfig
 ) {
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+  const url = getOpenAICompatibleBaseUrl(modelConfig)
+  const headers = getOpenAICompatibleHeaders(apiKey, modelConfig)
+
+  const response = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
+    headers,
     body: JSON.stringify({
       ...request,
       model: modelConfig.apiModel,
@@ -667,7 +885,7 @@ async function proxyOpenAINonStream(
 
   if (!response.ok) {
     const errorText = await response.text()
-    throw new Error(`OpenAI API error (${response.status}): ${errorText}`)
+    throw new Error(`${modelConfig.provider} API error (${response.status}): ${errorText}`)
   }
 
   return response.json()
@@ -1013,26 +1231,76 @@ export function aiProxyRoutes() {
       )
     }
 
-    const anthropicApiKey = process.env.ANTHROPIC_API_KEY
-    if (!anthropicApiKey) {
-      return c.json(
-        { type: 'error', error: { type: 'api_error', message: 'Anthropic provider is not configured on this server.' } },
-        503
-      )
-    }
-
     try {
       const body = await c.req.text()
+      let parsed: any = {}
+      try { parsed = JSON.parse(body) } catch { /* ok */ }
+      const requestModel = parsed.model || 'advanced'
+      const isStream = !!parsed.stream
 
-      let model = 'unknown'
-      let isStream = false
-      try {
-        const parsed = JSON.parse(body)
-        model = parsed.model || 'unknown'
-        isStream = !!parsed.stream
-      } catch { /* ok */ }
+      const { resolvedModel, isLocal } = resolveAgentModel(requestModel)
+      console.log(`[AI Proxy] Anthropic pass-through: ${tokenPayload.projectId} → ${requestModel} resolved to ${resolvedModel} (local: ${isLocal}, stream: ${isStream})`)
 
-      console.log(`[AI Proxy] Anthropic pass-through: ${tokenPayload.projectId} → ${model} (stream: ${isStream})`)
+      // ── Local LLM routing: convert Anthropic → OpenAI format ──
+      if (isLocal) {
+        const localBase = process.env.LOCAL_LLM_BASE_URL!.replace(/\/$/, '')
+        const openaiMessages = convertAnthropicRequestToOpenAIMessages(parsed)
+        const openaiBody: any = {
+          model: resolvedModel,
+          messages: openaiMessages,
+          stream: isStream,
+        }
+        if (parsed.max_tokens) openaiBody.max_tokens = parsed.max_tokens
+        if (parsed.temperature !== undefined) openaiBody.temperature = parsed.temperature
+        if (parsed.tools) {
+          openaiBody.tools = parsed.tools.map((t: any) => ({
+            type: 'function',
+            function: { name: t.name, description: t.description, parameters: t.input_schema },
+          }))
+        }
+
+        const response = await fetch(`${localBase}/v1/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(openaiBody),
+        })
+        if (!response.ok) {
+          const errorText = await response.text()
+          return c.json(
+            { type: 'error', error: { type: 'api_error', message: `Local LLM error (${response.status}): ${errorText}` } },
+            response.status as any
+          )
+        }
+
+        if (isStream) {
+          const anthropicStream = convertOpenAIStreamToAnthropicStream(response.body!, resolvedModel)
+          return new Response(anthropicStream, {
+            headers: {
+              'Content-Type': 'text/event-stream',
+              'Cache-Control': 'no-cache',
+              'X-Proxy-Provider': 'local',
+              'X-Proxy-Model': resolvedModel,
+            },
+          })
+        } else {
+          const openaiResult = await response.json() as any
+          const anthropicResult = convertOpenAIResponseToAnthropic(openaiResult, resolvedModel)
+          return c.json(anthropicResult)
+        }
+      }
+
+      // ── Cloud routing: forward to Anthropic API ──
+      const anthropicApiKey = process.env.ANTHROPIC_API_KEY
+      if (!anthropicApiKey) {
+        return c.json(
+          { type: 'error', error: { type: 'api_error', message: 'Anthropic provider is not configured on this server.' } },
+          503
+        )
+      }
+
+      // Replace the model name with the resolved one before forwarding
+      parsed.model = resolvedModel
+      const forwardBody = JSON.stringify(parsed)
 
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
@@ -1050,7 +1318,7 @@ export function aiProxyRoutes() {
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers,
-        body,
+        body: forwardBody,
       })
 
       if (!response.ok) {
@@ -1065,7 +1333,7 @@ export function aiProxyRoutes() {
         const responseBody = await response.json() as any
         const inTok = responseBody.usage?.input_tokens || 0
         const outTok = responseBody.usage?.output_tokens || 0
-        recordUsage(tokenPayload, model, inTok, outTok)
+        recordUsage(tokenPayload, resolvedModel, inTok, outTok)
         return c.json(responseBody)
       }
 
@@ -1105,7 +1373,7 @@ export function aiProxyRoutes() {
           }
         },
         flush() {
-          recordUsage(tokenPayload, model, streamInputTokens, streamOutputTokens)
+          recordUsage(tokenPayload, resolvedModel, streamInputTokens, streamOutputTokens)
         },
       })
 

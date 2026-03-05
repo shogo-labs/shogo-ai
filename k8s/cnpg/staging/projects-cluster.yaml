@@ -17,6 +17,10 @@ spec:
   # Single instance for staging (no HA replica needed)
   instances: 1
 
+  # Disable auto-created PDBs so Karpenter can drain nodes.
+  # With a single instance there is no failover target anyway.
+  enablePDB: false
+
   # PostgreSQL configuration - tuned for many small databases
   postgresql:
     parameters:
@@ -87,6 +91,8 @@ spec:
       memory: "2Gi"
       cpu: "1000m"
 
-  # Affinity: spread across nodes for HA
+  # Pin to managed node group — never schedule on ephemeral Karpenter nodes
   affinity:
+    nodeSelector:
+      eks.amazonaws.com/nodegroup: shogo-staging-main
     topologyKey: kubernetes.io/hostname

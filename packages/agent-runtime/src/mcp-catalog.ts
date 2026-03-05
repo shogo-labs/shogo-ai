@@ -379,6 +379,15 @@ export function isPreinstalledMcpId(id: string): boolean {
   return MCP_CATALOG.some((e) => e.id === id && e.preinstalled === true)
 }
 
+/**
+ * In local mode any MCP server is allowed (the user controls their own machine).
+ * In cloud mode only preinstalled servers pass.
+ */
+export function isMcpServerAllowed(id: string): boolean {
+  if (process.env.SHOGO_LOCAL_MODE === 'true') return true
+  return isPreinstalledMcpId(id)
+}
+
 /** Get the preinstalled catalog entry for a server ID, or undefined if not whitelisted */
 export function getPreinstalledEntry(id: string): MCPCatalogEntry | undefined {
   return MCP_CATALOG.find((e) => e.id === id && e.preinstalled === true)

@@ -424,6 +424,7 @@ export const ModelName = {
   LayoutTemplate: 'LayoutTemplate',
   Composition: 'Composition',
   ComponentSpec: 'ComponentSpec',
+  PlatformSetting: 'PlatformSetting',
   InfraSnapshot: 'InfraSnapshot'
 } as const
 
@@ -440,7 +441,7 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
     omit: GlobalOmitOptions
   }
   meta: {
-    modelProps: "user" | "session" | "account" | "verification" | "workspace" | "project" | "agentConfig" | "projectCheckpoint" | "gitHubConnection" | "starredProject" | "member" | "billingAccount" | "invitation" | "inviteLink" | "folder" | "notification" | "subscription" | "creditLedger" | "usageEvent" | "chatSession" | "chatMessage" | "toolCallLog" | "featureSession" | "requirement" | "designDecision" | "classificationDecision" | "analysisFinding" | "integrationPoint" | "testCase" | "implementationTask" | "taskDependency" | "testSpecification" | "implementationRun" | "taskExecution" | "componentDefinition" | "registry" | "rendererBinding" | "layoutTemplate" | "composition" | "componentSpec" | "infraSnapshot"
+    modelProps: "user" | "session" | "account" | "verification" | "workspace" | "project" | "agentConfig" | "projectCheckpoint" | "gitHubConnection" | "starredProject" | "member" | "billingAccount" | "invitation" | "inviteLink" | "folder" | "notification" | "subscription" | "creditLedger" | "usageEvent" | "chatSession" | "chatMessage" | "toolCallLog" | "featureSession" | "requirement" | "designDecision" | "classificationDecision" | "analysisFinding" | "integrationPoint" | "testCase" | "implementationTask" | "taskDependency" | "testSpecification" | "implementationRun" | "taskExecution" | "componentDefinition" | "registry" | "rendererBinding" | "layoutTemplate" | "composition" | "componentSpec" | "platformSetting" | "infraSnapshot"
     txIsolationLevel: TransactionIsolationLevel
   }
   model: {
@@ -3404,6 +3405,80 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
         }
       }
     }
+    PlatformSetting: {
+      payload: Prisma.$PlatformSettingPayload<ExtArgs>
+      fields: Prisma.PlatformSettingFieldRefs
+      operations: {
+        findUnique: {
+          args: Prisma.PlatformSettingFindUniqueArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$PlatformSettingPayload> | null
+        }
+        findUniqueOrThrow: {
+          args: Prisma.PlatformSettingFindUniqueOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$PlatformSettingPayload>
+        }
+        findFirst: {
+          args: Prisma.PlatformSettingFindFirstArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$PlatformSettingPayload> | null
+        }
+        findFirstOrThrow: {
+          args: Prisma.PlatformSettingFindFirstOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$PlatformSettingPayload>
+        }
+        findMany: {
+          args: Prisma.PlatformSettingFindManyArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$PlatformSettingPayload>[]
+        }
+        create: {
+          args: Prisma.PlatformSettingCreateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$PlatformSettingPayload>
+        }
+        createMany: {
+          args: Prisma.PlatformSettingCreateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        createManyAndReturn: {
+          args: Prisma.PlatformSettingCreateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$PlatformSettingPayload>[]
+        }
+        delete: {
+          args: Prisma.PlatformSettingDeleteArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$PlatformSettingPayload>
+        }
+        update: {
+          args: Prisma.PlatformSettingUpdateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$PlatformSettingPayload>
+        }
+        deleteMany: {
+          args: Prisma.PlatformSettingDeleteManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateMany: {
+          args: Prisma.PlatformSettingUpdateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateManyAndReturn: {
+          args: Prisma.PlatformSettingUpdateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$PlatformSettingPayload>[]
+        }
+        upsert: {
+          args: Prisma.PlatformSettingUpsertArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$PlatformSettingPayload>
+        }
+        aggregate: {
+          args: Prisma.PlatformSettingAggregateArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AggregatePlatformSetting>
+        }
+        groupBy: {
+          args: Prisma.PlatformSettingGroupByArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.PlatformSettingGroupByOutputType>[]
+        }
+        count: {
+          args: Prisma.PlatformSettingCountArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.PlatformSettingCountAggregateOutputType> | number
+        }
+      }
+    }
     InfraSnapshot: {
       payload: Prisma.$InfraSnapshotPayload<ExtArgs>
       fields: Prisma.InfraSnapshotFieldRefs
@@ -4148,6 +4223,16 @@ export const ComponentSpecScalarFieldEnum = {
 export type ComponentSpecScalarFieldEnum = (typeof ComponentSpecScalarFieldEnum)[keyof typeof ComponentSpecScalarFieldEnum]
 
 
+export const PlatformSettingScalarFieldEnum = {
+  key: 'key',
+  value: 'value',
+  updatedAt: 'updatedAt',
+  updatedBy: 'updatedBy'
+} as const
+
+export type PlatformSettingScalarFieldEnum = (typeof PlatformSettingScalarFieldEnum)[keyof typeof PlatformSettingScalarFieldEnum]
+
+
 export const InfraSnapshotScalarFieldEnum = {
   id: 'id',
   timestamp: 'timestamp',
@@ -4158,6 +4243,7 @@ export const InfraSnapshotScalarFieldEnum = {
   usedPodSlots: 'usedPodSlots',
   totalCpuMillis: 'totalCpuMillis',
   usedCpuMillis: 'usedCpuMillis',
+  limitCpuMillis: 'limitCpuMillis',
   warmAvailable: 'warmAvailable',
   warmTarget: 'warmTarget',
   warmAssigned: 'warmAssigned',
@@ -4886,6 +4972,7 @@ export type GlobalOmitConfig = {
   layoutTemplate?: Prisma.LayoutTemplateOmit
   composition?: Prisma.CompositionOmit
   componentSpec?: Prisma.ComponentSpecOmit
+  platformSetting?: Prisma.PlatformSettingOmit
   infraSnapshot?: Prisma.InfraSnapshotOmit
 }
 

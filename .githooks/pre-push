@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+#
+# pre-push: regenerate Prisma client for PostgreSQL when pushing to main or staging.
+# Ensures the generated client in the repo always targets the cloud (PostgreSQL) schema,
+# even if the developer was last running in local/SQLite mode.
+#
+
+remote="$1"
+url="$2"
+
+PROTECTED_BRANCHES="main staging"
+
+while read local_ref local_oid remote_ref remote_oid; do
+  branch=$(echo "$remote_ref" | sed 's|refs/heads/||')
+
+  for protected in $PROTECTED_BRANCHES; do
+    if [ "$branch" = "$protected" ]; then
+      echo "[pre-push] Pushing to '$branch' — regenerating Prisma client for PostgreSQL..."
+
+      DATABASE_URL="postgresql://placeholder:5432/shogo" \
+        bunx prisma generate 2>&1 | tail -3
+
+      if [ $? -ne 0 ]; then
+        echo "[pre-push] ERROR: Prisma generate failed. Push aborted."
+        exit 1
+      fi
+
+      # If prisma generate changed files, stage and amend silently
+      if ! git diff --quiet apps/api/src/generated/prisma/; then
+        echo "[pre-push] Generated client was stale — updating commit..."
+        git add apps/api/src/generated/prisma/
+        git commit --amend --no-edit --no-verify >/dev/null 2>&1
+        echo "[pre-push] Commit amended with regenerated Prisma client."
+      else
+        echo "[pre-push] Prisma client already up to date for PostgreSQL."
+      fi
+
+      break
+    fi
+  done
+done
+
+exit 0

@@ -33,7 +33,7 @@ const NODE_HEADROOM_PODS = parseInt(process.env.NODE_HEADROOM_PODS || '10', 10)
 const NODE_MAX_SIZE = parseInt(process.env.NODE_MAX_SIZE || '15', 10)
 
 const POD_CPU_REQUEST_MILLICORES = 200
-const POD_MEMORY_REQUEST_MI = 512
+const POD_MEMORY_REQUEST_MI = 256
 const PODS_PER_NODE_ESTIMATE = 10
 
 const SCALE_COOLDOWN_MS = 60_000
@@ -44,6 +44,8 @@ interface NodeCapacity {
   allocatableMemoryMi: number
   allocatablePods: number
   runningPods: number
+  usedCpuMillis: number
+  limitCpuMillis: number
 }
 
 export interface CapacitySummary {
@@ -53,6 +55,7 @@ export interface CapacitySummary {
   availablePodSlots: number
   totalCpuMillis: number
   usedCpuMillis: number
+  limitCpuMillis: number
   availableCpuMillis: number
   asgDesired: number
   asgMax: number
@@ -122,12 +125,25 @@ async function getNodeCapacities(): Promise<NodeCapacity[]> {
       fieldSelector: `spec.nodeName=${name},status.phase=Running`,
     })
 
+    let nodeCpuRequests = 0
+    let nodeCpuLimits = 0
+    for (const pod of pods) {
+      for (const container of pod.spec?.containers || []) {
+        const cpuReq = container.resources?.requests?.cpu
+        const cpuLim = container.resources?.limits?.cpu
+        if (cpuReq) nodeCpuRequests += parseCpuToMillis(cpuReq)
+        if (cpuLim) nodeCpuLimits += parseCpuToMillis(cpuLim)
+      }
+    }
+
     capacities.push({
       name,
       allocatableCpuMillis,
       allocatableMemoryMi,
       allocatablePods,
       runningPods: pods.length,
+      usedCpuMillis: nodeCpuRequests,
+      limitCpuMillis: nodeCpuLimits,
     })
   }
 
@@ -172,12 +188,14 @@ export async function getCapacitySummary(): Promise<CapacitySummary> {
   let usedPodSlots = 0
   let totalCpuMillis = 0
   let usedCpuMillis = 0
+  let limitCpuMillis = 0
 
   for (const node of nodes) {
     totalPodSlots += node.allocatablePods
     usedPodSlots += node.runningPods
     totalCpuMillis += node.allocatableCpuMillis
-    usedCpuMillis += node.runningPods * POD_CPU_REQUEST_MILLICORES
+    usedCpuMillis += node.usedCpuMillis
+    limitCpuMillis += node.limitCpuMillis
   }
 
   return {
@@ -187,6 +205,7 @@ export async function getCapacitySummary(): Promise<CapacitySummary> {
     availablePodSlots: totalPodSlots - usedPodSlots,
     totalCpuMillis,
     usedCpuMillis,
+    limitCpuMillis,
     availableCpuMillis: totalCpuMillis - usedCpuMillis,
     asgDesired: asg?.desired ?? nodes.length,
     asgMax: asg?.max ?? NODE_MAX_SIZE,

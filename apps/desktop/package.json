@@ -1,0 +1,27 @@
+{
+  "name": "@shogo/desktop",
+  "version": "0.1.0",
+  "description": "Shogo Desktop - Local open-source edition",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "tsc && electron .",
+    "build": "tsc",
+    "start": "electron .",
+    "package": "electron-forge package",
+    "make": "electron-forge make",
+    "publish": "electron-forge publish",
+    "download-bun": "node scripts/download-bun.mjs"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^7.6.0",
+    "@electron-forge/maker-dmg": "^7.6.0",
+    "@electron-forge/maker-squirrel": "^7.6.0",
+    "@electron-forge/maker-zip": "^7.6.0",
+    "electron": "^33.0.0",
+    "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.0"
+  }
+}

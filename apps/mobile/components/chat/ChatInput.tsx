@@ -24,6 +24,7 @@ import {
   Platform,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
+import { usePlatformConfig } from "../../lib/platform-config"
 import {
   Popover,
   PopoverBackdrop,
@@ -131,6 +132,9 @@ export function ChatInput({
   onRemoveQueuedMessage,
   onReorderQueuedMessage,
 }: ChatInputProps) {
+  const { features } = usePlatformConfig()
+  const effectiveIsPro = features.billing ? isPro : true
+
   const textInputRef = useRef<TextInput>(null)
   const dropZoneRef = useRef<View>(null)
   const dragCounterRef = useRef(0)
@@ -144,7 +148,7 @@ export function ChatInput({
   const [agentModeOpen, setAgentModeOpen] = useState(false)
 
   const [internalAgentMode, setInternalAgentMode] = useState<AgentMode>(
-    isPro ? "advanced" : "basic"
+    effectiveIsPro ? "advanced" : "basic"
   )
   const agentMode = controlledAgentMode ?? internalAgentMode
 
@@ -152,7 +156,7 @@ export function ChatInput({
     (mode: AgentMode) => {
       const modeConfig = AGENT_MODES.find((m) => m.id === mode)
 
-      if (modeConfig?.requiresPro && !isPro) {
+      if (modeConfig?.requiresPro && !effectiveIsPro) {
         onUpgradeClick?.()
         return
       }
@@ -163,7 +167,7 @@ export function ChatInput({
         setInternalAgentMode(mode)
       }
     },
-    [onAgentModeChange, isPro, onUpgradeClick]
+    [onAgentModeChange, effectiveIsPro, onUpgradeClick]
   )
 
   const currentAgentConfig = useMemo(
@@ -657,7 +661,7 @@ export function ChatInput({
               <PopoverContent className="max-w-[280px] p-0">
                 <PopoverBody>
                   {AGENT_MODES.map((mode) => {
-                    const isLocked = mode.requiresPro && !isPro
+                    const isLocked = mode.requiresPro && !effectiveIsPro
                     const isSelected = mode.id === agentMode
                     return (
                       <Pressable
@@ -686,11 +690,11 @@ export function ChatInput({
                             <Text className="font-medium text-sm text-foreground">
                               {mode.label}
                             </Text>
-                            {mode.requiresPro && (
+                            {features.billing && mode.requiresPro && (
                               <View
                                 className={cn(
                                   "flex-row items-center gap-0.5 px-1.5 py-0.5 rounded-full",
-                                  isPro
+                                  effectiveIsPro
                                     ? "bg-amber-100 dark:bg-amber-900/30"
                                     : "bg-muted"
                                 )}
@@ -698,7 +702,7 @@ export function ChatInput({
                                 <Crown
                                   className={cn(
                                     "h-2.5 w-2.5",
-                                    isPro
+                                    effectiveIsPro
                                       ? "text-amber-700 dark:text-amber-400"
                                       : "text-muted-foreground"
                                   )}
@@ -707,7 +711,7 @@ export function ChatInput({
                                 <Text
                                   className={cn(
                                     "text-[10px] font-semibold",
-                                    isPro
+                                    effectiveIsPro
                                       ? "text-amber-700 dark:text-amber-400"
                                       : "text-muted-foreground"
                                   )}
@@ -720,7 +724,7 @@ export function ChatInput({
                           <Text className="text-xs text-muted-foreground">
                             {isLocked
                               ? "Upgrade to unlock"
-                              : `${mode.description} (${mode.creditHint})`}
+                              : features.billing ? `${mode.description} (${mode.creditHint})` : mode.description}
                           </Text>
                         </View>
                       </Pressable>

@@ -21,8 +21,6 @@ export * from './null'
 // S3 persistence support
 export * from './s3-io'
 export * from './s3-schema-io'
-// Note: s3-sqlite is server-only (uses bun:sqlite) - import directly from:
-// import { S3SqliteManager } from '@shogo/state-api/persistence/s3-sqlite'
 
 // Phase 8: Nested persistence helpers
 export * from './helpers'
