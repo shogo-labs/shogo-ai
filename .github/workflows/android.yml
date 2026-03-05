@@ -127,7 +127,7 @@ jobs:
         run: bun install
 
       - name: Build workspace packages
-        run: bun run build
+        run: bunx turbo build --filter=@shogo/mobile...
 
       - name: Setup EAS
         uses: expo/expo-github-action@v8
@@ -181,7 +181,7 @@ jobs:
         run: bun install
 
       - name: Build workspace packages
-        run: bun run build
+        run: bunx turbo build --filter=@shogo/mobile...
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
