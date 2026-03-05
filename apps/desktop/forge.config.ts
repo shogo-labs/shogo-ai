@@ -39,6 +39,7 @@ const config: ForgeConfig = {
     },
     {
       name: 'electron-forge-maker-nsis',
+      platforms: ['win32'],
       config: {},
     },
   ],
