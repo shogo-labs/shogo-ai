@@ -768,6 +768,167 @@ export const TRAVEL_PLANNER_CANVAS = cs(
 )
 
 // ---------------------------------------------------------------------------
+// Email → Slack Alert
+// ---------------------------------------------------------------------------
+export const EMAIL_SLACK_ALERT_CANVAS = cs(
+  'email_alert_dashboard', 'Email Alert Dashboard',
+  [
+    { id: 'root', component: 'Column', children: ['header', 'kpis', 'rules_card', 'alerts_card', 'getting_started'], gap: 'lg' },
+    { id: 'header', component: 'Row', children: ['title', 'status_badge'], align: 'center', justify: 'between' },
+    { id: 'title', component: 'Text', text: '📨 Email → Slack Alerts', variant: 'h2' },
+    { id: 'status_badge', component: 'Badge', text: 'No email connected', variant: 'outline' },
+    { id: 'kpis', component: 'Grid', columns: 3, children: ['kpi_alerts', 'kpi_senders', 'kpi_last'] },
+    { id: 'kpi_alerts', component: 'Metric', label: 'Alerts Today', value: { path: '/metrics/alertsToday' } },
+    { id: 'kpi_senders', component: 'Metric', label: 'Senders Tracked', value: { path: '/metrics/sendersTracked' } },
+    { id: 'kpi_last', component: 'Metric', label: 'Last Checked', value: { path: '/metrics/lastChecked' } },
+    { id: 'rules_card', component: 'Card', title: 'Alert Rules', description: 'Configure which senders trigger Slack alerts', child: 'rules_content' },
+    { id: 'rules_content', component: 'Column', children: ['rule1', 'rule2', 'rule3'], gap: 'sm' },
+    { id: 'rule1', component: 'Row', children: ['r1_badge', 'r1_text', 'r1_channel'], align: 'center', justify: 'between' },
+    { id: 'r1_badge', component: 'Badge', text: 'High', variant: 'destructive' },
+    { id: 'r1_text', component: 'Text', text: '@ceo.com, @investor.com' },
+    { id: 'r1_channel', component: 'Text', text: '#urgent', variant: 'muted' },
+    { id: 'rule2', component: 'Row', children: ['r2_badge', 'r2_text', 'r2_channel'], align: 'center', justify: 'between' },
+    { id: 'r2_badge', component: 'Badge', text: 'Normal', variant: 'default' },
+    { id: 'r2_text', component: 'Text', text: '@client.com, @vendor.com' },
+    { id: 'r2_channel', component: 'Text', text: '#general', variant: 'muted' },
+    { id: 'rule3', component: 'Row', children: ['r3_badge', 'r3_text', 'r3_channel'], align: 'center', justify: 'between' },
+    { id: 'r3_badge', component: 'Badge', text: 'Low', variant: 'secondary' },
+    { id: 'r3_text', component: 'Text', text: 'newsletters, notifications' },
+    { id: 'r3_channel', component: 'Text', text: 'Daily digest', variant: 'muted' },
+    { id: 'alerts_card', component: 'Card', title: 'Recent Alerts', description: 'Latest forwarded emails', child: 'alerts_placeholder' },
+    { id: 'alerts_placeholder', component: 'Text', text: 'Alerts will appear here once you connect Gmail and Slack. Each forwarded email shows sender, subject, urgency, and delivery status.', variant: 'muted' },
+    { id: 'getting_started', component: 'Card', title: '🚀 Getting Started', child: 'gs_col' },
+    { id: 'gs_col', component: 'Column', children: ['gs_text', 'gs_options'], gap: 'md' },
+    { id: 'gs_text', component: 'Text', text: 'Set up email-to-Slack alerts:', variant: 'muted' },
+    { id: 'gs_options', component: 'Column', children: ['opt1', 'opt2', 'opt3'], gap: 'sm' },
+    { id: 'opt1', component: 'Text', text: '• Say "Connect Gmail and Slack" to link both accounts' },
+    { id: 'opt2', component: 'Text', text: '• Then: "Alert me when I get emails from @acme.com in #deals"' },
+    { id: 'opt3', component: 'Text', text: '• I\'ll check every 5 minutes and forward matching emails to Slack' },
+  ],
+  { metrics: { alertsToday: '0', sendersTracked: '0', lastChecked: 'Never' } },
+)
+
+// ---------------------------------------------------------------------------
+// Developer Activity Dashboard
+// ---------------------------------------------------------------------------
+export const DEV_ACTIVITY_CANVAS = cs(
+  'dev_activity_dashboard', 'Developer Activity',
+  [
+    { id: 'root', component: 'Column', children: ['header', 'kpis', 'team_card', 'feed_card', 'getting_started'], gap: 'lg' },
+    { id: 'header', component: 'Row', children: ['title', 'status_badge'], align: 'center', justify: 'between' },
+    { id: 'title', component: 'Text', text: '📊 Developer Activity', variant: 'h2' },
+    { id: 'status_badge', component: 'Badge', text: 'No repos connected', variant: 'outline' },
+    { id: 'kpis', component: 'Grid', columns: 4, children: ['kpi_commits', 'kpi_prs', 'kpi_reviews', 'kpi_active'] },
+    { id: 'kpi_commits', component: 'Metric', label: 'Commits Today', value: { path: '/metrics/commitsToday' } },
+    { id: 'kpi_prs', component: 'Metric', label: 'PRs Merged', value: { path: '/metrics/prsMerged' } },
+    { id: 'kpi_reviews', component: 'Metric', label: 'Reviews Done', value: { path: '/metrics/reviewsDone' } },
+    { id: 'kpi_active', component: 'Metric', label: 'Active Devs', value: { path: '/metrics/activeDevs' } },
+    { id: 'team_card', component: 'Card', title: 'Team Breakdown', description: 'Per-developer activity for today', child: 'team_placeholder' },
+    { id: 'team_placeholder', component: 'Text', text: 'Connect GitHub and I\'ll show per-developer commit counts, PR activity, and review stats here.', variant: 'muted' },
+    { id: 'feed_card', component: 'Card', title: 'Activity Feed', description: 'Recent commits, PRs, and reviews', child: 'feed_placeholder' },
+    { id: 'feed_placeholder', component: 'Text', text: 'A chronological feed of commits, PR events, and reviews will appear here once GitHub is connected.', variant: 'muted' },
+    { id: 'getting_started', component: 'Card', title: '🚀 Getting Started', child: 'gs_col' },
+    { id: 'gs_col', component: 'Column', children: ['gs_text', 'gs_options'], gap: 'md' },
+    { id: 'gs_text', component: 'Text', text: 'Set up your activity dashboard:', variant: 'muted' },
+    { id: 'gs_options', component: 'Column', children: ['opt1', 'opt2', 'opt3'], gap: 'sm' },
+    { id: 'opt1', component: 'Text', text: '• Say "Connect my GitHub" to link your account' },
+    { id: 'opt2', component: 'Text', text: '• Tell me which repos to track: "Watch org/repo1 and org/repo2"' },
+    { id: 'opt3', component: 'Text', text: '• I\'ll build a live activity feed with per-developer breakdowns' },
+  ],
+  { metrics: { commitsToday: '—', prsMerged: '—', reviewsDone: '—', activeDevs: '—' } },
+)
+
+// ---------------------------------------------------------------------------
+// Standup Summary Generator
+// ---------------------------------------------------------------------------
+export const STANDUP_GENERATOR_CANVAS = cs(
+  'standup_dashboard', 'Standup Summary',
+  [
+    { id: 'root', component: 'Column', children: ['header', 'kpis', 'blockers_card', 'summary_card', 'getting_started'], gap: 'lg' },
+    { id: 'header', component: 'Row', children: ['title', 'date_badge'], align: 'center', justify: 'between' },
+    { id: 'title', component: 'Text', text: '🗓️ Standup Summary', variant: 'h2' },
+    { id: 'date_badge', component: 'Badge', text: 'Not yet generated', variant: 'outline' },
+    { id: 'kpis', component: 'Grid', columns: 4, children: ['kpi_active', 'kpi_prs', 'kpi_commits', 'kpi_blockers'] },
+    { id: 'kpi_active', component: 'Metric', label: 'Team Active', value: { path: '/metrics/teamActive' } },
+    { id: 'kpi_prs', component: 'Metric', label: 'PRs in Flight', value: { path: '/metrics/prsInFlight' } },
+    { id: 'kpi_commits', component: 'Metric', label: 'Commits (24h)', value: { path: '/metrics/commits24h' } },
+    { id: 'kpi_blockers', component: 'Metric', label: 'Blockers', value: { path: '/metrics/blockers' } },
+    { id: 'blockers_card', component: 'Card', title: '🚧 Blockers', description: 'Items requiring attention', child: 'blockers_placeholder' },
+    { id: 'blockers_placeholder', component: 'Text', text: 'Blockers like stale PRs and failing CI will be highlighted here once GitHub is connected.', variant: 'muted' },
+    { id: 'summary_card', component: 'Card', title: 'Today\'s Summary', description: 'Auto-generated from GitHub activity', child: 'summary_placeholder' },
+    { id: 'summary_placeholder', component: 'Text', text: 'Connect GitHub and I\'ll automatically generate standup summaries each morning. Each team member\'s Done / In Progress / Blockers will be compiled from their actual commits and PRs.', variant: 'muted' },
+    { id: 'getting_started', component: 'Card', title: '🚀 Getting Started', child: 'gs_col' },
+    { id: 'gs_col', component: 'Column', children: ['gs_text', 'gs_options'], gap: 'md' },
+    { id: 'gs_text', component: 'Text', text: 'Set up automatic standups:', variant: 'muted' },
+    { id: 'gs_options', component: 'Column', children: ['opt1', 'opt2', 'opt3'], gap: 'sm' },
+    { id: 'opt1', component: 'Text', text: '• Say "Connect GitHub and Slack" to link both accounts' },
+    { id: 'opt2', component: 'Text', text: '• Tell me your team: "Track @alice, @bob, and @carol"' },
+    { id: 'opt3', component: 'Text', text: '• I\'ll generate and post standup summaries every morning at 9 AM' },
+  ],
+  { metrics: { teamActive: '—', prsInFlight: '—', commits24h: '—', blockers: '—' } },
+)
+
+// ---------------------------------------------------------------------------
+// Slack Mention Monitor
+// ---------------------------------------------------------------------------
+export const SLACK_MONITOR_CANVAS = cs(
+  'mention_dashboard', 'Slack Monitor',
+  [
+    { id: 'root', component: 'Column', children: ['header', 'kpis', 'mentions_card', 'rules_card', 'getting_started'], gap: 'lg' },
+    { id: 'header', component: 'Row', children: ['title', 'status_badge'], align: 'center', justify: 'between' },
+    { id: 'title', component: 'Text', text: '👁️ Slack Monitor', variant: 'h2' },
+    { id: 'status_badge', component: 'Badge', text: 'No Slack connected', variant: 'outline' },
+    { id: 'kpis', component: 'Grid', columns: 4, children: ['kpi_unread', 'kpi_channels', 'kpi_keywords', 'kpi_today'] },
+    { id: 'kpi_unread', component: 'Metric', label: 'Unread Mentions', value: { path: '/metrics/unreadMentions' } },
+    { id: 'kpi_channels', component: 'Metric', label: 'Channels Watched', value: { path: '/metrics/channelsWatched' } },
+    { id: 'kpi_keywords', component: 'Metric', label: 'Keywords Tracked', value: { path: '/metrics/keywordsTracked' } },
+    { id: 'kpi_today', component: 'Metric', label: 'Alerts Today', value: { path: '/metrics/alertsToday' } },
+    { id: 'mentions_card', component: 'Card', title: 'Recent Mentions', description: 'Latest @mentions and keyword matches', child: 'mentions_placeholder' },
+    { id: 'mentions_placeholder', component: 'Text', text: 'Connect Slack and mentions, keyword matches, and watched channel activity will appear here categorized by urgency.', variant: 'muted' },
+    { id: 'rules_card', component: 'Card', title: 'Watch Rules', description: 'Configure what to monitor', child: 'rules_placeholder' },
+    { id: 'rules_placeholder', component: 'Text', text: 'Watch rules will appear here. You can add keywords, channels, and priority people to monitor. Each rule can be set to Urgent, Normal, or FYI priority.', variant: 'muted' },
+    { id: 'getting_started', component: 'Card', title: '🚀 Getting Started', child: 'gs_col' },
+    { id: 'gs_col', component: 'Column', children: ['gs_text', 'gs_options'], gap: 'md' },
+    { id: 'gs_text', component: 'Text', text: 'Set up Slack monitoring:', variant: 'muted' },
+    { id: 'gs_options', component: 'Column', children: ['opt1', 'opt2', 'opt3'], gap: 'sm' },
+    { id: 'opt1', component: 'Text', text: '• Say "Connect Slack" to link your workspace' },
+    { id: 'opt2', component: 'Text', text: '• Configure: "Watch for mentions of \'production\' and \'outage\'"' },
+    { id: 'opt3', component: 'Text', text: '• I\'ll check every 10 minutes and alert you on urgent mentions' },
+  ],
+  { metrics: { unreadMentions: '0', channelsWatched: '0', keywordsTracked: '0', alertsToday: '0' } },
+)
+
+// ---------------------------------------------------------------------------
+// Git Commit Insights
+// ---------------------------------------------------------------------------
+export const GIT_INSIGHTS_CANVAS = cs(
+  'git_insights_dashboard', 'Engineering Insights',
+  [
+    { id: 'root', component: 'Column', children: ['header', 'kpis', 'team_card', 'pr_aging_card', 'getting_started'], gap: 'lg' },
+    { id: 'header', component: 'Row', children: ['title', 'period_badge'], align: 'center', justify: 'between' },
+    { id: 'title', component: 'Text', text: '🔍 Engineering Insights', variant: 'h2' },
+    { id: 'period_badge', component: 'Badge', text: 'No repos connected', variant: 'outline' },
+    { id: 'kpis', component: 'Grid', columns: 4, children: ['kpi_commits', 'kpi_cycle', 'kpi_top', 'kpi_prs'] },
+    { id: 'kpi_commits', component: 'Metric', label: 'Weekly Commits', value: { path: '/metrics/weeklyCommits' } },
+    { id: 'kpi_cycle', component: 'Metric', label: 'Avg PR Cycle', value: { path: '/metrics/avgCycleTime' } },
+    { id: 'kpi_top', component: 'Metric', label: 'Top Reviewer', value: { path: '/metrics/topReviewer' } },
+    { id: 'kpi_prs', component: 'Metric', label: 'Active PRs', value: { path: '/metrics/activePrs' } },
+    { id: 'team_card', component: 'Card', title: 'Team Leaderboard', description: 'Weekly contribution metrics', child: 'team_placeholder' },
+    { id: 'team_placeholder', component: 'Text', text: 'Connect GitHub and I\'ll show a team leaderboard with commits, PRs merged, and reviews given per developer.', variant: 'muted' },
+    { id: 'pr_aging_card', component: 'Card', title: 'PR Aging', description: 'Open PRs sorted by age', child: 'pr_aging_placeholder' },
+    { id: 'pr_aging_placeholder', component: 'Text', text: 'Open PRs older than 3 days without review will be flagged here. Connect GitHub to start tracking.', variant: 'muted' },
+    { id: 'getting_started', component: 'Card', title: '🚀 Getting Started', child: 'gs_col' },
+    { id: 'gs_col', component: 'Column', children: ['gs_text', 'gs_options'], gap: 'md' },
+    { id: 'gs_text', component: 'Text', text: 'Set up engineering insights:', variant: 'muted' },
+    { id: 'gs_options', component: 'Column', children: ['opt1', 'opt2', 'opt3'], gap: 'sm' },
+    { id: 'opt1', component: 'Text', text: '• Say "Connect GitHub" to link your account' },
+    { id: 'opt2', component: 'Text', text: '• Tell me your repos and team: "Track myorg/api and myorg/web"' },
+    { id: 'opt3', component: 'Text', text: '• I\'ll compute PR cycle times, code churn, and team velocity weekly' },
+  ],
+  { metrics: { weeklyCommits: '—', avgCycleTime: '—', topReviewer: '—', activePrs: '—' } },
+)
+
+// ---------------------------------------------------------------------------
 // Lookup map
 // ---------------------------------------------------------------------------
 export const TEMPLATE_CANVAS_STATES: Record<string, TemplateCanvasState> = {
@@ -793,4 +954,9 @@ export const TEMPLATE_CANVAS_STATES: Record<string, TemplateCanvasState> = {
   'code-review-assistant': CODE_REVIEW_ASSISTANT_CANVAS,
   'client-onboarding': CLIENT_ONBOARDING_CANVAS,
   'travel-planner': TRAVEL_PLANNER_CANVAS,
+  'email-slack-alert': EMAIL_SLACK_ALERT_CANVAS,
+  'dev-activity': DEV_ACTIVITY_CANVAS,
+  'standup-generator': STANDUP_GENERATOR_CANVAS,
+  'slack-monitor': SLACK_MONITOR_CANVAS,
+  'git-insights': GIT_INSIGHTS_CANVAS,
 }
