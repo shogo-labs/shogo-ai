@@ -95,21 +95,34 @@ class AgentRuntimeUser(HttpUser):
 
     def _get_workspace(self):
         self.workspace_id = None
-        with self.client.get(
-            "/api/workspaces",
-            catch_response=True,
-            name="/api/workspaces",
-        ) as resp:
-            if resp.status_code == 200:
-                data = resp.json()
-                items = data.get("items", [])
-                if items:
-                    self.workspace_id = items[0]["id"]
+        max_attempts = 5
+        for attempt in range(1, max_attempts + 1):
+            with self.client.get(
+                "/api/workspaces",
+                catch_response=True,
+                name="/api/workspaces",
+            ) as resp:
+                if resp.status_code == 200:
+                    data = resp.json()
+                    items = data.get("items", [])
+                    if items:
+                        self.workspace_id = items[0]["id"]
+                        resp.success()
+                        return
+                    elif attempt < max_attempts:
+                        resp.success()
+                        time.sleep(attempt * 0.5)
+                        continue
+                    else:
+                        resp.failure("No workspaces found after retries")
+                        return
+                elif attempt < max_attempts:
                     resp.success()
+                    time.sleep(attempt * 0.5)
+                    continue
                 else:
-                    resp.failure("No workspaces found")
-            else:
-                resp.failure(f"Workspaces: {resp.status_code}")
+                    resp.failure(f"Workspaces: {resp.status_code}")
+                    return
 
     def _create_and_wait(self):
         """Create project + warm pool claim in a single measured pipeline."""
