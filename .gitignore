@@ -110,6 +110,7 @@ apps/mobile/.env
 apps/mobile/google-services.json
 apps/mobile/android/
 apps/mobile/ios/
+*.keystore
 
 *.png
 !apps/mobile/assets/*.png
