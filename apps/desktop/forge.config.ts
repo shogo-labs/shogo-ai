@@ -2,6 +2,7 @@ import type { ForgeConfig } from '@electron-forge/cli'
 import fs from 'fs'
 
 const hasIcon = fs.existsSync('./resources/icon.icns') || fs.existsSync('./resources/icon.ico')
+const isWindows = process.platform === 'win32'
 
 const config: ForgeConfig = {
   packagerConfig: {
@@ -37,11 +38,9 @@ const config: ForgeConfig = {
         format: 'ULFO',
       },
     },
-    {
-      name: 'electron-forge-maker-nsis',
-      platforms: ['win32'],
-      config: {},
-    },
+    ...(isWindows
+      ? [{ name: 'electron-forge-maker-nsis', config: {} }]
+      : []),
   ],
 }
 
