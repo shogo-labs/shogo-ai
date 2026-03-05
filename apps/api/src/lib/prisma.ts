@@ -106,14 +106,12 @@ async function createPrismaClient(): Promise<PrismaClient> {
   }
 
   const { PrismaPg } = await import('@prisma/adapter-pg')
-  const { Pool } = await import('pg')
-  const pool = new Pool({
+  const adapter = new PrismaPg({
     connectionString: process.env.DATABASE_URL,
     max: parseInt(process.env.PRISMA_POOL_SIZE || '50', 10),
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
   })
-  const adapter = new PrismaPg({ pool })
   return new PrismaClient({ adapter, log: [...logConfig] })
 }
 
