@@ -682,6 +682,10 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           console.error(`[RuntimeManager] Runtime will start without AI proxy — LLM calls will fail`)
         }
 
+        // Tools proxy URL — enables file-index-engine embeddings and other tool
+        // requests to route through the API server (same as Kubernetes managers do).
+        runtimeEnv.TOOLS_PROXY_URL = `http://localhost:${apiPort}/api`
+
         // Strip the raw platform API key so the child process cannot bypass the proxy.
         delete runtimeEnv.ANTHROPIC_API_KEY
         delete runtimeEnv.ANTHROPIC_BASE_URL

@@ -771,6 +771,72 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
 
     return c.json({ ok: true })
   })
+
+  // ── Local mode: LLM provider configuration ──────────────────────────────
+  const LLM_CONFIG_KEYS = [
+    'LOCAL_LLM_BASE_URL',
+    'LOCAL_LLM_BASIC_MODEL',
+    'LOCAL_LLM_ADVANCED_MODEL',
+    'LOCAL_EMBEDDING_MODEL',
+    'LOCAL_EMBEDDING_DIMENSIONS',
+  ]
+
+  app.get('/api/local/llm-config', async (c) => {
+    try {
+      const rows = await localDb.localConfig.findMany({
+        where: { key: { in: LLM_CONFIG_KEYS } },
+      })
+      const config: Record<string, string> = {}
+      for (const row of rows) config[row.key] = row.value
+      return c.json({ ok: true, config })
+    } catch {
+      return c.json({ ok: true, config: {} })
+    }
+  })
+
+  app.put('/api/local/llm-config', async (c) => {
+    const body = await c.req.json<Record<string, string | null>>()
+    const ops: Promise<any>[] = []
+    for (const [key, value] of Object.entries(body)) {
+      if (!LLM_CONFIG_KEYS.includes(key)) continue
+      if (value) {
+        ops.push(
+          localDb.localConfig.upsert({
+            where: { key },
+            update: { value },
+            create: { key, value },
+          })
+        )
+        process.env[key] = value
+      } else {
+        ops.push(localDb.localConfig.deleteMany({ where: { key } }))
+        delete process.env[key]
+      }
+    }
+    await Promise.all(ops)
+    return c.json({ ok: true })
+  })
+
+  // ── Local mode: model discovery ────────────────────────────────────────
+  app.get('/api/local/models', async (c) => {
+    const baseUrl = c.req.query('baseUrl') || process.env.LOCAL_LLM_BASE_URL
+    if (!baseUrl) {
+      return c.json({ ok: false, error: 'No LLM base URL configured. Set LOCAL_LLM_BASE_URL first.', models: [] })
+    }
+    try {
+      const res = await fetch(`${baseUrl.replace(/\/$/, '')}/v1/models`, {
+        signal: AbortSignal.timeout(5000),
+      })
+      if (!res.ok) {
+        return c.json({ ok: false, error: `LLM server returned ${res.status}`, models: [] })
+      }
+      const data = await res.json() as { data?: Array<{ id: string; object?: string }> }
+      const models = (data.data || []).map((m) => ({ id: m.id, name: m.id }))
+      return c.json({ ok: true, models })
+    } catch (err: any) {
+      return c.json({ ok: false, error: `Cannot reach LLM server: ${err.message}`, models: [] })
+    }
+  })
 }
 
 // Agent template catalog — public, no auth required
@@ -4712,10 +4778,8 @@ console.log(`   AI Providers: Anthropic=${!!process.env.ANTHROPIC_API_KEY}, Open
 if (process.env.SHOGO_LOCAL_MODE === 'true') {
   setTimeout(async () => {
     try {
-      const savedKeys = await (prisma as any).localConfig.findMany({
-        where: { key: { in: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'] } },
-      })
-      for (const row of savedKeys) {
+      const savedConfig = await (prisma as any).localConfig.findMany({})
+      for (const row of savedConfig) {
         if (!process.env[row.key]) {
           process.env[row.key] = row.value
           console.log(`[LocalMode] Restored ${row.key} from local config`)
