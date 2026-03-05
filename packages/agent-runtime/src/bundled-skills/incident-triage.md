@@ -3,14 +3,14 @@ name: incident-triage
 version: 2.0.0
 description: Investigate production incidents — correlate errors, deploys, and metrics into a timeline
 trigger: "incident|something broke|production issue|outage|error spike|investigate|postmortem"
-tools: [tool_list, tool_install, web, canvas_create, canvas_update, memory_write, send_message]
+tools: [tool_search, tool_install, web, canvas_create, canvas_update, memory_write, send_message]
 ---
 
 # Incident Triage
 
 When a production incident is reported, investigate and build a timeline:
 
-1. **Gather data** — Check available integrations via `tool_list`, then:
+1. **Gather data** — Check available integrations via `tool_search`, then:
    - **Sentry** (if installed): `SENTRY_LIST_ISSUES` for recent error spikes
    - **GitHub** (if installed): `GITHUB_LIST_RECENT_DEPLOYS` for recent deploys
    - **Datadog** (if installed): `DATADOG_QUERY_METRICS` for infra metrics

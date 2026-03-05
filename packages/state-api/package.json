@@ -18,10 +18,6 @@
       "import": "./src/query/execution/bun-sql.ts",
       "types": "./src/query/execution/bun-sql.ts"
     },
-    "./persistence/s3-sqlite": {
-      "import": "./src/persistence/s3-sqlite.ts",
-      "types": "./src/persistence/s3-sqlite.ts"
-    },
     "./component-builder": {
       "import": "./src/component-builder/index.ts",
       "types": "./src/component-builder/index.ts"

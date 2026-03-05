@@ -60,8 +60,9 @@ import {
 import { useDomainActions } from '@shogo/shared-app/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { setActiveWorkspaceId } from '../../lib/workspace-store'
-import { api } from '../../lib/api'
+import { api, API_URL } from '../../lib/api'
 import { useBillingData } from '@shogo/shared-app/hooks'
+import { usePlatformConfig } from '../../lib/platform-config'
 import {
   PRO_TIERS,
   BUSINESS_TIERS,
@@ -89,9 +90,9 @@ import {
 
 const DOCS_URL = 'https://docs.shogo.ai'
 
-type TabId = 'workspace' | 'people' | 'account' | 'billing'
+type TabId = 'workspace' | 'people' | 'account' | 'billing' | 'api-keys'
 
-const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'billing']
+const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'billing', 'api-keys']
 
 interface NavItem {
   id: TabId
@@ -103,16 +104,26 @@ const MOBILE_NAV_ITEMS: NavItem[] = [
   { id: 'workspace', label: 'Workspace', icon: Building2 },
   { id: 'people', label: 'People', icon: Users },
   { id: 'account', label: 'Account', icon: User },
-  { id: 'billing', label: 'Plans & Credits', icon: CreditCard },
+  { id: 'billing', label: 'Billing', icon: CreditCard },
+]
+
+const LOCAL_NAV_ITEMS: NavItem[] = [
+  { id: 'workspace', label: 'Workspace', icon: Building2 },
+  { id: 'people', label: 'People', icon: Users },
+  { id: 'account', label: 'Account', icon: User },
+  { id: 'api-keys', label: 'API Keys', icon: Settings },
 ]
 
 function TabBar({
   activeTab,
   onTabChange,
+  showBilling = true,
 }: {
   activeTab: TabId
   onTabChange: (tab: TabId) => void
+  showBilling?: boolean
 }) {
+  const items = showBilling ? MOBILE_NAV_ITEMS : LOCAL_NAV_ITEMS
   return (
     <ScrollView
       horizontal
@@ -121,7 +132,7 @@ function TabBar({
       contentContainerClassName="px-4"
       style={{ flexGrow: 0 }}
     >
-      {MOBILE_NAV_ITEMS.map((item) => {
+      {items.map((item) => {
         const Icon = item.icon
         const isActive = activeTab === item.id
         return (
@@ -169,23 +180,29 @@ function SettingsSidebar({
   onTabChange,
   workspaceName,
   userName,
+  showBilling = true,
 }: {
   activeTab: TabId
   onTabChange: (tab: TabId) => void
   workspaceName: string
   userName: string
+  showBilling?: boolean
 }) {
   const router = useRouter()
+
+  const workspaceItems: SidebarItem[] = [
+    { id: 'workspace', label: workspaceName || 'Workspace', avatar: (workspaceName?.[0] || 'W').toUpperCase() },
+    { id: 'people', label: 'People' },
+    ...(showBilling
+      ? [{ id: 'billing' as TabId, label: 'Billing' }]
+      : [{ id: 'api-keys' as TabId, label: 'API Keys' }]),
+  ]
 
   const sections: SidebarSection[] = [
     {
       id: 'workspace',
       label: 'Workspace',
-      items: [
-        { id: 'workspace', label: workspaceName || 'Workspace', avatar: (workspaceName?.[0] || 'W').toUpperCase() },
-        { id: 'people', label: 'People' },
-        { id: 'billing', label: 'Plans & credits' },
-      ],
+      items: workspaceItems,
     },
     {
       id: 'account',
@@ -260,6 +277,7 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
   const store = useDomain() as IDomainStore
   const actions = useDomainActions()
   const { user } = useAuth()
+  const { features: wsFeatures } = usePlatformConfig()
   const workspaces = useWorkspaceCollection()
   const members = useMemberCollection()
   const http = useDomainHttp()
@@ -433,24 +451,28 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
             </Button>
           </View>
 
-          <Separator />
+          {wsFeatures.billing && (
+            <>
+              <Separator />
 
-          {/* Default monthly member credit limit */}
-          <View className="px-6 py-5 flex-row items-start justify-between">
-            <View className="flex-[0.45] mr-4 pt-1">
-              <Text className="text-base font-semibold text-foreground">
-                Default monthly member credit limit
-              </Text>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                The default monthly credit limit for members of this workspace. Leave empty to use no limit.
-              </Text>
-            </View>
-            <View className="flex-[0.55]">
-              <Input
-                placeholder="Enter default monthly member credit limit (optional)"
-              />
-            </View>
-          </View>
+              {/* Default monthly member credit limit */}
+              <View className="px-6 py-5 flex-row items-start justify-between">
+                <View className="flex-[0.45] mr-4 pt-1">
+                  <Text className="text-base font-semibold text-foreground">
+                    Default monthly member credit limit
+                  </Text>
+                  <Text className="text-sm text-muted-foreground mt-0.5">
+                    The default monthly credit limit for members of this workspace. Leave empty to use no limit.
+                  </Text>
+                </View>
+                <View className="flex-[0.55]">
+                  <Input
+                    placeholder="Enter default monthly member credit limit (optional)"
+                  />
+                </View>
+              </View>
+            </>
+          )}
         </CardContent>
       </Card>
 
@@ -1073,6 +1095,192 @@ function AccountTab() {
 }
 
 // ============================================================================
+// API KEYS TAB — Local mode: user provides their own LLM API keys
+// ============================================================================
+
+function ApiKeysTab() {
+  const [anthropicKey, setAnthropicKey] = useState('')
+  const [openaiKey, setOpenaiKey] = useState('')
+  const [savedAnthropicMask, setSavedAnthropicMask] = useState('')
+  const [savedOpenaiMask, setSavedOpenaiMask] = useState('')
+  const [isLoading, setIsLoading] = useState(true)
+  const [isSaving, setIsSaving] = useState(false)
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
+
+  useEffect(() => {
+    fetch(`${API_URL}/api/local/api-keys`, { credentials: 'include' })
+      .then(r => r.json())
+      .then(data => {
+        if (data.keys?.ANTHROPIC_API_KEY) setSavedAnthropicMask(data.keys.ANTHROPIC_API_KEY)
+        if (data.keys?.OPENAI_API_KEY) setSavedOpenaiMask(data.keys.OPENAI_API_KEY)
+      })
+      .catch(() => {})
+      .finally(() => setIsLoading(false))
+  }, [])
+
+  const handleSave = async () => {
+    setIsSaving(true)
+    setSaveStatus('idle')
+    try {
+      const body: Record<string, string> = {}
+      if (anthropicKey) body.anthropicApiKey = anthropicKey
+      if (openaiKey) body.openaiApiKey = openaiKey
+      const res = await fetch(`${API_URL}/api/local/api-keys`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) throw new Error('Failed')
+      setSaveStatus('saved')
+      if (anthropicKey) {
+        setSavedAnthropicMask(anthropicKey.slice(0, 8) + '...' + anthropicKey.slice(-4))
+        setAnthropicKey('')
+      }
+      if (openaiKey) {
+        setSavedOpenaiMask(openaiKey.slice(0, 8) + '...' + openaiKey.slice(-4))
+        setOpenaiKey('')
+      }
+      setTimeout(() => setSaveStatus('idle'), 3000)
+    } catch {
+      setSaveStatus('error')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  if (isLoading) {
+    return (
+      <View className="items-center justify-center py-20">
+        <ActivityIndicator />
+      </View>
+    )
+  }
+
+  return (
+    <View className="gap-8">
+      <View>
+        <Text className="text-xl font-semibold text-foreground">API Keys</Text>
+        <Text className="text-sm text-muted-foreground mt-1">
+          Shogo runs locally on your machine. Provide your own API keys to power the AI agent.
+        </Text>
+      </View>
+
+      <Card>
+        <CardContent className="p-6 gap-6">
+          {/* Anthropic */}
+          <View className="gap-2">
+            <View className="flex-row items-center justify-between">
+              <Text className="text-sm font-medium text-foreground">Anthropic API Key</Text>
+              {savedAnthropicMask ? (
+                <View className="flex-row items-center gap-1.5">
+                  <View className="h-2 w-2 rounded-full bg-green-500" />
+                  <Text className="text-xs text-muted-foreground">{savedAnthropicMask}</Text>
+                </View>
+              ) : (
+                <View className="flex-row items-center gap-1.5">
+                  <View className="h-2 w-2 rounded-full bg-amber-500" />
+                  <Text className="text-xs text-muted-foreground">Not configured</Text>
+                </View>
+              )}
+            </View>
+            <Text className="text-xs text-muted-foreground">
+              Required for the AI agent. Get your key at console.anthropic.com
+            </Text>
+            <Input
+              value={anthropicKey}
+              onChangeText={setAnthropicKey}
+              placeholder={savedAnthropicMask ? 'Enter new key to replace' : 'sk-ant-...'}
+              secureTextEntry
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+          </View>
+
+          <Separator />
+
+          {/* OpenAI */}
+          <View className="gap-2">
+            <View className="flex-row items-center justify-between">
+              <Text className="text-sm font-medium text-foreground">OpenAI API Key</Text>
+              {savedOpenaiMask ? (
+                <View className="flex-row items-center gap-1.5">
+                  <View className="h-2 w-2 rounded-full bg-green-500" />
+                  <Text className="text-xs text-muted-foreground">{savedOpenaiMask}</Text>
+                </View>
+              ) : (
+                <View className="flex-row items-center gap-1.5">
+                  <View className="h-2 w-2 rounded-full bg-muted-foreground" />
+                  <Text className="text-xs text-muted-foreground">Optional</Text>
+                </View>
+              )}
+            </View>
+            <Text className="text-xs text-muted-foreground">
+              Optional — used for embeddings and alternative models. Get your key at platform.openai.com
+            </Text>
+            <Input
+              value={openaiKey}
+              onChangeText={setOpenaiKey}
+              placeholder={savedOpenaiMask ? 'Enter new key to replace' : 'sk-...'}
+              secureTextEntry
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+          </View>
+
+          <Separator />
+
+          <View className="flex-row items-center justify-between">
+            <View>
+              {saveStatus === 'saved' && (
+                <Text className="text-sm text-green-600">Keys saved successfully</Text>
+              )}
+              {saveStatus === 'error' && (
+                <Text className="text-sm text-destructive">Failed to save keys</Text>
+              )}
+            </View>
+            <Button
+              onPress={handleSave}
+              disabled={isSaving || (!anthropicKey && !openaiKey)}
+            >
+              <Text className="text-sm font-medium text-primary-foreground">
+                {isSaving ? 'Saving...' : 'Save Keys'}
+              </Text>
+            </Button>
+          </View>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="p-6 gap-3">
+          <Text className="text-sm font-medium text-foreground">How it works</Text>
+          <View className="gap-2">
+            <View className="flex-row items-start gap-2">
+              <Text className="text-muted-foreground text-sm">•</Text>
+              <Text className="text-sm text-muted-foreground flex-1">
+                Your API keys are stored locally on this machine and never sent to any external server.
+              </Text>
+            </View>
+            <View className="flex-row items-start gap-2">
+              <Text className="text-muted-foreground text-sm">•</Text>
+              <Text className="text-sm text-muted-foreground flex-1">
+                The Anthropic key is used by the AI agent for reasoning and code generation.
+              </Text>
+            </View>
+            <View className="flex-row items-start gap-2">
+              <Text className="text-muted-foreground text-sm">•</Text>
+              <Text className="text-sm text-muted-foreground flex-1">
+                Usage is billed directly by the API providers at their standard rates.
+              </Text>
+            </View>
+          </View>
+        </CardContent>
+      </Card>
+    </View>
+  )
+}
+
+// ============================================================================
 // BILLING TAB — Lovable-style layout
 // ============================================================================
 
@@ -1165,7 +1373,7 @@ const BillingTab = observer(function BillingTab() {
     <View className="gap-8">
       {/* Header */}
       <View>
-        <Text className="text-xl font-semibold text-foreground">Plans & credits</Text>
+        <Text className="text-xl font-semibold text-foreground">Billing</Text>
         <Text className="text-sm text-muted-foreground mt-1">
           Manage your subscription plan and credit balance.
         </Text>
@@ -2257,6 +2465,7 @@ function SettingsContent({ activeTab }: { activeTab: TabId }) {
       {activeTab === 'people' && <PeopleTab />}
       {activeTab === 'account' && <AccountTab />}
       {activeTab === 'billing' && <BillingTab />}
+      {activeTab === 'api-keys' && <ApiKeysTab />}
     </>
   )
 }
@@ -2268,9 +2477,14 @@ export default observer(function SettingsPage() {
   const isWide = width >= 768
   const { user } = useAuth()
   const currentWorkspace = useActiveWorkspace()
+  const { features } = usePlatformConfig()
 
   const [activeTab, setActiveTab] = useState<TabId>(
-    () => (ALL_TAB_IDS.includes(params.tab as TabId) ? params.tab as TabId : 'workspace')
+    () => {
+      const requested = params.tab as TabId
+      if (requested === 'billing' && !features.billing) return 'api-keys'
+      return ALL_TAB_IDS.includes(requested) ? requested : 'workspace'
+    }
   )
 
   const workspaceName = currentWorkspace?.name || ''
@@ -2284,6 +2498,7 @@ export default observer(function SettingsPage() {
           onTabChange={setActiveTab}
           workspaceName={workspaceName}
           userName={userName}
+          showBilling={features.billing}
         />
         <ScrollView
           className="flex-1"
@@ -2316,7 +2531,7 @@ export default observer(function SettingsPage() {
         <Text className="text-xl font-bold text-foreground">Settings</Text>
       </View>
 
-      <TabBar activeTab={activeTab} onTabChange={setActiveTab} />
+      <TabBar activeTab={activeTab} onTabChange={setActiveTab} showBilling={features.billing} />
 
       <ScrollView
         className="flex-1"

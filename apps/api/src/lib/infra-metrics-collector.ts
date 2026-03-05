@@ -33,15 +33,15 @@ async function collectSnapshot(prisma: PrismaClient): Promise<void> {
     try {
       const { getKnativeProjectManager } = await import('./knative-project-manager')
       const manager = getKnativeProjectManager()
-      const projects = await manager.listProjects()
+      const allServices = await manager.listAllServices()
       projectStats = {
-        total: projects.length,
-        ready: projects.filter((p: any) => p.status.ready).length,
-        running: projects.filter((p: any) => p.status.replicas > 0).length,
-        scaled_to_zero: projects.filter((p: any) => p.status.replicas === 0).length,
+        total: allServices.length,
+        ready: allServices.filter((s: any) => s.status.ready).length,
+        running: allServices.filter((s: any) => s.status.replicas > 0).length,
+        scaled_to_zero: allServices.filter((s: any) => s.status.replicas === 0).length,
       }
     } catch (err: any) {
-      console.warn('[InfraCollector] Failed to list Knative projects:', err.message)
+      console.warn('[InfraCollector] Failed to list Knative services:', err.message)
     }
 
     const warmAvail =
@@ -58,6 +58,7 @@ async function collectSnapshot(prisma: PrismaClient): Promise<void> {
         usedPodSlots: extended.cluster?.usedPodSlots ?? 0,
         totalCpuMillis: extended.cluster?.totalCpuMillis ?? 0,
         usedCpuMillis: extended.cluster?.usedCpuMillis ?? 0,
+        limitCpuMillis: extended.cluster?.limitCpuMillis ?? 0,
         warmAvailable: warmAvail,
         warmTarget: warmTgt,
         warmAssigned: extended.assigned ?? 0,

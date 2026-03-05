@@ -7,12 +7,14 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   View,
   Text,
+  TextInput,
   ScrollView,
   Pressable,
   ActivityIndicator,
   RefreshControl,
   Alert,
   useWindowDimensions,
+  Switch,
 } from 'react-native'
 import {
   Server,
@@ -25,6 +27,8 @@ import {
   CheckCircle,
   Clock,
   HardDrive,
+  Settings,
+  Save,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../lib/api'
@@ -50,6 +54,7 @@ interface ClusterCapacity {
   availablePodSlots: number
   totalCpuMillis: number
   usedCpuMillis: number
+  limitCpuMillis: number
   availableCpuMillis: number
   asgDesired: number
   asgMax: number
@@ -87,6 +92,7 @@ interface InfraHistoryPoint {
   usedPodSlots: number
   totalCpuMillis: number
   usedCpuMillis: number
+  limitCpuMillis: number
   warmAvailable: number
   warmTarget: number
   warmAssigned: number
@@ -158,6 +164,43 @@ async function evictPod(projectId: string): Promise<boolean> {
   }
 }
 
+interface InfraSettings {
+  warmPoolMinAgents: number
+  warmPoolMinProjects: number
+  warmPoolAgentsPerNode: number
+  warmPoolProjectsPerNode: number
+  reconcileIntervalMs: number
+  maxPodAgeMs: number
+  promotedPodIdleTimeoutMs: number
+  promotedPodGcEnabled: boolean
+}
+
+async function fetchInfraSettings(): Promise<InfraSettings | null> {
+  try {
+    const res = await fetch(`${API_BASE}/settings/infrastructure`, { credentials: 'include' })
+    if (!res.ok) return null
+    return await res.json()
+  } catch {
+    return null
+  }
+}
+
+async function saveInfraSettings(patch: Partial<InfraSettings>): Promise<{ ok: boolean; config?: InfraSettings; error?: string }> {
+  try {
+    const res = await fetch(`${API_BASE}/settings/infrastructure`, {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    })
+    const json = await res.json()
+    if (!res.ok) return { ok: false, error: json.error || 'Failed to save' }
+    return { ok: true, config: json.config }
+  } catch (err: any) {
+    return { ok: false, error: err.message }
+  }
+}
+
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -225,8 +268,9 @@ function InfraStatCard({
   )
 }
 
-function UtilizationBar({ label, used, total, unit = '' }: { label: string; used: number; total: number; unit?: string }) {
+function UtilizationBar({ label, used, total, limit, unit = '' }: { label: string; used: number; total: number; limit?: number; unit?: string }) {
   const pct = total > 0 ? Math.round((used / total) * 100) : 0
+  const limitPct = limit && total > 0 ? Math.min(Math.round((limit / total) * 100), 100) : 0
   const barColor = pct > 80 ? 'bg-red-500' : pct > 60 ? 'bg-yellow-500' : 'bg-green-500'
   return (
     <View className="mb-3">
@@ -234,10 +278,18 @@ function UtilizationBar({ label, used, total, unit = '' }: { label: string; used
         <Text className="text-xs text-muted-foreground">{label}</Text>
         <Text className="text-xs text-foreground">
           {used}{unit} / {total}{unit} ({pct}%)
+          {limit ? ` · limit ${limit}${unit} (${limitPct}%)` : ''}
         </Text>
       </View>
       <View className="h-2 bg-muted rounded-full overflow-hidden">
-        <View className={cn('h-full rounded-full', barColor)} style={{ width: `${pct}%` }} />
+        {limit && limitPct > pct ? (
+          <View className="h-full flex-row" style={{ width: `${limitPct}%` }}>
+            <View className={cn('h-full rounded-l-full', barColor)} style={{ width: `${Math.round((pct / limitPct) * 100)}%` }} />
+            <View className="h-full bg-orange-400/40 rounded-r-full" style={{ flex: 1 }} />
+          </View>
+        ) : (
+          <View className={cn('h-full rounded-full', barColor)} style={{ width: `${pct}%` }} />
+        )}
       </View>
     </View>
   )
@@ -490,6 +542,193 @@ function PromotedPodTable({
 }
 
 // =============================================================================
+// Settings Panel
+// =============================================================================
+
+function SettingsField({
+  label,
+  hint,
+  value,
+  onChange,
+  suffix,
+}: {
+  label: string
+  hint?: string
+  value: string
+  onChange: (v: string) => void
+  suffix?: string
+}) {
+  return (
+    <View className="mb-3">
+      <Text className="text-xs font-medium text-foreground mb-1">{label}</Text>
+      <View className="flex-row items-center gap-2">
+        <TextInput
+          className="flex-1 bg-muted border border-border rounded-lg px-3 py-2 text-sm text-foreground"
+          value={value}
+          onChangeText={onChange}
+          keyboardType="numeric"
+          placeholderTextColor="#666"
+        />
+        {suffix && <Text className="text-xs text-muted-foreground">{suffix}</Text>}
+      </View>
+      {hint && <Text className="text-[10px] text-muted-foreground mt-0.5">{hint}</Text>}
+    </View>
+  )
+}
+
+function InfraSettingsPanel({
+  settings,
+  onSaved,
+}: {
+  settings: InfraSettings
+  onSaved: (config: InfraSettings) => void
+}) {
+  const [form, setForm] = useState({
+    warmPoolMinAgents: String(settings.warmPoolMinAgents),
+    warmPoolMinProjects: String(settings.warmPoolMinProjects),
+    warmPoolAgentsPerNode: String(settings.warmPoolAgentsPerNode),
+    warmPoolProjectsPerNode: String(settings.warmPoolProjectsPerNode),
+    reconcileIntervalMs: String(settings.reconcileIntervalMs / 1000),
+    maxPodAgeMs: String(settings.maxPodAgeMs / 60000),
+    promotedPodIdleTimeoutMs: String(settings.promotedPodIdleTimeoutMs / 60000),
+    promotedPodGcEnabled: settings.promotedPodGcEnabled,
+  })
+  const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState<{ type: 'ok' | 'error'; text: string } | null>(null)
+
+  useEffect(() => {
+    setForm({
+      warmPoolMinAgents: String(settings.warmPoolMinAgents),
+      warmPoolMinProjects: String(settings.warmPoolMinProjects),
+      warmPoolAgentsPerNode: String(settings.warmPoolAgentsPerNode),
+      warmPoolProjectsPerNode: String(settings.warmPoolProjectsPerNode),
+      reconcileIntervalMs: String(settings.reconcileIntervalMs / 1000),
+      maxPodAgeMs: String(settings.maxPodAgeMs / 60000),
+      promotedPodIdleTimeoutMs: String(settings.promotedPodIdleTimeoutMs / 60000),
+      promotedPodGcEnabled: settings.promotedPodGcEnabled,
+    })
+  }, [settings])
+
+  const onSave = async () => {
+    setSaving(true)
+    setMessage(null)
+    const patch: Partial<InfraSettings> = {
+      warmPoolMinAgents: parseInt(form.warmPoolMinAgents, 10),
+      warmPoolMinProjects: parseInt(form.warmPoolMinProjects, 10),
+      warmPoolAgentsPerNode: parseInt(form.warmPoolAgentsPerNode, 10),
+      warmPoolProjectsPerNode: parseInt(form.warmPoolProjectsPerNode, 10),
+      reconcileIntervalMs: Math.round(parseFloat(form.reconcileIntervalMs) * 1000),
+      maxPodAgeMs: Math.round(parseFloat(form.maxPodAgeMs) * 60000),
+      promotedPodIdleTimeoutMs: Math.round(parseFloat(form.promotedPodIdleTimeoutMs) * 60000),
+      promotedPodGcEnabled: form.promotedPodGcEnabled,
+    }
+    const result = await saveInfraSettings(patch)
+    setSaving(false)
+    if (result.ok && result.config) {
+      setMessage({ type: 'ok', text: 'Settings saved and applied' })
+      onSaved(result.config)
+    } else {
+      setMessage({ type: 'error', text: result.error || 'Save failed' })
+    }
+    setTimeout(() => setMessage(null), 4000)
+  }
+
+  return (
+    <View className="bg-card border border-border rounded-xl p-4 mb-4">
+      <View className="flex-row items-center gap-2 mb-3">
+        <Settings size={14} className="text-primary" />
+        <Text className="text-sm font-medium text-foreground">Infrastructure Settings</Text>
+        <Text className="text-[10px] text-muted-foreground ml-1">Changes apply immediately</Text>
+      </View>
+
+      <View className="flex-row flex-wrap gap-x-6">
+        <View className="flex-1 min-w-[200px]">
+          <Text className="text-xs font-medium text-muted-foreground mb-2 uppercase tracking-wider">Warm Pool</Text>
+          <SettingsField
+            label="Min Agent Pods"
+            hint="Minimum warm agent pods regardless of node count"
+            value={form.warmPoolMinAgents}
+            onChange={(v) => setForm((f) => ({ ...f, warmPoolMinAgents: v }))}
+          />
+          <SettingsField
+            label="Min Project Pods"
+            hint="Minimum warm project pods (0 = disabled)"
+            value={form.warmPoolMinProjects}
+            onChange={(v) => setForm((f) => ({ ...f, warmPoolMinProjects: v }))}
+          />
+          <SettingsField
+            label="Agents Per Node"
+            hint="Additional warm agents added per managed node"
+            value={form.warmPoolAgentsPerNode}
+            onChange={(v) => setForm((f) => ({ ...f, warmPoolAgentsPerNode: v }))}
+          />
+          <SettingsField
+            label="Max Pod Age"
+            value={form.maxPodAgeMs}
+            onChange={(v) => setForm((f) => ({ ...f, maxPodAgeMs: v }))}
+            suffix="min"
+            hint="Warm pods older than this are recycled"
+          />
+        </View>
+
+        <View className="flex-1 min-w-[200px]">
+          <Text className="text-xs font-medium text-muted-foreground mb-2 uppercase tracking-wider">Lifecycle</Text>
+          <SettingsField
+            label="Reconcile Interval"
+            value={form.reconcileIntervalMs}
+            onChange={(v) => setForm((f) => ({ ...f, reconcileIntervalMs: v }))}
+            suffix="sec"
+            hint="How often the controller checks pool state"
+          />
+          <SettingsField
+            label="Idle Timeout"
+            value={form.promotedPodIdleTimeoutMs}
+            onChange={(v) => setForm((f) => ({ ...f, promotedPodIdleTimeoutMs: v }))}
+            suffix="min"
+            hint="Promoted pods idle longer than this are evicted"
+          />
+          <View className="flex-row items-center justify-between mb-3">
+            <View>
+              <Text className="text-xs font-medium text-foreground">GC Enabled</Text>
+              <Text className="text-[10px] text-muted-foreground">Auto-evict orphaned and idle pods</Text>
+            </View>
+            <Switch
+              value={form.promotedPodGcEnabled}
+              onValueChange={(v) => setForm((f) => ({ ...f, promotedPodGcEnabled: v }))}
+            />
+          </View>
+        </View>
+      </View>
+
+      <View className="flex-row items-center gap-3 mt-2">
+        <Pressable
+          onPress={onSave}
+          disabled={saving}
+          className={cn(
+            'flex-row items-center gap-1.5 px-4 py-2 rounded-lg',
+            saving ? 'bg-muted' : 'bg-primary'
+          )}
+        >
+          {saving ? (
+            <ActivityIndicator size="small" />
+          ) : (
+            <Save size={13} className="text-primary-foreground" />
+          )}
+          <Text className={cn('text-xs font-medium', saving ? 'text-muted-foreground' : 'text-primary-foreground')}>
+            Save & Apply
+          </Text>
+        </Pressable>
+        {message && (
+          <Text className={cn('text-xs', message.type === 'ok' ? 'text-green-400' : 'text-red-400')}>
+            {message.text}
+          </Text>
+        )}
+      </View>
+    </View>
+  )
+}
+
+// =============================================================================
 // Main Page
 // =============================================================================
 
@@ -507,6 +746,7 @@ export default function InfrastructurePage() {
   const [historyPeriod, setHistoryPeriod] = useState<HistoryPeriod>('24h')
   const [historyData, setHistoryData] = useState<InfraHistoryPoint[] | null>(null)
   const [historyLoading, setHistoryLoading] = useState(true)
+  const [infraSettings, setInfraSettings] = useState<InfraSettings | null>(null)
 
   const autoRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -523,9 +763,14 @@ export default function InfrastructurePage() {
     setHistoryLoading(false)
   }, [historyPeriod])
 
+  const loadSettings = useCallback(async () => {
+    const result = await fetchInfraSettings()
+    if (result) setInfraSettings(result)
+  }, [])
+
   useEffect(() => {
     setLoading(true)
-    Promise.all([loadLiveData(), loadHistory()]).finally(() => setLoading(false))
+    Promise.all([loadLiveData(), loadHistory(), loadSettings()]).finally(() => setLoading(false))
     autoRefreshRef.current = setInterval(loadLiveData, AUTO_REFRESH_INTERVAL)
     return () => {
       if (autoRefreshRef.current) clearInterval(autoRefreshRef.current)
@@ -677,9 +922,10 @@ export default function InfrastructurePage() {
             total={cluster.totalPodSlots}
           />
           <UtilizationBar
-            label="CPU"
+            label="CPU (requested → limit)"
             used={cluster.usedCpuMillis}
             total={cluster.totalCpuMillis}
+            limit={cluster.limitCpuMillis || undefined}
             unit="m"
           />
         </View>
@@ -705,6 +951,17 @@ export default function InfrastructurePage() {
           </View>
         )}
       </View>
+
+      {/* Infrastructure Settings */}
+      {infraSettings && (
+        <InfraSettingsPanel
+          settings={infraSettings}
+          onSaved={(config) => {
+            setInfraSettings(config)
+            loadLiveData()
+          }}
+        />
+      )}
 
       {/* Promoted Pods */}
       <View>

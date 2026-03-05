@@ -56,6 +56,12 @@ const FORWARDED_SKIP_HEADERS = new Set([
   'upgrade',
 ])
 
+const RESPONSE_SKIP_HEADERS = new Set([
+  ...FORWARDED_SKIP_HEADERS,
+  'content-encoding',
+  'content-length',
+])
+
 // =============================================================================
 // JWT extraction
 // =============================================================================
@@ -114,7 +120,7 @@ async function forwardRequest(
   const responseHeaders = new Headers()
   upstream.headers.forEach((value, key) => {
     const lower = key.toLowerCase()
-    if (FORWARDED_SKIP_HEADERS.has(lower)) return
+    if (RESPONSE_SKIP_HEADERS.has(lower)) return
     responseHeaders.set(key, value)
   })
 
@@ -147,6 +153,60 @@ async function requireProxyAuth(
   }
 
   return { projectId: payload.projectId }
+}
+
+// =============================================================================
+// Local LLM embedding forwarding
+// =============================================================================
+
+async function forwardLocalEmbedding(
+  req: Request,
+  localBaseUrl: string,
+  embeddingModel: string,
+  upstreamPath: string,
+): Promise<Response> {
+  const url = `${localBaseUrl.replace(/\/$/, '')}${upstreamPath}`
+
+  let body: any = null
+  if (req.method === 'POST') {
+    try {
+      const parsed = await req.json()
+      parsed.model = embeddingModel
+      const dims = process.env.LOCAL_EMBEDDING_DIMENSIONS
+      if (dims) parsed.dimensions = parseInt(dims, 10)
+      body = JSON.stringify(parsed)
+    } catch {
+      body = req.body
+    }
+  }
+
+  const headers = new Headers()
+  req.headers.forEach((value, key) => {
+    const lower = key.toLowerCase()
+    if (FORWARDED_SKIP_HEADERS.has(lower)) return
+    if (lower === 'x-api-key' || lower === 'authorization') return
+    headers.set(key, value)
+  })
+  headers.set('Content-Type', 'application/json')
+
+  const upstream = await fetch(url, {
+    method: req.method,
+    headers,
+    body,
+  })
+
+  const responseHeaders = new Headers()
+  upstream.headers.forEach((value, key) => {
+    const lower = key.toLowerCase()
+    if (RESPONSE_SKIP_HEADERS.has(lower)) return
+    responseHeaders.set(key, value)
+  })
+
+  return new Response(upstream.body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers: responseHeaders,
+  })
 }
 
 // =============================================================================
@@ -183,12 +243,21 @@ export function toolsProxyRoutes() {
   })
 
   // ---- OpenAI passthrough (embeddings, etc.) ----
+  // When LOCAL_LLM_BASE_URL is configured and the request is for embeddings,
+  // route to the local LLM server instead of OpenAI.
   router.all('/tools/openai/*', async (c) => {
     const auth = await requireProxyAuth(c.req.raw)
     if ('error' in auth) return auth.error
 
     const upstreamPath = extractUpstreamPath(c.req.path, 'openai')
     const qs = new URL(c.req.url).search
+    const localBaseUrl = process.env.LOCAL_LLM_BASE_URL
+    const localEmbeddingModel = process.env.LOCAL_EMBEDDING_MODEL
+
+    if (localBaseUrl && localEmbeddingModel && upstreamPath.startsWith('/v1/embeddings')) {
+      return forwardLocalEmbedding(c.req.raw, localBaseUrl, localEmbeddingModel, upstreamPath + qs)
+    }
+
     return forwardRequest(c.req.raw, TARGETS.openai, upstreamPath + qs)
   })
 

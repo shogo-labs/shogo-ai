@@ -226,17 +226,22 @@ export async function initComposioSession(
   userId: string,
   projectId: string,
 ): Promise<boolean> {
-  if (storedComposioUserId) return true
+  const composioUserId = `shogo_${userId}_${projectId}`
+
+  if (storedComposioUserId === composioUserId) return true
 
   const client = getComposioClient()
   if (!client) return false
 
-  const composioUserId = `shogo_${userId}_${projectId}`
   const authConfigs = getAuthConfigs()
   const hasCustomAuth = Object.keys(authConfigs).length > 0
 
   try {
     const t0 = performance.now()
+    const switching = storedComposioUserId && storedComposioUserId !== composioUserId
+    if (switching) {
+      console.log(`[Composio] Switching session from "${storedComposioUserId}" to "${composioUserId}"`)
+    }
     console.log(`[Composio] Creating session for user "${composioUserId}"${hasCustomAuth ? ' (with custom auth configs)' : ' (using Composio managed auth)'}...`)
     const sessionOpts = hasCustomAuth ? { authConfigs } : undefined
     await client.create(composioUserId, sessionOpts)

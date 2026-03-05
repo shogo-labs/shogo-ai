@@ -19,6 +19,7 @@ cd "$ROOT_DIR"
 USERS=${USERS:-15}
 SPAWN_RATE=${SPAWN_RATE:-5}
 RUN_TIME=${RUN_TIME:-10m}
+# Targets the API DomainMapping directly for accurate latency measurement
 HOST=${HOST:-https://api-staging.shogo.ai}
 
 # Parse CLI args

@@ -78,6 +78,7 @@ import { useBillingData } from '@shogo/shared-app/hooks'
 import { formatCredits, DAILY_CREDITS } from '../../lib/billing-config'
 import { api } from '../../lib/api'
 import { getActiveWorkspaceId, setActiveWorkspaceId } from '../../lib/workspace-store'
+import { usePlatformConfig } from '../../lib/platform-config'
 
 function getInitials(name: string | null | undefined): string {
   if (!name) return '?'
@@ -532,6 +533,7 @@ interface WorkspaceSwitcherProps {
   billingData: any
   workspacePlan: { planId: string; status: string | null } | null
   allPlans: Record<string, { planId: string; status: string | null }>
+  showBilling: boolean
   onNavigate: (href: string) => void
   onSwitchWorkspace: (workspaceId: string) => void
   onCreateWorkspace: () => void
@@ -544,6 +546,7 @@ function WorkspaceSwitcher({
   billingData,
   workspacePlan,
   allPlans,
+  showBilling,
   onNavigate,
   onSwitchWorkspace,
   onCreateWorkspace,
@@ -606,9 +609,11 @@ function WorkspaceSwitcher({
                   <Text className="font-medium text-foreground" numberOfLines={1}>
                     {currentWorkspace.name}
                   </Text>
-                  <Text className="text-xs text-muted-foreground">
-                    {planType} Plan {'\u00B7'} 1 member
-                  </Text>
+                  {showBilling && (
+                    <Text className="text-xs text-muted-foreground">
+                      {planType} Plan {'\u00B7'} 1 member
+                    </Text>
+                  )}
                 </View>
               </View>
             </View>
@@ -643,7 +648,7 @@ function WorkspaceSwitcher({
             overScrollMode="never"
           >
             {/* Credits */}
-            {currentWorkspace && (
+            {showBilling && currentWorkspace && (
               <>
                 <View className="px-4 py-3 gap-2">
                   <View className="flex-row items-center justify-between">
@@ -670,7 +675,7 @@ function WorkspaceSwitcher({
             )}
 
             {/* Upgrade CTA */}
-            {currentWorkspace && planType === 'Free' && (
+            {showBilling && currentWorkspace && planType === 'Free' && (
               <>
                 <View className="px-3 py-2">
                   <Pressable
@@ -715,7 +720,7 @@ function WorkspaceSwitcher({
                     <Text className="text-sm text-foreground flex-1" numberOfLines={1}>
                       {ws.name}
                     </Text>
-                    {(() => {
+                    {showBilling && (() => {
                       const wsPlanId = allPlans[ws.id]?.planId ?? 'free'
                       const isPaid = wsPlanId !== 'free'
                       const label = isPaid
@@ -914,6 +919,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const router = useRouter()
   const insets = useSafeAreaInsets()
   const isWide = width >= 768
+  const { features } = usePlatformConfig()
 
   const { user, signOut } = useAuth()
   const projects = useProjectCollection()
@@ -992,7 +998,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
     currentWorkspace = undefined
   }
 
-  const billingData = useBillingData(currentWorkspace?.id)
+  const billingData = useBillingData(features.billing ? currentWorkspace?.id : undefined)
 
   const [allPlans, setAllPlans] = useState<Record<string, { planId: string; status: string | null }>>({})
 
@@ -1018,16 +1024,15 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   let allWorkspaces: any[]
   try { allWorkspaces = workspaces?.all?.slice() ?? [] } catch { allWorkspaces = [] }
 
-  // Fetch plans for all workspaces in a single call
   useEffect(() => {
-    if (!allWorkspaces.length) return
+    if (!features.billing || !allWorkspaces.length) return
     let cancelled = false
     const ids = allWorkspaces.map((w: any) => w.id)
     api.getWorkspacePlans(http, ids)
       .then((plans) => { if (!cancelled) setAllPlans(plans) })
       .catch(() => {})
     return () => { cancelled = true }
-  }, [allWorkspaces.length, http])
+  }, [features.billing, allWorkspaces.length, http])
 
   const workspacePlan = currentWorkspace?.id ? (allPlans[currentWorkspace.id] ?? null) : null
   const isPaidPlan = billingData.hasActiveSubscription || (workspacePlan?.planId !== 'free' && workspacePlan?.status === 'active')
@@ -1152,6 +1157,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
           billingData={billingData}
           workspacePlan={workspacePlan}
           allPlans={allPlans}
+          showBilling={features.billing}
           onNavigate={(href) => { router.push(href as any); onNavPress() }}
           onSwitchWorkspace={handleSwitchWorkspace}
           onCreateWorkspace={handleCreateWorkspace}
@@ -1261,7 +1267,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
       {/* ── Bottom Section ── */}
       <View className="border-t border-border" style={{ paddingBottom: insets.bottom }}>
         {/* Upgrade to Pro CTA */}
-        {!collapsed && !isPaidPlan && (
+        {features.billing && !collapsed && !isPaidPlan && (
           <View className="px-2 pt-2">
             <Pressable
               onPress={() => { router.push('/(app)/billing' as any); onNavPress() }}

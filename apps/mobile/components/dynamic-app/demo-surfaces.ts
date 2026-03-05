@@ -934,10 +934,62 @@ export const MAUI_VACATION_SURFACE = buildSurface(
 )
 
 // ---------------------------------------------------------------------------
+// Interactive Task Manager — Tests Checkbox, Select, Delete (auto-mutations)
+// Uses the same component definitions the basic agent would send.
+// ---------------------------------------------------------------------------
+
+export const INTERACTIVE_TASKS_SURFACE = buildSurface(
+  'demo_interactive_tasks',
+  'Interactive Task Manager',
+  [
+    { id: 'root', component: 'Column', children: ['header_row', 'metrics', 'tasks_card'] },
+    { id: 'header_row', component: 'Row', children: ['title'], align: 'center', justify: 'between' },
+    { id: 'title', component: 'Text', text: 'Task Manager', variant: 'h2' },
+    { id: 'metrics', component: 'Grid', columns: 3, children: ['m_total', 'm_done', 'm_pending'] },
+    { id: 'm_total', component: 'Metric', label: 'Total', value: { path: '/summary/total' } },
+    { id: 'm_done', component: 'Metric', label: 'Completed', value: { path: '/summary/completed' }, trendValue: '+2 this week' },
+    { id: 'm_pending', component: 'Metric', label: 'Pending', value: { path: '/summary/pending' } },
+    { id: 'tasks_card', component: 'Card', title: 'All Tasks', child: 'task_list' },
+    {
+      id: 'task_list', component: 'DataList',
+      children: { path: '/tasks', templateId: 'task_row' },
+      emptyText: 'No tasks yet',
+    },
+    { id: 'task_row', component: 'Row', children: ['task_check', 'task_info', 'task_priority', 'task_delete'], align: 'center', gap: 'sm' },
+    { id: 'task_check', component: 'Checkbox', checked: { path: 'completed' }, dataPath: 'completed' },
+    { id: 'task_info', component: 'Column', children: ['task_title', 'task_due'], gap: 'xs', className: 'flex-1' },
+    { id: 'task_title', component: 'Text', text: { path: 'title' }, weight: 'medium' },
+    { id: 'task_due', component: 'Text', text: { path: 'dueDate' }, variant: 'muted', size: 'sm' },
+    {
+      id: 'task_priority', component: 'Select', value: { path: 'priority' }, dataPath: 'priority',
+      options: [
+        { label: 'Low', value: 'low' },
+        { label: 'Medium', value: 'medium' },
+        { label: 'High', value: 'high' },
+        { label: 'Urgent', value: 'urgent' },
+      ],
+    },
+    { id: 'task_delete', component: 'Button', label: 'Remove', variant: 'destructive', size: 'sm', deleteAction: true },
+  ] as ComponentDefinition[],
+  {
+    summary: { total: 6, completed: 2, pending: 4 },
+    tasks: [
+      { id: '1', title: 'Review pull request #142', completed: true, priority: 'high', dueDate: '2026-03-01' },
+      { id: '2', title: 'Update onboarding docs', completed: false, priority: 'medium', dueDate: '2026-03-03' },
+      { id: '3', title: 'Fix login redirect bug', completed: false, priority: 'urgent', dueDate: '2026-03-02' },
+      { id: '4', title: 'Design settings page mockup', completed: false, priority: 'low', dueDate: '2026-03-05' },
+      { id: '5', title: 'Write unit tests for auth module', completed: true, priority: 'high', dueDate: '2026-02-28' },
+      { id: '6', title: 'Set up CI/CD pipeline', completed: false, priority: 'medium', dueDate: '2026-03-07' },
+    ],
+  },
+)
+
+// ---------------------------------------------------------------------------
 // All demos indexed by name
 // ---------------------------------------------------------------------------
 
 export const DEMO_SURFACES: Record<string, { label: string; surface: SurfaceState }> = {
+  interactive_tasks: { label: 'Interactive Tasks', surface: INTERACTIVE_TASKS_SURFACE },
   maui: { label: 'Maui Vacation', surface: MAUI_VACATION_SURFACE },
   drive_lax: { label: 'Drive to LAX', surface: DRIVE_TIME_LAX_SURFACE },
   expenses: { label: 'Expense Tracker', surface: EXPENSE_TRACKER_SURFACE },

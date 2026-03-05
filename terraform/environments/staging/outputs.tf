@@ -71,9 +71,10 @@ output "namespaces" {
 output "domains" {
   description = "Staging domain names"
   value = {
-    api     = "api-staging.shogo.ai"
-    studio  = "studio-staging.shogo.ai"
-    preview = "*.staging.shogo.ai" # preview--{projectId}.staging.shogo.ai
+    studio  = "studio-staging.shogo.ai"  # Primary user-facing domain (app + same-origin API)
+    api     = "api-staging.shogo.ai"     # External API access (load tests, webhooks, debugging)
+    docs    = "docs-staging.shogo.ai"
+    preview = "*.staging.shogo.ai"       # preview--{projectId}.staging.shogo.ai
   }
 }
 

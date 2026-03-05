@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Uses the API DomainMapping directly (not the studio proxy) for external tooling
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api-staging.shogo.ai")
 MCP_BASE_URL = os.getenv("MCP_BASE_URL", "https://mcp-staging.shogo.ai")
 

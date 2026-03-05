@@ -244,7 +244,7 @@ export default observer(function BillingPage() {
         </Pressable>
         <View className="flex-1">
           <Text className="text-2xl font-bold text-foreground">
-            Plans & credits
+            Billing
           </Text>
           <Text className="text-sm text-muted-foreground">
             Manage your subscription plan and credit balance.

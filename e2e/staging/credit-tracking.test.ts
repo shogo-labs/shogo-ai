@@ -37,7 +37,7 @@ test.describe("Credit Tracking", () => {
 
     // Upgrade to Pro
     await page.goto("/billing")
-    await page.waitForSelector("text=Plans & credits", { timeout: 10_000 })
+    await page.waitForSelector("text=Billing", { timeout: 10_000 })
     await page.getByText("Upgrade to Pro").last().click()
     await page.waitForSelector("text=Subscribe to Pro", { timeout: 15_000 })
 
@@ -60,7 +60,7 @@ test.describe("Credit Tracking", () => {
 
   test("billing page shows initial Pro credits (105 of 105)", async () => {
     await page.goto("/billing")
-    await page.waitForSelector("text=Plans & credits", { timeout: 10_000 })
+    await page.waitForSelector("text=Billing", { timeout: 10_000 })
 
     await expect(page.getByText("You're on Pro Plan")).toBeVisible()
     await expect(page.getByText(/105 of 105/)).toBeVisible()
@@ -99,7 +99,7 @@ test.describe("Credit Tracking", () => {
 
     // Check billing page
     await page.goto("/billing")
-    await page.waitForSelector("text=Plans & credits", { timeout: 10_000 })
+    await page.waitForSelector("text=Billing", { timeout: 10_000 })
 
     const creditsEl = page.getByText(/[\d.]+ of 105/)
     await expect(creditsEl).toBeVisible()

@@ -240,6 +240,11 @@ export type Composition = Prisma.CompositionModel
  */
 export type ComponentSpec = Prisma.ComponentSpecModel
 /**
+ * Model PlatformSetting
+ * 
+ */
+export type PlatformSetting = Prisma.PlatformSettingModel
+/**
  * Model InfraSnapshot
  * 
  */

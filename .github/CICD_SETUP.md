@@ -8,8 +8,8 @@ The pipeline supports two environments with automatic branch-based deployment:
 
 | Branch | Environment | Domains |
 |--------|-------------|---------|
-| `staging` | Staging | `api-staging.shogo.ai`, `studio-staging.shogo.ai` |
-| `main` | Production | `api.shogo.ai`, `studio.shogo.ai` |
+| `staging` | Staging | `studio-staging.shogo.ai`, `api-staging.shogo.ai`, `docs-staging.shogo.ai` |
+| `main` | Production | `studio.shogo.ai`, `api.shogo.ai`, `docs.shogo.ai` |
 
 ## Prerequisites
 
@@ -61,10 +61,10 @@ Go to **Settings > Environments > staging** and configure:
 
 | Variable Name | Value | Description |
 |---------------|-------|-------------|
-| `VITE_API_URL` | `https://api-staging.shogo.ai` | Staging API endpoint |
-| `VITE_BETTER_AUTH_URL` | `https://api-staging.shogo.ai` | Staging Auth endpoint |
+| `VITE_API_URL` | `` (empty string) | Same-origin — studio proxies to API via Knative |
+| `VITE_BETTER_AUTH_URL` | `` (empty string) | Same-origin — auth runs through the studio origin |
 | `VITE_WORKSPACE` | `workspace-1` | Default workspace ID |
-| `ALLOWED_ORIGINS` | `https://studio-staging.shogo.ai,https://api-staging.shogo.ai` | CORS allowed origins |
+| `ALLOWED_ORIGINS` | `https://studio-staging.shogo.ai` | CORS allowed origins |
 
 ### Production Environment
 
@@ -82,12 +82,12 @@ Go to **Settings > Environments > production** and configure:
 
 | Variable Name | Value | Description |
 |---------------|-------|-------------|
-| `VITE_API_URL` | `https://api.shogo.ai` | Production API endpoint |
-| `VITE_BETTER_AUTH_URL` | `https://api.shogo.ai` | Production Auth endpoint |
+| `VITE_API_URL` | `` (empty string) | Same-origin — studio proxies to API via Knative |
+| `VITE_BETTER_AUTH_URL` | `` (empty string) | Same-origin — auth runs through the studio origin |
 | `VITE_WORKSPACE` | `workspace-1` | Default workspace ID |
-| `ALLOWED_ORIGINS` | `https://studio.shogo.ai,https://api.shogo.ai,https://shogo.ai` | CORS allowed origins |
+| `ALLOWED_ORIGINS` | `https://studio.shogo.ai,https://shogo.ai` | CORS allowed origins |
 
-> **Note:** `VITE_BETTER_AUTH_URL` should be the same as `VITE_API_URL` since BetterAuth is integrated into the API server.
+> **Note:** `VITE_API_URL` and `VITE_BETTER_AUTH_URL` should be empty strings for Docker/nginx builds. The studio app uses same-origin requests (`/api/*`), and Knative's internal routing forwards them to the API service. The `api-staging.shogo.ai` domain exists for external tooling (load tests, curl debugging) but is not used by the app itself.
 
 ## Step 3: Configure EKS Access
 
@@ -179,12 +179,16 @@ Additionally, each environment maintains a `<env>-latest` tag for the most recen
 ## Domain Configuration
 
 ### Staging Domains
-- **Studio**: `https://studio-staging.shogo.ai`
-- **API**: `https://api-staging.shogo.ai`
+- **Studio (app)**: `https://studio-staging.shogo.ai` — primary user-facing domain
+- **API (external)**: `https://api-staging.shogo.ai` — for load tests, debugging, webhooks
+- **Docs**: `https://docs-staging.shogo.ai`
 
 ### Production Domains
-- **Studio**: `https://studio.shogo.ai`
-- **API**: `https://api.shogo.ai`
+- **Studio (app)**: `https://studio.shogo.ai` — primary user-facing domain
+- **API (external)**: `https://api.shogo.ai` — for load tests, debugging, webhooks
+- **Docs**: `https://docs.shogo.ai`
+
+> **Architecture note:** The studio app makes all API calls to its own origin (`/api/*`). Knative routes these internally to the API service. The separate `api-*` domains exist for external access (load testing, curl, webhooks) but are not used by the frontend.
 
 ## Namespace Isolation
 

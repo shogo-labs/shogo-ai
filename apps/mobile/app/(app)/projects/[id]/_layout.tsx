@@ -43,6 +43,7 @@ import { getTotalCreditsForPlan } from '../../../../lib/billing-config'
 import { useAuth } from '../../../../contexts/auth'
 import { authClient } from '../../../../lib/auth-client'
 import { API_URL, api } from '../../../../lib/api'
+import { usePlatformConfig } from '../../../../lib/platform-config'
 import { consumePendingImageData } from '../../../../lib/pending-image-store'
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
 import { ChatSessionPicker, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
@@ -100,7 +101,12 @@ export default observer(function ProjectLayout() {
 
   const isAgentProject = project?.type === 'AGENT'
 
-  const billingData = useBillingData(project?.workspaceId)
+  const { features } = usePlatformConfig()
+  const billingData = useBillingData(features.billing ? project?.workspaceId : undefined)
+
+  const effectiveHasActiveSubscription = features.billing
+    ? billingData.hasActiveSubscription
+    : true
 
   const workspaceName = useMemo(() => {
     try {
@@ -462,7 +468,7 @@ export default observer(function ProjectLayout() {
       projectType={isAgentProject ? 'AGENT' : 'APP'}
       initialMessage={capturedInitialMessage}
       initialImageData={capturedInitialImageData}
-      billingData={billingData}
+      billingData={features.billing ? billingData : { hasActiveSubscription: true, refetchCreditLedger: () => {} }}
       onCanvasPreview={handleCanvasPreview}
       className="flex-1"
     />
@@ -501,7 +507,7 @@ export default observer(function ProjectLayout() {
             onChatCollapseToggle={() => setChatCollapsed((c) => !c)}
             activeTab={previewTab}
             onTabChange={setPreviewTab}
-            hasActiveSubscription={billingData.hasActiveSubscription}
+            hasActiveSubscription={effectiveHasActiveSubscription}
             workspaceName={workspaceName}
             planLabel={planLabel}
             creditsRemaining={creditsRemaining}
@@ -556,7 +562,7 @@ export default observer(function ProjectLayout() {
             projectType={project.type}
             projects={allProjects}
             activeTab={previewTab}
-            hasActiveSubscription={billingData.hasActiveSubscription}
+            hasActiveSubscription={effectiveHasActiveSubscription}
             workspaceName={workspaceName}
             planLabel={planLabel}
             creditsRemaining={creditsRemaining}

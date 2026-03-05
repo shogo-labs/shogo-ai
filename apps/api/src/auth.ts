@@ -14,9 +14,25 @@
 
 import { betterAuth } from "better-auth"
 import { expo } from "@better-auth/expo"
-import { Pool } from "pg"
 import { createPersonalWorkspace } from "./services/workspace.service"
 import { sendWelcomeEmail, sendPasswordResetEmail, sendEmailVerificationEmail } from "./services/email.service"
+
+const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
+
+function createAuthDatabase() {
+  if (isLocalMode) {
+    const { Database } = require('bun:sqlite')
+    const dbPath = (process.env.DATABASE_URL || 'file:./shogo.db').replace(/^file:/, '')
+    return new Database(dbPath)
+  }
+  const { Pool } = require('pg')
+  return new Pool({
+    connectionString: process.env.DATABASE_URL,
+    max: parseInt(process.env.AUTH_POOL_SIZE || '30', 10),
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 10_000,
+  })
+}
 
 /**
  * Strip HTML tags and angle brackets from user input.
@@ -60,10 +76,7 @@ export const auth = betterAuth({
   // Base URL for OAuth callbacks - must match Google's authorized redirect URIs
   baseURL: getBaseURL(),
 
-  // PostgreSQL database connection via pg Pool
-  database: new Pool({
-    connectionString: process.env.DATABASE_URL,
-  }),
+  database: createAuthDatabase(),
 
   // User model configuration - uses Prisma's users table
   user: {
@@ -88,12 +101,9 @@ export const auth = betterAuth({
     },
     // JWT session with 7-day expiry (in seconds)
     expiresIn: 60 * 60 * 24 * 7,
-    // Cookie cache to reduce database queries on repeated get-session calls
-    // This stores session data in a short-lived signed cookie, avoiding
-    // database lookups for each useSession() call in React StrictMode
     cookieCache: {
       enabled: true,
-      maxAge: 5 * 60, // Cache for 5 minutes
+      maxAge: 5 * 60,
     },
   },
 
@@ -143,8 +153,7 @@ export const auth = betterAuth({
     },
   },
 
-  // Social providers - Google OAuth
-  socialProviders: {
+  socialProviders: isLocalMode ? {} : {
     google: {
       clientId: process.env.GOOGLE_CLIENT_ID!,
       clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
@@ -204,29 +213,33 @@ export const auth = betterAuth({
          * Errors are logged but do not block user creation (graceful degradation).
          */
         after: async (user) => {
-          try {
-            // BLOCKING: Create workspace (user needs this immediately)
-            await createPersonalWorkspace(user.id, user.name || "User")
-            console.log(`Created personal workspace for user ${user.email}`)
-            
-            // FIRE-AND-FORGET: Send welcome email (non-blocking)
-            const baseUrl = process.env.APP_URL || process.env.BETTER_AUTH_URL || 'http://localhost:3001'
-            sendWelcomeEmail({
-              to: user.email,
-              name: user.name || 'User',
-              loginUrl: `${baseUrl}/login`
-            }).catch((err) => {
-              // Gracefully log email failures without blocking
-              console.error(`Welcome email failed for ${user.email}:`, err)
-            })
-            
-          } catch (error) {
-            // Log error but don't block user creation
-            console.error(
-              `Failed to create personal workspace for user ${user.email}:`,
-              error instanceof Error ? error.message : String(error)
-            )
+          const maxAttempts = 3
+          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+              await createPersonalWorkspace(user.id, user.name || "User")
+              console.log(`Created personal workspace for user ${user.email}${attempt > 1 ? ` (attempt ${attempt})` : ''}`)
+              break
+            } catch (error) {
+              const msg = error instanceof Error ? error.message : String(error)
+              if (attempt < maxAttempts) {
+                const delay = attempt * 500
+                console.warn(`Workspace creation attempt ${attempt}/${maxAttempts} failed for ${user.email}: ${msg} — retrying in ${delay}ms`)
+                await new Promise((r) => setTimeout(r, delay))
+              } else {
+                console.error(`Failed to create personal workspace for ${user.email} after ${maxAttempts} attempts: ${msg}`)
+              }
+            }
           }
+
+          // FIRE-AND-FORGET: Send welcome email (non-blocking)
+          const baseUrl = process.env.APP_URL || process.env.BETTER_AUTH_URL || 'http://localhost:3001'
+          sendWelcomeEmail({
+            to: user.email,
+            name: user.name || 'User',
+            loginUrl: `${baseUrl}/login`
+          }).catch((err) => {
+            console.error(`Welcome email failed for ${user.email}:`, err)
+          })
         },
       },
       update: {

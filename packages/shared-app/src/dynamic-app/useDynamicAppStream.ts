@@ -253,7 +253,7 @@ export function useDynamicAppStream(agentUrl: string | null, options?: DynamicAp
   )
 
   const updateLocalData = useCallback(
-    (surfaceId: string, path: string, value: unknown) => {
+    (surfaceId: string, path: string, value: unknown, options?: { persist?: boolean }) => {
       setSurfaces((prev) => {
         const surface = prev.get(surfaceId)
         if (!surface) return prev
@@ -263,8 +263,18 @@ export function useDynamicAppStream(agentUrl: string | null, options?: DynamicAp
         next.set(surfaceId, { ...surface, dataModel: newDataModel, updatedAt: new Date().toISOString() })
         return next
       })
+
+      if (options?.persist && agentUrl) {
+        fetch(`${agentUrl}/agent/dynamic-app/data-change`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ surfaceId, path, value }),
+        }).catch((err) => {
+          console.error('[DynamicApp] Failed to persist data change:', err)
+        })
+      }
     },
-    [],
+    [agentUrl],
   )
 
   const reconnect = useCallback(() => {

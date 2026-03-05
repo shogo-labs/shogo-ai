@@ -230,6 +230,7 @@ export function adminRoutes(): Hono {
           usedPodSlots: true,
           totalCpuMillis: true,
           usedCpuMillis: true,
+          limitCpuMillis: true,
           warmAvailable: true,
           warmTarget: true,
           warmAssigned: true,

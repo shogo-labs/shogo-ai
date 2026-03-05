@@ -25,6 +25,51 @@ import { ComponentTreePanel } from './edit/ComponentTreePanel'
 import { CanvasThemeProvider, CanvasThemedContainer } from './CanvasThemeContext'
 import { CanvasThemePicker } from './CanvasThemePicker'
 import { useDynamicAppStream } from './use-dynamic-app-stream'
+import { setByPointer, getByPointer } from '@shogo/shared-app/dynamic-app'
+
+/**
+ * After a collection changes, find summary objects in the dataModel and
+ * recompute total / boolean field counts / inverse counts automatically.
+ */
+function recomputeSummaries(dataModel: Record<string, unknown>, _collectionPath: string, items: unknown[]): void {
+  const boolFields = new Map<string, number>()
+  for (const item of items) {
+    if (typeof item !== 'object' || item === null) continue
+    for (const [k, v] of Object.entries(item as Record<string, unknown>)) {
+      if (typeof v === 'boolean') {
+        boolFields.set(k, (boolFields.get(k) ?? 0) + (v ? 1 : 0))
+      }
+    }
+  }
+
+  for (const [key, value] of Object.entries(dataModel)) {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) continue
+    const summary = value as Record<string, unknown>
+    if (typeof summary.total !== 'number') continue
+
+    // Snapshot old values before mutating so inverse detection works
+    const oldSnapshot = { ...summary } as Record<string, number>
+    const oldTotal = oldSnapshot.total
+
+    summary.total = items.length
+
+    for (const [sumKey, sumVal] of Object.entries(oldSnapshot)) {
+      if (sumKey === 'total' || typeof sumVal !== 'number') continue
+
+      if (boolFields.has(sumKey)) {
+        summary[sumKey] = boolFields.get(sumKey)!
+      } else {
+        for (const [bf, trueCount] of boolFields) {
+          const oldBoolCount = oldSnapshot[bf]
+          if (typeof oldBoolCount === 'number' && sumVal === oldTotal - oldBoolCount) {
+            summary[sumKey] = items.length - trueCount
+            break
+          }
+        }
+      }
+    }
+  }
+}
 
 export function DynamicAppDevPreview({ agentUrl }: { agentUrl?: string | null } = {}) {
   const isLive = Boolean(agentUrl)
@@ -83,6 +128,49 @@ export function DynamicAppDevPreview({ agentUrl }: { agentUrl?: string | null } 
 
     if (isLive) {
       stream.dispatchAction(surfaceId, name, context)
+    }
+
+    if (!isLive && name === '__delete_item__' && context?.collectionPath && context?.itemId) {
+      setActiveSurface((prev) => {
+        const newDataModel = { ...prev.dataModel }
+        const path = context.collectionPath as string
+        const items = (newDataModel as any)[path.replace(/^\//, '')]
+        if (Array.isArray(items)) {
+          const updated = items.filter(
+            (item: any) => String(item?.id) !== String(context.itemId),
+          );
+          (newDataModel as any)[path.replace(/^\//, '')] = updated
+          recomputeSummaries(newDataModel, path, updated)
+        }
+        return { ...prev, dataModel: newDataModel, updatedAt: new Date().toISOString() }
+      })
+    }
+  }, [isLive, stream])
+
+  const handleDataChange = useCallback((surfaceId: string, path: string, value: unknown, options?: { persist?: boolean }) => {
+    const logEntry = { surfaceId, type: 'dataChange', path, value, persist: options?.persist, timestamp: new Date().toISOString() }
+    console.log('[DynamicApp DataChange]', logEntry)
+    setActionLog((prev) => [logEntry, ...prev].slice(0, 20))
+
+    if (isLive) {
+      stream.updateLocalData(surfaceId, path, value, options)
+    } else {
+      setActiveSurface((prev) => {
+        const newDataModel = { ...prev.dataModel }
+        setByPointer(newDataModel, path, value)
+
+        // Find which collection this path belongs to and recompute summaries
+        const segments = path.replace(/^\//, '').split('/')
+        if (segments.length >= 2) {
+          const collectionKey = segments[0]
+          const collection = (newDataModel as any)[collectionKey]
+          if (Array.isArray(collection)) {
+            recomputeSummaries(newDataModel, `/${collectionKey}`, collection)
+          }
+        }
+
+        return { ...prev, dataModel: newDataModel, updatedAt: new Date().toISOString() }
+      })
     }
   }, [isLive, stream])
 
@@ -259,11 +347,29 @@ export function DynamicAppDevPreview({ agentUrl }: { agentUrl?: string | null } 
 
             {actionLog.length > 0 && (
               <View className="border-t border-border p-2">
-                <Text className="text-xs font-medium text-muted-foreground mb-1">Action Log</Text>
+                <Text className="text-xs font-medium text-muted-foreground mb-1">Event Log</Text>
                 <View className="gap-1">
                   {actionLog.map((entry, i) => (
                     <View key={i} className="bg-muted/50 rounded p-1.5">
-                      <Text className="text-[10px] font-medium text-primary">{entry.action}</Text>
+                      {entry.type === 'dataChange' ? (
+                        <>
+                          <Text className="text-[10px] font-medium text-blue-500">
+                            DATA {entry.persist ? '(persist)' : '(local)'}
+                          </Text>
+                          <Text className="text-[10px] text-muted-foreground" numberOfLines={1}>
+                            {entry.path} = {JSON.stringify(entry.value)}
+                          </Text>
+                        </>
+                      ) : (
+                        <>
+                          <Text className="text-[10px] font-medium text-primary">{entry.action}</Text>
+                          {entry.context && Object.keys(entry.context).length > 0 && (
+                            <Text className="text-[10px] text-muted-foreground" numberOfLines={1}>
+                              {JSON.stringify(entry.context)}
+                            </Text>
+                          )}
+                        </>
+                      )}
                     </View>
                   ))}
                 </View>
@@ -273,14 +379,19 @@ export function DynamicAppDevPreview({ agentUrl }: { agentUrl?: string | null } 
         </View>
 
         {/* Main Content with Edit UI */}
-        <CanvasArea surface={displaySurface} agentUrl={displayAgentUrl} onAction={handleAction} />
+        <CanvasArea surface={displaySurface} agentUrl={displayAgentUrl} onAction={handleAction} onDataChange={handleDataChange} />
       </View>
     </EditModeProvider>
     </CanvasThemeProvider>
   )
 }
 
-function CanvasArea({ surface, agentUrl, onAction }: { surface: SurfaceState; agentUrl?: string | null; onAction: (surfaceId: string, name: string, context?: Record<string, unknown>) => void }) {
+function CanvasArea({ surface, agentUrl, onAction, onDataChange }: {
+  surface: SurfaceState
+  agentUrl?: string | null
+  onAction: (surfaceId: string, name: string, context?: Record<string, unknown>) => void
+  onDataChange?: (surfaceId: string, path: string, value: unknown, options?: { persist?: boolean }) => void
+}) {
   const editMode = useEditModeOptional()
   const isEditMode = editMode?.isEditMode ?? false
   const showTreePanel = editMode?.showTreePanel ?? false
@@ -299,6 +410,7 @@ function CanvasArea({ surface, agentUrl, onAction }: { surface: SurfaceState; ag
                 surface={surface}
                 agentUrl={agentUrl ?? null}
                 onAction={onAction}
+                onDataChange={onDataChange}
               />
             </ScrollView>
           </CanvasThemedContainer>

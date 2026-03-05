@@ -266,6 +266,62 @@ resource "null_resource" "knative_domain" {
 }
 
 # -----------------------------------------------------------------------------
+# Relax PDBs for single-replica deployments
+# -----------------------------------------------------------------------------
+# Upstream Knative PDBs use minAvailable: 80% which blocks all disruption
+# when running single replicas (ceil(0.8 * 1) = 1, so 0 allowed disruptions).
+# Switch to maxUnavailable: 1 so Karpenter and node drains can proceed.
+variable "relax_pdbs" {
+  description = "Patch upstream Knative PDBs to allow disruption of single-replica components"
+  type        = bool
+  default     = true
+}
+
+resource "null_resource" "knative_pdb_patches" {
+  count      = var.relax_pdbs ? 1 : 0
+  depends_on = [null_resource.kourier]
+
+  triggers = {
+    knative_version = var.knative_version
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      # Scale traffic-critical components to 2 replicas so that
+      # maxUnavailable:1 always keeps one pod serving during node drains.
+      # Activator has an HPA — patch minReplicas instead of scaling directly.
+      kubectl patch hpa activator -n knative-serving --type merge \
+        -p '{"spec":{"minReplicas":2}}' || true
+      kubectl scale deployment 3scale-kourier-gateway -n kourier-system --replicas=2 || true
+
+      # Relax PDBs from minAvailable:80% to maxUnavailable:1.
+      # With 2 replicas this guarantees 1 stays up; with 1 replica it
+      # still allows the drain to proceed (non-critical components).
+      kubectl patch pdb activator-pdb -n knative-serving --type merge \
+        -p '{"spec":{"minAvailable":null,"maxUnavailable":1}}' || true
+      kubectl patch pdb webhook-pdb -n knative-serving --type merge \
+        -p '{"spec":{"minAvailable":null,"maxUnavailable":1}}' || true
+      kubectl patch pdb 3scale-kourier-gateway-pdb -n kourier-system --type merge \
+        -p '{"spec":{"minAvailable":null,"maxUnavailable":1}}' || true
+
+      # Scale net-kourier-controller resources for large service counts.
+      # Each Knative service creates an ingress route; at 1000+ services the
+      # default 500Mi/1 CPU is insufficient and causes OOMKills or liveness failures.
+      kubectl set resources -n knative-serving deployment/net-kourier-controller \
+        -c controller \
+        --limits=cpu=2,memory=2Gi \
+        --requests=cpu=500m,memory=512Mi || true
+
+      # Increase liveness probe tolerance so the controller can prime all
+      # ingresses before being killed (default 6 failures * 10s = 60s is
+      # too short for 1000+ ingresses).
+      kubectl patch deployment net-kourier-controller -n knative-serving --type=json \
+        -p='[{"op":"replace","path":"/spec/template/spec/containers/0/livenessProbe/failureThreshold","value":30},{"op":"replace","path":"/spec/template/spec/containers/0/livenessProbe/initialDelaySeconds","value":30}]' || true
+    EOT
+  }
+}
+
+# -----------------------------------------------------------------------------
 # Outputs
 # -----------------------------------------------------------------------------
 output "knative_version" {

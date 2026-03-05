@@ -11,8 +11,8 @@ import {
 import { useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { observer } from 'mobx-react-lite'
-import { ArrowRight, FolderOpen, Users } from 'lucide-react-native'
-import { formatDistanceToNow } from 'date-fns'
+import { ArrowRight } from 'lucide-react-native'
+import { ProjectCard } from '../../components/home/ProjectCard'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Button } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
@@ -21,11 +21,12 @@ import {
   useWorkspaceCollection,
   useMemberCollection,
   useDomainActions,
+  useDomainHttp,
 } from '../../contexts/domain'
 import { CompactChatInput } from '../../components/chat/CompactChatInput'
 import { setPendingImageData } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
-import { API_URL } from '../../lib/api'
+import { api } from '../../lib/api'
 
 interface AgentTemplate {
   id: string
@@ -72,19 +73,6 @@ const GRADIENT_CSS = `
 }
 `
 
-const PROJECT_GRADIENT_COLORS = [
-  'bg-purple-500', 'bg-pink-500', 'bg-orange-500', 'bg-green-500',
-  'bg-cyan-500', 'bg-violet-500', 'bg-fuchsia-500', 'bg-teal-500',
-]
-
-function getPlaceholderColor(name: string): string {
-  const index = name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) % PROJECT_GRADIENT_COLORS.length
-  return PROJECT_GRADIENT_COLORS[index]
-}
-
-function getTimeAgo(timestamp: number): string {
-  return formatDistanceToNow(new Date(timestamp), { addSuffix: true })
-}
 
 const TEMPLATE_COLORS: Record<string, string> = {
   'research-assistant': '#3b82f6',
@@ -269,58 +257,13 @@ function TemplateCard({
   )
 }
 
-function ProjectCard({
-  project,
-  onPress,
-  isDark,
-  badge,
-}: {
-  project: any
-  onPress: () => void
-  isDark: boolean
-  badge?: string
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      className="rounded-2xl overflow-hidden border border-border bg-card"
-      style={Platform.OS === 'web' ? {
-        boxShadow: isDark
-          ? '0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2)'
-          : '0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)',
-        transition: 'box-shadow 0.2s, transform 0.2s',
-      } as any : {}}
-    >
-      <View
-        className={cn('items-center justify-center', getPlaceholderColor(project.name || ''))}
-        style={{ height: 120 }}
-      >
-        <FolderOpen size={28} className="text-white/30" />
-        {badge && (
-          <View className="absolute top-2 left-2 flex-row items-center bg-black/30 rounded-md px-2 py-0.5">
-            <Users size={12} className="text-white mr-1" />
-            <Text className="text-white text-xs">{badge}</Text>
-          </View>
-        )}
-      </View>
-      <View className="px-4 py-3.5">
-        <Text className="text-[15px] font-semibold text-card-foreground" numberOfLines={1}>
-          {project.name || 'Untitled'}
-        </Text>
-        <Text className="text-[13px] mt-1 text-muted-foreground" numberOfLines={1}>
-          {project.description || getTimeAgo(project.updatedAt || project.createdAt || Date.now())}
-        </Text>
-      </View>
-    </Pressable>
-  )
-}
-
 const HomeScreen = observer(function HomeScreen() {
   const router = useRouter()
   const { user, isAuthenticated } = useAuth()
   const projects = useProjectCollection()
   const workspaces = useWorkspaceCollection()
   const membersColl = useMemberCollection()
+  const http = useDomainHttp()
   const actions = useDomainActions()
   const isDark = useDarkMode()
 
@@ -346,16 +289,14 @@ const HomeScreen = observer(function HomeScreen() {
 
     async function fetchTemplates() {
       try {
-        const res = await fetch(`${API_URL}/api/agent-templates`)
-        if (!res.ok) return
-        const data = await res.json()
-        setHomeTemplates((data.templates || []).slice(0, 6))
+        const data = await api.getAgentTemplates(http)
+        setHomeTemplates(data.slice(0, 6))
       } catch (err) {
         console.error('[Home] Failed to fetch templates:', err)
       }
     }
     fetchTemplates()
-  }, [isAuthenticated, user?.id])
+  }, [isAuthenticated, user?.id, http])
 
   const currentWorkspace = useActiveWorkspace()
 
@@ -659,7 +600,10 @@ const HomeScreen = observer(function HomeScreen() {
                   {myProjects.map((project: any) => (
                     <ProjectCard
                       key={project.id}
-                      project={project}
+                      name={project.name || 'Untitled'}
+                      description={project.description}
+                      updatedAt={project.updatedAt}
+                      createdAt={project.createdAt}
                       onPress={() => router.push(`/(app)/projects/${project.id}`)}
                       isDark={isDark}
                     />
@@ -687,7 +631,10 @@ const HomeScreen = observer(function HomeScreen() {
                   {sharedProjects.map((project: any) => (
                     <ProjectCard
                       key={project.id}
-                      project={project}
+                      name={project.name || 'Untitled'}
+                      description={project.description}
+                      updatedAt={project.updatedAt}
+                      createdAt={project.createdAt}
                       onPress={() => router.push(`/(app)/projects/${project.id}`)}
                       isDark={isDark}
                       badge="Shared"

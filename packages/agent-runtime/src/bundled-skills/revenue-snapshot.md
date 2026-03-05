@@ -3,14 +3,14 @@ name: revenue-snapshot
 version: 2.0.0
 description: Pull revenue metrics from Stripe and build a financial dashboard on canvas
 trigger: "revenue|mrr|payments|balance|stripe|financial|how much"
-tools: [tool_list, tool_install, canvas_create, canvas_update, canvas_api_bind, memory_write]
+tools: [tool_search, tool_install, canvas_create, canvas_update, canvas_api_bind, memory_write]
 ---
 
 # Revenue Snapshot
 
 When triggered, pull financial data and build a revenue dashboard:
 
-1. **Connect** — Check if Stripe is installed via `tool_list`. If not:
+1. **Connect** — Check if Stripe is installed via `tool_search`. If not:
    - `tool_install({ name: "stripe" })` to connect via Composio OAuth
    - Use autoBind to wire Stripe data to canvas
 2. **Fetch** — Once connected:

@@ -3,14 +3,14 @@ name: ticket-triage
 version: 2.0.0
 description: Triage support tickets — categorize by severity, identify patterns, build dashboard
 trigger: "triage tickets|support tickets|ticket status|check tickets|new tickets"
-tools: [tool_list, tool_search, tool_install, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, canvas_api_bind, memory_write]
+tools: [tool_search, tool_install, canvas_create, canvas_update, canvas_api_schema, canvas_api_seed, canvas_api_bind, memory_write]
 ---
 
 # Ticket Triage
 
 When triggered, pull and triage support tickets:
 
-1. **Connect** — Check for a ticketing integration via `tool_list`. If none:
+1. **Connect** — Search for a ticketing integration via `tool_search`. If none installed:
    - `tool_search("zendesk")` or `tool_search("linear")` to find options
    - `tool_install` with the chosen toolkit for Composio OAuth
    - Use autoBind to connect ticket data to canvas

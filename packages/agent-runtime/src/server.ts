@@ -214,6 +214,9 @@ function writeAgentConfigFiles(): void {
 let agentGateway: AgentGateway | null = null
 let s3SyncInstance: import('@shogo/shared-runtime').S3Sync | null = null
 
+let gatewayReadyResolve: (() => void) | null = null
+let gatewayReadyPromise: Promise<void> | null = null
+
 // =============================================================================
 // Stream Keep-Alive Utility
 // =============================================================================
@@ -313,6 +316,15 @@ import('./channels/teams').then(({ TeamsAdapter }) => {
     return agentGateway.getChannel('teams') as any
   })
 }).catch(() => { /* Teams adapter not available */ })
+
+// Register WebChat embeddable widget routes
+import('./channels/webchat').then(({ WebChatAdapter }) => {
+  WebChatAdapter.registerRoutes(app, () => {
+    if (!agentGateway) return null
+    const adapter = agentGateway.getChannel('webchat')
+    return adapter && adapter.getStatus().connected ? adapter as any : null
+  })
+}).catch(() => { /* WebChat adapter not available */ })
 
 // Health check
 app.get('/health', (c) =>
@@ -528,8 +540,20 @@ app.post('/agent/channels/disconnect', async (c) => {
 // Accepts AI SDK v3 format: { messages: [{ role, parts: [{ type: 'text', text }] }] }
 // Returns an AI SDK UI message stream so the frontend can use useChat().
 app.post('/agent/chat', async (c) => {
-  if (!agentGateway) {
-    return c.json({ error: 'Agent gateway not running' }, 503)
+  if (!agentGateway || gatewayReadyPromise) {
+    if (gatewayReadyPromise) {
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Gateway startup timeout')), 30_000)
+      )
+      try {
+        await Promise.race([gatewayReadyPromise, timeout])
+      } catch {
+        return c.json({ error: 'Agent gateway still starting, please retry' }, 503)
+      }
+    }
+    if (!agentGateway) {
+      return c.json({ error: 'Agent gateway not running' }, 503)
+    }
   }
 
   const body = await c.req.json()
@@ -606,13 +630,13 @@ app.post('/agent/chat', async (c) => {
   }
 
   const agentMode = body.agentMode as 'basic' | 'advanced' | undefined
-  const modelOverride = agentMode === 'basic' ? 'claude-haiku-4-5'
-    : agentMode === 'advanced' ? 'claude-sonnet-4-5'
-    : undefined
+  const modelOverride = agentMode || undefined
 
   if (body.timezone && typeof body.timezone === 'string') {
     agentGateway!.setUserTimezone(body.timezone)
   }
+
+  const chatUserId = c.req.header('X-User-Id') || body.userId || undefined
 
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
@@ -621,6 +645,7 @@ app.post('/agent/chat', async (c) => {
         await agentGateway!.processChatMessageStream(userText || '', writer, {
           modelOverride,
           fileParts: userFileParts.length > 0 ? userFileParts : undefined,
+          userId: chatUserId,
         })
 
         const usage = agentGateway!.consumeLastTurnUsage()
@@ -1116,7 +1141,7 @@ app.post('/agent/workspace/reindex', async (c) => {
 })
 
 // Tool catalog and search — powers the "Tools" tab in the web UI
-import { MCP_CATALOG, MCP_CATEGORIES, isPreinstalledMcpId, getPreinstalledPackages } from './mcp-catalog'
+import { MCP_CATALOG, MCP_CATEGORIES, isMcpServerAllowed, getPreinstalledPackages } from './mcp-catalog'
 import { isComposioEnabled, searchComposioToolkits, findComposioToolkit, initComposioSession, registerToolkitProxyTools } from './composio'
 
 // Agent Templates API — powers the templates gallery
@@ -1162,6 +1187,21 @@ app.post('/agent/bundled-skills/install', async (c) => {
   return c.json({ ok: true, installed: name })
 })
 
+app.get('/agent/skills/:name', (c) => {
+  const name = c.req.param('name')
+  if (!name || name.includes('/') || name.includes('..')) {
+    return c.json({ error: 'Invalid skill name' }, 400)
+  }
+
+  const filePath = join(AGENT_DIR, 'skills', `${name}.md`)
+  if (!existsSync(filePath)) {
+    return c.json({ error: `Skill "${name}" not found` }, 404)
+  }
+
+  const raw = readFileSync(filePath, 'utf-8')
+  return c.json({ name, content: raw })
+})
+
 app.delete('/agent/skills/:name', (c) => {
   const name = c.req.param('name')
   if (!name || name.includes('/') || name.includes('..')) {
@@ -1195,7 +1235,7 @@ app.post('/agent/mcp-servers/toggle', async (c) => {
   }
 
   const entry = MCP_CATALOG.find((e) => e.id === serverId)
-  if (!entry || !entry.preinstalled) {
+  if (!entry || !isMcpServerAllowed(serverId)) {
     const allowed = getPreinstalledPackages().map(e => e.id).join(', ')
     return c.json({ error: `MCP server "${serverId}" is not available. Only preinstalled servers are supported: ${allowed}` }, 400)
   }
@@ -1355,7 +1395,7 @@ app.post('/agent/tools/install', async (c) => {
   }
 
   const catalogEntry = MCP_CATALOG.find((e) => e.id === id)
-  if (!catalogEntry || !catalogEntry.preinstalled) {
+  if (!catalogEntry || !isMcpServerAllowed(id)) {
     const allowed = getPreinstalledPackages().map(e => e.id).join(', ')
     return c.json({ error: `MCP server "${id}" is not available. Only preinstalled servers are supported: ${allowed}` }, 400)
   }
@@ -1546,6 +1586,25 @@ app.post('/agent/dynamic-app/action', async (c) => {
 
   manager.deliverAction(event)
   return c.json({ ok: true, event })
+})
+
+app.post('/agent/dynamic-app/data-change', async (c) => {
+  const body = await c.req.json() as { surfaceId?: string; path?: string; value?: unknown }
+  if (!body.surfaceId || !body.path) {
+    return c.json({ error: 'Missing surfaceId or path' }, 400)
+  }
+
+  const manager = getDynamicAppManager()
+  try {
+    const result = await manager.handleDataChange(body.surfaceId, body.path, body.value)
+    if (!result.ok) {
+      return c.json(result, 422)
+    }
+    return c.json(result)
+  } catch (err: any) {
+    console.error('[DynamicApp] data-change failed:', err)
+    return c.json({ ok: false, error: err.message || 'Internal error' }, 500)
+  }
 })
 
 app.post('/agent/dynamic-app/edit', async (c) => {
@@ -1913,6 +1972,8 @@ async function initializeEssentials(): Promise<void> {
 async function startGateway(): Promise<void> {
   logTiming('Starting agent gateway...')
 
+  gatewayReadyPromise = new Promise<void>((resolve) => { gatewayReadyResolve = resolve })
+
   agentGateway = new AgentGateway(AGENT_DIR, currentProjectId!)
   agentGateway.setLogCallback((line) => {
     consoleLogs.push(line)
@@ -1926,6 +1987,9 @@ async function startGateway(): Promise<void> {
   }
 
   await agentGateway.start()
+  gatewayReadyResolve?.()
+  gatewayReadyResolve = null
+  gatewayReadyPromise = null
   logTiming('Agent gateway started')
 }
 

@@ -16,7 +16,7 @@ import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec } from './sandbox-exec'
 import { MemorySearchEngine } from './memory-search'
 import { FileIndexEngine } from './file-index-engine'
-import { MCP_CATALOG, isPreinstalledMcpId, getPreinstalledPackages } from './mcp-catalog'
+import { MCP_CATALOG, isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPackages } from './mcp-catalog'
 import { initComposioSession, isComposioEnabled, isComposioInitialized, searchComposioToolkits, findComposioToolkit, registerToolkitProxyTools, checkComposioAuth } from './composio'
 import { autoBindPrimaryEntity } from './composio-auto-bind'
 import { getDynamicAppManager, getByPointer } from './dynamic-app-manager'
@@ -1795,7 +1795,7 @@ Only bind operations the tool actually supports. Read-only tools can use just "l
 
       const missing = boundTools.filter((t: string) => !availableTools.includes(t))
       if (missing.length > 0) {
-        return textResult({ error: `Tool(s) not found: ${missing.join(', ')}. Use tool_list to see available tools.` })
+        return textResult({ error: `Tool(s) not found: ${missing.join(', ')}. Use tool_search to find available tools.` })
       }
 
       const manager = getDynamicAppManager()
@@ -2348,7 +2348,9 @@ Rate-limited: max ${MAX_UPDATES_PER_SESSION}/session, ${MAX_UPDATES_PER_DAY}/day
 function createToolSearchTool(): AgentTool {
   return {
     name: 'tool_search',
-    description: 'Search for available tools and integrations by capability or keyword. Searches the built-in catalog of preinstalled MCP servers and managed OAuth integrations (hundreds of services — no credentials needed). Managed integrations are preferred when available.',
+    description: process.env.SHOGO_LOCAL_MODE === 'true'
+      ? 'Search for available tools and integrations by capability or keyword. Searches the full MCP server catalog and managed OAuth integrations. Managed integrations are preferred when available.'
+      : 'Search for available tools and integrations by capability or keyword. Searches the built-in catalog of preinstalled MCP servers and managed OAuth integrations (hundreds of services — no credentials needed). Managed integrations are preferred when available.',
     label: 'Search Tools',
     parameters: Type.Object({
       query: Type.String({ description: 'Search query describing the capability you need (e.g. "google calendar", "slack messaging", "postgres database")' }),
@@ -2379,12 +2381,12 @@ function createToolSearchTool(): AgentTool {
         } catch { /* Composio API unavailable, continue with other sources */ }
       }
 
-      // 2. Search preinstalled MCP catalog only
-      const preinstalled = getPreinstalledPackages()
+      // 2. Search MCP catalog (all entries in local mode, preinstalled only in cloud)
+      const searchableCatalog = process.env.SHOGO_LOCAL_MODE === 'true' ? MCP_CATALOG : getPreinstalledPackages()
       const queryLower = query.toLowerCase()
       const queryWords = queryLower.split(/\s+/).filter(w => w.length > 2)
       const scored: Array<{ entry: typeof MCP_CATALOG[0]; score: number }> = []
-      for (const entry of preinstalled) {
+      for (const entry of searchableCatalog) {
         const haystack = `${entry.id} ${entry.name} ${entry.description} ${entry.category} ${entry.providedTools.join(' ')}`.toLowerCase()
         const idName = `${entry.id} ${entry.name}`.toLowerCase()
         let score = 0
@@ -2443,14 +2445,20 @@ function formatToolInstallMessage(
 function createToolInstallTool(ctx: ToolContext): AgentTool {
   return {
     name: 'tool_install',
-    description: `Install and start a tool integration, making its tools available immediately. For managed integrations (Google Calendar, Slack, GitHub, and hundreds more), just provide the name — no command or args needed. For preinstalled MCP servers (fetch, github, postgres, slack, notion, brave-search, airbnb, filesystem), provide the server name.
+    description: process.env.SHOGO_LOCAL_MODE === 'true'
+      ? `Install and start a tool integration, making its tools available immediately. Any MCP server from the catalog can be used: ${MCP_CATALOG.map(e => e.id).join(', ')}. For managed integrations (Google Calendar, Slack, GitHub, and hundreds more), just provide the name — no command or args needed.
+
+Managed integrations auto-bind by default: the toolkit's CRUD operations are automatically discovered and deferred to bind to the next canvas you create. No extra parameters needed — just call tool_install({ name: "googlecalendar" }) and then canvas_create.
+
+Pass "autoBind" with surfaceId/dataPath to target a specific canvas. Pass "bind" with explicit config if you already know the tool's response shape (e.g. from a saved skill).`
+      : `Install and start a tool integration, making its tools available immediately. For managed integrations (Google Calendar, Slack, GitHub, and hundreds more), just provide the name — no command or args needed. For preinstalled MCP servers (fetch, github, postgres, slack, notion, brave-search, airbnb, filesystem), provide the server name.
 
 Managed integrations auto-bind by default: the toolkit's CRUD operations are automatically discovered and deferred to bind to the next canvas you create. No extra parameters needed — just call tool_install({ name: "googlecalendar" }) and then canvas_create.
 
 Pass "autoBind" with surfaceId/dataPath to target a specific canvas. Pass "bind" with explicit config if you already know the tool's response shape (e.g. from a saved skill).`,
     label: 'Install Tool',
     parameters: Type.Object({
-      name: Type.String({ description: 'Tool or integration name (e.g. "googlecalendar", "slack", "postgres"). Only preinstalled MCP servers and managed integrations are supported.' }),
+      name: Type.String({ description: process.env.SHOGO_LOCAL_MODE === 'true' ? 'Tool or integration name (e.g. "googlecalendar", "slack", "postgres"). Any catalog MCP server or managed integration is supported.' : 'Tool or integration name (e.g. "googlecalendar", "slack", "postgres"). Only preinstalled MCP servers and managed integrations are supported.' }),
       env: Type.Optional(Type.Any({ description: 'Environment variables for the server process' })),
       autoBind: Type.Optional(Type.Object({
         surfaceId: Type.String({ description: 'Surface ID to bind to (deferred if surface does not exist yet)' }),
@@ -2602,9 +2610,8 @@ Pass "autoBind" with surfaceId/dataPath to target a specific canvas. Pass "bind"
         }
       }
 
-      // Only allow preinstalled MCP servers
       const catalogEntry = MCP_CATALOG.find(e => e.id === name)
-      if (!catalogEntry || !catalogEntry.preinstalled) {
+      if (!isMcpServerAllowed(name) || !catalogEntry) {
         const allowed = getPreinstalledPackages().map(e => e.id).join(', ')
         return textResult({ error: `"${name}" is not available. Only preinstalled MCP servers are supported: ${allowed}` })
       }
@@ -2635,7 +2642,7 @@ function createToolUninstallTool(ctx: ToolContext): AgentTool {
     description: 'Stop and remove an installed tool. Its tools will no longer be available.',
     label: 'Uninstall Tool',
     parameters: Type.Object({
-      name: Type.String({ description: 'Tool name to remove (use tool_list to see names)' }),
+      name: Type.String({ description: 'Tool name to remove (use tool_search to find names)' }),
     }),
     execute: async (_id: string, params: any) => {
       const name = params.name as string
@@ -2654,31 +2661,6 @@ function createToolUninstallTool(ctx: ToolContext): AgentTool {
       } catch (err: any) {
         return textResult({ error: `Failed to remove "${name}": ${err.message}` })
       }
-    },
-  }
-}
-
-function createToolListTool(ctx: ToolContext): AgentTool {
-  return {
-    name: 'tool_list',
-    description: 'List all currently installed tools and their available capabilities.',
-    label: 'List Tools',
-    parameters: Type.Object({}),
-    execute: async () => {
-      if (!ctx.mcpClientManager) {
-        return textResult({ error: 'Tool manager not available' })
-      }
-
-      const servers = ctx.mcpClientManager.getServerInfo()
-      if (servers.length === 0) {
-        return textResult({ servers: [], message: 'No tools installed. Use tool_search to find tools to install.' })
-      }
-
-      return textResult({
-        servers: servers.map(s => ({ name: s.name, toolCount: s.toolCount, tools: s.toolNames })),
-        totalServers: servers.length,
-        totalTools: servers.reduce((sum, s) => sum + s.toolCount, 0),
-      })
     },
   }
 }
@@ -2710,8 +2692,8 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   canvas: ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_action_wait', 'canvas_components', 'canvas_trigger_action', 'canvas_inspect'],
   api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind'],
   personality: ['personality_update'],
-  tool_discovery: ['tool_search', 'tool_install', 'tool_uninstall', 'tool_list'],
-  mcp_discovery: ['tool_search', 'tool_install', 'tool_uninstall', 'tool_list'],
+  tool_discovery: ['tool_search', 'tool_install', 'tool_uninstall'],
+  mcp_discovery: ['tool_search', 'tool_install', 'tool_uninstall'],
 }
 
 export const ALL_TOOL_NAMES = [
@@ -2722,7 +2704,7 @@ export const ALL_TOOL_NAMES = [
   'canvas_trigger_action', 'canvas_inspect',
   'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind',
   'personality_update',
-  'tool_search', 'tool_install', 'tool_uninstall', 'tool_list',
+  'tool_search', 'tool_install', 'tool_uninstall',
 ] as const
 
 /**
@@ -2885,12 +2867,13 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
   return {
     name: 'channel_connect',
     description:
-      'Connect a messaging channel (telegram, discord, email, slack, whatsapp, or webhook). ' +
-      'Saves the config and hot-connects the channel immediately.',
+      'Connect a messaging channel (telegram, discord, email, slack, whatsapp, webhook, teams, or webchat). ' +
+      'Saves the config and hot-connects the channel immediately. ' +
+      'For webchat: creates an embeddable chat widget for any website — no external accounts needed.',
     label: 'Connect Channel',
     parameters: Type.Object({
       type: Type.String({
-        description: 'Channel type: telegram, discord, email, slack, whatsapp, or webhook',
+        description: 'Channel type: telegram, discord, email, slack, whatsapp, webhook, teams, or webchat',
       }),
       config: Type.Record(Type.String(), Type.String(), {
         description:
@@ -2899,7 +2882,8 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
           'For email: { imapHost, smtpHost, username, password }. ' +
           'For slack: { botToken: "xoxb-...", appToken: "xapp-..." }. ' +
           'For whatsapp: { accessToken, phoneNumberId, verifyToken }. ' +
-          'For teams: { appId, appPassword, botName? }.',
+          'For teams: { appId, appPassword, botName? }. ' +
+          'For webchat: { title?, subtitle?, primaryColor?, position?, welcomeMessage?, avatarUrl?, allowedOrigins? } — all fields optional.',
       }),
     }),
     execute: async (_toolCallId, params) => {
@@ -2908,7 +2892,7 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
         config: Record<string, string>
       }
 
-      const validTypes = ['telegram', 'discord', 'email', 'slack', 'whatsapp', 'webhook', 'teams']
+      const validTypes = ['telegram', 'discord', 'email', 'slack', 'whatsapp', 'webhook', 'teams', 'webchat']
       if (!validTypes.includes(type)) {
         return textResult({ error: `Invalid channel type: ${type}. Must be one of: ${validTypes.join(', ')}` })
       }
@@ -2936,6 +2920,26 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
       if (ctx.connectChannel) {
         try {
           await ctx.connectChannel(type, channelConfig)
+
+          if (type === 'webchat') {
+            const port = process.env.PORT || '8080'
+            const widgetUrl = `http://localhost:${port}/agent/channels/webchat/widget.js`
+            return textResult({
+              ok: true,
+              message: [
+                'WebChat channel connected and live!',
+                '',
+                'Tell the user to add this single script tag before the closing </body> tag on their website:',
+                '',
+                `<script src="${widgetUrl}"></script>`,
+                '',
+                'A chat bubble will appear on their page. Visitors can click it to chat with the agent. No other setup needed.',
+                'The user can also find the embed snippet in the Channels panel.',
+              ].join('\n'),
+              embedSnippet: `<script src="${widgetUrl}"></script>`,
+            })
+          }
+
           return textResult({
             ok: true,
             message: `${type} channel connected and live. ` +
@@ -3000,7 +3004,6 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createToolSearchTool(),
     createToolInstallTool(ctx),
     createToolUninstallTool(ctx),
-    createToolListTool(ctx),
   ]
 }
 
@@ -3035,7 +3038,6 @@ export function createBasicTools(ctx: ToolContext): AgentTool[] {
     createToolSearchTool(),
     createToolInstallTool(ctx),
     createToolUninstallTool(ctx),
-    createToolListTool(ctx),
   ]
 }
 

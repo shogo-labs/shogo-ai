@@ -34,6 +34,7 @@ export type InfraSnapshotAvgAggregateOutputType = {
   usedPodSlots: number | null
   totalCpuMillis: number | null
   usedCpuMillis: number | null
+  limitCpuMillis: number | null
   warmAvailable: number | null
   warmTarget: number | null
   warmAssigned: number | null
@@ -54,6 +55,7 @@ export type InfraSnapshotSumAggregateOutputType = {
   usedPodSlots: number | null
   totalCpuMillis: number | null
   usedCpuMillis: number | null
+  limitCpuMillis: number | null
   warmAvailable: number | null
   warmTarget: number | null
   warmAssigned: number | null
@@ -76,6 +78,7 @@ export type InfraSnapshotMinAggregateOutputType = {
   usedPodSlots: number | null
   totalCpuMillis: number | null
   usedCpuMillis: number | null
+  limitCpuMillis: number | null
   warmAvailable: number | null
   warmTarget: number | null
   warmAssigned: number | null
@@ -98,6 +101,7 @@ export type InfraSnapshotMaxAggregateOutputType = {
   usedPodSlots: number | null
   totalCpuMillis: number | null
   usedCpuMillis: number | null
+  limitCpuMillis: number | null
   warmAvailable: number | null
   warmTarget: number | null
   warmAssigned: number | null
@@ -120,6 +124,7 @@ export type InfraSnapshotCountAggregateOutputType = {
   usedPodSlots: number
   totalCpuMillis: number
   usedCpuMillis: number
+  limitCpuMillis: number
   warmAvailable: number
   warmTarget: number
   warmAssigned: number
@@ -142,6 +147,7 @@ export type InfraSnapshotAvgAggregateInputType = {
   usedPodSlots?: true
   totalCpuMillis?: true
   usedCpuMillis?: true
+  limitCpuMillis?: true
   warmAvailable?: true
   warmTarget?: true
   warmAssigned?: true
@@ -162,6 +168,7 @@ export type InfraSnapshotSumAggregateInputType = {
   usedPodSlots?: true
   totalCpuMillis?: true
   usedCpuMillis?: true
+  limitCpuMillis?: true
   warmAvailable?: true
   warmTarget?: true
   warmAssigned?: true
@@ -184,6 +191,7 @@ export type InfraSnapshotMinAggregateInputType = {
   usedPodSlots?: true
   totalCpuMillis?: true
   usedCpuMillis?: true
+  limitCpuMillis?: true
   warmAvailable?: true
   warmTarget?: true
   warmAssigned?: true
@@ -206,6 +214,7 @@ export type InfraSnapshotMaxAggregateInputType = {
   usedPodSlots?: true
   totalCpuMillis?: true
   usedCpuMillis?: true
+  limitCpuMillis?: true
   warmAvailable?: true
   warmTarget?: true
   warmAssigned?: true
@@ -228,6 +237,7 @@ export type InfraSnapshotCountAggregateInputType = {
   usedPodSlots?: true
   totalCpuMillis?: true
   usedCpuMillis?: true
+  limitCpuMillis?: true
   warmAvailable?: true
   warmTarget?: true
   warmAssigned?: true
@@ -337,6 +347,7 @@ export type InfraSnapshotGroupByOutputType = {
   usedPodSlots: number
   totalCpuMillis: number
   usedCpuMillis: number
+  limitCpuMillis: number
   warmAvailable: number
   warmTarget: number
   warmAssigned: number
@@ -382,6 +393,7 @@ export type InfraSnapshotWhereInput = {
   usedPodSlots?: Prisma.IntFilter<"InfraSnapshot"> | number
   totalCpuMillis?: Prisma.IntFilter<"InfraSnapshot"> | number
   usedCpuMillis?: Prisma.IntFilter<"InfraSnapshot"> | number
+  limitCpuMillis?: Prisma.IntFilter<"InfraSnapshot"> | number
   warmAvailable?: Prisma.IntFilter<"InfraSnapshot"> | number
   warmTarget?: Prisma.IntFilter<"InfraSnapshot"> | number
   warmAssigned?: Prisma.IntFilter<"InfraSnapshot"> | number
@@ -404,6 +416,7 @@ export type InfraSnapshotOrderByWithRelationInput = {
   usedPodSlots?: Prisma.SortOrder
   totalCpuMillis?: Prisma.SortOrder
   usedCpuMillis?: Prisma.SortOrder
+  limitCpuMillis?: Prisma.SortOrder
   warmAvailable?: Prisma.SortOrder
   warmTarget?: Prisma.SortOrder
   warmAssigned?: Prisma.SortOrder
@@ -429,6 +442,7 @@ export type InfraSnapshotWhereUniqueInput = Prisma.AtLeast<{
   usedPodSlots?: Prisma.IntFilter<"InfraSnapshot"> | number
   totalCpuMillis?: Prisma.IntFilter<"InfraSnapshot"> | number
   usedCpuMillis?: Prisma.IntFilter<"InfraSnapshot"> | number
+  limitCpuMillis?: Prisma.IntFilter<"InfraSnapshot"> | number
   warmAvailable?: Prisma.IntFilter<"InfraSnapshot"> | number
   warmTarget?: Prisma.IntFilter<"InfraSnapshot"> | number
   warmAssigned?: Prisma.IntFilter<"InfraSnapshot"> | number
@@ -451,6 +465,7 @@ export type InfraSnapshotOrderByWithAggregationInput = {
   usedPodSlots?: Prisma.SortOrder
   totalCpuMillis?: Prisma.SortOrder
   usedCpuMillis?: Prisma.SortOrder
+  limitCpuMillis?: Prisma.SortOrder
   warmAvailable?: Prisma.SortOrder
   warmTarget?: Prisma.SortOrder
   warmAssigned?: Prisma.SortOrder
@@ -481,6 +496,7 @@ export type InfraSnapshotScalarWhereWithAggregatesInput = {
   usedPodSlots?: Prisma.IntWithAggregatesFilter<"InfraSnapshot"> | number
   totalCpuMillis?: Prisma.IntWithAggregatesFilter<"InfraSnapshot"> | number
   usedCpuMillis?: Prisma.IntWithAggregatesFilter<"InfraSnapshot"> | number
+  limitCpuMillis?: Prisma.IntWithAggregatesFilter<"InfraSnapshot"> | number
   warmAvailable?: Prisma.IntWithAggregatesFilter<"InfraSnapshot"> | number
   warmTarget?: Prisma.IntWithAggregatesFilter<"InfraSnapshot"> | number
   warmAssigned?: Prisma.IntWithAggregatesFilter<"InfraSnapshot"> | number
@@ -503,6 +519,7 @@ export type InfraSnapshotCreateInput = {
   usedPodSlots: number
   totalCpuMillis: number
   usedCpuMillis: number
+  limitCpuMillis?: number
   warmAvailable: number
   warmTarget: number
   warmAssigned: number
@@ -525,6 +542,7 @@ export type InfraSnapshotUncheckedCreateInput = {
   usedPodSlots: number
   totalCpuMillis: number
   usedCpuMillis: number
+  limitCpuMillis?: number
   warmAvailable: number
   warmTarget: number
   warmAssigned: number
@@ -547,6 +565,7 @@ export type InfraSnapshotUpdateInput = {
   usedPodSlots?: Prisma.IntFieldUpdateOperationsInput | number
   totalCpuMillis?: Prisma.IntFieldUpdateOperationsInput | number
   usedCpuMillis?: Prisma.IntFieldUpdateOperationsInput | number
+  limitCpuMillis?: Prisma.IntFieldUpdateOperationsInput | number
   warmAvailable?: Prisma.IntFieldUpdateOperationsInput | number
   warmTarget?: Prisma.IntFieldUpdateOperationsInput | number
   warmAssigned?: Prisma.IntFieldUpdateOperationsInput | number
@@ -569,6 +588,7 @@ export type InfraSnapshotUncheckedUpdateInput = {
   usedPodSlots?: Prisma.IntFieldUpdateOperationsInput | number
   totalCpuMillis?: Prisma.IntFieldUpdateOperationsInput | number
   usedCpuMillis?: Prisma.IntFieldUpdateOperationsInput | number
+  limitCpuMillis?: Prisma.IntFieldUpdateOperationsInput | number
   warmAvailable?: Prisma.IntFieldUpdateOperationsInput | number
   warmTarget?: Prisma.IntFieldUpdateOperationsInput | number
   warmAssigned?: Prisma.IntFieldUpdateOperationsInput | number
@@ -591,6 +611,7 @@ export type InfraSnapshotCreateManyInput = {
   usedPodSlots: number
   totalCpuMillis: number
   usedCpuMillis: number
+  limitCpuMillis?: number
   warmAvailable: number
   warmTarget: number
   warmAssigned: number
@@ -613,6 +634,7 @@ export type InfraSnapshotUpdateManyMutationInput = {
   usedPodSlots?: Prisma.IntFieldUpdateOperationsInput | number
   totalCpuMillis?: Prisma.IntFieldUpdateOperationsInput | number
   usedCpuMillis?: Prisma.IntFieldUpdateOperationsInput | number
+  limitCpuMillis?: Prisma.IntFieldUpdateOperationsInput | number
   warmAvailable?: Prisma.IntFieldUpdateOperationsInput | number
   warmTarget?: Prisma.IntFieldUpdateOperationsInput | number
   warmAssigned?: Prisma.IntFieldUpdateOperationsInput | number
@@ -635,6 +657,7 @@ export type InfraSnapshotUncheckedUpdateManyInput = {
   usedPodSlots?: Prisma.IntFieldUpdateOperationsInput | number
   totalCpuMillis?: Prisma.IntFieldUpdateOperationsInput | number
   usedCpuMillis?: Prisma.IntFieldUpdateOperationsInput | number
+  limitCpuMillis?: Prisma.IntFieldUpdateOperationsInput | number
   warmAvailable?: Prisma.IntFieldUpdateOperationsInput | number
   warmTarget?: Prisma.IntFieldUpdateOperationsInput | number
   warmAssigned?: Prisma.IntFieldUpdateOperationsInput | number
@@ -657,6 +680,7 @@ export type InfraSnapshotCountOrderByAggregateInput = {
   usedPodSlots?: Prisma.SortOrder
   totalCpuMillis?: Prisma.SortOrder
   usedCpuMillis?: Prisma.SortOrder
+  limitCpuMillis?: Prisma.SortOrder
   warmAvailable?: Prisma.SortOrder
   warmTarget?: Prisma.SortOrder
   warmAssigned?: Prisma.SortOrder
@@ -677,6 +701,7 @@ export type InfraSnapshotAvgOrderByAggregateInput = {
   usedPodSlots?: Prisma.SortOrder
   totalCpuMillis?: Prisma.SortOrder
   usedCpuMillis?: Prisma.SortOrder
+  limitCpuMillis?: Prisma.SortOrder
   warmAvailable?: Prisma.SortOrder
   warmTarget?: Prisma.SortOrder
   warmAssigned?: Prisma.SortOrder
@@ -699,6 +724,7 @@ export type InfraSnapshotMaxOrderByAggregateInput = {
   usedPodSlots?: Prisma.SortOrder
   totalCpuMillis?: Prisma.SortOrder
   usedCpuMillis?: Prisma.SortOrder
+  limitCpuMillis?: Prisma.SortOrder
   warmAvailable?: Prisma.SortOrder
   warmTarget?: Prisma.SortOrder
   warmAssigned?: Prisma.SortOrder
@@ -721,6 +747,7 @@ export type InfraSnapshotMinOrderByAggregateInput = {
   usedPodSlots?: Prisma.SortOrder
   totalCpuMillis?: Prisma.SortOrder
   usedCpuMillis?: Prisma.SortOrder
+  limitCpuMillis?: Prisma.SortOrder
   warmAvailable?: Prisma.SortOrder
   warmTarget?: Prisma.SortOrder
   warmAssigned?: Prisma.SortOrder
@@ -741,6 +768,7 @@ export type InfraSnapshotSumOrderByAggregateInput = {
   usedPodSlots?: Prisma.SortOrder
   totalCpuMillis?: Prisma.SortOrder
   usedCpuMillis?: Prisma.SortOrder
+  limitCpuMillis?: Prisma.SortOrder
   warmAvailable?: Prisma.SortOrder
   warmTarget?: Prisma.SortOrder
   warmAssigned?: Prisma.SortOrder
@@ -765,6 +793,7 @@ export type InfraSnapshotSelect<ExtArgs extends runtime.Types.Extensions.Interna
   usedPodSlots?: boolean
   totalCpuMillis?: boolean
   usedCpuMillis?: boolean
+  limitCpuMillis?: boolean
   warmAvailable?: boolean
   warmTarget?: boolean
   warmAssigned?: boolean
@@ -787,6 +816,7 @@ export type InfraSnapshotSelectCreateManyAndReturn<ExtArgs extends runtime.Types
   usedPodSlots?: boolean
   totalCpuMillis?: boolean
   usedCpuMillis?: boolean
+  limitCpuMillis?: boolean
   warmAvailable?: boolean
   warmTarget?: boolean
   warmAssigned?: boolean
@@ -809,6 +839,7 @@ export type InfraSnapshotSelectUpdateManyAndReturn<ExtArgs extends runtime.Types
   usedPodSlots?: boolean
   totalCpuMillis?: boolean
   usedCpuMillis?: boolean
+  limitCpuMillis?: boolean
   warmAvailable?: boolean
   warmTarget?: boolean
   warmAssigned?: boolean
@@ -831,6 +862,7 @@ export type InfraSnapshotSelectScalar = {
   usedPodSlots?: boolean
   totalCpuMillis?: boolean
   usedCpuMillis?: boolean
+  limitCpuMillis?: boolean
   warmAvailable?: boolean
   warmTarget?: boolean
   warmAssigned?: boolean
@@ -843,7 +875,7 @@ export type InfraSnapshotSelectScalar = {
   idleEvictions?: boolean
 }
 
-export type InfraSnapshotOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "timestamp" | "totalNodes" | "asgDesired" | "asgMax" | "totalPodSlots" | "usedPodSlots" | "totalCpuMillis" | "usedCpuMillis" | "warmAvailable" | "warmTarget" | "warmAssigned" | "coldStarts" | "totalProjects" | "readyProjects" | "runningProjects" | "scaledToZero" | "orphansDeleted" | "idleEvictions", ExtArgs["result"]["infraSnapshot"]>
+export type InfraSnapshotOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "timestamp" | "totalNodes" | "asgDesired" | "asgMax" | "totalPodSlots" | "usedPodSlots" | "totalCpuMillis" | "usedCpuMillis" | "limitCpuMillis" | "warmAvailable" | "warmTarget" | "warmAssigned" | "coldStarts" | "totalProjects" | "readyProjects" | "runningProjects" | "scaledToZero" | "orphansDeleted" | "idleEvictions", ExtArgs["result"]["infraSnapshot"]>
 
 export type $InfraSnapshotPayload<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   name: "InfraSnapshot"
@@ -858,6 +890,7 @@ export type $InfraSnapshotPayload<ExtArgs extends runtime.Types.Extensions.Inter
     usedPodSlots: number
     totalCpuMillis: number
     usedCpuMillis: number
+    limitCpuMillis: number
     warmAvailable: number
     warmTarget: number
     warmAssigned: number
@@ -1300,6 +1333,7 @@ export interface InfraSnapshotFieldRefs {
   readonly usedPodSlots: Prisma.FieldRef<"InfraSnapshot", 'Int'>
   readonly totalCpuMillis: Prisma.FieldRef<"InfraSnapshot", 'Int'>
   readonly usedCpuMillis: Prisma.FieldRef<"InfraSnapshot", 'Int'>
+  readonly limitCpuMillis: Prisma.FieldRef<"InfraSnapshot", 'Int'>
   readonly warmAvailable: Prisma.FieldRef<"InfraSnapshot", 'Int'>
   readonly warmTarget: Prisma.FieldRef<"InfraSnapshot", 'Int'>
   readonly warmAssigned: Prisma.FieldRef<"InfraSnapshot", 'Int'>

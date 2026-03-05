@@ -9,7 +9,7 @@
 
 import { existsSync, readFileSync, writeFileSync, readdirSync, unlinkSync, mkdirSync } from 'fs'
 import { join, extname, dirname } from 'path'
-import { isPreinstalledMcpId, getPreinstalledPackages, getCatalogEntry } from '../mcp-catalog'
+import { isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPackages, getCatalogEntry } from '../mcp-catalog'
 
 const AGENT_DIR = process.env.AGENT_DIR || '/app/agent'
 const PROJECT_ID = process.env.PROJECT_ID || 'unknown'
@@ -363,14 +363,14 @@ defineTool({
 
 defineTool({
   name: 'channel_connect',
-  description: 'Connect a messaging channel (telegram, discord, email, whatsapp, or slack)',
+  description: 'Connect a messaging channel (telegram, discord, email, whatsapp, slack, webhook, teams, or webchat)',
   inputSchema: {
     type: 'object',
     properties: {
-      type: { type: 'string', enum: ['telegram', 'discord', 'email', 'whatsapp', 'slack', 'webhook', 'teams'], description: 'Channel type' },
+      type: { type: 'string', enum: ['telegram', 'discord', 'email', 'whatsapp', 'slack', 'webhook', 'teams', 'webchat'], description: 'Channel type' },
       config: {
         type: 'object',
-        description: 'Channel configuration. Telegram: { botToken }. Discord: { botToken, guildId? }. Email: { imapHost, smtpHost, username, password }. WhatsApp: { accessToken, phoneNumberId, verifyToken? }. Slack: { botToken, appToken }. Webhook: { secret? }. Teams: { appId, appPassword, botName? }',
+        description: 'Channel configuration. Telegram: { botToken }. Discord: { botToken, guildId? }. Email: { imapHost, smtpHost, username, password }. WhatsApp: { accessToken, phoneNumberId, verifyToken? }. Slack: { botToken, appToken }. Webhook: { secret? }. Teams: { appId, appPassword, botName? }. WebChat: { title?, subtitle?, primaryColor?, position?, welcomeMessage?, avatarUrl?, allowedOrigins? }',
       },
     },
     required: ['type', 'config'],
@@ -404,6 +404,25 @@ defineTool({
         signal: AbortSignal.timeout(10_000),
       })
       if (res.ok) {
+        if (input.type === 'webchat') {
+          const localWidgetUrl = `http://localhost:${port}/agent/channels/webchat/widget.js`
+          return {
+            ok: true,
+            message: [
+              `WebChat channel connected and live!`,
+              ``,
+              `Tell the user to add this single script tag before the closing </body> tag on their website:`,
+              ``,
+              `<script src="${localWidgetUrl}"></script>`,
+              ``,
+              `A chat bubble will appear on the page. Visitors click it to chat with the agent directly. No other setup, libraries, or accounts needed.`,
+              ``,
+              `The user can also find the embed snippet in the Channels panel.`,
+            ].join('\n'),
+            embedSnippet: `<script src="${localWidgetUrl}"></script>`,
+            widgetUrl: localWidgetUrl,
+          }
+        }
         return {
           ok: true,
           message: `${input.type} channel connected and live.`,
@@ -486,35 +505,48 @@ defineTool({
 // MCP Server Configuration Tools
 // =============================================================================
 
+const isLocal = process.env.SHOGO_LOCAL_MODE === 'true'
+
 defineTool({
   name: 'mcp_server_configure',
-  description: `Add a preinstalled MCP server to the agent config. Only preinstalled servers are allowed: ${getPreinstalledPackages().map(e => e.id).join(', ')}. The server will be spawned when the agent starts.`,
+  description: isLocal
+    ? `Add an MCP server to the agent config. Any npx-compatible server is supported. Catalog servers: ${getPreinstalledPackages().map(e => e.id).join(', ')}. The server will be spawned when the agent starts.`
+    : `Add a preinstalled MCP server to the agent config. Only preinstalled servers are allowed: ${getPreinstalledPackages().map(e => e.id).join(', ')}. The server will be spawned when the agent starts.`,
   inputSchema: {
     type: 'object',
     properties: {
-      name: { type: 'string', description: `Server name. Must be one of: ${getPreinstalledPackages().map(e => e.id).join(', ')}` },
+      name: { type: 'string', description: isLocal ? 'Server name (any identifier)' : `Server name. Must be one of: ${getPreinstalledPackages().map(e => e.id).join(', ')}` },
+      package: isLocal ? { type: 'string', description: 'npm package to run via npx (e.g. "@modelcontextprotocol/server-github@latest"). Required for non-catalog servers.' } : undefined,
+      args: isLocal ? { type: 'array', items: { type: 'string' }, description: 'Extra CLI args for the server' } : undefined,
       env: { type: 'object', description: 'Optional environment variables for the server' },
     },
     required: ['name'],
   },
   handler: async (input) => {
     const name = input.name as string
-    if (!isPreinstalledMcpId(name)) {
+    if (!isMcpServerAllowed(name)) {
       const allowed = getPreinstalledPackages().map(e => e.id).join(', ')
       return { error: `MCP server "${name}" is not available. Only preinstalled servers are supported: ${allowed}` }
     }
 
-    const entry = getCatalogEntry(name)!
+    const entry = getCatalogEntry(name)
     const configPath = join(AGENT_DIR, 'config.json')
     let config: Record<string, any> = {}
     if (existsSync(configPath)) {
       config = JSON.parse(readFileSync(configPath, 'utf-8'))
     }
 
+    const pkg = entry?.package || (input.package as string | undefined)
+    if (!pkg) {
+      return { error: `No package specified for "${name}". Provide a "package" field (e.g. "@modelcontextprotocol/server-github@latest").` }
+    }
+    const defaultArgs = entry?.defaultArgs || []
+    const extraArgs = (input.args as string[] | undefined) || []
+
     config.mcpServers = config.mcpServers || {}
     config.mcpServers[name] = {
       command: 'npx',
-      args: [entry.package, ...entry.defaultArgs],
+      args: [pkg, ...defaultArgs, ...extraArgs],
       ...(input.env ? { env: input.env } : {}),
     }
 

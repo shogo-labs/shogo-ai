@@ -27,7 +27,7 @@ metadata:
     app.kubernetes.io/component: infrastructure
     environment: staging
 spec:
-  minAvailable: 3  # For 4-node cluster, keep at least 3 running
+  minAvailable: 1  # Allow node drains while keeping at least 1 prepuller running
   selector:
     matchLabels:
       app.kubernetes.io/name: image-prepuller
