@@ -1,0 +1,142 @@
+name: Desktop Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 0.1.0)'
+        required: true
+        type: string
+  push:
+    tags:
+      - 'desktop-v*'
+
+env:
+  BUN_VERSION: '1.2.4'
+  NODE_VERSION: '22'
+
+jobs:
+  build-web:
+    name: Build Expo Web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build web
+        run: bun run web:build
+
+      - name: Upload web build
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: apps/mobile/dist/
+
+  build-desktop:
+    name: Build Desktop (${{ matrix.os }})
+    needs: build-web
+    strategy:
+      matrix:
+        include:
+          - os: macos-14
+            platform: darwin
+            arch: arm64
+            bun-target: bun-darwin-aarch64
+          - os: macos-13
+            platform: darwin
+            arch: x64
+            bun-target: bun-darwin-x64
+          - os: windows-latest
+            platform: win32
+            arch: x64
+            bun-target: bun-windows-x64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Download web build
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: apps/mobile/dist/
+
+      - name: Download Bun binary
+        shell: bash
+        run: |
+          mkdir -p apps/desktop/resources/bun
+          cd apps/desktop/resources/bun
+          curl -fSL -o bun.zip "https://github.com/oven-sh/bun/releases/download/bun-v${{ env.BUN_VERSION }}/${{ matrix.bun-target }}.zip"
+          if [ "${{ matrix.platform }}" = "win32" ]; then
+            7z x bun.zip || unzip bun.zip
+          else
+            unzip bun.zip
+          fi
+          mv ${{ matrix.bun-target }}/bun* . || true
+          rm -rf ${{ matrix.bun-target }} bun.zip
+          ls -la
+
+      - name: Generate Prisma client (SQLite)
+        shell: bash
+        run: |
+          cd apps/desktop
+          npm install
+          cd ../..
+          npx prisma generate --schema=prisma/schema.local.prisma
+
+      - name: Install desktop dependencies
+        working-directory: apps/desktop
+        run: npm install
+
+      - name: Build TypeScript
+        working-directory: apps/desktop
+        run: npx tsc
+
+      - name: Package with Electron Forge
+        working-directory: apps/desktop
+        run: npx electron-forge make
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
+          path: apps/desktop/out/make/**/*
+
+  release:
+    name: Create Release
+    needs: build-desktop
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          pattern: desktop-*
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Shogo Desktop ${{ github.ref_name }}
+          draft: true
+          files: artifacts/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

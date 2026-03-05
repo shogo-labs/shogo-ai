@@ -676,12 +676,13 @@ app.use('/*', cors({
   origin: (origin) => {
     // Allow requests with no origin (mobile apps, curl, React Native on Android/iOS)
     if (!origin) return `http://localhost:${VITE_PORT}`
-    // In dev mode, allow any localhost origin (for playwright, vite, etc.)
-    if (process.env.NODE_ENV !== 'production' && origin?.startsWith('http://localhost:')) {
+    const isDevOrLocal = process.env.NODE_ENV !== 'production' || process.env.SHOGO_LOCAL_MODE === 'true'
+    // In dev/local mode, allow any localhost origin, custom protocols, and null origins (Electron custom scheme)
+    if (isDevOrLocal && (origin === 'null' || origin?.startsWith('http://localhost:') || origin?.startsWith('shogo://'))) {
       return origin
     }
-    // Allow local network origins in dev (React Native on physical devices)
-    if (process.env.NODE_ENV !== 'production' && /^http:\/\/192\.168\.\d+\.\d+/.test(origin)) {
+    // Allow local network origins in dev/local (React Native on physical devices)
+    if (isDevOrLocal && /^http:\/\/192\.168\.\d+\.\d+/.test(origin)) {
       return origin
     }
     // Check if origin is in allowed list
@@ -696,6 +697,81 @@ app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
 
 // Health check
 app.get('/api/health', (c) => c.json({ ok: true }))
+app.get('/health', (c) => c.json({ ok: true }))
+
+// Platform config (tells frontend about local mode, enabled features, etc.)
+app.get('/api/config', (c) => {
+  const localMode = process.env.SHOGO_LOCAL_MODE === 'true'
+  return c.json({
+    localMode,
+    features: {
+      billing: !localMode,
+      admin: !localMode,
+      oauth: !localMode,
+      analytics: !localMode,
+      publishing: !localMode,
+    },
+  })
+})
+
+// ── Local mode: API key management ──────────────────────────────────────────
+if (process.env.SHOGO_LOCAL_MODE === 'true') {
+  const localDb = prisma as any
+
+  app.get('/api/local/api-keys', async (c) => {
+    try {
+      const rows = await localDb.localConfig.findMany({
+        where: { key: { in: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'] } },
+      })
+      const keys: Record<string, string> = {}
+      for (const row of rows) {
+        keys[row.key] = row.value.slice(0, 8) + '...' + row.value.slice(-4)
+      }
+      return c.json({ ok: true, keys })
+    } catch {
+      return c.json({ ok: true, keys: {} })
+    }
+  })
+
+  app.put('/api/local/api-keys', async (c) => {
+    const body = await c.req.json<{ anthropicApiKey?: string; openaiApiKey?: string }>()
+
+    const upserts: Promise<any>[] = []
+    if (body.anthropicApiKey !== undefined) {
+      if (body.anthropicApiKey) {
+        upserts.push(
+          localDb.localConfig.upsert({
+            where: { key: 'ANTHROPIC_API_KEY' },
+            update: { value: body.anthropicApiKey },
+            create: { key: 'ANTHROPIC_API_KEY', value: body.anthropicApiKey },
+          })
+        )
+        process.env.ANTHROPIC_API_KEY = body.anthropicApiKey
+      } else {
+        upserts.push(localDb.localConfig.deleteMany({ where: { key: 'ANTHROPIC_API_KEY' } }))
+        delete process.env.ANTHROPIC_API_KEY
+      }
+    }
+    if (body.openaiApiKey !== undefined) {
+      if (body.openaiApiKey) {
+        upserts.push(
+          localDb.localConfig.upsert({
+            where: { key: 'OPENAI_API_KEY' },
+            update: { value: body.openaiApiKey },
+            create: { key: 'OPENAI_API_KEY', value: body.openaiApiKey },
+          })
+        )
+        process.env.OPENAI_API_KEY = body.openaiApiKey
+      } else {
+        upserts.push(localDb.localConfig.deleteMany({ where: { key: 'OPENAI_API_KEY' } }))
+        delete process.env.OPENAI_API_KEY
+      }
+    }
+    await Promise.all(upserts)
+
+    return c.json({ ok: true })
+  })
+}
 
 // Agent template catalog — public, no auth required
 app.route('/api', agentTemplateRoutes())
@@ -4632,13 +4708,55 @@ console.log(`   AI Proxy Health: GET  http://localhost:${API_PORT}/api/ai/proxy/
 console.log(`   CORS origin: http://localhost:${VITE_PORT}`)
 console.log(`   AI Providers: Anthropic=${!!process.env.ANTHROPIC_API_KEY}, OpenAI=${!!process.env.OPENAI_API_KEY}`)
 
+// Local mode: restore saved API keys + auto-seed
+if (process.env.SHOGO_LOCAL_MODE === 'true') {
+  setTimeout(async () => {
+    try {
+      const savedKeys = await (prisma as any).localConfig.findMany({
+        where: { key: { in: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'] } },
+      })
+      for (const row of savedKeys) {
+        if (!process.env[row.key]) {
+          process.env[row.key] = row.value
+          console.log(`[LocalMode] Restored ${row.key} from local config`)
+        }
+      }
+    } catch (err: any) {
+      console.log('[LocalMode] Could not restore API keys (table may not exist yet):', err.message)
+    }
+
+    try {
+      const existingUser = await prisma.user.findFirst()
+      if (!existingUser) {
+        console.log('[LocalMode] First launch detected — creating default user and workspace...')
+        const res = await fetch(`http://localhost:${API_PORT}/api/auth/sign-up/email`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: 'local@shogo.local',
+            password: 'shogo-local',
+            name: 'Local User',
+          }),
+        })
+        if (!res.ok) throw new Error(`Sign-up failed: ${res.status}`)
+        const { user } = await res.json() as { user: { id: string } }
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { emailVerified: true, role: 'super_admin' },
+        })
+        console.log('[LocalMode] Default user created: local@shogo.local / shogo-local')
+      }
+    } catch (err: any) {
+      console.error('[LocalMode] Auto-seed failed (non-fatal):', err.message)
+    }
+  }, 1000)
+}
+
 export default {
   port: API_PORT,
-  hostname: "0.0.0.0", // Bind to all interfaces for Docker/Kubernetes
+  hostname: "0.0.0.0",
   fetch: app.fetch,
-  // Increase idle timeout for long-running subagent operations
-  // Default is 10 seconds which is too short for Claude Code tool execution
-  idleTimeout: 120, // 2 minutes
+  idleTimeout: 120,
 }
 
 // Pre-warm Claude Code after server is listening.

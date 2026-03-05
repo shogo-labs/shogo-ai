@@ -6,6 +6,8 @@
 import { prisma, type Prisma, CreditSource, SubscriptionStatus, BillingInterval, PlanId } from '../lib/prisma';
 import { DAILY_CREDITS, PLAN_CREDITS, getMonthlyCreditsForPlan } from '../config/credit-plans';
 
+const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
+
 /**
  * Get subscription for a workspace
  */
@@ -111,6 +113,8 @@ export async function hasPaidSubscription(workspaceId: string): Promise<boolean>
  * Uses lazy daily reset logic for accurate balance.
  */
 export async function hasCredits(workspaceId: string, minimumRequired = 0.5): Promise<boolean> {
+  if (isLocalMode) return true
+
   let ledger = await prisma.creditLedger.findUnique({ where: { workspaceId } });
   if (!ledger) {
     ledger = await allocateFreeCredits(workspaceId);
@@ -146,6 +150,8 @@ export async function consumeCredits(
   creditCost: number,
   actionMetadata?: Record<string, unknown>
 ): Promise<{ success: boolean; error?: string; remainingCredits?: number }> {
+  if (isLocalMode) return { success: true, remainingCredits: Infinity }
+
   for (let attempt = 0; ; attempt++) {
     try {
       return await _consumeCreditsTransaction(workspaceId, projectId, memberId, actionType, creditCost, actionMetadata)

@@ -55,6 +55,7 @@ import { cn, Badge, Progress } from '@shogo/shared-ui/primitives'
 import { useTheme, type ThemePreference } from '../../contexts/theme'
 import { formatCredits } from '../../lib/billing-config'
 import { PublishDropdown } from './PublishDropdown'
+import { usePlatformConfig } from '../../lib/platform-config'
 
 const AGENT_TABS = [
   { id: 'dynamic-app', label: 'Canvas' },
@@ -427,6 +428,8 @@ function ProjectMenuView({
   const [showDetailsModal, setShowDetailsModal] = useState(false)
   const [showRenameModal, setShowRenameModal] = useState(false)
   const [showMoveModal, setShowMoveModal] = useState(false)
+  const { features } = usePlatformConfig()
+  const showBilling = features.billing
   const creditsPercent = creditsTotal > 0 ? (creditsRemaining / creditsTotal) * 100 : 0
 
   const menuItems: {
@@ -500,43 +503,46 @@ function ProjectMenuView({
                 <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
                   {workspaceName || 'Workspace'}
                 </Text>
-                <Badge variant="secondary" className="px-1.5 py-0">
-                  <Text className="text-[10px] font-semibold text-secondary-foreground uppercase">
-                    {planLabel}
-                  </Text>
-                </Badge>
+                {showBilling && (
+                  <Badge variant="secondary" className="px-1.5 py-0">
+                    <Text className="text-[10px] font-semibold text-secondary-foreground uppercase">
+                      {planLabel}
+                    </Text>
+                  </Badge>
+                )}
               </View>
             </View>
           </View>
         </Pressable>
 
-        {/* Credits section */}
-        <View className="px-4 pb-3">
-          <View className="bg-card border border-border rounded-lg p-3 gap-2">
-            <View className="flex-row items-center justify-between">
-              <Text className="text-sm font-medium text-foreground">Credits</Text>
-              <Pressable
-                onPress={() => { onClose(); router.push({ pathname: '/(app)/settings', params: { tab: 'billing' } } as any) }}
-                className="flex-row items-center gap-1"
-              >
-                <Text className="text-sm font-medium text-foreground">
-                  {formatCredits(creditsRemaining)} left
+        {showBilling && (
+          <View className="px-4 pb-3">
+            <View className="bg-card border border-border rounded-lg p-3 gap-2">
+              <View className="flex-row items-center justify-between">
+                <Text className="text-sm font-medium text-foreground">Credits</Text>
+                <Pressable
+                  onPress={() => { onClose(); router.push({ pathname: '/(app)/settings', params: { tab: 'billing' } } as any) }}
+                  className="flex-row items-center gap-1"
+                >
+                  <Text className="text-sm font-medium text-foreground">
+                    {formatCredits(creditsRemaining)} left
+                  </Text>
+                  <ChevronRight size={14} className="text-muted-foreground" />
+                </Pressable>
+              </View>
+              <Progress
+                value={creditsPercent}
+                className="h-1.5"
+              />
+              <View className="flex-row items-center gap-1.5">
+                <View className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />
+                <Text className="text-xs text-muted-foreground">
+                  Daily credits reset at midnight UTC
                 </Text>
-                <ChevronRight size={14} className="text-muted-foreground" />
-              </Pressable>
-            </View>
-            <Progress
-              value={creditsPercent}
-              className="h-1.5"
-            />
-            <View className="flex-row items-center gap-1.5">
-              <View className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />
-              <Text className="text-xs text-muted-foreground">
-                Daily credits reset at midnight UTC
-              </Text>
+              </View>
             </View>
           </View>
-        </View>
+        )}
 
         {/* Divider */}
         <View className="h-px bg-border mx-3 my-1" />

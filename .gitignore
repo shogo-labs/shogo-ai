@@ -116,6 +116,16 @@ tests/
 
 .dynamic-app-runtimes/
 
+# Desktop app build artifacts
+apps/desktop/dist/
+apps/desktop/out/
+apps/desktop/resources/bun/
+
+# Local SQLite databases
+*.local.db
+shogo-local.db
+apps/api/shogo-local.db
+
 *.webm
 test-results/
 load-tests/results/

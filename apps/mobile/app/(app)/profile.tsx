@@ -26,6 +26,7 @@ import {
   type IDomainStore,
 } from '../../contexts/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
+import { usePlatformConfig } from '../../lib/platform-config'
 import {
   Card,
   CardContent,
@@ -195,10 +196,11 @@ const WorkspaceCard = observer(function WorkspaceCard({
   role: string
   onManage: () => void
 }) {
+  const { features } = usePlatformConfig()
   const {
     subscription,
     effectiveBalance,
-  } = useBillingData(workspace.id)
+  } = useBillingData(features.billing ? workspace.id : undefined)
 
   return (
     <View className="p-4 rounded-lg border border-border bg-card">
@@ -227,7 +229,7 @@ const WorkspaceCard = observer(function WorkspaceCard({
       </View>
 
       {/* Billing Section for Workspace Owners */}
-      {role === 'owner' && (
+      {features.billing && role === 'owner' && (
         <View className="pt-3 border-t border-border">
           {subscription ? (
             <View className="gap-3">
