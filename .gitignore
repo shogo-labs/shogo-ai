@@ -112,6 +112,7 @@ apps/mobile/ios/
 
 *.png
 !apps/mobile/assets/*.png
+!apps/desktop/resources/icon.png
 tests/
 
 .dynamic-app-runtimes/
@@ -120,6 +121,16 @@ tests/
 apps/desktop/dist/
 apps/desktop/out/
 apps/desktop/resources/bun/
+apps/desktop/resources/web/
+apps/desktop/resources/apps/
+apps/desktop/resources/packages/
+apps/desktop/resources/node_modules/
+apps/desktop/resources/prisma/
+apps/desktop/resources/scripts/
+apps/desktop/resources/package.json
+apps/desktop/resources/bun.lock
+apps/desktop/resources/tsconfig.base.json
+apps/desktop/resources/prisma.config.local.ts
 
 # Local SQLite databases
 *.local.db
