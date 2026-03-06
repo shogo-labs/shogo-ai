@@ -96,7 +96,16 @@ export function AuthProvider({ authClient, children }: AuthProviderProps) {
       if (result?.error) {
         console.error('[Auth] Google sign-in error:', result.error)
         setError(result.error.message || 'Google sign-in failed')
+        return
       }
+      if (result?.data?.user) {
+        setUser(result.data.user as AuthUser)
+        return
+      }
+      // Fallback: re-fetch session (expo plugin stores token in SecureStore
+      // but the promise may not return user data directly)
+      const { data } = await authClient.getSession()
+      if (data?.user) setUser(data.user as AuthUser)
     } catch (e: any) {
       console.error('[Auth] Google sign-in exception:', e)
       setError(e.message || 'Google sign-in failed')
