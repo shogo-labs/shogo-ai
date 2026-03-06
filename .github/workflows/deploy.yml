@@ -143,21 +143,20 @@ jobs:
           }
 
           SHARED=$(has_match '^(package\.json|bun\.lock|tsconfig\.base\.json|scripts/)')
-          STATE_API=$(has_match '^packages/state-api/')
           SDK=$(has_match '^packages/sdk/')
           SHARED_RUNTIME=$(has_match '^packages/shared-runtime/')
           AGENT_RUNTIME_PKG=$(has_match '^packages/agent-runtime/')
-          API_APP=$(has_match '^(apps/api/|prisma/|prisma\.config\.ts)')
+          API_APP=$(has_match '^(apps/api/|prisma/|prisma\.config\.ts|templates/runtime-template/)')
           WEB_APP=$(has_match '^(apps/mobile/|packages/domain-stores/|packages/shared-app/|packages/shared-ui/|packages/ui-kit/)')
           DOCS_APP=$(has_match '^apps/docs/')
 
           API_CHANGED=false
-          if [ "$SHARED" = "true" ] || [ "$STATE_API" = "true" ] || [ "$SDK" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$AGENT_RUNTIME_PKG" = "true" ] || [ "$API_APP" = "true" ]; then
+          if [ "$SHARED" = "true" ] || [ "$SDK" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$AGENT_RUNTIME_PKG" = "true" ] || [ "$API_APP" = "true" ]; then
             API_CHANGED=true
           fi
 
           WEB_CHANGED=false
-          if [ "$SHARED" = "true" ] || [ "$STATE_API" = "true" ] || [ "$SDK" = "true" ] || [ "$WEB_APP" = "true" ]; then
+          if [ "$SHARED" = "true" ] || [ "$SDK" = "true" ] || [ "$WEB_APP" = "true" ]; then
             WEB_CHANGED=true
           fi
 
@@ -222,9 +221,6 @@ jobs:
 
       - name: Install dependencies
         run: bun install
-
-      - name: Build state-api
-        run: cd packages/state-api && bun run build
 
       - name: Run tests
         run: bun test

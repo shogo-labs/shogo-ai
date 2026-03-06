@@ -2,7 +2,7 @@
  * APIPersistence - SDK Implementation
  *
  * Persistence service for MST stores that uses SDK's HttpClient.
- * Implements IPersistenceService interface for compatibility with state-api.
+ * Implements IPersistenceService interface.
  *
  * Features:
  * - Request deduplication via HttpClient
@@ -13,7 +13,7 @@
 import type { HttpClient } from '../http/client.js'
 
 // ============================================================================
-// Types (compatible with @shogo/state-api)
+// Types
 // ============================================================================
 
 /**
@@ -34,7 +34,7 @@ export interface EntityContext extends PersistenceContext {
 }
 
 /**
- * Persistence service interface (compatible with @shogo/state-api)
+ * Persistence service interface
  */
 export interface IPersistenceService {
   saveCollection(context: PersistenceContext, snapshot: any): Promise<void>

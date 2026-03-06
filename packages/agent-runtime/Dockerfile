@@ -22,7 +22,6 @@ WORKDIR /app
 COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
-COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY packages/agent-runtime/package.json ./packages/agent-runtime/
 COPY packages/shared-runtime/package.json ./packages/shared-runtime/
@@ -58,7 +57,6 @@ WORKDIR /app
 COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
-COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY packages/agent-runtime/package.json ./packages/agent-runtime/
 COPY packages/shared-runtime/package.json ./packages/shared-runtime/
@@ -107,7 +105,6 @@ COPY --chown=appuser:appgroup --from=builder /app/bun.lock ./
 COPY --chown=appuser:appgroup --from=builder /app/tsconfig.base.json ./
 
 # Workspace member package.jsons needed by bun install for resolution
-COPY --from=builder /app/packages/state-api/package.json ./packages/state-api/
 COPY --from=builder /app/packages/project-runtime/package.json ./packages/project-runtime/
 COPY --from=builder /app/packages/sdk/package.json ./packages/sdk/
 COPY --from=builder /app/packages/domain-stores/package.json ./packages/domain-stores/

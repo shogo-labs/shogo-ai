@@ -2,7 +2,6 @@
  * Hono Routes Generator (Per-Model)
  *
  * Generates one route file per Prisma model with CRUD operations.
- * Adapted from @shogo/state-api for SDK consolidation.
  */
 
 import type { PrismaModel, PrismaField } from './prisma-generator'

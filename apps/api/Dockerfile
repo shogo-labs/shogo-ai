@@ -16,7 +16,6 @@ COPY tsconfig.base.json ./
 
 # Copy package.json files for dependency resolution
 # All workspace members must be present for bun install to succeed
-COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY packages/agent-runtime/package.json ./packages/agent-runtime/
 COPY packages/shared-runtime/package.json ./packages/shared-runtime/
@@ -35,12 +34,12 @@ COPY scripts ./scripts
 RUN bun install
 
 # Copy source code
-COPY packages/state-api ./packages/state-api
 COPY packages/project-runtime ./packages/project-runtime
 COPY packages/agent-runtime ./packages/agent-runtime
 COPY packages/shared-runtime ./packages/shared-runtime
 COPY packages/sdk ./packages/sdk
 COPY apps/api ./apps/api
+COPY templates/runtime-template ./templates/runtime-template
 
 # Copy prisma schema and config for generation
 COPY prisma ./prisma
@@ -54,10 +53,6 @@ RUN DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholde
 
 # Build SDK first (dependency of api)
 WORKDIR /app/packages/sdk
-RUN bun run build
-
-# Build state-api (dependency)
-WORKDIR /app/packages/state-api
 RUN bun run build
 
 # Clean per-package node_modules in packages/* to avoid bun symlink bloat
@@ -91,7 +86,6 @@ RUN addgroup -g 1001 -S appgroup && \
 
 # Copy built artifacts with --chown (avoids expensive recursive chown layer duplication)
 COPY --chown=appuser:appgroup --from=builder /app/node_modules ./node_modules
-COPY --chown=appuser:appgroup --from=builder /app/packages/state-api ./packages/state-api
 COPY --chown=appuser:appgroup --from=builder /app/packages/project-runtime ./packages/project-runtime
 COPY --chown=appuser:appgroup --from=builder /app/packages/agent-runtime ./packages/agent-runtime
 COPY --chown=appuser:appgroup --from=builder /app/packages/shared-runtime ./packages/shared-runtime
@@ -104,7 +98,6 @@ COPY --chown=appuser:appgroup --from=builder /app/tsconfig.base.json ./
 # Re-create workspace symlinks (Docker COPY doesn't preserve cross-tree symlinks)
 RUN mkdir -p node_modules/@shogo && \
     ln -sf ../../../packages/shared-runtime node_modules/@shogo/shared-runtime && \
-    ln -sf ../../../packages/state-api node_modules/@shogo/state-api && \
     ln -sf ../../../packages/sdk node_modules/@shogo/sdk && \
     ln -sf ../../../packages/project-runtime node_modules/@shogo/project-runtime && \
     ln -sf ../../../packages/agent-runtime node_modules/@shogo/agent-runtime && \
@@ -116,6 +109,9 @@ COPY --chown=appuser:appgroup --from=builder /app/prisma.config.ts ./prisma.conf
 
 # Copy SDK examples folder for templates API
 COPY packages/sdk/examples ./packages/sdk/examples
+
+# Copy runtime template for RuntimeManager project initialization
+COPY --chown=appuser:appgroup templates/runtime-template ./templates/runtime-template
 
 # Copy entrypoint script
 COPY apps/api/entrypoint.sh /app/entrypoint.sh

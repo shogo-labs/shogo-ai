@@ -209,6 +209,19 @@ spec:
                   name: api-secrets
                   key: GH_APP_SLUG
                   optional: true
+            # Google OAuth
+            - name: GOOGLE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GOOGLE_CLIENT_ID
+                  optional: true
+            - name: GOOGLE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GOOGLE_CLIENT_SECRET
+                  optional: true
             # Composio integration
             - name: COMPOSIO_API_KEY
               valueFrom:

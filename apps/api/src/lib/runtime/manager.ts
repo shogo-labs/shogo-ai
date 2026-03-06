@@ -23,9 +23,9 @@ const __dirname = dirname(__filename)
 
 /**
  * Path to the bundled Vite + React + TypeScript template.
- * Adjusted for api package location: apps/api/src/lib/runtime -> packages/state-api/runtime-template
+ * Adjusted for api package location: apps/api/src/lib/runtime -> templates/runtime-template
  */
-const BUNDLED_TEMPLATE_DIR = join(__dirname, '..', '..', '..', '..', '..', 'packages', 'state-api', 'runtime-template')
+const BUNDLED_TEMPLATE_DIR = join(__dirname, '..', '..', '..', '..', '..', 'templates', 'runtime-template')
 
 /**
  * Path to the project-runtime server.
@@ -35,9 +35,11 @@ const PROJECT_RUNTIME_SERVER = join(__dirname, '..', '..', '..', '..', '..', 'pa
 
 /**
  * Path to the agent-runtime server.
- * Used for local development to run agent projects.
+ * In desktop mode, AGENT_RUNTIME_ENTRY points to the bun-built bundle.
+ * Falls back to source path for cloud/local dev.
  */
-const AGENT_RUNTIME_SERVER = join(__dirname, '..', '..', '..', '..', '..', 'packages', 'agent-runtime', 'src', 'server.ts')
+const AGENT_RUNTIME_SERVER = process.env.AGENT_RUNTIME_ENTRY
+  || join(__dirname, '..', '..', '..', '..', '..', 'packages', 'agent-runtime', 'src', 'server.ts')
 
 /**
  * Path to the MCP server (for project-runtime to spawn).

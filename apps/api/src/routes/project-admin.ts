@@ -14,14 +14,18 @@
  */
 
 import { Hono } from "hono"
-import { 
-  getKnativeProjectManager, 
-  type ProjectPodInfo,
-  type ProjectPodStatus 
+import type { 
+  ProjectPodInfo,
+  ProjectPodStatus 
 } from "../lib/knative-project-manager"
 
 // Environment detection
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
+
+async function getKnativeProjectManager() {
+  const mod = await import("../lib/knative-project-manager")
+  return mod.getKnativeProjectManager()
+}
 
 // =============================================================================
 // Types
@@ -72,7 +76,7 @@ export function projectAdminRoutes() {
     }
 
     try {
-      const manager = getKnativeProjectManager()
+      const manager = await getKnativeProjectManager()
       const projects = await manager.listProjects()
 
       return c.json({
@@ -108,7 +112,7 @@ export function projectAdminRoutes() {
     const projectId = c.req.param("projectId")
 
     try {
-      const manager = getKnativeProjectManager()
+      const manager = await getKnativeProjectManager()
       const status = await manager.getStatus(projectId)
 
       if (!status.exists) {
@@ -173,7 +177,7 @@ export function projectAdminRoutes() {
         }, 400)
       }
 
-      const manager = getKnativeProjectManager()
+      const manager = await getKnativeProjectManager()
 
       // Check if project exists
       const status = await manager.getStatus(projectId)
@@ -224,7 +228,7 @@ export function projectAdminRoutes() {
     const projectId = c.req.param("projectId")
 
     try {
-      const manager = getKnativeProjectManager()
+      const manager = await getKnativeProjectManager()
 
       // Check if project exists
       const status = await manager.getStatus(projectId)
@@ -274,7 +278,7 @@ export function projectAdminRoutes() {
     const projectId = c.req.param("projectId")
 
     try {
-      const manager = getKnativeProjectManager()
+      const manager = await getKnativeProjectManager()
       await manager.deleteProject(projectId)
 
       return c.json({
@@ -308,7 +312,7 @@ export function projectAdminRoutes() {
     }
 
     try {
-      const manager = getKnativeProjectManager()
+      const manager = await getKnativeProjectManager()
       const projects = await manager.listProjects()
 
       const stats = {

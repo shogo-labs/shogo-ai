@@ -83,7 +83,7 @@ case "${1:-start}" in
     echo "🔥 Resetting Shogo development environment (removing node_modules)..."
     docker-compose -f "$COMPOSE_FILE" down -v
     echo "Removing node_modules volumes..."
-    docker volume rm shogo-api-node-modules-dev shogo-web-node-modules-dev shogo-state-api-node-modules-dev shogo-web-app-node-modules-dev 2>/dev/null || true
+    docker volume rm shogo-api-node-modules-dev shogo-web-node-modules-dev shogo-web-app-node-modules-dev 2>/dev/null || true
     echo ""
     echo "✅ Environment reset. Run './scripts/docker-dev.sh start' to rebuild."
     ;;

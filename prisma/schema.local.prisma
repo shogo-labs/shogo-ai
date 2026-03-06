@@ -23,14 +23,15 @@ datasource db {
 // =============================================================================
 
 model User {
-  id            String   @id @default(cuid())
-  name          String?
-  email         String   @unique
-  emailVerified Boolean  @default(false)
-  image         String?
-  role          String   @default("user")
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id                  String   @id @default(cuid())
+  name                String?
+  email               String   @unique
+  emailVerified       Boolean  @default(false)
+  image               String?
+  role                String   @default("user")
+  onboardingCompleted Boolean  @default(false)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   sessions        Session[]
   accounts        Account[]

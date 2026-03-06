@@ -16,6 +16,7 @@ import { betterAuth } from "better-auth"
 import { expo } from "@better-auth/expo"
 import { createPersonalWorkspace } from "./services/workspace.service"
 import { sendWelcomeEmail, sendPasswordResetEmail, sendEmailVerificationEmail } from "./services/email.service"
+import { prisma } from "./lib/prisma"
 
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 
@@ -210,6 +211,19 @@ export const auth = betterAuth({
          * Errors are logged but do not block user creation (graceful degradation).
          */
         after: async (user) => {
+          // In local/desktop mode, every user is a super_admin
+          if (isLocalMode) {
+            try {
+              await prisma.user.update({
+                where: { id: user.id },
+                data: { role: 'super_admin', emailVerified: true },
+              })
+              console.log(`[LocalMode] User ${user.email} promoted to super_admin`)
+            } catch (err) {
+              console.error(`[LocalMode] Failed to promote user:`, err)
+            }
+          }
+
           const maxAttempts = 3
           for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {

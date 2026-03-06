@@ -4,6 +4,8 @@ import { API_URL } from './api'
 
 export interface PlatformConfig {
   localMode: boolean
+  needsSetup?: boolean
+  configLoaded: boolean
   features: {
     billing: boolean
     admin: boolean
@@ -15,11 +17,13 @@ export interface PlatformConfig {
 
 const CLOUD_CONFIG: PlatformConfig = {
   localMode: false,
+  configLoaded: false,
   features: { billing: true, admin: true, oauth: true, analytics: true, publishing: true },
 }
 
 const LOCAL_CONFIG: PlatformConfig = {
   localMode: true,
+  configLoaded: false,
   features: { billing: false, admin: false, oauth: false, analytics: false, publishing: false },
 }
 
@@ -33,23 +37,22 @@ let cachedConfig: PlatformConfig | null = null
 
 function getInitialConfig(): PlatformConfig {
   if (cachedConfig) return cachedConfig
-  if (isLocalMode()) {
-    cachedConfig = LOCAL_CONFIG
-    return LOCAL_CONFIG
-  }
-  return CLOUD_CONFIG
+  return isLocalMode() ? LOCAL_CONFIG : CLOUD_CONFIG
 }
 
 async function fetchConfig(): Promise<PlatformConfig> {
-  if (cachedConfig) return cachedConfig
+  if (cachedConfig?.configLoaded) return cachedConfig
   try {
     const res = await fetch(`${API_URL}/api/config`, { signal: AbortSignal.timeout(3000) })
     if (res.ok) {
-      cachedConfig = await res.json()
+      const data = await res.json()
+      cachedConfig = { ...data, configLoaded: true }
       return cachedConfig!
     }
   } catch {}
-  return getInitialConfig()
+  const fallback = getInitialConfig()
+  cachedConfig = { ...fallback, configLoaded: true }
+  return cachedConfig
 }
 
 export function usePlatformConfig(): PlatformConfig {
@@ -60,4 +63,8 @@ export function usePlatformConfig(): PlatformConfig {
   }, [])
 
   return config
+}
+
+export function invalidatePlatformConfigCache() {
+  cachedConfig = null
 }

@@ -78,7 +78,17 @@ export const DAILY_CREDITS = 5
 
 export function getTotalCreditsForPlan(planId: string | undefined): number {
   if (!planId) return (PLAN_CREDITS['free'] || 0) + DAILY_CREDITS
-  return (PLAN_CREDITS[planId] || 0) + DAILY_CREDITS
+
+  if (PLAN_CREDITS[planId] !== undefined) {
+    return PLAN_CREDITS[planId] + DAILY_CREDITS
+  }
+
+  const match = planId.match(/^(free|pro|business|enterprise)_(\d+)$/)
+  if (match) {
+    return parseInt(match[2], 10) + DAILY_CREDITS
+  }
+
+  return DAILY_CREDITS
 }
 
 export function formatCredits(n: number): string {

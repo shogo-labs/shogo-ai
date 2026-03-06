@@ -33,7 +33,6 @@ COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
 # Copy package.json files for dependency resolution (cached layer)
-COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY packages/agent-runtime/package.json ./packages/agent-runtime/
 COPY packages/shared-runtime/package.json ./packages/shared-runtime/
@@ -53,13 +52,9 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
     bun install
 
 # Copy source code (this layer invalidates when source changes)
-COPY packages/state-api ./packages/state-api
 COPY packages/shared-runtime ./packages/shared-runtime
 COPY packages/project-runtime ./packages/project-runtime
-
-# Build state-api (skip tsc --emitDeclarationOnly — .d.ts not needed at runtime)
-WORKDIR /app/packages/state-api
-RUN bun build src/index.ts --outdir dist --target node
+COPY templates/runtime-template ./templates/runtime-template
 
 # ---------------------------------------------------------------------------
 # Clean per-package node_modules BEFORE the production stage copies.
@@ -85,7 +80,6 @@ WORKDIR /app
 COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
-COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY packages/agent-runtime/package.json ./packages/agent-runtime/
 COPY packages/shared-runtime/package.json ./packages/shared-runtime/
@@ -205,9 +199,9 @@ ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 # recursive chown that was duplicating GBs of layer data.
 # ---------------------------------------------------------------------------
 COPY --from=deps /app/node_modules ./node_modules
-COPY --chown=appuser:appgroup --from=builder /app/packages/state-api ./packages/state-api
 COPY --chown=appuser:appgroup --from=builder /app/packages/shared-runtime ./packages/shared-runtime
 COPY --chown=appuser:appgroup --from=builder /app/packages/project-runtime ./packages/project-runtime
+COPY --chown=appuser:appgroup --from=builder /app/templates/runtime-template ./templates/runtime-template
 COPY --chown=appuser:appgroup --from=builder /app/package.json ./
 COPY --chown=appuser:appgroup --from=builder /app/bun.lock ./
 COPY --chown=appuser:appgroup --from=builder /app/tsconfig.base.json ./

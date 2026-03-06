@@ -116,7 +116,7 @@ export async function getOverviewStats(scope: AnalyticsScope = {}) {
         where: { projectId: scope.projectId },
       }),
       prisma.chatMessage.count({
-        where: { session: { contextId: scope.projectId } },
+        where: { role: 'user', session: { contextId: scope.projectId } },
       }),
     ])
     return { chatSessions, usageEvents, messages }
@@ -634,12 +634,12 @@ export async function getChatAnalytics(
       select: {
         id: true,
         createdAt: true,
-        _count: { select: { messages: true } },
+        _count: { select: { messages: { where: { role: 'user' } } } },
       },
       orderBy: { createdAt: 'asc' },
     }),
     prisma.chatMessage.count({
-      where: { session: sessionWhere },
+      where: { role: 'user', session: sessionWhere },
     }),
     prisma.toolCallLog.count({
       where: { chatSession: sessionWhere },

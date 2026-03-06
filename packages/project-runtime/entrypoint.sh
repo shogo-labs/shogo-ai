@@ -61,7 +61,7 @@ fi
 # - prisma/ (schema + config)
 # - src/ (App.tsx, main.tsx, index.css, lib/db.ts)
 # =============================================================================
-BUNDLED_TEMPLATE="/app/packages/state-api/runtime-template"
+BUNDLED_TEMPLATE="/app/templates/runtime-template"
 
 if [ ! -f "$PROJECT_DIR/package.json" ]; then
   if [ -d "$BUNDLED_TEMPLATE" ] && [ -f "$BUNDLED_TEMPLATE/package.json" ]; then

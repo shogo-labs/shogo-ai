@@ -1,25 +1,28 @@
 #!/usr/bin/env node
 
 /**
- * Bundles the API server + workspace packages into resources/ for Electron packaging.
+ * Bundles the API server for Electron desktop packaging using `bun build`.
  *
- * The bundle mirrors the monorepo directory layout so that all relative path
- * references in the API source code (e.g. to packages/state-api/runtime-template)
- * continue to work at runtime.
+ * Instead of copying the full source tree + node_modules (~500MB+), this script
+ * uses bun's bundler to compile each entry point into a single JS file with all
+ * dependencies inlined. Only native modules that can't be bundled (Prisma, sqlite-vec)
+ * are kept as external packages in a minimal node_modules.
+ *
+ * Entry points bundled:
+ *   1. apps/api/src/entry.ts       → bundle/api.js        (~17 MB)
+ *   2. packages/agent-runtime/src/server.ts → bundle/agent-runtime.js (~14 MB)
+ *   3. packages/agent-runtime/src/tools/mcp-server.ts → bundle/mcp-server.js (~134 KB)
  *
  * Structure created inside apps/desktop/resources/:
- *   apps/api/          — API server source
- *   packages/          — workspace packages needed by the API
- *   node_modules/      — installed dependencies + workspace symlinks
- *   prisma/            — local SQLite schema
- *   scripts/           — postinstall patches
- *   package.json       — workspace config for dependency resolution
- *   tsconfig.base.json — shared TS config
+ *   bundle/             — compiled JS entry points
+ *   node_modules/       — only native/external packages
+ *   prisma/             — local SQLite schema
+ *   package.json        — minimal manifest for external deps
  *   prisma.config.local.ts
  *
  * Usage:
  *   node scripts/bundle-api.mjs                 # default
- *   node scripts/bundle-api.mjs --skip-install  # skip bun install (for debugging)
+ *   node scripts/bundle-api.mjs --skip-install  # skip external dep install
  */
 
 import { execSync } from 'child_process'
@@ -32,15 +35,8 @@ const DESKTOP_DIR = path.join(__dirname, '..')
 const RESOURCES_DIR = path.join(DESKTOP_DIR, 'resources')
 const REPO_ROOT = path.resolve(DESKTOP_DIR, '..', '..')
 
-const WORKSPACE_PACKAGES = [
-  'agent-runtime',
-  'shared-runtime',
-  'state-api',
-  'project-runtime',
-  'sdk',
-]
-
 const ITEMS_TO_CLEAN = [
+  'bundle',
   'apps',
   'packages',
   'node_modules',
@@ -52,20 +48,38 @@ const ITEMS_TO_CLEAN = [
   'prisma.config.local.ts',
 ]
 
-const API_EXCLUDES = [
-  'node_modules',
-  'Dockerfile',
-  'Dockerfile.dev',
-  'entrypoint.sh',
-  '.env',
-  '.env.local',
+/**
+ * Packages that contain native binaries or dynamic requires that can't be bundled.
+ * These are kept as external imports and installed in a minimal node_modules.
+ */
+const EXTERNAL_PACKAGES = [
+  'playwright-core',
+  '@playwright/mcp',
+  '@prisma/client',
+  'prisma-adapter-bun-sqlite',
+  'sqlite-vec',
+  '@anthropic-ai/claude-agent-sdk',
 ]
 
-const PACKAGE_EXCLUDES = [
-  'node_modules',
-  '__tests__',
-  '.turbo',
-  'coverage',
+/**
+ * Entry points to bundle with bun build.
+ */
+const ENTRY_POINTS = [
+  {
+    name: 'api',
+    input: 'apps/api/src/entry.ts',
+    output: 'api.js',
+  },
+  {
+    name: 'agent-runtime',
+    input: 'packages/agent-runtime/src/server.ts',
+    output: 'agent-runtime.js',
+  },
+  {
+    name: 'mcp-server',
+    input: 'packages/agent-runtime/src/tools/mcp-server.ts',
+    output: 'mcp-server.js',
+  },
 ]
 
 function clean() {
@@ -77,54 +91,59 @@ function clean() {
   }
 }
 
-function copyDir(src, dest, excludes = []) {
-  fs.mkdirSync(dest, { recursive: true })
-  const entries = fs.readdirSync(src, { withFileTypes: true })
-
-  for (const entry of entries) {
-    if (excludes.includes(entry.name)) continue
-    const srcPath = path.join(src, entry.name)
-    const destPath = path.join(dest, entry.name)
-
-    if (entry.isDirectory()) {
-      copyDir(srcPath, destPath, excludes)
-    } else if (entry.isFile()) {
-      fs.copyFileSync(srcPath, destPath)
-    }
-  }
-}
-
 function main() {
   const skipInstall = process.argv.includes('--skip-install')
 
-  console.log('Bundling API server for desktop...')
+  console.log('Bundling API server for desktop (bun build)...')
   console.log(`  Repo root:    ${REPO_ROOT}`)
   console.log(`  Resources:    ${RESOURCES_DIR}`)
 
   clean()
-  fs.mkdirSync(RESOURCES_DIR, { recursive: true })
+  const bundleDir = path.join(RESOURCES_DIR, 'bundle')
+  fs.mkdirSync(bundleDir, { recursive: true })
 
-  // --- API source ---
-  console.log('\n[1/7] Copying API source...')
-  const apiSrc = path.join(REPO_ROOT, 'apps', 'api')
-  const apiDest = path.join(RESOURCES_DIR, 'apps', 'api')
-  copyDir(apiSrc, apiDest, API_EXCLUDES)
+  // --- Bundle entry points ---
+  const externals = EXTERNAL_PACKAGES.map((p) => `--external ${p}`).join(' ')
 
-  // --- Workspace packages ---
-  console.log('[2/7] Copying workspace packages...')
-  for (const pkg of WORKSPACE_PACKAGES) {
-    const src = path.join(REPO_ROOT, 'packages', pkg)
-    const dest = path.join(RESOURCES_DIR, 'packages', pkg)
-    if (!fs.existsSync(src)) {
-      console.warn(`  ⚠ Package not found: packages/${pkg} — skipping`)
-      continue
+  for (let i = 0; i < ENTRY_POINTS.length; i++) {
+    const { name, input, output } = ENTRY_POINTS[i]
+    console.log(`\n[${i + 1}/${ENTRY_POINTS.length + 4}] Bundling ${name}...`)
+
+    const inputPath = path.join(REPO_ROOT, input)
+    const tempDir = path.join(bundleDir, `_tmp_${name}`)
+    fs.mkdirSync(tempDir, { recursive: true })
+
+    const cmd = `bun build "${inputPath}" --target bun --outdir "${tempDir}" ${externals}`
+
+    try {
+      const result = execSync(cmd, { cwd: REPO_ROOT, stdio: 'pipe', encoding: 'utf-8' })
+      console.log(`  ${result.trim().split('\n').pop()}`)
+
+      // Move the main entry file to the expected output name.
+      // Also move any .node asset files alongside it.
+      const files = fs.readdirSync(tempDir)
+      const entryFile = files.find((f) => f.endsWith('.js'))
+      if (entryFile) {
+        fs.renameSync(path.join(tempDir, entryFile), path.join(bundleDir, output))
+      }
+      for (const f of files) {
+        if (f.endsWith('.node')) {
+          fs.renameSync(path.join(tempDir, f), path.join(bundleDir, f))
+        }
+      }
+      fs.rmSync(tempDir, { recursive: true, force: true })
+    } catch (err) {
+      console.error(`  Failed to bundle ${name}:`)
+      console.error(err.stderr || err.message)
+      fs.rmSync(tempDir, { recursive: true, force: true })
+      process.exit(1)
     }
-    copyDir(src, dest, PACKAGE_EXCLUDES)
-    console.log(`  ✓ packages/${pkg}`)
   }
 
+  const stepOffset = ENTRY_POINTS.length
+
   // --- Prisma schema ---
-  console.log('[3/7] Copying Prisma schema...')
+  console.log(`[${stepOffset + 1}/${stepOffset + 4}] Copying Prisma schema...`)
   const prismaDir = path.join(RESOURCES_DIR, 'prisma')
   fs.mkdirSync(prismaDir, { recursive: true })
   const localSchema = path.join(REPO_ROOT, 'prisma', 'schema.local.prisma')
@@ -133,55 +152,75 @@ function main() {
   }
 
   // --- Config files ---
-  console.log('[4/7] Copying config files...')
-  const configFiles = [
-    ['prisma.config.local.ts', 'prisma.config.local.ts'],
-    ['tsconfig.base.json', 'tsconfig.base.json'],
-  ]
-  for (const [src, dest] of configFiles) {
-    const srcPath = path.join(REPO_ROOT, src)
-    if (fs.existsSync(srcPath)) {
-      fs.copyFileSync(srcPath, path.join(RESOURCES_DIR, dest))
-      console.log(`  ✓ ${dest}`)
+  console.log(`[${stepOffset + 2}/${stepOffset + 4}] Copying config files...`)
+  const prismaConfig = path.join(REPO_ROOT, 'prisma.config.local.ts')
+  if (fs.existsSync(prismaConfig)) {
+    fs.copyFileSync(prismaConfig, path.join(RESOURCES_DIR, 'prisma.config.local.ts'))
+    console.log('  ✓ prisma.config.local.ts')
+  }
+
+  // --- Install external packages ---
+  console.log(`[${stepOffset + 3}/${stepOffset + 4}] Installing external packages...`)
+  const externalPkg = {
+    name: 'shogo-desktop-bundle',
+    private: true,
+    dependencies: {},
+  }
+
+  // Read versions from the source package.json files to pin external deps
+  const apiPkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'apps/api/package.json'), 'utf-8'))
+  const agentPkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'packages/agent-runtime/package.json'), 'utf-8'))
+  const allSourceDeps = { ...agentPkg.dependencies, ...apiPkg.dependencies }
+
+  for (const pkg of EXTERNAL_PACKAGES) {
+    const version = allSourceDeps[pkg]
+    if (version) {
+      externalPkg.dependencies[pkg] = version
     }
   }
 
-  // --- Patch script (runs during bun install postinstall) ---
-  console.log('[5/7] Copying patch scripts...')
-  const patchSrc = path.join(REPO_ROOT, 'scripts', 'patch-claude-sdk.ts')
-  if (fs.existsSync(patchSrc)) {
-    const scriptsDest = path.join(RESOURCES_DIR, 'scripts')
-    fs.mkdirSync(scriptsDest, { recursive: true })
-    fs.copyFileSync(patchSrc, path.join(scriptsDest, 'patch-claude-sdk.ts'))
-  }
-
-  // --- Workspace package.json ---
-  console.log('[6/7] Creating workspace package.json...')
-  const workspacePkg = {
-    name: 'shogo-desktop-bundle',
-    private: true,
-    workspaces: ['apps/api', 'packages/*'],
-    scripts: {
-      postinstall:
-        '[ -f scripts/patch-claude-sdk.ts ] && bun scripts/patch-claude-sdk.ts || true',
-    },
-  }
   fs.writeFileSync(
     path.join(RESOURCES_DIR, 'package.json'),
-    JSON.stringify(workspacePkg, null, 2) + '\n',
+    JSON.stringify(externalPkg, null, 2) + '\n',
   )
 
-  // --- Install dependencies ---
   if (!skipInstall) {
-    console.log('[7/7] Installing dependencies (bun install)...')
-    execSync('bun install', {
+    const isWindows = process.platform === 'win32'
+    const installCmd = isWindows
+      ? 'bun install --production --linker=isolated'
+      : 'bun install --production'
+    console.log(`  Running: ${installCmd}`)
+    execSync(installCmd, {
       cwd: RESOURCES_DIR,
       stdio: 'inherit',
-      env: { ...process.env, NODE_ENV: 'production' },
     })
-  } else {
-    console.log('[7/7] Skipping dependency install (--skip-install)')
   }
+
+  // --- Patch claude-agent-sdk (runs post-install in cloud, do it manually here) ---
+  console.log(`[${stepOffset + 4}/${stepOffset + 4}] Patching claude-agent-sdk...`)
+  const patchScript = path.join(REPO_ROOT, 'scripts', 'patch-claude-sdk.ts')
+  if (fs.existsSync(patchScript)) {
+    try {
+      execSync(`bun run "${patchScript}"`, {
+        cwd: RESOURCES_DIR,
+        stdio: 'inherit',
+      })
+    } catch {
+      console.warn('  Patch script failed (non-fatal)')
+    }
+  }
+
+  // --- Summary ---
+  let totalSize = 0
+  for (const { output } of ENTRY_POINTS) {
+    const f = path.join(bundleDir, output)
+    if (fs.existsSync(f)) {
+      const size = fs.statSync(f).size
+      totalSize += size
+      console.log(`  ${output}: ${(size / 1024 / 1024).toFixed(1)} MB`)
+    }
+  }
+  console.log(`  Total bundle: ${(totalSize / 1024 / 1024).toFixed(1)} MB`)
 
   console.log('\n✅ API bundle complete!')
 }

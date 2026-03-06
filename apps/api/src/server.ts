@@ -700,10 +700,16 @@ app.get('/api/health', (c) => c.json({ ok: true }))
 app.get('/health', (c) => c.json({ ok: true }))
 
 // Platform config (tells frontend about local mode, enabled features, etc.)
-app.get('/api/config', (c) => {
+app.get('/api/config', async (c) => {
   const localMode = process.env.SHOGO_LOCAL_MODE === 'true'
+  let needsSetup = false
+  if (localMode) {
+    const userCount = await prisma.user.count()
+    needsSetup = userCount === 0
+  }
   return c.json({
     localMode,
+    needsSetup,
     features: {
       billing: !localMode,
       admin: !localMode,
@@ -4486,6 +4492,7 @@ app.get('/api/me', authMiddleware, requireAuth, async (c) => {
       emailVerified: true,
       image: true,
       role: true,
+      onboardingCompleted: true,
       createdAt: true,
       updatedAt: true,
     },
@@ -4494,6 +4501,109 @@ app.get('/api/me', authMiddleware, requireAuth, async (c) => {
     return c.json({ error: { code: 'not_found', message: 'User not found' } }, 404)
   }
   return c.json({ ok: true, data: user })
+})
+
+// =============================================================================
+// Onboarding complete (/api/onboarding/complete)
+// =============================================================================
+
+app.post('/api/onboarding/complete', authMiddleware, requireAuth, async (c) => {
+  const authCtx = c.get('auth')
+  if (!authCtx?.userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Not authenticated' } }, 401)
+  }
+  await prisma.user.update({
+    where: { id: authCtx.userId },
+    data: { onboardingCompleted: true },
+  })
+  return c.json({ ok: true })
+})
+
+// =============================================================================
+// Current User Activity (/api/me/activity) - Message stats for account page
+// =============================================================================
+
+app.get('/api/me/activity', authMiddleware, requireAuth, async (c) => {
+  const authCtx = c.get('auth')
+  if (!authCtx?.userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Not authenticated' } }, 401)
+  }
+
+  try {
+    const userId = authCtx.userId
+    const oneYearAgo = new Date()
+    oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1)
+    oneYearAgo.setHours(0, 0, 0, 0)
+
+    const memberships = await prisma.member.findMany({
+      where: { userId },
+      select: { workspaceId: true },
+    })
+    const workspaceIds = memberships.map((m: any) => m.workspaceId)
+
+    if (workspaceIds.length === 0) {
+      return c.json({
+        ok: true,
+        data: { totalMessages: 0, dailyAverage: 0, daysActive: 0, daysInPeriod: 365, currentStreak: 0, dailyCounts: {} },
+      })
+    }
+
+    const messages = await prisma.chatMessage.findMany({
+      where: {
+        role: 'user',
+        createdAt: { gte: oneYearAgo },
+        session: {
+          project: { workspaceId: { in: workspaceIds } },
+        },
+      },
+      select: { createdAt: true },
+      orderBy: { createdAt: 'asc' },
+    })
+
+    const dailyCounts: Record<string, number> = {}
+    for (const msg of messages) {
+      const day = msg.createdAt.toISOString().slice(0, 10)
+      dailyCounts[day] = (dailyCounts[day] || 0) + 1
+    }
+
+    const totalMessages = messages.length
+    const now = new Date()
+    const diffMs = now.getTime() - oneYearAgo.getTime()
+    const daysInPeriod = Math.max(1, Math.ceil(diffMs / 86400000))
+    const dailyAverage = Math.round((totalMessages / daysInPeriod) * 10) / 10
+    const daysActive = Object.keys(dailyCounts).length
+
+    let currentStreak = 0
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const cursor = new Date(today)
+    while (true) {
+      const key = cursor.toISOString().slice(0, 10)
+      if (dailyCounts[key]) {
+        currentStreak++
+        cursor.setDate(cursor.getDate() - 1)
+      } else if (currentStreak === 0) {
+        cursor.setDate(cursor.getDate() - 1)
+        const yesterdayKey = cursor.toISOString().slice(0, 10)
+        if (dailyCounts[yesterdayKey]) {
+          currentStreak++
+          cursor.setDate(cursor.getDate() - 1)
+        } else {
+          break
+        }
+      } else {
+        break
+      }
+    }
+
+    return c.json({
+      ok: true,
+      data: { totalMessages, dailyAverage, daysActive, daysInPeriod, currentStreak, dailyCounts },
+    })
+  } catch (error: any) {
+    console.error('[Activity] Failed to fetch activity:', error)
+    return c.json({ error: { code: 'activity_failed', message: error.message } }, 500)
+  }
 })
 
 // =============================================================================
@@ -4782,7 +4892,7 @@ console.log(`   AI Proxy Health: GET  http://localhost:${API_PORT}/api/ai/proxy/
 console.log(`   CORS origin: http://localhost:${VITE_PORT}`)
 console.log(`   AI Providers: Anthropic=${!!process.env.ANTHROPIC_API_KEY}, OpenAI=${!!process.env.OPENAI_API_KEY}`)
 
-// Local mode: restore saved API keys + auto-seed
+// Local mode: restore saved API keys on startup
 if (process.env.SHOGO_LOCAL_MODE === 'true') {
   setTimeout(async () => {
     try {
@@ -4795,31 +4905,6 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
       }
     } catch (err: any) {
       console.log('[LocalMode] Could not restore API keys (table may not exist yet):', err.message)
-    }
-
-    try {
-      const existingUser = await prisma.user.findFirst()
-      if (!existingUser) {
-        console.log('[LocalMode] First launch detected — creating default user and workspace...')
-        const res = await fetch(`http://localhost:${API_PORT}/api/auth/sign-up/email`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            email: 'local@shogo.local',
-            password: 'shogo-local',
-            name: 'Local User',
-          }),
-        })
-        if (!res.ok) throw new Error(`Sign-up failed: ${res.status}`)
-        const { user } = await res.json() as { user: { id: string } }
-        await prisma.user.update({
-          where: { id: user.id },
-          data: { emailVerified: true, role: 'super_admin' },
-        })
-        console.log('[LocalMode] Default user created: local@shogo.local / shogo-local')
-      }
-    } catch (err: any) {
-      console.error('[LocalMode] Auto-seed failed (non-fatal):', err.message)
     }
   }, 1000)
 }
