@@ -37,12 +37,6 @@ const config: ForgeConfig = {
         format: 'ULFO',
       },
     },
-    {
-      name: '@electron-forge/maker-squirrel',
-      config: {
-        name: 'Shogo',
-      },
-    },
   ],
 }
 
