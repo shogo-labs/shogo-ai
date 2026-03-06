@@ -95,3 +95,51 @@ export interface SkillDefinition {
   tools: string[]
   content: string
 }
+
+// =============================================================================
+// Security & Permissions (Local Mode)
+// =============================================================================
+
+export type SecurityMode = 'strict' | 'balanced' | 'full_autonomy'
+
+export type PermissionCategory =
+  | 'shell'
+  | 'file_read'
+  | 'file_write'
+  | 'file_delete'
+  | 'network'
+  | 'mcp'
+  | 'system'
+
+export interface SecurityPreference {
+  mode: SecurityMode
+  overrides?: {
+    shellCommands?: { allow?: string[]; deny?: string[] }
+    fileAccess?: { allow?: string[]; deny?: string[] }
+    network?: { allowedDomains?: string[] }
+    mcpTools?: { autoApprove?: string[] }
+  }
+  approvalTimeoutSeconds?: number
+}
+
+export interface PermissionCheckResult {
+  action: 'allow' | 'deny' | 'ask'
+  reason: string
+  guidance?: string
+  category: PermissionCategory
+}
+
+export interface PermissionRequest {
+  id: string
+  toolName: string
+  category: PermissionCategory
+  params: Record<string, any>
+  reason: string
+  timeout: number
+}
+
+export interface PermissionResponse {
+  id: string
+  decision: 'allow_once' | 'always_allow' | 'deny'
+  pattern?: string
+}

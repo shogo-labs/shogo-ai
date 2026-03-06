@@ -74,6 +74,7 @@ import {
 } from '../../lib/billing-config'
 import { TierSelector } from '../../components/billing/TierSelector'
 import { FeatureList } from '../../components/billing/FeatureList'
+import { SecuritySettingsPanel } from '../../components/security/SecuritySettingsPanel'
 import {
   Card,
   CardContent,
@@ -89,9 +90,9 @@ import {
 
 const DOCS_URL = 'https://docs.shogo.ai'
 
-type TabId = 'workspace' | 'people' | 'account' | 'billing'
+type TabId = 'workspace' | 'people' | 'account' | 'billing' | 'security'
 
-const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'billing']
+const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'billing', 'security']
 
 interface NavItem {
   id: TabId
@@ -110,6 +111,7 @@ const LOCAL_NAV_ITEMS: NavItem[] = [
   { id: 'workspace', label: 'Workspace', icon: Building2 },
   { id: 'people', label: 'People', icon: Users },
   { id: 'account', label: 'Account', icon: User },
+  { id: 'security', label: 'Security', icon: Shield },
 ]
 
 function TabBar({
@@ -206,6 +208,7 @@ function SettingsSidebar({
       label: 'Account',
       items: [
         { id: 'account', label: userName || 'Account' },
+        ...(!showBilling ? [{ id: 'security' as TabId, label: 'Security' }] : []),
       ],
     },
   ]
@@ -2304,6 +2307,7 @@ function SettingsContent({ activeTab }: { activeTab: TabId }) {
       {activeTab === 'people' && <PeopleTab />}
       {activeTab === 'account' && <AccountTab />}
       {activeTab === 'billing' && <BillingTab />}
+      {activeTab === 'security' && <SecuritySettingsPanel />}
     </>
   )
 }

@@ -437,6 +437,75 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     }
   }
 
+  /**
+   * Build a merged security policy for a project runtime (local mode only).
+   * Reads user-level preference from LocalConfig and project-level overrides
+   * from Project.settings, merges with escalation protection, and returns
+   * a base64-encoded JSON string for the SECURITY_POLICY env var.
+   */
+  private async buildSecurityPolicy(projectId: string): Promise<string | null> {
+    try {
+      const { prisma } = await import('../prisma')
+      const localDb = prisma as any
+
+      const TIER_RANK: Record<string, number> = { strict: 0, balanced: 1, full_autonomy: 2 }
+      const DEFAULT_PREF = { mode: 'balanced', approvalTimeoutSeconds: 60 }
+
+      // Read user-level preference
+      let userPref = DEFAULT_PREF
+      try {
+        const row = await localDb.localConfig.findUnique({ where: { key: 'SECURITY_PREFS' } })
+        if (row?.value) {
+          userPref = { ...DEFAULT_PREF, ...JSON.parse(row.value) }
+        }
+      } catch { /* use default */ }
+
+      // Read project-level override
+      let projectOverride: any = null
+      try {
+        const project = await prisma.project.findUnique({
+          where: { id: projectId },
+          select: { settings: true },
+        })
+        const settings = typeof project?.settings === 'string'
+          ? JSON.parse(project.settings)
+          : project?.settings
+        if (settings?.security) {
+          projectOverride = settings.security
+        }
+      } catch { /* no override */ }
+
+      // Merge with escalation protection
+      let effective = userPref
+      if (projectOverride?.mode) {
+        const projRank = TIER_RANK[projectOverride.mode] ?? 1
+        const userRank = TIER_RANK[userPref.mode] ?? 1
+        const effectiveMode = projRank <= userRank ? projectOverride.mode : userPref.mode
+        effective = { ...userPref, mode: effectiveMode }
+
+        if (projectOverride.overrides) {
+          const userDeny = (userPref as any).overrides?.shellCommands?.deny ?? []
+          const projDeny = projectOverride.overrides?.shellCommands?.deny ?? []
+          effective = {
+            ...effective,
+            overrides: {
+              ...(userPref as any).overrides,
+              shellCommands: {
+                ...(userPref as any).overrides?.shellCommands,
+                deny: [...new Set([...userDeny, ...projDeny])],
+              },
+            },
+          } as any
+        }
+      }
+
+      return Buffer.from(JSON.stringify(effective)).toString('base64')
+    } catch (err) {
+      console.warn('[RuntimeManager] buildSecurityPolicy error:', err)
+      return null
+    }
+  }
+
   async start(projectId: string): Promise<IProjectRuntime> {
     // Check if already running
     const existing = this.runtimes.get(projectId)
@@ -691,6 +760,19 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         // Strip the raw platform API key so the child process cannot bypass the proxy.
         delete runtimeEnv.ANTHROPIC_API_KEY
         delete runtimeEnv.ANTHROPIC_BASE_URL
+
+        // Security policy — read user prefs + project overrides, merge, and pass to runtime
+        if (process.env.SHOGO_LOCAL_MODE === 'true') {
+          try {
+            const securityPolicy = await this.buildSecurityPolicy(projectId)
+            if (securityPolicy) {
+              runtimeEnv.SECURITY_POLICY = securityPolicy
+              console.log(`[RuntimeManager] Security policy attached for ${projectId}`)
+            }
+          } catch (err: any) {
+            console.warn(`[RuntimeManager] Failed to build security policy: ${err.message}`)
+          }
+        }
         
         const agentProc = spawn('bun', ['run', runtimeServerPath], {
           cwd: projectDir,

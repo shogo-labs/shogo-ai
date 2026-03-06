@@ -843,6 +843,48 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
       return c.json({ ok: false, error: `Cannot reach LLM server: ${err.message}`, models: [] })
     }
   })
+
+  // -------------------------------------------------------------------------
+  // Security Preferences (local mode only)
+  // -------------------------------------------------------------------------
+
+  app.get('/api/local/security-prefs', async (c) => {
+    try {
+      const row = await localDb.localConfig.findUnique({ where: { key: 'SECURITY_PREFS' } })
+      if (!row) {
+        return c.json({ mode: 'balanced', approvalTimeoutSeconds: 60 })
+      }
+      return c.json(JSON.parse(row.value))
+    } catch (err: any) {
+      return c.json({ error: err.message }, 500)
+    }
+  })
+
+  app.post('/api/local/security-prefs', async (c) => {
+    try {
+      const body = await c.req.json<{
+        mode?: string
+        overrides?: Record<string, any>
+        approvalTimeoutSeconds?: number
+      }>()
+
+      const validModes = ['strict', 'balanced', 'full_autonomy']
+      if (body.mode && !validModes.includes(body.mode)) {
+        return c.json({ error: `Invalid mode. Must be one of: ${validModes.join(', ')}` }, 400)
+      }
+
+      const value = JSON.stringify(body)
+      await localDb.localConfig.upsert({
+        where: { key: 'SECURITY_PREFS' },
+        update: { value },
+        create: { key: 'SECURITY_PREFS', value },
+      })
+
+      return c.json({ ok: true })
+    } catch (err: any) {
+      return c.json({ error: err.message }, 500)
+    }
+  })
 }
 
 // Agent template catalog — public, no auth required
