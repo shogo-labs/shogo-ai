@@ -9,13 +9,14 @@
  * Rename uses a text input inline approach.
  */
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useCallback } from "react"
 import {
   View,
   Text,
   Pressable,
   TextInput,
   FlatList,
+  ActivityIndicator,
   type ListRenderItemInfo,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
@@ -56,6 +57,9 @@ export interface ChatSessionPickerProps {
   onSelect: (sessionId: string) => void
   onCreate: () => void
   onRename?: (sessionId: string, newName: string) => void
+  onLoadMore?: () => void
+  hasMore?: boolean
+  isLoadingMore?: boolean
 }
 
 export function formatRelativeTime(timestamp: number): string {
@@ -78,6 +82,9 @@ export function ChatSessionPicker({
   onSelect,
   onCreate,
   onRename,
+  onLoadMore,
+  hasMore,
+  isLoadingMore,
 }: ChatSessionPickerProps) {
   const currentSession = sessions.find((s) => s.id === currentSessionId)
   const [isOpen, setIsOpen] = useState(false)
@@ -125,6 +132,12 @@ export function ChatSessionPicker({
     onCreate()
     setIsOpen(false)
   }
+
+  const handleEndReached = useCallback(() => {
+    if (hasMore && !isLoadingMore && !searchQuery.trim()) {
+      onLoadMore?.()
+    }
+  }, [hasMore, isLoadingMore, searchQuery, onLoadMore])
 
   const renderSession = ({ item: session }: ListRenderItemInfo<ChatSession>) => {
     const isEditing = editingSessionId === session.id
@@ -246,6 +259,15 @@ export function ChatSessionPicker({
               renderItem={renderSession}
               keyExtractor={(item) => item.id}
               style={{ maxHeight: 240 }}
+              onEndReached={handleEndReached}
+              onEndReachedThreshold={0.5}
+              ListFooterComponent={
+                isLoadingMore ? (
+                  <View className="py-3 items-center">
+                    <ActivityIndicator size="small" />
+                  </View>
+                ) : null
+              }
             />
           )}
         </PopoverBody>

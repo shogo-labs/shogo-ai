@@ -28,7 +28,10 @@ export const ChatMessageCollection = types
   .model("ChatMessageCollection", {
     items: types.map(ChatMessageModel),
     isLoading: types.optional(types.boolean, false),
+    isLoadingMore: types.optional(types.boolean, false),
     error: types.maybeNull(types.string),
+    total: types.optional(types.number, 0),
+    hasMore: types.optional(types.boolean, false),
   })
 
   // =========================================================================
@@ -157,6 +160,73 @@ export const ChatMessageCollection = types
         } catch (error: any) {
           self.error = error.message || "Failed to load"
           self.isLoading = false
+          throw error
+        }
+      }),
+
+      /**
+       * Load a page of items (append mode for infinite scroll).
+       * API returns items in desc order (newest first).
+       * On offset=0 (first page), clears the map to handle refresh.
+       */
+      loadPage: flow(function* (
+        filter?: Record<string, any>,
+        pagination?: { limit?: number; offset?: number },
+      ) {
+        const limit = pagination?.limit ?? 50
+        const offset = pagination?.offset ?? 0
+        const isFirstPage = offset === 0
+
+        if (isFirstPage) {
+          self.isLoading = true
+        } else {
+          self.isLoadingMore = true
+        }
+        self.error = null
+
+        try {
+          const env = getEnv<ISDKEnvironment>(self)
+          const params = new URLSearchParams({
+            ...(filter as any),
+            limit: String(limit),
+            offset: String(offset),
+          })
+          const url = `${ENDPOINT}?${params.toString()}`
+
+          const response = yield env.http.get<{
+            ok: boolean
+            items?: any[]
+            total?: number
+          }>(url)
+
+          if (response.data?.ok && response.data.items) {
+            if (isFirstPage) {
+              self.items.clear()
+            }
+
+            for (const item of response.data.items) {
+              const transformed = transformForMST(item)
+              const id = transformed.id
+              const existing = self.items.get(id)
+              if (existing) {
+                applySnapshot(existing, transformed)
+              } else {
+                self.items.put(transformed)
+              }
+            }
+
+            const serverTotal = response.data.total ?? 0
+            self.total = serverTotal
+            self.hasMore = offset + response.data.items.length < serverTotal
+          }
+
+          self.isLoading = false
+          self.isLoadingMore = false
+          return self.all
+        } catch (error: any) {
+          self.error = error.message || "Failed to load page"
+          self.isLoading = false
+          self.isLoadingMore = false
           throw error
         }
       }),

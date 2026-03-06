@@ -301,6 +301,8 @@ export default observer(function ProjectLayout() {
     }
   }, [projectId, chatSessionId])
 
+  const SESSION_PAGE_SIZE = 10
+
   // Auto-select or create chat session
   useEffect(() => {
     if (!projectId || !store?.chatSessionCollection || chatSessionId) return
@@ -309,7 +311,10 @@ export default observer(function ProjectLayout() {
 
     const initSession = async () => {
       try {
-        await store.chatSessionCollection.loadAll({ contextId: projectId })
+        await store.chatSessionCollection.loadPage(
+          { contextId: projectId },
+          { limit: SESSION_PAGE_SIZE, offset: 0 },
+        )
         if (cancelled) return
 
         const existing = store.chatSessionCollection.all.filter(
@@ -349,6 +354,21 @@ export default observer(function ProjectLayout() {
   const handleChatSessionChange = useCallback((sessionId: string) => {
     setChatSessionId(sessionId)
   }, [])
+
+  const handleLoadMoreSessions = useCallback(async () => {
+    if (!store?.chatSessionCollection || store.chatSessionCollection.isLoadingMore) return
+    const currentCount = store.chatSessionCollection.all.filter(
+      (s: any) => s.contextId === projectId,
+    ).length
+    try {
+      await store.chatSessionCollection.loadPage(
+        { contextId: projectId },
+        { limit: SESSION_PAGE_SIZE, offset: currentCount },
+      )
+    } catch (err) {
+      console.error('[ProjectLayout] Failed to load more chat sessions:', err)
+    }
+  }, [store, projectId])
 
   // Chat panel visibility
   const [chatCollapsed, setChatCollapsed] = useState(false)
@@ -517,6 +537,9 @@ export default observer(function ProjectLayout() {
                         setShowChatSessions(false)
                       }}
                       onCreate={handleCreateNewSession}
+                      onLoadMore={handleLoadMoreSessions}
+                      hasMore={store?.chatSessionCollection?.hasMore ?? false}
+                      isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
                     />
                   </View>
                 )}
