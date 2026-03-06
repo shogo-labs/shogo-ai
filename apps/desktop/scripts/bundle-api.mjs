@@ -77,6 +77,18 @@ const DEPS_TO_STRIP = {
     '@prisma/instrumentation',   // OTEL integration, disabled without env var
     'pg',                        // conditional require, guarded by !isLocalMode
     '@aws-sdk/client-ses',       // dynamic import in SDK email provider
+    // OTEL SDK packages -- entry.ts skips import('./instrumentation') in local mode.
+    // @opentelemetry/api is kept (lightweight, used by tracing middleware, no-ops gracefully).
+    '@opentelemetry/exporter-metrics-otlp-http',
+    '@opentelemetry/exporter-trace-otlp-http',
+    '@opentelemetry/instrumentation-http',
+    '@opentelemetry/instrumentation-undici',
+    '@opentelemetry/resources',
+    '@opentelemetry/sdk-metrics',
+    '@opentelemetry/sdk-node',
+    '@opentelemetry/sdk-trace-base',
+    '@opentelemetry/sdk-trace-node',
+    '@opentelemetry/semantic-conventions',
   ],
   'packages/agent-runtime': [
     '@aws-sdk/client-s3',        // phantom dep: never imported in agent-runtime source
