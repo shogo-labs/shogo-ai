@@ -5,8 +5,8 @@
  * Uses shared-ui primitives backed by React Native.
  */
 
-import React, { useState, useMemo } from 'react'
-import { View, Text, ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform, Pressable } from 'react-native'
+import React, { useState, useEffect, useMemo, useRef } from 'react'
+import { View, Text, TextInput, ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform, Pressable, useWindowDimensions } from 'react-native'
 import { Button } from '../primitives/Button'
 import { Card, CardContent } from '../primitives/Card'
 import { Input } from '../primitives/Input'
@@ -65,10 +65,16 @@ function getPasswordStrength(password: string): { score: number; label: string; 
   return { score, ...levels[score] }
 }
 
-function SignInForm({ onSignIn, isLoading, error, onClearError }: Pick<LoginScreenProps, 'onSignIn' | 'isLoading' | 'error' | 'onClearError'>) {
+function SignInForm({ onSignIn, isLoading, error, onClearError, onScrollToBottom }: Pick<LoginScreenProps, 'onSignIn' | 'isLoading' | 'error' | 'onClearError'> & { onScrollToBottom?: () => void }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
+  const passwordRef = useRef<TextInput>(null)
+
+  const focusPassword = () => {
+    passwordRef.current?.focus()
+    setTimeout(() => onScrollToBottom?.(), 100)
+  }
 
   const handleSubmit = async () => {
     if (!email || !password) return
@@ -88,6 +94,8 @@ function SignInForm({ onSignIn, isLoading, error, onClearError }: Pick<LoginScre
           onChangeText={(t) => { setEmail(t); onClearError?.() }}
           disabled={isLoading}
           returnKeyType="next"
+          blurOnSubmit={false}
+          onSubmitEditing={focusPassword}
         />
       </View>
 
@@ -100,6 +108,7 @@ function SignInForm({ onSignIn, isLoading, error, onClearError }: Pick<LoginScre
         </View>
         <View className="relative">
           <Input
+            ref={passwordRef}
             placeholder="Enter your password"
             secureTextEntry={!showPassword}
             value={password}
@@ -107,6 +116,7 @@ function SignInForm({ onSignIn, isLoading, error, onClearError }: Pick<LoginScre
             disabled={isLoading}
             onSubmitEditing={handleSubmit}
             returnKeyType="go"
+            onFocus={onScrollToBottom}
           />
           <Pressable
             onPress={() => setShowPassword(!showPassword)}
@@ -131,17 +141,24 @@ function SignInForm({ onSignIn, isLoading, error, onClearError }: Pick<LoginScre
   )
 }
 
-function SignUpForm({ onSignUp, isLoading, error, onClearError }: Pick<LoginScreenProps, 'onSignUp' | 'isLoading' | 'error' | 'onClearError'>) {
+function SignUpForm({ onSignUp, isLoading, error, onClearError, onScrollToBottom }: Pick<LoginScreenProps, 'onSignUp' | 'isLoading' | 'error' | 'onClearError'> & { onScrollToBottom?: () => void }) {
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [emailTouched, setEmailTouched] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
+  const emailRef = useRef<TextInput>(null)
+  const passwordRef = useRef<TextInput>(null)
 
   const isEmailValid = useMemo(() => isValidEmail(email), [email])
   const showEmailError = emailTouched && email.length > 0 && !isEmailValid
   const passwordStrength = useMemo(() => getPasswordStrength(password), [password])
   const isFormValid = name.length > 0 && isEmailValid && password.length >= 8
+
+  const focusPassword = () => {
+    passwordRef.current?.focus()
+    setTimeout(() => onScrollToBottom?.(), 100)
+  }
 
   const handleSubmit = async () => {
     if (!isFormValid) return
@@ -159,6 +176,8 @@ function SignUpForm({ onSignUp, isLoading, error, onClearError }: Pick<LoginScre
           onChangeText={(t) => { setName(t); onClearError?.() }}
           disabled={isLoading}
           returnKeyType="next"
+          blurOnSubmit={false}
+          onSubmitEditing={() => emailRef.current?.focus()}
         />
       </View>
 
@@ -166,6 +185,7 @@ function SignUpForm({ onSignUp, isLoading, error, onClearError }: Pick<LoginScre
         <Text className="text-sm font-medium text-foreground">Email</Text>
         <View className="relative">
           <Input
+            ref={emailRef}
             placeholder="you@example.com"
             keyboardType="email-address"
             autoCapitalize="none"
@@ -175,6 +195,8 @@ function SignUpForm({ onSignUp, isLoading, error, onClearError }: Pick<LoginScre
             onBlur={() => setEmailTouched(true)}
             disabled={isLoading}
             returnKeyType="next"
+            blurOnSubmit={false}
+            onSubmitEditing={focusPassword}
           />
           {emailTouched && email.length > 0 ? (
             <View className="absolute right-3 top-1/2 -translate-y-1/2">
@@ -193,6 +215,7 @@ function SignUpForm({ onSignUp, isLoading, error, onClearError }: Pick<LoginScre
         <Text className="text-sm font-medium text-foreground">Password</Text>
         <View className="relative">
           <Input
+            ref={passwordRef}
             placeholder="Create a password (min 8 chars)"
             secureTextEntry={!showPassword}
             value={password}
@@ -200,6 +223,7 @@ function SignUpForm({ onSignUp, isLoading, error, onClearError }: Pick<LoginScre
             disabled={isLoading}
             onSubmitEditing={handleSubmit}
             returnKeyType="go"
+            onFocus={onScrollToBottom}
           />
           <Pressable
             onPress={() => setShowPassword(!showPassword)}
@@ -248,18 +272,31 @@ function SignUpForm({ onSignUp, isLoading, error, onClearError }: Pick<LoginScre
   )
 }
 
-export function LoginScreen({ onSignIn, onSignUp, onGoogleSignIn, isLoading, error, onClearError }: LoginScreenProps) {
+export function LoginScreen({ onSignIn, onSignUp, onGoogleSignIn, isLoading, error }: LoginScreenProps) {
   const [activeTab, setActiveTab] = useState<Tab>('signin')
-  const switchTab = (tab: Tab) => { setActiveTab(tab); onClearError?.() }
+  const [dismissed, setDismissed] = useState(false)
+  const { height: windowHeight } = useWindowDimensions()
+  const scrollRef = useRef<ScrollView>(null)
+
+  useEffect(() => { if (error) setDismissed(false) }, [error])
+
+  const displayError = dismissed ? null : error
+  const dismissError = () => setDismissed(true)
+  const switchTab = (tab: Tab) => { setActiveTab(tab); setDismissed(true) }
+  const scrollToBottom = () => {
+    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 150)
+  }
 
   return (
     <KeyboardAvoidingView
       className="flex-1 bg-background"
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
       <ScrollView
-        contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', padding: 16 }}
+        ref={scrollRef}
+        contentContainerStyle={{ minHeight: windowHeight, justifyContent: 'center', padding: 16 }}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="interactive"
       >
         <Card className="w-full max-w-md self-center">
           <CardContent className="p-6">
@@ -277,8 +314,15 @@ export function LoginScreen({ onSignIn, onSignUp, onGoogleSignIn, isLoading, err
                   onPress={() => switchTab(tab)}
                   className={cn(
                     'flex-1 py-2 rounded-md items-center',
-                    activeTab === tab ? 'bg-card shadow-sm' : '',
+                    activeTab === tab ? 'bg-card' : '',
                   )}
+                  style={activeTab === tab ? {
+                    shadowColor: '#000',
+                    shadowOffset: { width: 0, height: 1 },
+                    shadowOpacity: 0.05,
+                    shadowRadius: 2,
+                    elevation: 1,
+                  } : undefined}
                 >
                   <Text className={cn(
                     'text-sm font-medium',
@@ -291,8 +335,8 @@ export function LoginScreen({ onSignIn, onSignUp, onGoogleSignIn, isLoading, err
             </View>
 
             {activeTab === 'signin'
-              ? <SignInForm onSignIn={onSignIn} isLoading={isLoading} error={error} onClearError={onClearError} />
-              : <SignUpForm onSignUp={onSignUp} isLoading={isLoading} error={error} onClearError={onClearError} />
+              ? <SignInForm onSignIn={onSignIn} isLoading={isLoading} error={displayError} onClearError={dismissError} onScrollToBottom={scrollToBottom} />
+              : <SignUpForm onSignUp={onSignUp} isLoading={isLoading} error={displayError} onClearError={dismissError} onScrollToBottom={scrollToBottom} />
             }
 
             {onGoogleSignIn ? (

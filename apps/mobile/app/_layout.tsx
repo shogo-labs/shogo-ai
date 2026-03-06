@@ -1,5 +1,6 @@
 import '../polyfills'
 import '../global.css'
+import '../lib/icon-interop'
 
 import { Stack } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'

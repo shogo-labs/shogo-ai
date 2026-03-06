@@ -32,9 +32,14 @@ export interface ApiDataSourceResult {
   unregisterBinding: (key: string) => void
 }
 
+export interface ApiDataSourceOptions {
+  headers?: () => Record<string, string>
+}
+
 export function useApiDataSource(
   agentUrl: string | null,
   surfaceId: string,
+  options?: ApiDataSourceOptions,
 ): ApiDataSourceResult {
   const [cache, setCache] = useState<Map<string, ApiDataState>>(new Map())
   const bindingsRef = useRef<Map<string, ApiBinding>>(new Map())
@@ -75,7 +80,7 @@ export function useApiDataSource(
     })
 
     try {
-      const res = await fetch(url)
+      const res = await fetch(url, { headers: options?.headers?.() })
       const json = await res.json()
       if (!mountedRef.current) return
 
@@ -156,9 +161,10 @@ export function useApiDataSource(
 
     const url = `${agentUrl}/agent/dynamic-app/api/${surfaceId}${endpoint}`
     try {
+      const extraHeaders = options?.headers?.()
       const res = await fetch(url, {
         method: method.toUpperCase(),
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...extraHeaders },
         body: body ? JSON.stringify(body) : undefined,
       })
       const json = await res.json()

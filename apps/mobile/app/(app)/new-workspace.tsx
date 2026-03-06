@@ -16,6 +16,8 @@ import {
   Linking,
   Platform,
 } from 'react-native'
+import * as WebBrowser from 'expo-web-browser'
+import * as ExpoLinking from 'expo-linking'
 import { useRouter } from 'expo-router'
 import {
   ArrowLeft,
@@ -63,29 +65,70 @@ export default function NewWorkspacePage() {
     setIsCheckoutLoading(true)
     setError(null)
     try {
-      const planId = credits === BASE_TIER_CREDITS ? planType : `${planType}_${credits}`
+      const planId = credits === 100 ? planType : `${planType}_${credits}`
+      const isNative = Platform.OS !== 'web'
+
+      const redirectBase = isNative ? ExpoLinking.createURL('checkout-return') : undefined
+      console.log('[NewWorkspace] checkout start', { planId, billingInterval, isNative, redirectBase })
+
       const data = await api.createWorkspaceCheckout(http, {
         workspaceName: workspaceName.trim(),
         planId,
         billingInterval,
         userId: user.id,
         userEmail: user.email ?? undefined,
+        ...(isNative && redirectBase && {
+          successUrl: `${redirectBase}?workspace={WORKSPACE_ID}&checkout=workspace_created&session_id={CHECKOUT_SESSION_ID}`,
+          cancelUrl: `${redirectBase}?workspace={WORKSPACE_ID}&checkout=canceled`,
+        }),
       })
+      console.log('[NewWorkspace] checkout session created', { url: data?.url ? '(received)' : '(missing)', workspaceId: (data as any)?.workspaceId })
+
       if (data?.url) {
-        if (Platform.OS === 'web') {
+        if (!isNative) {
           window.location.href = data.url
         } else {
-          Linking.openURL(data.url)
+          const scheme = ExpoLinking.createURL('')
+          console.log('[NewWorkspace] opening auth session, scheme prefix:', scheme)
+          const result = await WebBrowser.openAuthSessionAsync(data.url, scheme)
+          console.log('[NewWorkspace] auth session result:', { type: result.type, url: 'url' in result ? result.url : undefined })
+
+          if (result.type === 'success' && 'url' in result && result.url) {
+            try {
+              const qs = result.url.split('?')[1] || ''
+              const params = new URLSearchParams(qs)
+              const checkout = params.get('checkout')
+              const sessionId = params.get('session_id')
+              const wsId = params.get('workspace')
+              console.log('[NewWorkspace] parsed redirect params:', { checkout, sessionId, wsId })
+
+              if (sessionId) {
+                console.log('[NewWorkspace] verifying checkout session...')
+                try {
+                  const verifyResult = await api.verifyCheckout(http, sessionId)
+                  console.log('[NewWorkspace] verify result:', verifyResult)
+                } catch (verifyErr) {
+                  console.warn('[NewWorkspace] verify failed (webhook will handle):', verifyErr)
+                }
+              }
+
+              console.log('[NewWorkspace] checkout complete, navigating home')
+              router.replace('/(app)')
+            } catch (parseErr) {
+              console.warn('[NewWorkspace] error parsing redirect URL:', parseErr)
+            }
+          }
         }
       } else {
         setError('No checkout URL received. Please try again.')
       }
     } catch (e: any) {
+      console.warn('[NewWorkspace] checkout failed:', e)
       setError(e?.message || 'Failed to start checkout. Please try again.')
     } finally {
       setIsCheckoutLoading(false)
     }
-  }, [http, workspaceName, billingInterval, user?.id, user?.email])
+  }, [http, workspaceName, billingInterval, user?.id, user?.email, router])
 
   const nameValid = workspaceName.trim().length > 0
 

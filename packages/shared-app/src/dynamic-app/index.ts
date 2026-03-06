@@ -8,8 +8,8 @@ export {
   type ComponentSchema,
 } from './component-schema'
 export * from './pointer'
-export { useDynamicAppStream, type DynamicAppStreamState } from './useDynamicAppStream'
-export { useApiDataSource, type ApiBinding, type ApiDataSourceResult } from './useApiDataSource'
+export { useDynamicAppStream, type DynamicAppStreamState, type DynamicAppStreamOptions } from './useDynamicAppStream'
+export { useApiDataSource, type ApiBinding, type ApiDataSourceResult, type ApiDataSourceOptions } from './useApiDataSource'
 export { useAgentUrl } from './useAgentUrl'
 export {
   resolveValue,

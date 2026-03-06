@@ -128,6 +128,7 @@ function TabBar({
       showsHorizontalScrollIndicator={false}
       className="border-b border-border"
       contentContainerClassName="px-4"
+      style={{ flexGrow: 0 }}
     >
       {items.map((item) => {
         const Icon = item.icon
@@ -1123,7 +1124,7 @@ function AccountTab() {
 // BILLING TAB — Lovable-style layout
 // ============================================================================
 
-function BillingTab() {
+const BillingTab = observer(function BillingTab() {
   const { user } = useAuth()
   const actions = useDomainActions()
   const currentWorkspace = useActiveWorkspace()
@@ -1411,7 +1412,7 @@ function BillingTab() {
       </View>
     </View>
   )
-}
+})
 
 // ============================================================================
 // PEOPLE TAB — Lovable-style workspace member management

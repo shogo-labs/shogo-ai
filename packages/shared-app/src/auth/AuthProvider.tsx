@@ -80,11 +80,36 @@ export function AuthProvider({ authClient, children }: AuthProviderProps) {
     }
   }, [authClient])
 
-  const handleSignInWithGoogle = useCallback(() => {
-    ;(authClient as any).signIn.social({
-      provider: 'google',
-      callbackURL: typeof window !== 'undefined' ? window.location.origin : '/',
-    })
+  const handleSignInWithGoogle = useCallback(async () => {
+    setError(null)
+    let callbackURL = '/'
+    if (typeof window !== 'undefined' && window.location?.protocol?.startsWith('http')) {
+      const { protocol, hostname, port } = window.location
+      const host = /^192\.168\./.test(hostname) ? 'localhost' : hostname
+      callbackURL = `${protocol}//${host}${port ? `:${port}` : ''}/`
+    }
+    try {
+      const result = await (authClient as any).signIn.social({
+        provider: 'google',
+        callbackURL,
+      })
+      if (result?.error) {
+        console.error('[Auth] Google sign-in error:', result.error)
+        setError(result.error.message || 'Google sign-in failed')
+        return
+      }
+      if (result?.data?.user) {
+        setUser(result.data.user as AuthUser)
+        return
+      }
+      // Fallback: re-fetch session (expo plugin stores token in SecureStore
+      // but the promise may not return user data directly)
+      const { data } = await authClient.getSession()
+      if (data?.user) setUser(data.user as AuthUser)
+    } catch (e: any) {
+      console.error('[Auth] Google sign-in exception:', e)
+      setError(e.message || 'Google sign-in failed')
+    }
   }, [authClient])
 
   const handleSignOut = useCallback(async () => {

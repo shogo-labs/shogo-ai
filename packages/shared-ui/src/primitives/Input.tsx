@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { forwardRef } from 'react'
 import { TextInput, type TextInputProps } from 'react-native'
 import { cn } from './cn'
 
@@ -18,9 +18,12 @@ export interface InputProps {
   onSubmitEditing?: () => void
   returnKeyType?: TextInputProps['returnKeyType']
   autoFocus?: boolean
+  onBlur?: () => void
+  onFocus?: () => void
+  blurOnSubmit?: boolean
 }
 
-export function Input({
+export const Input = forwardRef<TextInput, InputProps>(function Input({
   value,
   onChangeText,
   placeholder,
@@ -36,9 +39,13 @@ export function Input({
   onSubmitEditing,
   returnKeyType,
   autoFocus,
-}: InputProps) {
+  onBlur,
+  onFocus,
+  blurOnSubmit,
+}, ref) {
   return (
     <TextInput
+      ref={ref}
       className={cn(
         'w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground',
         multiline ? 'min-h-[80px]' : 'h-10',
@@ -59,6 +66,9 @@ export function Input({
       onSubmitEditing={onSubmitEditing}
       returnKeyType={returnKeyType}
       autoFocus={autoFocus}
+      onBlur={onBlur}
+      onFocus={onFocus}
+      blurOnSubmit={blurOnSubmit}
     />
   )
-}
+})

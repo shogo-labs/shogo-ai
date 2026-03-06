@@ -12,6 +12,7 @@ import { useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { observer } from 'mobx-react-lite'
 import { ArrowRight } from 'lucide-react-native'
+import Svg, { Defs, RadialGradient, Stop, Ellipse } from 'react-native-svg'
 import { ProjectCard } from '../../components/home/ProjectCard'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Button } from '@shogo/shared-ui/primitives'
@@ -111,18 +112,30 @@ function LovableGradient({ isDark }: { isDark: boolean }) {
     const o = isDark ? 0.35 : 1
     return (
       <View className="absolute inset-0 overflow-hidden" pointerEvents="none">
-        <View
-          className="absolute w-[500px] h-[500px] rounded-full"
-          style={{ top: '-10%', left: '10%', backgroundColor: `rgba(96, 165, 250, ${0.25 * o})` }}
-        />
-        <View
-          className="absolute w-[500px] h-[500px] rounded-full"
-          style={{ top: '10%', right: '-10%', backgroundColor: `rgba(244, 114, 182, ${0.25 * o})` }}
-        />
-        <View
-          className="absolute w-[400px] h-[400px] rounded-full"
-          style={{ bottom: '-5%', left: '30%', backgroundColor: `rgba(251, 113, 133, ${0.2 * o})` }}
-        />
+        <Svg width="100%" height="100%" style={{ position: 'absolute' }}>
+          <Defs>
+            <RadialGradient id="orb1" cx="50%" cy="50%" rx="50%" ry="50%">
+              <Stop offset="0%" stopColor="rgb(96,165,250)" stopOpacity={0.55 * o} />
+              <Stop offset="40%" stopColor="rgb(147,197,253)" stopOpacity={0.35 * o} />
+              <Stop offset="100%" stopColor="rgb(96,165,250)" stopOpacity={0} />
+            </RadialGradient>
+            <RadialGradient id="orb2" cx="50%" cy="50%" rx="50%" ry="50%">
+              <Stop offset="0%" stopColor="rgb(244,114,182)" stopOpacity={0.55 * o} />
+              <Stop offset="30%" stopColor="rgb(251,113,133)" stopOpacity={0.4 * o} />
+              <Stop offset="60%" stopColor="rgb(249,115,22)" stopOpacity={0.2 * o} />
+              <Stop offset="100%" stopColor="rgb(244,114,182)" stopOpacity={0} />
+            </RadialGradient>
+            <RadialGradient id="orb3" cx="50%" cy="50%" rx="50%" ry="50%">
+              <Stop offset="0%" stopColor="rgb(251,113,133)" stopOpacity={0.45 * o} />
+              <Stop offset="25%" stopColor="rgb(236,72,153)" stopOpacity={0.35 * o} />
+              <Stop offset="50%" stopColor="rgb(249,115,22)" stopOpacity={0.2 * o} />
+              <Stop offset="100%" stopColor="rgb(251,113,133)" stopOpacity={0} />
+            </RadialGradient>
+          </Defs>
+          <Ellipse cx="30%" cy="15%" rx="55%" ry="45%" fill="url(#orb1)" />
+          <Ellipse cx="80%" cy="35%" rx="50%" ry="55%" fill="url(#orb2)" />
+          <Ellipse cx="50%" cy="90%" rx="55%" ry="40%" fill="url(#orb3)" />
+        </Svg>
       </View>
     )
   }
@@ -347,18 +360,37 @@ const HomeScreen = observer(function HomeScreen() {
     setIsCreating(true)
     try {
       const projectName = generateProjectNameFromPrompt(text)
-      const newProject = await actions.createProject(
-        projectName,
-        currentWorkspace.id,
-        undefined,
-        user.id,
-        'AGENT',
-      )
-      const chatSession = await actions.createChatSession({
-        inferredName: `Chat - ${projectName}`,
-        contextType: 'project',
-        contextId: newProject.id,
-      })
+
+      let newProject
+      try {
+        newProject = await actions.createProject(
+          projectName,
+          currentWorkspace.id,
+          undefined,
+          user.id,
+          'AGENT',
+        )
+      } catch (err: any) {
+        const detail = err?.message || err?.details?.error?.message || String(err)
+        console.error('[Home] Failed to create project:', detail, err)
+        Alert.alert('Error', `Failed to create project: ${detail}`)
+        return
+      }
+
+      let chatSession
+      try {
+        chatSession = await actions.createChatSession({
+          inferredName: `Chat - ${projectName}`,
+          contextType: 'project',
+          contextId: newProject.id,
+        })
+      } catch (err: any) {
+        const detail = err?.message || err?.details?.error?.message || String(err)
+        console.error('[Home] Failed to create chat session:', detail, err)
+        Alert.alert('Error', `Failed to create chat session: ${detail}`)
+        return
+      }
+
       if (imageData && imageData.length > 0) {
         setPendingImageData(imageData)
       }
@@ -371,9 +403,6 @@ const HomeScreen = observer(function HomeScreen() {
           initialMessage: text,
         },
       } as any)
-    } catch (error) {
-      console.error('[Home] Failed to create project:', error)
-      Alert.alert('Error', 'Failed to create project')
     } finally {
       setIsCreating(false)
     }

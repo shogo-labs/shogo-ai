@@ -30,11 +30,12 @@ interface RendererProps {
   surface: SurfaceState
   agentUrl: string | null
   onAction: (surfaceId: string, name: string, context?: Record<string, unknown>) => void
-  onDataChange?: (surfaceId: string, path: string, value: unknown, options?: { persist?: boolean }) => void
+  onDataChange?: (surfaceId: string, path: string, value: unknown) => void
+  authHeaders?: () => Record<string, string>
 }
 
-export function DynamicAppRenderer({ surface, agentUrl, onAction, onDataChange }: RendererProps) {
-  const apiDataSource = useApiDataSource(agentUrl, surface.surfaceId)
+export function DynamicAppRenderer({ surface, agentUrl, onAction, onDataChange, authHeaders }: RendererProps) {
+  const apiDataSource = useApiDataSource(agentUrl, surface.surfaceId, authHeaders ? { headers: authHeaders } : undefined)
 
   const handleAction = useCallback(
     async (name: string, context?: Record<string, unknown>) => {

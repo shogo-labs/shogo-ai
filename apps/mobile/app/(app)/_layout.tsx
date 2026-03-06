@@ -61,7 +61,7 @@ export default function AppLayout() {
           {showSidebar && <AppSidebar />}
 
           <View className="flex-1">
-            {!isWide && !isHomePage && !isSettingsPage && <AppHeader onMenuPress={openDrawer} />}
+            {!isWide && !isProjectDetail && <AppHeader onMenuPress={openDrawer} />}
             <View className="flex-1">
               <Slot />
             </View>

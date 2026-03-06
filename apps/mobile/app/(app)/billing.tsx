@@ -17,6 +17,8 @@ import {
   Linking,
   Platform,
 } from 'react-native'
+import * as WebBrowser from 'expo-web-browser'
+import * as ExpoLinking from 'expo-linking'
 import { useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
@@ -28,7 +30,8 @@ import {
   Crown,
 } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
-import { useWorkspaceCollection } from '../../contexts/domain'
+import { useWorkspaceCollection, useDomainHttp } from '../../contexts/domain'
+import { api } from '../../lib/api'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useDomainActions } from '@shogo/shared-app/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
@@ -70,12 +73,15 @@ export default observer(function BillingPage() {
     }
   }, [user?.id, workspaces])
 
+  const http = useDomainHttp()
   const currentWorkspace = useActiveWorkspace()
 
   const {
     subscription,
     effectiveBalance,
     isLoading: isBillingLoading,
+    refetchSubscription,
+    refetchCreditLedger,
   } = useBillingData(currentWorkspace?.id)
 
   const [billingInterval, setBillingInterval] = useState<'monthly' | 'annual'>('monthly')
@@ -98,46 +104,96 @@ export default observer(function BillingPage() {
     if (!currentWorkspace?.id) return
     setIsCheckoutLoading(true)
     try {
-      const planId = credits === BASE_TIER_CREDITS ? planType : `${planType}_${credits}`
-      const data = await actions.createCheckoutSession({
+      const planId = credits === 100 ? planType : `${planType}_${credits}`
+      const isNative = Platform.OS !== 'web'
+
+      const redirectBase = isNative ? ExpoLinking.createURL('billing') : undefined
+      console.log('[Billing] checkout start', { planId, billingInterval, isNative, redirectBase })
+
+      const data = await api.createCheckoutSession(http, {
         workspaceId: currentWorkspace.id,
         planId,
         billingInterval,
         userEmail: user?.email,
+        ...(isNative && redirectBase && {
+          successUrl: `${redirectBase}?workspace=${currentWorkspace.id}&checkout=success&session_id={CHECKOUT_SESSION_ID}`,
+          cancelUrl: `${redirectBase}?workspace=${currentWorkspace.id}&checkout=canceled`,
+        }),
       })
+      console.log('[Billing] checkout session created', { url: data.url ? '(received)' : '(missing)' })
+
       if (data.url) {
-        if (Platform.OS === 'web') {
+        if (!isNative) {
           window.location.href = data.url
         } else {
-          Linking.openURL(data.url)
+          const scheme = ExpoLinking.createURL('')
+          console.log('[Billing] opening auth session, scheme prefix:', scheme)
+          const result = await WebBrowser.openAuthSessionAsync(data.url, scheme)
+          console.log('[Billing] auth session result:', { type: result.type, url: 'url' in result ? result.url : undefined })
+
+          if (result.type === 'success' && 'url' in result && result.url) {
+            try {
+              const qs = result.url.split('?')[1] || ''
+              const params = new URLSearchParams(qs)
+              const checkout = params.get('checkout')
+              const sessionId = params.get('session_id')
+              console.log('[Billing] parsed redirect params:', { checkout, sessionId })
+
+              if (sessionId) {
+                console.log('[Billing] verifying checkout session...')
+                try {
+                  const verifyResult = await api.verifyCheckout(http, sessionId)
+                  console.log('[Billing] verify result:', verifyResult)
+                } catch (verifyErr) {
+                  console.warn('[Billing] verify failed (webhook will handle):', verifyErr)
+                }
+              }
+
+              console.log('[Billing] refetching billing data...')
+              refetchSubscription()
+              refetchCreditLedger()
+            } catch (parseErr) {
+              console.warn('[Billing] error parsing redirect URL:', parseErr)
+            }
+          }
         }
       }
     } catch (e) {
-      console.warn('Checkout failed:', e)
+      console.warn('[Billing] checkout failed:', e)
     } finally {
       setIsCheckoutLoading(false)
     }
-  }, [actions, currentWorkspace?.id, billingInterval, user?.email])
+  }, [http, currentWorkspace?.id, billingInterval, user?.email, router, refetchSubscription, refetchCreditLedger])
 
   const handleManageSubscription = useCallback(async () => {
     if (!currentWorkspace?.id) return
     setIsPortalLoading(true)
     try {
-      const returnUrl = Platform.OS === 'web' ? window.location.href : undefined
-      const data = await actions.createPortalSession(currentWorkspace.id, returnUrl)
+      const isNative = Platform.OS !== 'web'
+      const returnUrl = isNative
+        ? ExpoLinking.createURL('billing')
+        : window.location.href
+      console.log('[Billing] portal start', { isNative, returnUrl })
+
+      const data = await api.createPortalSession(http, currentWorkspace.id, returnUrl)
       if (data.url) {
-        if (Platform.OS === 'web') {
+        if (!isNative) {
           window.location.href = data.url
         } else {
-          Linking.openURL(data.url)
+          const scheme = ExpoLinking.createURL('')
+          console.log('[Billing] opening portal, scheme prefix:', scheme)
+          const result = await WebBrowser.openAuthSessionAsync(data.url, scheme)
+          console.log('[Billing] portal result:', { type: result.type })
+          refetchSubscription()
+          refetchCreditLedger()
         }
       }
     } catch (e) {
-      console.warn('Portal session failed:', e)
+      console.warn('[Billing] portal session failed:', e)
     } finally {
       setIsPortalLoading(false)
     }
-  }, [actions, currentWorkspace?.id])
+  }, [http, currentWorkspace?.id, refetchSubscription, refetchCreditLedger])
 
   if (isAuthLoading || isBillingLoading) {
     return (

@@ -18,8 +18,11 @@ if (Platform.OS !== 'web') {
     }
   }
 
-  // Polyfill EventSource for Hermes (used by dynamic app streaming)
-  if (!('EventSource' in global)) {
+  // Always override EventSource on native. The built-in Hermes/Expo Go
+  // EventSource doesn't support custom headers, which we need to send
+  // auth cookies. Our implementation uses XMLHttpRequest for reliable
+  // incremental streaming and fires onerror on stream end for reconnection.
+  {
     class RNEventSource {
       static CONNECTING = 0
       static OPEN = 1
@@ -29,63 +32,88 @@ if (Platform.OS !== 'web') {
       onopen: ((ev: any) => void) | null = null
       onmessage: ((ev: any) => void) | null = null
       onerror: ((ev: any) => void) | null = null
-      private _controller: AbortController | null = null
+      private _xhr: XMLHttpRequest | null = null
+      private _lastIdx = 0
 
-      constructor(url: string) {
+      constructor(url: string, options?: { headers?: Record<string, string> }) {
         this.url = url
-        this._connect()
+        this._open(options?.headers)
       }
 
-      private async _connect() {
-        this._controller = new AbortController()
-        try {
-          const res = await fetch(this.url, {
-            headers: { Accept: 'text/event-stream' },
-            signal: this._controller.signal,
-          })
-          if (!res.ok || !res.body) {
-            this.onerror?.({ type: 'error' })
-            return
+      private _open(headers?: Record<string, string>) {
+        const xhr = new XMLHttpRequest()
+        this._xhr = xhr
+        this._lastIdx = 0
+
+        xhr.open('GET', this.url, true)
+        xhr.setRequestHeader('Accept', 'text/event-stream')
+        xhr.setRequestHeader('Cache-Control', 'no-cache')
+        if (headers) {
+          for (const [k, v] of Object.entries(headers)) {
+            xhr.setRequestHeader(k, v)
           }
-          this.readyState = 1
-          this.onopen?.({ type: 'open' })
+        }
 
-          const reader = res.body.getReader()
-          const decoder = new TextDecoder()
-          let buf = ''
+        xhr.onreadystatechange = () => {
+          if (this.readyState === RNEventSource.CLOSED) return
 
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-            buf += decoder.decode(value, { stream: true })
-            const parts = buf.split('\n\n')
-            buf = parts.pop() || ''
-            for (const part of parts) {
-              let data = ''
-              let eventType = 'message'
-              for (const line of part.split('\n')) {
-                if (line.startsWith('data: ')) data += line.slice(6)
-                else if (line.startsWith('data:')) data += line.slice(5)
-                else if (line.startsWith('event: ')) eventType = line.slice(7)
-              }
-              if (data) {
-                const evt = { type: eventType, data, lastEventId: '' }
-                if (eventType === 'message') this.onmessage?.(evt)
-              }
+          if (
+            (xhr.readyState === 3 || xhr.readyState === 4) &&
+            xhr.status >= 200 &&
+            xhr.status < 400
+          ) {
+            if (this.readyState === RNEventSource.CONNECTING) {
+              this.readyState = RNEventSource.OPEN
+              this.onopen?.({ type: 'open' })
             }
+            this._parse(xhr.responseText || '')
           }
-          this.readyState = 2
-        } catch (e: any) {
-          if (e?.name !== 'AbortError') {
-            this.readyState = 2
+
+          if (xhr.readyState === 4) {
+            this.readyState = RNEventSource.CLOSED
             this.onerror?.({ type: 'error' })
+          }
+        }
+
+        xhr.onerror = () => {
+          if (this.readyState === RNEventSource.CLOSED) return
+          this.readyState = RNEventSource.CLOSED
+          this.onerror?.({ type: 'error' })
+        }
+
+        xhr.send()
+      }
+
+      private _parse(text: string) {
+        const unprocessed = text.substring(this._lastIdx)
+        const boundary = unprocessed.lastIndexOf('\n\n')
+        if (boundary === -1) return
+
+        const chunk = unprocessed.substring(0, boundary)
+        this._lastIdx += boundary + 2
+
+        for (const block of chunk.split('\n\n')) {
+          if (!block.trim()) continue
+          let data = ''
+          let eventType = 'message'
+          for (const line of block.split('\n')) {
+            if (line.startsWith('data: ')) data += line.slice(6)
+            else if (line.startsWith('data:')) data += line.slice(5)
+            else if (line.startsWith('event: ')) eventType = line.slice(7)
+            else if (line.startsWith('event:')) eventType = line.slice(6)
+          }
+          if (data && eventType === 'message') {
+            this.onmessage?.({ type: 'message', data, lastEventId: '' })
           }
         }
       }
 
       close() {
-        this.readyState = 2
-        this._controller?.abort()
+        this.readyState = RNEventSource.CLOSED
+        if (this._xhr) {
+          this._xhr.abort()
+          this._xhr = null
+        }
       }
     }
     ;(global as any).EventSource = RNEventSource

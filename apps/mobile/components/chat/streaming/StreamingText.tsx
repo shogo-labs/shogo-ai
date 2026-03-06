@@ -2,18 +2,14 @@
  * StreamingText Component (React Native)
  *
  * Renders text chunks with fade-in animation during streaming.
- * Uses useStreamingText hook internally.
+ * Uses React Native's built-in Animated API.
  */
 
-import { Text } from "react-native"
-import { useEffect } from "react"
+import { Text, Animated } from "react-native"
+import { useEffect, useRef } from "react"
 import { cn } from "@shogo/shared-ui/primitives"
-import Animated, {
-  FadeIn,
-} from "react-native-reanimated"
 import { useStreamingText } from "./useStreamingText"
 import { CursorBlink } from "./CursorBlink"
-import { useReducedMotion } from "@/hooks/useReducedMotion"
 
 export interface StreamingTextProps {
   content: string
@@ -22,7 +18,23 @@ export interface StreamingTextProps {
   showCursor?: boolean
 }
 
-const AnimatedText = Animated.createAnimatedComponent(Text)
+function FadeInText({ children }: { children: string }) {
+  const opacity = useRef(new Animated.Value(0)).current
+
+  useEffect(() => {
+    Animated.timing(opacity, {
+      toValue: 1,
+      duration: 200,
+      useNativeDriver: true,
+    }).start()
+  }, [])
+
+  return (
+    <Animated.Text className="text-foreground" style={{ opacity }}>
+      {children}
+    </Animated.Text>
+  )
+}
 
 export function StreamingText({
   content,
@@ -31,7 +43,6 @@ export function StreamingText({
   showCursor = true,
 }: StreamingTextProps) {
   const { chunks } = useStreamingText(content, isStreaming)
-  const prefersReducedMotion = useReducedMotion()
 
   if (!isStreaming && chunks.length === 0 && content) {
     return (
@@ -44,14 +55,8 @@ export function StreamingText({
   return (
     <Animated.View className={cn("flex-row flex-wrap", className)}>
       {chunks.map((chunk) =>
-        chunk.isNew && !prefersReducedMotion ? (
-          <AnimatedText
-            key={chunk.id}
-            entering={FadeIn.duration(200)}
-            className="text-foreground"
-          >
-            {chunk.text}
-          </AnimatedText>
+        chunk.isNew ? (
+          <FadeInText key={chunk.id}>{chunk.text}</FadeInText>
         ) : (
           <Text key={chunk.id} className="text-foreground">
             {chunk.text}
