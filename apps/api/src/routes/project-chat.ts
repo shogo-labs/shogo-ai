@@ -13,7 +13,6 @@
 import { Hono } from "hono"
 import { resolve } from "path"
 import { trace, SpanStatusCode } from "@opentelemetry/api"
-import { getProjectPodUrl } from "../lib/knative-project-manager"
 
 import { prisma } from "../lib/prisma"
 import type { IRuntimeManager } from "../lib/runtime"
@@ -429,6 +428,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
   async function getProjectUrl(projectId: string): Promise<string> {
     if (isKubernetes()) {
       // In Kubernetes: Use Knative project manager
+      const { getProjectPodUrl } = await import("../lib/knative-project-manager")
       return await getProjectPodUrl(projectId)
     } else if (runtimeManager) {
       // Local development: Use RuntimeManager

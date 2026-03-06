@@ -21,7 +21,6 @@ import { resolve } from "path"
 import { S3Client, PutObjectCommand, DeleteObjectsCommand, ListObjectsV2Command } from "@aws-sdk/client-s3"
 import { CloudFrontClient, CreateInvalidationCommand } from "@aws-sdk/client-cloudfront"
 import { prisma } from "../lib/prisma"
-import { getProjectPodUrl } from "../lib/knative-project-manager"
 import * as checkpointService from "../services/checkpoint.service"
 import * as databaseService from "../services/database.service"
 
@@ -117,6 +116,7 @@ function getMimeType(filename: string): string {
  */
 async function triggerBuild(projectId: string): Promise<{ success: boolean; error?: string }> {
   try {
+    const { getProjectPodUrl } = await import("../lib/knative-project-manager")
     const podUrl = await getProjectPodUrl(projectId)
     console.log(`[Publish] Triggering build for project ${projectId} at ${podUrl}`)
     
@@ -143,6 +143,7 @@ async function triggerBuild(projectId: string): Promise<{ success: boolean; erro
  * Download dist/ files from the project-runtime pod
  */
 async function downloadDistFiles(projectId: string): Promise<Map<string, Buffer>> {
+  const { getProjectPodUrl } = await import("../lib/knative-project-manager")
   const podUrl = await getProjectPodUrl(projectId)
   const files = new Map<string, Buffer>()
   

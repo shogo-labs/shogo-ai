@@ -77,6 +77,8 @@ const DEPS_TO_STRIP = {
     '@prisma/instrumentation',   // OTEL integration, disabled without env var
     'pg',                        // conditional require, guarded by !isLocalMode
     '@aws-sdk/client-ses',       // dynamic import in SDK email provider
+    '@kubernetes/client-node',   // knative-project-manager now lazy-imported
+    '@aws-sdk/client-auto-scaling', // only used by proactive-node-scaler (K8s only)
     // OTEL SDK packages -- entry.ts skips import('./instrumentation') in local mode.
     // @opentelemetry/api is kept (lightweight, used by tracing middleware, no-ops gracefully).
     '@opentelemetry/exporter-metrics-otlp-http',
