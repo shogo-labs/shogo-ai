@@ -307,6 +307,13 @@ function textResult(data: any): AgentToolResult<any> {
   }
 }
 
+/** Read/list actions the Composio default response may omit but templates need. */
+const TOOLKIT_EXTRA_SLUGS: Record<string, string[]> = {
+  github: ['GITHUB_LIST_COMMITS', 'GITHUB_LIST_PULL_REQUESTS', 'GITHUB_GET_PULL_REQUEST', 'GITHUB_LIST_PULL_REQUEST_REVIEWS', 'GITHUB_LIST_ISSUES', 'GITHUB_GET_ISSUE'],
+  slack: ['SLACK_SEND_MESSAGE', 'SLACK_LIST_CHANNELS', 'SLACK_READ_MESSAGES', 'SLACK_SEARCH'],
+  gmail: ['GMAIL_SEND', 'GMAIL_SEARCH', 'GMAIL_READ', 'GMAIL_LIST_LABELS'],
+}
+
 /**
  * Dynamically register proxy AgentTools for each action in a Composio toolkit.
  * Each proxy tool executes via the Composio SDK directly.
@@ -323,7 +330,8 @@ export async function registerToolkitProxyTools(
     return { toolNames: alreadyRegistered, toolCount: alreadyRegistered.length }
   }
 
-  const schemas = await fetchComposioToolSchemas(toolkitSlug)
+  const extraSlugs = TOOLKIT_EXTRA_SLUGS[toolkitSlug.toLowerCase()]
+  const schemas = await fetchComposioToolSchemas(toolkitSlug, { toolSlugs: extraSlugs })
   const nonDeprecated = schemas.filter(s => !s.is_deprecated)
 
   if (nonDeprecated.length === 0) {

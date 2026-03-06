@@ -317,7 +317,7 @@ interface ComposioToolsResponse {
  */
 export async function fetchComposioToolSchemas(
   toolkitSlug: string,
-  options?: { apiKey?: string; important?: boolean; limit?: number },
+  options?: { apiKey?: string; important?: boolean; limit?: number; toolSlugs?: string[] },
 ): Promise<ComposioToolSchema[]> {
   const directKey = options?.apiKey || process.env.COMPOSIO_API_KEY
   const proxyUrl = process.env.TOOLS_PROXY_URL
@@ -335,6 +335,7 @@ export async function fetchComposioToolSchemas(
     limit: String(options?.limit || 100),
   })
   if (options?.important) params.set('important', 'true')
+  if (options?.toolSlugs?.length) params.set('tool_slugs', options.toolSlugs.join(','))
 
   const t0 = performance.now()
   const res = await fetch(`${baseUrl}/api/v3/tools?${params}`, {
