@@ -107,7 +107,6 @@ Shogo ships with 8 purpose-built agent templates:
 
 | Package | Description |
 |---------|-------------|
-| [@shogo/state-api](packages/state-api) | Schema-to-MST transformation engine |
 | [@shogo/agent-runtime](packages/agent-runtime) | Agent gateway, tools, Composio integrations |
 | [@shogo/api](apps/api) | Hono API server, auth, chat proxy |
 | [@shogo/mobile](apps/mobile) | Expo app (React Native for Web + iOS + Android) |
@@ -162,10 +161,9 @@ shogo-ai/
 │   ├── api/               # Hono API server (auth, chat, runtime management)
 │   └── mobile/            # Expo app (web + iOS + Android)
 ├── packages/
-│   ├── state-api/         # Schema-to-MST transformation engine
 │   ├── agent-runtime/     # Agent gateway, tool system, Composio
 │   ├── shared-app/        # Shared app logic (auth, chat, domain)
-│   └── domain-store/      # Domain CRUD stores
+│   └── domain-stores/     # Domain CRUD stores
 ├── prisma/                # Database schema & migrations
 ├── scripts/               # Dev scripts (docker, codegen)
 ├── workspaces/            # Agent runtime workspaces (gitignored)

@@ -36,10 +36,10 @@ Tests use Bun's native test runner.
 bun run test
 
 # Single package
-bun test --cwd packages/state-api
+bun test --cwd packages/agent-runtime
 
 # Single file
-bun test packages/state-api/src/schematic/tests/01-basic-transformation.test.ts
+bun test packages/agent-runtime/src/__tests__/example.test.ts
 ```
 
 Tests live in `src/**/*.test.ts` files. All tests must pass before merging.
@@ -82,7 +82,7 @@ Before submitting:
 Use conventional commits:
 
 ```
-feat(state-api): add MST reference type inference
+feat(api): add workspace invitation endpoint
 fix(api): handle missing schema error
 docs: update ARCHITECTURE.md
 ```
@@ -91,7 +91,6 @@ docs: update ARCHITECTURE.md
 
 | Path | Purpose |
 |------|---------|
-| `packages/state-api/` | Schema-to-MST transformation |
 | `apps/mobile/` | Expo app (web + iOS + Android) |
 | `.claude/skills/` | AI skill definitions |
 | `docs/` | Documentation |

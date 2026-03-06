@@ -4,7 +4,7 @@
  * Bundles the API server + workspace packages into resources/ for Electron packaging.
  *
  * The bundle mirrors the monorepo directory layout so that all relative path
- * references in the API source code (e.g. to packages/state-api/runtime-template)
+ * references in the API source code (e.g. to templates/runtime-template)
  * continue to work at runtime.
  *
  * Structure created inside apps/desktop/resources/:

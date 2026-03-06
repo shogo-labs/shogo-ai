@@ -23,9 +23,9 @@ const __dirname = dirname(__filename)
 
 /**
  * Path to the bundled Vite + React + TypeScript template.
- * Adjusted for api package location: apps/api/src/lib/runtime -> packages/state-api/runtime-template
+ * Adjusted for api package location: apps/api/src/lib/runtime -> templates/runtime-template
  */
-const BUNDLED_TEMPLATE_DIR = join(__dirname, '..', '..', '..', '..', '..', 'packages', 'state-api', 'runtime-template')
+const BUNDLED_TEMPLATE_DIR = join(__dirname, '..', '..', '..', '..', '..', 'templates', 'runtime-template')
 
 /**
  * Path to the project-runtime server.
