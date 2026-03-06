@@ -64,6 +64,7 @@ import {
   getToolCategory as getToolCategoryFromTools,
 } from "./tools/types"
 import { AlertCircle } from "lucide-react-native"
+import { useToast, Toast, ToastTitle, ToastDescription } from "../ui/toast"
 
 // ============================================================
 // Agent Mode Persistence
@@ -688,6 +689,9 @@ export const ChatPanel = observer(function ChatPanel({
 
   const isAgent = projectType === "AGENT"
 
+  const toast = useToast()
+  const privateRepoToastShownRef = useRef(false)
+
   const nativeHeaders = useMemo(() => {
     if (Platform.OS === 'web') return undefined
     return (): Record<string, string> => {
@@ -1049,6 +1053,24 @@ export const ChatPanel = observer(function ChatPanel({
         }
       }
 
+      if (dataPart.type === "data-github-private-repo" && !privateRepoToastShownRef.current) {
+        privateRepoToastShownRef.current = true
+        toast.show({
+          id: "github-private-repo",
+          placement: "top",
+          duration: 6000,
+          render: ({ id: toastId }) => (
+            <Toast nativeID={`toast-${toastId}`} action="error" variant="solid">
+              <ToastTitle>Private Repository</ToastTitle>
+              <ToastDescription>
+                This repository is private and cannot be accessed. Please
+                check your GitHub permissions or make the repository public.
+              </ToastDescription>
+            </Toast>
+          ),
+        })
+      }
+
       if (dataPart.type === "data-canvas-preview") {
         const { surfaceId, components } = (dataPart as any).data
         onCanvasPreview?.(surfaceId, components)
@@ -1276,6 +1298,7 @@ export const ChatPanel = observer(function ChatPanel({
 
     if (isStreaming && !wasStreaming) {
       filesChangedFiredRef.current = false
+      privateRepoToastShownRef.current = false
     }
   }, [isStreaming, messages, onFilesChanged])
 

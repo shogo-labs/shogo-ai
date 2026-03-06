@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { EventEmitter } from 'events'
 import type { SubagentProgressEvent, VirtualToolEvent } from './types/progress'
 // isVirtualTool kept in types/progress.ts for client-side use (ChatPanel handler)
-import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput, PreToolUseHookInput, CanUseTool, SDKSession, SDKMessage, SDKSessionOptions, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput, PostToolUseFailureHookInput, PreToolUseHookInput, CanUseTool, SDKSession, SDKMessage, SDKSessionOptions, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import { createSdkMcpServer, tool as sdkTool, unstable_v2_createSession, unstable_v2_resumeSession } from '@anthropic-ai/claude-agent-sdk'
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { resolve, join, isAbsolute } from 'path'
@@ -253,6 +253,20 @@ const virtualToolEvents = new EventEmitter()
 
 // streamCompletionEvents removed — V2 SDK session.stream() naturally completes per turn
 
+const githubPrivateRepoEvents = new EventEmitter()
+
+const GITHUB_PRIVATE_REPO_ERRORS = [
+  'not found',
+  'resource not accessible',
+  'repository access blocked',
+]
+
+function isGitHubPrivateRepoError(toolName: string, errorText: string): boolean {
+  if (!/github/i.test(toolName)) return false
+  const lower = errorText.toLowerCase()
+  return GITHUB_PRIVATE_REPO_ERRORS.some((pattern) => lower.includes(pattern))
+}
+
 // Debug logging prefix for subagent progress
 const LOG_PREFIX = '[SubagentProgress]'
 const VT_LOG_PREFIX = '[VirtualTool]'
@@ -488,6 +502,29 @@ const SESSION_HOOKS = {
         toolUseId: input.tool_use_id,
         timestamp: Date.now(),
       } satisfies SubagentProgressEvent)
+
+      const responseStr = typeof input.tool_response === 'string'
+        ? input.tool_response
+        : JSON.stringify(input.tool_response ?? '')
+      if (isGitHubPrivateRepoError(input.tool_name, responseStr)) {
+        githubPrivateRepoEvents.emit('github-private-repo', {
+          toolName: input.tool_name,
+          toolUseId: input.tool_use_id,
+        })
+      }
+
+      return { continue: true }
+    }]
+  }],
+  PostToolUseFailure: [{
+    hooks: [async (rawInput: unknown) => {
+      const input = rawInput as PostToolUseFailureHookInput
+      if (isGitHubPrivateRepoError(input.tool_name, input.error)) {
+        githubPrivateRepoEvents.emit('github-private-repo', {
+          toolName: input.tool_name,
+          toolUseId: input.tool_use_id,
+        })
+      }
       return { continue: true }
     }]
   }],
@@ -3528,6 +3565,7 @@ app.post('/api/chat', async (c) => {
     const eventBuffer: SubagentProgressEvent[] = []
     const virtualToolBuffer: VirtualToolEvent[] = []
     let streamWriter: { write: (data: any) => void } | null = null
+    let emittedPrivateRepoWarning = false
 
     const onProgress = (event: SubagentProgressEvent) => {
       if (streamWriter) {
@@ -3543,10 +3581,23 @@ app.post('/api/chat', async (c) => {
         virtualToolBuffer.push(event)
       }
     }
+    const onGitHubPrivateRepo = (event: { toolName: string; toolUseId: string }) => {
+      if (emittedPrivateRepoWarning) return
+      emittedPrivateRepoWarning = true
+      const chunk = {
+        type: 'data-github-private-repo',
+        id: `gh-private-${event.toolUseId}`,
+        data: { toolName: event.toolName, toolUseId: event.toolUseId },
+      }
+      if (streamWriter) {
+        streamWriter.write(chunk as any)
+      }
+    }
 
     // Attach listeners BEFORE sending message
     progressEvents.on('progress', onProgress)
     virtualToolEvents.on('virtual-tool', onVirtualTool)
+    githubPrivateRepoEvents.on('github-private-repo', onGitHubPrivateRepo)
 
     // Send the user message to the persistent V2 session
     await session.send(sessionMessage)
@@ -3719,6 +3770,7 @@ app.post('/api/chat', async (c) => {
                   currentToolId = null
                   currentToolName = null
                   currentToolInput = ''
+
                   writer.write({ type: 'finish-step' })
                   writer.write({ type: 'start-step' })
                   break
@@ -3915,6 +3967,7 @@ app.post('/api/chat', async (c) => {
           // Cleanup listeners
           progressEvents.off('progress', onProgress)
           virtualToolEvents.off('virtual-tool', onVirtualTool)
+          githubPrivateRepoEvents.off('github-private-repo', onGitHubPrivateRepo)
           streamWriter = null
 
           // server-side-persistence: Persist assistant message to database (fire-and-forget)
@@ -3965,6 +4018,7 @@ app.post('/api/chat', async (c) => {
         console.error('[/api/chat] Stream error:', error)
         progressEvents.off('progress', onProgress)
         virtualToolEvents.off('virtual-tool', onVirtualTool)
+        githubPrivateRepoEvents.off('github-private-repo', onGitHubPrivateRepo)
         streamWriter = null
         return 'An error occurred during streaming'
       },

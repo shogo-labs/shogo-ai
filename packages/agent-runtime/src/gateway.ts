@@ -1879,6 +1879,21 @@ export class AgentGateway {
               toolCallId,
               output: isError ? { error: typeof result === 'string' ? result : JSON.stringify(result) } : (result ?? { success: true }),
             })
+
+            if (isError && /github/i.test(toolName)) {
+              const errStr = typeof result === 'string' ? result : JSON.stringify(result ?? '')
+              const isPrivateRepo =
+                /not found/i.test(errStr) ||
+                /resource not accessible/i.test(errStr) ||
+                /repository access blocked/i.test(errStr)
+              if (isPrivateRepo) {
+                uiWriter.write({
+                  type: 'data-github-private-repo',
+                  id: `gh-private-${toolCallId}`,
+                  data: { toolName, toolCallId, error: errStr },
+                } as any)
+              }
+            }
           }
           await hookEmitter.emit(
             HookEmitter.createEvent('tool', 'after', sessionId, {
