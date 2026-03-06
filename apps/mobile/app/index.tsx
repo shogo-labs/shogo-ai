@@ -39,6 +39,10 @@ export default function RootIndex() {
 
   if (isAuthenticated) {
     if (onboardingCompleted === false) {
+      // Local users go straight to super admin to configure
+      if (platformConfig.localMode) {
+        return <Redirect href="/(admin)" />
+      }
       return <Redirect href="/(onboarding)" />
     }
     return <Redirect href="/(app)" />

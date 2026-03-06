@@ -65,11 +65,9 @@ type StepId =
 
 function getSteps(localMode: boolean, needsSetup: boolean): StepId[] {
   if (localMode && needsSetup) {
-    return ['welcome', 'create-account', 'configure-ai', 'features', 'templates', 'get-started']
+    return ['welcome', 'create-account']
   }
-  if (localMode) {
-    return ['configure-ai', 'features', 'templates', 'get-started']
-  }
+  // Cloud onboarding
   return ['welcome', 'features', 'templates', 'get-started']
 }
 
@@ -147,13 +145,22 @@ export default function OnboardingPage() {
     try {
       await signUp(name, email, password)
       invalidatePlatformConfigCache()
-      goNext()
+      if (localMode) {
+        // Mark onboarding done and send to super admin for setup
+        await fetch(`${API_URL}/api/onboarding/complete`, {
+          method: 'POST',
+          credentials: 'include',
+        }).catch(() => {})
+        router.replace('/(admin)')
+      } else {
+        goNext()
+      }
     } catch (e: any) {
       setAuthError(e.message || 'Failed to create account')
     } finally {
       setIsSigningUp(false)
     }
-  }, [name, email, password, signUp, goNext])
+  }, [name, email, password, signUp, goNext, localMode, router])
 
   // -- Test LLM connection
   const handleTestConnection = useCallback(async () => {
@@ -373,7 +380,7 @@ function WelcomeStep({
         </Text>
         <Text className="text-base text-muted-foreground text-center leading-6 max-w-sm">
           {localMode
-            ? 'Your private AI agent platform, running entirely on your machine. Let\'s get you set up in just a few steps.'
+            ? 'Your private AI agent platform, running entirely on your machine. Create your admin account and then configure your AI settings.'
             : 'Build and deploy AI agents that work for you. Let\'s show you around.'}
         </Text>
       </View>
