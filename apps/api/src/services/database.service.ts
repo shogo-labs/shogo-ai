@@ -125,7 +125,6 @@ function getK8sCoreApi(): k8s.CoreV1Api {
             name: "in-cluster",
             server: host,
             caData: Buffer.from(ca).toString("base64"),
-            skipTLSVerify: true,
           },
         ],
         users: [{ name: "in-cluster", token }],

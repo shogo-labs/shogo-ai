@@ -9,6 +9,7 @@
 import { Hono } from 'hono'
 import { PutObjectCommand } from '@aws-sdk/client-s3'
 import { prisma } from '../lib/prisma'
+import { validateOutboundUrl } from '../lib/url-validation'
 
 async function saveThumbnail(projectId: string, pngBuffer: Buffer): Promise<string> {
   // Try S3 first
@@ -100,7 +101,13 @@ export function thumbnailRoutes() {
 
       try {
         const body = await c.req.json<{ url?: string }>().catch(() => ({}))
-        if (body.url) targetUrl = body.url
+        if (body.url) {
+          const urlError = validateOutboundUrl(body.url)
+          if (urlError) {
+            return c.json({ error: { code: 'invalid_url', message: urlError } }, 400)
+          }
+          targetUrl = body.url
+        }
       } catch {}
 
       if (!targetUrl && project.publishedSubdomain) {

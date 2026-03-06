@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import { csrf } from 'hono/csrf'
 import { secureHeaders } from 'hono/secure-headers'
 import { bodyLimit } from 'hono/body-limit'
 import Stripe from 'stripe'
@@ -52,8 +53,9 @@ import { createGeneratedRoutes } from './generated/routes'
 import { routeHooks } from './generated/hooks'
 import { prisma } from './lib/prisma'
 // Auth middleware for generated routes
-import { authMiddleware, requireAuth } from './middleware/auth'
+import { authMiddleware, requireAuth, requireProjectAccess } from './middleware/auth'
 import { tracingMiddleware } from './middleware/tracing'
+import { rateLimiter } from './middleware/rate-limit'
 
 // Runtime manager singleton for project Vite runtimes
 let runtimeManager: IRuntimeManager | null = null
@@ -703,6 +705,28 @@ app.use('/*', cors({
   },
   credentials: true,
 }))
+
+// CSRF protection — validates Origin header on state-changing requests (POST/PUT/PATCH/DELETE).
+// Skips webhook and internal endpoints that use their own auth (signatures, tokens).
+app.use('/api/*', csrf({
+  origin: (origin, c) => {
+    // Allow requests with no origin (server-to-server, mobile apps, curl)
+    if (!origin) return true
+    const isDevOrLocal = process.env.NODE_ENV !== 'production' || process.env.SHOGO_LOCAL_MODE === 'true'
+    if (isDevOrLocal && (origin === 'null' || origin.startsWith('http://localhost:') || origin.startsWith('shogo://'))) {
+      return true
+    }
+    if (isDevOrLocal && /^http:\/\/192\.168\.\d+\.\d+/.test(origin)) {
+      return true
+    }
+    return allowedOrigins.includes(origin)
+  },
+}))
+
+// Rate limiting — applied per-route group for different thresholds
+app.use('/api/auth/*', rateLimiter('auth', { max: 20, windowMs: 60_000 }))
+app.use('/api/webhooks/*', rateLimiter('webhooks', { max: 30, windowMs: 60_000 }))
+app.use('/api/*', rateLimiter('global', { max: 200, windowMs: 60_000 }))
 
 // Better Auth handler - mounted BEFORE other /api/* routes
 // Handles all authentication endpoints: sign-up, sign-in, sign-out, session, OAuth callbacks, etc.
@@ -1617,6 +1641,8 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     if (contentType) headers.set('content-type', contentType)
     const accept = c.req.header('accept')
     if (accept) headers.set('accept', accept)
+    const runtimeSecret = process.env.RUNTIME_AUTH_SECRET || process.env.WEBHOOK_TOKEN
+    if (runtimeSecret) headers.set('x-runtime-token', runtimeSecret)
 
     const requestInit: RequestInit = { method: c.req.method, headers }
     if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
@@ -4634,6 +4660,10 @@ app.use('/api/*', authMiddleware)
 // Require authentication for all routes
 // Unauthenticated requests get 401 Unauthorized
 app.use('/api/*', requireAuth)
+
+// Require project membership for all project-scoped routes
+// Prevents authenticated users from accessing projects they don't belong to
+app.use('/api/projects/:projectId/*', requireProjectAccess)
 
 // =============================================================================
 // Leave Workspace - Removes the current user's membership from a workspace

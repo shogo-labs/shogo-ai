@@ -592,6 +592,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         "Content-Type": "application/json",
       }
 
+      // Attach shared runtime secret for pod-to-pod auth
+      const runtimeSecret = process.env.RUNTIME_AUTH_SECRET || process.env.WEBHOOK_TOKEN
+      if (runtimeSecret) headers["x-runtime-token"] = runtimeSecret
+
       // Copy relevant headers from original request
       const authHeader = c.req.header("Authorization")
       if (authHeader) headers["Authorization"] = authHeader
