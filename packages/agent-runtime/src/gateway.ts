@@ -48,6 +48,34 @@ import {
   OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE,
 } from './optimized-prompts'
 
+const ACCESS_ERROR_PATTERNS = [
+  'not found',
+  'resource not accessible',
+  'unauthorized', 'not authorized', 'forbidden',
+  'invalid_auth', 'not_authed', 'missing_scope', 'token_revoked', 'account_inactive',
+  'authentication required', 'insufficient authentication scopes',
+  'access denied', 'permission denied',
+]
+
+function isAccessError(errorText: string): boolean {
+  const lower = errorText.toLowerCase()
+  return ACCESS_ERROR_PATTERNS.some((p) => lower.includes(p))
+}
+
+function isIntegrationTool(toolName: string): boolean {
+  return /^[A-Z]+_/.test(toolName) || toolName.startsWith('mcp__')
+}
+
+function extractToolkitName(toolName: string): string {
+  if (toolName.startsWith('mcp__')) {
+    const server = toolName.split('__')[1] || toolName
+    return server.charAt(0).toUpperCase() + server.slice(1)
+  }
+  const prefix = toolName.split('_')[0]
+  if (!prefix) return toolName
+  return prefix.charAt(0).toUpperCase() + prefix.slice(1).toLowerCase()
+}
+
 export interface GatewayConfig {
   heartbeatInterval: number
   heartbeatEnabled: boolean
@@ -1879,6 +1907,17 @@ export class AgentGateway {
               toolCallId,
               output: isError ? { error: typeof result === 'string' ? result : JSON.stringify(result) } : (result ?? { success: true }),
             })
+
+            if (isIntegrationTool(toolName)) {
+              const errStr = typeof result === 'string' ? result : JSON.stringify(result ?? '')
+              if (isAccessError(errStr)) {
+                uiWriter.write({
+                  type: 'data-tool-access-error',
+                  id: `tool-access-${toolCallId}`,
+                  data: { toolName, toolkitName: extractToolkitName(toolName), toolUseId: toolCallId },
+                } as any)
+              }
+            }
           }
           await hookEmitter.emit(
             HookEmitter.createEvent('tool', 'after', sessionId, {

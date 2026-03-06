@@ -64,6 +64,7 @@ import {
   getToolCategory as getToolCategoryFromTools,
 } from "./tools/types"
 import { AlertCircle } from "lucide-react-native"
+import { useToast, Toast, ToastTitle, ToastDescription } from "../ui/toast"
 
 // ============================================================
 // Agent Mode Persistence
@@ -688,6 +689,9 @@ export const ChatPanel = observer(function ChatPanel({
 
   const isAgent = projectType === "AGENT"
 
+  const toast = useToast()
+  const accessErrorShownRef = useRef(false)
+
   const nativeHeaders = useMemo(() => {
     if (Platform.OS === 'web') return undefined
     return (): Record<string, string> => {
@@ -1049,6 +1053,26 @@ export const ChatPanel = observer(function ChatPanel({
         }
       }
 
+      if (dataPart.type === "data-tool-access-error" && !accessErrorShownRef.current) {
+        accessErrorShownRef.current = true
+        const { toolkitName } = (dataPart as any).data ?? {}
+        const name = toolkitName || "Integration"
+        toast.show({
+          id: `access-error-${Date.now()}`,
+          placement: "top",
+          duration: 6000,
+          render: ({ id: toastId }) => (
+            <Toast nativeID={`toast-${toastId}`} action="error" variant="solid">
+              <ToastTitle>{name} Access Error</ToastTitle>
+              <ToastDescription>
+                Permission denied. Please reconnect {name} or check your
+                access settings.
+              </ToastDescription>
+            </Toast>
+          ),
+        })
+      }
+
       if (dataPart.type === "data-canvas-preview") {
         const { surfaceId, components } = (dataPart as any).data
         onCanvasPreview?.(surfaceId, components)
@@ -1276,6 +1300,7 @@ export const ChatPanel = observer(function ChatPanel({
 
     if (isStreaming && !wasStreaming) {
       filesChangedFiredRef.current = false
+      accessErrorShownRef.current = false
     }
   }, [isStreaming, messages, onFilesChanged])
 

@@ -4,9 +4,10 @@ import Stripe from 'stripe'
 import { generateText, createUIMessageStream, createUIMessageStreamResponse, type ModelMessage } from 'ai'
 import { z } from 'zod'
 import { EventEmitter } from 'events'
-import type { SubagentProgressEvent, VirtualToolEvent } from './types/progress'
+import type { SubagentProgressEvent, VirtualToolEvent, ToolAccessErrorEvent } from './types/progress'
+import { isAccessError, isIntegrationTool, extractToolkitName, extractErrorText } from './types/progress'
 // isVirtualTool kept in types/progress.ts for client-side use (ChatPanel handler)
-import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput, PreToolUseHookInput, CanUseTool, SDKSession, SDKMessage, SDKSessionOptions, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput, PostToolUseFailureHookInput, PreToolUseHookInput, CanUseTool, SDKSession, SDKMessage, SDKSessionOptions, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import { createSdkMcpServer, tool as sdkTool, unstable_v2_createSession, unstable_v2_resumeSession } from '@anthropic-ai/claude-agent-sdk'
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { resolve, join, isAbsolute } from 'path'
@@ -253,6 +254,8 @@ const virtualToolEvents = new EventEmitter()
 
 // streamCompletionEvents removed — V2 SDK session.stream() naturally completes per turn
 
+const toolAccessErrorEvents = new EventEmitter()
+
 // Debug logging prefix for subagent progress
 const LOG_PREFIX = '[SubagentProgress]'
 const VT_LOG_PREFIX = '[VirtualTool]'
@@ -488,6 +491,31 @@ const SESSION_HOOKS = {
         toolUseId: input.tool_use_id,
         timestamp: Date.now(),
       } satisfies SubagentProgressEvent)
+
+      if (isIntegrationTool(input.tool_name)) {
+        const errorText = extractErrorText(input.tool_response)
+        if (errorText && isAccessError(errorText)) {
+          toolAccessErrorEvents.emit('tool-access-error', {
+            toolName: input.tool_name,
+            toolkitName: extractToolkitName(input.tool_name),
+            toolUseId: input.tool_use_id,
+          } satisfies ToolAccessErrorEvent)
+        }
+      }
+
+      return { continue: true }
+    }]
+  }],
+  PostToolUseFailure: [{
+    hooks: [async (rawInput: unknown) => {
+      const input = rawInput as PostToolUseFailureHookInput
+      if (isIntegrationTool(input.tool_name) && isAccessError(input.error)) {
+        toolAccessErrorEvents.emit('tool-access-error', {
+          toolName: input.tool_name,
+          toolkitName: extractToolkitName(input.tool_name),
+          toolUseId: input.tool_use_id,
+        } satisfies ToolAccessErrorEvent)
+      }
       return { continue: true }
     }]
   }],
@@ -3528,6 +3556,7 @@ app.post('/api/chat', async (c) => {
     const eventBuffer: SubagentProgressEvent[] = []
     const virtualToolBuffer: VirtualToolEvent[] = []
     let streamWriter: { write: (data: any) => void } | null = null
+    let emittedAccessError = false
 
     const onProgress = (event: SubagentProgressEvent) => {
       if (streamWriter) {
@@ -3543,10 +3572,22 @@ app.post('/api/chat', async (c) => {
         virtualToolBuffer.push(event)
       }
     }
+    const onToolAccessError = (event: ToolAccessErrorEvent) => {
+      if (emittedAccessError) return
+      emittedAccessError = true
+      if (streamWriter) {
+        streamWriter.write({
+          type: 'data-tool-access-error',
+          id: `tool-access-${event.toolUseId}`,
+          data: event,
+        } as any)
+      }
+    }
 
     // Attach listeners BEFORE sending message
     progressEvents.on('progress', onProgress)
     virtualToolEvents.on('virtual-tool', onVirtualTool)
+    toolAccessErrorEvents.on('tool-access-error', onToolAccessError)
 
     // Send the user message to the persistent V2 session
     await session.send(sessionMessage)
@@ -3719,6 +3760,7 @@ app.post('/api/chat', async (c) => {
                   currentToolId = null
                   currentToolName = null
                   currentToolInput = ''
+
                   writer.write({ type: 'finish-step' })
                   writer.write({ type: 'start-step' })
                   break
@@ -3915,6 +3957,7 @@ app.post('/api/chat', async (c) => {
           // Cleanup listeners
           progressEvents.off('progress', onProgress)
           virtualToolEvents.off('virtual-tool', onVirtualTool)
+          toolAccessErrorEvents.off('tool-access-error', onToolAccessError)
           streamWriter = null
 
           // server-side-persistence: Persist assistant message to database (fire-and-forget)
@@ -3965,6 +4008,7 @@ app.post('/api/chat', async (c) => {
         console.error('[/api/chat] Stream error:', error)
         progressEvents.off('progress', onProgress)
         virtualToolEvents.off('virtual-tool', onVirtualTool)
+        toolAccessErrorEvents.off('tool-access-error', onToolAccessError)
         streamWriter = null
         return 'An error occurred during streaming'
       },
