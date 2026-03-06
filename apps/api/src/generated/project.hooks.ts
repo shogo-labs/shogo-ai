@@ -173,6 +173,10 @@ export const projectHooks: ProjectHooks = {
    * Super admins can create in any workspace.
    */
   beforeCreate: async (input, ctx) => {
+    // Never allow client-supplied id — always let Prisma generate a UUID.
+    // A crafted id could trigger SQL injection downstream (e.g. database provisioning).
+    delete input.id
+
     const userId = ctx.userId
     if (!userId) {
       return {
