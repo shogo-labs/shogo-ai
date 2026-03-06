@@ -11,12 +11,10 @@ const config: ForgeConfig = {
     extraResource: [
       './resources/bun',
       './resources/web',
-      './resources/apps',
-      './resources/packages',
+      './resources/bundle',
       './resources/node_modules',
       './resources/prisma',
       './resources/package.json',
-      './resources/tsconfig.base.json',
       './resources/prisma.config.local.ts',
     ],
     ignore: [

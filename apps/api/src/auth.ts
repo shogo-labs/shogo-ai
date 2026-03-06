@@ -211,19 +211,16 @@ export const auth = betterAuth({
          * Errors are logged but do not block user creation (graceful degradation).
          */
         after: async (user) => {
-          // In local mode, promote the first user to super_admin
+          // In local/desktop mode, every user is a super_admin
           if (isLocalMode) {
             try {
-              const userCount = await prisma.user.count()
-              if (userCount <= 1) {
-                await prisma.user.update({
-                  where: { id: user.id },
-                  data: { role: 'super_admin', emailVerified: true },
-                })
-                console.log(`[LocalMode] First user ${user.email} promoted to super_admin`)
-              }
+              await prisma.user.update({
+                where: { id: user.id },
+                data: { role: 'super_admin', emailVerified: true },
+              })
+              console.log(`[LocalMode] User ${user.email} promoted to super_admin`)
             } catch (err) {
-              console.error(`[LocalMode] Failed to promote first user:`, err)
+              console.error(`[LocalMode] Failed to promote user:`, err)
             }
           }
 

@@ -122,6 +122,7 @@ apps/desktop/dist/
 apps/desktop/out/
 apps/desktop/resources/bun/
 apps/desktop/resources/web/
+apps/desktop/resources/bundle/
 apps/desktop/resources/apps/
 apps/desktop/resources/packages/
 apps/desktop/resources/node_modules/
