@@ -37,8 +37,10 @@ function getProxySecret(): string {
     process.env.BETTER_AUTH_SECRET ||
     process.env.PREVIEW_TOKEN_SECRET
   if (!secret) {
-    console.warn('[AI Proxy Token] WARNING: No AI_PROXY_SECRET set, using insecure default')
-    return 'insecure-default-ai-proxy-secret-change-me'
+    throw new Error(
+      '[AI Proxy Token] FATAL: No signing secret configured. ' +
+      'Set AI_PROXY_SECRET, BETTER_AUTH_SECRET, or PREVIEW_TOKEN_SECRET.'
+    )
   }
   return secret
 }

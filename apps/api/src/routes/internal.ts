@@ -63,7 +63,7 @@ app.get('/pod-config/:projectId', async (c) => {
     return c.json({ projectId, env })
   } catch (err: any) {
     console.error(`[Internal] Failed to build pod config for ${projectId}:`, err.message)
-    return c.json({ error: `Failed to build config: ${err.message}` }, 500)
+    return c.json({ error: 'Failed to build pod configuration' }, 500)
   }
 })
 

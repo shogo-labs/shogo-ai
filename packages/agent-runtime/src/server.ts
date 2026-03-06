@@ -716,7 +716,10 @@ app.get('/agent/chat/history', async (c) => {
 const WEBHOOK_TOKEN = process.env.WEBHOOK_TOKEN
 
 function verifyWebhookAuth(c: any): boolean {
-  if (!WEBHOOK_TOKEN) return true
+  if (!WEBHOOK_TOKEN) {
+    console.warn('[agent-runtime] WEBHOOK_TOKEN not set — rejecting webhook request (fail-closed)')
+    return false
+  }
   const auth = c.req.header('authorization') || ''
   const token = c.req.header('x-webhook-token') || ''
   return auth === `Bearer ${WEBHOOK_TOKEN}` || token === WEBHOOK_TOKEN

@@ -1,5 +1,7 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import { secureHeaders } from 'hono/secure-headers'
+import { bodyLimit } from 'hono/body-limit'
 import Stripe from 'stripe'
 import { generateText, createUIMessageStream, createUIMessageStreamResponse, type ModelMessage } from 'ai'
 import { z } from 'zod'
@@ -625,6 +627,17 @@ const app = new Hono()
 // OpenTelemetry tracing — must be first middleware so all requests get spans
 app.use('*', tracingMiddleware)
 
+// Security headers — X-Content-Type-Options, X-Frame-Options, etc.
+app.use('*', secureHeaders({
+  xFrameOptions: 'SAMEORIGIN',
+  xContentTypeOptions: 'nosniff',
+  referrerPolicy: 'strict-origin-when-cross-origin',
+  crossOriginOpenerPolicy: 'same-origin',
+}))
+
+// Global request body size limit (10 MB default)
+app.use('*', bodyLimit({ maxSize: 10 * 1024 * 1024 }))
+
 // =============================================================================
 // Global Error Handling
 // =============================================================================
@@ -825,7 +838,7 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
 
   // ── Local mode: model discovery ────────────────────────────────────────
   app.get('/api/local/models', async (c) => {
-    const baseUrl = c.req.query('baseUrl') || process.env.LOCAL_LLM_BASE_URL
+    const baseUrl = process.env.LOCAL_LLM_BASE_URL
     if (!baseUrl) {
       return c.json({ ok: false, error: 'No LLM base URL configured. Set LOCAL_LLM_BASE_URL first.', models: [] })
     }
@@ -2994,7 +3007,15 @@ app.post('/api/projects/:projectId/chat/wake', async (c) => {
 
 // =============================================================================
 // Project Admin Routes (Kubernetes pod management)
+// Require super_admin role for all project admin endpoints
 // =============================================================================
+
+app.use('/api/admin/projects/*', requireSuperAdmin)
+app.use('/api/admin/projects', requireSuperAdmin)
+app.use('/api/admin/stats', requireSuperAdmin)
+app.use('/api/admin/warm-pool', requireSuperAdmin)
+app.use('/api/admin/warm-pool/*', requireSuperAdmin)
+app.use('/api/admin/settings/*', requireSuperAdmin)
 
 // GET /api/admin/projects - List all project pods
 app.get('/api/admin/projects', async (c) => {
@@ -4256,7 +4277,11 @@ app.post('/api/webhooks/stripe', async (c) => {
 
     const payload = await c.req.text()
     const signature = c.req.header('stripe-signature') || ''
-    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || ''
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET
+    if (!webhookSecret) {
+      console.error('[Stripe] STRIPE_WEBHOOK_SECRET is not configured')
+      return c.json({ error: 'Webhook verification not configured' }, 500)
+    }
 
     let event: Stripe.Event
     try {
