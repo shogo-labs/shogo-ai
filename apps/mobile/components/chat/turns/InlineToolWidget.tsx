@@ -139,8 +139,8 @@ export function InlineToolWidget({
               <Text className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
                 Args
               </Text>
-              <ScrollView horizontal className="bg-background/50 rounded p-1.5 max-h-32">
-                <Text className="text-[10px] font-mono text-foreground">
+              <ScrollView nestedScrollEnabled className="bg-background/50 rounded p-1.5 max-h-32">
+                <Text className="text-[10px] font-mono text-foreground" selectable>
                   {formatJson(tool.args)}
                 </Text>
               </ScrollView>
@@ -152,8 +152,8 @@ export function InlineToolWidget({
               <Text className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
                 Result
               </Text>
-              <ScrollView horizontal className="bg-background/50 rounded p-1.5 max-h-32">
-                <Text className="text-[10px] font-mono text-foreground">
+              <ScrollView nestedScrollEnabled className="bg-background/50 rounded p-1.5 max-h-32">
+                <Text className="text-[10px] font-mono text-foreground" selectable>
                   {formatJson(tool.result)}
                 </Text>
               </ScrollView>
@@ -165,8 +165,8 @@ export function InlineToolWidget({
               <Text className="text-[9px] font-medium text-red-500 uppercase tracking-wide">
                 Error
               </Text>
-              <ScrollView horizontal className="bg-red-500/10 rounded p-1.5 max-h-32">
-                <Text className="text-[10px] font-mono text-red-500">
+              <ScrollView nestedScrollEnabled className="bg-red-500/10 rounded p-1.5 max-h-32">
+                <Text className="text-[10px] font-mono text-red-500" selectable>
                   {getDisplayableResult() || "No output captured"}
                 </Text>
               </ScrollView>

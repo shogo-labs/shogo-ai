@@ -80,17 +80,27 @@ export function AuthProvider({ authClient, children }: AuthProviderProps) {
     }
   }, [authClient])
 
-  const handleSignInWithGoogle = useCallback(() => {
+  const handleSignInWithGoogle = useCallback(async () => {
+    setError(null)
     let callbackURL = '/'
     if (typeof window !== 'undefined' && window.location?.protocol?.startsWith('http')) {
       const { protocol, hostname, port } = window.location
       const host = /^192\.168\./.test(hostname) ? 'localhost' : hostname
       callbackURL = `${protocol}//${host}${port ? `:${port}` : ''}/`
     }
-    ;(authClient as any).signIn.social({
-      provider: 'google',
-      callbackURL,
-    })
+    try {
+      const result = await (authClient as any).signIn.social({
+        provider: 'google',
+        callbackURL,
+      })
+      if (result?.error) {
+        console.error('[Auth] Google sign-in error:', result.error)
+        setError(result.error.message || 'Google sign-in failed')
+      }
+    } catch (e: any) {
+      console.error('[Auth] Google sign-in exception:', e)
+      setError(e.message || 'Google sign-in failed')
+    }
   }, [authClient])
 
   const handleSignOut = useCallback(async () => {

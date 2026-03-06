@@ -161,21 +161,18 @@ export const auth = betterAuth({
   },
 
   trustedOrigins: (request) => {
-    const origins = [...getAllowedOrigins(), 'shogo://']
+    const baseURL = getBaseURL()
+    const origins = [...getAllowedOrigins(), baseURL, 'shogo://', 'exp://']
     if (process.env.NODE_ENV !== 'production') {
-      // Expo web dev server
       origins.push('http://localhost:8081')
 
       const reqOrigin = request?.headers?.get?.('origin')
       if (reqOrigin?.startsWith('http://localhost:') && !origins.includes(reqOrigin)) {
         origins.push(reqOrigin)
       }
-      // Allow local network origins (React Native on physical Android/iOS devices)
       if (reqOrigin && /^http:\/\/192\.168\.\d+\.\d+/.test(reqOrigin) && !origins.includes(reqOrigin)) {
         origins.push(reqOrigin)
       }
-      // Expo Go deep links (used by @better-auth/expo for OAuth redirects)
-      origins.push('exp://')
     }
     return origins
   },

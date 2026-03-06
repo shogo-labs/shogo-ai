@@ -215,10 +215,10 @@ export function ToolCallDisplay({
             <View className="mt-1.5">
               <Text className="text-[9px] text-gray-400 mb-0.5 uppercase">Args</Text>
               <ScrollView
-                horizontal
+                nestedScrollEnabled
                 className="bg-black/5 dark:bg-white/5 rounded p-1.5 max-h-32"
               >
-                <Text className="text-[10px] font-mono text-foreground">
+                <Text className="text-[10px] font-mono text-foreground" selectable>
                   {JSON.stringify(args, null, 2)}
                 </Text>
               </ScrollView>
@@ -240,8 +240,8 @@ export function ToolCallDisplay({
                 </View>
               )}
 
-              <ScrollView className="bg-black/5 dark:bg-white/5 rounded p-1.5 max-h-32">
-                <Text className="text-[10px] font-mono text-foreground">
+              <ScrollView nestedScrollEnabled className="bg-black/5 dark:bg-white/5 rounded p-1.5 max-h-32">
+                <Text className="text-[10px] font-mono text-foreground" selectable>
                   {showFullResult ? resultString : truncated.displayContent}
                 </Text>
               </ScrollView>
