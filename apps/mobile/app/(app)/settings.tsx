@@ -670,6 +670,15 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
 
 const CHAT_SUGGESTIONS_KEY = 'shogo:chat-suggestions'
 
+interface ActivityData {
+  totalMessages: number
+  dailyAverage: number
+  daysActive: number
+  daysInPeriod: number
+  currentStreak: number
+  dailyCounts: Record<string, number>
+}
+
 function AccountTab() {
   const { user, signOut, updateUser } = useAuth()
   const http = useDomainHttp()
@@ -682,6 +691,7 @@ function AccountTab() {
   const [isDeleting, setIsDeleting] = useState(false)
   const [deleteConfirmText, setDeleteConfirmText] = useState('')
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
+  const [activity, setActivity] = useState<ActivityData | null>(null)
 
   const originalName = user?.name || ''
   const hasNameChanges = name !== originalName
@@ -697,6 +707,15 @@ function AccountTab() {
       if (stored !== null) setChatSuggestions(stored !== 'false')
     }
   }, [])
+
+  useEffect(() => {
+    if (!http) return
+    let cancelled = false
+    api.getMyActivity(http)
+      .then((data) => { if (!cancelled) setActivity(data) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [http])
 
   const handleToggleChatSuggestions = useCallback((value: boolean) => {
     setChatSuggestions(value)
@@ -775,11 +794,14 @@ function AccountTab() {
         </Text>
       </View>
 
-      {/* Activity heatmap */}
+      {/* Activity */}
       <Card>
         <CardContent className="p-5 gap-3">
           <View className="flex-row items-center gap-2">
-            <Text className="text-sm text-foreground">0 edits on</Text>
+            <MessageSquare size={16} className="text-primary" />
+            <Text className="text-sm text-foreground">
+              {activity?.totalMessages ?? 0} messages sent on
+            </Text>
             <Sparkles size={16} className="text-primary" />
             <Text className="text-sm font-bold text-foreground">Shogo</Text>
             <Text className="text-sm text-foreground">in the last year</Text>
@@ -792,15 +814,21 @@ function AccountTab() {
           <View className="flex-row gap-4">
             <View className="flex-1">
               <Text className="text-xs text-muted-foreground">Daily average</Text>
-              <Text className="text-sm font-medium text-foreground">0.0 edits</Text>
+              <Text className="text-sm font-medium text-foreground">
+                {activity?.dailyAverage ?? 0} msgs
+              </Text>
             </View>
             <View className="flex-1">
-              <Text className="text-xs text-muted-foreground">Days edited</Text>
-              <Text className="text-sm font-medium text-foreground">0 (0%)</Text>
+              <Text className="text-xs text-muted-foreground">Days active</Text>
+              <Text className="text-sm font-medium text-foreground">
+                {activity?.daysActive ?? 0} ({activity ? Math.round((activity.daysActive / activity.daysInPeriod) * 100) : 0}%)
+              </Text>
             </View>
             <View className="flex-1">
               <Text className="text-xs text-muted-foreground">Current streak</Text>
-              <Text className="text-sm font-medium text-foreground">0 days</Text>
+              <Text className="text-sm font-medium text-foreground">
+                {activity?.currentStreak ?? 0} days
+              </Text>
             </View>
           </View>
         </CardContent>

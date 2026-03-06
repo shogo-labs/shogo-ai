@@ -4489,6 +4489,93 @@ app.get('/api/me', authMiddleware, requireAuth, async (c) => {
 })
 
 // =============================================================================
+// Current User Activity (/api/me/activity) - Message stats for account page
+// =============================================================================
+
+app.get('/api/me/activity', authMiddleware, requireAuth, async (c) => {
+  const authCtx = c.get('auth')
+  if (!authCtx?.userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Not authenticated' } }, 401)
+  }
+
+  try {
+    const userId = authCtx.userId
+    const oneYearAgo = new Date()
+    oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1)
+    oneYearAgo.setHours(0, 0, 0, 0)
+
+    const memberships = await prisma.member.findMany({
+      where: { userId },
+      select: { workspaceId: true },
+    })
+    const workspaceIds = memberships.map((m: any) => m.workspaceId)
+
+    if (workspaceIds.length === 0) {
+      return c.json({
+        ok: true,
+        data: { totalMessages: 0, dailyAverage: 0, daysActive: 0, daysInPeriod: 365, currentStreak: 0, dailyCounts: {} },
+      })
+    }
+
+    const messages = await prisma.chatMessage.findMany({
+      where: {
+        role: 'user',
+        createdAt: { gte: oneYearAgo },
+        session: {
+          project: { workspaceId: { in: workspaceIds } },
+        },
+      },
+      select: { createdAt: true },
+      orderBy: { createdAt: 'asc' },
+    })
+
+    const dailyCounts: Record<string, number> = {}
+    for (const msg of messages) {
+      const day = msg.createdAt.toISOString().slice(0, 10)
+      dailyCounts[day] = (dailyCounts[day] || 0) + 1
+    }
+
+    const totalMessages = messages.length
+    const now = new Date()
+    const diffMs = now.getTime() - oneYearAgo.getTime()
+    const daysInPeriod = Math.max(1, Math.ceil(diffMs / 86400000))
+    const dailyAverage = Math.round((totalMessages / daysInPeriod) * 10) / 10
+    const daysActive = Object.keys(dailyCounts).length
+
+    let currentStreak = 0
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const cursor = new Date(today)
+    while (true) {
+      const key = cursor.toISOString().slice(0, 10)
+      if (dailyCounts[key]) {
+        currentStreak++
+        cursor.setDate(cursor.getDate() - 1)
+      } else if (currentStreak === 0) {
+        cursor.setDate(cursor.getDate() - 1)
+        const yesterdayKey = cursor.toISOString().slice(0, 10)
+        if (dailyCounts[yesterdayKey]) {
+          currentStreak++
+          cursor.setDate(cursor.getDate() - 1)
+        } else {
+          break
+        }
+      } else {
+        break
+      }
+    }
+
+    return c.json({
+      ok: true,
+      data: { totalMessages, dailyAverage, daysActive, daysInPeriod, currentStreak, dailyCounts },
+    })
+  } catch (error: any) {
+    console.error('[Activity] Failed to fetch activity:', error)
+    return c.json({ error: { code: 'activity_failed', message: error.message } }, 500)
+  }
+})
+
+// =============================================================================
 // Generated API Routes - Auto-generated from Prisma schema with hooks
 // =============================================================================
 

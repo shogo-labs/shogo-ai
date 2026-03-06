@@ -202,6 +202,21 @@ export const api = {
     return res.data
   },
 
+  async getMyActivity(http: HttpClient) {
+    const res = await http.get<{
+      ok: boolean
+      data: {
+        totalMessages: number
+        dailyAverage: number
+        daysActive: number
+        daysInPeriod: number
+        currentStreak: number
+        dailyCounts: Record<string, number>
+      }
+    }>('/api/me/activity')
+    return res.data?.data ?? { totalMessages: 0, dailyAverage: 0, daysActive: 0, daysInPeriod: 365, currentStreak: 0, dailyCounts: {} }
+  },
+
   // ─── Templates ─────────────────────────────────────────────
 
   async getAgentTemplates(http: HttpClient) {
