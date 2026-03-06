@@ -27,6 +27,7 @@ name: Android Build & Update
 on:
   push:
     branches:
+      - main
       - staging
     paths:
       - 'apps/mobile/**'

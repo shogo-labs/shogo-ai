@@ -8,6 +8,9 @@ on:
         required: true
         type: string
   push:
+    branches:
+      - main
+      - staging
     tags:
       - 'desktop-v*'
 
