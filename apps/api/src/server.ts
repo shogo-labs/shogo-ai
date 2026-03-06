@@ -5,7 +5,7 @@ import { generateText, createUIMessageStream, createUIMessageStreamResponse, typ
 import { z } from 'zod'
 import { EventEmitter } from 'events'
 import type { SubagentProgressEvent, VirtualToolEvent, ToolAccessErrorEvent } from './types/progress'
-import { isAccessError, isIntegrationTool, extractToolkitName, extractErrorText } from './types/progress'
+import { isAccessError, isComposioTool, extractToolkitName, extractErrorText } from './types/progress'
 // isVirtualTool kept in types/progress.ts for client-side use (ChatPanel handler)
 import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput, PostToolUseFailureHookInput, PreToolUseHookInput, CanUseTool, SDKSession, SDKMessage, SDKSessionOptions, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import { createSdkMcpServer, tool as sdkTool, unstable_v2_createSession, unstable_v2_resumeSession } from '@anthropic-ai/claude-agent-sdk'
@@ -492,7 +492,7 @@ const SESSION_HOOKS = {
         timestamp: Date.now(),
       } satisfies SubagentProgressEvent)
 
-      if (isIntegrationTool(input.tool_name)) {
+      if (isComposioTool(input.tool_name)) {
         const errorText = extractErrorText(input.tool_response)
         if (errorText && isAccessError(errorText)) {
           toolAccessErrorEvents.emit('tool-access-error', {
@@ -509,7 +509,7 @@ const SESSION_HOOKS = {
   PostToolUseFailure: [{
     hooks: [async (rawInput: unknown) => {
       const input = rawInput as PostToolUseFailureHookInput
-      if (isIntegrationTool(input.tool_name) && isAccessError(input.error)) {
+      if (isComposioTool(input.tool_name) && isAccessError(input.error)) {
         toolAccessErrorEvents.emit('tool-access-error', {
           toolName: input.tool_name,
           toolkitName: extractToolkitName(input.tool_name),

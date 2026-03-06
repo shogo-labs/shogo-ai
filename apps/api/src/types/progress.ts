@@ -77,13 +77,11 @@ const ACCESS_ERROR_PATTERNS = [
 ]
 
 /**
- * Integration tools follow specific naming conventions:
- * Composio: GITHUB_LIST_ISSUES (UPPER_CASE with underscores)
- * MCP:      mcp__server__tool
+ * Composio tools follow UPPER_CASE_ACTION naming (e.g. GITHUB_LIST_ISSUES).
  * Built-in tools (Read, Write, Bash, web, exec, etc.) don't match.
  */
-export function isIntegrationTool(toolName: string): boolean {
-  return /^[A-Z]+_/.test(toolName) || toolName.startsWith('mcp__')
+export function isComposioTool(toolName: string): boolean {
+  return /^[A-Z]+_/.test(toolName)
 }
 
 /**
@@ -95,15 +93,11 @@ export function isAccessError(errorText: string): boolean {
 }
 
 /**
- * Extract a human-readable toolkit name from a tool slug.
- * Composio: GITHUB_LIST_ISSUES -> "Github"
- * MCP:      mcp__slack__send_message -> "Slack"
+ * Extract a human-readable toolkit name from a Composio tool slug.
+ * GITHUB_LIST_ISSUES -> "Github"
+ * SLACK_SEND_MESSAGE -> "Slack"
  */
 export function extractToolkitName(toolName: string): string {
-  if (toolName.startsWith('mcp__')) {
-    const server = toolName.split('__')[1] || toolName
-    return server.charAt(0).toUpperCase() + server.slice(1)
-  }
   const prefix = toolName.split('_')[0]
   if (!prefix) return toolName
   return prefix.charAt(0).toUpperCase() + prefix.slice(1).toLowerCase()
