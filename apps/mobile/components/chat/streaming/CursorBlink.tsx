@@ -2,21 +2,12 @@
  * CursorBlink Component (React Native)
  *
  * Blinking cursor indicator for active streaming.
- * Uses react-native-reanimated for the blink animation.
+ * Uses React Native's built-in Animated API for the blink animation.
  */
 
-import { View } from "react-native"
-import { useEffect } from "react"
+import { View, Animated } from "react-native"
+import { useEffect, useRef } from "react"
 import { cn } from "@shogo/shared-ui/primitives"
-import Animated, {
-  useSharedValue,
-  useAnimatedStyle,
-  withRepeat,
-  withSequence,
-  withTiming,
-  cancelAnimation,
-} from "react-native-reanimated"
-import { useReducedMotion } from "@/hooks/useReducedMotion"
 
 export interface CursorBlinkProps {
   isVisible: boolean
@@ -24,32 +15,30 @@ export interface CursorBlinkProps {
 }
 
 export function CursorBlink({ isVisible, className }: CursorBlinkProps) {
-  const prefersReducedMotion = useReducedMotion()
-  const opacity = useSharedValue(1)
+  const opacity = useRef(new Animated.Value(1)).current
 
   useEffect(() => {
-    if (isVisible && !prefersReducedMotion) {
-      opacity.value = withRepeat(
-        withSequence(
-          withTiming(0, { duration: 500 }),
-          withTiming(1, { duration: 500 })
-        ),
-        -1,
-        false
+    if (isVisible) {
+      const animation = Animated.loop(
+        Animated.sequence([
+          Animated.timing(opacity, {
+            toValue: 0,
+            duration: 500,
+            useNativeDriver: true,
+          }),
+          Animated.timing(opacity, {
+            toValue: 1,
+            duration: 500,
+            useNativeDriver: true,
+          }),
+        ])
       )
+      animation.start()
+      return () => animation.stop()
     } else {
-      cancelAnimation(opacity)
-      opacity.value = 1
+      opacity.setValue(1)
     }
-
-    return () => {
-      cancelAnimation(opacity)
-    }
-  }, [isVisible, prefersReducedMotion])
-
-  const animatedStyle = useAnimatedStyle(() => ({
-    opacity: opacity.value,
-  }))
+  }, [isVisible])
 
   if (!isVisible) {
     return null
@@ -58,7 +47,7 @@ export function CursorBlink({ isVisible, className }: CursorBlinkProps) {
   return (
     <Animated.View
       className={cn("w-[2px] h-4 ml-0.5 bg-blue-400", className)}
-      style={animatedStyle}
+      style={{ opacity }}
       accessibilityElementsHidden
     />
   )
