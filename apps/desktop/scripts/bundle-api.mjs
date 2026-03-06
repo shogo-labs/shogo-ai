@@ -94,6 +94,71 @@ function copyDir(src, dest, excludes = []) {
   }
 }
 
+const PRUNE_PATTERNS = [
+  /\/\.github\b/,
+  /\/\.vscode\b/,
+  /\/docs?\b/i,
+  /\/test[s]?\b/i,
+  /\/__tests__\b/,
+  /\/examples?\b/i,
+  /\/benchmarks?\b/i,
+  /\/\.eslint/,
+  /\/\.prettier/,
+  /\/tsconfig.*\.json$/,
+  /\/\.editorconfig$/,
+  /\/\.npmignore$/,
+  /\/CHANGELOG/i,
+  /\/HISTORY/i,
+  /\/CONTRIBUTING/i,
+  /\/AUTHORS/i,
+  /\/\.travis\.yml$/,
+  /\/appveyor\.yml$/,
+  /\/Makefile$/,
+  /\/Gruntfile/i,
+  /\/gulpfile/i,
+]
+
+const PRUNE_EXTENSIONS = new Set([
+  '.md', '.markdown', '.ts', '.map', '.d.ts',
+  '.flow', '.mts', '.cts', '.d.mts', '.d.cts',
+])
+
+function shouldPrune(filePath) {
+  const ext = path.extname(filePath).toLowerCase()
+  if (ext === '.ts' && !filePath.endsWith('.d.ts')) return false
+  if (PRUNE_EXTENSIONS.has(ext)) return true
+  return PRUNE_PATTERNS.some((p) => p.test(filePath))
+}
+
+function pruneNodeModules(nmDir) {
+  if (!fs.existsSync(nmDir)) return
+
+  let removed = 0
+  function walk(dir) {
+    let entries
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue
+      const full = path.join(dir, entry.name)
+      if (entry.isDirectory()) {
+        if (PRUNE_PATTERNS.some((p) => p.test('/' + entry.name))) {
+          fs.rmSync(full, { recursive: true, force: true })
+          removed++
+        } else {
+          walk(full)
+        }
+      } else if (entry.isFile() && shouldPrune(full)) {
+        fs.rmSync(full, { force: true })
+        removed++
+      }
+    }
+  }
+
+  walk(nmDir)
+  console.log(`  Removed ${removed} files/directories`)
+}
+
 function main() {
   const skipInstall = process.argv.includes('--skip-install')
 
@@ -173,15 +238,23 @@ function main() {
 
   // --- Install dependencies ---
   if (!skipInstall) {
-    console.log('[7/7] Installing dependencies (bun install)...')
-    execSync('bun install', {
+    const isWindows = process.platform === 'win32'
+    const installCmd = isWindows
+      ? 'bun install --linker=isolated'
+      : 'bun install'
+    console.log(`[7/8] Installing dependencies (${installCmd})...`)
+    execSync(installCmd, {
       cwd: RESOURCES_DIR,
       stdio: 'inherit',
       env: { ...process.env, NODE_ENV: 'production' },
     })
   } else {
-    console.log('[7/7] Skipping dependency install (--skip-install)')
+    console.log('[7/8] Skipping dependency install (--skip-install)')
   }
+
+  // --- Prune node_modules to reduce size ---
+  console.log('[8/8] Pruning node_modules...')
+  pruneNodeModules(path.join(RESOURCES_DIR, 'node_modules'))
 
   console.log('\n✅ API bundle complete!')
 }

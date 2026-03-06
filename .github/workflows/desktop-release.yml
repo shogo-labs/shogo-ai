@@ -40,6 +40,9 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      - name: Build workspace packages
+        run: cd packages/sdk && bun run build
+
       - name: Build web
         run: bun run web:build
         env:
@@ -56,13 +59,14 @@ jobs:
     name: Build Desktop (${{ matrix.os }})
     needs: build-web
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: macos-14
             platform: darwin
             arch: arm64
             bun-target: bun-darwin-aarch64
-          - os: macos-13
+          - os: macos-14
             platform: darwin
             arch: x64
             bun-target: bun-darwin-x64
@@ -112,7 +116,13 @@ jobs:
           ls -la
 
       - name: Install monorepo dependencies
-        run: bun install
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = "win32" ]; then
+            bun install --linker=isolated
+          else
+            bun install
+          fi
 
       - name: Build workspace packages
         shell: bash
@@ -147,7 +157,7 @@ jobs:
 
       - name: Package with Electron Forge
         working-directory: apps/desktop
-        run: npx electron-forge make
+        run: npx electron-forge make --arch=${{ matrix.arch }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
