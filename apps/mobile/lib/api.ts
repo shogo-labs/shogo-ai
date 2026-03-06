@@ -227,7 +227,12 @@ export const api = {
   // ─── Admin ───────────────────────────────────────────────
 
   async getMe(http: HttpClient) {
-    const res = await http.get<{ ok: boolean; data?: { role?: string } }>('/api/me')
+    const res = await http.get<{ ok: boolean; data?: { role?: string; onboardingCompleted?: boolean } }>('/api/me')
+    return res.data
+  },
+
+  async completeOnboarding(http: HttpClient) {
+    const res = await http.post<{ ok: boolean }>('/api/onboarding/complete')
     return res.data
   },
 }

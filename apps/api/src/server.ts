@@ -700,10 +700,16 @@ app.get('/api/health', (c) => c.json({ ok: true }))
 app.get('/health', (c) => c.json({ ok: true }))
 
 // Platform config (tells frontend about local mode, enabled features, etc.)
-app.get('/api/config', (c) => {
+app.get('/api/config', async (c) => {
   const localMode = process.env.SHOGO_LOCAL_MODE === 'true'
+  let needsSetup = false
+  if (localMode) {
+    const userCount = await prisma.user.count()
+    needsSetup = userCount === 0
+  }
   return c.json({
     localMode,
+    needsSetup,
     features: {
       billing: !localMode,
       admin: !localMode,
@@ -4478,6 +4484,7 @@ app.get('/api/me', authMiddleware, requireAuth, async (c) => {
       emailVerified: true,
       image: true,
       role: true,
+      onboardingCompleted: true,
       createdAt: true,
       updatedAt: true,
     },
@@ -4486,6 +4493,22 @@ app.get('/api/me', authMiddleware, requireAuth, async (c) => {
     return c.json({ error: { code: 'not_found', message: 'User not found' } }, 404)
   }
   return c.json({ ok: true, data: user })
+})
+
+// =============================================================================
+// Onboarding complete (/api/onboarding/complete)
+// =============================================================================
+
+app.post('/api/onboarding/complete', authMiddleware, requireAuth, async (c) => {
+  const authCtx = c.get('auth')
+  if (!authCtx?.userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Not authenticated' } }, 401)
+  }
+  await prisma.user.update({
+    where: { id: authCtx.userId },
+    data: { onboardingCompleted: true },
+  })
+  return c.json({ ok: true })
 })
 
 // =============================================================================
@@ -4861,7 +4884,7 @@ console.log(`   AI Proxy Health: GET  http://localhost:${API_PORT}/api/ai/proxy/
 console.log(`   CORS origin: http://localhost:${VITE_PORT}`)
 console.log(`   AI Providers: Anthropic=${!!process.env.ANTHROPIC_API_KEY}, OpenAI=${!!process.env.OPENAI_API_KEY}`)
 
-// Local mode: restore saved API keys + auto-seed
+// Local mode: restore saved API keys on startup
 if (process.env.SHOGO_LOCAL_MODE === 'true') {
   setTimeout(async () => {
     try {
@@ -4874,31 +4897,6 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
       }
     } catch (err: any) {
       console.log('[LocalMode] Could not restore API keys (table may not exist yet):', err.message)
-    }
-
-    try {
-      const existingUser = await prisma.user.findFirst()
-      if (!existingUser) {
-        console.log('[LocalMode] First launch detected — creating default user and workspace...')
-        const res = await fetch(`http://localhost:${API_PORT}/api/auth/sign-up/email`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            email: 'local@shogo.local',
-            password: 'shogo-local',
-            name: 'Local User',
-          }),
-        })
-        if (!res.ok) throw new Error(`Sign-up failed: ${res.status}`)
-        const { user } = await res.json() as { user: { id: string } }
-        await prisma.user.update({
-          where: { id: user.id },
-          data: { emailVerified: true, role: 'super_admin' },
-        })
-        console.log('[LocalMode] Default user created: local@shogo.local / shogo-local')
-      }
-    } catch (err: any) {
-      console.error('[LocalMode] Auto-seed failed (non-fatal):', err.message)
     }
   }, 1000)
 }

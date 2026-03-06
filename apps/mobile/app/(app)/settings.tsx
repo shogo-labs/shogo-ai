@@ -27,7 +27,6 @@ import { SafeAreaView } from 'react-native-safe-area-context'
 import { observer } from 'mobx-react-lite'
 import {
   ArrowLeft,
-  Settings,
   Building2,
   Users,
   CreditCard,
@@ -90,9 +89,9 @@ import {
 
 const DOCS_URL = 'https://docs.shogo.ai'
 
-type TabId = 'workspace' | 'people' | 'account' | 'billing' | 'api-keys'
+type TabId = 'workspace' | 'people' | 'account' | 'billing'
 
-const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'billing', 'api-keys']
+const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'billing']
 
 interface NavItem {
   id: TabId
@@ -111,7 +110,6 @@ const LOCAL_NAV_ITEMS: NavItem[] = [
   { id: 'workspace', label: 'Workspace', icon: Building2 },
   { id: 'people', label: 'People', icon: Users },
   { id: 'account', label: 'Account', icon: User },
-  { id: 'api-keys', label: 'API Keys', icon: Settings },
 ]
 
 function TabBar({
@@ -194,7 +192,7 @@ function SettingsSidebar({
     { id: 'people', label: 'People' },
     ...(showBilling
       ? [{ id: 'billing' as TabId, label: 'Billing' }]
-      : [{ id: 'api-keys' as TabId, label: 'API Keys' }]),
+      : []),
   ]
 
   const sections: SidebarSection[] = [
@@ -1117,192 +1115,6 @@ function AccountTab() {
           </View>
         </View>
       )}
-    </View>
-  )
-}
-
-// ============================================================================
-// API KEYS TAB — Local mode: user provides their own LLM API keys
-// ============================================================================
-
-function ApiKeysTab() {
-  const [anthropicKey, setAnthropicKey] = useState('')
-  const [openaiKey, setOpenaiKey] = useState('')
-  const [savedAnthropicMask, setSavedAnthropicMask] = useState('')
-  const [savedOpenaiMask, setSavedOpenaiMask] = useState('')
-  const [isLoading, setIsLoading] = useState(true)
-  const [isSaving, setIsSaving] = useState(false)
-  const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
-
-  useEffect(() => {
-    fetch(`${API_URL}/api/local/api-keys`, { credentials: 'include' })
-      .then(r => r.json())
-      .then(data => {
-        if (data.keys?.ANTHROPIC_API_KEY) setSavedAnthropicMask(data.keys.ANTHROPIC_API_KEY)
-        if (data.keys?.OPENAI_API_KEY) setSavedOpenaiMask(data.keys.OPENAI_API_KEY)
-      })
-      .catch(() => {})
-      .finally(() => setIsLoading(false))
-  }, [])
-
-  const handleSave = async () => {
-    setIsSaving(true)
-    setSaveStatus('idle')
-    try {
-      const body: Record<string, string> = {}
-      if (anthropicKey) body.anthropicApiKey = anthropicKey
-      if (openaiKey) body.openaiApiKey = openaiKey
-      const res = await fetch(`${API_URL}/api/local/api-keys`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(body),
-      })
-      if (!res.ok) throw new Error('Failed')
-      setSaveStatus('saved')
-      if (anthropicKey) {
-        setSavedAnthropicMask(anthropicKey.slice(0, 8) + '...' + anthropicKey.slice(-4))
-        setAnthropicKey('')
-      }
-      if (openaiKey) {
-        setSavedOpenaiMask(openaiKey.slice(0, 8) + '...' + openaiKey.slice(-4))
-        setOpenaiKey('')
-      }
-      setTimeout(() => setSaveStatus('idle'), 3000)
-    } catch {
-      setSaveStatus('error')
-    } finally {
-      setIsSaving(false)
-    }
-  }
-
-  if (isLoading) {
-    return (
-      <View className="items-center justify-center py-20">
-        <ActivityIndicator />
-      </View>
-    )
-  }
-
-  return (
-    <View className="gap-8">
-      <View>
-        <Text className="text-xl font-semibold text-foreground">API Keys</Text>
-        <Text className="text-sm text-muted-foreground mt-1">
-          Shogo runs locally on your machine. Provide your own API keys to power the AI agent.
-        </Text>
-      </View>
-
-      <Card>
-        <CardContent className="p-6 gap-6">
-          {/* Anthropic */}
-          <View className="gap-2">
-            <View className="flex-row items-center justify-between">
-              <Text className="text-sm font-medium text-foreground">Anthropic API Key</Text>
-              {savedAnthropicMask ? (
-                <View className="flex-row items-center gap-1.5">
-                  <View className="h-2 w-2 rounded-full bg-green-500" />
-                  <Text className="text-xs text-muted-foreground">{savedAnthropicMask}</Text>
-                </View>
-              ) : (
-                <View className="flex-row items-center gap-1.5">
-                  <View className="h-2 w-2 rounded-full bg-amber-500" />
-                  <Text className="text-xs text-muted-foreground">Not configured</Text>
-                </View>
-              )}
-            </View>
-            <Text className="text-xs text-muted-foreground">
-              Required for the AI agent. Get your key at console.anthropic.com
-            </Text>
-            <Input
-              value={anthropicKey}
-              onChangeText={setAnthropicKey}
-              placeholder={savedAnthropicMask ? 'Enter new key to replace' : 'sk-ant-...'}
-              secureTextEntry
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-          </View>
-
-          <Separator />
-
-          {/* OpenAI */}
-          <View className="gap-2">
-            <View className="flex-row items-center justify-between">
-              <Text className="text-sm font-medium text-foreground">OpenAI API Key</Text>
-              {savedOpenaiMask ? (
-                <View className="flex-row items-center gap-1.5">
-                  <View className="h-2 w-2 rounded-full bg-green-500" />
-                  <Text className="text-xs text-muted-foreground">{savedOpenaiMask}</Text>
-                </View>
-              ) : (
-                <View className="flex-row items-center gap-1.5">
-                  <View className="h-2 w-2 rounded-full bg-muted-foreground" />
-                  <Text className="text-xs text-muted-foreground">Optional</Text>
-                </View>
-              )}
-            </View>
-            <Text className="text-xs text-muted-foreground">
-              Optional — used for embeddings and alternative models. Get your key at platform.openai.com
-            </Text>
-            <Input
-              value={openaiKey}
-              onChangeText={setOpenaiKey}
-              placeholder={savedOpenaiMask ? 'Enter new key to replace' : 'sk-...'}
-              secureTextEntry
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-          </View>
-
-          <Separator />
-
-          <View className="flex-row items-center justify-between">
-            <View>
-              {saveStatus === 'saved' && (
-                <Text className="text-sm text-green-600">Keys saved successfully</Text>
-              )}
-              {saveStatus === 'error' && (
-                <Text className="text-sm text-destructive">Failed to save keys</Text>
-              )}
-            </View>
-            <Button
-              onPress={handleSave}
-              disabled={isSaving || (!anthropicKey && !openaiKey)}
-            >
-              <Text className="text-sm font-medium text-primary-foreground">
-                {isSaving ? 'Saving...' : 'Save Keys'}
-              </Text>
-            </Button>
-          </View>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardContent className="p-6 gap-3">
-          <Text className="text-sm font-medium text-foreground">How it works</Text>
-          <View className="gap-2">
-            <View className="flex-row items-start gap-2">
-              <Text className="text-muted-foreground text-sm">•</Text>
-              <Text className="text-sm text-muted-foreground flex-1">
-                Your API keys are stored locally on this machine and never sent to any external server.
-              </Text>
-            </View>
-            <View className="flex-row items-start gap-2">
-              <Text className="text-muted-foreground text-sm">•</Text>
-              <Text className="text-sm text-muted-foreground flex-1">
-                The Anthropic key is used by the AI agent for reasoning and code generation.
-              </Text>
-            </View>
-            <View className="flex-row items-start gap-2">
-              <Text className="text-muted-foreground text-sm">•</Text>
-              <Text className="text-sm text-muted-foreground flex-1">
-                Usage is billed directly by the API providers at their standard rates.
-              </Text>
-            </View>
-          </View>
-        </CardContent>
-      </Card>
     </View>
   )
 }
@@ -2492,7 +2304,6 @@ function SettingsContent({ activeTab }: { activeTab: TabId }) {
       {activeTab === 'people' && <PeopleTab />}
       {activeTab === 'account' && <AccountTab />}
       {activeTab === 'billing' && <BillingTab />}
-      {activeTab === 'api-keys' && <ApiKeysTab />}
     </>
   )
 }
@@ -2509,7 +2320,7 @@ export default observer(function SettingsPage() {
   const [activeTab, setActiveTab] = useState<TabId>(
     () => {
       const requested = params.tab as TabId
-      if (requested === 'billing' && !features.billing) return 'api-keys'
+      if (requested === 'billing' && !features.billing) return 'workspace'
       return ALL_TAB_IDS.includes(requested) ? requested : 'workspace'
     }
   )
