@@ -21,6 +21,11 @@ import { sendWelcomeEmail, sendPasswordResetEmail, sendEmailVerificationEmail } 
 import { prisma } from "./lib/prisma"
 
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
+const LOAD_TEST_SECRET = process.env.LOAD_TEST_SECRET
+
+function isLoadTestBypass(request: Request): boolean {
+  return !!(LOAD_TEST_SECRET && request?.headers?.get?.('x-load-test-key') === LOAD_TEST_SECRET)
+}
 
 function createAuthDatabase() {
   if (isLocalMode) {
@@ -186,6 +191,24 @@ export const auth = betterAuth({
     window: 60,
     max: 1000,
     enabled: process.env.NODE_ENV === 'production',
+    customRules: {
+      "/sign-in/email": async (request) => {
+        if (isLoadTestBypass(request)) return false
+        return { window: 10, max: 3 }
+      },
+      "/sign-up/email": async (request) => {
+        if (isLoadTestBypass(request)) return false
+        return { window: 10, max: 3 }
+      },
+      "/sign-out": async (request) => {
+        if (isLoadTestBypass(request)) return false
+        return { window: 10, max: 10 }
+      },
+      "/get-session": async (request) => {
+        if (isLoadTestBypass(request)) return false
+        return { window: 10, max: 30 }
+      },
+    },
   },
 
   // Advanced configuration
