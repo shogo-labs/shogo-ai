@@ -2,6 +2,10 @@
 
 Better Auth uses cookie-based sessions, not Bearer tokens.
 The Locust HttpSession automatically handles cookies between requests.
+
+The server enforces CSRF protection on state-changing requests (POST/PUT/PATCH/DELETE)
+by validating the Origin header. All mutating helpers send an Origin header matching
+the target host so requests are not rejected.
 """
 import os
 from typing import Optional, Dict
@@ -20,8 +24,20 @@ class AuthManager:
     
     def __init__(self, api_base_url: str = None):
         self.api_base_url = api_base_url or config.API_BASE_URL
+        self._origin = self._derive_origin(self.api_base_url)
         self.user_data = {}  # user_id -> user data (id, email, name)
         self.signup_attempts = {}  # user_id -> attempt count
+
+    @staticmethod
+    def _derive_origin(url: str) -> str:
+        """Extract the origin (scheme + host) from a URL for CSRF headers."""
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        return f"{parsed.scheme}://{parsed.netloc}"
+
+    def _csrf_headers(self) -> Dict[str, str]:
+        """Return headers required to pass CSRF validation."""
+        return {"Origin": self._origin}
     
     def generate_test_email(self, user_id: int) -> str:
         """Generate unique test email."""
@@ -54,6 +70,7 @@ class AuthManager:
                 "password": password,
                 "name": f"Load Test User {user_id}"
             },
+            headers=self._csrf_headers(),
             catch_response=True,
             name="/api/auth/sign-up/email"
         ) as response:
@@ -92,6 +109,7 @@ class AuthManager:
         with client.post(
             "/api/auth/sign-in/email",
             json={"email": email, "password": password},
+            headers=self._csrf_headers(),
             catch_response=True,
             name="/api/auth/sign-in/email"
         ) as response:
@@ -146,6 +164,7 @@ class AuthManager:
         """Log out the current user (clears session cookie)."""
         with client.post(
             "/api/auth/sign-out",
+            headers=self._csrf_headers(),
             catch_response=True,
             name="/api/auth/sign-out"
         ) as response:

@@ -28,6 +28,7 @@ class MCPLoadTestUser(FastHttpUser):
     def on_start(self):
         """Authenticate and setup."""
         self.auth = AuthManager(self.host)
+        self._origin = self.host.rstrip("/")
         self.user_id = random.randint(100000, 999999)
         self.authenticated = False
         self.workspace_id = f"ws-{self.user_id}"
@@ -53,6 +54,7 @@ class MCPLoadTestUser(FastHttpUser):
                     "arguments": arguments,
                 },
             },
+            headers={"Origin": self._origin},
             catch_response=True,
             name=name or f"MCP: {tool_name}",
         ) as response:

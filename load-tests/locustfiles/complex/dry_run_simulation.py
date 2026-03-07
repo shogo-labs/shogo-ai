@@ -52,6 +52,7 @@ class DryRunUser(HttpUser):
 
     def on_start(self):
         self.auth = AuthManager(self.host)
+        self._origin = self.host.rstrip("/")
         self.user_id = random.randint(200000, 999999)
         self.project_ids = []
         self.workspace_id = None
@@ -98,6 +99,7 @@ class DryRunUser(HttpUser):
                 "workspaceId": self.workspace_id,
                 "type": "AGENT",
             },
+            headers={"Origin": self._origin},
             catch_response=True,
             name="/api/projects [create-agent]",
         ) as response:
@@ -139,6 +141,7 @@ class DryRunUser(HttpUser):
                 ],
                 "agentMode": "basic",
             },
+            headers={"Origin": self._origin},
             catch_response=True,
             name="/api/projects/:id/chat [first-message]",
             timeout=120,
@@ -195,6 +198,7 @@ class DryRunUser(HttpUser):
                 ],
                 "agentMode": "basic",
             },
+            headers={"Origin": self._origin},
             catch_response=True,
             name="/api/projects/:id/chat",
             timeout=120,

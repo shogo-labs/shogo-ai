@@ -33,6 +33,7 @@ class ChatHeavyUser(HttpUser):
     def on_start(self):
         """Authenticate, get workspace, create agent project."""
         self.auth = AuthManager(self.host)
+        self._origin = self.host.rstrip("/")
         self.user_id = random.randint(100000, 999999)
         self.project_id = None
         self.workspace_id = None
@@ -71,6 +72,7 @@ class ChatHeavyUser(HttpUser):
                 "workspaceId": self.workspace_id,
                 "type": "AGENT",
             },
+            headers={"Origin": self._origin},
             catch_response=True,
             name="/api/projects [create-agent]",
         ) as resp:
@@ -117,6 +119,7 @@ class ChatHeavyUser(HttpUser):
                 "chatSessionId": self.session_id,
                 "agentMode": "basic",
             },
+            headers={"Origin": self._origin},
             catch_response=True,
             name="/projects/:id/chat [message]",
             timeout=120,

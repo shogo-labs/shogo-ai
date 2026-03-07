@@ -725,10 +725,11 @@ app.use('/api/*', csrf({
   },
 }))
 
-// Rate limiting — applied per-route group for different thresholds
-app.use('/api/auth/*', rateLimiter('auth', { max: 20, windowMs: 60_000 }))
-app.use('/api/webhooks/*', rateLimiter('webhooks', { max: 30, windowMs: 60_000 }))
-app.use('/api/*', rateLimiter('global', { max: 200, windowMs: 60_000 }))
+// Rate limiting — applied per-route group for different thresholds.
+// Defaults can be overridden via RATE_LIMIT_*_MAX and RATE_LIMIT_*_WINDOW_MS env vars.
+app.use('/api/auth/*', rateLimiter('auth', { max: Number(process.env.RATE_LIMIT_AUTH_MAX) || 60, windowMs: Number(process.env.RATE_LIMIT_AUTH_WINDOW_MS) || 60_000 }))
+app.use('/api/webhooks/*', rateLimiter('webhooks', { max: Number(process.env.RATE_LIMIT_WEBHOOKS_MAX) || 90, windowMs: Number(process.env.RATE_LIMIT_WEBHOOKS_WINDOW_MS) || 60_000 }))
+app.use('/api/*', rateLimiter('global', { max: Number(process.env.RATE_LIMIT_GLOBAL_MAX) || 600, windowMs: Number(process.env.RATE_LIMIT_GLOBAL_WINDOW_MS) || 60_000 }))
 
 // Better Auth handler - mounted BEFORE other /api/* routes
 // Handles all authentication endpoints: sign-up, sign-in, sign-out, session, OAuth callbacks, etc.
@@ -1675,9 +1676,8 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     if (contentType) headers.set('content-type', contentType)
     const accept = c.req.header('accept')
     if (accept) headers.set('accept', accept)
-    const runtimeSecret = process.env.RUNTIME_AUTH_SECRET || process.env.WEBHOOK_TOKEN
-    if (runtimeSecret) headers.set('x-runtime-token', runtimeSecret)
-
+    const { deriveRuntimeToken } = await import('./lib/runtime-token')
+    headers.set('x-runtime-token', deriveRuntimeToken(projectId))
     const requestInit: RequestInit = { method: c.req.method, headers }
     if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
       requestInit.body = await c.req.arrayBuffer()

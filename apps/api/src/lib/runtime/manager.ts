@@ -690,6 +690,11 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         // requests to route through the API server (same as Kubernetes managers do).
         runtimeEnv.TOOLS_PROXY_URL = `http://localhost:${apiPort}/api`
 
+        // Per-project runtime auth tokens (deterministic — derived from signing secret + projectId)
+        const { deriveRuntimeToken, deriveWebhookToken } = await import('../runtime-token')
+        runtimeEnv.RUNTIME_AUTH_SECRET = deriveRuntimeToken(projectId)
+        runtimeEnv.WEBHOOK_TOKEN = deriveWebhookToken(projectId)
+
         // Strip the raw platform API key so the child process cannot bypass the proxy.
         delete runtimeEnv.ANTHROPIC_API_KEY
         delete runtimeEnv.ANTHROPIC_BASE_URL

@@ -967,6 +967,11 @@ export class KnativeProjectManager {
       console.warn(`[KnativeProjectManager] AI proxy token not generated for ${projectId} — AI features will be unavailable in this pod`)
     }
 
+    // Per-project runtime auth tokens (deterministic — derived from signing secret + projectId)
+    const { deriveRuntimeToken, deriveWebhookToken } = await import('./runtime-token')
+    env.push({ name: "RUNTIME_AUTH_SECRET", value: deriveRuntimeToken(projectId) })
+    env.push({ name: "WEBHOOK_TOKEN", value: deriveWebhookToken(projectId) })
+
     // Inject public-facing URL so agent-runtime can build OAuth callback URLs (Composio, etc.)
     if (process.env.BETTER_AUTH_URL) {
       env.push({ name: "BETTER_AUTH_URL", value: process.env.BETTER_AUTH_URL })

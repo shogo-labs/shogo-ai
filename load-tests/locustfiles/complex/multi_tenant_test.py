@@ -29,6 +29,7 @@ class MultiTenantUser(HttpUser):
     def on_start(self):
         """Authenticate via cookie-based session."""
         self.auth = AuthManager(self.host)
+        self._origin = self.host.rstrip("/")
         self.user_id = random.randint(100000, 999999)
         self.authenticated = False
         self.workspaces = []
@@ -81,6 +82,7 @@ class MultiTenantUser(HttpUser):
                 "workspaceId": workspace["id"],
                 "type": "AGENT",
             },
+            headers={"Origin": self._origin},
             catch_response=True,
             name="/api/projects [CREATE]",
         ) as response:
@@ -141,6 +143,7 @@ class MultiTenantUser(HttpUser):
                 ],
                 "agentMode": "basic",
             },
+            headers={"Origin": self._origin},
             catch_response=True,
             name="/projects/:id/chat [message]",
             timeout=120,

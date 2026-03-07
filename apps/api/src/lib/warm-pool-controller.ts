@@ -1278,6 +1278,11 @@ export class WarmPoolController {
       console.log(`[WarmPool] buildProjectEnv: skipping DB provisioning for AGENT project`)
     }
 
+    // Per-project runtime auth tokens (deterministic — derived from signing secret + projectId)
+    const { deriveRuntimeToken, deriveWebhookToken } = await import('./runtime-token')
+    env.RUNTIME_AUTH_SECRET = deriveRuntimeToken(projectId)
+    env.WEBHOOK_TOKEN = deriveWebhookToken(projectId)
+
     // S3 config
     if (process.env.S3_WORKSPACES_BUCKET) {
       env.S3_WORKSPACES_BUCKET = process.env.S3_WORKSPACES_BUCKET

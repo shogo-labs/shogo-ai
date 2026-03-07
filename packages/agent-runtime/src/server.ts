@@ -286,34 +286,32 @@ app.use('*', async (c, next) => {
   await next()
 })
 
-// Authenticate /agent/* and /pool/* endpoints with a shared secret.
+// Authenticate /agent/* and /pool/* endpoints with a per-project secret.
+// Tokens are derived from HMAC(projectId, signingSecret) and injected at pod creation.
 // Health/readiness probes and external channel webhooks are excluded.
-const RUNTIME_SECRET = process.env.RUNTIME_AUTH_SECRET || process.env.WEBHOOK_TOKEN
-app.use('/agent/*', async (c, next) => {
+const RUNTIME_SECRET = process.env.RUNTIME_AUTH_SECRET
+
+function checkRuntimeAuth(c: any): Response | null {
   if (!RUNTIME_SECRET) {
-    await next()
-    return
+    if (process.env.NODE_ENV !== 'production') return null
+    console.error('[agent-runtime] RUNTIME_AUTH_SECRET not set — rejecting request')
+    return c.json({ error: 'Unauthorized — RUNTIME_AUTH_SECRET not configured' }, 401)
   }
   const auth = c.req.header('authorization') || ''
   const token = c.req.header('x-runtime-token') || ''
-  if (auth === `Bearer ${RUNTIME_SECRET}` || token === RUNTIME_SECRET) {
-    await next()
-    return
-  }
+  if (auth === `Bearer ${RUNTIME_SECRET}` || token === RUNTIME_SECRET) return null
   return c.json({ error: 'Unauthorized — missing or invalid runtime token' }, 401)
+}
+
+app.use('/agent/*', async (c, next) => {
+  const denied = checkRuntimeAuth(c)
+  if (denied) return denied
+  await next()
 })
 app.use('/pool/*', async (c, next) => {
-  if (!RUNTIME_SECRET) {
-    await next()
-    return
-  }
-  const auth = c.req.header('authorization') || ''
-  const token = c.req.header('x-runtime-token') || ''
-  if (auth === `Bearer ${RUNTIME_SECRET}` || token === RUNTIME_SECRET) {
-    await next()
-    return
-  }
-  return c.json({ error: 'Unauthorized — missing or invalid runtime token' }, 401)
+  const denied = checkRuntimeAuth(c)
+  if (denied) return denied
+  await next()
 })
 
 // Register WhatsApp webhook routes (must be before any auth middleware)
