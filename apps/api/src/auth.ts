@@ -182,6 +182,12 @@ export const auth = betterAuth({
 
   plugins: [expo()],
 
+  rateLimit: {
+    window: 60,
+    max: 1000,
+    enabled: process.env.NODE_ENV === 'production',
+  },
+
   // Advanced configuration
   advanced: {
     database: {
