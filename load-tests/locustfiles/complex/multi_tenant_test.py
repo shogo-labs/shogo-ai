@@ -30,6 +30,9 @@ class MultiTenantUser(HttpUser):
         """Authenticate via cookie-based session."""
         self.auth = AuthManager(self.host)
         self._origin = self.host.rstrip("/")
+        self._headers = {"Origin": self._origin}
+        if config.LOAD_TEST_SECRET:
+            self._headers["X-Load-Test-Key"] = config.LOAD_TEST_SECRET
         self.user_id = random.randint(100000, 999999)
         self.authenticated = False
         self.workspaces = []
@@ -50,6 +53,7 @@ class MultiTenantUser(HttpUser):
 
         with self.client.get(
             "/api/workspaces",
+            headers=self._headers,
             catch_response=True,
             name="/api/workspaces [LIST]",
         ) as response:
@@ -82,7 +86,7 @@ class MultiTenantUser(HttpUser):
                 "workspaceId": workspace["id"],
                 "type": "AGENT",
             },
-            headers={"Origin": self._origin},
+            headers=self._headers,
             catch_response=True,
             name="/api/projects [CREATE]",
         ) as response:
@@ -105,6 +109,7 @@ class MultiTenantUser(HttpUser):
 
         with self.client.get(
             "/api/projects",
+            headers=self._headers,
             catch_response=True,
             name="/api/projects [LIST]",
         ) as response:
@@ -143,7 +148,7 @@ class MultiTenantUser(HttpUser):
                 ],
                 "agentMode": "basic",
             },
-            headers={"Origin": self._origin},
+            headers=self._headers,
             catch_response=True,
             name="/projects/:id/chat [message]",
             timeout=120,

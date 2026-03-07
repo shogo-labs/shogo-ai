@@ -38,13 +38,13 @@ class DataIntensiveUser(FastHttpUser):
     @task(5)
     def bulk_create(self):
         """Bulk create entities."""
-        # TODO: Implement bulk create via MCP
+        # TODO: Implement bulk create via API
         pass
 
     @task(10)
     def complex_query(self):
         """Execute complex query with joins."""
-        # TODO: Implement complex query via MCP
+        # TODO: Implement complex query via API
         pass
 
     @task(3)

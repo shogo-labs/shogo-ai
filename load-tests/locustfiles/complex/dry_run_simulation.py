@@ -53,6 +53,9 @@ class DryRunUser(HttpUser):
     def on_start(self):
         self.auth = AuthManager(self.host)
         self._origin = self.host.rstrip("/")
+        self._headers = {"Origin": self._origin}
+        if config.LOAD_TEST_SECRET:
+            self._headers["X-Load-Test-Key"] = config.LOAD_TEST_SECRET
         self.user_id = random.randint(200000, 999999)
         self.project_ids = []
         self.workspace_id = None
@@ -68,6 +71,7 @@ class DryRunUser(HttpUser):
 
         with self.client.get(
             "/api/workspaces",
+            headers=self._headers,
             catch_response=True,
             name="/api/workspaces",
         ) as response:
@@ -99,7 +103,7 @@ class DryRunUser(HttpUser):
                 "workspaceId": self.workspace_id,
                 "type": "AGENT",
             },
-            headers={"Origin": self._origin},
+            headers=self._headers,
             catch_response=True,
             name="/api/projects [create-agent]",
         ) as response:
@@ -141,7 +145,7 @@ class DryRunUser(HttpUser):
                 ],
                 "agentMode": "basic",
             },
-            headers={"Origin": self._origin},
+            headers=self._headers,
             catch_response=True,
             name="/api/projects/:id/chat [first-message]",
             timeout=120,
@@ -198,7 +202,7 @@ class DryRunUser(HttpUser):
                 ],
                 "agentMode": "basic",
             },
-            headers={"Origin": self._origin},
+            headers=self._headers,
             catch_response=True,
             name="/api/projects/:id/chat",
             timeout=120,
@@ -225,6 +229,7 @@ class DryRunUser(HttpUser):
 
         with self.client.get(
             f"/api/projects/{project_id}/chat/status",
+            headers=self._headers,
             catch_response=True,
             name="/api/projects/:id/chat/status",
             timeout=10,

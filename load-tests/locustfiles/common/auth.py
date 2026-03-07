@@ -35,9 +35,15 @@ class AuthManager:
         parsed = urlparse(url)
         return f"{parsed.scheme}://{parsed.netloc}"
 
+    def _base_headers(self) -> Dict[str, str]:
+        """Return headers included on every request (e.g. rate-limit bypass)."""
+        if config.LOAD_TEST_SECRET:
+            return {"X-Load-Test-Key": config.LOAD_TEST_SECRET}
+        return {}
+
     def _csrf_headers(self) -> Dict[str, str]:
         """Return headers required to pass CSRF validation."""
-        return {"Origin": self._origin}
+        return {**self._base_headers(), "Origin": self._origin}
     
     def generate_test_email(self, user_id: int) -> str:
         """Generate unique test email."""
@@ -136,11 +142,9 @@ class AuthManager:
         
         With Better Auth's cookie-based sessions, no special headers are needed.
         The Locust client automatically includes session cookies in requests.
-        
-        Returns empty dict - kept for API compatibility.
+        Includes the load-test bypass header when configured.
         """
-        # No Authorization header needed - cookies handle authentication
-        return {}
+        return self._base_headers()
     
     def verify_session(self, client) -> Optional[Dict]:
         """Verify current session with server.
@@ -149,6 +153,7 @@ class AuthManager:
         """
         with client.get(
             "/api/auth/get-session",
+            headers=self._base_headers(),
             catch_response=True,
             name="/api/auth/get-session"
         ) as response:

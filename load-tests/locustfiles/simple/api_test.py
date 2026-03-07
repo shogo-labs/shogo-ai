@@ -15,6 +15,7 @@ import random
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 from locustfiles.common.auth import AuthManager
+from locustfiles.common.config import config
 
 
 class APILoadTestUser(FastHttpUser):
@@ -25,6 +26,9 @@ class APILoadTestUser(FastHttpUser):
     def on_start(self):
         """Authenticate user."""
         self.auth = AuthManager(self.host)
+        self._headers = {}
+        if config.LOAD_TEST_SECRET:
+            self._headers["X-Load-Test-Key"] = config.LOAD_TEST_SECRET
         self.user_id = random.randint(100000, 999999)
         self.authenticated = False
         self.workspaces = []
@@ -41,6 +45,7 @@ class APILoadTestUser(FastHttpUser):
         """Get auth session."""
         with self.client.get(
             "/api/auth/get-session",
+            headers=self._headers,
             catch_response=True,
             name="/api/auth/get-session",
         ) as response:
@@ -54,6 +59,7 @@ class APILoadTestUser(FastHttpUser):
         """Get templates list."""
         with self.client.get(
             "/api/templates",
+            headers=self._headers,
             catch_response=True,
             name="/api/templates",
         ) as response:
@@ -70,6 +76,7 @@ class APILoadTestUser(FastHttpUser):
 
         with self.client.get(
             "/api/workspaces",
+            headers=self._headers,
             catch_response=True,
             name="/api/workspaces",
         ) as response:
@@ -91,6 +98,7 @@ class APILoadTestUser(FastHttpUser):
 
         with self.client.get(
             "/api/projects",
+            headers=self._headers,
             catch_response=True,
             name="/api/projects",
         ) as response:
@@ -107,6 +115,7 @@ class APILoadTestUser(FastHttpUser):
 
         with self.client.get(
             "/api/folders",
+            headers=self._headers,
             catch_response=True,
             name="/api/folders",
         ) as response:
@@ -123,6 +132,7 @@ class APILoadTestUser(FastHttpUser):
 
         with self.client.get(
             "/api/starred-projects",
+            headers=self._headers,
             catch_response=True,
             name="/api/starred-projects",
         ) as response:
@@ -139,6 +149,7 @@ class APILoadTestUser(FastHttpUser):
 
         with self.client.get(
             "/api/members",
+            headers=self._headers,
             catch_response=True,
             name="/api/members",
         ) as response:
@@ -152,6 +163,7 @@ class APILoadTestUser(FastHttpUser):
         """API health check (public endpoint)."""
         with self.client.get(
             "/api/health",
+            headers=self._headers,
             catch_response=True,
             name="/api/health",
         ) as response:

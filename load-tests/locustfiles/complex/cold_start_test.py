@@ -34,6 +34,9 @@ class ColdStartUser(HttpUser):
         """Authenticate and get workspace."""
         self.auth = AuthManager(self.host)
         self._origin = self.host.rstrip("/")
+        self._headers = {"Origin": self._origin}
+        if config.LOAD_TEST_SECRET:
+            self._headers["X-Load-Test-Key"] = config.LOAD_TEST_SECRET
         self.user_id = random.randint(100000, 999999)
         self.project_id = None
         self.workspace_id = None
@@ -46,6 +49,7 @@ class ColdStartUser(HttpUser):
 
         with self.client.get(
             "/api/workspaces",
+            headers=self._headers,
             catch_response=True,
             name="/api/workspaces",
         ) as resp:
@@ -77,7 +81,7 @@ class ColdStartUser(HttpUser):
                 "workspaceId": self.workspace_id,
                 "type": "AGENT",
             },
-            headers={"Origin": self._origin},
+            headers=self._headers,
             catch_response=True,
             name="/api/projects [create-agent-cold-start]",
         ) as resp:
@@ -113,7 +117,7 @@ class ColdStartUser(HttpUser):
                 ],
                 "agentMode": "basic",
             },
-            headers={"Origin": self._origin},
+            headers=self._headers,
             catch_response=True,
             name="/projects/:id/chat [cold-start]",
             timeout=120,
@@ -156,7 +160,7 @@ class ColdStartUser(HttpUser):
                 ],
                 "agentMode": "basic",
             },
-            headers={"Origin": self._origin},
+            headers=self._headers,
             catch_response=True,
             name="/projects/:id/chat [warm]",
             timeout=60,
