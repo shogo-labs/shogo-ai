@@ -254,6 +254,7 @@ export function CanvasThemedContainer({ children }: { children: ReactNode }) {
           borderRadius: 16,
           border: '1px solid rgb(var(--color-border, 228 228 231))',
           backgroundColor: `rgb(${vars['--color-background']})`,
+          color: `rgb(${vars['--color-foreground']})`,
         }}
       >
         {children}
