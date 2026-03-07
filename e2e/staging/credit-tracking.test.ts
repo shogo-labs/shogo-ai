@@ -35,6 +35,14 @@ test.describe("Credit Tracking", () => {
     await page.getByPlaceholder("you@example.com").fill(TEST_USER.email)
     await page.getByPlaceholder("Create a password").fill(TEST_USER.password)
     await page.getByRole("button", { name: "Sign Up" }).or(page.getByText("Sign Up").last()).click()
+    // Handle onboarding screen if present (new users see "Get Started" before home)
+    const getStarted = page.getByText("Get Started")
+    try {
+      await getStarted.waitFor({ timeout: 5_000 })
+      await getStarted.click()
+    } catch {
+      // No onboarding screen — already on home
+    }
     await page.waitForSelector("text=What's on your mind", { timeout: 20_000 })
 
     // Upgrade to Pro

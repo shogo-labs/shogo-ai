@@ -17,11 +17,10 @@
 import { betterAuth } from "better-auth"
 import { expo } from "@better-auth/expo"
 import { createPersonalWorkspace } from "./services/workspace.service"
-import { sendWelcomeEmail, sendPasswordResetEmail, sendEmailVerificationEmail, isEmailConfigured } from "./services/email.service"
+import { sendWelcomeEmail, sendPasswordResetEmail, sendEmailVerificationEmail } from "./services/email.service"
 import { prisma } from "./lib/prisma"
 
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
-const isDev = process.env.NODE_ENV !== 'production'
 
 function createAuthDatabase() {
   if (isLocalMode) {
@@ -140,7 +139,7 @@ export const auth = betterAuth({
 
   emailAndPassword: {
     enabled: true,
-    requireEmailVerification: !isLocalMode && !isDev && isEmailConfigured(),
+    requireEmailVerification: process.env.REQUIRE_EMAIL_VERIFICATION === 'true',
     sendResetPassword: async ({ user, url }: { user: { email: string; name?: string | null }; url: string }) => {
       await sendPasswordResetEmail({
         to: user.email,

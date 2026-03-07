@@ -33,6 +33,7 @@ class ColdStartUser(HttpUser):
     def on_start(self):
         """Authenticate and get workspace."""
         self.auth = AuthManager(self.host)
+        self._origin = self.host.rstrip("/")
         self.user_id = random.randint(100000, 999999)
         self.project_id = None
         self.workspace_id = None
@@ -76,6 +77,7 @@ class ColdStartUser(HttpUser):
                 "workspaceId": self.workspace_id,
                 "type": "AGENT",
             },
+            headers={"Origin": self._origin},
             catch_response=True,
             name="/api/projects [create-agent-cold-start]",
         ) as resp:
@@ -111,6 +113,7 @@ class ColdStartUser(HttpUser):
                 ],
                 "agentMode": "basic",
             },
+            headers={"Origin": self._origin},
             catch_response=True,
             name="/projects/:id/chat [cold-start]",
             timeout=120,
@@ -153,6 +156,7 @@ class ColdStartUser(HttpUser):
                 ],
                 "agentMode": "basic",
             },
+            headers={"Origin": self._origin},
             catch_response=True,
             name="/projects/:id/chat [warm]",
             timeout=60,

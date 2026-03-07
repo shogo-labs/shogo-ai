@@ -25,6 +25,7 @@ class WorkspaceLoadTestUser(FastHttpUser):
     def on_start(self):
         """Authenticate user and prepare for workspace operations."""
         self.auth = AuthManager(self.host)
+        self._origin = self.host.rstrip("/")
         self.user_id = random.randint(100000, 999999)
         
         # Sign up and login - this sets session cookie automatically
@@ -96,6 +97,7 @@ class WorkspaceLoadTestUser(FastHttpUser):
                 "slug": f"loadtest-{workspace_id}",
                 "description": "Workspace for load testing"
             },
+            headers={"Origin": self._origin},
             catch_response=True,
             name="/api/workspaces [CREATE]"
         ) as response:
@@ -131,6 +133,7 @@ class WorkspaceLoadTestUser(FastHttpUser):
                 "name": f"Updated WS {random.randint(1, 1000)}",
                 "description": f"Updated at {random.randint(1, 1000)}"
             },
+            headers={"Origin": self._origin},
             catch_response=True,
             name="/api/workspaces/:id [UPDATE]"
         ) as response:
@@ -201,6 +204,7 @@ class WorkspaceLoadTestUser(FastHttpUser):
                 "type": "AGENT",
                 "description": "Project for load testing",
             },
+            headers={"Origin": self._origin},
             catch_response=True,
             name="/api/projects [CREATE]"
         ) as response:
@@ -247,6 +251,7 @@ class WorkspaceLoadTestUser(FastHttpUser):
         # Use v2 API endpoint - authenticated via session cookie
         with self.client.delete(
             f"/api/workspaces/{workspace_id}",
+            headers={"Origin": self._origin},
             catch_response=True,
             name="/api/workspaces/:id [DELETE]"
         ) as response:
