@@ -1,29 +1,27 @@
-# GitHub Actions Repository / Environment Variables
+# GitHub Actions Environment Variables
 
-The deploy workflows expect the following GitHub repository or environment
-variables to be configured.
+The deploy workflow uses **GitHub environment-scoped variables**. Create a
+`staging` and `production` environment in your repo settings and set the
+following variables on each.
 
-## Shared
+## Per-Environment Variables
 
-- `ECR_REGISTRY` - Example: `123456789012.dkr.ecr.us-east-1.amazonaws.com`
-- `MOBILE_API_URL` - Public API/studio URL used by mobile release builds
+Set these on **both** `staging` and `production` environments with the
+appropriate values for each:
 
-## Staging
+- `ECR_REGISTRY` - ECR registry URL, e.g. `123456789012.dkr.ecr.us-east-1.amazonaws.com`
+- `EKS_CLUSTER` - EKS cluster name
+- `NAMESPACE_SYSTEM` - K8s namespace for system services
+- `NAMESPACE_WORKSPACES` - K8s namespace for workspace pods
+- `DOMAIN` - Primary domain (e.g. `studio-staging.example.com`)
+- `DOCS_DOMAIN` - Docs domain (e.g. `docs-staging.example.com`)
+- `MULTI_REGION` - `true` or `false`
+- `ALLOWED_ORIGINS` - Comma-separated allowed CORS origins
+- `EXPO_PUBLIC_API_URL` - Public API URL for web builds
 
-- `STAGING_EKS_CLUSTER`
-- `STAGING_NAMESPACE_SYSTEM`
-- `STAGING_NAMESPACE_WORKSPACES`
-- `STAGING_DOMAIN`
-- `STAGING_DOCS_DOMAIN`
+Set these only on the **production** environment:
 
-## Production
-
-- `PROD_EKS_CLUSTER`
-- `PROD_EKS_CLUSTER_EU`
-- `PROD_NAMESPACE_SYSTEM`
-- `PROD_NAMESPACE_WORKSPACES`
-- `PROD_DOMAIN`
-- `PROD_DOCS_DOMAIN`
+- `EKS_CLUSTER_EU` - EU region EKS cluster name (when `MULTI_REGION=true`)
 
 ## Related GitHub Secrets
 
