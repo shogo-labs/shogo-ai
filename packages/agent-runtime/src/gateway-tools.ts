@@ -54,6 +54,7 @@ export interface ToolContext {
 
 const BLOCKED_COMMANDS = [
   'rm -rf /',
+  'rm -rf /*',
   'shutdown',
   'reboot',
   'mkfs',
@@ -61,6 +62,15 @@ const BLOCKED_COMMANDS = [
   'chmod 777',
   'curl.*|.*bash',
   'wget.*|.*bash',
+  'curl.*|.*sh',
+  'wget.*|.*sh',
+  'nc -l',
+  'ncat -l',
+  'python.*-m.*http.server',
+  'python.*SimpleHTTPServer',
+  'eval\\s*\\$',
+  '\\$\\(curl',
+  '\\$\\(wget',
 ]
 
 function isBlockedCommand(command: string): boolean {

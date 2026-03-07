@@ -15,9 +15,9 @@ import { execSync } from 'child_process'
 import type { SandboxConfig } from './types'
 
 const DEFAULT_SANDBOX: SandboxConfig = {
-  enabled: false,
+  enabled: process.env.SANDBOX_EXEC_ENABLED === 'true' || !!process.env.KUBERNETES_SERVICE_HOST,
   mode: 'non-main',
-  image: 'ubuntu:22.04',
+  image: process.env.SANDBOX_IMAGE || 'ubuntu:22.04',
   networkEnabled: false,
   memoryLimit: '256m',
   cpuLimit: '0.5',
@@ -68,6 +68,9 @@ export function sandboxExec(opts: SandboxExecOptions): SandboxExecResult {
     '-w', '/workspace',
     '--memory', config.memoryLimit,
     '--cpus', config.cpuLimit,
+    '--pids-limit', '256',
+    '--cap-drop', 'ALL',
+    '--security-opt', 'no-new-privileges',
   ]
 
   if (!config.networkEnabled) {

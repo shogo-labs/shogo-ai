@@ -18,6 +18,7 @@
 
 import type { Context, Next } from "hono"
 import { auth } from "../auth"
+import { prisma } from "../lib/prisma"
 
 /**
  * Auth context set by middleware
@@ -124,4 +125,66 @@ export function requireRole(role: string | string[]) {
 
     await next()
   }
+}
+
+/**
+ * Middleware that verifies the authenticated user has access to the
+ * project specified by the `:projectId` route parameter.
+ *
+ * Access is granted if the user is a member of the project's workspace,
+ * or if the user has the super_admin role.
+ *
+ * Must be applied AFTER authMiddleware and requireAuth so that
+ * c.get("auth").userId is available.
+ */
+export async function requireProjectAccess(c: Context, next: Next) {
+  const auth = c.get("auth")
+  const userId = auth?.userId
+  if (!userId) {
+    return c.json(
+      { error: { code: "unauthorized", message: "Authentication required" } },
+      401
+    )
+  }
+
+  const projectId = c.req.param("projectId")
+  if (!projectId) {
+    return c.json(
+      { error: { code: "bad_request", message: "Project ID is required" } },
+      400
+    )
+  }
+
+  // Super admins bypass project access checks
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { role: true },
+  })
+  if (user?.role === "super_admin") {
+    await next()
+    return
+  }
+
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { workspaceId: true },
+  })
+  if (!project) {
+    return c.json(
+      { error: { code: "not_found", message: "Project not found" } },
+      404
+    )
+  }
+
+  const member = await prisma.member.findFirst({
+    where: { userId, workspaceId: project.workspaceId },
+  })
+  if (!member) {
+    return c.json(
+      { error: { code: "forbidden", message: "Access denied to this project" } },
+      403
+    )
+  }
+
+  await next()
 }

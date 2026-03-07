@@ -125,7 +125,7 @@ export function integrationRoutes() {
       })
     } catch (err: any) {
       console.error(`[Integrations] Connect error for ${toolkit}:`, err.message)
-      return c.json({ error: `Failed to create connection: ${err.message}` }, 500)
+      return c.json({ error: 'Failed to create integration connection' }, 500)
     }
   })
 
@@ -204,7 +204,7 @@ export function integrationRoutes() {
       return c.json({ ok: true })
     } catch (err: any) {
       console.error(`[Integrations] Disconnect error:`, err.message)
-      return c.json({ error: `Failed to disconnect: ${err.message}` }, 500)
+      return c.json({ error: 'Failed to disconnect integration' }, 500)
     }
   })
 

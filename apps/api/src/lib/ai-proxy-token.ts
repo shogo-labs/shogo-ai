@@ -38,8 +38,11 @@ function getProxySecret(): string {
     process.env.AI_PROXY_SECRET ||
     process.env.BETTER_AUTH_SECRET ||
     process.env.PREVIEW_TOKEN_SECRET
-  if (secret) {
-    return secret
+  if (!secret) {
+    throw new Error(
+      '[AI Proxy Token] FATAL: No signing secret configured. ' +
+      'Set AI_PROXY_SECRET, BETTER_AUTH_SECRET, or PREVIEW_TOKEN_SECRET.'
+    )
   }
 
   if (process.env.NODE_ENV === 'production') {

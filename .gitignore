@@ -106,6 +106,7 @@ packages/agent-runtime/src/evals/dspy/results/
 
 
 
+apps/api/.env
 apps/mobile/.env
 apps/mobile/google-services.json
 apps/mobile/android/

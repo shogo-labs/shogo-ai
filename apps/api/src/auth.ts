@@ -139,7 +139,7 @@ export const auth = betterAuth({
 
   emailAndPassword: {
     enabled: true,
-    requireEmailVerification: false,
+    requireEmailVerification: !isLocalMode,
     sendResetPassword: async ({ user, url }: { user: { email: string; name?: string | null }; url: string }) => {
       await sendPasswordResetEmail({
         to: user.email,
