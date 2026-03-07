@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * ChatMessage Hooks
  *
@@ -29,8 +31,8 @@ export interface HookContext {
  * Hooks for ChatMessage routes
  */
 export interface ChatMessageHooks {
-  /** Called before listing records. Can modify where/include. */
-  beforeList?: (ctx: HookContext) => Promise<HookResult<{ where?: any; include?: any }> | void>
+  /** Called before listing records. Can modify where/include/orderBy. */
+  beforeList?: (ctx: HookContext) => Promise<HookResult<{ where?: any; include?: any; orderBy?: any }> | void>
   /** Called before getting a single record. Can reject access. */
   beforeGet?: (id: string, ctx: HookContext) => Promise<HookResult | void>
   /** Called before creating a record. Can modify input or reject. */
@@ -118,7 +120,7 @@ export const chatMessageHooks: ChatMessageHooks = {
         where: { sessionId },
         // Explicitly no include - MST expects session as ID reference, not nested object
         include: undefined,
-        orderBy: { createdAt: 'asc' },
+        orderBy: { createdAt: 'desc' },
       },
     }
   },

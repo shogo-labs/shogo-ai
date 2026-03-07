@@ -1,5 +1,8 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import '../polyfills'
 import '../global.css'
+import '../lib/icon-interop'
 
 import { Stack } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
@@ -25,6 +28,7 @@ function RootLayoutInner() {
         <Stack screenOptions={{ headerShown: false, lazy: true }}>
           <Stack.Screen name="index" />
           <Stack.Screen name="(auth)" />
+          <Stack.Screen name="(onboarding)" />
           <Stack.Screen name="(app)" />
           <Stack.Screen name="(admin)" />
         </Stack>

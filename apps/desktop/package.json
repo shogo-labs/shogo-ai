@@ -4,6 +4,7 @@
   "description": "Shogo Desktop - Local open-source edition",
   "author": "Shogo Team",
   "private": true,
+  "license": "AGPL-3.0-or-later",
   "main": "dist/main.js",
   "scripts": {
     "dev": "tsc && electron .",

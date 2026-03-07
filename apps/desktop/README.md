@@ -3,6 +3,8 @@
 Shogo Desktop is the offline-first, open-source edition of Shogo. It runs the
 full platform locally — no cloud account or subscription required.
 
+License: `AGPL-3.0-or-later`.
+
 ## Architecture
 
 ```
@@ -101,15 +103,7 @@ EXPO_PUBLIC_API_URL=http://localhost:8002 \
   npx expo start --web --port 8081
 ```
 
-Open **http://localhost:8081** in your browser. Sign in with:
-
-| Field    | Value               |
-|----------|---------------------|
-| Email    | `local@shogo.local` |
-| Password | `shogo-local`       |
-
-You get the full app with hot-reload — create projects, use templates, test
-settings — all backed by the local SQLite database.
+Open **http://localhost:8081** in your browser.
 
 ## Configuring API Keys
 

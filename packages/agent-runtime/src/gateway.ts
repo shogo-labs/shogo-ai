@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Agent Gateway
  *
@@ -563,9 +565,11 @@ Then follow ALL steps below:
     { id: "m_total", component: "Metric", label: "Total Tasks", value: { path: "/summary/total" } },
     { id: "m_done", component: "Metric", label: "Completed", value: { path: "/summary/completed" }, trendValue: "+3 this week" },
     { id: "m_pending", component: "Metric", label: "Pending", value: { path: "/summary/pending" } },
-    { id: "list_card", component: "Card", child: "task_list", title: "All Tasks" },
+    { id: "list_card", component: "Card", title: "All Tasks", children: ["task_search", "task_list"] },
+    { id: "task_search", component: "TextField", placeholder: "Search tasks...", dataPath: "/searchTerm" },
     { id: "task_list", component: "DataList",
-      children: { path: "/tasks", templateId: "task_row" }, emptyText: "No tasks yet" },
+      children: { path: "/tasks", templateId: "task_row" }, emptyText: "No tasks yet",
+      filterPath: "/searchTerm", filterFields: ["title"] },
     { id: "task_row", component: "Row", children: ["task_check", "task_info", "task_priority", "task_delete"], align: "center", justify: "between" },
     { id: "task_check", component: "Checkbox", checked: { path: "completed" }, dataPath: "completed" },
     { id: "task_info", component: "Text", text: { path: "title" }, weight: "medium", className: "flex-1" },
@@ -628,8 +632,23 @@ Delete button (remove an item):
 - Dynamic URL (per-item in DataList): \`action: { name: "view", mutation: { endpoint: { path: "url" }, method: "OPEN" } }\`
   \`method: "OPEN"\` opens the resolved URL in a new browser tab.
 
-### Filtering with \`where\` (categorized views)
+### Search & Filter Patterns
 
+When the user wants to search, filter, or find items in a list, use one of these patterns:
+
+**Pattern 1 — Client-side search (best for small/medium lists, instant results):**
+Add a TextField with \`dataPath\`, and set \`filterPath\` + \`filterFields\` on the DataList. The list filters in real time as the user types.
+\`\`\`json
+{ "id": "search", "component": "TextField", "placeholder": "Search emails...", "dataPath": "/searchTerm" }
+{ "id": "list", "component": "DataList",
+  "children": { "path": "/emails", "templateId": "email_row" },
+  "filterPath": "/searchTerm", "filterFields": ["subject", "from", "preview"] }
+\`\`\`
+- \`filterPath\`: JSON Pointer to where the search text lives (matches the TextField's \`dataPath\`)
+- \`filterFields\`: array of item field names to search (case-insensitive substring match)
+- **Always add a search TextField when displaying lists of 5+ items** — users expect to be able to filter
+
+**Pattern 2 — Exact-value filter with \`where\` (Kanban boards, pipeline views):**
 Use the \`where\` prop on DataList to show only items matching specific field values. Multiple DataLists can share the same data path but display different subsets.
 \`\`\`json
 { "id": "new_col", "component": "DataList",
@@ -638,13 +657,23 @@ Use the \`where\` prop on DataList to show only items matching specific field va
 { "id": "qualified_col", "component": "DataList",
   "children": { "path": "/leads", "templateId": "lead_card" },
   "where": { "stage": "qualified" } }
-{ "id": "closed_col", "component": "DataList",
-  "children": { "path": "/leads", "templateId": "lead_card" },
-  "where": { "stage": "closed" } }
 \`\`\`
 - \`where\`: object with field-value pairs. Only items where ALL fields match are shown.
-- Load ALL items into one array with a single \`canvas_api_query\` (no per-column queries needed).
-- ALWAYS prefer this pattern for categorized/status-based views over creating separate filtered queries.
+- ALWAYS prefer this for categorized/status-based views over creating separate filtered queries.
+
+**Pattern 3 — Select/ChoicePicker as a filter (category/type/status filtering):**
+Use a Select or ChoicePicker with \`dataPath\` to let users pick a filter, then use \`where\` on DataList to filter by the selected value.
+\`\`\`json
+{ "id": "filter", "component": "ChoicePicker", "label": "Filter by label",
+  "options": [{ "label": "All", "value": "all" }, { "label": "Important", "value": "important" }, { "label": "Urgent", "value": "urgent" }],
+  "variant": "chip", "dataPath": "/selectedFilter" }
+\`\`\`
+
+**When to use which:**
+- Any list of 5+ items → **always add Pattern 1** (search TextField + filterPath)
+- Kanban/pipeline/status views → Pattern 2 (\`where\` prop)
+- Category/type selection → Pattern 3 (Select/ChoicePicker)
+- **Combine patterns** — a dashboard with many items should have BOTH a search box AND category filters
 
 ### Component Types
 
@@ -705,10 +734,11 @@ The renderer auto-formats numbers (commas, compact notation), currency ($ prefix
 
 **Mandatory Patterns:**
 - **Dashboard/analytics request**: Grid of 3-4 Metric components with \`trendValue\` (e.g. "+12%"), at least one Chart, Card-wrapped data sections
-- **Interactive data request**: Metric summary row, DataList with interactive components (Checkbox for booleans, Select for enums, Delete button)
-- **Data display request**: Metric summary row, Card-wrapped DataList or Table
+- **Interactive data request**: Metric summary row, DataList with interactive components (Checkbox for booleans, Select for enums, Delete button), **TextField search input with filterPath/filterFields on DataList**
+- **Data display request**: Metric summary row, Card-wrapped DataList or Table, **TextField search input when showing 5+ items**
 - **Categorized view request**: Metric summary row (counts per category), Card-wrapped columns in a Grid, each with a DataList using \`where\` prop to filter by field value — load ALL items into one array, use \`where: { "field": "value" }\` per column
 - **Any request with data**: Header Row with title (variant "h2") + context Badge (justify: "between")
+- **Any list of 5+ items**: MUST include a TextField search input with \`dataPath\` wired to \`filterPath\` + \`filterFields\` on the DataList. Users expect to be able to search/filter data.
 
 **Chart Type Selection:**
 - \`bar\` — Compare values across categories (e.g. sales by region)
@@ -743,7 +773,10 @@ Root Column
 Root Column
   → Row: title (h2) + Badge (justify: between)
   → Grid (columns: 3): Metric + Metric + Metric (with trendValues)
-  → Card (title: "Items"): DataList with template Rows, each with Checkbox + Text + Select + Delete Button
+  → Card (title: "Items"):
+    → TextField (placeholder: "Search...", dataPath: "/searchTerm")
+    → DataList (filterPath: "/searchTerm", filterFields: ["title", "description"])
+      → template Rows: Checkbox + Text + Select + Delete Button
 \`\`\`
 
 **Reference Layout — Data Display with Links:**
@@ -751,7 +784,10 @@ Root Column
 Root Column
   → Row: title (h2) + Badge (justify: between)
   → Grid (columns: 3): Metric + Metric + Metric (with trendValues)
-  → Card (title: "Items"): DataList with template Cards, each with OPEN link Button
+  → Card (title: "Items"):
+    → TextField (placeholder: "Search...", dataPath: "/searchTerm")
+    → DataList (filterPath: "/searchTerm", filterFields: ["title", "from"])
+      → template Cards: Text + Badge + OPEN link Button
 \`\`\`
 
 ### Rules

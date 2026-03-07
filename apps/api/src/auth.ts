@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Better Auth Server Configuration
  * Task: task-ba-006, task-org-002
@@ -15,9 +17,11 @@
 import { betterAuth } from "better-auth"
 import { expo } from "@better-auth/expo"
 import { createPersonalWorkspace } from "./services/workspace.service"
-import { sendWelcomeEmail, sendPasswordResetEmail, sendEmailVerificationEmail } from "./services/email.service"
+import { sendWelcomeEmail, sendPasswordResetEmail, sendEmailVerificationEmail, isEmailConfigured } from "./services/email.service"
+import { prisma } from "./lib/prisma"
 
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
+const isDev = process.env.NODE_ENV !== 'production'
 
 function createAuthDatabase() {
   if (isLocalMode) {
@@ -136,7 +140,7 @@ export const auth = betterAuth({
 
   emailAndPassword: {
     enabled: true,
-    requireEmailVerification: false,
+    requireEmailVerification: !isLocalMode && !isDev && isEmailConfigured(),
     sendResetPassword: async ({ user, url }: { user: { email: string; name?: string | null }; url: string }) => {
       await sendPasswordResetEmail({
         to: user.email,
@@ -161,18 +165,18 @@ export const auth = betterAuth({
   },
 
   trustedOrigins: (request) => {
-    const origins = [...getAllowedOrigins(), 'shogo://']
+    const baseURL = getBaseURL()
+    const origins = [...getAllowedOrigins(), baseURL, 'shogo://', 'exp://']
     if (process.env.NODE_ENV !== 'production') {
+      origins.push('http://localhost:8081')
+
       const reqOrigin = request?.headers?.get?.('origin')
       if (reqOrigin?.startsWith('http://localhost:') && !origins.includes(reqOrigin)) {
         origins.push(reqOrigin)
       }
-      // Allow local network origins (React Native on physical Android/iOS devices)
       if (reqOrigin && /^http:\/\/192\.168\.\d+\.\d+/.test(reqOrigin) && !origins.includes(reqOrigin)) {
         origins.push(reqOrigin)
       }
-      // Expo Go deep links (used by @better-auth/expo for OAuth redirects)
-      origins.push('exp://')
     }
     return origins
   },
@@ -194,10 +198,17 @@ export const auth = betterAuth({
         /**
          * Before creating a user, sanitize the name to prevent stored XSS.
          * Strips any HTML tags and angle brackets from the name field.
+         * In local mode, enforces a single-account limit.
          */
         before: async (user) => {
           if (user.name) {
             user.name = sanitizeName(user.name)
+          }
+          if (isLocalMode) {
+            const existingCount = await prisma.user.count()
+            if (existingCount >= 1) {
+              throw new Error('Local mode only supports a single account.')
+            }
           }
           return { data: user }
         },
@@ -210,6 +221,19 @@ export const auth = betterAuth({
          * Errors are logged but do not block user creation (graceful degradation).
          */
         after: async (user) => {
+          // In local/desktop mode, every user is a super_admin
+          if (isLocalMode) {
+            try {
+              await prisma.user.update({
+                where: { id: user.id },
+                data: { role: 'super_admin', emailVerified: true },
+              })
+              console.log(`[LocalMode] User ${user.email} promoted to super_admin`)
+            } catch (err) {
+              console.error(`[LocalMode] Failed to promote user:`, err)
+            }
+          }
+
           const maxAttempts = 3
           for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {

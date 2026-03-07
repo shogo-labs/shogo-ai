@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
 // @ts-nocheck
 import type { Node } from "prosemirror-model";
 import { Plugin, PluginKey } from "prosemirror-state";

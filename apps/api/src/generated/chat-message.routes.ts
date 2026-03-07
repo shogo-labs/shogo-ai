@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Auto-generated ChatMessage Routes
  *
@@ -80,8 +82,9 @@ export function createChatMessageRoutes(): Hono {
       }
       
       let include: any = undefined
+      let orderBy: any = undefined
 
-      // Apply beforeList hook (can override where/include)
+      // Apply beforeList hook (can override where/include/orderBy)
       if (hooks.beforeList) {
         const result = await hooks.beforeList(ctx)
         if (result && !result.ok) {
@@ -90,17 +93,25 @@ export function createChatMessageRoutes(): Hono {
         if (result?.data) {
           where = result.data.where || where
           include = result.data.include || include
+          orderBy = result.data.orderBy || orderBy
         }
       }
 
-      const items = await prisma.chatMessage.findMany({
-        where,
-        include,
-        take: query.limit ? parseInt(query.limit) : undefined,
-        skip: query.offset ? parseInt(query.offset) : undefined,
-      })
+      const take = query.limit ? parseInt(query.limit) : undefined
+      const skip = query.offset ? parseInt(query.offset) : undefined
 
-      return c.json({ ok: true, items })
+      const [items, total] = await Promise.all([
+        prisma.chatMessage.findMany({
+          where,
+          include,
+          orderBy,
+          take,
+          skip,
+        }),
+        prisma.chatMessage.count({ where }),
+      ])
+
+      return c.json({ ok: true, items, total, limit: take, offset: skip ?? 0 })
     } catch (error: any) {
       console.error("[ChatMessage] List error:", error)
       return c.json({ error: { code: "list_failed", message: error.message } }, 500)

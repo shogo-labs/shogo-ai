@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Billing Configuration — single source of truth for plan tiers, features, and credit constants.
  * Import from here rather than defining billing values locally in components.
@@ -78,7 +80,17 @@ export const DAILY_CREDITS = 5
 
 export function getTotalCreditsForPlan(planId: string | undefined): number {
   if (!planId) return (PLAN_CREDITS['free'] || 0) + DAILY_CREDITS
-  return (PLAN_CREDITS[planId] || 0) + DAILY_CREDITS
+
+  if (PLAN_CREDITS[planId] !== undefined) {
+    return PLAN_CREDITS[planId] + DAILY_CREDITS
+  }
+
+  const match = planId.match(/^(free|pro|business|enterprise)_(\d+)$/)
+  if (match) {
+    return parseInt(match[2], 10) + DAILY_CREDITS
+  }
+
+  return DAILY_CREDITS
 }
 
 export function formatCredits(n: number): string {

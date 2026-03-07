@@ -8,6 +8,9 @@ on:
         required: true
         type: string
   push:
+    branches:
+      - main
+      - staging
     tags:
       - 'desktop-v*'
 
@@ -128,7 +131,6 @@ jobs:
         shell: bash
         run: |
           cd packages/sdk && bun run build && cd ../..
-          cd packages/state-api && bun run build && cd ../..
 
       - name: Generate Prisma client (SQLite)
         shell: bash

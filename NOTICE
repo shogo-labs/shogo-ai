@@ -1,0 +1,34 @@
+Shogo AI
+Copyright 2026 Shogo Technologies, Inc.
+
+This product includes software developed at Shogo Technologies, Inc.
+(https://shogo.ai/).
+
+Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
+See the LICENSE file in the root of this repository.
+
+The Shogo SDK (@shogo-ai/sdk) is licensed under Apache License 2.0.
+See packages/sdk/LICENSE for details.
+
+Documentation (apps/docs/, docs/) is licensed under Creative Commons
+Attribution 4.0 International (CC BY 4.0). See apps/docs/LICENSE for details.
+
+Infrastructure and deployment materials in `terraform/`, `k8s/`,
+`deploy-examples/`, and `.github/workflows/` are licensed under the Shogo
+Infrastructure License. See `INFRASTRUCTURE-LICENSE.md` for details.
+
+---
+
+This product includes or depends on the following third-party software:
+
+- Hono (MIT License) - https://hono.dev
+- Better Auth (MIT License) - https://better-auth.com
+- Prisma (Apache 2.0) - https://prisma.io
+- Expo (MIT License) - https://expo.dev
+- React Native (MIT License) - https://reactnative.dev
+- Bun (MIT License) - https://bun.sh
+- Anthropic SDK (MIT License) - https://github.com/anthropics/anthropic-sdk-typescript
+- Composio (MIT License) - https://composio.dev
+- Stripe (MIT License) - https://stripe.com
+- MobX (MIT License) - https://mobx.js.org
+- Gluestack UI (MIT License) - https://gluestack.io

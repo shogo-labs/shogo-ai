@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Shared Shogo email layout.
  * All templates wrap their content with this layout for consistent branding.

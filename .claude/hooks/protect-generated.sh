@@ -40,7 +40,7 @@ if [[ "$file_path" == */generated/* ]] || [[ "$file_path" == *"/generated/"* ]];
   cat << 'EOF'
 {
   "decision": "block",
-  "reason": "PROTECTED FILE: Cannot modify auto-generated files in /generated/ directories.\n\nEXCEPTION: Files matching *.hooks.ts ARE editable - these are customization points for business logic.\n\nTO REGENERATE:\n  • Domain types & collections: bun run generate:domain\n  • API routes & hooks scaffolds: bun run generate:routes\n  • Prisma client: bun run db:generate\n  • All generators: bun run generate:all\n\nIf you need to customize behavior, look for or create a corresponding *.hooks.ts file instead of modifying the generated code directly."
+  "reason": "PROTECTED FILE: Cannot modify auto-generated files in /generated/ directories.\n\nEXCEPTION: Files matching *.hooks.ts ARE editable - these are customization points for business logic.\n\nTO REGENERATE:\n  • API routes & hooks scaffolds: bun run generate:routes\n  • Prisma client: bun run db:generate\n\nIf you need to customize behavior, look for or create a corresponding *.hooks.ts file instead of modifying the generated code directly."
 }
 EOF
   exit 0

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState, useCallback } from 'react'
 import { View, ScrollView, useWindowDimensions, Platform } from 'react-native'
 import { useRouter } from 'expo-router'

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Project Runtime Server
  *
@@ -1016,9 +1018,16 @@ const app = new Hono()
 
 // CORS for cross-origin requests from API
 app.use('*', cors({
-  origin: '*',
+  origin: (origin) => {
+    const allowed = process.env.ALLOWED_ORIGINS?.split(',').map(o => o.trim()) || []
+    if (!origin) return '*'
+    if (allowed.length > 0 && allowed.includes(origin)) return origin
+    if (origin.startsWith('http://localhost:') || origin.startsWith('https://localhost:')) return origin
+    return allowed[0] || origin
+  },
   allowMethods: ['GET', 'POST', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization', 'X-Session-Id'],
+  allowHeaders: ['Content-Type', 'Authorization', 'X-Session-Id', 'X-Runtime-Token'],
+  credentials: true,
 }))
 
 // =============================================================================

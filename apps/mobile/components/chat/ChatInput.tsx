@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * ChatInput Component (React Native)
  * Migrated from apps/web/src/components/app/chat/ChatInput.tsx
@@ -24,13 +26,12 @@ import {
   Platform,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { usePlatformConfig } from "../../lib/platform-config"
 import {
   Popover,
   PopoverBackdrop,
-  PopoverBody,
   PopoverContent,
 } from "@/components/ui/popover"
+import { usePlatformConfig } from "../../lib/platform-config"
 import {
   ArrowUp,
   Plus,
@@ -54,7 +55,7 @@ export interface AgentModeConfig {
   id: AgentMode
   label: string
   description: string
-  icon: React.ReactNode
+  Icon: React.ElementType
   creditHint: string
   requiresPro?: boolean
 }
@@ -82,7 +83,7 @@ const AGENT_MODES: AgentModeConfig[] = [
     id: "basic",
     label: "Basic",
     description: "Fast responses, 4x cheaper",
-    icon: <Zap className="h-3.5 w-3.5" size={14} />,
+    Icon: Zap,
     creditHint: "~0.2 credits",
     requiresPro: false,
   },
@@ -90,7 +91,7 @@ const AGENT_MODES: AgentModeConfig[] = [
     id: "advanced",
     label: "Advanced",
     description: "More capable, better quality",
-    icon: <Rocket className="h-3.5 w-3.5" size={14} />,
+    Icon: Rocket,
     creditHint: "~0.5-1 credits",
     requiresPro: true,
   },
@@ -650,7 +651,7 @@ export function ChatInput({
                   disabled={disabled || isStreaming}
                   className="h-8 flex-row items-center gap-1.5 rounded-full px-3"
                 >
-                  {currentAgentConfig.icon}
+                  <currentAgentConfig.Icon className="h-3.5 w-3.5 text-muted-foreground" size={14} />
                   <Text className="text-xs text-muted-foreground">
                     {currentAgentConfig.label}
                   </Text>
@@ -658,8 +659,8 @@ export function ChatInput({
               )}
             >
               <PopoverBackdrop />
-              <PopoverContent className="max-w-[280px] p-0">
-                <PopoverBody>
+              <PopoverContent className="w-[280px] p-0">
+                <View className="py-1">
                   {AGENT_MODES.map((mode) => {
                     const isLocked = mode.requiresPro && !effectiveIsPro
                     const isSelected = mode.id === agentMode
@@ -682,7 +683,7 @@ export function ChatInput({
                               size={16}
                             />
                           ) : (
-                            mode.icon
+                            <mode.Icon className="h-3.5 w-3.5 text-muted-foreground" size={14} />
                           )}
                         </View>
                         <View className="flex-1">
@@ -730,7 +731,7 @@ export function ChatInput({
                       </Pressable>
                     )
                   })}
-                </PopoverBody>
+                </View>
               </PopoverContent>
             </Popover>
           </View>

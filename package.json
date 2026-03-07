@@ -1,6 +1,7 @@
 {
   "name": "shogo-ai",
   "private": true,
+  "license": "AGPL-3.0-or-later",
   "packageManager": "bun@1.3.6",
   "workspaces": ["packages/*", "apps/api", "apps/mobile"],
   "scripts": {
@@ -11,6 +12,7 @@
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
     "web:dev": "cd apps/mobile && npx expo start --web",
+    "mobile:dev": "bun run --cwd apps/mobile expo start --go",
     "web:build": "cd apps/mobile && npx expo export --platform web",
     "api:dev": "PREWARM_CLAUDE_CODE=false bun --watch apps/api/src/entry.ts",
     "api:start": "bun apps/api/src/server.ts",
@@ -26,10 +28,7 @@
     "db:init": "bun apps/api/scripts/init-database.ts",
     "db:migrate": "npx prisma migrate dev",
     "db:migrate:deploy": "npx prisma migrate deploy",
-    "generate:domain": "bun run scripts/generate-domain.ts",
-    "generate:auth": "bun run scripts/generate-better-auth.ts",
     "generate:routes": "bun run packages/sdk/bin/shogo.ts generate",
-    "generate:all": "bun run generate:domain && bun run generate:auth && bun run generate:routes",
     "db:push": "npx prisma db push",
     "db:studio": "npx prisma studio",
     "db:generate": "npx prisma generate",
@@ -37,7 +36,6 @@
     "docker:prod": "docker-compose up",
     "docker:prod:build": "docker-compose up --build",
     "docker:prod:down": "docker-compose down",
-    "mobile:dev": "cd apps/mobile && npx expo start",
     "mobile:ios": "cd apps/mobile && npx expo start --ios",
     "mobile:android": "cd apps/mobile && npx expo start --android",
     "mobile:web": "cd apps/mobile && npx expo start --web",
@@ -48,6 +46,11 @@
     "docs:build": "bun run --cwd apps/docs build",
     "test:e2e:staging": "npx playwright test --config e2e/playwright.config.ts",
     "test:e2e:staging:ui": "npx playwright test --config e2e/playwright.config.ts --ui",
+    "test:channels": "bun test e2e/channels/",
+    "test:channels:status": "bun test e2e/channels/agent-status.integration.test.ts",
+    "test:channels:webchat": "bun test e2e/channels/webchat.integration.test.ts",
+    "test:channels:webhook": "bun test e2e/channels/webhook.integration.test.ts",
+    "test:channels:external": "bun test e2e/channels/external-channels.integration.test.ts",
     "postinstall": "[ -f scripts/patch-claude-sdk.ts ] && bun scripts/patch-claude-sdk.ts || true"
   },
   "devDependencies": {

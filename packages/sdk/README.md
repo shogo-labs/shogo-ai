@@ -365,4 +365,4 @@ See the [examples](./examples) directory for complete working examples:
 
 ## License
 
-MIT
+Apache-2.0

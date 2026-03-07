@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import { spawn, execSync, type ChildProcess } from 'child_process'
 import path from 'path'
 import { getBunPath, getApiDir, getDbPath, getWorkspacesDir, getProjectRoot } from './paths'
@@ -14,8 +16,9 @@ export function getApiUrl(): string {
 
 export async function startLocalServer(): Promise<void> {
   const bunPath = getBunPath()
-  const apiDir = getApiDir()
-  const serverEntry = path.join(apiDir, 'src', 'entry.ts')
+  const projectRoot = getProjectRoot()
+  const bundleDir = path.join(projectRoot, 'bundle')
+  const serverEntry = path.join(bundleDir, 'api.js')
 
   const env: Record<string, string> = {
     ...process.env as Record<string, string>,
@@ -30,6 +33,8 @@ export async function startLocalServer(): Promise<void> {
     BETTER_AUTH_URL: `http://localhost:${API_PORT}`,
     BUN_INSTALL_CACHE_DIR: path.join(getWorkspacesDir(), '..', '.bun-cache'),
     PREWARM_CLAUDE_CODE: 'false',
+    AGENT_RUNTIME_ENTRY: path.join(bundleDir, 'agent-runtime.js'),
+    MCP_SERVER_PATH: path.join(bundleDir, 'mcp-server.js'),
   }
 
   await initializeDatabase(bunPath, env)

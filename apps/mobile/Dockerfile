@@ -24,7 +24,6 @@ COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
 
 # Copy all workspace member package.json files for dependency resolution
-COPY packages/state-api/package.json ./packages/state-api/
 COPY packages/project-runtime/package.json ./packages/project-runtime/
 COPY packages/agent-runtime/package.json ./packages/agent-runtime/
 COPY packages/shared-runtime/package.json ./packages/shared-runtime/
@@ -48,7 +47,6 @@ COPY packages/shared-app ./packages/shared-app
 COPY packages/shared-ui ./packages/shared-ui
 COPY packages/ui-kit ./packages/ui-kit
 COPY packages/sdk ./packages/sdk
-COPY packages/state-api ./packages/state-api
 
 # Copy the mobile app source
 COPY apps/mobile ./apps/mobile

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
 // @ts-nocheck
 // Vite-compatible Image replacement
 const Image = ({ src, alt, className, width, height, ...props }: any) => (

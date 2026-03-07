@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * JSON Pointer helpers for dynamic app data binding.
  * Implements RFC 6901 JSON Pointer resolution and mutation.

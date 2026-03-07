@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import { Platform } from 'react-native'
 import { createAuthClient } from '@shogo/shared-app/auth'
 import { createAuthClient as createBetterAuthClient } from 'better-auth/react'

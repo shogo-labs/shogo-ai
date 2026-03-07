@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import type { EmailTemplate } from '../../types.js'
 import { EMAIL_CONSTANTS, wrapInLayout } from '../_layout.js'
 

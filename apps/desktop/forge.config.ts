@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import type { ForgeConfig } from '@electron-forge/cli'
 import fs from 'fs'
 
@@ -11,12 +13,10 @@ const config: ForgeConfig = {
     extraResource: [
       './resources/bun',
       './resources/web',
-      './resources/apps',
-      './resources/packages',
+      './resources/bundle',
       './resources/node_modules',
       './resources/prisma',
       './resources/package.json',
-      './resources/tsconfig.base.json',
       './resources/prisma.config.local.ts',
     ],
     ignore: [

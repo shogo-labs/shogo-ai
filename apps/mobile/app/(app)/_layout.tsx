@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * (app) layout - Responsive app shell
  *
@@ -61,7 +63,7 @@ export default function AppLayout() {
           {showSidebar && <AppSidebar />}
 
           <View className="flex-1">
-            {!isWide && !isHomePage && !isSettingsPage && <AppHeader onMenuPress={openDrawer} />}
+            {!isWide && !isProjectDetail && <AppHeader onMenuPress={openDrawer} />}
             <View className="flex-1">
               <Slot />
             </View>

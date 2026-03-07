@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Agent Runtime Server
  *
@@ -263,7 +265,18 @@ function wrapStreamWithKeepalive(
 
 const app = new Hono()
 
-app.use('*', cors({ origin: '*' }))
+app.use('*', cors({
+  origin: (origin) => {
+    const allowed = process.env.ALLOWED_ORIGINS?.split(',').map(o => o.trim()) || []
+    if (!origin) return '*'
+    if (allowed.length > 0 && allowed.includes(origin)) return origin
+    if (origin.startsWith('http://localhost:') || origin.startsWith('https://localhost:')) return origin
+    return allowed[0] || origin
+  },
+  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowHeaders: ['Content-Type', 'Authorization', 'X-Runtime-Token', 'X-Session-Id', 'X-User-Id', 'X-Billing-User-Id'],
+  credentials: true,
+}))
 
 // Track last external HTTP request for idle detection (excludes internal probes)
 app.use('*', async (c, next) => {
@@ -271,6 +284,36 @@ app.use('*', async (c, next) => {
     lastRequestAt = Date.now()
   }
   await next()
+})
+
+// Authenticate /agent/* and /pool/* endpoints with a shared secret.
+// Health/readiness probes and external channel webhooks are excluded.
+const RUNTIME_SECRET = process.env.RUNTIME_AUTH_SECRET || process.env.WEBHOOK_TOKEN
+app.use('/agent/*', async (c, next) => {
+  if (!RUNTIME_SECRET) {
+    await next()
+    return
+  }
+  const auth = c.req.header('authorization') || ''
+  const token = c.req.header('x-runtime-token') || ''
+  if (auth === `Bearer ${RUNTIME_SECRET}` || token === RUNTIME_SECRET) {
+    await next()
+    return
+  }
+  return c.json({ error: 'Unauthorized — missing or invalid runtime token' }, 401)
+})
+app.use('/pool/*', async (c, next) => {
+  if (!RUNTIME_SECRET) {
+    await next()
+    return
+  }
+  const auth = c.req.header('authorization') || ''
+  const token = c.req.header('x-runtime-token') || ''
+  if (auth === `Bearer ${RUNTIME_SECRET}` || token === RUNTIME_SECRET) {
+    await next()
+    return
+  }
+  return c.json({ error: 'Unauthorized — missing or invalid runtime token' }, 401)
 })
 
 // Register WhatsApp webhook routes (must be before any auth middleware)
@@ -716,7 +759,10 @@ app.get('/agent/chat/history', async (c) => {
 const WEBHOOK_TOKEN = process.env.WEBHOOK_TOKEN
 
 function verifyWebhookAuth(c: any): boolean {
-  if (!WEBHOOK_TOKEN) return true
+  if (!WEBHOOK_TOKEN) {
+    console.warn('[agent-runtime] WEBHOOK_TOKEN not set — rejecting webhook request (fail-closed)')
+    return false
+  }
   const auth = c.req.header('authorization') || ''
   const token = c.req.header('x-webhook-token') || ''
   return auth === `Bearer ${WEBHOOK_TOKEN}` || token === WEBHOOK_TOKEN
@@ -1987,6 +2033,21 @@ async function startGateway(): Promise<void> {
   }
 
   await agentGateway.start()
+
+  // Load response transforms: defaults first, then user overrides from disk
+  try {
+    const { getTransformRegistry } = await import('./response-transforms')
+    const { DEFAULT_TRANSFORMS } = await import('./default-transforms')
+    const registry = getTransformRegistry()
+    const transformsDir = join(AGENT_DIR, 'transforms')
+    registry.loadFromDisk(transformsDir)
+    registry.registerDefaults(DEFAULT_TRANSFORMS)
+    const count = registry.list().length
+    if (count > 0) console.log(`[agent-runtime] ${count} response transform(s) loaded`)
+  } catch (err: any) {
+    console.warn('[agent-runtime] Failed to load transforms:', err.message)
+  }
+
   gatewayReadyResolve?.()
   gatewayReadyResolve = null
   gatewayReadyPromise = null
