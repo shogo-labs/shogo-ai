@@ -417,6 +417,15 @@ jobs:
           
           echo "✅ Anthropic credentials created/updated in ${{ env.NS_WORKSPACES }} namespace"
 
+          # SigNoz observability credentials (optional)
+          if [ -n "${{ secrets.SIGNOZ_INGESTION_KEY }}" ]; then
+            kubectl create secret generic signoz-credentials \
+              --namespace=${{ env.NS_SYSTEM }} \
+              --from-literal=SIGNOZ_INGESTION_KEY="${{ secrets.SIGNOZ_INGESTION_KEY }}" \
+              --dry-run=client -o yaml | kubectl apply -f -
+            echo "✅ SigNoz credentials created/updated in ${{ env.NS_SYSTEM }} namespace"
+          fi
+
       - name: Save current Knative service images
         id: save-images
         run: |
@@ -686,7 +695,16 @@ jobs:
             --from-literal=api-key="${{ secrets.ANTHROPIC_API_KEY }}" \
             --dry-run=client -o yaml | kubectl apply -f -
 
-          echo "API secrets created/updated in EU cluster"
+          echo "✅ API secrets created/updated in EU cluster"
+
+          # SigNoz observability credentials (optional)
+          if [ -n "${{ secrets.SIGNOZ_INGESTION_KEY }}" ]; then
+            kubectl create secret generic signoz-credentials \
+              --namespace=${{ env.NS_SYSTEM }} \
+              --from-literal=SIGNOZ_INGESTION_KEY="${{ secrets.SIGNOZ_INGESTION_KEY }}" \
+              --dry-run=client -o yaml | kubectl apply -f -
+            echo "✅ SigNoz credentials created/updated in EU cluster"
+          fi
 
       - name: Save current Knative service images (EU)
         id: save-images-eu
@@ -713,13 +731,36 @@ jobs:
         run: |
           EU_REGISTRY=$(echo "$ECR_REGISTRY" | sed 's/us-east-1/eu-west-1/')
 
+          wait_for_ecr_image() {
+            local repo=$1 tag=$2
+            for attempt in 1 2 3 4 5; do
+              if aws ecr describe-images --repository-name "shogo/${repo}" \
+                   --image-ids "imageTag=${tag}" --region eu-west-1 &>/dev/null; then
+                return 0
+              fi
+              echo "⏳ Waiting for ECR replication of ${repo}:${tag} to eu-west-1 (attempt ${attempt}/5)..."
+              sleep 20
+            done
+            return 1
+          }
+
           patch_ksvc() {
             local name=$1 ns=$2 ecr_name=$3 changed=$4 prev=$5
             if [ "$changed" = "true" ]; then
-              echo "🔄 Deploying $name → ${{ env.IMAGE_TAG }} (EU)"
-              kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
-                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${EU_REGISTRY}/shogo/${ecr_name}:${{ env.IMAGE_TAG }}\"}
-              ]" || echo "$name service not found in EU cluster"
+              if wait_for_ecr_image "$ecr_name" "${{ env.IMAGE_TAG }}"; then
+                echo "🔄 Deploying $name → ${{ env.IMAGE_TAG }} (EU)"
+                kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
+                  {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${EU_REGISTRY}/shogo/${ecr_name}:${{ env.IMAGE_TAG }}\"}
+                ]" || echo "⚠️ $name service not found in EU cluster"
+              else
+                echo "⚠️ Image ${ecr_name}:${{ env.IMAGE_TAG }} not found in eu-west-1 after waiting. Keeping current image."
+                if [ -n "$prev" ]; then
+                  echo "📌 Restoring $name → $prev (EU)"
+                  kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
+                    {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${prev}\"}
+                  ]" || true
+                fi
+              fi
             elif [ -n "$prev" ]; then
               echo "📌 Restoring $name → $prev (EU, undoing kustomize reset)"
               kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[

@@ -3070,12 +3070,12 @@ app.post('/api/projects/:projectId/chat/wake', async (c) => {
 // Require super_admin role for all project admin endpoints
 // =============================================================================
 
-app.use('/api/admin/projects/*', requireSuperAdmin)
-app.use('/api/admin/projects', requireSuperAdmin)
-app.use('/api/admin/stats', requireSuperAdmin)
-app.use('/api/admin/warm-pool', requireSuperAdmin)
-app.use('/api/admin/warm-pool/*', requireSuperAdmin)
-app.use('/api/admin/settings/*', requireSuperAdmin)
+app.use('/api/admin/projects/*', authMiddleware, requireAuth, requireSuperAdmin)
+app.use('/api/admin/projects', authMiddleware, requireAuth, requireSuperAdmin)
+app.use('/api/admin/stats', authMiddleware, requireAuth, requireSuperAdmin)
+app.use('/api/admin/warm-pool', authMiddleware, requireAuth, requireSuperAdmin)
+app.use('/api/admin/warm-pool/*', authMiddleware, requireAuth, requireSuperAdmin)
+app.use('/api/admin/settings/*', authMiddleware, requireAuth, requireSuperAdmin)
 
 // GET /api/admin/projects - List all project pods
 app.get('/api/admin/projects', async (c) => {

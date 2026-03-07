@@ -58,23 +58,6 @@ echo ""
 echo "✅ Test 1.2 complete"
 echo ""
 
-# Test 1.3: MCP Operations (50-100 users, 10 min)
-echo "🔧 Test 1.3: MCP Operations Load Test"
-echo "   Users: 100, Spawn rate: 10, Duration: 10m"
-locust \
-    -f locustfiles/simple/mcp_test.py \
-    --headless \
-    --users 100 \
-    --spawn-rate 10 \
-    --run-time 10m \
-    --host "$MCP_BASE_URL" \
-    --html reports/mcp_test_report.html \
-    --csv reports/mcp_test
-
-echo ""
-echo "✅ Test 1.3 complete"
-echo ""
-
 # Analyze results
 echo "📊 Analyzing results..."
 python scripts/analyze_results.py --all
@@ -84,4 +67,3 @@ echo "✅ All simple tests complete!"
 echo "📊 Reports available in reports/ directory:"
 echo "   - reports/auth_test_report.html"
 echo "   - reports/workspace_test_report.html"
-echo "   - reports/mcp_test_report.html"

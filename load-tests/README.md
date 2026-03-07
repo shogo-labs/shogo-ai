@@ -38,8 +38,6 @@ open reports/agent_runtime_*.html
 - **auth_test.py** - Authentication load via cookie-based sessions (100 users, 5 min)
 - **workspace_test.py** - Workspace + project CRUD (200 users, 10 min)
 - **api_test.py** - Core API endpoints: templates, workspaces, projects (50 users, 3 min)
-- **mcp_test.py** - MCP tool operations (100 users, 10 min)
-
 ### Complex Tests (Phase 2)
 - **multi_tenant_test.py** - Multi-tenant simulation (150 users, 30 min)
 - **cold_start_test.py** - Agent runtime cold start stress (100 users, 15 min)

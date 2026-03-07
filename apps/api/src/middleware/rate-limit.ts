@@ -10,6 +10,8 @@
 
 import type { Context, Next, MiddlewareHandler } from 'hono'
 
+const LOAD_TEST_SECRET = process.env.LOAD_TEST_SECRET
+
 interface RateLimitEntry {
   timestamps: number[]
 }
@@ -76,6 +78,11 @@ export function rateLimiter(
   ensureGC()
 
   return async (c: Context, next: Next) => {
+    if (LOAD_TEST_SECRET && c.req.header('x-load-test-key') === LOAD_TEST_SECRET) {
+      await next()
+      return
+    }
+
     const key = keyGenerator(c)
     const now = Date.now()
     const windowStart = now - windowMs
