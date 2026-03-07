@@ -270,6 +270,12 @@ spec:
               value: "true"
             - name: PROMOTED_POD_IDLE_TIMEOUT_MS
               value: "600000"
+            - name: LOAD_TEST_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: LOAD_TEST_SECRET
+                  optional: true
           resources:
             requests:
               memory: "256Mi"
