@@ -2033,6 +2033,21 @@ async function startGateway(): Promise<void> {
   }
 
   await agentGateway.start()
+
+  // Load response transforms: defaults first, then user overrides from disk
+  try {
+    const { getTransformRegistry } = await import('./response-transforms')
+    const { DEFAULT_TRANSFORMS } = await import('./default-transforms')
+    const registry = getTransformRegistry()
+    const transformsDir = join(AGENT_DIR, 'transforms')
+    registry.loadFromDisk(transformsDir)
+    registry.registerDefaults(DEFAULT_TRANSFORMS)
+    const count = registry.list().length
+    if (count > 0) console.log(`[agent-runtime] ${count} response transform(s) loaded`)
+  } catch (err: any) {
+    console.warn('[agent-runtime] Failed to load transforms:', err.message)
+  }
+
   gatewayReadyResolve?.()
   gatewayReadyResolve = null
   gatewayReadyPromise = null

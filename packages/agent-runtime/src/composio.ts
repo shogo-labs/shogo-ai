@@ -14,6 +14,7 @@ import { Composio } from '@composio/core'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import type { MCPClientManager } from './mcp-client'
 import { fetchComposioToolSchemas, type ComposioToolSchema } from './composio-auto-bind'
+import { getTransformRegistry, smartTruncateJson } from './response-transforms'
 
 /** Stored composio user ID for SDK auth and tool execution scoping */
 let storedComposioUserId: string | null = null
@@ -381,18 +382,33 @@ function createProxyTool(schema: ComposioToolSchema): AgentTool {
           return textResult({ error: result.error || `Tool ${schema.slug} returned an error` })
         }
 
-        let raw = JSON.stringify(result.data)
-        const MAX_CHARS = 12000
-        if (raw.length > MAX_CHARS) {
-          const headSize = Math.floor(MAX_CHARS * 0.75)
-          const tailSize = Math.max(0, MAX_CHARS - headSize - 100)
-          const omitted = raw.length - headSize - tailSize
-          raw = raw.substring(0, headSize)
-            + `\n\n[... ${omitted} chars truncated ...]\n\n`
-            + (tailSize > 0 ? raw.substring(raw.length - tailSize) : '')
+        const registry = getTransformRegistry()
+        registry.cacheResponse(schema.slug, result.data)
+
+        let outputData: unknown = result.data
+        let transformApplied: string | null = null
+        const transformMeta = registry.get(schema.slug)
+        if (transformMeta) {
+          try {
+            outputData = await registry.execute(schema.slug, result.data)
+            transformApplied = transformMeta.description
+          } catch (err: any) {
+            console.warn(`[Composio] Transform for ${schema.slug} failed, using raw: ${err.message}`)
+            outputData = result.data
+          }
         }
 
-        return textResult(raw)
+        const MAX_CHARS = 25000
+        const { result: raw, truncated } = smartTruncateJson(outputData, MAX_CHARS)
+
+        let annotation = ''
+        if (transformApplied) {
+          annotation = `\n\n[Transform active: "${transformApplied}". Use binding_transform({ action: "list" }) to view or binding_transform({ action: "create", tool: "${schema.slug}", ... }) to modify.]`
+        } else if (truncated) {
+          annotation = `\n\n[Response was truncated. Use binding_transform to create a transform that extracts only the fields you need. Example: binding_transform({ action: "create", tool: "${schema.slug}", transform: "(data) => ({ ... })", description: "..." })]`
+        }
+
+        return textResult(raw + annotation)
       } catch (err: any) {
         return textResult({ error: `Tool "${schema.slug}" failed: ${err.message}` })
       }

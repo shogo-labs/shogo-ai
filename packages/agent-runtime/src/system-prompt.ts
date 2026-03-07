@@ -33,6 +33,8 @@ ${MEMORY_GUIDE}
 
 ${TOOL_USAGE}
 
+${RESPONSE_TRANSFORM_GUIDE}
+
 ${DECISION_RULES}`
 
   let prompt = basePrompt
@@ -332,6 +334,38 @@ and daily logs are written as the agent operates.
 - Use memory.write to save important information discovered during tasks
 - Use memory.search to find relevant context from past interactions`
 
+export const RESPONSE_TRANSFORM_GUIDE = `## Response Transforms (Handling Large Tool Responses)
+
+Some tools (especially integrations like Gmail, GitHub, Calendar) return very large responses that get truncated. When you see a response with \`_truncated: true\`, \`_meta.showing < _meta.totalItems\`, or \`[... N chars truncated ...]\`, **important data is being lost**.
+
+### How to fix this
+
+Use the **binding_transform** tool to register a transform that extracts only the fields you need. The transform runs automatically on every subsequent call to that tool, BEFORE truncation.
+
+\`\`\`
+binding_transform({
+  action: "create",
+  tool: "GMAIL_FETCH_EMAILS",
+  transform: "(data) => ({ emails: data.messages.map(m => ({ id: m.messageId, subject: m.payload?.headers?.find(h => h.name === 'Subject')?.value, from: m.payload?.headers?.find(h => h.name === 'From')?.value, date: m.messageTimestamp, labels: m.labelIds, preview: (m.messageText || '').substring(0, 200) })) })",
+  description: "Extract email summaries without headers/payload bloat"
+})
+\`\`\`
+
+### Workflow
+1. Call a tool → see truncated/partial response
+2. Call \`binding_transform({ action: "create", tool: "...", transform: "...", description: "..." })\`
+3. Call \`binding_transform({ action: "test", tool: "..." })\` to verify size reduction
+4. Re-call the original tool — now you get clean, compact data
+
+### Checking existing transforms
+When a tool response includes \`[Transform active: "...". Use binding_transform to view/modify.]\`, a transform is already registered. Use \`binding_transform({ action: "list" })\` to see all transforms, or \`binding_transform({ action: "test", tool: "..." })\` to verify it's extracting the right fields. You can update a transform by calling \`create\` again with the same tool name.
+
+### Key rules
+- **Always create a transform** when you see truncated responses — don't just work with partial data
+- Transforms are pure functions: \`(data) => { ... }\` — no side effects, no imports
+- They persist across sessions — once registered, they apply automatically
+- If a transform is already active but missing fields you need, update it`
+
 export const TOOL_USAGE = `## Tool Usage
 
 ### Direct Gateway Tools (always available — use these first)
@@ -350,20 +384,12 @@ export const TOOL_USAGE = `## Tool Usage
 - **web** — Fetch a URL or search the web. Provide \`url\` to fetch a page, or \`query\` to search Google. Google property URLs (Maps, Flights, Shopping) are automatically routed through search for rich results.
 - **cron** — Manage scheduled jobs
 
-**IMPORTANT: When the user asks to connect a channel (including webchat widget, Telegram, Slack, etc.), ALWAYS use the \`channel_connect\` tool directly.** Do NOT search for external tools or tell the user to configure it manually. Webchat, webhook, and all messaging channels are BUILT-IN — use \`channel_connect\` immediately.
+- **tool_search** — Search for available integrations (e.g. Gmail, GitHub, Slack)
+- **tool_install** — Install an integration tool
+- **tool_uninstall** — Remove an installed tool
+- **binding_transform** — Create, test, list, or remove response transforms for tools that return large data (see "Response Transforms" section above)
 
-### MCP Tools (if available)
-- **mcp__shogo__identity_set** — Write IDENTITY.md, SOUL.md, USER.md, or AGENTS.md
-- **mcp__shogo__identity_get** — Read any workspace bootstrap file
-- **mcp__shogo__skill_create** — Create a new skill in skills/
-- **mcp__shogo__skill_edit** — Edit an existing skill
-- **mcp__shogo__skill_list** — List all installed skills
-- **mcp__shogo__skill_delete** — Remove a skill
-- **mcp__shogo__heartbeat_configure** — Set heartbeat interval, quiet hours, target
-- **mcp__shogo__heartbeat_status** — Check current heartbeat state
-- **mcp__shogo__heartbeat_trigger** — Manually fire a heartbeat tick
-- **mcp__shogo__agent_template_list** — List available agent templates
-- **mcp__shogo__agent_template_copy** — Initialize workspace from a template
+**IMPORTANT: When the user asks to connect a channel (including webchat widget, Telegram, Slack, etc.), ALWAYS use the \`channel_connect\` tool directly.** Do NOT search for external tools or tell the user to configure it manually. Webchat, webhook, and all messaging channels are BUILT-IN — use \`channel_connect\` immediately.
 
 ### Fallback
 If an MCP tool fails, fall back to \`read_file\`/\`write_file\`/\`exec\` immediately.`
