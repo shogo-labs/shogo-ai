@@ -256,6 +256,12 @@ spec:
               value: "10"
             - name: WARM_POOL_MAX_AGE_MS
               value: "3600000"
+            - name: LOAD_TEST_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: LOAD_TEST_SECRET
+                  optional: true
           resources:
             requests:
               memory: "512Mi"

@@ -400,6 +400,11 @@ jobs:
           if [ -n "${{ secrets.COMPOSIO_PROJECT_ID }}" ]; then
             SECRET_ARGS+=(--from-literal=COMPOSIO_PROJECT_ID="${{ secrets.COMPOSIO_PROJECT_ID }}")
           fi
+
+          # Load test bypass key (optional - allows load tests to skip rate limiting)
+          if [ -n "${{ secrets.LOAD_TEST_SECRET }}" ]; then
+            SECRET_ARGS+=(--from-literal=LOAD_TEST_SECRET="${{ secrets.LOAD_TEST_SECRET }}")
+          fi
           
           kubectl create secret generic api-secrets \
             --namespace=${{ env.NS_SYSTEM }} \
@@ -683,6 +688,11 @@ jobs:
           fi
           if [ -n "${{ secrets.COMPOSIO_PROJECT_ID }}" ]; then
             SECRET_ARGS+=(--from-literal=COMPOSIO_PROJECT_ID="${{ secrets.COMPOSIO_PROJECT_ID }}")
+          fi
+
+          # Load test bypass key (optional - allows load tests to skip rate limiting)
+          if [ -n "${{ secrets.LOAD_TEST_SECRET }}" ]; then
+            SECRET_ARGS+=(--from-literal=LOAD_TEST_SECRET="${{ secrets.LOAD_TEST_SECRET }}")
           fi
 
           kubectl create secret generic api-secrets \
