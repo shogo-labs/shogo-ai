@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * ChatInput Component (React Native)
  * Migrated from apps/web/src/components/app/chat/ChatInput.tsx

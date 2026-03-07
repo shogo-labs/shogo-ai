@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
 // @ts-nocheck
 import { toast } from "sonner";
 import { Artifact } from "@/components/create-artifact";

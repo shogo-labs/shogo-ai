@@ -3,6 +3,8 @@
 Shogo Desktop is the offline-first, open-source edition of Shogo. It runs the
 full platform locally — no cloud account or subscription required.
 
+License: `AGPL-3.0-or-later`.
+
 ## Architecture
 
 ```

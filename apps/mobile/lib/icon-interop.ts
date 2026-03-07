@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Registers all lucide-react-native icons with NativeWind's cssInterop
  * so that className color classes (e.g. text-purple-400, text-muted-foreground)

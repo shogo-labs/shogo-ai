@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * File attachment helpers — parse data-URL file parts into:
  *   1. ImageContent[] for native multi-modal model support (images)

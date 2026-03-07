@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import { View, ViewProps } from 'react-native';
 import React from 'react';
 import { centerStyle } from './styles';

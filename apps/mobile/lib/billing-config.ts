@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Billing Configuration — single source of truth for plan tiers, features, and credit constants.
  * Import from here rather than defining billing values locally in components.

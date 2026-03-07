@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * DomainProvider - SDK React Provider for MST Stores
  *

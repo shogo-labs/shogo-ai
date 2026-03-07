@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Preview Token Generation & Validation
  * 
@@ -16,11 +18,18 @@
 // Secret for signing tokens - uses same secret as better-auth
 const getPreviewSecret = (): string => {
   const secret = process.env.BETTER_AUTH_SECRET || process.env.PREVIEW_TOKEN_SECRET
-  if (!secret) {
-    console.warn('[PreviewToken] WARNING: No BETTER_AUTH_SECRET set, using insecure default')
-    return 'insecure-default-preview-secret-change-me'
+  if (secret) {
+    return secret
   }
-  return secret
+
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(
+      '[PreviewToken] Missing signing secret. Set BETTER_AUTH_SECRET or PREVIEW_TOKEN_SECRET.'
+    )
+  }
+
+  console.warn('[PreviewToken] WARNING: No signing secret set, using development-only fallback')
+  return 'shogo-dev-only-preview-secret'
 }
 
 // Token expiry time (1 hour)

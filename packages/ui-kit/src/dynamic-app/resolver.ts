@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Data resolution utilities for the Dynamic App protocol.
  * Pure functions -- no platform dependencies.

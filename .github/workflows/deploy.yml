@@ -72,26 +72,25 @@ jobs:
           echo "environment=$ENV" >> $GITHUB_OUTPUT
           echo "📦 Deploying to: $ENV"
           
-          # Set environment-specific variables
-          # Both environments use the same AWS account (097357356677)
-          ECR_REGISTRY="097357356677.dkr.ecr.us-east-1.amazonaws.com"
+          # Set environment-specific variables from repository/environment vars
+          ECR_REGISTRY="${{ vars.ECR_REGISTRY }}"
           echo "ecr_registry=$ECR_REGISTRY" >> $GITHUB_OUTPUT
           
           if [[ "$ENV" == "production" ]]; then
-            echo "eks_cluster=shogo-production" >> $GITHUB_OUTPUT
-            echo "eks_cluster_eu=shogo-production-eu" >> $GITHUB_OUTPUT
-            echo "namespace_system=shogo-system" >> $GITHUB_OUTPUT
-            echo "namespace_workspaces=shogo-workspaces" >> $GITHUB_OUTPUT
-            echo "domain=studio.shogo.ai" >> $GITHUB_OUTPUT
-            echo "docs_domain=docs.shogo.ai" >> $GITHUB_OUTPUT
+            echo "eks_cluster=${{ vars.PROD_EKS_CLUSTER }}" >> $GITHUB_OUTPUT
+            echo "eks_cluster_eu=${{ vars.PROD_EKS_CLUSTER_EU }}" >> $GITHUB_OUTPUT
+            echo "namespace_system=${{ vars.PROD_NAMESPACE_SYSTEM }}" >> $GITHUB_OUTPUT
+            echo "namespace_workspaces=${{ vars.PROD_NAMESPACE_WORKSPACES }}" >> $GITHUB_OUTPUT
+            echo "domain=${{ vars.PROD_DOMAIN }}" >> $GITHUB_OUTPUT
+            echo "docs_domain=${{ vars.PROD_DOCS_DOMAIN }}" >> $GITHUB_OUTPUT
             echo "multi_region=true" >> $GITHUB_OUTPUT
           else
-            echo "eks_cluster=shogo-staging" >> $GITHUB_OUTPUT
+            echo "eks_cluster=${{ vars.STAGING_EKS_CLUSTER }}" >> $GITHUB_OUTPUT
             echo "eks_cluster_eu=" >> $GITHUB_OUTPUT
-            echo "namespace_system=shogo-staging-system" >> $GITHUB_OUTPUT
-            echo "namespace_workspaces=shogo-staging-workspaces" >> $GITHUB_OUTPUT
-            echo "domain=studio-staging.shogo.ai" >> $GITHUB_OUTPUT
-            echo "docs_domain=docs-staging.shogo.ai" >> $GITHUB_OUTPUT
+            echo "namespace_system=${{ vars.STAGING_NAMESPACE_SYSTEM }}" >> $GITHUB_OUTPUT
+            echo "namespace_workspaces=${{ vars.STAGING_NAMESPACE_WORKSPACES }}" >> $GITHUB_OUTPUT
+            echo "domain=${{ vars.STAGING_DOMAIN }}" >> $GITHUB_OUTPUT
+            echo "docs_domain=${{ vars.STAGING_DOCS_DOMAIN }}" >> $GITHUB_OUTPUT
             echo "multi_region=false" >> $GITHUB_OUTPUT
           fi
 
@@ -737,7 +736,7 @@ jobs:
 
       - name: Sync API environment variables (EU)
         run: |
-          EXPECTED_AUTH_URL="https://studio.shogo.ai"
+          EXPECTED_AUTH_URL="https://${{ vars.PROD_DOMAIN }}"
 
           IDX=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o json | \
             python3 -c "import sys,json; envs=json.load(sys.stdin)['spec']['template']['spec']['containers'][0]['env']; print(next(i for i,e in enumerate(envs) if e['name']=='BETTER_AUTH_URL'))" 2>/dev/null) || true

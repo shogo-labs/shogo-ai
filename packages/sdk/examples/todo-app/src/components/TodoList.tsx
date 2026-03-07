@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import type { Todo } from '../App'
 import { TodoItem } from './TodoItem'
 import { ListChecks } from 'lucide-react'

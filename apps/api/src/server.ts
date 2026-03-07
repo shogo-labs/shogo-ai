@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import Stripe from 'stripe'

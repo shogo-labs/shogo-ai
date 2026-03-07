@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * AI proxy configuration for Claude Code SDK sessions.
  * Routes Claude API requests through the API server's proxy endpoint

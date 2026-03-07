@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * ChatPanel - Smart component that integrates useChat hook with studio-chat domain
  * Tasks: task-2-4-004, task-3-1-004, task-cpbi-004, task-cpbi-005

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
 // Pure type definitions - no drizzle-orm dependency needed in the browser
 
 export type User = {
