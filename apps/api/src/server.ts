@@ -744,7 +744,9 @@ app.get('/api/config', async (c) => {
   let needsSetup = false
   if (localMode) {
     const userCount = await prisma.user.count()
-    needsSetup = userCount === 0
+    const hasAnthropicKey = !!process.env.ANTHROPIC_API_KEY
+    const hasLocalLlm = !!process.env.LOCAL_LLM_BASE_URL
+    needsSetup = userCount === 0 || (!hasAnthropicKey && !hasLocalLlm)
   }
   return c.json({
     localMode,
@@ -759,9 +761,39 @@ app.get('/api/config', async (c) => {
   })
 })
 
-// ── Local mode: API key management ──────────────────────────────────────────
+// ── Local mode: auto-sign-in + API key management ───────────────────────────
 if (process.env.SHOGO_LOCAL_MODE === 'true') {
   const localDb = prisma as any
+
+  // Auto-sign-in: creates a session for the single local user without credentials.
+  // Not gated by authMiddleware — this IS the auth mechanism for local mode.
+  app.post('/api/local/auto-sign-in', async (c) => {
+    try {
+      const user = await prisma.user.findFirst()
+      if (!user) {
+        return c.json({ ok: false, error: 'No local user found. Server may still be initializing.' }, 503)
+      }
+      const storedPw = await localDb.localConfig.findUnique({ where: { key: 'local_user_password' } })
+      if (!storedPw) {
+        return c.json({ ok: false, error: 'Local user password not found in config.' }, 500)
+      }
+      // Build a synthetic sign-in request and pass it through Better Auth's handler
+      // so session cookies are set correctly in the response.
+      const baseUrl = process.env.BETTER_AUTH_URL || `http://localhost:${API_PORT}`
+      const signInReq = new Request(`${baseUrl}/api/auth/sign-in/email`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...Object.fromEntries(c.req.raw.headers.entries()),
+        },
+        body: JSON.stringify({ email: user.email, password: storedPw.value }),
+      })
+      return auth.handler(signInReq)
+    } catch (err: any) {
+      console.error('[LocalMode] Auto-sign-in failed:', err)
+      return c.json({ ok: false, error: err.message }, 500)
+    }
+  })
 
   app.get('/api/local/api-keys', async (c) => {
     try {
@@ -4949,7 +4981,7 @@ console.log(`   AI Proxy Health: GET  http://localhost:${API_PORT}/api/ai/proxy/
 console.log(`   CORS origin: http://localhost:${VITE_PORT}`)
 console.log(`   AI Providers: Anthropic=${!!process.env.ANTHROPIC_API_KEY}, OpenAI=${!!process.env.OPENAI_API_KEY}`)
 
-// Local mode: restore saved API keys on startup
+// Local mode: restore saved API keys and auto-seed default user on startup
 if (process.env.SHOGO_LOCAL_MODE === 'true') {
   setTimeout(async () => {
     try {
@@ -4962,6 +4994,34 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
       }
     } catch (err: any) {
       console.log('[LocalMode] Could not restore API keys (table may not exist yet):', err.message)
+    }
+
+    // Auto-seed the single local user if none exists
+    try {
+      const userCount = await prisma.user.count()
+      if (userCount === 0) {
+        const crypto = require('crypto') as typeof import('crypto')
+        const password = crypto.randomBytes(24).toString('base64')
+
+        const signUpRes = await auth.api.signUpEmail({
+          body: {
+            name: 'Local User',
+            email: 'local@shogo.local',
+            password,
+          },
+        })
+
+        if (signUpRes?.user) {
+          await (prisma as any).localConfig.upsert({
+            where: { key: 'local_user_password' },
+            update: { value: password },
+            create: { key: 'local_user_password', value: password },
+          })
+          console.log('[LocalMode] Auto-seeded default user local@shogo.local')
+        }
+      }
+    } catch (err: any) {
+      console.error('[LocalMode] Failed to auto-seed user:', err.message)
     }
   }, 1000)
 }

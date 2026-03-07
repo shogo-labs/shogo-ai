@@ -197,10 +197,17 @@ export const auth = betterAuth({
         /**
          * Before creating a user, sanitize the name to prevent stored XSS.
          * Strips any HTML tags and angle brackets from the name field.
+         * In local mode, enforces a single-account limit.
          */
         before: async (user) => {
           if (user.name) {
             user.name = sanitizeName(user.name)
+          }
+          if (isLocalMode) {
+            const existingCount = await prisma.user.count()
+            if (existingCount >= 1) {
+              throw new Error('Local mode only supports a single account.')
+            }
           }
           return { data: user }
         },

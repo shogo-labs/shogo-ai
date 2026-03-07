@@ -28,6 +28,7 @@ export interface AuthContextValue {
   signInWithGoogle: () => void
   signOut: () => Promise<void>
   updateUser: (fields: { name?: string; image?: string }) => Promise<void>
+  refreshSession: () => Promise<void>
   clearError: () => void
 }
 
@@ -128,11 +129,18 @@ export function AuthProvider({ authClient, children }: AuthProviderProps) {
     }
   }, [authClient])
 
+  const handleRefreshSession = useCallback(async () => {
+    const { data } = await authClient.getSession()
+    if (data?.user) setUser(data.user as AuthUser)
+    else setUser(null)
+  }, [authClient])
+
   return (
     <AuthContext.Provider value={{
       user, isLoading, isAuthenticated: !!user, error,
       signIn: handleSignIn, signUp: handleSignUp, signInWithGoogle: handleSignInWithGoogle, signOut: handleSignOut,
       updateUser: handleUpdateUser,
+      refreshSession: handleRefreshSession,
       clearError: () => setError(null),
     }}>
       {children}

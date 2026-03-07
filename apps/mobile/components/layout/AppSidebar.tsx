@@ -363,6 +363,7 @@ function UserMenuContent({
 }: UserMenuProps & { onClose: () => void }) {
   const [appearanceOpen, setAppearanceOpen] = useState(false)
   const { theme, setTheme } = useTheme()
+  const { localMode } = usePlatformConfig()
 
   return (
     <>
@@ -432,17 +433,21 @@ function UserMenuContent({
         )}
       </View>
 
-      <View className="h-px bg-border" />
+      {!localMode && (
+        <>
+          <View className="h-px bg-border" />
 
-      <View className="py-1">
-        <Pressable
-          onPress={() => { onSignOut(); onClose() }}
-          className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
-        >
-          <LogOut size={18} className="text-muted-foreground" />
-          <Text className="text-sm text-foreground">Sign Out</Text>
-        </Pressable>
-      </View>
+          <View className="py-1">
+            <Pressable
+              onPress={() => { onSignOut(); onClose() }}
+              className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
+            >
+              <LogOut size={18} className="text-muted-foreground" />
+              <Text className="text-sm text-foreground">Sign Out</Text>
+            </Pressable>
+          </View>
+        </>
+      )}
     </>
   )
 }

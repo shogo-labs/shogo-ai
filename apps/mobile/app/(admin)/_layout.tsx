@@ -44,6 +44,14 @@ const BASE_NAV_ITEMS = [
 
 const LOCAL_NAV_ITEM = { href: '/(admin)/settings' as const, icon: Settings, label: 'AI Settings' }
 
+const LOCAL_NAV_ITEMS = [
+  { href: '/(admin)', icon: LayoutDashboard, label: 'Dashboard' },
+  { href: '/(admin)/users', icon: Users, label: 'Users' },
+  { href: '/(admin)/workspaces', icon: Building2, label: 'Workspaces' },
+  { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics' },
+  { href: '/(admin)/settings' as const, icon: Settings, label: 'AI Settings' },
+] as const
+
 function useAdminCheck() {
   const { user, isAuthenticated, isLoading: authLoading } = useAuth()
   const http = useDomainHttp()
@@ -144,8 +152,8 @@ function AdminSidebar({
 }) {
   const router = useRouter()
   const pathname = usePathname()
-  const { features } = usePlatformConfig()
-  const NAV_ITEMS = features.billing ? BASE_NAV_ITEMS : [...BASE_NAV_ITEMS, LOCAL_NAV_ITEM]
+  const { features, localMode } = usePlatformConfig()
+  const NAV_ITEMS = localMode ? LOCAL_NAV_ITEMS : features.billing ? BASE_NAV_ITEMS : [...BASE_NAV_ITEMS, LOCAL_NAV_ITEM]
 
   const handleNav = useCallback((href: string) => {
     router.push(href as any)

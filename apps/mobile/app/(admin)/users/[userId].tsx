@@ -33,6 +33,7 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../../lib/api'
+import { usePlatformConfig } from '../../../lib/platform-config'
 
 const API_BASE = `${API_URL}/api/admin`
 
@@ -103,6 +104,7 @@ export default function AdminUserDetailPage() {
   const router = useRouter()
   const { width } = useWindowDimensions()
   const isWide = width >= 900
+  const { localMode } = usePlatformConfig()
 
   const [user, setUser] = useState<UserDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -276,29 +278,33 @@ export default function AdminUserDetailPage() {
             {/* Desktop inline actions */}
             {isWide && (
               <View className="flex-row gap-2 ml-4">
-                <Pressable
-                  onPress={handleToggleRole}
-                  className="items-center px-4 py-2 rounded-lg border border-border active:bg-muted/50"
-                >
-                  <Text className="text-sm font-medium text-foreground">
-                    {user.role === 'super_admin' ? 'Remove Admin' : 'Make Admin'}
-                  </Text>
-                </Pressable>
-                <Pressable
-                  onPress={handleDelete}
-                  className="flex-row items-center gap-1.5 px-4 py-2 rounded-lg bg-destructive active:opacity-90"
-                >
-                  <Trash2 size={14} className="text-destructive-foreground" />
-                  <Text className="text-sm font-medium text-destructive-foreground">
-                    Delete
-                  </Text>
-                </Pressable>
+                {!localMode && (
+                  <Pressable
+                    onPress={handleToggleRole}
+                    className="items-center px-4 py-2 rounded-lg border border-border active:bg-muted/50"
+                  >
+                    <Text className="text-sm font-medium text-foreground">
+                      {user.role === 'super_admin' ? 'Remove Admin' : 'Make Admin'}
+                    </Text>
+                  </Pressable>
+                )}
+                {!localMode && (
+                  <Pressable
+                    onPress={handleDelete}
+                    className="flex-row items-center gap-1.5 px-4 py-2 rounded-lg bg-destructive active:opacity-90"
+                  >
+                    <Trash2 size={14} className="text-destructive-foreground" />
+                    <Text className="text-sm font-medium text-destructive-foreground">
+                      Delete
+                    </Text>
+                  </Pressable>
+                )}
               </View>
             )}
           </View>
 
           {/* Mobile actions */}
-          {!isWide && (
+          {!isWide && !localMode && (
             <View className="flex-row gap-2 mt-4">
               <Pressable
                 onPress={handleToggleRole}
