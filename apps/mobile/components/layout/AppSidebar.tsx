@@ -1264,7 +1264,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
             <NavItem
               icon={ExternalLink}
               label="Docs"
-              externalHref="https://docs-staging.shogo.ai/"
+              externalHref="https://docs.shogo.ai/"
               collapsed={collapsed}
             />
           </View>

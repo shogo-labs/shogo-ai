@@ -104,6 +104,6 @@ function deriveApiUrl(): string | null {
   }
 
   // Fallback using system namespace
-  const systemNs = process.env.SYSTEM_NAMESPACE || 'shogo-staging-system'
+  const systemNs = process.env.SYSTEM_NAMESPACE || 'shogo-system'
   return `http://api.${systemNs}.svc.cluster.local`
 }

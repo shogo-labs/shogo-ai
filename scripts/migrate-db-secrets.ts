@@ -20,7 +20,7 @@
  *   bun run scripts/migrate-db-secrets.ts --apply
  *
  *   # Specify namespace
- *   bun run scripts/migrate-db-secrets.ts --apply --namespace shogo-staging-workspaces
+ *   bun run scripts/migrate-db-secrets.ts --apply --namespace shogo-workspaces
  */
 
 import * as k8s from "@kubernetes/client-node"
@@ -34,7 +34,7 @@ const dryRun = !args.includes("--apply")
 const namespaceFlag = args.find((a) => a.startsWith("--namespace="))
 const NAMESPACE = namespaceFlag
   ? namespaceFlag.split("=")[1]
-  : process.env.PROJECT_NAMESPACE || "shogo-staging-workspaces"
+  : process.env.PROJECT_NAMESPACE || "shogo-workspaces"
 
 const KNATIVE_GROUP = "serving.knative.dev"
 const KNATIVE_VERSION = "v1"

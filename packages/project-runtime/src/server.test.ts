@@ -327,7 +327,7 @@ describe('Prisma Studio Proxy URL Rewriting', () => {
       try {
         const urlObj = new URL(url)
         // Check if same domain or localhost - rewrite to use proxy
-        if (urlObj.hostname === 'localhost' || urlObj.hostname === 'studio-staging.shogo.ai') {
+        if (urlObj.hostname === 'localhost' || urlObj.hostname === 'studio.example.com') {
           let path = urlObj.pathname
           
           // CRITICAL FIX: Check if pathname already contains the proxy base
@@ -367,7 +367,7 @@ describe('Prisma Studio Proxy URL Rewriting', () => {
   describe('Full URL Rewriting (Critical Fix)', () => {
     test('should NOT double-prefix URLs that already contain proxy base', () => {
       // This is the bug we're fixing - URL already has proxy base in pathname
-      const alreadyProxied = `https://studio-staging.shogo.ai${proxyBase}ui/index.css`
+      const alreadyProxied = `https://studio.example.com${proxyBase}ui/index.css`
       const result = simulateRewriteUrl(alreadyProxied, proxyBase)
       
       // Should use the path as-is, not double it
@@ -378,7 +378,7 @@ describe('Prisma Studio Proxy URL Rewriting', () => {
 
     test('should correctly prefix URLs without proxy base', () => {
       // URL doesn't have proxy base yet - should be added
-      const notProxied = 'https://studio-staging.shogo.ai/ui/index.css'
+      const notProxied = 'https://studio.example.com/ui/index.css'
       const result = simulateRewriteUrl(notProxied, proxyBase)
       
       expect(result).toBe(`${proxyBase}ui/index.css`)
@@ -401,7 +401,7 @@ describe('Prisma Studio Proxy URL Rewriting', () => {
     })
 
     test('should preserve query parameters in full URLs', () => {
-      const urlWithQuery = `https://studio-staging.shogo.ai${proxyBase}api/models?take=100`
+      const urlWithQuery = `https://studio.example.com${proxyBase}api/models?take=100`
       const result = simulateRewriteUrl(urlWithQuery, proxyBase)
       
       expect(result).toBe(`${proxyBase}api/models?take=100`)
@@ -489,10 +489,10 @@ describe('Prisma Studio Proxy URL Rewriting', () => {
   describe('Real-World Scenarios from Staging Errors', () => {
     test('should fix the exact CSS URL from staging error logs', () => {
       // The actual error from staging:
-      // 'https://studio-staging.shogo.ai/api/projects/431ac3e9-4227-4e6a-8dae-b0961fad68c3/database/proxy/api/projects/431ac3e9-4227-4e6a-8dae-b0961fad68c3/database/proxy/ui/index.css'
+      // 'https://studio.example.com/api/projects/431ac3e9-4227-4e6a-8dae-b0961fad68c3/database/proxy/api/projects/431ac3e9-4227-4e6a-8dae-b0961fad68c3/database/proxy/ui/index.css'
       
       // What Prisma Studio creates (already proxied path in URL):
-      const studioGeneratedUrl = `https://studio-staging.shogo.ai${proxyBase}ui/index.css`
+      const studioGeneratedUrl = `https://studio.example.com${proxyBase}ui/index.css`
       const result = simulateRewriteUrl(studioGeneratedUrl, proxyBase)
       
       // Should NOT double the proxy path
@@ -504,8 +504,8 @@ describe('Prisma Studio Proxy URL Rewriting', () => {
     })
 
     test('should fix adapter.js and index.js paths', () => {
-      const adapterUrl = `https://studio-staging.shogo.ai${proxyBase}adapter.js`
-      const indexUrl = `https://studio-staging.shogo.ai${proxyBase}index.js`
+      const adapterUrl = `https://studio.example.com${proxyBase}adapter.js`
+      const indexUrl = `https://studio.example.com${proxyBase}index.js`
       
       const adapterResult = simulateRewriteUrl(adapterUrl, proxyBase)
       const indexResult = simulateRewriteUrl(indexUrl, proxyBase)
@@ -520,7 +520,7 @@ describe('Prisma Studio Proxy URL Rewriting', () => {
 
     test('should handle API calls from Prisma Studio', () => {
       // Prisma Studio makes API calls that get rewritten
-      const apiCallUrl = `https://studio-staging.shogo.ai${proxyBase}api/models/User`
+      const apiCallUrl = `https://studio.example.com${proxyBase}api/models/User`
       const result = simulateRewriteUrl(apiCallUrl, proxyBase)
       
       expect(result).toBe(`${proxyBase}api/models/User`)
@@ -531,7 +531,7 @@ describe('Prisma Studio Proxy URL Rewriting', () => {
   describe('Proxy Base Path Variations', () => {
     test('should work with different project IDs', () => {
       const differentProxyBase = '/api/projects/abc-123/database/proxy/'
-      const url = `https://studio-staging.shogo.ai${differentProxyBase}ui/index.css`
+      const url = `https://studio.example.com${differentProxyBase}ui/index.css`
       const result = simulateRewriteUrl(url, differentProxyBase)
       
       expect(result).toBe(`${differentProxyBase}ui/index.css`)
@@ -550,7 +550,7 @@ describe('Prisma Studio Proxy URL Rewriting', () => {
       // The function adds trailing slash internally, but test the path matching
       const baseWithoutSlash = '/api/projects/123/database/proxy'
       const baseWithSlash = baseWithoutSlash + '/'
-      const url = `https://studio-staging.shogo.ai${baseWithSlash}ui/index.css`
+      const url = `https://studio.example.com${baseWithSlash}ui/index.css`
       const result = simulateRewriteUrl(url, baseWithSlash)
       
       expect(result).toBe(`${baseWithSlash}ui/index.css`)

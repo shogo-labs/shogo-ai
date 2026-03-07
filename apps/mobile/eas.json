@@ -18,7 +18,7 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://studio-staging.shogo.ai"
+        "EXPO_PUBLIC_API_URL": "https://api.example.com"
       }
     },
     "production": {
@@ -28,7 +28,7 @@
       },
       "autoIncrement": true,
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://studio-staging.shogo.ai"
+        "EXPO_PUBLIC_API_URL": "https://api.example.com"
       }
     }
   },

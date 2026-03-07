@@ -9,13 +9,13 @@ class Config:
     """Load test configuration.
     
     Uses api-staging.shogo.ai for direct API access (bypasses studio proxy).
-    The app frontend uses studio-staging.shogo.ai with same-origin /api/* calls,
+    The app frontend may use a shared host with same-origin /api/* calls,
     but load tests hit the API DomainMapping directly for accurate latency measurement.
     """
     
     # Target URLs
     API_BASE_URL = os.getenv("API_BASE_URL", "https://api-staging.shogo.ai")
-    WEB_BASE_URL = os.getenv("WEB_BASE_URL", "https://studio-staging.shogo.ai")
+    WEB_BASE_URL = os.getenv("WEB_BASE_URL", "https://app.example.com")
     
     # Test settings
     NUM_USERS = int(os.getenv("NUM_USERS", "100"))

@@ -3,10 +3,10 @@
 import { defineConfig, devices } from "@playwright/test"
 
 /**
- * Playwright E2E config for staging environment tests.
+ * Playwright E2E config for hosted environment tests.
  *
- * These tests run against the deployed staging environment (studio-staging.shogo.ai)
- * and exercise real user flows including sign-up, billing, upgrade, and feature gating.
+ * Point STAGING_URL at the environment you want to validate. By default the
+ * config uses a local web app URL.
  *
  * Run with:
  *   npx playwright test --config e2e/playwright.config.ts
@@ -24,7 +24,7 @@ export default defineConfig({
   outputDir: "../test-results/e2e-artifacts",
 
   use: {
-    baseURL: process.env.STAGING_URL || "https://studio-staging.shogo.ai",
+    baseURL: process.env.STAGING_URL || "http://localhost:8081",
     trace: "retain-on-failure",
     screenshot: "on",
     video: "retain-on-failure",

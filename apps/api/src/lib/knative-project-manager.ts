@@ -48,12 +48,10 @@ const KNATIVE_VERSION = "v1"
 
 // Preview subdomain configuration
 // Format varies by environment:
-//   Staging:    preview--{projectId}.staging.shogo.ai  (requires *.staging.shogo.ai cert)
-//   Production: preview--{projectId}.shogo.ai         (uses existing *.shogo.ai cert)
-// 
-// This keeps subdomains clean and allows different certs per environment.
-const PREVIEW_BASE_DOMAIN = process.env.PREVIEW_BASE_DOMAIN || "shogo.ai"
-const PREVIEW_ENVIRONMENT = process.env.PREVIEW_ENVIRONMENT || process.env.ENVIRONMENT || "staging"
+//   Non-production: preview--{projectId}.{env}.{baseDomain}
+//   Production:     preview--{projectId}.{baseDomain}
+const PREVIEW_BASE_DOMAIN = process.env.PREVIEW_BASE_DOMAIN || "example.com"
+const PREVIEW_ENVIRONMENT = process.env.PREVIEW_ENVIRONMENT || process.env.ENVIRONMENT || "dev"
 const IS_PRODUCTION = PREVIEW_ENVIRONMENT === "production" || PREVIEW_ENVIRONMENT === "prod"
 
 // Log preview configuration on module load
@@ -172,8 +170,8 @@ export interface ProjectPodStatus {
 /**
  * Build the preview subdomain for a project.
  * Format varies by environment:
- *   Staging:    preview--{projectId}.staging.shogo.ai
- *   Production: preview--{projectId}.shogo.ai
+ *   Non-production: preview--{projectId}.{env}.{baseDomain}
+ *   Production:     preview--{projectId}.{baseDomain}
  */
 export function getPreviewSubdomain(projectId: string): string {
   if (IS_PRODUCTION) {
@@ -926,7 +924,7 @@ export class KnativeProjectManager {
     // from K8s secrets so the pod can still function.
     // Derive the API service URL from the pod's own namespace
     // The API is a Knative service exposed on port 80 via kourier
-    const systemNamespace = process.env.SYSTEM_NAMESPACE || (process.env.NODE_ENV === 'production' ? 'shogo-system' : 'shogo-staging-system')
+    const systemNamespace = process.env.SYSTEM_NAMESPACE || 'shogo-system'
     const apiUrl = process.env.API_URL || process.env.SHOGO_API_URL || `http://api.${systemNamespace}.svc.cluster.local`
     env.push({ name: "AI_PROXY_URL", value: `${apiUrl}/api/ai/v1` })
     env.push({ name: "TOOLS_PROXY_URL", value: `${apiUrl}/api/tools` })

@@ -31,7 +31,7 @@ fi
 USERS=${USERS:-5}
 SPAWN_RATE=${SPAWN_RATE:-2}
 RUN_TIME=${RUN_TIME:-5m}
-HOST=${HOST:-https://studio-staging.shogo.ai}
+HOST=${HOST:-https://app.example.com}
 TAGS=""
 
 # Parse CLI args (override everything)
