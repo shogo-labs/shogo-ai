@@ -83,7 +83,7 @@ export function AuthProvider({ authClient, children }: AuthProviderProps) {
   const handleSignInWithGoogle = useCallback(async () => {
     setError(null)
     let callbackURL = '/'
-    if (typeof window !== 'undefined' && window.location?.protocol?.startsWith('http')) {
+    if (typeof document !== 'undefined' && window.location?.protocol?.startsWith('http')) {
       const { protocol, hostname, port } = window.location
       const host = /^192\.168\./.test(hostname) ? 'localhost' : hostname
       callbackURL = `${protocol}//${host}${port ? `:${port}` : ''}/`
