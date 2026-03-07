@@ -697,6 +697,12 @@ jobs:
           echo "web_image=$(get_image studio ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
           echo "api_image=$(get_image api ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
 
+      - name: Apply Kubernetes manifests (EU)
+        run: |
+          echo "📦 Applying Kubernetes manifests for ${{ env.ENVIRONMENT }}-eu"
+          kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}-eu/ || true
+          echo "✅ Kubernetes manifests applied (EU)"
+
       - name: Deploy Knative services (EU)
         env:
           ECR_REGISTRY: ${{ needs.resolve-config.outputs.ecr_registry }}
@@ -705,26 +711,24 @@ jobs:
           PREV_WEB_IMAGE: ${{ steps.save-images-eu.outputs.web_image }}
           PREV_API_IMAGE: ${{ steps.save-images-eu.outputs.api_image }}
         run: |
-          # ECR images are replicated to eu-west-1 automatically
-          # Use the eu-west-1 ECR registry for image references
           EU_REGISTRY=$(echo "$ECR_REGISTRY" | sed 's/us-east-1/eu-west-1/')
 
           patch_ksvc() {
             local name=$1 ns=$2 ecr_name=$3 changed=$4 prev=$5
             if [ "$changed" = "true" ]; then
-              echo "Deploying $name -> ${{ env.IMAGE_TAG }} (EU)"
+              echo "🔄 Deploying $name → ${{ env.IMAGE_TAG }} (EU)"
               kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
                 {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${EU_REGISTRY}/shogo/${ecr_name}:${{ env.IMAGE_TAG }}\"}
               ]" || echo "$name service not found in EU cluster"
             elif [ -n "$prev" ]; then
-              echo "Restoring $name -> $prev (EU)"
+              echo "📌 Restoring $name → $prev (EU, undoing kustomize reset)"
               kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
                 {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${prev}\"}
               ]" || true
             fi
           }
 
-          echo "Updating images in EU cluster"
+          echo "📦 Updating images in EU cluster"
           patch_ksvc studio       "${{ env.NS_SYSTEM }}"     shogo-web  "$WEB_CHANGED"  "$PREV_WEB_IMAGE"
           patch_ksvc api          "${{ env.NS_SYSTEM }}"     shogo-api  "$API_CHANGED"  "$PREV_API_IMAGE"
 
@@ -736,16 +740,16 @@ jobs:
             python3 -c "import sys,json; envs=json.load(sys.stdin)['spec']['template']['spec']['containers'][0]['env']; print(next(i for i,e in enumerate(envs) if e['name']=='BETTER_AUTH_URL'))" 2>/dev/null) || true
 
           if [ -z "$IDX" ]; then
-            echo "BETTER_AUTH_URL not found on API ksvc, skipping env sync"
+            echo "⚠️ BETTER_AUTH_URL not found on API ksvc, skipping env sync"
           else
             CURRENT=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o jsonpath="{.spec.template.spec.containers[0].env[${IDX}].value}")
             if [ "$CURRENT" != "$EXPECTED_AUTH_URL" ]; then
-              echo "Updating BETTER_AUTH_URL: $CURRENT -> $EXPECTED_AUTH_URL"
+              echo "🔄 Updating BETTER_AUTH_URL: $CURRENT → $EXPECTED_AUTH_URL"
               kubectl patch ksvc api -n ${{ env.NS_SYSTEM }} --type='json' -p="[
                 {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/env/${IDX}/value\", \"value\": \"${EXPECTED_AUTH_URL}\"}
               ]"
             else
-              echo "BETTER_AUTH_URL already correct: $CURRENT"
+              echo "✅ BETTER_AUTH_URL already correct: $CURRENT"
             fi
           fi
 
