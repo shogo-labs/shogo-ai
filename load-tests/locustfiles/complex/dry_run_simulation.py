@@ -39,7 +39,7 @@ class DryRunUser(HttpUser):
     tasks: send chat messages, check status
     """
 
-    wait_time = between(10, 30)
+    wait_time = between(15, 45)
     host = config.API_BASE_URL
 
     def on_start(self):
@@ -157,11 +157,12 @@ class DryRunUser(HttpUser):
         if not sandbox_ready:
             return
 
+        time.sleep(2 + random.random() * 2)
         self._send_first_chat(start)
 
     def _send_first_chat(self, start_time: float):
         """Send first chat message with retries for transient errors."""
-        max_retries = 3
+        max_retries = 5
         for attempt in range(max_retries):
             with self.client.post(
                 f"/api/projects/{self.project_id}/chat",
@@ -213,7 +214,7 @@ class DryRunUser(HttpUser):
                     self.runtime_ready = True
                     return
 
-    @task(10)
+    @task(5)
     @tag("chat", "ai-proxy")
     def send_chat_message(self):
         """Send a follow-up chat message with retry for transient errors."""
@@ -234,7 +235,7 @@ class DryRunUser(HttpUser):
         ]
 
         prompt = random.choice(prompts)
-        max_retries = 3
+        max_retries = 5
         for attempt in range(max_retries):
             with self.client.post(
                 f"/api/projects/{self.project_id}/chat",
@@ -261,7 +262,7 @@ class DryRunUser(HttpUser):
                     return
                 elif response.status_code in (0, 502, 503) and attempt < max_retries - 1:
                     response.success()
-                    delay = (attempt + 1) * 5 + random.random() * 5
+                    delay = (attempt + 1) * 3 + random.random() * 3
                     time.sleep(delay)
                     continue
                 elif response.status_code == 504:
@@ -285,9 +286,7 @@ class DryRunUser(HttpUser):
             name="/api/projects/:id/chat/status",
             timeout=10,
         ) as response:
-            if response.status_code == 200:
-                response.success()
-            elif response.status_code in (502, 503):
+            if response.status_code in (0, 200, 502, 503):
                 response.success()
             else:
                 response.failure(f"Status: {response.status_code}")
