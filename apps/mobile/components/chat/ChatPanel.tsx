@@ -473,6 +473,11 @@ async function refreshCollections(
 }
 
 // ============================================================
+// Toolkit Error Messages
+// ============================================================
+
+
+// ============================================================
 // Component
 // ============================================================
 
@@ -695,7 +700,7 @@ export const ChatPanel = observer(function ChatPanel({
   const isAgent = projectType === "AGENT"
 
   const toast = useToast()
-  const accessErrorShownRef = useRef(false)
+  const errorToastShownRef = useRef(false)
 
   const nativeHeaders = useMemo(() => {
     if (Platform.OS === 'web') return undefined
@@ -987,6 +992,21 @@ export const ChatPanel = observer(function ChatPanel({
               )
             }
           }
+        } else if (event.toolName === "notify_user_error") {
+          const title = (event.args?.title as string) || "Error"
+          const message = (event.args?.message as string) || "Something went wrong."
+          errorToastShownRef.current = true
+          toast.show({
+            id: "agent-error",
+            placement: "top",
+            duration: 8000,
+            render: ({ id: toastId }) => (
+              <Toast nativeID={`toast-${toastId}`} action="error" variant="solid">
+                <ToastTitle>{title}</ToastTitle>
+                <ToastDescription>{message}</ToastDescription>
+              </Toast>
+            ),
+          })
         } else {
           console.warn("[ChatPanel:VirtualTool] Unknown virtual tool:", event.toolName)
         }
@@ -1058,21 +1078,19 @@ export const ChatPanel = observer(function ChatPanel({
         }
       }
 
-      if (dataPart.type === "data-tool-access-error" && !accessErrorShownRef.current) {
-        accessErrorShownRef.current = true
-        const { toolkitName } = (dataPart as any).data ?? {}
+      if (dataPart.type === "data-tool-error-fallback" && !errorToastShownRef.current) {
+        errorToastShownRef.current = true
+        const { toolkitName, userMessage } = (dataPart as any).data ?? {}
         const name = toolkitName || "Integration"
+        const desc = userMessage || "An error occurred. Check the chat for details."
         toast.show({
-          id: `access-error-${Date.now()}`,
+          id: "tool-error-fallback",
           placement: "top",
-          duration: 6000,
+          duration: 8000,
           render: ({ id: toastId }) => (
             <Toast nativeID={`toast-${toastId}`} action="error" variant="solid">
-              <ToastTitle>{name} Access Error</ToastTitle>
-              <ToastDescription>
-                Permission denied. Please reconnect {name} or check your
-                access settings.
-              </ToastDescription>
+              <ToastTitle>{name} Error</ToastTitle>
+              <ToastDescription>{desc}</ToastDescription>
             </Toast>
           ),
         })
@@ -1305,7 +1323,7 @@ export const ChatPanel = observer(function ChatPanel({
 
     if (isStreaming && !wasStreaming) {
       filesChangedFiredRef.current = false
-      accessErrorShownRef.current = false
+      errorToastShownRef.current = false
     }
   }, [isStreaming, messages, onFilesChanged])
 

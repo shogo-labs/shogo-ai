@@ -50,28 +50,46 @@ import {
   OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE,
 } from './optimized-prompts'
 
-const ACCESS_ERROR_PATTERNS = [
-  'not found',
-  'resource not accessible',
-  'unauthorized', 'not authorized', 'forbidden',
-  'invalid_auth', 'not_authed', 'missing_scope', 'token_revoked', 'account_inactive',
-  'authentication required', 'insufficient authentication scopes',
-  'access denied', 'permission denied',
-]
-
-function isAccessError(errorText: string): boolean {
-  const lower = errorText.toLowerCase()
-  return ACCESS_ERROR_PATTERNS.some((p) => lower.includes(p))
+function isComposioTool(name: string): boolean {
+  return /^[A-Z]+_/.test(name)
 }
 
-function isComposioTool(toolName: string): boolean {
-  return /^[A-Z]+_/.test(toolName)
+function extractToolkitName(name: string): string {
+  const p = name.split('_')[0]
+  return p ? p.charAt(0).toUpperCase() + p.slice(1).toLowerCase() : name
 }
 
-function extractToolkitName(toolName: string): string {
-  const prefix = toolName.split('_')[0]
-  if (!prefix) return toolName
-  return prefix.charAt(0).toUpperCase() + prefix.slice(1).toLowerCase()
+function hasErrorInResult(result: unknown): boolean {
+  if (!result || typeof result !== 'object') return false
+  return 'error' in (result as any)
+}
+
+const TOOLKIT_ACCESS_HINTS: Record<string, string> = {
+  Github: 'Your organization may have OAuth App restrictions enabled. Go to your GitHub org Settings > Third-party access and approve the Composio OAuth app.',
+  Slack: 'The Slack workspace admin may need to approve the app. Go to Slack admin settings > Manage apps to grant access.',
+  Googlecalendar: 'Check that the Google account has granted calendar access. Go to Google Account > Security > Third-party apps to review permissions.',
+  Googledrive: 'Check that the Google account has granted Drive access. Go to Google Account > Security > Third-party apps to review permissions.',
+  Gmail: 'Check that the Google account has granted Gmail access. Go to Google Account > Security > Third-party apps to review permissions.',
+  Notion: 'Ensure the Notion integration has been given access to the required pages. Go to Notion Settings > Connections to manage access.',
+  Linear: 'Verify your Linear API token has the required scopes. Go to Linear Settings > API to check permissions.',
+}
+
+function getUserFriendlyError(toolkit: string, raw: string): string {
+  const lower = raw.toLowerCase()
+  const accessHint = TOOLKIT_ACCESS_HINTS[toolkit]
+    || `Please check your ${toolkit} connection in the Capabilities tab.`
+
+  if (lower.includes('not found') || lower.includes('404'))
+    return `${toolkit} could not access the requested resource — it may be private or the name may be incorrect. ${accessHint}`
+  if (lower.includes('unauthorized') || lower.includes('forbidden') || lower.includes('not_authed') || lower.includes('invalid_auth'))
+    return `${toolkit} authorization failed. ${accessHint}`
+  if (lower.includes('scope') || lower.includes('insufficient') || lower.includes('permission'))
+    return `${toolkit} needs additional permissions. ${accessHint}`
+  if (lower.includes('token_revoked') || lower.includes('token expired') || lower.includes('account_inactive'))
+    return `${toolkit} connection has expired. Please reconnect from the Capabilities tab.`
+  if (lower.includes('rate limit') || lower.includes('too many') || lower.includes('429'))
+    return `${toolkit} rate limit reached. Please wait a moment and try again.`
+  return `${toolkit} encountered an error. ${accessHint}`
 }
 
 export interface GatewayConfig {
@@ -1698,6 +1716,22 @@ export class AgentGateway {
       mcpClientManager: this.mcpClientManager,
       connectChannel: (type, config) => this.connectChannel(type, config),
       disconnectChannel: (type) => this.disconnectChannel(type),
+      onNotifyError: (title, message) => {
+        pendingToolkitError = null
+        if (uiWriter) {
+          uiWriter.write({
+            type: 'data-virtual-tool',
+            id: `vt-notify-${Date.now()}`,
+            data: {
+              type: 'virtual-tool-execute',
+              toolUseId: `vt-${Date.now()}`,
+              toolName: 'notify_user_error',
+              args: { title, message },
+              timestamp: Date.now(),
+            },
+          } as any)
+        }
+      },
     }
 
     const baseTools = isHeartbeat
@@ -1818,6 +1852,7 @@ export class AgentGateway {
 
     // UI stream writer: track current text block for delta streaming
     let uiTextId: string | null = null
+    let pendingToolkitError: string | null = null
 
     // Gate map: onBeforeToolCall stores a promise per toolCallId that
     // resolves once the tool-input-start SSE events have had time to
@@ -1940,13 +1975,15 @@ export class AgentGateway {
               output: isError ? { error: typeof result === 'string' ? result : JSON.stringify(result) } : (result ?? { success: true }),
             })
 
-            if (isComposioTool(toolName)) {
-              const errStr = typeof result === 'string' ? result : JSON.stringify(result ?? '')
-              if (isAccessError(errStr)) {
+            if (isComposioTool(toolName) && !pendingToolkitError) {
+              if (isError || hasErrorInResult(result)) {
+                const toolkit = extractToolkitName(toolName)
+                const errStr = typeof result === 'string' ? result : JSON.stringify(result ?? '')
+                pendingToolkitError = toolkit
                 uiWriter.write({
-                  type: 'data-tool-access-error',
-                  id: `tool-access-${toolCallId}`,
-                  data: { toolName, toolkitName: extractToolkitName(toolName), toolUseId: toolCallId },
+                  type: 'data-tool-error-fallback',
+                  id: `tool-err-${toolCallId}`,
+                  data: { toolkitName: toolkit, userMessage: getUserFriendlyError(toolkit, errStr) },
                 } as any)
               }
             }
@@ -2105,6 +2142,23 @@ export class AgentGateway {
     parts.push(memoryGuide)
     parts.push(skillMatchingGuide)
     parts.push(this.promptOverrides.get('mcp_discovery_guide') ?? OPTIMIZED_MCP_DISCOVERY_GUIDE)
+
+    parts.push([
+      '## CRITICAL: Error Notifications (MUST follow)',
+      '',
+      'You have a tool called `notify_user_error`. You MUST call it whenever:',
+      '- A tool returns an error, 404, or access denied',
+      '- You cannot complete the task the user asked for',
+      '- An integration (GitHub, Slack, Google, etc.) is not working properly',
+      '- You detect a configuration or permission issue the user needs to fix',
+      '',
+      'Usage: `notify_user_error({ title: "GitHub Access Error", message: "The repository CodeGlo/shogo-ai is private or not accessible. Your organization may have OAuth App restrictions enabled. Go to GitHub org Settings > Third-party access to approve." })`',
+      '',
+      'ALWAYS call notify_user_error BEFORE writing the error explanation in chat.',
+      'The title should be short (e.g. "GitHub Access Error", "Slack Auth Expired").',
+      'The message should explain what went wrong AND how to fix it.',
+      'This shows a prominent toast notification that the user will not miss.',
+    ].join('\n'))
 
     return parts.join('\n\n---\n\n')
   }

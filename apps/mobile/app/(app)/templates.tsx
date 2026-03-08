@@ -18,13 +18,10 @@ import {
   useProjectCollection,
   useDomainActions,
   useDomainHttp,
-  useDomainHttp,
 } from '../../contexts/domain'
-import { api, type AgentTemplateSummary } from '../../lib/api'
 import { api, type AgentTemplateSummary } from '../../lib/api'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 
-type AgentTemplate = AgentTemplateSummary
 type AgentTemplate = AgentTemplateSummary
 
 /**
@@ -180,7 +177,6 @@ export default observer(function TemplatesPage() {
   const router = useRouter()
   const { user } = useAuth()
   const http = useDomainHttp()
-  const http = useDomainHttp()
   const actions = useDomainActions()
   const projects = useProjectCollection()
   const isDark = useDarkMode()
@@ -196,8 +192,6 @@ export default observer(function TemplatesPage() {
       try {
         const data = await api.getAgentTemplates(http)
         setTemplates(data)
-        const data = await api.getAgentTemplates(http)
-        setTemplates(data)
       } catch (err) {
         console.error('[TemplatesPage] Failed to fetch templates:', err)
       } finally {
@@ -205,7 +199,6 @@ export default observer(function TemplatesPage() {
       }
     }
     fetchTemplates()
-  }, [http])
   }, [http])
 
   const handleTemplatePress = useCallback(

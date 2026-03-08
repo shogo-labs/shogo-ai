@@ -9,10 +9,9 @@ import Stripe from 'stripe'
 import { generateText, createUIMessageStream, createUIMessageStreamResponse, type ModelMessage } from 'ai'
 import { z } from 'zod'
 import { EventEmitter } from 'events'
-import type { SubagentProgressEvent, VirtualToolEvent, ToolAccessErrorEvent } from './types/progress'
-import { isAccessError, isComposioTool, extractToolkitName, extractErrorText } from './types/progress'
+import type { SubagentProgressEvent, VirtualToolEvent } from './types/progress'
 // isVirtualTool kept in types/progress.ts for client-side use (ChatPanel handler)
-import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput, PostToolUseFailureHookInput, PreToolUseHookInput, CanUseTool, SDKSession, SDKMessage, SDKSessionOptions, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { SubagentStartHookInput, SubagentStopHookInput, PostToolUseHookInput, PreToolUseHookInput, CanUseTool, SDKSession, SDKMessage, SDKSessionOptions, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import { createSdkMcpServer, tool as sdkTool, unstable_v2_createSession, unstable_v2_resumeSession } from '@anthropic-ai/claude-agent-sdk'
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { resolve, join, isAbsolute } from 'path'
@@ -260,8 +259,6 @@ const virtualToolEvents = new EventEmitter()
 
 // streamCompletionEvents removed — V2 SDK session.stream() naturally completes per turn
 
-const toolAccessErrorEvents = new EventEmitter()
-
 // Debug logging prefix for subagent progress
 const LOG_PREFIX = '[SubagentProgress]'
 const VT_LOG_PREFIX = '[VirtualTool]'
@@ -340,6 +337,25 @@ const virtualToolsServer = createSdkMcpServer({
             text: `Executed ${args.operations?.length ?? 0} operation(s)${clientOps.length > 0 ? ` (${clientOps.length} sent to client)` : ''}`
           }]
         }
+      }
+    ),
+    sdkTool(
+      'notify_user_error',
+      'Show an error notification to the user when you detect a problem they need to act on (e.g. access denied, OAuth not configured, private repo, missing permissions). Call this INSTEAD of just writing about the error in chat — the toast is more visible and actionable. Always include a clear title and a message explaining what went wrong and how to fix it.',
+      {
+        title: z.string().describe('Short heading, e.g. "GitHub Access Error"'),
+        message: z.string().describe('What went wrong and how to fix it'),
+      },
+      async (args) => {
+        const event: VirtualToolEvent = {
+          type: 'virtual-tool-execute',
+          toolUseId: `vt-${Date.now()}`,
+          toolName: 'notify_user_error',
+          args: args as Record<string, unknown>,
+          timestamp: Date.now(),
+        }
+        virtualToolEvents.emit('virtual-tool', event)
+        return { content: [{ type: 'text', text: 'Error notification shown to user.' }] }
       }
     ),
   ]
@@ -449,6 +465,7 @@ const ALLOWED_TOOLS = [
   // Virtual tools (SDK MCP server - uses mcp__servername__toolname format)
   'mcp__virtual-tools__set_workspace',
   'mcp__virtual-tools__execute',
+  'mcp__virtual-tools__notify_user_error',
   // File operations
   'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
   // Skill and agent tools
@@ -498,30 +515,6 @@ const SESSION_HOOKS = {
         timestamp: Date.now(),
       } satisfies SubagentProgressEvent)
 
-      if (isComposioTool(input.tool_name)) {
-        const errorText = extractErrorText(input.tool_response)
-        if (errorText && isAccessError(errorText)) {
-          toolAccessErrorEvents.emit('tool-access-error', {
-            toolName: input.tool_name,
-            toolkitName: extractToolkitName(input.tool_name),
-            toolUseId: input.tool_use_id,
-          } satisfies ToolAccessErrorEvent)
-        }
-      }
-
-      return { continue: true }
-    }]
-  }],
-  PostToolUseFailure: [{
-    hooks: [async (rawInput: unknown) => {
-      const input = rawInput as PostToolUseFailureHookInput
-      if (isComposioTool(input.tool_name) && isAccessError(input.error)) {
-        toolAccessErrorEvents.emit('tool-access-error', {
-          toolName: input.tool_name,
-          toolkitName: extractToolkitName(input.tool_name),
-          toolUseId: input.tool_use_id,
-        } satisfies ToolAccessErrorEvent)
-      }
       return { continue: true }
     }]
   }],
@@ -3643,7 +3636,6 @@ app.post('/api/chat', async (c) => {
     const eventBuffer: SubagentProgressEvent[] = []
     const virtualToolBuffer: VirtualToolEvent[] = []
     let streamWriter: { write: (data: any) => void } | null = null
-    let emittedAccessError = false
 
     const onProgress = (event: SubagentProgressEvent) => {
       if (streamWriter) {
@@ -3659,22 +3651,9 @@ app.post('/api/chat', async (c) => {
         virtualToolBuffer.push(event)
       }
     }
-    const onToolAccessError = (event: ToolAccessErrorEvent) => {
-      if (emittedAccessError) return
-      emittedAccessError = true
-      if (streamWriter) {
-        streamWriter.write({
-          type: 'data-tool-access-error',
-          id: `tool-access-${event.toolUseId}`,
-          data: event,
-        } as any)
-      }
-    }
-
     // Attach listeners BEFORE sending message
     progressEvents.on('progress', onProgress)
     virtualToolEvents.on('virtual-tool', onVirtualTool)
-    toolAccessErrorEvents.on('tool-access-error', onToolAccessError)
 
     // Send the user message to the persistent V2 session
     await session.send(sessionMessage)
@@ -4044,7 +4023,6 @@ app.post('/api/chat', async (c) => {
           // Cleanup listeners
           progressEvents.off('progress', onProgress)
           virtualToolEvents.off('virtual-tool', onVirtualTool)
-          toolAccessErrorEvents.off('tool-access-error', onToolAccessError)
           streamWriter = null
 
           // server-side-persistence: Persist assistant message to database (fire-and-forget)
@@ -4095,7 +4073,6 @@ app.post('/api/chat', async (c) => {
         console.error('[/api/chat] Stream error:', error)
         progressEvents.off('progress', onProgress)
         virtualToolEvents.off('virtual-tool', onVirtualTool)
-        toolAccessErrorEvents.off('tool-access-error', onToolAccessError)
         streamWriter = null
         return 'An error occurred during streaming'
       },
