@@ -270,7 +270,7 @@ resource "null_resource" "karpenter_node_pool" {
 
   triggers = {
     node_pool_hash = sha256(jsonencode({
-      instance_types = ["t3.xlarge", "t3.2xlarge", "m5.xlarge", "m5.2xlarge"]
+      instance_types = ["t3.2xlarge", "m5.xlarge", "m5.2xlarge"]
       cluster_name   = module.eks.cluster_name
       node_role_name = module.eks.node_role_name
       node_sg        = module.eks.node_security_group_id
@@ -307,7 +307,7 @@ resource "null_resource" "karpenter_node_pool" {
                 values: ["on-demand"]
               - key: node.kubernetes.io/instance-type
                 operator: In
-                values: ["t3.xlarge", "t3.2xlarge", "m5.xlarge", "m5.2xlarge"]
+                values: ["t3.2xlarge", "m5.xlarge", "m5.2xlarge"]
             nodeClassRef:
               group: karpenter.k8s.aws
               kind: EC2NodeClass
