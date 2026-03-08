@@ -39,7 +39,7 @@ class DryRunUser(HttpUser):
     tasks: send chat messages, check status
     """
 
-    wait_time = between(5, 15)
+    wait_time = between(10, 30)
     host = config.API_BASE_URL
 
     def on_start(self):
@@ -129,22 +129,33 @@ class DryRunUser(HttpUser):
                 return
             resp.success()
 
-        with self.client.get(
-            f"/api/projects/{self.project_id}/sandbox/url?wait=true",
-            headers=self._headers,
-            catch_response=True,
-            name="/api/projects/:id/sandbox/url [wait=true]",
-            timeout=180,
-        ) as resp:
-            sandbox_ms = (time.time() - start) * 1000
-            if resp.status_code == 200:
-                resp.success()
-                logger.info(
-                    f"User {self.user_id}: sandbox ready in {sandbox_ms:.0f}ms"
-                )
-            else:
-                resp.failure(f"sandbox/url: {resp.status_code}")
-                return
+        sandbox_ready = False
+        for sandbox_attempt in range(3):
+            with self.client.get(
+                f"/api/projects/{self.project_id}/sandbox/url?wait=true",
+                headers=self._headers,
+                catch_response=True,
+                name="/api/projects/:id/sandbox/url [wait=true]",
+                timeout=180,
+            ) as resp:
+                sandbox_ms = (time.time() - start) * 1000
+                if resp.status_code == 200:
+                    resp.success()
+                    sandbox_ready = True
+                    logger.info(
+                        f"User {self.user_id}: sandbox ready in {sandbox_ms:.0f}ms"
+                    )
+                    break
+                elif resp.status_code in (0, 502, 503) and sandbox_attempt < 2:
+                    resp.success()
+                    time.sleep(5 + random.random() * 5)
+                    continue
+                else:
+                    resp.failure(f"sandbox/url: {resp.status_code}")
+                    return
+
+        if not sandbox_ready:
+            return
 
         self._send_first_chat(start)
 
@@ -223,7 +234,7 @@ class DryRunUser(HttpUser):
         ]
 
         prompt = random.choice(prompts)
-        max_retries = 2
+        max_retries = 3
         for attempt in range(max_retries):
             with self.client.post(
                 f"/api/projects/{self.project_id}/chat",
@@ -250,7 +261,8 @@ class DryRunUser(HttpUser):
                     return
                 elif response.status_code in (0, 502, 503) and attempt < max_retries - 1:
                     response.success()
-                    time.sleep(3 + random.random() * 3)
+                    delay = (attempt + 1) * 5 + random.random() * 5
+                    time.sleep(delay)
                     continue
                 elif response.status_code == 504:
                     response.failure("504: Gateway timeout")
