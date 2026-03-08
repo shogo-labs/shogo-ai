@@ -18,16 +18,12 @@
 // Secret for signing tokens - uses same secret as better-auth
 const getPreviewSecret = (): string => {
   const secret = process.env.BETTER_AUTH_SECRET || process.env.PREVIEW_TOKEN_SECRET
-  if (!secret) {
-    throw new Error(
-      '[PreviewToken] FATAL: No signing secret configured. ' +
-      'Set BETTER_AUTH_SECRET or PREVIEW_TOKEN_SECRET.'
-    )
-  }
+  if (secret) return secret
 
   if (process.env.NODE_ENV === 'production') {
     throw new Error(
-      '[PreviewToken] Missing signing secret. Set BETTER_AUTH_SECRET or PREVIEW_TOKEN_SECRET.'
+      '[PreviewToken] FATAL: No signing secret configured in production. ' +
+      'Set BETTER_AUTH_SECRET or PREVIEW_TOKEN_SECRET.'
     )
   }
 
