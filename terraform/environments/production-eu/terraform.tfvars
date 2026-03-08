@@ -18,10 +18,10 @@ vpc_cidr = "10.1.0.0/16"
 
 # EKS Configuration
 eks_cluster_version         = "1.33"
-node_instance_types         = ["t3.xlarge"]
+node_instance_types         = ["t3.2xlarge"]
 node_desired_size           = 1
 node_min_size               = 1
-node_max_size               = 15
+node_max_size               = 30
 enable_secondary_node_group = false
 
 # Redis Configuration (Global Datastore requires m5.large minimum)
