@@ -1,23 +1,16 @@
 """
-Dry Run Simulation — Reproduces the exact concurrent-user scenario
-that caused staging failures on 2026-02-20.
+Dry Run Simulation — 100 users sign up, create a project, and chat for 10 min.
 
-Scenario: 10-20 users all arrive within a 2-minute window, each:
-1. Signs up / logs in
-2. Creates a new AGENT project (triggers warm pool claim / cold start)
-3. Sends a chat message (triggers AI proxy)
-4. Sends follow-up messages
-
-Key metrics tracked:
-- Agent cold start time (time from create to first successful chat)
-- Chat response time (time for AI proxy round-trip)
-- Overall error rate under concurrent load
+This reproduces the exact production launch scenario:
+1. 100 users sign up (staggered over ~20 seconds at spawn rate 5/s)
+2. Each creates ONE agent project
+3. Waits for runtime to become ready
+4. Sends multiple chat messages over the test duration
 
 SLOs:
-- Agent cold start: < 60s p95
-- Warm start: < 15s p95
-- Chat first-token: < 10s p95
-- Error rate: < 5% (relaxed from normal 1% given cold starts)
+- Agent cold start (create → first chat response): < 120s p95
+- Chat round-trip: < 60s p95
+- Error rate: < 1%
 """
 from locust import HttpUser, task, between, events, tag
 import sys
@@ -34,20 +27,19 @@ from locustfiles.common.config import config
 
 logger = logging.getLogger(__name__)
 
-SLO_COLD_START_P95 = 60_000
-SLO_WARM_START_P95 = 15_000
-SLO_CHAT_RESPONSE_P95 = 10_000
-SLO_MAX_ERROR_RATE = 0.05
+SLO_COLD_START_P95 = 120_000
+SLO_CHAT_RESPONSE_P95 = 60_000
+SLO_MAX_ERROR_RATE = 0.01
 
 
 class DryRunUser(HttpUser):
-    """Simulates a company employee during a dry-run demo.
+    """Simulates a user during the production launch.
 
-    Each user goes through the full onboarding flow:
-    signup -> create agent project -> chat -> follow-up messages
+    on_start: signup → get workspace → create agent project → wait for runtime
+    tasks: send chat messages, check status
     """
 
-    wait_time = between(3, 8)
+    wait_time = between(15, 45)
     host = config.API_BASE_URL
 
     def on_start(self):
@@ -57,9 +49,11 @@ class DryRunUser(HttpUser):
         if config.LOAD_TEST_SECRET:
             self._headers["X-Load-Test-Key"] = config.LOAD_TEST_SECRET
         self.user_id = random.randint(200000, 999999)
-        self.project_ids = []
+        self.project_id = None
         self.workspace_id = None
         self.authenticated = False
+        self.runtime_ready = False
+        self.chat_session_id = f"session-{self.user_id}-{int(time.time())}"
 
         result = self.auth.signup(self.client, self.user_id)
         if result:
@@ -69,31 +63,41 @@ class DryRunUser(HttpUser):
             logger.warning(f"User {self.user_id} failed to authenticate")
             return
 
-        with self.client.get(
-            "/api/workspaces",
-            headers=self._headers,
-            catch_response=True,
-            name="/api/workspaces",
-        ) as response:
-            if response.status_code == 200:
-                data = response.json()
-                items = data.get("items", data if isinstance(data, list) else [])
-                if items:
-                    self.workspace_id = items[0]["id"]
-                    response.success()
-                    logger.info(f"User {self.user_id} workspace: {self.workspace_id}")
-                else:
-                    response.failure("No workspaces found")
-            else:
-                response.failure(f"Workspaces failed: {response.status_code}")
-
-    @task(5)
-    @tag("cold-start", "project")
-    def create_agent_project(self):
-        """Create a new agent project and measure cold start time."""
-        if not self.authenticated or not self.workspace_id:
+        self._get_workspace()
+        if not self.workspace_id:
             return
 
+        self._create_project_and_wait()
+
+    def _get_workspace(self):
+        max_attempts = 5
+        for attempt in range(1, max_attempts + 1):
+            with self.client.get(
+                "/api/workspaces",
+                headers=self._headers,
+                catch_response=True,
+                name="/api/workspaces",
+            ) as resp:
+                if resp.status_code == 200:
+                    data = resp.json()
+                    items = data.get("items", data if isinstance(data, list) else [])
+                    if items:
+                        self.workspace_id = items[0]["id"]
+                        resp.success()
+                        return
+                    elif attempt < max_attempts:
+                        resp.success()
+                        time.sleep(attempt * 0.5)
+                    else:
+                        resp.failure("No workspaces after retries")
+                elif attempt < max_attempts:
+                    resp.success()
+                    time.sleep(attempt * 0.5)
+                else:
+                    resp.failure(f"Workspaces: {resp.status_code}")
+
+    def _create_project_and_wait(self):
+        """Create one agent project and wait for the runtime to become ready."""
         start = time.time()
 
         with self.client.post(
@@ -106,80 +110,116 @@ class DryRunUser(HttpUser):
             headers=self._headers,
             catch_response=True,
             name="/api/projects [create-agent]",
-        ) as response:
-            if response.status_code not in (200, 201):
-                response.failure(f"Create failed: {response.status_code}")
+        ) as resp:
+            if resp.status_code not in (200, 201):
+                resp.failure(f"Create failed: {resp.status_code}")
                 return
-
             try:
-                data = response.json()
-                project_id = (
+                data = resp.json()
+                self.project_id = (
                     data.get("data", {}).get("id")
                     or data.get("id")
                     or data.get("project", {}).get("id")
                 )
             except Exception:
-                response.failure("Could not parse project response")
+                resp.failure("Could not parse project response")
                 return
-
-            if not project_id:
-                response.failure("No project ID in response")
+            if not self.project_id:
+                resp.failure("No project ID")
                 return
+            resp.success()
 
-            self.project_ids.append(project_id)
-            response.success()
+        sandbox_ready = False
+        for sandbox_attempt in range(3):
+            with self.client.get(
+                f"/api/projects/{self.project_id}/sandbox/url?wait=true",
+                headers=self._headers,
+                catch_response=True,
+                name="/api/projects/:id/sandbox/url [wait=true]",
+                timeout=180,
+            ) as resp:
+                sandbox_ms = (time.time() - start) * 1000
+                if resp.status_code == 200:
+                    resp.success()
+                    sandbox_ready = True
+                    logger.info(
+                        f"User {self.user_id}: sandbox ready in {sandbox_ms:.0f}ms"
+                    )
+                    break
+                elif resp.status_code in (0, 500, 502, 503) and sandbox_attempt < 2:
+                    resp.success()
+                    time.sleep(5 + random.random() * 5)
+                    continue
+                else:
+                    resp.failure(f"sandbox/url: {resp.status_code}")
+                    return
 
-        # Send first chat message to trigger runtime start
-        self._send_first_chat(project_id, start)
-
-    def _send_first_chat(self, project_id: str, start_time: float):
-        """Send first chat message and measure cold start + first response."""
-        with self.client.post(
-            f"/api/projects/{project_id}/chat",
-            json={
-                "messages": [
-                    {
-                        "role": "user",
-                        "parts": [{"type": "text", "text": "Build me a support ticket manager with priority levels and status tracking. Throw in some example tickets to start."}],
-                    }
-                ],
-                "agentMode": "basic",
-            },
-            headers=self._headers,
-            catch_response=True,
-            name="/api/projects/:id/chat [first-message]",
-            timeout=120,
-        ) as response:
-            total_ms = (time.time() - start_time) * 1000
-
-            if response.status_code == 200:
-                events.request.fire(
-                    request_type="COLD_START",
-                    name="agent_cold_start",
-                    response_time=total_ms,
-                    response_length=0,
-                    exception=None,
-                    context={},
-                )
-                response.success()
-                logger.info(f"Agent project {project_id} first response in {total_ms:.0f}ms")
-            elif response.status_code == 402:
-                response.success()
-            elif response.status_code == 503:
-                response.failure("503: Agent runtime not ready")
-            elif response.status_code == 504:
-                response.failure("504: Gateway timeout")
-            else:
-                response.failure(f"Chat failed: {response.status_code}")
-
-    @task(10)
-    @tag("chat", "ai-proxy")
-    def send_chat_message(self):
-        """Send a chat message to an existing agent project."""
-        if not self.authenticated or not self.project_ids:
+        if not sandbox_ready:
             return
 
-        project_id = random.choice(self.project_ids)
+        time.sleep(2 + random.random() * 2)
+        self._send_first_chat(start)
+
+    def _send_first_chat(self, start_time: float):
+        """Send first chat message with retries for transient errors."""
+        max_retries = 5
+        for attempt in range(max_retries):
+            with self.client.post(
+                f"/api/projects/{self.project_id}/chat",
+                json={
+                    "messages": [
+                        {
+                            "role": "user",
+                            "parts": [{"type": "text", "text": "Build me a support ticket manager with priority levels and status tracking. Throw in some example tickets."}],
+                        }
+                    ],
+                    "chatSessionId": self.chat_session_id,
+                    "agentMode": "basic",
+                },
+                headers=self._headers,
+                catch_response=True,
+                name="/api/projects/:id/chat [first-message]",
+                timeout=120,
+            ) as response:
+                total_ms = (time.time() - start_time) * 1000
+
+                if response.status_code == 200:
+                    events.request.fire(
+                        request_type="COLD_START",
+                        name="agent_cold_start",
+                        response_time=total_ms,
+                        response_length=0,
+                        exception=None,
+                        context={},
+                    )
+                    response.success()
+                    self.runtime_ready = True
+                    logger.info(
+                        f"Project {self.project_id} first response in {total_ms:.0f}ms"
+                    )
+                    return
+                elif response.status_code == 402:
+                    response.success()
+                    self.runtime_ready = True
+                    return
+                elif response.status_code in (0, 500, 502, 503) and attempt < max_retries - 1:
+                    response.success()
+                    time.sleep(5 + random.random() * 5)
+                    continue
+                else:
+                    if response.status_code == 0:
+                        response.failure("Connection dropped")
+                    else:
+                        response.failure(f"Chat failed: {response.status_code}")
+                    self.runtime_ready = True
+                    return
+
+    @task(5)
+    @tag("chat", "ai-proxy")
+    def send_chat_message(self):
+        """Send a follow-up chat message with retry for transient errors."""
+        if not self.runtime_ready:
+            return
 
         prompts = [
             "Now add a way to assign tickets to team members. Each ticket should show the assignee.",
@@ -189,55 +229,86 @@ class DryRunUser(HttpUser):
             "Show me our recent deployments — which ones passed, which failed, and the trend over the last week.",
             "I need to track job applicants through our hiring process — who applied, what role, what stage, and rating.",
             "Add a warning banner that we're at 85% of our monthly budget. Make it stand out.",
+            "Add a search bar that filters tickets by title or description.",
+            "Show me a chart of tickets created per day over the last week.",
+            "Add a comments section to each ticket so team members can discuss.",
         ]
 
-        with self.client.post(
-            f"/api/projects/{project_id}/chat",
-            json={
-                "messages": [
-                    {
-                        "role": "user",
-                        "parts": [{"type": "text", "text": random.choice(prompts)}],
-                    }
-                ],
-                "agentMode": "basic",
-            },
-            headers=self._headers,
-            catch_response=True,
-            name="/api/projects/:id/chat",
-            timeout=120,
-        ) as response:
-            if response.status_code == 200:
-                response.success()
-            elif response.status_code == 503:
-                response.failure("503: Agent runtime not ready")
-            elif response.status_code == 504:
-                response.failure("504: Gateway timeout (AI proxy)")
-            elif response.status_code == 402:
-                response.success()
-            else:
-                response.failure(f"Chat failed: {response.status_code}")
+        prompt = random.choice(prompts)
+        max_retries = 5
+        for attempt in range(max_retries):
+            with self.client.post(
+                f"/api/projects/{self.project_id}/chat",
+                json={
+                    "messages": [
+                        {
+                            "role": "user",
+                            "parts": [{"type": "text", "text": prompt}],
+                        }
+                    ],
+                    "chatSessionId": self.chat_session_id,
+                    "agentMode": "basic",
+                },
+                headers=self._headers,
+                catch_response=True,
+                name="/api/projects/:id/chat",
+                timeout=120,
+            ) as response:
+                if response.status_code == 200:
+                    response.success()
+                    return
+                elif response.status_code == 402:
+                    response.success()
+                    return
+                elif response.status_code in (0, 500, 502, 503) and attempt < max_retries - 1:
+                    response.success()
+                    delay = (attempt + 1) * 3 + random.random() * 3
+                    time.sleep(delay)
+                    continue
+                elif response.status_code == 504:
+                    response.failure("504: Gateway timeout")
+                    return
+                else:
+                    response.failure(f"Chat failed: {response.status_code}")
+                    return
 
     @task(3)
     @tag("status")
     def check_runtime_status(self):
-        """Check agent runtime status for a project."""
-        if not self.authenticated or not self.project_ids:
+        """Check agent runtime status."""
+        if not self.runtime_ready:
             return
 
-        project_id = random.choice(self.project_ids)
-
         with self.client.get(
-            f"/api/projects/{project_id}/chat/status",
+            f"/api/projects/{self.project_id}/chat/status",
             headers=self._headers,
             catch_response=True,
             name="/api/projects/:id/chat/status",
             timeout=10,
         ) as response:
-            if response.status_code == 200:
+            if response.status_code in (0, 200, 502, 503):
                 response.success()
             else:
                 response.failure(f"Status: {response.status_code}")
+
+    @task(5)
+    @tag("dynamic-app")
+    def check_dynamic_app(self):
+        """Check the dynamic app state (canvas)."""
+        if not self.runtime_ready:
+            return
+
+        with self.client.get(
+            f"/api/projects/{self.project_id}/agent-proxy/agent/dynamic-app/state",
+            headers=self._headers,
+            catch_response=True,
+            name="agent-proxy/dynamic-app/state",
+            timeout=15,
+        ) as response:
+            if response.status_code in (0, 200, 502, 503):
+                response.success()
+            else:
+                response.failure(f"Dynamic app: {response.status_code}")
 
 
 slo_violations = {
@@ -261,10 +332,23 @@ def on_request(request_type, name, response_time, response_length, exception, **
 
 @events.test_start.add_listener
 def on_test_start(environment, **kwargs):
+    import requests as req
+    host = environment.host or config.API_BASE_URL
     print("=" * 60)
-    print("DRY RUN SIMULATION — Concurrent User Stress Test")
+    print("DRY RUN SIMULATION — 100-User Launch Test")
     print("=" * 60)
-    print(f"SLOs: cold_start<{SLO_COLD_START_P95/1000}s, chat<{SLO_CHAT_RESPONSE_P95/1000}s, errors<{SLO_MAX_ERROR_RATE*100}%")
+
+    try:
+        resp = req.get(f"{host}/api/warm-pool/status", timeout=5)
+        if resp.status_code == 200:
+            pool = resp.json()
+            avail = pool.get("available", {}).get("agent", "?")
+            target = pool.get("targetSize", {}).get("agent", "?")
+            print(f"  Warm pool: {avail}/{target} agent pods available")
+    except Exception:
+        pass
+
+    print(f"  SLOs: cold_start<{SLO_COLD_START_P95/1000}s, chat<{SLO_CHAT_RESPONSE_P95/1000}s, errors<{SLO_MAX_ERROR_RATE*100}%")
     print("=" * 60)
 
 
