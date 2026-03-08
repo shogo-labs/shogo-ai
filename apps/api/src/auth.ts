@@ -36,9 +36,9 @@ function createAuthDatabase() {
   const { Pool } = require('pg')
   return new Pool({
     connectionString: process.env.DATABASE_URL,
-    max: parseInt(process.env.AUTH_POOL_SIZE || '30', 10),
+    max: parseInt(process.env.AUTH_POOL_SIZE || '60', 10),
     idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 10_000,
+    connectionTimeoutMillis: 15_000,
   })
 }
 
@@ -262,7 +262,7 @@ export const auth = betterAuth({
             }
           }
 
-          const maxAttempts = 3
+          const maxAttempts = 5
           for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
               await createPersonalWorkspace(user.id, user.name || "User")
@@ -271,8 +271,8 @@ export const auth = betterAuth({
             } catch (error) {
               const msg = error instanceof Error ? error.message : String(error)
               if (attempt < maxAttempts) {
-                const delay = attempt * 500
-                console.warn(`Workspace creation attempt ${attempt}/${maxAttempts} failed for ${user.email}: ${msg} — retrying in ${delay}ms`)
+                const delay = attempt * 1000 + Math.random() * 500
+                console.warn(`Workspace creation attempt ${attempt}/${maxAttempts} failed for ${user.email}: ${msg} — retrying in ${Math.round(delay)}ms`)
                 await new Promise((r) => setTimeout(r, delay))
               } else {
                 console.error(`Failed to create personal workspace for ${user.email} after ${maxAttempts} attempts: ${msg}`)
