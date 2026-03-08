@@ -36,7 +36,8 @@ class AuthLoadTestUser(FastHttpUser):
     @task(3)
     def signup_and_login(self):
         """Sign up new user (sets session cookie automatically)."""
-        self.user_id = random.randint(100000, 999999)
+        import time
+        self.user_id = int(time.time() * 1000) % 10_000_000 + random.randint(0, 999999)
 
         result = self.auth.signup(self.client, self.user_id)
         if result:

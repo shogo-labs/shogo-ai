@@ -58,52 +58,53 @@ class AuthManager:
         
         Better Auth sets session cookies in the response.
         The Locust client automatically stores and sends these cookies.
+        If user already exists (422), falls back to sign-in.
+        On 500 (DB contention), retries with backoff.
         """
         email = self.generate_test_email(user_id)
         password = self.generate_password()
         
-        # Track signup attempts to avoid hammering on 403s
-        attempts = self.signup_attempts.get(user_id, 0)
-        if attempts >= 3:
-            # After 3 failed attempts, try to login instead
-            return self.login(client, email, password)
-        
-        # Better Auth email signup endpoint - sets session cookie automatically
-        with client.post(
-            "/api/auth/sign-up/email",
-            json={
-                "email": email,
-                "password": password,
-                "name": f"Load Test User {user_id}"
-            },
-            headers=self._csrf_headers(),
-            catch_response=True,
-            name="/api/auth/sign-up/email"
-        ) as response:
-            if response.status_code == 200:
-                data = response.json()
-                user_data = data.get("user", {})
-                if user_data:
-                    # Store user data (cookies are handled automatically by Locust)
-                    self.user_data[user_id] = user_data
-                    self.signup_attempts[user_id] = 0
+        max_attempts = 5
+        for attempt in range(max_attempts):
+            with client.post(
+                "/api/auth/sign-up/email",
+                json={
+                    "email": email,
+                    "password": password,
+                    "name": f"Load Test User {user_id}"
+                },
+                headers=self._csrf_headers(),
+                catch_response=True,
+                name="/api/auth/sign-up/email"
+            ) as response:
+                if response.status_code == 200:
+                    data = response.json()
+                    user_data = data.get("user", {})
+                    if user_data:
+                        self.user_data[user_id] = user_data
+                        response.success()
+                        return {
+                            "email": email,
+                            "password": password,
+                            "userId": user_data.get("id"),
+                            "userName": user_data.get("name")
+                        }
+                elif response.status_code in (403, 422):
                     response.success()
-                    return {
-                        "email": email,
-                        "password": password,
-                        "userId": user_data.get("id"),
-                        "userName": user_data.get("name")
-                    }
-            elif response.status_code == 403:
-                # CSRF or rate limit - mark but don't fail the test
-                self.signup_attempts[user_id] = attempts + 1
-                response.success()  # Don't count as failure
-                # Try to login with this email instead
-                return self.login(client, email, password)
-            
-            self.signup_attempts[user_id] = attempts + 1
-            response.failure(f"Signup failed: {response.status_code}")
-            return None
+                    return self.login(client, email, password)
+                elif response.status_code == 500 and attempt < max_attempts - 1:
+                    response.success()
+                    delay = (attempt + 1) * 2 + random.random() * 2
+                    time.sleep(delay)
+                    continue
+                elif response.status_code == 429 and attempt < max_attempts - 1:
+                    response.success()
+                    time.sleep(3 + random.random() * 3)
+                    continue
+                
+                response.failure(f"Signup failed: {response.status_code}")
+                return None
+        return None
     
     def login(self, client, email: str, password: str) -> Optional[Dict]:
         """Log in existing user via Better Auth.
