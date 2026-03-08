@@ -146,7 +146,7 @@ class DryRunUser(HttpUser):
                         f"User {self.user_id}: sandbox ready in {sandbox_ms:.0f}ms"
                     )
                     break
-                elif resp.status_code in (0, 502, 503) and sandbox_attempt < 2:
+                elif resp.status_code in (0, 500, 502, 503) and sandbox_attempt < 2:
                     resp.success()
                     time.sleep(5 + random.random() * 5)
                     continue
@@ -202,7 +202,7 @@ class DryRunUser(HttpUser):
                     response.success()
                     self.runtime_ready = True
                     return
-                elif response.status_code in (0, 502, 503) and attempt < max_retries - 1:
+                elif response.status_code in (0, 500, 502, 503) and attempt < max_retries - 1:
                     response.success()
                     time.sleep(5 + random.random() * 5)
                     continue
@@ -260,7 +260,7 @@ class DryRunUser(HttpUser):
                 elif response.status_code == 402:
                     response.success()
                     return
-                elif response.status_code in (0, 502, 503) and attempt < max_retries - 1:
+                elif response.status_code in (0, 500, 502, 503) and attempt < max_retries - 1:
                     response.success()
                     delay = (attempt + 1) * 3 + random.random() * 3
                     time.sleep(delay)
