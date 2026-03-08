@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 #!/usr/bin/env bun
 /**
  * Migration Script: Backfill K8s Secrets for Existing Project Databases

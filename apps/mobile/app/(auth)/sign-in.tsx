@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import { useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useAuth } from '../../contexts/auth'
@@ -12,14 +14,14 @@ export default function SignInScreen() {
   const handleSignIn = async (email: string, password: string) => {
     try {
       await signIn(email, password)
-      router.replace('/(app)')
+      router.replace('/')
     } catch {}
   }
 
   const handleSignUp = async (name: string, email: string, password: string) => {
     try {
       await signUp(name, email, password)
-      router.replace('/(app)')
+      router.replace('/')
     } catch {}
   }
 

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Gateway Tools
  *
@@ -52,6 +54,7 @@ export interface ToolContext {
 
 const BLOCKED_COMMANDS = [
   'rm -rf /',
+  'rm -rf /*',
   'shutdown',
   'reboot',
   'mkfs',
@@ -59,6 +62,15 @@ const BLOCKED_COMMANDS = [
   'chmod 777',
   'curl.*|.*bash',
   'wget.*|.*bash',
+  'curl.*|.*sh',
+  'wget.*|.*sh',
+  'nc -l',
+  'ncat -l',
+  'python.*-m.*http.server',
+  'python.*SimpleHTTPServer',
+  'eval\\s*\\$',
+  '\\$\\(curl',
+  '\\$\\(wget',
 ]
 
 function isBlockedCommand(command: string): boolean {
@@ -2860,6 +2872,188 @@ function createSearchFilesTool(ctx: ToolContext): AgentTool {
 }
 
 // ---------------------------------------------------------------------------
+// Binding Transform Tool
+// ---------------------------------------------------------------------------
+
+function createBindingTransformTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'binding_transform',
+    description: `Create, test, list, or remove TypeScript transform functions for tool responses.
+
+When a tool (e.g. GITHUB_LIST_ISSUES) returns a large response that gets truncated, you can register a transform function that extracts only the fields you need. The transform runs automatically on every subsequent call to that tool, BEFORE truncation.
+
+ACTIONS:
+
+create — Register a transform for a tool. Write a pure function "(data) => ..." that takes the raw response object and returns just what you need:
+  binding_transform({ action: "create", tool: "GITHUB_LIST_ISSUES", transform: "(data) => ({ issues: data.data.items.map(i => ({ number: i.number, title: i.title, state: i.state })), total: data.data.total_count })", description: "Extract issue summaries" })
+
+test — Dry-run the transform against the last cached response to see size reduction:
+  binding_transform({ action: "test", tool: "GITHUB_LIST_ISSUES" })
+
+list — List all registered transforms:
+  binding_transform({ action: "list" })
+
+remove — Remove a transform:
+  binding_transform({ action: "remove", tool: "GITHUB_LIST_ISSUES" })
+
+WORKFLOW: Call a tool → see truncated response → create a transform → re-call the tool → get clean compact response.
+
+TRANSFORM RULES:
+- Must be a pure arrow function: (data) => { ... }
+- Has access to: JSON, Math, Date, Array, Object, String, Number, Boolean, Map, Set, RegExp
+- No access to: require, import, process, fetch, eval, Bun, globalThis
+- 2-second timeout — no infinite loops
+- If a transform errors at runtime, it falls back to the raw (truncated) response gracefully`,
+    label: 'Transform Tool Responses',
+    parameters: Type.Object({
+      action: Type.Union([
+        Type.Literal('create'),
+        Type.Literal('test'),
+        Type.Literal('list'),
+        Type.Literal('remove'),
+      ], { description: 'Action to perform' }),
+      tool: Type.Optional(Type.String({ description: 'Tool slug (e.g. "GITHUB_LIST_ISSUES"). Required for create/test/remove.' })),
+      transform: Type.Optional(Type.String({ description: 'Transform function body for create action. Must be a pure arrow function: (data) => { ... }' })),
+      description: Type.Optional(Type.String({ description: 'Human-readable description of what the transform does (for create action)' })),
+      sampleData: Type.Optional(Type.Any({ description: 'Optional sample data to test the transform against (for test action). If omitted, uses the last cached response.' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { action, tool, transform, description, sampleData } = params as {
+        action: 'create' | 'test' | 'list' | 'remove'
+        tool?: string
+        transform?: string
+        description?: string
+        sampleData?: unknown
+      }
+
+      const { getTransformRegistry } = await import('./response-transforms')
+      const registry = getTransformRegistry()
+      const transformsDir = join(ctx.workspaceDir, 'transforms')
+
+      switch (action) {
+        case 'create': {
+          if (!tool) return textResult({ error: 'Missing required parameter: tool' })
+          if (!transform) return textResult({ error: 'Missing required parameter: transform' })
+
+          try {
+            registry.register(tool, transform, description || '')
+
+            // Persist to disk
+            registry.persistToDisk(transformsDir)
+
+            // If we have a cached response, show a size preview
+            const cached = registry.getCachedResponse(tool)
+            if (cached) {
+              try {
+                const transformed = await registry.execute(tool, cached)
+                const originalSize = JSON.stringify(cached).length
+                const transformedSize = JSON.stringify(transformed).length
+                return textResult({
+                  ok: true,
+                  tool,
+                  description: description || '',
+                  sizePreview: {
+                    originalChars: originalSize,
+                    transformedChars: transformedSize,
+                    reductionRatio: Math.round((originalSize / Math.max(transformedSize, 1)) * 10) / 10,
+                    percentReduced: Math.round((1 - transformedSize / Math.max(originalSize, 1)) * 100),
+                  },
+                  message: `Transform registered for "${tool}". Next call will use it automatically.`,
+                })
+              } catch {
+                // Transform registered but preview failed — still ok
+              }
+            }
+
+            return textResult({
+              ok: true,
+              tool,
+              description: description || '',
+              message: `Transform registered for "${tool}". Next call to this tool will apply it automatically.`,
+            })
+          } catch (err: any) {
+            return textResult({ error: `Failed to register transform: ${err.message}` })
+          }
+        }
+
+        case 'test': {
+          if (!tool) return textResult({ error: 'Missing required parameter: tool' })
+
+          const testData = sampleData ?? registry.getCachedResponse(tool)
+          if (!testData) {
+            return textResult({
+              error: `No cached response for "${tool}". Call the tool first, or provide sampleData.`,
+            })
+          }
+
+          const existing = registry.get(tool)
+          if (!existing) {
+            return textResult({
+              error: `No transform registered for "${tool}". Use action "create" first.`,
+            })
+          }
+
+          try {
+            const transformed = await registry.execute(tool, testData)
+            const originalSize = JSON.stringify(testData).length
+            const transformedSize = JSON.stringify(transformed).length
+            const preview = JSON.stringify(transformed, null, 2)
+            const previewTruncated = preview.length > 2000
+              ? preview.substring(0, 2000) + '\n... [preview truncated]'
+              : preview
+
+            return textResult({
+              ok: true,
+              tool,
+              inputSize: originalSize,
+              outputSize: transformedSize,
+              reductionRatio: Math.round((originalSize / Math.max(transformedSize, 1)) * 10) / 10,
+              percentReduced: Math.round((1 - transformedSize / Math.max(originalSize, 1)) * 100),
+              preview: previewTruncated,
+            })
+          } catch (err: any) {
+            return textResult({
+              error: `Transform test failed: ${err.message}. Fix the transform and try again.`,
+            })
+          }
+        }
+
+        case 'list': {
+          const transforms = registry.list()
+          return textResult({
+            ok: true,
+            count: transforms.length,
+            transforms: transforms.map(t => ({
+              tool: t.toolSlug,
+              description: t.description,
+              createdAt: new Date(t.createdAt).toISOString(),
+            })),
+          })
+        }
+
+        case 'remove': {
+          if (!tool) return textResult({ error: 'Missing required parameter: tool' })
+
+          const removed = registry.remove(tool)
+          if (removed) {
+            registry.removeFromDisk(transformsDir, tool)
+          }
+          return textResult({
+            ok: removed,
+            message: removed
+              ? `Transform for "${tool}" removed. Future calls will use raw responses.`
+              : `No transform found for "${tool}".`,
+          })
+        }
+
+        default:
+          return textResult({ error: `Unknown action: ${action}` })
+      }
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Channel Connect Tool
 // ---------------------------------------------------------------------------
 
@@ -3004,6 +3198,7 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createToolSearchTool(),
     createToolInstallTool(ctx),
     createToolUninstallTool(ctx),
+    createBindingTransformTool(ctx),
   ]
 }
 
@@ -3038,6 +3233,7 @@ export function createBasicTools(ctx: ToolContext): AgentTool[] {
     createToolSearchTool(),
     createToolInstallTool(ctx),
     createToolUninstallTool(ctx),
+    createBindingTransformTool(ctx),
   ]
 }
 

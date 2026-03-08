@@ -79,8 +79,9 @@ spec:
   template:
     metadata:
       annotations:
-        autoscaling.knative.dev/min-scale: "1"
+        autoscaling.knative.dev/min-scale: "2"
         autoscaling.knative.dev/max-scale: "10"
+        autoscaling.knative.dev/target: "50"
     spec:
       serviceAccountName: api-service-account
       containers:
@@ -152,6 +153,68 @@ spec:
                 secretKeyRef:
                   name: api-secrets
                   key: ANTHROPIC_API_KEY
+            - name: STRIPE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: STRIPE_SECRET_KEY
+                  optional: true
+            - name: STRIPE_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: STRIPE_WEBHOOK_SECRET
+                  optional: true
+            # GitHub App configuration for Git sync integration
+            - name: GH_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GH_APP_ID
+                  optional: true
+            - name: GH_APP_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GH_APP_CLIENT_ID
+                  optional: true
+            - name: GH_APP_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GH_APP_CLIENT_SECRET
+                  optional: true
+            - name: GH_APP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GH_APP_PRIVATE_KEY
+                  optional: true
+            - name: GH_APP_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GH_APP_WEBHOOK_SECRET
+                  optional: true
+            - name: GH_APP_SLUG
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GH_APP_SLUG
+                  optional: true
+            # Google OAuth
+            - name: GOOGLE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GOOGLE_CLIENT_ID
+                  optional: true
+            - name: GOOGLE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GOOGLE_CLIENT_SECRET
+                  optional: true
             # Composio integration
             - name: COMPOSIO_API_KEY
               valueFrom:
@@ -194,6 +257,12 @@ spec:
               value: "10"
             - name: WARM_POOL_MAX_AGE_MS
               value: "3600000"
+            - name: LOAD_TEST_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: LOAD_TEST_SECRET
+                  optional: true
           resources:
             requests:
               memory: "512Mi"

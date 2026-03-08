@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Project Chat Proxy Routes
  *
@@ -13,7 +15,6 @@
 import { Hono } from "hono"
 import { resolve } from "path"
 import { trace, SpanStatusCode } from "@opentelemetry/api"
-import { getProjectPodUrl } from "../lib/knative-project-manager"
 
 import { prisma } from "../lib/prisma"
 import type { IRuntimeManager } from "../lib/runtime"
@@ -429,6 +430,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
   async function getProjectUrl(projectId: string): Promise<string> {
     if (isKubernetes()) {
       // In Kubernetes: Use Knative project manager
+      const { getProjectPodUrl } = await import("../lib/knative-project-manager")
       return await getProjectPodUrl(projectId)
     } else if (runtimeManager) {
       // Local development: Use RuntimeManager
@@ -591,6 +593,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
       }
+
+      const { deriveRuntimeToken } = await import('../lib/runtime-token')
+      headers["x-runtime-token"] = deriveRuntimeToken(projectId)
 
       // Copy relevant headers from original request
       const authHeader = c.req.header("Authorization")

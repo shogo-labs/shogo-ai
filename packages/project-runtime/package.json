@@ -1,6 +1,7 @@
 {
   "name": "@shogo/project-runtime",
   "version": "0.0.1",
+  "license": "AGPL-3.0-or-later",
   "description": "Isolated project runtime - runs Claude Code agent + Vite in a per-project pod",
   "type": "module",
   "main": "src/server.ts",

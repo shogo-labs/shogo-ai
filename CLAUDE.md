@@ -82,9 +82,6 @@ bun run db:generate
 ### Running Single Tests
 
 ```bash
-# Run a single test file
-bun test packages/state-api/src/meta/__tests__/bootstrap.test.ts
-
 # Run tests with pattern matching
 bun test --filter "meta-store"
 
@@ -104,70 +101,17 @@ cd packages/sdk && bun run test:e2e
 ### Package Dependency Graph
 
 ```
-@shogo/state-api (isomorphic core - no external runtime deps)
-       ↑
-       ├── @shogo/api (Hono API server, Better Auth, Prisma)
-       ├── @shogo/mobile (Universal Expo app - Web, iOS, Android)
-       │   ├── @shogo/shared-ui (Gluestack v3 universal components)
-       │   ├── @shogo/shared-app (shared hooks, domain logic, auth)
-       │   └── @shogo/ui-kit (theme, routing utilities)
-       ├── @shogo/agent-runtime (agent gateway, heartbeat, channels, skills, Composio)
-       ├── @shogo/project-runtime (isolated project pods - not active this release)
-       └── @shogo-ai/sdk (Vite + Hono SDK - not active this release)
-```
-
-### Transformation Pipeline
-
-The core value is schema-to-store transformation. Schemas flow through three stages:
-
-1. **ArkType Scope** → `arkTypeToEnhancedJsonSchema()` → **Enhanced JSON Schema**
-2. **Enhanced JSON Schema** → `enhancedJsonSchemaToMST()` → **MST Models + Collections**
-3. **MST Models** → `createStore(environment)` → **Runtime Store**
-
-Key extensions in Enhanced JSON Schema:
-- `x-original-name` — preserves model names
-- `x-reference-type` — "single" or "array" cardinality
-- `x-mst-type` — "identifier", "reference", "maybe-reference"
-- `x-computed` — inverse relationship arrays
-- `x-renderer-config` — UI rendering hints
-
-### Two-Layer Store Architecture
-
-**Meta-Store** (singleton): Manages schema definitions as queryable entities. Access via `getMetaStore()` or `createMetaStoreInstance(env)` for isolated testing.
-
-**Runtime Stores** (per-schema): Dynamically-generated MST stores for application data, keyed by workspace. Access via `getRuntimeStore(schemaId, location)`.
-
-```typescript
-// Meta-store for schema management
-const metaStore = getMetaStore()
-metaStore.ingestEnhancedJsonSchema(schema)
-
-// Runtime store for data operations
-const store = getRuntimeStore(schemaId, workspace)
-store.userCollection.add({ name: 'Alice' })
-```
-
-### Environment Injection Pattern
-
-Services are injected at store creation, enabling the same model code to work across environments:
-
-```typescript
-const store = RootStoreModel.create({}, {
-  services: { persistence: new FileSystemPersistence() },
-  context: { schemaName: 'my-app' }
-})
+@shogo/api (Hono API server, Better Auth, Prisma)
+├── @shogo/mobile (Universal Expo app - Web, iOS, Android)
+│   ├── @shogo/shared-ui (Gluestack v3 universal components)
+│   ├── @shogo/shared-app (shared hooks, domain logic, auth)
+│   └── @shogo/ui-kit (theme, routing utilities)
+├── @shogo/agent-runtime (agent gateway, heartbeat, channels, skills, Composio)
+├── @shogo/project-runtime (isolated project pods)
+└── @shogo-ai/sdk (Vite + Hono SDK)
 ```
 
 ## Key Source Locations
-
-### packages/state-api/src/
-- `schematic/` — Transformation pipeline (arktype-to-json-schema, enhanced-json-schema-to-mst)
-- `meta/` — Meta-store system (bootstrap.ts, meta-store.ts, meta-registry.ts)
-- `persistence/` — Storage adapters (filesystem.ts, null.ts, s3-sqlite.ts)
-- `composition/` — MST mixins (persistable.ts, queryable.ts, mutatable.ts)
-- `ddl/` — SQL DDL generation from schemas
-- `query/` — Query execution backends (memory, sql)
-- `domain/` — Domain model generation
 
 ### apps/mobile/ (Universal Expo App — Web, iOS, Android)
 - `app/` — Expo Router file-based routes
@@ -194,14 +138,9 @@ AI skills are defined in `.claude/skills/`.
 Tests use Bun's test runner. Most tests are colocated in `__tests__/` directories.
 
 ```bash
-# Run all state-api tests
-bun test packages/state-api
-
-# Run specific test file
-bun test packages/state-api/src/meta/__tests__/bootstrap.test.ts
+# Run all tests
+bun run test
 
 # Watch mode
-bun test --watch packages/state-api
+bun test --watch
 ```
-
-For isolated meta-store testing, use `createMetaStoreInstance()` instead of the singleton `getMetaStore()`.

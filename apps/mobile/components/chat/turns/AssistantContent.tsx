@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * AssistantContent Component (React Native)
  *
@@ -120,7 +122,7 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
   return result
 }
 
-const UNGROUPABLE_TOOLS = new Set(["AskUserQuestion", "TodoWrite"])
+const UNGROUPABLE_TOOLS = new Set(["AskUserQuestion", "TodoWrite", "tool_install"])
 const MIN_GROUP_SIZE = 2
 
 function groupConsecutiveParts(parts: MessagePart[]): GroupedMessagePart[] {

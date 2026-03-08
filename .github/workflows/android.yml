@@ -1,0 +1,325 @@
+# =============================================================================
+# Android Build & Update Pipeline
+# =============================================================================
+# Automatic (push to staging):
+#   - Resolves native fingerprint to detect if native deps changed
+#   - If fingerprint matches the last successful build → OTA update (eas update)
+#   - If fingerprint changed → full native build (expo prebuild + Gradle)
+#
+# Manual (workflow_dispatch):
+#   - Always runs a full native build
+#   - Optionally submits to Play Store
+#
+# Both build and OTA run on the same GitHub runner environment, so the
+# fingerprint hash is always consistent (no EAS server mismatch).
+#
+# Required GitHub Secrets:
+#   EXPO_TOKEN                  - Expo token for eas update / eas submit
+#   KEYSTORE_BASE64             - Base64-encoded Android release signing keystore
+#   KEYSTORE_PASSWORD           - Keystore password
+#   KEY_ALIAS                   - Key alias within the keystore
+#   KEY_PASSWORD                - Key password
+#   GOOGLE_SERVICES_JSON_BASE64 - Base64-encoded Play Store service account key
+# =============================================================================
+
+name: Android Build & Update
+
+on:
+  push:
+    branches:
+      - staging
+    paths:
+      - 'apps/mobile/**'
+      - 'packages/domain-stores/**'
+      - 'packages/shared-app/**'
+      - 'packages/shared-ui/**'
+      - 'packages/ui-kit/**'
+      - 'packages/sdk/**'
+  workflow_dispatch:
+    inputs:
+      submit:
+        description: 'Submit to Play Store (internal track)'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  # ===========================================================================
+  # Check if native code changed (push events only)
+  # ===========================================================================
+  check-fingerprint:
+    name: Check Native Fingerprint
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    outputs:
+      needs_build: ${{ steps.decide.outputs.needs_build }}
+      runtime_version: ${{ steps.fingerprint.outputs.runtime_version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Resolve fingerprint
+        id: fingerprint
+        working-directory: apps/mobile
+        run: |
+          RUNTIME_VERSION=$(npx expo-updates runtimeversion:resolve --platform android 2>/dev/null || echo "")
+
+          if [ -z "$RUNTIME_VERSION" ]; then
+            echo "Could not resolve runtime version"
+            echo "runtime_version=unknown" >> $GITHUB_OUTPUT
+          else
+            echo "Runtime version (fingerprint): $RUNTIME_VERSION"
+            echo "runtime_version=$RUNTIME_VERSION" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Restore cached fingerprint
+        if: steps.fingerprint.outputs.runtime_version != 'unknown'
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: .fingerprint-android
+          key: android-fingerprint-${{ steps.fingerprint.outputs.runtime_version }}
+
+      - name: Determine if build is needed
+        id: decide
+        run: |
+          if [ "${{ steps.fingerprint.outputs.runtime_version }}" = "unknown" ]; then
+            echo "Could not resolve fingerprint → forcing full build"
+            echo "needs_build=true" >> $GITHUB_OUTPUT
+          elif [ "${{ steps.cache.outputs.cache-hit }}" = "true" ]; then
+            echo "Fingerprint cached from previous build → OTA update only"
+            echo "needs_build=false" >> $GITHUB_OUTPUT
+          else
+            echo "New fingerprint → full build required"
+            echo "needs_build=true" >> $GITHUB_OUTPUT
+          fi
+
+  # ===========================================================================
+  # OTA Update — JS/asset changes only (no native changes)
+  # ===========================================================================
+  update:
+    name: EAS Update (OTA)
+    runs-on: ubuntu-latest
+    needs: check-fingerprint
+    if: >
+      needs.check-fingerprint.result == 'success' &&
+      needs.check-fingerprint.outputs.needs_build == 'false'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build workspace packages
+        run: bunx turbo build --filter=@shogo/mobile...
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Publish OTA update
+        working-directory: apps/mobile
+        run: |
+          eas update \
+            --branch production \
+            --message "${{ github.event.head_commit.message }}" \
+            --non-interactive
+
+      - name: Summary
+        run: |
+          echo "## OTA Update Published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** production" >> $GITHUB_STEP_SUMMARY
+          echo "- **Runtime Version:** ${{ needs.check-fingerprint.outputs.runtime_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Devices running a production build will receive this update automatically." >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # Full Native Build — native deps changed or manual trigger
+  # Uses expo prebuild + Gradle instead of EAS Build so the fingerprint
+  # stays consistent with the OTA update environment.
+  # ===========================================================================
+  build:
+    name: Android Build (Gradle)
+    runs-on: ubuntu-latest
+    needs: check-fingerprint
+    if: >
+      always() && (
+        github.event_name == 'workflow_dispatch' ||
+        (needs.check-fingerprint.result == 'success' && needs.check-fingerprint.outputs.needs_build == 'true')
+      )
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            ~/.bun/install/cache
+          key: bun-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build workspace packages
+        run: bunx turbo build --filter=@shogo/mobile...
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('apps/mobile/android/gradle/wrapper/gradle-wrapper.properties') }}-${{ hashFiles('apps/mobile/android/**/build.gradle') }}
+          restore-keys: gradle-
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Set versionCode from run number
+        working-directory: apps/mobile
+        run: |
+          node -e "
+            const fs = require('fs');
+            const appJson = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+            appJson.expo.android.versionCode = ${{ github.run_number }};
+            fs.writeFileSync('app.json', JSON.stringify(appJson, null, 2) + '\n');
+            console.log('Set versionCode to ${{ github.run_number }}');
+          "
+
+      - name: Expo Prebuild
+        working-directory: apps/mobile
+        run: npx expo prebuild --platform android --clean
+
+      - name: Verify signing secrets
+        run: |
+          [ -z "$KEYSTORE_PASSWORD" ] && echo "::error::KEYSTORE_PASSWORD is empty!" && exit 1
+          [ -z "$KEY_PASSWORD" ] && echo "::error::KEY_PASSWORD is empty!" && exit 1
+          [ -z "$KEY_ALIAS" ] && echo "::error::KEY_ALIAS is empty!" && exit 1
+          [ -z "$KEYSTORE_BASE64" ] && echo "::error::KEYSTORE_BASE64 is empty!" && exit 1
+          echo "KEYSTORE_PASSWORD length: ${#KEYSTORE_PASSWORD}"
+          echo "KEY_PASSWORD length: ${#KEY_PASSWORD}"
+          echo "KEY_ALIAS value: $KEY_ALIAS"
+          echo "KEYSTORE_BASE64 length: ${#KEYSTORE_BASE64}"
+          echo "All signing secrets are set"
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+
+      - name: Decode signing keystore
+        run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > apps/mobile/android/app/release.keystore
+
+      - name: Inject release signing config
+        working-directory: apps/mobile/android/app
+        run: |
+          sed -i '/android {/a \
+              signingConfigs {\
+                  release {\
+                      storeFile file("release.keystore")\
+                      storePassword System.getenv("KEYSTORE_PASSWORD")\
+                      keyAlias System.getenv("KEY_ALIAS")\
+                      keyPassword System.getenv("KEY_PASSWORD")\
+                  }\
+              }' build.gradle
+
+          sed -i 's/signingConfig signingConfigs.debug/signingConfig signingConfigs.release/' build.gradle
+
+          sed -i '/defaultConfig {/a\
+                  ndk {\
+                      abiFilters "armeabi-v7a", "arm64-v8a"\
+                  }' build.gradle
+
+      - name: Build AAB
+        working-directory: apps/mobile/android
+        run: ./gradlew bundleRelease -x lintVitalAnalyzeRelease -x lintVitalRelease
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          EXPO_PUBLIC_API_URL: ${{ vars.MOBILE_API_URL }}
+          # GRADLE_OPTS: -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"
+
+      - name: Upload AAB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release.aab
+          path: apps/mobile/android/app/build/outputs/bundle/release/app-release.aab
+
+      - name: Save fingerprint to cache
+        run: |
+          RUNTIME_VERSION="${{ needs.check-fingerprint.outputs.runtime_version }}"
+          if [ -z "$RUNTIME_VERSION" ] || [ "$RUNTIME_VERSION" = "unknown" ]; then
+            RUNTIME_VERSION=$(cd apps/mobile && npx expo-updates runtimeversion:resolve --platform android 2>/dev/null || echo "manual-build")
+          fi
+          echo "$RUNTIME_VERSION" > .fingerprint-android
+
+      - name: Cache fingerprint
+        uses: actions/cache/save@v4
+        with:
+          path: .fingerprint-android
+          key: android-fingerprint-${{ needs.check-fingerprint.outputs.runtime_version || 'manual' }}
+
+      - name: Decode Google service account key
+        if: github.event.inputs.submit != 'false'
+        run: echo "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" | base64 -d > apps/mobile/google-services.json
+
+      - name: Submit to Play Store (internal track)
+        if: github.event.inputs.submit != 'false'
+        working-directory: apps/mobile
+        run: |
+          eas submit \
+            --platform android \
+            --path ./android/app/build/outputs/bundle/release/app-release.aab \
+            --non-interactive
+
+      - name: Summary
+        run: |
+          echo "## Android Build Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **versionCode:** ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Submit:** ${{ github.event.inputs.submit != 'false' && 'Play Store (internal track)' || 'Skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "AAB is available as a workflow artifact." >> $GITHUB_STEP_SUMMARY

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
 // Models available through the Shogo AI Proxy
 export const DEFAULT_CHAT_MODEL = "claude-haiku-4-5";
 

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * ProjectLayout - Main project view layout (mobile)
  *
@@ -41,6 +43,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { getTotalCreditsForPlan } from '../../../../lib/billing-config'
 import { useAuth } from '../../../../contexts/auth'
+import { authClient } from '../../../../lib/auth-client'
 import { API_URL, api } from '../../../../lib/api'
 import { usePlatformConfig } from '../../../../lib/platform-config'
 import { consumePendingImageData } from '../../../../lib/pending-image-store'
@@ -183,9 +186,24 @@ export default observer(function ProjectLayout() {
     }
   }, [projects?.all])
 
+  // Auth headers for native (Android/iOS) — cookies aren't sent automatically
+  const nativeHeaders = useMemo(() => {
+    if (Platform.OS === 'web') return undefined
+    return (): Record<string, string> => {
+      const cookie = (authClient as any).getCookie()
+      return cookie ? { Cookie: cookie } : {}
+    }
+  }, [])
+
   // Dynamic app canvas (agent projects)
-  const { agentUrl } = useAgentUrl(API_URL!, projectId, { credentials: Platform.OS === 'web' ? 'include' : 'omit' })
-  const { surfaces, connected, dispatchAction, updateLocalData, reconnect, applyMessage } = useDynamicAppStream(agentUrl)
+  const { agentUrl } = useAgentUrl(API_URL!, projectId, {
+    credentials: Platform.OS === 'web' ? 'include' : 'omit',
+    headers: nativeHeaders,
+  })
+  const { surfaces, connected, dispatchAction, updateLocalData, reconnect, applyMessage } = useDynamicAppStream(
+    agentUrl,
+    nativeHeaders ? { headers: nativeHeaders } : undefined,
+  )
   const activeSurface = surfaces.size > 0 ? Array.from(surfaces.values())[0] : null
 
   // Canvas action handler
@@ -301,6 +319,8 @@ export default observer(function ProjectLayout() {
     }
   }, [projectId, chatSessionId])
 
+  const SESSION_PAGE_SIZE = 10
+
   // Auto-select or create chat session
   useEffect(() => {
     if (!projectId || !store?.chatSessionCollection || chatSessionId) return
@@ -309,7 +329,10 @@ export default observer(function ProjectLayout() {
 
     const initSession = async () => {
       try {
-        await store.chatSessionCollection.loadAll({ contextId: projectId })
+        await store.chatSessionCollection.loadPage(
+          { contextId: projectId },
+          { limit: SESSION_PAGE_SIZE, offset: 0 },
+        )
         if (cancelled) return
 
         const existing = store.chatSessionCollection.all.filter(
@@ -349,6 +372,21 @@ export default observer(function ProjectLayout() {
   const handleChatSessionChange = useCallback((sessionId: string) => {
     setChatSessionId(sessionId)
   }, [])
+
+  const handleLoadMoreSessions = useCallback(async () => {
+    if (!store?.chatSessionCollection || store.chatSessionCollection.isLoadingMore) return
+    const currentCount = store.chatSessionCollection.all.filter(
+      (s: any) => s.contextId === projectId,
+    ).length
+    try {
+      await store.chatSessionCollection.loadPage(
+        { contextId: projectId },
+        { limit: SESSION_PAGE_SIZE, offset: currentCount },
+      )
+    } catch (err) {
+      console.error('[ProjectLayout] Failed to load more chat sessions:', err)
+    }
+  }, [store, projectId])
 
   // Chat panel visibility
   const [chatCollapsed, setChatCollapsed] = useState(false)
@@ -467,6 +505,7 @@ export default observer(function ProjectLayout() {
           agentUrl={agentUrl}
           onAction={handleCanvasAction}
           onDataChange={updateLocalData}
+          authHeaders={nativeHeaders}
           onRefresh={reconnect}
         />
       </EditModeProvider>
@@ -517,6 +556,9 @@ export default observer(function ProjectLayout() {
                         setShowChatSessions(false)
                       }}
                       onCreate={handleCreateNewSession}
+                      onLoadMore={handleLoadMoreSessions}
+                      hasMore={store?.chatSessionCollection?.hasMore ?? false}
+                      isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
                     />
                   </View>
                 )}
@@ -617,13 +659,15 @@ function CanvasPanel({
   agentUrl,
   onAction,
   onDataChange,
+  authHeaders,
   onRefresh,
 }: {
   surface: any | null
   connected: boolean
   agentUrl: string | null
   onAction: (surfaceId: string, name: string, context?: Record<string, unknown>) => void
-  onDataChange?: (surfaceId: string, path: string, value: unknown, options?: { persist?: boolean }) => void
+  onDataChange?: (surfaceId: string, path: string, value: unknown) => void
+  authHeaders?: () => Record<string, string>
   onRefresh?: () => void
 }) {
   const editMode = useEditModeOptional()
@@ -703,6 +747,7 @@ function CanvasPanel({
                 agentUrl={agentUrl}
                 onAction={onAction}
                 onDataChange={onDataChange}
+                authHeaders={authHeaders}
               />
             </ScrollView>
           </CanvasThemedContainer>

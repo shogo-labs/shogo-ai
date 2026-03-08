@@ -1,18 +1,26 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import { Platform } from 'react-native'
 import type { HttpClient } from '@shogo-ai/sdk'
 
 export const API_URL = (() => {
   const envUrl = process.env.EXPO_PUBLIC_API_URL
-  if (envUrl) return envUrl
 
   // Empty string means "same origin" (Docker/nginx proxy builds set EXPO_PUBLIC_API_URL="")
   if (envUrl === '' && Platform.OS === 'web' && typeof window !== 'undefined') {
     return window.location.origin
   }
 
+  // On web dev, ignore the env var (it's a LAN IP meant for physical mobile devices)
+  // and always use localhost so the browser can reach the API.
+  if (Platform.OS === 'web') {
+    return 'http://localhost:8002'
+  }
+
+  if (envUrl) return envUrl
+
   return Platform.select({
-    web: 'http://localhost:8002',
-    ios: 'http://localhost:8002',
+    ios: 'http://192.168.1.132:8002',
     android: 'http://192.168.1.132:8002',
     default: 'http://localhost:8002',
   })!
@@ -202,6 +210,21 @@ export const api = {
     return res.data
   },
 
+  async getMyActivity(http: HttpClient) {
+    const res = await http.get<{
+      ok: boolean
+      data: {
+        totalMessages: number
+        dailyAverage: number
+        daysActive: number
+        daysInPeriod: number
+        currentStreak: number
+        dailyCounts: Record<string, number>
+      }
+    }>('/api/me/activity')
+    return res.data?.data ?? { totalMessages: 0, dailyAverage: 0, daysActive: 0, daysInPeriod: 365, currentStreak: 0, dailyCounts: {} }
+  },
+
   // ─── Templates ─────────────────────────────────────────────
 
   async getAgentTemplates(http: HttpClient) {
@@ -212,7 +235,12 @@ export const api = {
   // ─── Admin ───────────────────────────────────────────────
 
   async getMe(http: HttpClient) {
-    const res = await http.get<{ ok: boolean; data?: { role?: string } }>('/api/me')
+    const res = await http.get<{ ok: boolean; data?: { role?: string; onboardingCompleted?: boolean } }>('/api/me')
+    return res.data
+  },
+
+  async completeOnboarding(http: HttpClient) {
+    const res = await http.post<{ ok: boolean }>('/api/onboarding/complete')
     return res.data
   },
 }

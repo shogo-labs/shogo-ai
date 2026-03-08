@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * ChatPanel - Smart component that integrates useChat hook with studio-chat domain
  * Tasks: task-2-4-004, task-3-1-004, task-cpbi-004, task-cpbi-005
@@ -26,7 +28,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react"
-import { View, Text, Pressable, ScrollView, Platform } from "react-native"
+import { View, Text, Pressable, ScrollView, Platform, ActivityIndicator } from "react-native"
 import * as SecureStore from "expo-secure-store"
 import { observer } from "mobx-react-lite"
 import { useChat, type UIMessage } from "@ai-sdk/react"
@@ -544,6 +546,9 @@ export const ChatPanel = observer(function ChatPanel({
   // Auto-scroll refs
   const scrollViewRef = useRef<ScrollView>(null)
   const isUserAtBottomRef = useRef(true)
+  const isLoadingOlderRef = useRef(false)
+  const contentHeightBeforeLoadRef = useRef(0)
+  const MESSAGE_PAGE_SIZE = 10
 
   // Chat session state
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(chatSessionId ?? null)
@@ -1488,14 +1493,17 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [messages, onActiveToolCall])
 
-  // Effect 1: Trigger data loading for chat messages from API
+  // Effect 1: Trigger data loading for chat messages from API (paginated, newest first)
   useEffect(() => {
     if (currentSessionId && !isLoadingMessagesRef.current) {
       isLoadingMessagesRef.current = true
       setIsInitialLoadComplete(false)
       console.log("[ChatPanel] Loading messages for session:", currentSessionId)
       studioChat.chatMessageCollection
-        .loadAll({ sessionId: currentSessionId })
+        .loadPage(
+          { sessionId: currentSessionId },
+          { limit: MESSAGE_PAGE_SIZE, offset: 0 },
+        )
         .then((result: any) => {
           const count = Array.isArray(result) ? result.length : 0
           console.log("[ChatPanel] Loaded", count, "messages for session:", currentSessionId)
@@ -1527,7 +1535,6 @@ export const ChatPanel = observer(function ChatPanel({
                 "messages to AI SDK"
               )
               setMessages(aiMessages)
-              // Scroll to bottom after messages load
               setTimeout(() => {
                 scrollViewRef.current?.scrollToEnd({ animated: false })
               }, 50)
@@ -1541,6 +1548,55 @@ export const ChatPanel = observer(function ChatPanel({
         })
     } else if (!currentSessionId) {
       setIsInitialLoadComplete(true)
+    }
+  }, [currentSessionId, studioChat, setMessages])
+
+  // Load older messages when user scrolls to top
+  const handleLoadOlderMessages = useCallback(async () => {
+    if (
+      !currentSessionId ||
+      isLoadingOlderRef.current ||
+      !studioChat.chatMessageCollection.hasMore ||
+      isStreamingRef.current
+    ) return
+
+    isLoadingOlderRef.current = true
+
+    const currentMsgs = studioChat.chatMessageCollection.all
+      .filter((msg: any) => msg.sessionId === currentSessionId)
+    const currentCount = currentMsgs.length
+
+    try {
+      await studioChat.chatMessageCollection.loadPage(
+        { sessionId: currentSessionId },
+        { limit: MESSAGE_PAGE_SIZE, offset: currentCount },
+      )
+
+      const allLoaded = studioChat.chatMessageCollection.all
+        .filter((msg: any) => msg.sessionId === currentSessionId)
+        .sort((a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0))
+
+      const aiMessages = allLoaded.map((msg: any) => {
+        const baseMessage: any = {
+          id: msg.id,
+          role: msg.role as "user" | "assistant",
+          content: msg.content,
+        }
+        if (msg.parts) {
+          try {
+            baseMessage.parts = JSON.parse(msg.parts)
+          } catch (err) {
+            console.warn("[ChatPanel] Failed to parse message parts:", err)
+          }
+        }
+        return baseMessage
+      })
+
+      setMessages(aiMessages)
+    } catch (err) {
+      console.error("[ChatPanel] Failed to load older messages:", err)
+    } finally {
+      isLoadingOlderRef.current = false
     }
   }, [currentSessionId, studioChat, setMessages])
 
@@ -2022,9 +2078,35 @@ export const ChatPanel = observer(function ChatPanel({
               const isAtBottom =
                 contentSize.height - contentOffset.y - layoutMeasurement.height < 100
               isUserAtBottomRef.current = isAtBottom
+
+              if (contentOffset.y < 50 && !isLoadingOlderRef.current) {
+                handleLoadOlderMessages()
+              }
+            }}
+            onContentSizeChange={(_w, h) => {
+              if (isLoadingOlderRef.current || studioChat.chatMessageCollection.isLoadingMore) {
+                const delta = h - contentHeightBeforeLoadRef.current
+                if (delta > 0 && contentHeightBeforeLoadRef.current > 0) {
+                  scrollViewRef.current?.scrollTo({ y: delta, animated: false })
+                }
+              }
+              contentHeightBeforeLoadRef.current = h
             }}
             scrollEventThrottle={16}
           >
+            {studioChat.chatMessageCollection.hasMore && (
+              <Pressable
+                onPress={handleLoadOlderMessages}
+                disabled={studioChat.chatMessageCollection.isLoadingMore}
+                className="py-2 items-center"
+              >
+                {studioChat.chatMessageCollection.isLoadingMore ? (
+                  <ActivityIndicator size="small" />
+                ) : (
+                  <Text className="text-sm text-primary">Load earlier messages</Text>
+                )}
+              </Pressable>
+            )}
             {displayMessages.length > 0 ? (
               <TurnList
                 messages={displayMessages}

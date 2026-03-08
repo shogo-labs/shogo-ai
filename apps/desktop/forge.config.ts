@@ -1,12 +1,23 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import type { ForgeConfig } from '@electron-forge/cli'
+import fs from 'fs'
+
+const hasIcon = fs.existsSync('./resources/icon.icns') || fs.existsSync('./resources/icon.ico')
 
 const config: ForgeConfig = {
   packagerConfig: {
     name: 'Shogo',
-    icon: './resources/icon',
+    ...(hasIcon ? { icon: './resources/icon' } : {}),
     asar: true,
     extraResource: [
       './resources/bun',
+      './resources/web',
+      './resources/bundle',
+      './resources/node_modules',
+      './resources/prisma',
+      './resources/package.json',
+      './resources/prisma.config.local.ts',
     ],
     ignore: [
       /^\/src/,
@@ -24,12 +35,6 @@ const config: ForgeConfig = {
       name: '@electron-forge/maker-dmg',
       config: {
         format: 'ULFO',
-      },
-    },
-    {
-      name: '@electron-forge/maker-squirrel',
-      config: {
-        name: 'Shogo',
       },
     },
   ],

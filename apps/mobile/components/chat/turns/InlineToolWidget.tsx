@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * InlineToolWidget Component (React Native)
  *
@@ -124,9 +126,9 @@ export function InlineToolWidget({
         <StateIcon
           className={cn(
             "w-3 h-3",
-            tool.state === "streaming" && "text-exec-streaming",
-            tool.state === "success" && "text-exec-success",
-            tool.state === "error" && "text-exec-error"
+            tool.state === "streaming" && "text-blue-400",
+            tool.state === "success" && "text-green-500",
+            tool.state === "error" && "text-red-500"
           )}
         />
       </Pressable>
@@ -139,8 +141,8 @@ export function InlineToolWidget({
               <Text className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
                 Args
               </Text>
-              <ScrollView horizontal className="bg-background/50 rounded p-1.5 max-h-32">
-                <Text className="text-[10px] font-mono text-foreground">
+              <ScrollView nestedScrollEnabled className="bg-background/50 rounded p-1.5 max-h-32">
+                <Text className="text-[10px] font-mono text-foreground" selectable>
                   {formatJson(tool.args)}
                 </Text>
               </ScrollView>
@@ -152,8 +154,8 @@ export function InlineToolWidget({
               <Text className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
                 Result
               </Text>
-              <ScrollView horizontal className="bg-background/50 rounded p-1.5 max-h-32">
-                <Text className="text-[10px] font-mono text-foreground">
+              <ScrollView nestedScrollEnabled className="bg-background/50 rounded p-1.5 max-h-32">
+                <Text className="text-[10px] font-mono text-foreground" selectable>
                   {formatJson(tool.result)}
                 </Text>
               </ScrollView>
@@ -162,11 +164,11 @@ export function InlineToolWidget({
 
           {tool.state === "error" && (
             <View className="gap-0.5">
-              <Text className="text-[9px] font-medium text-exec-error uppercase tracking-wide">
+              <Text className="text-[9px] font-medium text-red-500 uppercase tracking-wide">
                 Error
               </Text>
-              <ScrollView horizontal className="bg-exec-error/10 rounded p-1.5 max-h-32">
-                <Text className="text-[10px] font-mono text-exec-error">
+              <ScrollView nestedScrollEnabled className="bg-red-500/10 rounded p-1.5 max-h-32">
+                <Text className="text-[10px] font-mono text-red-500" selectable>
                   {getDisplayableResult() || "No output captured"}
                 </Text>
               </ScrollView>

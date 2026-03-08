@@ -21,8 +21,8 @@ _.log
 report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # dotenv environment variable files
-# .env is a tracked symlink -> .env.local (for Docker Compose variable substitution)
-# The actual secrets live in .env.local which remains ignored
+# .env is a sanitized tracked example for local development
+# Real secrets should live in .env.local, which remains ignored
 .env.development.local
 .env.test.local
 .env.production.local
@@ -106,12 +106,16 @@ packages/agent-runtime/src/evals/dspy/results/
 
 
 
+apps/api/.env
 apps/mobile/.env
+apps/mobile/google-services.json
 apps/mobile/android/
 apps/mobile/ios/
+*.keystore
 
 *.png
 !apps/mobile/assets/*.png
+!apps/desktop/resources/icon.png
 tests/
 
 .dynamic-app-runtimes/
@@ -120,6 +124,17 @@ tests/
 apps/desktop/dist/
 apps/desktop/out/
 apps/desktop/resources/bun/
+apps/desktop/resources/web/
+apps/desktop/resources/bundle/
+apps/desktop/resources/apps/
+apps/desktop/resources/packages/
+apps/desktop/resources/node_modules/
+apps/desktop/resources/prisma/
+apps/desktop/resources/scripts/
+apps/desktop/resources/package.json
+apps/desktop/resources/bun.lock
+apps/desktop/resources/tsconfig.base.json
+apps/desktop/resources/prisma.config.local.ts
 
 # Local SQLite databases
 *.local.db

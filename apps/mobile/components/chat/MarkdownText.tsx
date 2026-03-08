@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import React, { useMemo } from "react"
 import Markdown from "react-native-marked"
 import type { MarkedStyles } from "react-native-marked"
@@ -71,7 +73,7 @@ export function MarkdownText({ children }: MarkdownTextProps) {
       value={value}
       styles={baseStyles}
       theme={{ colors }}
-      flatListProps={{ scrollEnabled: false }}
+      flatListProps={{ scrollEnabled: false, style: { backgroundColor: 'transparent' } }}
     />
   )
 }

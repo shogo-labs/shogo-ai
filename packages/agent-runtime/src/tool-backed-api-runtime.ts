@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Tool-Backed API Runtime
  *
@@ -11,6 +13,7 @@
 import { Hono } from 'hono'
 import type { MCPClientManager } from './mcp-client'
 import type { FieldType, ModelField } from './managed-api-runtime'
+import { getTransformRegistry } from './response-transforms'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -25,6 +28,8 @@ export interface ToolCrudBinding {
   resultPath?: string
   /** Maps model field names to tool parameter names. Value ":id" is interpolated from the route param. */
   paramMap?: Record<string, string>
+  /** TypeScript function body that transforms the raw response before extraction, e.g. "(data) => data.items.map(...)" */
+  transform?: string
 }
 
 export interface ToolBindingConfig {
@@ -141,7 +146,14 @@ export class ToolBackedApiRuntime {
             return c.json({ ok: false, error: result.error }, 500)
           }
 
-          const parsed = tryParseJson(result.data || '{}')
+          let parsed = tryParseJson(result.data || '{}')
+          if (binding.transform) {
+            try {
+              parsed = await getTransformRegistry().executeInline(binding.transform, parsed)
+            } catch (err: any) {
+              console.warn(`[ToolBackedAPI] Transform failed for ${binding.tool}: ${err.message}`)
+            }
+          }
           let items = extractAtPath(parsed, binding.resultPath)
           if (!Array.isArray(items)) {
             items = parsed ? [parsed] : []
@@ -172,7 +184,14 @@ export class ToolBackedApiRuntime {
           if (!result.ok) {
             return c.json({ ok: false, error: result.error }, 500)
           }
-          const parsed = tryParseJson(result.data || '{}')
+          let parsed = tryParseJson(result.data || '{}')
+          if (binding.transform) {
+            try {
+              parsed = await getTransformRegistry().executeInline(binding.transform, parsed)
+            } catch (err: any) {
+              console.warn(`[ToolBackedAPI] Transform failed for ${binding.tool}: ${err.message}`)
+            }
+          }
           const item = extractAtPath(parsed, binding.resultPath) ?? parsed
           return c.json({ ok: true, item })
         } catch (err: any) {
@@ -283,7 +302,14 @@ export class ToolBackedApiRuntime {
       if (!result.ok) {
         return { ok: false, error: result.error }
       }
-      const parsed = tryParseJson(result.data || '{}')
+      let parsed = tryParseJson(result.data || '{}')
+      if (binding.transform) {
+        try {
+          parsed = await getTransformRegistry().executeInline(binding.transform, parsed)
+        } catch (err: any) {
+          console.warn(`[ToolBackedAPI] Transform failed for ${binding.tool}: ${err.message}`)
+        }
+      }
       let items = extractAtPath(parsed, binding.resultPath)
       if (!Array.isArray(items)) {
         items = parsed ? [parsed] : []

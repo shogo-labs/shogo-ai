@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import { app } from 'electron'
 import path from 'path'
 import fs from 'fs'
@@ -38,7 +40,7 @@ export function getApiDir(): string {
   if (IS_DEV) {
     return path.resolve(__dirname, '..', '..', 'api')
   }
-  return path.join(process.resourcesPath!, 'api')
+  return path.join(process.resourcesPath!, 'apps', 'api')
 }
 
 export function getWebDir(): string {

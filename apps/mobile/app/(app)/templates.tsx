@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState, useEffect, useCallback } from 'react'
 import {
   View,
@@ -16,10 +18,13 @@ import {
   useProjectCollection,
   useDomainActions,
   useDomainHttp,
+  useDomainHttp,
 } from '../../contexts/domain'
+import { api, type AgentTemplateSummary } from '../../lib/api'
 import { api, type AgentTemplateSummary } from '../../lib/api'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 
+type AgentTemplate = AgentTemplateSummary
 type AgentTemplate = AgentTemplateSummary
 
 /**
@@ -54,6 +59,20 @@ const TEMPLATE_COLORS: Record<string, string> = {
   'project-board': '#06b6d4',
   'incident-commander': '#ef4444',
   'personal-assistant': '#f59e0b',
+  'sales-pipeline': '#eab308',
+  'social-media-manager': '#a855f7',
+  'release-manager': '#22d3ee',
+  'hiring-pipeline': '#14b8a6',
+  'newsletter-curator': '#f472b6',
+  'competitor-intel': '#6366f1',
+  'api-health-monitor': '#e11d48',
+  'expense-manager': '#84cc16',
+  'fitness-coach': '#f97316',
+  'daily-journal': '#8b5cf6',
+  'market-watch': '#0ea5e9',
+  'code-review-assistant': '#10b981',
+  'client-onboarding': '#d946ef',
+  'travel-planner': '#06b6d4',
   'email-slack-alert': '#e11d48',
   'dev-activity': '#2563eb',
   'standup-generator': '#16a34a',
@@ -63,9 +82,11 @@ const TEMPLATE_COLORS: Record<string, string> = {
 
 const FILTER_TABS = [
   { key: 'all', label: 'All Templates', icon: '⊞' },
-  { key: 'research', label: 'Research', icon: '📚' },
-  { key: 'development', label: 'Development', icon: '🐙' },
+  { key: 'sales', label: 'Sales', icon: '🏆' },
+  { key: 'marketing', label: 'Marketing', icon: '📣' },
   { key: 'business', label: 'Business', icon: '💼' },
+  { key: 'development', label: 'Development', icon: '🐙' },
+  { key: 'research', label: 'Research', icon: '📚' },
   { key: 'operations', label: 'DevOps', icon: '🚨' },
   { key: 'personal', label: 'Personal', icon: '⚡' },
 ]
@@ -159,6 +180,7 @@ export default observer(function TemplatesPage() {
   const router = useRouter()
   const { user } = useAuth()
   const http = useDomainHttp()
+  const http = useDomainHttp()
   const actions = useDomainActions()
   const projects = useProjectCollection()
   const isDark = useDarkMode()
@@ -174,6 +196,8 @@ export default observer(function TemplatesPage() {
       try {
         const data = await api.getAgentTemplates(http)
         setTemplates(data)
+        const data = await api.getAgentTemplates(http)
+        setTemplates(data)
       } catch (err) {
         console.error('[TemplatesPage] Failed to fetch templates:', err)
       } finally {
@@ -181,6 +205,7 @@ export default observer(function TemplatesPage() {
       }
     }
     fetchTemplates()
+  }, [http])
   }, [http])
 
   const handleTemplatePress = useCallback(

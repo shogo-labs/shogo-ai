@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import { PrismaClient } from '../generated/prisma/client';
 
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
@@ -108,11 +110,18 @@ async function createPrismaClient(): Promise<PrismaClient> {
   const { PrismaPg } = await import('@prisma/adapter-pg')
   const adapter = new PrismaPg({
     connectionString: process.env.DATABASE_URL,
-    max: parseInt(process.env.PRISMA_POOL_SIZE || '50', 10),
+    max: parseInt(process.env.PRISMA_POOL_SIZE || '80', 10),
     idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 10_000,
+    connectionTimeoutMillis: 15_000,
   })
-  return new PrismaClient({ adapter, log: [...logConfig] })
+  return new PrismaClient({
+    adapter,
+    log: [...logConfig],
+    transactionOptions: {
+      maxWait: 10_000,
+      timeout: 30_000,
+    },
+  })
 }
 
 export const prisma = globalForPrisma.prisma ?? await createPrismaClient();

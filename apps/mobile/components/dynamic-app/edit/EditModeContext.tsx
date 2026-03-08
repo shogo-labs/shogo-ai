@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import { createContext, useContext, useState, useCallback, useMemo, type ReactNode } from 'react'
 import type { ComponentDefinition, SurfaceState } from '@shogo/shared-app/dynamic-app'
 

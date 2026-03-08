@@ -17,15 +17,13 @@ load_dotenv()
 
 # Uses the API DomainMapping directly (not the studio proxy) for external tooling
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api-staging.shogo.ai")
-MCP_BASE_URL = os.getenv("MCP_BASE_URL", "https://mcp-staging.shogo.ai")
 
 
 class TestDataSeeder:
     """Populates staging with test users, workspaces, and projects."""
     
-    def __init__(self, api_url: str, mcp_url: str):
+    def __init__(self, api_url: str):
         self.api_url = api_url
-        self.mcp_url = mcp_url
         self.admin_token = None
         self.created_users = []
         self.created_workspaces = []
@@ -192,12 +190,10 @@ async def main():
     
     if args.env == "staging":
         api_url = "https://api-staging.shogo.ai"
-        mcp_url = "https://mcp-staging.shogo.ai"
     else:
         api_url = "http://localhost:8002"
-        mcp_url = "http://localhost:3100"
     
-    seeder = TestDataSeeder(api_url, mcp_url)
+    seeder = TestDataSeeder(api_url)
     await seeder.setup(args.users, args.workspaces, args.projects)
 
 

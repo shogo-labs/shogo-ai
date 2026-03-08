@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Tool Mock Fixtures for Agent Evals
  *
@@ -2854,6 +2856,166 @@ export const CICD_PIPELINE_MOCKS: ToolMockMap = {
           { id: 8968, name: 'Deploy Production', head_branch: 'main', head_sha: 'k8l9m0n', status: 'in_progress', conclusion: null, created_at: '2026-02-21T11:30:00Z', run_started_at: '2026-02-21T11:30:05Z', updated_at: '2026-02-21T11:31:00Z', html_url: 'https://github.com/acme/app/actions/runs/8968' },
         ],
         total_count: 10,
+      },
+      successful: true,
+    },
+  },
+}
+
+// ---------------------------------------------------------------------------
+// Fixture: Response Transform — Large GitHub Issues (truncated)
+// Returns 80k+ response that will trigger truncation
+// ---------------------------------------------------------------------------
+
+function generateLargeIssuesMock(): any {
+  const items = Array.from({ length: 200 }, (_, i) => ({
+    number: i + 1,
+    title: ['Fix SSO login flow', 'Memory leak in WS handler', 'Add dark mode toggle', 'Upgrade React to v19', 'Fix pagination in search results'][i % 5],
+    state: i % 4 === 0 ? 'closed' : 'open',
+    body: `This is a detailed issue description for issue ${i + 1}. `.repeat(30),
+    labels: [
+      { id: 100 + i, name: ['bug', 'enhancement', 'documentation', 'performance', 'security'][i % 5], color: 'fc2929' },
+      { id: 200 + i, name: ['priority:high', 'priority:medium', 'priority:low'][i % 3], color: '0e8a16' },
+    ],
+    assignee: { login: `user${i % 5}`, id: 1000 + i, avatar_url: `https://avatars.githubusercontent.com/u/${1000 + i}?v=4`, type: 'User' },
+    milestone: i % 3 === 0 ? { number: 1, title: 'v2.0', description: 'Major release with breaking changes' } : null,
+    created_at: `2026-0${1 + (i % 3)}-${String(1 + (i % 28)).padStart(2, '0')}T10:00:00Z`,
+    updated_at: '2026-03-01T14:30:00Z',
+    comments: i * 2,
+    html_url: `https://github.com/acme/app/issues/${i + 1}`,
+    reactions: { '+1': i % 10, '-1': 0, laugh: 0, hooray: i % 5, confused: 0, heart: i % 3, rocket: i % 7, eyes: i % 4 },
+    pull_request: null,
+    locked: false,
+    author_association: 'MEMBER',
+  }))
+
+  return {
+    data: { items, total_count: 200 },
+    successful: true,
+  }
+}
+
+export const RESPONSE_TRANSFORM_LARGE_ISSUES_MOCKS: ToolMockMap = {
+  tool_search: {
+    type: 'static',
+    paramKeys: ['query'],
+    response: {
+      query: 'github',
+      results: [
+        { name: 'github', description: 'GitHub — manage repos, issues, PRs', source: 'composio' },
+      ],
+      message: 'Found 1 integration(s).',
+    },
+  },
+  tool_install: {
+    type: 'static',
+    paramKeys: ['name'],
+    response: {
+      ok: true,
+      server: 'composio',
+      integration: 'github',
+      toolCount: 3,
+      tools: ['GITHUB_LIST_ISSUES', 'GITHUB_CREATE_ISSUE', 'GITHUB_GET_ISSUE'],
+      authStatus: 'active',
+      message: 'Installed github with 3 tool(s). Auth is active.',
+    },
+  },
+  GITHUB_LIST_ISSUES: {
+    type: 'static',
+    paramKeys: ['repo', 'state', 'per_page'],
+    hidden: true,
+    response: generateLargeIssuesMock(),
+  },
+  binding_transform: {
+    type: 'static',
+    paramKeys: ['action', 'tool', 'transform', 'description'],
+    response: {
+      ok: true,
+      message: 'Transform registered. Next call will use it automatically.',
+    },
+  },
+}
+
+// ---------------------------------------------------------------------------
+// Fixture: Response Transform — Pre-loaded transform (calendar)
+// ---------------------------------------------------------------------------
+
+export const RESPONSE_TRANSFORM_PRELOADED_MOCKS: ToolMockMap = {
+  tool_install: {
+    type: 'static',
+    paramKeys: ['name'],
+    response: {
+      ok: true,
+      server: 'composio',
+      integration: 'googlecalendar',
+      toolCount: 3,
+      tools: ['GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS', 'GOOGLECALENDAR_CREATE_EVENT', 'GOOGLECALENDAR_LIST_CALENDARS'],
+      authStatus: 'active',
+      message: 'Installed googlecalendar with 3 tool(s). Auth is active.',
+    },
+  },
+  GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS: {
+    type: 'static',
+    paramKeys: ['time_min', 'time_max'],
+    hidden: true,
+    response: {
+      data: {
+        items: Array.from({ length: 80 }, (_, i) => ({
+          id: `event_${i}`,
+          summary: ['Team Standup', 'Product Review', '1:1 with Manager', 'Sprint Planning', 'Design Review'][i % 5],
+          description: `Detailed event description for event ${i}. `.repeat(20),
+          start: { dateTime: `2026-03-0${1 + (i % 7)}T${9 + (i % 8)}:00:00-08:00` },
+          end: { dateTime: `2026-03-0${1 + (i % 7)}T${10 + (i % 8)}:00:00-08:00` },
+          location: i % 3 === 0 ? 'Conference Room A' : null,
+          organizer: { email: `organizer${i % 3}@example.com`, displayName: `Organizer ${i % 3}` },
+          attendees: Array.from({ length: 5 }, (_, j) => ({
+            email: `attendee${j}@example.com`,
+            displayName: `Attendee ${j}`,
+            responseStatus: ['accepted', 'needsAction', 'declined'][j % 3],
+          })),
+          creator: { email: 'me@example.com', self: true },
+          htmlLink: `https://calendar.google.com/event?eid=${i}`,
+          status: 'confirmed',
+          reminders: { useDefault: true },
+        })),
+        nextPageToken: 'abc123',
+        kind: 'calendar#events',
+      },
+      successful: true,
+    },
+  },
+}
+
+// ---------------------------------------------------------------------------
+// Fixture: Response Transform — Broken transform fallback
+// ---------------------------------------------------------------------------
+
+export const RESPONSE_TRANSFORM_FALLBACK_MOCKS: ToolMockMap = {
+  tool_install: {
+    type: 'static',
+    paramKeys: ['name'],
+    response: {
+      ok: true,
+      server: 'composio',
+      integration: 'github',
+      toolCount: 2,
+      tools: ['GITHUB_LIST_ISSUES', 'GITHUB_CREATE_ISSUE'],
+      authStatus: 'active',
+      message: 'Installed github with 2 tool(s). Auth is active.',
+    },
+  },
+  GITHUB_LIST_ISSUES: {
+    type: 'static',
+    paramKeys: ['repo', 'state'],
+    hidden: true,
+    response: {
+      data: {
+        items: [
+          { number: 1, title: 'Fix login bug', state: 'open', body: 'Login fails on Safari' },
+          { number: 2, title: 'Add dark mode', state: 'open', body: 'Users want dark mode' },
+          { number: 3, title: 'Memory leak', state: 'closed', body: 'WS handler leaks memory' },
+        ],
+        total_count: 3,
       },
       successful: true,
     },

@@ -1,173 +1,129 @@
 # Shogo AI
 
-> AI-first agent builder. Build autonomous AI agents through conversation.
+AI-first agent builder for chat-driven apps, persistent agents, and dynamic
+workspaces.
 
-A platform for building personal AI agents that monitor systems, process messages across platforms, run scheduled tasks, remember context, and execute modular skills — all configured through natural language.
+Shogo combines a Hono API, Expo-based clients, agent runtimes, project
+runtimes, and a developer SDK into one platform for building and operating
+agentic products.
+
+## Open Source Model
+
+Shogo uses a split-license model:
+
+- Core product code is licensed under `AGPL-3.0-or-later`
+- `packages/sdk/` and SDK examples are licensed under `Apache-2.0`
+- Documentation is licensed under `CC BY 4.0`
+- Infrastructure and deployment materials in `terraform/`, `k8s/`,
+  `deploy-examples/`, and `.github/workflows/` are proprietary and licensed
+  under `INFRASTRUCTURE-LICENSE.md`
+- The hosted Shogo Cloud offering is proprietary
+
+See `LICENSE`, `NOTICE`, `INFRASTRUCTURE-LICENSE.md`, and `TRADEMARK.md` for
+details.
+
+## Repository Layout
+
+| Path | Purpose |
+|------|---------|
+| `apps/api/` | Hono API server, auth, billing, runtime orchestration |
+| `apps/mobile/` | Expo app for web, iOS, and Android |
+| `apps/desktop/` | Local desktop distribution |
+| `apps/docs/` | Documentation site |
+| `packages/agent-runtime/` | Agent gateway, tools, integrations |
+| `packages/project-runtime/` | Isolated project runtime |
+| `packages/shared-runtime/` | Shared runtime helpers |
+| `packages/shared-app/` | Shared app/domain logic |
+| `packages/shared-ui/` | Shared UI components |
+| `packages/ui-kit/` | Theme and routing helpers |
+| `packages/domain-stores/` | Domain store layer |
+| `packages/sdk/` | Apache-licensed SDK |
+| `templates/runtime-template/` | Apache-licensed project template |
 
 ## Quick Start
 
-### Local Development
+### Local development
 
-**Prerequisites:**
-- [Bun](https://bun.sh) — JavaScript runtime
-- [Node.js](https://nodejs.org) — Required for npx/Expo CLI
-- [Docker](https://www.docker.com/) — For infrastructure (Postgres, Redis, MinIO)
+Prerequisites:
 
-**1. Install dependencies and start infrastructure:**
+- [Bun](https://bun.sh)
+- [Node.js](https://nodejs.org)
+- [Docker](https://www.docker.com/)
+
+1. Install dependencies.
 
 ```bash
 bun install
+```
 
-# Start Docker infrastructure (Postgres, Redis, MinIO)
+2. Create your local env file.
+
+```bash
+cp .env.example .env.local
+```
+
+3. Start local infrastructure.
+
+```bash
 bun run docker:infra
 ```
 
-**2. Run database migrations (first time only):**
+4. Run database migrations.
 
 ```bash
 bun run db:migrate:deploy
 ```
 
-**3. Start all services:**
+5. Start the app.
 
 ```bash
 bun run dev:all
 ```
 
-This starts three services concurrently:
+Open `http://localhost:8081`.
 
-| Service | Port | Description |
-|---------|------|-------------|
-| API Server | `localhost:8002` | Hono API, auth, chat proxy, agent runtimes |
-| Web Frontend | `localhost:8081` | Expo web app (React Native for Web) |
+## Self-Hosting
 
-Open **http://localhost:8081** in your browser.
+Shogo can be self-hosted locally or on your own infrastructure. For setup
+details, required environment variables, storage, and deployment notes, see
+`docs/SELF_HOSTING.md`.
 
-Logs are written to `logs/api.log` and `logs/web.log` so you can `tail -f logs/api.log` to debug issues.
-
-**Environment:** Copy `.env.local.template` to `.env.local` and fill in your API keys (at minimum `ANTHROPIC_API_KEY`). The dev server script will create a minimal `.env.local` for you if one doesn't exist.
-
-#### Running Services Individually
-
-If you prefer separate terminals:
-
-```bash
-bun run api:dev        # Terminal 1 — API server on :8002 (with --watch)
-bun run web:dev        # Terminal 2 — Expo web on :8081
-```
-
-Or run just the backend (no frontend):
-
-```bash
-bun run dev:backend    # API only
-```
-
-#### Full Setup with Infrastructure
-
-For a one-command start that also handles Docker and migrations:
-
-```bash
-bun run dev:start      # Starts Docker infra + app services
-```
-
-→ See [Getting Started](docs/GETTING_STARTED.md) and [Architecture](docs/ARCHITECTURE.md)
-
-## Agent Templates
-
-Shogo ships with 8 purpose-built agent templates:
-
-| Template | Description |
-|----------|-------------|
-| Research Assistant | Web research, synthesis, canvas dashboards, daily briefings |
-| GitHub Ops | PR triage, CI monitoring, issue tracking dashboards |
-| Support Desk | Ticket triage, KPIs, Zendesk/Linear integration |
-| Meeting Prep | Calendar events, attendee research, prep documents |
-| Revenue Tracker | Revenue metrics, invoice management, Stripe integration |
-| Project Board | Sprint board, task tracking, velocity metrics |
-| Incident Commander | Service health monitoring, error correlation, alerting |
-| Personal Assistant | Habit tracking, reminders, daily check-ins |
-
-## Why Shogo AI?
-
-| Traditional Approach | Shogo AI |
-|---------------------|----------|
-| Agents require heavy boilerplate | Templates + conversation-driven configuration |
-| Manual integration wiring | Composio auto-bind for 250+ tools |
-| No persistent state | Markdown memory + heartbeat scheduling |
-| Isolated automations | Canvas dashboards with live data |
-
-**Core differentiators:**
-- **Conversation-first** — configure agents through chat, not code
-- **Persistent memory** — agents remember context across sessions
-- **Heartbeat system** — agents proactively check for work on a schedule
-- **Canvas dashboards** — visual dashboards and summaries, not static text
-- **Composio integrations** — connect GitHub, Slack, Stripe, and 250+ tools via OAuth
+Local desktop/offline usage is documented in `apps/desktop/README.md`.
 
 ## Packages
 
 | Package | Description |
 |---------|-------------|
-| [@shogo/state-api](packages/state-api) | Schema-to-MST transformation engine |
-| [@shogo/agent-runtime](packages/agent-runtime) | Agent gateway, tools, Composio integrations |
-| [@shogo/api](apps/api) | Hono API server, auth, chat proxy |
-| [@shogo/mobile](apps/mobile) | Expo app (React Native for Web + iOS + Android) |
+| `@shogo/api` | API server and platform orchestration |
+| `@shogo/mobile` | Primary client app |
+| `@shogo/desktop` | Desktop packaging layer |
+| `@shogo/agent-runtime` | Agent runtime and tool gateway |
+| `@shogo/project-runtime` | Isolated per-project runtime |
+| `@shogo-ai/sdk` | Developer SDK for auth, data, and email |
 
 ## Commands
 
-### Development
-
 | Command | Description |
 |---------|-------------|
-| `bun run dev:all` | Start API + Web concurrently |
-| `bun run dev:backend` | Start API only (no frontend) |
-| `bun run dev:start` | Full setup: Docker infra + app services |
-| `bun run api:dev` | API server with hot reload (`:8002`) |
-| `bun run web:dev` | Expo web frontend (`:8081`) |
+| `bun run dev:all` | Start API and web app |
+| `bun run dev:backend` | Start API only |
+| `bun run docker:infra` | Start Postgres, Redis, and MinIO |
+| `bun run db:migrate:deploy` | Apply migrations |
+| `bun run build` | Build the monorepo |
+| `bun run test` | Run tests |
+| `bun run typecheck` | Run TypeScript checks |
+| `bun run lint` | Run linters |
 
-### Infrastructure
+## Community
 
-| Command | Description |
-|---------|-------------|
-| `bun run docker:infra` | Start Postgres, Redis, MinIO containers |
-| `bun run docker:infra:down` | Stop infrastructure containers |
-| `bun run docker:infra:clean` | Stop and remove all volumes |
-| `bun run db:migrate` | Run Prisma migrations (dev) |
-| `bun run db:migrate:deploy` | Run Prisma migrations (deploy) |
-| `bun run db:studio` | Open Prisma Studio |
-
-### Build & Test
-
-| Command | Description |
-|---------|-------------|
-| `bun install` | Install all dependencies |
-| `bun run build` | Build all packages (Turbo) |
-| `bun run test` | Run all tests |
-| `bun run typecheck` | Type check all packages |
-| `bun run lint` | Lint all packages |
+- `CONTRIBUTING.md` for contribution guidelines
+- `CLA.md` for contributor licensing terms
+- `SECURITY.md` for responsible disclosure
+- `TRADEMARK.md` for branding and name usage
 
 ## Documentation
 
-### Guides
-- [Getting Started](docs/GETTING_STARTED.md) — Developer setup
-- [Architecture](docs/ARCHITECTURE.md) — System design and patterns
-
-### Contributing
-- [Contributing Guide](CONTRIBUTING.md) — How to contribute
-
-## Project Structure
-
-```
-shogo-ai/
-├── apps/
-│   ├── api/               # Hono API server (auth, chat, runtime management)
-│   └── mobile/            # Expo app (web + iOS + Android)
-├── packages/
-│   ├── state-api/         # Schema-to-MST transformation engine
-│   ├── agent-runtime/     # Agent gateway, tool system, Composio
-│   ├── shared-app/        # Shared app logic (auth, chat, domain)
-│   └── domain-store/      # Domain CRUD stores
-├── prisma/                # Database schema & migrations
-├── scripts/               # Dev scripts (docker, codegen)
-├── workspaces/            # Agent runtime workspaces (gitignored)
-└── docs/                  # Documentation
-```
+- `docs/GETTING_STARTED.md`
+- `docs/ARCHITECTURE.md`
+- `docs/SELF_HOSTING.md`
+- `packages/sdk/README.md`

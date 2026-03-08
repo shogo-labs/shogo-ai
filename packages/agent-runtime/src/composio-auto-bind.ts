@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Composio Auto-Bind
  *
@@ -13,6 +15,7 @@
 import type { ToolBindingConfig, ToolCrudBinding } from './tool-backed-api-runtime'
 import type { FieldType, ModelField } from './managed-api-runtime'
 import type { MCPClientManager } from './mcp-client'
+import { getTransformRegistry } from './response-transforms'
 
 // ---------------------------------------------------------------------------
 // Composio REST API types (from GET /api/v3/tools)
@@ -522,6 +525,13 @@ export async function autoBindComposioToolkit(
     if (listTool) {
       const binding: ToolCrudBinding = { tool: listTool.mcpName }
       if (resultPath) binding.resultPath = resultPath
+
+      const registry = getTransformRegistry()
+      const existingTransform = registry.get(listTool.slug) || registry.get(listTool.mcpName)
+      if (existingTransform) {
+        binding.transform = existingTransform.transformFn
+      }
+
       bindings.list = binding
       toolMap.list = listTool.slug
     }
@@ -701,6 +711,13 @@ export async function autoBindPrimaryEntity(
     if (listTool) {
       const binding: ToolCrudBinding = { tool: listTool.mcpName }
       if (resultPath) binding.resultPath = resultPath
+
+      const registry = getTransformRegistry()
+      const existingTransform = registry.get(listTool.slug) || registry.get(listTool.mcpName)
+      if (existingTransform) {
+        binding.transform = existingTransform.transformFn
+      }
+
       bindings.list = binding
       toolMap.list = listTool.slug
     }
