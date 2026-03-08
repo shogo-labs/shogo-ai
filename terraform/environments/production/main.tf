@@ -360,8 +360,8 @@ resource "null_resource" "karpenter_node_pool" {
           budgets:
             - nodes: "1"
         limits:
-          cpu: "64"
-          memory: 256Gi
+          cpu: "128"
+          memory: 512Gi
       EOF
 
       echo "Karpenter NodePool and EC2NodeClass deployed"

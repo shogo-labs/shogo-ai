@@ -313,8 +313,8 @@ resource "null_resource" "karpenter_node_pool" {
               kind: EC2NodeClass
               name: default
         limits:
-          cpu: "64"
-          memory: "128Gi"
+          cpu: "128"
+          memory: "512Gi"
         disruption:
           consolidationPolicy: WhenEmptyOrUnderutilized
           consolidateAfter: 60s
