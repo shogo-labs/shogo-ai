@@ -787,16 +787,16 @@ resource "null_resource" "postgres_credentials" {
         --from-literal=DATABASE_URL="$PLATFORM_URI" \
         --dry-run=client -o yaml | kubectl apply -f -
 
-      echo "Waiting for CloudNativePG projects-pg-superuser secret..."
+      echo "Waiting for CloudNativePG projects-pg-app secret..."
       for i in $(seq 1 60); do
-        if kubectl get secret projects-pg-superuser -n shogo-system > /dev/null 2>&1; then
-          echo "Secret projects-pg-superuser found"
+        if kubectl get secret projects-pg-app -n shogo-system > /dev/null 2>&1; then
+          echo "Secret projects-pg-app found"
           break
         fi
         sleep 5
       done
 
-      PROJECTS_ADMIN_URI=$(kubectl get secret projects-pg-superuser -n shogo-system -o jsonpath='{.data.uri}' | base64 -d)
+      PROJECTS_ADMIN_URI=$(kubectl get secret projects-pg-app -n shogo-system -o jsonpath='{.data.uri}' | base64 -d)
       
       if [ -z "$PROJECTS_ADMIN_URI" ]; then
         echo "ERROR: Could not extract projects-pg URI"
