@@ -226,8 +226,8 @@ export function integrationRoutes() {
     }
 
     // Check both the authenticated user's entity and the 'default' entity.
-    // The agent runtime uses process.env.USER_ID which may not be set (falls
-    // back to 'default'), while the API has the real auth userId.
+    // The agent runtime prefers the X-User-Id header from the chat request,
+    // falling back to process.env.USER_ID then 'default'.
     const candidateIds = [
       buildComposioUserId(auth.userId, projectId),
       buildComposioUserId('default', projectId),

@@ -915,6 +915,7 @@ export class AgentGateway {
   private workspaceDir: string
   private projectId: string
   private config: GatewayConfig
+  private currentUserId: string | undefined
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
   private channels: Map<string, ChannelAdapter> = new Map()
   private skills: Skill[] = []
@@ -1569,8 +1570,11 @@ export class AgentGateway {
       session.modelOverride = options.modelOverride
     }
 
-    if (options?.userId && isComposioEnabled()) {
-      await initComposioSession(options.userId, this.projectId)
+    if (options?.userId) {
+      this.currentUserId = options.userId
+      if (isComposioEnabled()) {
+        await initComposioSession(options.userId, this.projectId)
+      }
     }
 
     this.emitLog(`Chat message received (stream): "${text.substring(0, 100)}"`)
@@ -1674,6 +1678,7 @@ export class AgentGateway {
       mcpClientManager: this.mcpClientManager,
       connectChannel: (type, config) => this.connectChannel(type, config),
       disconnectChannel: (type) => this.disconnectChannel(type),
+      userId: this.currentUserId,
     }
 
     const baseTools = isHeartbeat
