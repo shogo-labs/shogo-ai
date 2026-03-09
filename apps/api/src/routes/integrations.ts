@@ -170,13 +170,26 @@ export function integrationRoutes() {
         userIds: [composioUserId],
       })
 
-      const connections = ((accounts as any)?.items || (accounts as any)?.data || []).map((acc: any) => ({
-        id: acc.id,
-        toolkit: acc.toolkit?.slug ?? acc.appName ?? acc.app_name ?? 'unknown',
-        status: acc.status,
-        createdAt: acc.createdAt || acc.created_at,
-        accountIdentifier: acc.memberEmailId ?? acc.metadata?.email ?? acc.connectionParams?.user_email ?? null,
-      }))
+      const items = (accounts as any)?.items || (accounts as any)?.data || []
+      console.log('[Integrations] Raw connected accounts:', JSON.stringify(items, null, 2))
+
+      const connections = items.map((acc: any) => {
+        const stateVal = acc.state?.val ?? acc.connectionParams ?? {}
+        const accountIdentifier =
+          stateVal.account_id ??
+          stateVal.user_email ??
+          stateVal.email ??
+          acc.memberEmailId ??
+          acc.metadata?.email ??
+          null
+        return {
+          id: acc.id,
+          toolkit: acc.toolkit?.slug ?? acc.appName ?? acc.app_name ?? 'unknown',
+          status: acc.status,
+          createdAt: acc.createdAt || acc.created_at,
+          accountIdentifier,
+        }
+      })
 
       return c.json({ ok: true, data: connections })
     } catch (err: any) {
