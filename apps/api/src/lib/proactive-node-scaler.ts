@@ -82,11 +82,11 @@ function getCoreApi(): k8s.CoreV1Api {
     const tokenPath = `${serviceAccountDir}/token`
 
     if (fs.existsSync(caPath) && fs.existsSync(tokenPath)) {
-      const ca = fs.readFileSync(caPath, 'utf8')
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
       const token = fs.readFileSync(tokenPath, 'utf8')
       const host = `https://${process.env.KUBERNETES_SERVICE_HOST}:${process.env.KUBERNETES_SERVICE_PORT}`
       kc.loadFromOptions({
-        clusters: [{ name: 'in-cluster', server: host, caData: Buffer.from(ca).toString('base64') }],
+        clusters: [{ name: 'in-cluster', server: host, skipTLSVerify: true }],
         users: [{ name: 'in-cluster', token }],
         contexts: [{ name: 'in-cluster', cluster: 'in-cluster', user: 'in-cluster' }],
         currentContext: 'in-cluster',
