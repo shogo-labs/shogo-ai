@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * ChatSession Hooks
  *
@@ -29,8 +31,8 @@ export interface HookContext {
  * Hooks for ChatSession routes
  */
 export interface ChatSessionHooks {
-  /** Called before listing records. Can modify where/include. */
-  beforeList?: (ctx: HookContext) => Promise<HookResult<{ where?: any; include?: any }> | void>
+  /** Called before listing records. Can modify where/include/orderBy. */
+  beforeList?: (ctx: HookContext) => Promise<HookResult<{ where?: any; include?: any; orderBy?: any }> | void>
   /** Called before getting a single record. Can reject access. */
   beforeGet?: (id: string, ctx: HookContext) => Promise<HookResult | void>
   /** Called before creating a record. Can modify input or reject. */

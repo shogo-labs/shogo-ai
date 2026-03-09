@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Workspace Service - Prisma-based workspace operations
  * Replaces studioCoreDomain.createStore() for workspace/member management
@@ -35,9 +37,7 @@ export async function createPersonalWorkspace(
   const slug = `user-${userIdPrefix}-personal`;
   const workspaceName = `${userName || 'User'} Personal`;
 
-  // Use transaction to ensure workspace + member are created atomically
   const result = await prisma.$transaction(async (tx) => {
-    // Create the workspace
     const workspace = await tx.workspace.create({
       data: {
         name: workspaceName,
@@ -45,7 +45,6 @@ export async function createPersonalWorkspace(
       },
     });
 
-    // Create the owner membership
     const member = await tx.member.create({
       data: {
         userId,
@@ -56,7 +55,7 @@ export async function createPersonalWorkspace(
     });
 
     return { workspace, member };
-  });
+  }, { maxWait: 15_000, timeout: 30_000 });
 
   return {
     workspace: {

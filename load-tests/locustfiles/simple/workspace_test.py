@@ -15,6 +15,7 @@ import random
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 from locustfiles.common.auth import AuthManager
+from locustfiles.common.config import config
 
 
 class WorkspaceLoadTestUser(FastHttpUser):
@@ -25,6 +26,10 @@ class WorkspaceLoadTestUser(FastHttpUser):
     def on_start(self):
         """Authenticate user and prepare for workspace operations."""
         self.auth = AuthManager(self.host)
+        self._origin = self.host.rstrip("/")
+        self._headers = {"Origin": self._origin}
+        if config.LOAD_TEST_SECRET:
+            self._headers["X-Load-Test-Key"] = config.LOAD_TEST_SECRET
         self.user_id = random.randint(100000, 999999)
         
         # Sign up and login - this sets session cookie automatically
@@ -57,6 +62,7 @@ class WorkspaceLoadTestUser(FastHttpUser):
         # Use v2 API endpoint - session cookie provides authentication
         with self.client.get(
             "/api/workspaces",
+            headers=self._headers,
             catch_response=True,
             name="/api/workspaces [LIST]"
         ) as response:
@@ -96,6 +102,7 @@ class WorkspaceLoadTestUser(FastHttpUser):
                 "slug": f"loadtest-{workspace_id}",
                 "description": "Workspace for load testing"
             },
+            headers=self._headers,
             catch_response=True,
             name="/api/workspaces [CREATE]"
         ) as response:
@@ -131,6 +138,7 @@ class WorkspaceLoadTestUser(FastHttpUser):
                 "name": f"Updated WS {random.randint(1, 1000)}",
                 "description": f"Updated at {random.randint(1, 1000)}"
             },
+            headers=self._headers,
             catch_response=True,
             name="/api/workspaces/:id [UPDATE]"
         ) as response:
@@ -159,6 +167,7 @@ class WorkspaceLoadTestUser(FastHttpUser):
         # No workspaceId filter - get all user's projects
         with self.client.get(
             "/api/projects",
+            headers=self._headers,
             catch_response=True,
             name="/api/projects [LIST]"
         ) as response:
@@ -201,6 +210,7 @@ class WorkspaceLoadTestUser(FastHttpUser):
                 "type": "AGENT",
                 "description": "Project for load testing",
             },
+            headers=self._headers,
             catch_response=True,
             name="/api/projects [CREATE]"
         ) as response:
@@ -247,6 +257,7 @@ class WorkspaceLoadTestUser(FastHttpUser):
         # Use v2 API endpoint - authenticated via session cookie
         with self.client.delete(
             f"/api/workspaces/{workspace_id}",
+            headers=self._headers,
             catch_response=True,
             name="/api/workspaces/:id [DELETE]"
         ) as response:

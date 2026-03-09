@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Agent Builder MCP Server
  *
@@ -8,8 +10,26 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, readdirSync, unlinkSync, mkdirSync } from 'fs'
-import { join, extname, dirname } from 'path'
+import { join, resolve, extname, dirname } from 'path'
 import { isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPackages, getCatalogEntry } from '../mcp-catalog'
+
+/**
+ * Resolve a path ensuring it stays within the given base directory.
+ * Rejects inputs containing ".." or starting with "/" to prevent path traversal.
+ */
+function safePath(base: string, ...segments: string[]): string {
+  for (const seg of segments) {
+    if (seg.includes('..') || seg.startsWith('/') || seg.startsWith('\\')) {
+      throw new Error(`Invalid path segment: "${seg}" — path traversal is not allowed`)
+    }
+  }
+  const resolved = resolve(join(base, ...segments))
+  const resolvedBase = resolve(base)
+  if (!resolved.startsWith(resolvedBase + '/') && resolved !== resolvedBase) {
+    throw new Error(`Path "${resolved}" escapes base directory "${resolvedBase}"`)
+  }
+  return resolved
+}
 
 const AGENT_DIR = process.env.AGENT_DIR || '/app/agent'
 const PROJECT_ID = process.env.PROJECT_ID || 'unknown'
@@ -238,7 +258,12 @@ defineTool({
     const skillsDir = join(AGENT_DIR, 'skills')
     const name = input.name as string
     const filename = name.endsWith('.md') ? name : `${name}.md`
-    const filepath = join(skillsDir, filename)
+    let filepath: string
+    try {
+      filepath = safePath(skillsDir, filename)
+    } catch {
+      return { error: `Invalid skill name: "${name}"` }
+    }
 
     if (!existsSync(filepath)) {
       return { error: `Skill "${name}" not found` }
@@ -263,7 +288,12 @@ defineTool({
     const skillsDir = join(AGENT_DIR, 'skills')
     const name = input.name as string
     const filename = name.endsWith('.md') ? name : `${name}.md`
-    const filepath = join(skillsDir, filename)
+    let filepath: string
+    try {
+      filepath = safePath(skillsDir, filename)
+    } catch {
+      return { error: `Invalid skill name: "${name}"` }
+    }
 
     if (!existsSync(filepath)) {
       return { error: `Skill "${name}" not found` }
@@ -618,10 +648,14 @@ defineTool({
     const file = input.file as string
     let filepath: string
 
-    if (file === 'MEMORY.md') {
-      filepath = join(AGENT_DIR, 'MEMORY.md')
-    } else {
-      filepath = join(AGENT_DIR, 'memory', `${file}.md`)
+    try {
+      if (file === 'MEMORY.md') {
+        filepath = safePath(AGENT_DIR, 'MEMORY.md')
+      } else {
+        filepath = safePath(join(AGENT_DIR, 'memory'), `${file}.md`)
+      }
+    } catch {
+      return { error: `Invalid memory file name: "${file}"` }
     }
 
     if (!existsSync(filepath)) {
@@ -648,12 +682,16 @@ defineTool({
     const file = input.file as string
     let filepath: string
 
-    if (file === 'MEMORY.md') {
-      filepath = join(AGENT_DIR, 'MEMORY.md')
-    } else {
-      const memoryDir = join(AGENT_DIR, 'memory')
-      mkdirSync(memoryDir, { recursive: true })
-      filepath = join(memoryDir, `${file}.md`)
+    try {
+      if (file === 'MEMORY.md') {
+        filepath = safePath(AGENT_DIR, 'MEMORY.md')
+      } else {
+        const memoryDir = join(AGENT_DIR, 'memory')
+        mkdirSync(memoryDir, { recursive: true })
+        filepath = safePath(memoryDir, `${file}.md`)
+      }
+    } catch {
+      return { error: `Invalid memory file name: "${file}"` }
     }
 
     if (input.append && existsSync(filepath)) {

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Settings Page - Mobile (Expo)
  *
@@ -130,6 +132,7 @@ function TabBar({
       showsHorizontalScrollIndicator={false}
       className="border-b border-border"
       contentContainerClassName="px-4"
+      style={{ flexGrow: 0 }}
     >
       {items.map((item) => {
         const Icon = item.icon
@@ -684,6 +687,7 @@ function AccountTab() {
   const { user, signOut, updateUser } = useAuth()
   const http = useDomainHttp()
   const router = useRouter()
+  const { localMode } = usePlatformConfig()
 
   const [name, setName] = useState(user?.name || '')
   const [isSaving, setIsSaving] = useState(false)
@@ -1026,72 +1030,78 @@ function AccountTab() {
             </View>
           </View>
 
-          <Separator />
+          {!localMode && (
+            <>
+              <Separator />
 
-          {/* Delete account */}
-          <View className="px-6 py-5">
-            <View className="flex-row items-center justify-between">
-              <View className="flex-1 mr-4">
-                <Text className="text-sm font-semibold text-foreground">
-                  Delete account
-                </Text>
-                <Text className="text-sm text-muted-foreground mt-0.5">
-                  Permanently delete your Shogo account. This cannot be undone.
-                </Text>
-              </View>
-              <Button
-                variant="destructive"
-                size="sm"
-                onPress={() => setIsDeleteDialogOpen(true)}
-              >
-                Delete
-              </Button>
-            </View>
-            {isDeleteDialogOpen && (
-              <View className="mt-4 p-4 border border-destructive/30 rounded-lg bg-destructive/5">
-                <Text className="text-sm text-foreground font-medium">
-                  Are you sure? This action is irreversible.
-                </Text>
-                <Text className="text-sm text-muted-foreground mt-1">
-                  Type "DELETE" to confirm.
-                </Text>
-                <Input
-                  className="mt-2"
-                  value={deleteConfirmText}
-                  onChangeText={setDeleteConfirmText}
-                  placeholder='Type "DELETE"'
-                />
-                <View className="flex-row gap-2 mt-3">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onPress={() => {
-                      setIsDeleteDialogOpen(false)
-                      setDeleteConfirmText('')
-                    }}
-                    disabled={isDeleting}
-                  >
-                    Cancel
-                  </Button>
+              {/* Delete account */}
+              <View className="px-6 py-5">
+                <View className="flex-row items-center justify-between">
+                  <View className="flex-1 mr-4">
+                    <Text className="text-sm font-semibold text-foreground">
+                      Delete account
+                    </Text>
+                    <Text className="text-sm text-muted-foreground mt-0.5">
+                      Permanently delete your Shogo account. This cannot be undone.
+                    </Text>
+                  </View>
                   <Button
                     variant="destructive"
                     size="sm"
-                    onPress={handleDeleteAccount}
-                    disabled={deleteConfirmText !== 'DELETE' || isDeleting}
+                    onPress={() => setIsDeleteDialogOpen(true)}
                   >
-                    {isDeleting ? 'Deleting...' : 'Permanently delete'}
+                    Delete
                   </Button>
                 </View>
+                {isDeleteDialogOpen && (
+                  <View className="mt-4 p-4 border border-destructive/30 rounded-lg bg-destructive/5">
+                    <Text className="text-sm text-foreground font-medium">
+                      Are you sure? This action is irreversible.
+                    </Text>
+                    <Text className="text-sm text-muted-foreground mt-1">
+                      Type "DELETE" to confirm.
+                    </Text>
+                    <Input
+                      className="mt-2"
+                      value={deleteConfirmText}
+                      onChangeText={setDeleteConfirmText}
+                      placeholder='Type "DELETE"'
+                    />
+                    <View className="flex-row gap-2 mt-3">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onPress={() => {
+                          setIsDeleteDialogOpen(false)
+                          setDeleteConfirmText('')
+                        }}
+                        disabled={isDeleting}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onPress={handleDeleteAccount}
+                        disabled={deleteConfirmText !== 'DELETE' || isDeleting}
+                      >
+                        {isDeleting ? 'Deleting...' : 'Permanently delete'}
+                      </Button>
+                    </View>
+                  </View>
+                )}
               </View>
-            )}
-          </View>
+            </>
+          )}
         </CardContent>
       </Card>
 
       {/* Sign Out */}
-      <Button variant="destructive" onPress={handleSignOut} className="w-full">
-        Sign Out
-      </Button>
+      {!localMode && (
+        <Button variant="destructive" onPress={handleSignOut} className="w-full">
+          Sign Out
+        </Button>
+      )}
 
       {/* Save changes bar */}
       {hasChanges && (
@@ -1126,7 +1136,7 @@ function AccountTab() {
 // BILLING TAB — Lovable-style layout
 // ============================================================================
 
-function BillingTab() {
+const BillingTab = observer(function BillingTab() {
   const { user } = useAuth()
   const actions = useDomainActions()
   const currentWorkspace = useActiveWorkspace()
@@ -1414,7 +1424,7 @@ function BillingTab() {
       </View>
     </View>
   )
-}
+})
 
 // ============================================================================
 // PEOPLE TAB — Lovable-style workspace member management

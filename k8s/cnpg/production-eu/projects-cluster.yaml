@@ -89,5 +89,8 @@ spec:
       memory: "4Gi"
       cpu: "2000m"
 
+  # Pin to managed node group — never schedule on ephemeral Karpenter nodes
   affinity:
+    nodeSelector:
+      eks.amazonaws.com/nodegroup: shogo-production-eu-main
     topologyKey: kubernetes.io/hostname

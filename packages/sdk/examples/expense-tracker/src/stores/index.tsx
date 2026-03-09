@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import { createContext, useContext, useRef } from 'react'
 import { makeAutoObservable } from 'mobx'
 import { AuthStore, getAuthStore } from '../generated/auth'

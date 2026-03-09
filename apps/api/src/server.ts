@@ -1,5 +1,10 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import { csrf } from 'hono/csrf'
+import { secureHeaders } from 'hono/secure-headers'
+import { bodyLimit } from 'hono/body-limit'
 import Stripe from 'stripe'
 import { generateText, createUIMessageStream, createUIMessageStreamResponse, type ModelMessage } from 'ai'
 import { z } from 'zod'
@@ -50,8 +55,9 @@ import { createGeneratedRoutes } from './generated/routes'
 import { routeHooks } from './generated/hooks'
 import { prisma } from './lib/prisma'
 // Auth middleware for generated routes
-import { authMiddleware, requireAuth } from './middleware/auth'
+import { authMiddleware, requireAuth, requireProjectAccess } from './middleware/auth'
 import { tracingMiddleware } from './middleware/tracing'
+import { rateLimiter } from './middleware/rate-limit'
 
 // Runtime manager singleton for project Vite runtimes
 let runtimeManager: IRuntimeManager | null = null
@@ -625,6 +631,17 @@ const app = new Hono()
 // OpenTelemetry tracing — must be first middleware so all requests get spans
 app.use('*', tracingMiddleware)
 
+// Security headers — X-Content-Type-Options, X-Frame-Options, etc.
+app.use('*', secureHeaders({
+  xFrameOptions: 'SAMEORIGIN',
+  xContentTypeOptions: 'nosniff',
+  referrerPolicy: 'strict-origin-when-cross-origin',
+  crossOriginOpenerPolicy: 'same-origin',
+}))
+
+// Global request body size limit (10 MB default)
+app.use('*', bodyLimit({ maxSize: 10 * 1024 * 1024 }))
+
 // =============================================================================
 // Global Error Handling
 // =============================================================================
@@ -691,6 +708,29 @@ app.use('/*', cors({
   credentials: true,
 }))
 
+// CSRF protection — validates Origin header on state-changing requests (POST/PUT/PATCH/DELETE).
+// Skips webhook and internal endpoints that use their own auth (signatures, tokens).
+app.use('/api/*', csrf({
+  origin: (origin, c) => {
+    // Allow requests with no origin (server-to-server, mobile apps, curl)
+    if (!origin) return true
+    const isDevOrLocal = process.env.NODE_ENV !== 'production' || process.env.SHOGO_LOCAL_MODE === 'true'
+    if (isDevOrLocal && (origin === 'null' || origin.startsWith('http://localhost:') || origin.startsWith('shogo://'))) {
+      return true
+    }
+    if (isDevOrLocal && /^http:\/\/192\.168\.\d+\.\d+/.test(origin)) {
+      return true
+    }
+    return allowedOrigins.includes(origin)
+  },
+}))
+
+// Rate limiting — applied per-route group for different thresholds.
+// Defaults can be overridden via RATE_LIMIT_*_MAX and RATE_LIMIT_*_WINDOW_MS env vars.
+app.use('/api/auth/*', rateLimiter('auth', { max: Number(process.env.RATE_LIMIT_AUTH_MAX) || 60, windowMs: Number(process.env.RATE_LIMIT_AUTH_WINDOW_MS) || 60_000 }))
+app.use('/api/webhooks/*', rateLimiter('webhooks', { max: Number(process.env.RATE_LIMIT_WEBHOOKS_MAX) || 90, windowMs: Number(process.env.RATE_LIMIT_WEBHOOKS_WINDOW_MS) || 60_000 }))
+app.use('/api/*', rateLimiter('global', { max: Number(process.env.RATE_LIMIT_GLOBAL_MAX) || 600, windowMs: Number(process.env.RATE_LIMIT_GLOBAL_WINDOW_MS) || 60_000 }))
+
 // Better Auth handler - mounted BEFORE other /api/* routes
 // Handles all authentication endpoints: sign-up, sign-in, sign-out, session, OAuth callbacks, etc.
 app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
@@ -705,7 +745,9 @@ app.get('/api/config', async (c) => {
   let needsSetup = false
   if (localMode) {
     const userCount = await prisma.user.count()
-    needsSetup = userCount === 0
+    const hasAnthropicKey = !!process.env.ANTHROPIC_API_KEY
+    const hasLocalLlm = !!process.env.LOCAL_LLM_BASE_URL
+    needsSetup = userCount === 0 || (!hasAnthropicKey && !hasLocalLlm)
   }
   return c.json({
     localMode,
@@ -720,9 +762,39 @@ app.get('/api/config', async (c) => {
   })
 })
 
-// ── Local mode: API key management ──────────────────────────────────────────
+// ── Local mode: auto-sign-in + API key management ───────────────────────────
 if (process.env.SHOGO_LOCAL_MODE === 'true') {
   const localDb = prisma as any
+
+  // Auto-sign-in: creates a session for the single local user without credentials.
+  // Not gated by authMiddleware — this IS the auth mechanism for local mode.
+  app.post('/api/local/auto-sign-in', async (c) => {
+    try {
+      const user = await prisma.user.findFirst()
+      if (!user) {
+        return c.json({ ok: false, error: 'No local user found. Server may still be initializing.' }, 503)
+      }
+      const storedPw = await localDb.localConfig.findUnique({ where: { key: 'local_user_password' } })
+      if (!storedPw) {
+        return c.json({ ok: false, error: 'Local user password not found in config.' }, 500)
+      }
+      // Build a synthetic sign-in request and pass it through Better Auth's handler
+      // so session cookies are set correctly in the response.
+      const baseUrl = process.env.BETTER_AUTH_URL || `http://localhost:${API_PORT}`
+      const signInReq = new Request(`${baseUrl}/api/auth/sign-in/email`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...Object.fromEntries(c.req.raw.headers.entries()),
+        },
+        body: JSON.stringify({ email: user.email, password: storedPw.value }),
+      })
+      return auth.handler(signInReq)
+    } catch (err: any) {
+      console.error('[LocalMode] Auto-sign-in failed:', err)
+      return c.json({ ok: false, error: err.message }, 500)
+    }
+  })
 
   app.get('/api/local/api-keys', async (c) => {
     try {
@@ -825,7 +897,7 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
 
   // ── Local mode: model discovery ────────────────────────────────────────
   app.get('/api/local/models', async (c) => {
-    const baseUrl = c.req.query('baseUrl') || process.env.LOCAL_LLM_BASE_URL
+    const baseUrl = process.env.LOCAL_LLM_BASE_URL
     if (!baseUrl) {
       return c.json({ ok: false, error: 'No LLM base URL configured. Set LOCAL_LLM_BASE_URL first.', models: [] })
     }
@@ -1646,7 +1718,8 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     if (contentType) headers.set('content-type', contentType)
     const accept = c.req.header('accept')
     if (accept) headers.set('accept', accept)
-
+    const { deriveRuntimeToken } = await import('./lib/runtime-token')
+    headers.set('x-runtime-token', deriveRuntimeToken(projectId))
     const requestInit: RequestInit = { method: c.req.method, headers }
     if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
       requestInit.body = await c.req.arrayBuffer()
@@ -3036,7 +3109,15 @@ app.post('/api/projects/:projectId/chat/wake', async (c) => {
 
 // =============================================================================
 // Project Admin Routes (Kubernetes pod management)
+// Require super_admin role for all project admin endpoints
 // =============================================================================
+
+app.use('/api/admin/projects/*', authMiddleware, requireAuth, requireSuperAdmin)
+app.use('/api/admin/projects', authMiddleware, requireAuth, requireSuperAdmin)
+app.use('/api/admin/stats', authMiddleware, requireAuth, requireSuperAdmin)
+app.use('/api/admin/warm-pool', authMiddleware, requireAuth, requireSuperAdmin)
+app.use('/api/admin/warm-pool/*', authMiddleware, requireAuth, requireSuperAdmin)
+app.use('/api/admin/settings/*', authMiddleware, requireAuth, requireSuperAdmin)
 
 // GET /api/admin/projects - List all project pods
 app.get('/api/admin/projects', async (c) => {
@@ -4045,7 +4126,7 @@ app.post('/api/billing/checkout', async (c) => {
     }
 
     const body = await c.req.json()
-    const { workspaceId, planId, billingInterval, userEmail } = body
+    const { workspaceId, planId, billingInterval, userEmail, successUrl: clientSuccessUrl, cancelUrl: clientCancelUrl } = body
 
     if (!workspaceId || !planId || !billingInterval) {
       return c.json({ error: { code: 'invalid_request', message: 'Missing required fields' } }, 400)
@@ -4065,10 +4146,12 @@ app.post('/api/billing/checkout', async (c) => {
       billingInterval,
     }
 
-    // Include workspace ID in URLs for proper navigation after checkout
+    // Use client-provided URLs (native apps pass deep link URLs), fall back to web URLs
     const frontendUrl = getFrontendUrl()
-    const successUrl = `${frontendUrl}/?workspace=${workspaceId}&checkout=success&session_id={CHECKOUT_SESSION_ID}`
-    const cancelUrl = `${frontendUrl}/?workspace=${workspaceId}&checkout=canceled`
+    const successUrl = clientSuccessUrl
+      || `${frontendUrl}/?workspace=${workspaceId}&checkout=success&session_id={CHECKOUT_SESSION_ID}`
+    const cancelUrl = clientCancelUrl
+      || `${frontendUrl}/?workspace=${workspaceId}&checkout=canceled`
 
     // Create Stripe checkout session
     const session = await stripe.checkout.sessions.create({
@@ -4128,7 +4211,7 @@ app.post('/api/billing/workspace-checkout', async (c) => {
     }
 
     const body = await c.req.json()
-    const { workspaceName, planId, billingInterval, userEmail, userId } = body
+    const { workspaceName, planId, billingInterval, userEmail, userId, successUrl: clientSuccessUrl, cancelUrl: clientCancelUrl } = body
 
     if (!workspaceName || !planId || !billingInterval || !userId) {
       return c.json({ error: { code: 'invalid_request', message: 'Missing required fields: workspaceName, planId, billingInterval, userId' } }, 400)
@@ -4153,9 +4236,15 @@ app.post('/api/billing/workspace-checkout', async (c) => {
       billingInterval,
     }
 
+    // Use client-provided URLs (native apps pass deep link URLs), fall back to web URLs
+    // For workspace checkout, replace placeholder workspace ID in client URLs with the newly created one
     const frontendUrl = getFrontendUrl()
-    const successUrl = `${frontendUrl}/?workspace=${newWorkspaceId}&checkout=workspace_created&session_id={CHECKOUT_SESSION_ID}`
-    const cancelUrl = `${frontendUrl}/?workspace=${newWorkspaceId}&checkout=canceled`
+    const successUrl = clientSuccessUrl
+      ? clientSuccessUrl.replace('{WORKSPACE_ID}', newWorkspaceId)
+      : `${frontendUrl}/?workspace=${newWorkspaceId}&checkout=workspace_created&session_id={CHECKOUT_SESSION_ID}`
+    const cancelUrl = clientCancelUrl
+      ? clientCancelUrl.replace('{WORKSPACE_ID}', newWorkspaceId)
+      : `${frontendUrl}/?workspace=${newWorkspaceId}&checkout=canceled`
 
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
@@ -4298,7 +4387,11 @@ app.post('/api/webhooks/stripe', async (c) => {
 
     const payload = await c.req.text()
     const signature = c.req.header('stripe-signature') || ''
-    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || ''
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET
+    if (!webhookSecret) {
+      console.error('[Stripe] STRIPE_WEBHOOK_SECRET is not configured')
+      return c.json({ error: 'Webhook verification not configured' }, 500)
+    }
 
     let event: Stripe.Event
     try {
@@ -4652,6 +4745,10 @@ app.use('/api/*', authMiddleware)
 // Unauthenticated requests get 401 Unauthorized
 app.use('/api/*', requireAuth)
 
+// Require project membership for all project-scoped routes
+// Prevents authenticated users from accessing projects they don't belong to
+app.use('/api/projects/:projectId/*', requireProjectAccess)
+
 // =============================================================================
 // Leave Workspace - Removes the current user's membership from a workspace
 // =============================================================================
@@ -4926,7 +5023,7 @@ console.log(`   AI Proxy Health: GET  http://localhost:${API_PORT}/api/ai/proxy/
 console.log(`   CORS origin: http://localhost:${VITE_PORT}`)
 console.log(`   AI Providers: Anthropic=${!!process.env.ANTHROPIC_API_KEY}, OpenAI=${!!process.env.OPENAI_API_KEY}`)
 
-// Local mode: restore saved API keys on startup
+// Local mode: restore saved API keys and auto-seed default user on startup
 if (process.env.SHOGO_LOCAL_MODE === 'true') {
   setTimeout(async () => {
     try {
@@ -4939,6 +5036,34 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
       }
     } catch (err: any) {
       console.log('[LocalMode] Could not restore API keys (table may not exist yet):', err.message)
+    }
+
+    // Auto-seed the single local user if none exists
+    try {
+      const userCount = await prisma.user.count()
+      if (userCount === 0) {
+        const crypto = require('crypto') as typeof import('crypto')
+        const password = crypto.randomBytes(24).toString('base64')
+
+        const signUpRes = await auth.api.signUpEmail({
+          body: {
+            name: 'Local User',
+            email: 'local@shogo.local',
+            password,
+          },
+        })
+
+        if (signUpRes?.user) {
+          await (prisma as any).localConfig.upsert({
+            where: { key: 'local_user_password' },
+            update: { value: password },
+            create: { key: 'local_user_password', value: password },
+          })
+          console.log('[LocalMode] Auto-seeded default user local@shogo.local')
+        }
+      }
+    } catch (err: any) {
+      console.error('[LocalMode] Failed to auto-seed user:', err.message)
     }
   }, 1000)
 }

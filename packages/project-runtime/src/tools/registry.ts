@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import { FastMCP } from "fastmcp"
 import { registerTemplateList } from "./template.list"
 import { registerTemplateCopy } from "./template.copy"

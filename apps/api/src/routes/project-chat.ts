@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Project Chat Proxy Routes
  *
@@ -591,6 +593,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
       }
+
+      const { deriveRuntimeToken } = await import('../lib/runtime-token')
+      headers["x-runtime-token"] = deriveRuntimeToken(projectId)
 
       // Copy relevant headers from original request
       const authHeader = c.req.header("Authorization")

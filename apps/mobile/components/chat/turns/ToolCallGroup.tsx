@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * ToolCallGroup Component (React Native)
  *
@@ -96,11 +98,11 @@ export function ToolCallGroup({
         <View className="flex-1" />
 
         {hasStreaming ? (
-          <Loader2 className="w-3 h-3 text-exec-streaming" />
+          <Loader2 className="w-3 h-3 text-blue-400" />
         ) : hasErrors ? (
-          <XCircle className="w-3 h-3 text-exec-error" />
+          <XCircle className="w-3 h-3 text-red-500" />
         ) : allSuccess ? (
-          <CheckCircle2 className="w-3 h-3 text-exec-success" />
+          <CheckCircle2 className="w-3 h-3 text-green-500" />
         ) : null}
       </Pressable>
 

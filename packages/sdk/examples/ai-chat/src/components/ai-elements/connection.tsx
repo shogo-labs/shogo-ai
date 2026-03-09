@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import type { ConnectionLineComponent } from "@xyflow/react";
 
 const HALF = 0.5;

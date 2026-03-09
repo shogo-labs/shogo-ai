@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import type { UIMessage, UIMessagePart } from "ai";
 import { z } from "zod";
 import type { ArtifactKind } from "@/components/artifact";

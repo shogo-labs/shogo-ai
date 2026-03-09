@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Database Provisioning Service
  *
@@ -125,7 +127,6 @@ function getK8sCoreApi(): k8s.CoreV1Api {
             name: "in-cluster",
             server: host,
             caData: Buffer.from(ca).toString("base64"),
-            skipTLSVerify: true,
           },
         ],
         users: [{ name: "in-cluster", token }],
@@ -266,12 +267,18 @@ async function deleteCredentialsSecret(
 // Database Name Helpers
 // =============================================================================
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 /**
  * Convert a project UUID to a valid PostgreSQL database name.
  * PostgreSQL identifiers: max 63 chars, alphanumeric + underscore.
+ * Validates that projectId is a well-formed UUID to prevent SQL injection
+ * in dynamic identifier interpolation.
  */
 export function projectIdToDbName(projectId: string): string {
-  // Replace hyphens with underscores (UUIDs have hyphens)
+  if (!UUID_RE.test(projectId)) {
+    throw new Error(`Invalid project ID format: expected UUID, got "${projectId.slice(0, 40)}"`)
+  }
   const sanitized = projectId.replace(/-/g, "_")
   return `project_${sanitized}`
 }

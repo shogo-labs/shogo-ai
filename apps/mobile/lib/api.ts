@@ -1,18 +1,26 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import { Platform } from 'react-native'
 import { HttpClient } from '@shogo-ai/sdk'
 
 export const API_URL = (() => {
   const envUrl = process.env.EXPO_PUBLIC_API_URL
-  if (envUrl) return envUrl
 
   // Empty string means "same origin" (Docker/nginx proxy builds set EXPO_PUBLIC_API_URL="")
   if (envUrl === '' && Platform.OS === 'web' && typeof window !== 'undefined') {
     return window.location.origin
   }
 
+  // On web dev, ignore the env var (it's a LAN IP meant for physical mobile devices)
+  // and always use localhost so the browser can reach the API.
+  if (Platform.OS === 'web') {
+    return 'http://localhost:8002'
+  }
+
+  if (envUrl) return envUrl
+
   return Platform.select({
-    web: 'http://localhost:8002',
-    ios: 'http://localhost:8002',
+    ios: 'http://192.168.1.132:8002',
     android: 'http://192.168.1.132:8002',
     default: 'http://localhost:8002',
   })!

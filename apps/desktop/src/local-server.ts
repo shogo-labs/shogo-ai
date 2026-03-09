@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import { spawn, execSync, type ChildProcess } from 'child_process'
 import path from 'path'
 import { getBunPath, getApiDir, getDbPath, getWorkspacesDir, getProjectRoot } from './paths'

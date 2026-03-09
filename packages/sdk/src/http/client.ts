@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * HTTP Client
  *
@@ -220,13 +222,19 @@ export class HttpClient {
       const data = await this.parseResponse<T>(response)
 
       if (!response.ok) {
-        throw ShogoError.fromStatus(
-          response.status,
-          typeof data === 'object' && data !== null && 'message' in data
-            ? String((data as { message: string }).message)
-            : undefined,
-          data
-        )
+        let errorMessage: string | undefined
+        if (typeof data === 'object' && data !== null) {
+          const d = data as Record<string, unknown>
+          if ('message' in d && d.message) {
+            errorMessage = String(d.message)
+          } else if ('error' in d && typeof d.error === 'object' && d.error !== null) {
+            const err = d.error as Record<string, unknown>
+            if ('message' in err && err.message) {
+              errorMessage = String(err.message)
+            }
+          }
+        }
+        throw ShogoError.fromStatus(response.status, errorMessage, data)
       }
 
       return {

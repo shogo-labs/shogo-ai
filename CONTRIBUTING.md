@@ -1,6 +1,32 @@
 # Contributing to Shogo AI
 
-Contributions are welcome! This guide covers development setup and conventions.
+Contributions are welcome. This guide covers development setup, review
+expectations, and the legal requirements for contributing to the open source
+repository.
+
+## Before You Contribute
+
+### Contributor License Agreement
+
+Because Shogo is offered under both open source and commercial licensing
+models, all external contributors must agree to the project's Contributor
+License Agreement before a pull request can be merged.
+
+By contributing, you confirm that:
+
+- You wrote the contribution yourself or have the right to submit it
+- You are allowed to license the contribution to Shogo Technologies, Inc.
+- You agree that your contribution may be redistributed under the repository
+  license and used in commercial editions of Shogo
+
+The agreement text lives in `CLA.md`. Pull requests may be blocked until the
+required CLA check is satisfied.
+
+### Community Expectations
+
+Please keep contributions focused, well-scoped, and documented. Security issues
+should be reported privately according to `SECURITY.md`, not filed as public
+issues.
 
 ## Development Setup
 
@@ -19,6 +45,13 @@ bun install
 bun run build
 bun run test
 ```
+
+Before opening a pull request, make sure you have read:
+
+- `LICENSE`
+- `CLA.md`
+- `SECURITY.md`
+- `TRADEMARK.md`
 
 ## Code Style
 
@@ -65,10 +98,11 @@ Before submitting:
 
 1. Create a feature branch from `main`
 2. Make changes
-3. Run: `bun run test`
-4. Run: `bun run typecheck`
-5. Run: `bun run build`
-6. All must pass
+3. Ensure the CLA requirement is satisfied
+4. Run: `bun run test`
+5. Run: `bun run typecheck`
+6. Run: `bun run build`
+7. All must pass
 
 ### PR Guidelines
 
@@ -76,6 +110,9 @@ Before submitting:
 - Write clear commit messages
 - Include tests for new features
 - Update docs if needed
+- Keep pull requests narrowly scoped
+- Describe any schema, env, or deployment changes
+- Confirm whether the change affects self-hosting, cloud-only behavior, or the SDK
 
 ### Commit Messages
 
@@ -100,3 +137,5 @@ docs: update ARCHITECTURE.md
 - [Getting Started](docs/GETTING_STARTED.md) — Setup guide
 - [Architecture](docs/ARCHITECTURE.md) — System design
 - [CLAUDE.md](CLAUDE.md) — Project vision
+- [Security Policy](SECURITY.md)
+- [Trademark Policy](TRADEMARK.md)

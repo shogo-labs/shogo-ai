@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, test, expect } from 'bun:test'
 import { parseSlashCommand, isSlashCommand } from '../slash-commands'
 import type { SlashCommandContext } from '../slash-commands'

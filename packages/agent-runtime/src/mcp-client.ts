@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * MCP Client Manager
  *
@@ -17,6 +19,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { Type } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPackages } from './mcp-catalog'
+import { getSanitizedEnv } from './sandbox-exec'
 
 const MAX_MCP_SERVERS = 10
 const MCP_CONNECT_TIMEOUT_MS = 90_000
@@ -234,7 +237,7 @@ export class MCPClientManager {
       transport = new StdioClientTransport({
         command: config.command,
         args: config.args,
-        env: { ...process.env, HOME: writableHome, npm_config_cache: join(writableHome, '.npm'), ...config.env } as Record<string, string>,
+        env: { ...getSanitizedEnv(), HOME: writableHome, npm_config_cache: join(writableHome, '.npm'), ...config.env } as Record<string, string>,
         cwd: config.cwd || writableHome,
         stderr: 'pipe',
       })

@@ -75,6 +75,10 @@ class AgentRuntimeUser(HttpUser):
 
     def on_start(self):
         self.auth = AuthManager(self.host)
+        self._origin = self.host.rstrip("/")
+        self._headers = {"Origin": self._origin}
+        if config.LOAD_TEST_SECRET:
+            self._headers["X-Load-Test-Key"] = config.LOAD_TEST_SECRET
         self.user_id = random.randint(300000, 999999)
         self.project_id = None
         self.agent_proxy_base = None
@@ -99,6 +103,7 @@ class AgentRuntimeUser(HttpUser):
         for attempt in range(1, max_attempts + 1):
             with self.client.get(
                 "/api/workspaces",
+                headers=self._headers,
                 catch_response=True,
                 name="/api/workspaces",
             ) as resp:
@@ -137,6 +142,7 @@ class AgentRuntimeUser(HttpUser):
                 "workspaceId": self.workspace_id,
                 "type": "AGENT",
             },
+            headers=self._headers,
             catch_response=True,
             name="/api/projects [create-agent]",
         ) as resp:
@@ -166,6 +172,7 @@ class AgentRuntimeUser(HttpUser):
         t1 = time.time()
         with self.client.get(
             f"/api/projects/{self.project_id}/sandbox/url?wait=true",
+            headers=self._headers,
             catch_response=True,
             name="/api/projects/:id/sandbox/url [wait=true]",
             timeout=120,
@@ -201,6 +208,7 @@ class AgentRuntimeUser(HttpUser):
         t2 = time.time()
         with self.client.get(
             f"{self.agent_proxy_base}/health",
+            headers=self._headers,
             catch_response=True,
             name="agent-proxy/health [first]",
             timeout=10,
@@ -227,6 +235,7 @@ class AgentRuntimeUser(HttpUser):
         while gateway_elapsed < gateway_timeout:
             with self.client.get(
                 f"{self.agent_proxy_base}/agent/status",
+                headers=self._headers,
                 catch_response=True,
                 name="agent-proxy/agent/status [gateway-poll]",
                 timeout=5,
@@ -286,6 +295,7 @@ class AgentRuntimeUser(HttpUser):
             return
         with self.client.get(
             f"{self.agent_proxy_base}/health",
+            headers=self._headers,
             catch_response=True,
             name="agent-proxy/health",
             timeout=5,
@@ -306,6 +316,7 @@ class AgentRuntimeUser(HttpUser):
             return
         with self.client.get(
             f"{self.agent_proxy_base}/agent/status",
+            headers=self._headers,
             catch_response=True,
             name="agent-proxy/agent/status",
             timeout=5,
@@ -322,6 +333,7 @@ class AgentRuntimeUser(HttpUser):
             return
         with self.client.get(
             f"{self.agent_proxy_base}/ready",
+            headers=self._headers,
             catch_response=True,
             name="agent-proxy/ready",
             timeout=5,
@@ -345,6 +357,7 @@ class AgentRuntimeUser(HttpUser):
         filename = random.choice(files)
         with self.client.get(
             f"{self.agent_proxy_base}/agent/files/{filename}",
+            headers=self._headers,
             catch_response=True,
             name="agent-proxy/agent/files/:name [read]",
             timeout=5,
@@ -363,6 +376,7 @@ class AgentRuntimeUser(HttpUser):
         with self.client.put(
             f"{self.agent_proxy_base}/agent/files/MEMORY.md",
             json={"content": content},
+            headers=self._headers,
             catch_response=True,
             name="agent-proxy/agent/files/:name [write]",
             timeout=5,
@@ -374,22 +388,6 @@ class AgentRuntimeUser(HttpUser):
 
     # ── Catalog / Templates / Recipes (read-only) ────────────────────
 
-    @task(5)
-    @tag("catalog")
-    def get_mcp_catalog(self):
-        if not self._can_run():
-            return
-        with self.client.get(
-            f"{self.agent_proxy_base}/agent/mcp-catalog",
-            catch_response=True,
-            name="agent-proxy/agent/mcp-catalog",
-            timeout=5,
-        ) as resp:
-            if resp.status_code == 200:
-                resp.success()
-            else:
-                resp.failure(f"MCP catalog: {resp.status_code}")
-
     @task(3)
     @tag("catalog")
     def get_templates(self):
@@ -397,6 +395,7 @@ class AgentRuntimeUser(HttpUser):
             return
         with self.client.get(
             f"{self.agent_proxy_base}/agent/templates",
+            headers=self._headers,
             catch_response=True,
             name="agent-proxy/agent/templates",
             timeout=5,
@@ -413,6 +412,7 @@ class AgentRuntimeUser(HttpUser):
             return
         with self.client.get(
             f"{self.agent_proxy_base}/agent/recipes",
+            headers=self._headers,
             catch_response=True,
             name="agent-proxy/agent/recipes",
             timeout=5,
@@ -429,6 +429,7 @@ class AgentRuntimeUser(HttpUser):
             return
         with self.client.get(
             f"{self.agent_proxy_base}/agent/bundled-skills",
+            headers=self._headers,
             catch_response=True,
             name="agent-proxy/agent/bundled-skills",
             timeout=5,
@@ -447,6 +448,7 @@ class AgentRuntimeUser(HttpUser):
             return
         with self.client.get(
             f"{self.agent_proxy_base}/agent/dynamic-app/state",
+            headers=self._headers,
             catch_response=True,
             name="agent-proxy/agent/dynamic-app/state",
             timeout=5,
@@ -469,6 +471,7 @@ class AgentRuntimeUser(HttpUser):
                 "context": {"button": "submit"},
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
             },
+            headers=self._headers,
             catch_response=True,
             name="agent-proxy/agent/dynamic-app/action",
             timeout=5,
@@ -487,6 +490,7 @@ class AgentRuntimeUser(HttpUser):
             return
         with self.client.get(
             f"{self.agent_proxy_base}/console-log",
+            headers=self._headers,
             catch_response=True,
             name="agent-proxy/console-log [read]",
             timeout=5,
@@ -504,6 +508,7 @@ class AgentRuntimeUser(HttpUser):
         with self.client.post(
             f"{self.agent_proxy_base}/console-log/append",
             json={"line": f"[load-test] ping at {time.time()}"},
+            headers=self._headers,
             catch_response=True,
             name="agent-proxy/console-log [append]",
             timeout=5,
@@ -522,6 +527,7 @@ class AgentRuntimeUser(HttpUser):
             return
         with self.client.get(
             f"{self.agent_proxy_base}/agent/export",
+            headers=self._headers,
             catch_response=True,
             name="agent-proxy/agent/export",
             timeout=10,
@@ -544,6 +550,7 @@ class AgentRuntimeUser(HttpUser):
             return
         with self.client.get(
             f"{self.agent_proxy_base}/agent/chat/history",
+            headers=self._headers,
             catch_response=True,
             name="agent-proxy/agent/chat/history",
             timeout=10,
@@ -583,6 +590,7 @@ class AgentRuntimeUser(HttpUser):
                 ],
                 "agentMode": "basic",
             },
+            headers=self._headers,
             catch_response=True,
             name="agent-proxy/agent/chat",
             timeout=120,
@@ -637,6 +645,7 @@ class AgentRuntimeUser(HttpUser):
                 ],
                 "agentMode": "basic",
             },
+            headers=self._headers,
             catch_response=True,
             name="/api/projects/:id/chat [build]",
             timeout=120,
@@ -659,6 +668,7 @@ class AgentRuntimeUser(HttpUser):
             return
         with self.client.post(
             f"{self.agent_proxy_base}/agent/heartbeat/trigger",
+            headers=self._headers,
             catch_response=True,
             name="agent-proxy/agent/heartbeat/trigger",
             timeout=60,

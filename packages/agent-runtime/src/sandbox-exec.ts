@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Docker Sandbox Execution
  *
@@ -12,10 +14,115 @@
 import { execSync } from 'child_process'
 import type { SandboxConfig } from './types'
 
+// Project-scoped env vars that are safe for the agent to read.
+// These are derived per-project (HMAC of projectId + signing secret),
+// so even if the agent reads them, the blast radius is zero.
+const PROJECT_SCOPED_SAFE = new Set([
+  'RUNTIME_AUTH_SECRET',
+  'WEBHOOK_TOKEN',
+])
+
+// Env vars that must never leak to agent-spawned child processes.
+// Patterns are matched case-insensitively against env var names.
+// Defense-in-depth: even if purgeSecretsFromEnv() already removed them from
+// process.env, this list catches anything that was re-injected or missed.
+const REDACTED_ENV_PATTERNS = [
+  /^BETTER_AUTH_SECRET$/i,
+  /^AI_PROXY_SECRET$/i,
+  /^PREVIEW_TOKEN_SECRET$/i,
+  /^ANTHROPIC_API_KEY$/i,
+  /^OPENAI_API_KEY$/i,
+  /^STRIPE_SECRET_KEY$/i,
+  /^STRIPE_WEBHOOK_SECRET$/i,
+  /^GH_APP_CLIENT_SECRET$/i,
+  /^GH_APP_PRIVATE_KEY$/i,
+  /^GH_APP_WEBHOOK_SECRET$/i,
+  /^COMPOSIO_API_KEY$/i,
+  /^SERPER_API_KEY$/i,
+  /^GOOGLE_CLIENT_SECRET$/i,
+  /^AWS_SECRET_ACCESS_KEY$/i,
+  /^DATABASE_URL$/i,
+  /^PROJECTS_DATABASE_URL$/i,
+  /SECRET/i,
+  /PRIVATE_KEY/i,
+  /INGESTION_KEY/i,
+  /_TOKEN$/i,
+  /API_KEY$/i,
+]
+
+function isRedacted(key: string): boolean {
+  if (PROJECT_SCOPED_SAFE.has(key)) return false
+  return REDACTED_ENV_PATTERNS.some((p) => p.test(key))
+}
+
+// Keys to capture into JS variables then delete from process.env.
+// After purgeSecretsFromEnv() runs, these are no longer visible to
+// child processes, `env`, `printenv`, or `echo $VAR`.
+const PURGE_KEYS = [
+  'BETTER_AUTH_SECRET',
+  'AI_PROXY_SECRET',
+  'PREVIEW_TOKEN_SECRET',
+  'ANTHROPIC_API_KEY',
+  'OPENAI_API_KEY',
+  'STRIPE_SECRET_KEY',
+  'STRIPE_WEBHOOK_SECRET',
+  'GH_APP_CLIENT_SECRET',
+  'GH_APP_PRIVATE_KEY',
+  'GH_APP_WEBHOOK_SECRET',
+  'COMPOSIO_API_KEY',
+  'SERPER_API_KEY',
+  'GOOGLE_CLIENT_SECRET',
+  'AWS_SECRET_ACCESS_KEY',
+  'DATABASE_URL',
+  'PROJECTS_DATABASE_URL',
+  'SIGNOZ_INGESTION_KEY',
+]
+
+const capturedSecrets = new Map<string, string>()
+
+/**
+ * Capture secrets into memory then delete them from process.env.
+ * Call once at startup, after all modules that read env directly have loaded.
+ * Captured values are retrievable via getCapturedSecret().
+ */
+export function purgeSecretsFromEnv(): void {
+  for (const key of PURGE_KEYS) {
+    const val = process.env[key]
+    if (val !== undefined) {
+      capturedSecrets.set(key, val)
+      delete process.env[key]
+    }
+  }
+  // Also purge any remaining env vars that match the broad patterns
+  for (const key of Object.keys(process.env)) {
+    if (isRedacted(key)) {
+      if (!capturedSecrets.has(key) && process.env[key] !== undefined) {
+        capturedSecrets.set(key, process.env[key]!)
+      }
+      delete process.env[key]
+    }
+  }
+}
+
+/** Retrieve a secret that was captured before purging. */
+export function getCapturedSecret(key: string): string | undefined {
+  return capturedSecrets.get(key)
+}
+
+export function getSanitizedEnv(): NodeJS.ProcessEnv {
+  const clean: NodeJS.ProcessEnv = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!isRedacted(key)) {
+      clean[key] = value
+    }
+  }
+  return clean
+}
+
 const DEFAULT_SANDBOX: SandboxConfig = {
-  enabled: false,
+  enabled: process.env.SANDBOX_EXEC_ENABLED === 'true' || !!process.env.KUBERNETES_SERVICE_HOST,
   mode: 'non-main',
-  image: 'ubuntu:22.04',
+  image: process.env.SANDBOX_IMAGE || 'ubuntu:22.04',
   networkEnabled: false,
   memoryLimit: '256m',
   cpuLimit: '0.5',
@@ -66,6 +173,9 @@ export function sandboxExec(opts: SandboxExecOptions): SandboxExecResult {
     '-w', '/workspace',
     '--memory', config.memoryLimit,
     '--cpus', config.cpuLimit,
+    '--pids-limit', '256',
+    '--cap-drop', 'ALL',
+    '--security-opt', 'no-new-privileges',
   ]
 
   if (!config.networkEnabled) {
@@ -79,6 +189,7 @@ export function sandboxExec(opts: SandboxExecOptions): SandboxExecResult {
       timeout: opts.timeout || 30000,
       encoding: 'utf-8',
       maxBuffer: 1024 * 1024,
+      env: getSanitizedEnv(),
     })
     return { stdout: stdout.trim(), stderr: '', exitCode: 0, sandboxed: true }
   } catch (err: any) {
@@ -98,6 +209,7 @@ function nativeExec(command: string, cwd: string, timeout?: number): SandboxExec
       timeout: timeout || 30000,
       encoding: 'utf-8',
       maxBuffer: 1024 * 1024,
+      env: getSanitizedEnv(),
     })
     return { stdout: stdout.trim(), stderr: '', exitCode: 0, sandboxed: false }
   } catch (err: any) {

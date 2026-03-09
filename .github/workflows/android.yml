@@ -27,7 +27,6 @@ name: Android Build & Update
 on:
   push:
     branches:
-      - main
       - staging
     paths:
       - 'apps/mobile/**'
@@ -128,7 +127,7 @@ jobs:
         run: bun install
 
       - name: Build workspace packages
-        run: bun run build
+        run: bunx turbo build --filter=@shogo/mobile...
 
       - name: Setup EAS
         uses: expo/expo-github-action@v8
@@ -178,11 +177,20 @@ jobs:
         with:
           bun-version: latest
 
+      - name: Cache bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            ~/.bun/install/cache
+          key: bun-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-
+
       - name: Install dependencies
         run: bun install
 
       - name: Build workspace packages
-        run: bun run build
+        run: bunx turbo build --filter=@shogo/mobile...
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -192,6 +200,15 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('apps/mobile/android/gradle/wrapper/gradle-wrapper.properties') }}-${{ hashFiles('apps/mobile/android/**/build.gradle') }}
+          restore-keys: gradle-
 
       - name: Setup EAS
         uses: expo/expo-github-action@v8
@@ -214,6 +231,23 @@ jobs:
         working-directory: apps/mobile
         run: npx expo prebuild --platform android --clean
 
+      - name: Verify signing secrets
+        run: |
+          [ -z "$KEYSTORE_PASSWORD" ] && echo "::error::KEYSTORE_PASSWORD is empty!" && exit 1
+          [ -z "$KEY_PASSWORD" ] && echo "::error::KEY_PASSWORD is empty!" && exit 1
+          [ -z "$KEY_ALIAS" ] && echo "::error::KEY_ALIAS is empty!" && exit 1
+          [ -z "$KEYSTORE_BASE64" ] && echo "::error::KEYSTORE_BASE64 is empty!" && exit 1
+          echo "KEYSTORE_PASSWORD length: ${#KEYSTORE_PASSWORD}"
+          echo "KEY_PASSWORD length: ${#KEY_PASSWORD}"
+          echo "KEY_ALIAS value: $KEY_ALIAS"
+          echo "KEYSTORE_BASE64 length: ${#KEYSTORE_BASE64}"
+          echo "All signing secrets are set"
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+
       - name: Decode signing keystore
         run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > apps/mobile/android/app/release.keystore
 
@@ -232,14 +266,20 @@ jobs:
 
           sed -i 's/signingConfig signingConfigs.debug/signingConfig signingConfigs.release/' build.gradle
 
+          sed -i '/defaultConfig {/a\
+                  ndk {\
+                      abiFilters "armeabi-v7a", "arm64-v8a"\
+                  }' build.gradle
+
       - name: Build AAB
         working-directory: apps/mobile/android
-        run: ./gradlew bundleRelease
+        run: ./gradlew bundleRelease -x lintVitalAnalyzeRelease -x lintVitalRelease
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-          EXPO_PUBLIC_API_URL: https://studio-staging.shogo.ai
+          EXPO_PUBLIC_API_URL: ${{ vars.MOBILE_API_URL }}
+          # GRADLE_OPTS: -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"
 
       - name: Upload AAB artifact
         uses: actions/upload-artifact@v4

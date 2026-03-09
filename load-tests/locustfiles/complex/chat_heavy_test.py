@@ -33,6 +33,10 @@ class ChatHeavyUser(HttpUser):
     def on_start(self):
         """Authenticate, get workspace, create agent project."""
         self.auth = AuthManager(self.host)
+        self._origin = self.host.rstrip("/")
+        self._headers = {"Origin": self._origin}
+        if config.LOAD_TEST_SECRET:
+            self._headers["X-Load-Test-Key"] = config.LOAD_TEST_SECRET
         self.user_id = random.randint(100000, 999999)
         self.project_id = None
         self.workspace_id = None
@@ -47,6 +51,7 @@ class ChatHeavyUser(HttpUser):
         # Get workspace
         with self.client.get(
             "/api/workspaces",
+            headers=self._headers,
             catch_response=True,
             name="/api/workspaces",
         ) as resp:
@@ -71,6 +76,7 @@ class ChatHeavyUser(HttpUser):
                 "workspaceId": self.workspace_id,
                 "type": "AGENT",
             },
+            headers=self._headers,
             catch_response=True,
             name="/api/projects [create-agent]",
         ) as resp:
@@ -117,6 +123,7 @@ class ChatHeavyUser(HttpUser):
                 "chatSessionId": self.session_id,
                 "agentMode": "basic",
             },
+            headers=self._headers,
             catch_response=True,
             name="/projects/:id/chat [message]",
             timeout=120,
@@ -139,6 +146,7 @@ class ChatHeavyUser(HttpUser):
 
         with self.client.get(
             f"/api/projects/{self.project_id}/chat/status",
+            headers=self._headers,
             catch_response=True,
             name="/projects/:id/chat/status",
             timeout=10,

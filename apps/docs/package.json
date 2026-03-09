@@ -2,6 +2,7 @@
   "name": "@shogo/docs",
   "version": "0.0.1",
   "private": true,
+  "license": "CC-BY-4.0",
   "scripts": {
     "dev": "docusaurus start --port 3002",
     "build": "docusaurus build",

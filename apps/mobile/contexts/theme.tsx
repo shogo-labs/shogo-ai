@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
 import { Platform } from 'react-native'
 import * as SecureStore from 'expo-secure-store'

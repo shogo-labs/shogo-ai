@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Claude Code V2 SDK session lifecycle management.
  * Shared between project-runtime and agent-runtime.
