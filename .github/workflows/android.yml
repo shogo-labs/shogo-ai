@@ -78,13 +78,15 @@ jobs:
         id: fingerprint
         working-directory: apps/mobile
         run: |
-          RUNTIME_VERSION=$(npx expo-updates runtimeversion:resolve --platform android 2>/dev/null || echo "")
+          RAW=$(npx expo-updates runtimeversion:resolve --platform android 2>/dev/null || echo "")
 
-          if [ -z "$RUNTIME_VERSION" ]; then
+          if [ -z "$RAW" ]; then
             echo "Could not resolve runtime version"
             echo "runtime_version=unknown" >> $GITHUB_OUTPUT
           else
-            echo "Runtime version (fingerprint): $RUNTIME_VERSION"
+            RUNTIME_VERSION=$(echo "$RAW" | sha256sum | cut -d' ' -f1)
+            echo "Raw output: $RAW"
+            echo "Fingerprint hash: $RUNTIME_VERSION"
             echo "runtime_version=$RUNTIME_VERSION" >> $GITHUB_OUTPUT
           fi
 
@@ -309,7 +311,8 @@ jobs:
         run: |
           RUNTIME_VERSION="${{ needs.check-fingerprint.outputs.runtime_version }}"
           if [ -z "$RUNTIME_VERSION" ] || [ "$RUNTIME_VERSION" = "unknown" ]; then
-            RUNTIME_VERSION=$(cd apps/mobile && npx expo-updates runtimeversion:resolve --platform android 2>/dev/null || echo "manual-build")
+            RAW=$(cd apps/mobile && npx expo-updates runtimeversion:resolve --platform android 2>/dev/null || echo "manual-build")
+            RUNTIME_VERSION=$(echo "$RAW" | sha256sum | cut -d' ' -f1)
           fi
           echo "$RUNTIME_VERSION" > .fingerprint-android
 
