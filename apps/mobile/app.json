@@ -7,7 +7,7 @@
     "icon": "./assets/icon.png",
     "scheme": "shogo",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": false,
+    "newArchEnabled": true,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",

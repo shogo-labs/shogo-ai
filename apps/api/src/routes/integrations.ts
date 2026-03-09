@@ -175,6 +175,7 @@ export function integrationRoutes() {
         toolkit: acc.toolkit?.slug ?? acc.appName ?? acc.app_name ?? 'unknown',
         status: acc.status,
         createdAt: acc.createdAt || acc.created_at,
+        accountIdentifier: acc.memberEmailId ?? acc.metadata?.email ?? acc.connectionParams?.user_email ?? null,
       }))
 
       return c.json({ ok: true, data: connections })

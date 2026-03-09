@@ -218,13 +218,16 @@ jobs:
 
       - name: Set versionCode from run number
         working-directory: apps/mobile
+        env:
+          VERSION_CODE_OFFSET: 100
         run: |
           node -e "
             const fs = require('fs');
             const appJson = JSON.parse(fs.readFileSync('app.json', 'utf8'));
-            appJson.expo.android.versionCode = ${{ github.run_number }};
+            const versionCode = ${{ github.run_number }} + parseInt(process.env.VERSION_CODE_OFFSET);
+            appJson.expo.android.versionCode = versionCode;
             fs.writeFileSync('app.json', JSON.stringify(appJson, null, 2) + '\n');
-            console.log('Set versionCode to ${{ github.run_number }}');
+            console.log('Set versionCode to ' + versionCode);
           "
 
       - name: Expo Prebuild
