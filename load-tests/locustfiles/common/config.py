@@ -15,7 +15,6 @@ class Config:
     
     # Target URLs
     API_BASE_URL = os.getenv("API_BASE_URL", "https://api-staging.shogo.ai")
-    MCP_BASE_URL = os.getenv("MCP_BASE_URL", "https://mcp-staging.shogo.ai")
     WEB_BASE_URL = os.getenv("WEB_BASE_URL", "https://studio-staging.shogo.ai")
     
     # Test settings
@@ -27,6 +26,9 @@ class Config:
     TEST_USER_PREFIX = os.getenv("TEST_USER_PREFIX", "loadtest-user")
     TEST_USER_PASSWORD = os.getenv("TEST_USER_PASSWORD", "LoadTest123!")
     
+    # Load test bypass key (skips rate limiting when set on both client and server)
+    LOAD_TEST_SECRET = os.getenv("LOAD_TEST_SECRET", "")
+
     # Thresholds
     MAX_RESPONSE_TIME_P95 = int(os.getenv("MAX_RESPONSE_TIME_P95", "2000"))
     MAX_RESPONSE_TIME_P99 = int(os.getenv("MAX_RESPONSE_TIME_P99", "5000"))

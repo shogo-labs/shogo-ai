@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import { observer } from 'mobx-react-lite'
 import { useStores } from '../stores'
 import { LoginPage } from './LoginPage'

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Warm Pool Controller
  *
@@ -95,6 +97,7 @@ const PROMOTED_POD_GC_MAX_IDLE_EVICTIONS_PER_CYCLE = 10
 // and delete ones that have no matching project in the DB.
 const NAMESPACE_GC_INTERVAL_CYCLES = parseInt(process.env.NAMESPACE_GC_INTERVAL_CYCLES || '10', 10) // every N reconcile cycles
 const NAMESPACE_GC_MAX_DELETIONS_PER_CYCLE = 50
+const NAMESPACE_GC_CREATION_GRACE_MS = 5 * 60 * 1000 // skip services created within the last 5 minutes
 
 const POOL_PROJECT_ID = '__POOL__'
 const POOL_LABEL_KEY = 'shogo.io/warm-pool'
@@ -152,10 +155,7 @@ function getKubeConfig(): k8s.KubeConfig {
   const tokenPath = `${serviceAccountDir}/token`
 
   if (fs.existsSync(caPath) && fs.existsSync(tokenPath)) {
-    // @kubernetes/client-node's skipTLSVerify doesn't reliably propagate
-    // in bun's fetch runtime; enforce at the process level for K8s API calls.
-    process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
-
+    const ca = fs.readFileSync(caPath, 'utf8')
     const token = fs.readFileSync(tokenPath, 'utf8')
     const host = `https://${process.env.KUBERNETES_SERVICE_HOST}:${process.env.KUBERNETES_SERVICE_PORT}`
 
@@ -164,7 +164,7 @@ function getKubeConfig(): k8s.KubeConfig {
         {
           name: 'in-cluster',
           server: host,
-          skipTLSVerify: true,
+          caData: Buffer.from(ca).toString('base64'),
         },
       ],
       users: [{ name: 'in-cluster', token }],
@@ -1106,6 +1106,7 @@ export class WarmPoolController {
         name: string
         projectId: string | null
         replicas: number
+        createdAt: number
       }[] = []
 
       for (const svc of allServices) {
@@ -1133,8 +1134,11 @@ export class WarmPoolController {
         }
 
         const replicas = status.actualReplicas ?? 0
+        const createdAt = svc.metadata?.creationTimestamp
+          ? new Date(svc.metadata.creationTimestamp).getTime()
+          : 0
 
-        candidateServices.push({ name, projectId, replicas })
+        candidateServices.push({ name, projectId, replicas, createdAt })
       }
 
       if (candidateServices.length === 0) return 0
@@ -1162,18 +1166,21 @@ export class WarmPoolController {
       // Collect DB mappings to clear for scaled-to-zero services
       const dbMappingsToClear: string[] = []
 
+      const now = Date.now()
+
       for (const svc of candidateServices) {
         if (deleted >= NAMESPACE_GC_MAX_DELETIONS_PER_CYCLE) break
 
         const isOrphan = !activeServiceNames.has(svc.name) &&
                          !(svc.projectId && activeProjectIds.has(svc.projectId))
         const isScaledToZero = svc.replicas === 0
+        const isRecentlyCreated = svc.createdAt > 0 && (now - svc.createdAt) < NAMESPACE_GC_CREATION_GRACE_MS
 
-        if (isOrphan) {
+        if (isOrphan && !isRecentlyCreated) {
           console.log(
             `[WarmPool GC:namespace] Deleting orphaned service ${svc.name} (project ${svc.projectId || 'unknown'} not in DB)`
           )
-        } else if (isScaledToZero) {
+        } else if (isScaledToZero && !isRecentlyCreated) {
           console.log(
             `[WarmPool GC:namespace] Deleting scaled-to-zero service ${svc.name} (project ${svc.projectId || 'unknown'} — warm pool will handle next visit)`
           )
@@ -1181,7 +1188,7 @@ export class WarmPoolController {
             dbMappingsToClear.push(svc.name)
           }
         } else {
-          // Service is running (replicas > 0) and has a valid DB mapping — leave it
+          // Service is running, recently created (still starting), or has a valid DB mapping — leave it
           continue
         }
 
@@ -1278,6 +1285,11 @@ export class WarmPoolController {
     } else {
       console.log(`[WarmPool] buildProjectEnv: skipping DB provisioning for AGENT project`)
     }
+
+    // Per-project runtime auth tokens (deterministic — derived from signing secret + projectId)
+    const { deriveRuntimeToken, deriveWebhookToken } = await import('./runtime-token')
+    env.RUNTIME_AUTH_SECRET = deriveRuntimeToken(projectId)
+    env.WEBHOOK_TOKEN = deriveWebhookToken(projectId)
 
     // S3 config
     if (process.env.S3_WORKSPACES_BUCKET) {

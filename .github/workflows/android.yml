@@ -292,7 +292,12 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+<<<<<<< HEAD
           EXPO_PUBLIC_API_URL: https://studio-staging.shogo.ai
+=======
+          EXPO_PUBLIC_API_URL: ${{ vars.MOBILE_API_URL }}
+          # GRADLE_OPTS: -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"
+>>>>>>> staging
 
       - name: Upload AAB artifact
         uses: actions/upload-artifact@v4

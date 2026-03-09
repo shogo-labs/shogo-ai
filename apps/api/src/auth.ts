@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Better Auth Server Configuration
  * Task: task-ba-006, task-org-002
@@ -19,6 +21,11 @@ import { sendWelcomeEmail, sendPasswordResetEmail, sendEmailVerificationEmail } 
 import { prisma } from "./lib/prisma"
 
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
+const LOAD_TEST_SECRET = process.env.LOAD_TEST_SECRET
+
+function isLoadTestBypass(request: Request): boolean {
+  return !!(LOAD_TEST_SECRET && request?.headers?.get?.('x-load-test-key') === LOAD_TEST_SECRET)
+}
 
 function createAuthDatabase() {
   if (isLocalMode) {
@@ -29,9 +36,9 @@ function createAuthDatabase() {
   const { Pool } = require('pg')
   return new Pool({
     connectionString: process.env.DATABASE_URL,
-    max: parseInt(process.env.AUTH_POOL_SIZE || '30', 10),
+    max: parseInt(process.env.AUTH_POOL_SIZE || '60', 10),
     idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 10_000,
+    connectionTimeoutMillis: 15_000,
   })
 }
 
@@ -137,7 +144,7 @@ export const auth = betterAuth({
 
   emailAndPassword: {
     enabled: true,
-    requireEmailVerification: false,
+    requireEmailVerification: process.env.REQUIRE_EMAIL_VERIFICATION === 'true',
     sendResetPassword: async ({ user, url }: { user: { email: string; name?: string | null }; url: string }) => {
       await sendPasswordResetEmail({
         to: user.email,
@@ -180,6 +187,30 @@ export const auth = betterAuth({
 
   plugins: [expo()],
 
+  rateLimit: {
+    window: 60,
+    max: 1000,
+    enabled: process.env.NODE_ENV === 'production',
+    customRules: {
+      "/sign-in/email": async (request) => {
+        if (isLoadTestBypass(request)) return false
+        return { window: 10, max: 3 }
+      },
+      "/sign-up/email": async (request) => {
+        if (isLoadTestBypass(request)) return false
+        return { window: 10, max: 3 }
+      },
+      "/sign-out": async (request) => {
+        if (isLoadTestBypass(request)) return false
+        return { window: 10, max: 10 }
+      },
+      "/get-session": async (request) => {
+        if (isLoadTestBypass(request)) return false
+        return { window: 10, max: 30 }
+      },
+    },
+  },
+
   // Advanced configuration
   advanced: {
     database: {
@@ -195,10 +226,17 @@ export const auth = betterAuth({
         /**
          * Before creating a user, sanitize the name to prevent stored XSS.
          * Strips any HTML tags and angle brackets from the name field.
+         * In local mode, enforces a single-account limit.
          */
         before: async (user) => {
           if (user.name) {
             user.name = sanitizeName(user.name)
+          }
+          if (isLocalMode) {
+            const existingCount = await prisma.user.count()
+            if (existingCount >= 1) {
+              throw new Error('Local mode only supports a single account.')
+            }
           }
           return { data: user }
         },
@@ -224,7 +262,7 @@ export const auth = betterAuth({
             }
           }
 
-          const maxAttempts = 3
+          const maxAttempts = 5
           for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
               await createPersonalWorkspace(user.id, user.name || "User")
@@ -233,8 +271,8 @@ export const auth = betterAuth({
             } catch (error) {
               const msg = error instanceof Error ? error.message : String(error)
               if (attempt < maxAttempts) {
-                const delay = attempt * 500
-                console.warn(`Workspace creation attempt ${attempt}/${maxAttempts} failed for ${user.email}: ${msg} — retrying in ${delay}ms`)
+                const delay = attempt * 1000 + Math.random() * 500
+                console.warn(`Workspace creation attempt ${attempt}/${maxAttempts} failed for ${user.email}: ${msg} — retrying in ${Math.round(delay)}ms`)
                 await new Promise((r) => setTimeout(r, delay))
               } else {
                 console.error(`Failed to create personal workspace for ${user.email} after ${maxAttempts} attempts: ${msg}`)

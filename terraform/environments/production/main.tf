@@ -276,7 +276,7 @@ resource "null_resource" "karpenter_node_pool" {
 
   triggers = {
     node_pool_hash = sha256(jsonencode({
-      instance_types = ["t3.xlarge", "t3.2xlarge", "m5.xlarge", "m5.2xlarge"]
+      instance_types = ["t3.2xlarge", "m5.xlarge", "m5.2xlarge"]
       cluster_name   = module.eks.cluster_name
       node_role_name = module.eks.node_role_name
       node_sg        = module.eks.node_security_group_id
@@ -352,7 +352,7 @@ resource "null_resource" "karpenter_node_pool" {
                 values: ["on-demand"]
               - key: node.kubernetes.io/instance-type
                 operator: In
-                values: ["t3.xlarge", "t3.2xlarge", "m5.xlarge", "m5.2xlarge"]
+                values: ["t3.2xlarge", "m5.xlarge", "m5.2xlarge"]
             expireAfter: 720h
         disruption:
           consolidationPolicy: WhenEmptyOrUnderutilized
@@ -360,8 +360,8 @@ resource "null_resource" "karpenter_node_pool" {
           budgets:
             - nodes: "1"
         limits:
-          cpu: "64"
-          memory: 256Gi
+          cpu: "128"
+          memory: 512Gi
       EOF
 
       echo "Karpenter NodePool and EC2NodeClass deployed"
@@ -787,16 +787,16 @@ resource "null_resource" "postgres_credentials" {
         --from-literal=DATABASE_URL="$PLATFORM_URI" \
         --dry-run=client -o yaml | kubectl apply -f -
 
-      echo "Waiting for CloudNativePG projects-pg-superuser secret..."
+      echo "Waiting for CloudNativePG projects-pg-app secret..."
       for i in $(seq 1 60); do
-        if kubectl get secret projects-pg-superuser -n shogo-system > /dev/null 2>&1; then
-          echo "Secret projects-pg-superuser found"
+        if kubectl get secret projects-pg-app -n shogo-system > /dev/null 2>&1; then
+          echo "Secret projects-pg-app found"
           break
         fi
         sleep 5
       done
 
-      PROJECTS_ADMIN_URI=$(kubectl get secret projects-pg-superuser -n shogo-system -o jsonpath='{.data.uri}' | base64 -d)
+      PROJECTS_ADMIN_URI=$(kubectl get secret projects-pg-app -n shogo-system -o jsonpath='{.data.uri}' | base64 -d)
       
       if [ -z "$PROJECTS_ADMIN_URI" ]; then
         echo "ERROR: Could not extract projects-pg URI"

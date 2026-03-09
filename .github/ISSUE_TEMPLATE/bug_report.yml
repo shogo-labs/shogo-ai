@@ -1,0 +1,72 @@
+name: Bug report
+description: Report a reproducible problem in Shogo
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. For security issues, do not use this template.
+        Please report those privately according to `SECURITY.md`.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+      placeholder: A clear and concise description of the issue.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include a minimal reproduction if possible.
+      placeholder: |
+        1. Go to ...
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - API
+        - Mobile/Web app
+        - Desktop app
+        - Agent runtime
+        - Project runtime
+        - SDK
+        - Docs
+        - Infrastructure / self-hosting
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v1.0.0 or commit SHA
+
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment details
+      placeholder: OS, Bun version, browser, deployment mode, relevant env vars (redacted)
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      render: shell

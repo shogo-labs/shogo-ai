@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import { ChevronUp } from "lucide-react";
 import { useTheme } from "next-themes";
 import {

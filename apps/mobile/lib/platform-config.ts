@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState, useEffect } from 'react'
 import { Platform } from 'react-native'
 import { API_URL } from './api'

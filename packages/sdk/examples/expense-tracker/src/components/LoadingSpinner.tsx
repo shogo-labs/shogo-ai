@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import { Loader2 } from 'lucide-react'
 
 export function LoadingSpinner({ message = 'Loading...' }: { message?: string }) {

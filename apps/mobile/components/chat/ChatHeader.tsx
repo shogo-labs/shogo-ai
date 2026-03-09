@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * ChatHeader Component
  * Task: task-2-4-002 (chat-presentational-components)

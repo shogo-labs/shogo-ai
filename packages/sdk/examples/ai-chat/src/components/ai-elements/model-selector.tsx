@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
 // Image replacement for Vite (no next/image)
 const Image = ({ src, alt, className, width, height, ...props }: any) => (
   <img src={src} alt={alt} className={className} width={width} height={height} {...props} />

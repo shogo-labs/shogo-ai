@@ -1,6 +1,7 @@
 {
   "name": "@shogo/agent-runtime",
   "version": "0.0.1",
+  "license": "AGPL-3.0-or-later",
   "description": "Agent runtime - runs AI agent gateway with heartbeat, channels, and skills in per-agent pods",
   "type": "module",
   "main": "src/server.ts",
@@ -31,6 +32,7 @@
     "@shogo/shared-runtime": "workspace:*",
     "@sinclair/typebox": "^0.34.48",
     "ai": "^6.0.73",
+    "chromium-bidi": "^15.0.0",
     "hono": "^4.7.10",
     "imapflow": "^1.2.10",
     "nodemailer": "^8.0.1",

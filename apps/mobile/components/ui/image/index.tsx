@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import React from 'react';
 import { createImage } from '@gluestack-ui/core/image/creator';
 import { Platform, Image as RNImage } from 'react-native';

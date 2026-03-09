@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
 // OTEL must initialize before any instrumented modules are imported.
 // Both imports are dynamic to guarantee execution order — static imports
 // would be hoisted and resolved in parallel, defeating the purpose.

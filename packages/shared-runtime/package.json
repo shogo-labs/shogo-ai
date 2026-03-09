@@ -1,6 +1,7 @@
 {
   "name": "@shogo/shared-runtime",
   "version": "0.0.1",
+  "license": "AGPL-3.0-or-later",
   "description": "Shared runtime utilities for project-runtime and agent-runtime (S3 sync, postgres backup, preview tokens, health checks)",
   "type": "module",
   "main": "src/index.ts",

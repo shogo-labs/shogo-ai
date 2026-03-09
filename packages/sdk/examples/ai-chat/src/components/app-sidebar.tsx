@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState } from "react";
 import { toast } from "sonner";
 import { PlusIcon, TrashIcon } from "@/components/icons";

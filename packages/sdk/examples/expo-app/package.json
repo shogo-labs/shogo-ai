@@ -2,6 +2,7 @@
   "name": "expo-app",
   "version": "0.1.0",
   "private": true,
+  "license": "Apache-2.0",
   "main": "expo-router/entry",
   "scripts": {
     "dev": "expo start --web --port ${PORT:-8081}",
