@@ -7,8 +7,8 @@
 #   - If fingerprint changed → full native build (expo prebuild + Gradle)
 #
 # Manual (workflow_dispatch):
-#   - Always runs a full native build
-#   - Optionally submits to Play Store
+#   mode=full → fingerprint check, then build or OTA, optional Play Store submit
+#   mode=ota  → fingerprint check, OTA update only (skips build)
 #
 # Both build and OTA run on the same GitHub runner environment, so the
 # fingerprint hash is always consistent (no EAS server mismatch).
@@ -37,20 +37,27 @@ on:
       - 'packages/sdk/**'
   workflow_dispatch:
     inputs:
+      mode:
+        description: 'full = build or OTA + submit · ota = OTA update only'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - ota
       submit:
-        description: 'Submit to Play Store (internal track)'
+        description: 'Submit to Play Store (internal track) — full mode only'
         required: false
         default: true
         type: boolean
 
 jobs:
   # ===========================================================================
-  # Check if native code changed (push events only)
+  # Check if native code changed
   # ===========================================================================
   check-fingerprint:
     name: Check Native Fingerprint
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
     outputs:
       needs_build: ${{ steps.decide.outputs.needs_build }}
       runtime_version: ${{ steps.fingerprint.outputs.runtime_version }}
@@ -140,7 +147,7 @@ jobs:
         run: |
           eas update \
             --branch production \
-            --message "${{ github.event.head_commit.message }}" \
+            --message "${{ github.event.head_commit.message || format('Manual OTA from {0}', github.sha) }}" \
             --non-interactive
 
       - name: Summary
@@ -154,7 +161,7 @@ jobs:
           echo "Devices running a production build will receive this update automatically." >> $GITHUB_STEP_SUMMARY
 
   # ===========================================================================
-  # Full Native Build — native deps changed or manual trigger
+  # Full Native Build — native deps changed (not used in ota mode)
   # Uses expo prebuild + Gradle instead of EAS Build so the fingerprint
   # stays consistent with the OTA update environment.
   # ===========================================================================
@@ -163,10 +170,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: check-fingerprint
     if: >
-      always() && (
-        github.event_name == 'workflow_dispatch' ||
-        (needs.check-fingerprint.result == 'success' && needs.check-fingerprint.outputs.needs_build == 'true')
-      )
+      needs.check-fingerprint.outputs.needs_build == 'true' &&
+      github.event.inputs.mode != 'ota'
 
     steps:
       - name: Checkout
@@ -292,12 +297,7 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-<<<<<<< HEAD
-          EXPO_PUBLIC_API_URL: https://studio-staging.shogo.ai
-=======
           EXPO_PUBLIC_API_URL: ${{ vars.MOBILE_API_URL }}
-          # GRADLE_OPTS: -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"
->>>>>>> staging
 
       - name: Upload AAB artifact
         uses: actions/upload-artifact@v4
