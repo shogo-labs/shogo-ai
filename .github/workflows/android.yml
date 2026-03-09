@@ -98,6 +98,17 @@ jobs:
           path: .fingerprint-android
           key: android-fingerprint-${{ steps.fingerprint.outputs.runtime_version }}
 
+      - name: Seed cache if missing
+        if: steps.cache.outputs.cache-hit != 'true' && steps.fingerprint.outputs.runtime_version != 'unknown'
+        run: echo "${{ steps.fingerprint.outputs.runtime_version }}" > .fingerprint-android
+
+      - name: Save fingerprint cache
+        if: steps.cache.outputs.cache-hit != 'true' && steps.fingerprint.outputs.runtime_version != 'unknown'
+        uses: actions/cache/save@v4
+        with:
+          path: .fingerprint-android
+          key: android-fingerprint-${{ steps.fingerprint.outputs.runtime_version }}
+
       - name: Determine if build is needed
         id: decide
         run: |
@@ -106,6 +117,9 @@ jobs:
             echo "needs_build=true" >> $GITHUB_OUTPUT
           elif [ "${{ steps.cache.outputs.cache-hit }}" = "true" ]; then
             echo "Fingerprint cached from previous build → OTA update only"
+            echo "needs_build=false" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.inputs.mode }}" = "ota" ]; then
+            echo "OTA mode: trusting no native changes, seeding cache"
             echo "needs_build=false" >> $GITHUB_OUTPUT
           else
             echo "New fingerprint → full build required"
