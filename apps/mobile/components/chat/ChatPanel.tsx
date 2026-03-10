@@ -45,7 +45,7 @@ import {
 import { useChatTransportConfig } from "@shogo/shared-app/chat"
 import { useSDKDomains, useDomainActions } from "@shogo/shared-app/domain"
 import { cn } from "@shogo/shared-ui/primitives"
-import { API_URL } from "../../lib/api"
+import { API_URL, api, createHttpClient } from "../../lib/api"
 import { authClient } from "../../lib/auth-client"
 import { ChatHeader } from "./ChatHeader"
 import { MessageList } from "./MessageList"
@@ -2178,12 +2178,8 @@ export const ChatPanel = observer(function ChatPanel({
                 setPendingPermissionRequest(null)
                 try {
                   if (projectId) {
-                    await fetch(`${API_URL}/api/projects/${projectId}/permission-response`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      credentials: 'include',
-                      body: JSON.stringify(response),
-                    })
+                    const http = createHttpClient()
+                    await api.sendPermissionResponse(http, projectId, response)
                   }
                 } catch (err) {
                   console.error('[ChatPanel] Failed to send permission response:', err)
