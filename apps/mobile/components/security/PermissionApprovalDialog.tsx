@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { View, Text, Pressable } from 'react-native'
 import { Shield, Terminal, FileEdit, Trash2, Globe, Puzzle } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -30,13 +30,18 @@ const CATEGORY_CONFIG: Record<string, { icon: typeof Shield; label: string; colo
   mcp: { icon: Puzzle, label: 'Install MCP tool', color: 'text-indigo-500' },
 }
 
-function extractAlwaysAllowPattern(toolName: string, params: Record<string, any>): string | null {
-  if (toolName === 'exec' && params.command) {
+function extractAlwaysAllowPattern(toolName: string, category: string, params: Record<string, any>): string | null {
+  if ((toolName === 'exec' || category === 'shell') && params.command) {
     const command = params.command as string
     const firstWord = command.split(/\s+/)[0]
     if (firstWord) return `${firstWord} *`
   }
-  if (toolName === 'tool_install' && params.name) {
+  if ((category === 'file_write' || category === 'file_delete') && params.path) {
+    const path = params.path as string
+    if (path.includes('.')) return `*${path.slice(path.lastIndexOf('.'))}`
+    return path
+  }
+  if ((toolName === 'tool_install' || category === 'mcp') && params.name) {
     return params.name as string
   }
   return null
@@ -44,14 +49,19 @@ function extractAlwaysAllowPattern(toolName: string, params: Record<string, any>
 
 export function PermissionApprovalDialog({ request, onRespond }: PermissionApprovalDialogProps) {
   const [secondsLeft, setSecondsLeft] = useState(request.timeout)
+  const respondedRef = useRef(false)
 
   useEffect(() => {
+    respondedRef.current = false
     setSecondsLeft(request.timeout)
     const interval = setInterval(() => {
       setSecondsLeft((s) => {
         if (s <= 1) {
           clearInterval(interval)
-          onRespond({ id: request.id, decision: 'deny' })
+          if (!respondedRef.current) {
+            respondedRef.current = true
+            onRespond({ id: request.id, decision: 'deny' })
+          }
           return 0
         }
         return s - 1
@@ -62,7 +72,7 @@ export function PermissionApprovalDialog({ request, onRespond }: PermissionAppro
 
   const config = CATEGORY_CONFIG[request.category] ?? CATEGORY_CONFIG.shell
   const Icon = config.icon
-  const alwaysAllowPattern = extractAlwaysAllowPattern(request.toolName, request.params)
+  const alwaysAllowPattern = extractAlwaysAllowPattern(request.toolName, request.category, request.params)
 
   const displayValue = request.params.command
     || request.params.path
@@ -71,14 +81,20 @@ export function PermissionApprovalDialog({ request, onRespond }: PermissionAppro
     || JSON.stringify(request.params)
 
   const handleDeny = useCallback(() => {
+    if (respondedRef.current) return
+    respondedRef.current = true
     onRespond({ id: request.id, decision: 'deny' })
   }, [request.id, onRespond])
 
   const handleAllowOnce = useCallback(() => {
+    if (respondedRef.current) return
+    respondedRef.current = true
     onRespond({ id: request.id, decision: 'allow_once' })
   }, [request.id, onRespond])
 
   const handleAlwaysAllow = useCallback(() => {
+    if (respondedRef.current) return
+    respondedRef.current = true
     onRespond({
       id: request.id,
       decision: 'always_allow',
@@ -135,11 +151,9 @@ export function PermissionApprovalDialog({ request, onRespond }: PermissionAppro
         {alwaysAllowPattern && (
           <Pressable
             onPress={handleAlwaysAllow}
-            className="flex-1 px-4 py-2 rounded-lg border border-primary/30 bg-primary/5"
+            className="px-4 py-2 rounded-lg border border-primary/30 bg-primary/5"
           >
-            <Text className="text-xs font-medium text-primary" numberOfLines={1}>
-              Always Allow "{alwaysAllowPattern}"
-            </Text>
+            <Text className="text-sm font-medium text-primary">Always Allow</Text>
           </Pressable>
         )}
       </View>

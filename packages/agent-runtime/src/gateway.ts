@@ -1690,12 +1690,15 @@ export class AgentGateway {
     const modelId = session.modelOverride || this.config.model.name
     const provider = this.config.model.provider
 
-    // Reset per-turn state and wire the SSE writer for permission requests
+    // Reset per-turn state and wire/clear the SSE writer for permission requests.
+    // When there's no uiWriter (cron, heartbeat, channel, webhook turns),
+    // clear the callback so "ask" decisions fail closed instead of writing
+    // to a stale stream from a previous UI turn.
     if (this.permissionEngine) {
       this.permissionEngine.resetTurn()
-      if (uiWriter) {
-        this.setPermissionSseCallback((event) => uiWriter.write(event))
-      }
+      this.permissionEngine.setSseCallback(
+        uiWriter ? (event) => uiWriter.write(event) : undefined
+      )
     }
 
     const toolContext: ToolContext = {

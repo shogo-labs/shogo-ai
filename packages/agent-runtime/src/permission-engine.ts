@@ -29,19 +29,40 @@ export type { SecurityPreference, PermissionCategory, PermissionCheckResult }
 // Hard-blocked patterns — enforced in ALL modes, never overridable
 // ---------------------------------------------------------------------------
 
-const HARD_BLOCKED_COMMAND_PATTERNS: RegExp[] = [
-  /^sudo\s/,
-  /\brm\s+(-[a-z]*r[a-z]*\s+|--recursive\s+)\//,
-  /\bshutdown\b/,
-  /\breboot\b/,
-  /\bmkfs\b/,
-  /\bdd\s+if=/,
-  /\bchmod\s+777\b/,
+// Patterns checked against each sub-command after splitting on ; && ||
+const SUB_COMMAND_BLOCKED: RegExp[] = [
+  /^\s*sudo\s/,
+  /^\s*rm\s+(-[a-z]*r[a-z]*\s+|--recursive\s+)\//,
+  /^\s*shutdown\b/,
+  /^\s*reboot\b/,
+  /^\s*mkfs\b/,
+  /^\s*dd\s+if=/,
+  /^\s*chmod\s+777\b/,
+  /^\s*kill\s+-9\s+1\b/,
+  /^\s*format\s+[a-z]:/i,
+]
+
+// Patterns checked against the entire command string (cannot be split away)
+const FULL_COMMAND_BLOCKED: RegExp[] = [
   /\|\s*(ba)?sh\b/,
   /\bgit\s+push\s+.*--force\b/,
-  /\bkill\s+-9\s+1\b/,
-  /\bformat\s+[a-z]:/i,
+  /\bsh\s+-c\b/,
+  /\bbash\s+-c\b/,
+  /\beval\s+["']/,
 ]
+
+function isHardBlockedCommand(command: string): boolean {
+  for (const pattern of FULL_COMMAND_BLOCKED) {
+    if (pattern.test(command)) return true
+  }
+  const subCommands = command.split(/\s*(?:&&|\|\||;)\s*/)
+  for (const sub of subCommands) {
+    for (const pattern of SUB_COMMAND_BLOCKED) {
+      if (pattern.test(sub)) return true
+    }
+  }
+  return false
+}
 
 const HARD_BLOCKED_PATH_PREFIXES: string[] = [
   join(homedir(), '.ssh'),
@@ -196,6 +217,7 @@ interface PendingApproval {
   resolve: (approved: boolean) => void
   timer: ReturnType<typeof setTimeout>
   cacheKey: string
+  category: PermissionCategory
 }
 
 export class PermissionEngine {
@@ -269,14 +291,12 @@ export class PermissionEngine {
   ): PermissionCheckResult | null {
     if (category === 'shell') {
       const command = (params.command as string) || ''
-      for (const pattern of HARD_BLOCKED_COMMAND_PATTERNS) {
-        if (pattern.test(command)) {
-          return {
-            action: 'deny',
-            reason: `Blocked: this command matches a hard-blocked destructive pattern`,
-            guidance: 'This command is never allowed. Ask the user to run it manually if needed.',
-            category,
-          }
+      if (isHardBlockedCommand(command)) {
+        return {
+          action: 'deny',
+          reason: `Blocked: this command matches a hard-blocked destructive pattern`,
+          guidance: 'This command is never allowed. Ask the user to run it manually if needed.',
+          category,
         }
       }
     }
@@ -348,6 +368,15 @@ export class PermissionEngine {
     if (category === 'file_read') {
       return { action: 'allow', reason: 'File reads allowed in strict mode (within workspace)', category }
     }
+    if ((category === 'file_write' || category === 'file_delete') && isAgentConfigFile((params.path as string) || '')) {
+      return { action: 'allow', reason: 'Agent config files are always writable', category }
+    }
+    if ((category === 'file_write' || category === 'file_delete')) {
+      const fileAllow = this.pref.overrides?.fileAccess?.allow ?? []
+      if (matchesAnyPattern((params.path as string) || '', fileAllow)) {
+        return { action: 'allow', reason: 'File path on user allowlist', category }
+      }
+    }
     return {
       action: 'ask',
       reason: `Strict mode: approval required for ${category} actions`,
@@ -370,8 +399,13 @@ export class PermissionEngine {
           ? { action: 'allow', reason: 'File writes auto-allowed within project directory', category }
           : { action: 'ask', reason: 'File write outside project directory', category }
 
-      case 'file_delete':
+      case 'file_delete': {
+        const fileAllow = this.pref.overrides?.fileAccess?.allow ?? []
+        if (matchesAnyPattern((params.path as string) || '', fileAllow)) {
+          return { action: 'allow', reason: 'File path on user allowlist', category }
+        }
         return { action: 'ask', reason: 'File deletes require approval in balanced mode', category }
+      }
 
       case 'shell': {
         const command = (params.command as string) || ''
@@ -489,7 +523,7 @@ export class PermissionEngine {
         resolvePromise(false)
       }, timeout)
 
-      this.pendingApprovals.set(requestId, { resolve: resolvePromise, timer, cacheKey })
+      this.pendingApprovals.set(requestId, { resolve: resolvePromise, timer, cacheKey, category })
 
       this.sendSseEvent!({
         type: 'data-permission-request',
@@ -513,16 +547,31 @@ export class PermissionEngine {
         break
       case 'always_allow':
         if (response.pattern) {
-          const existing = this.pref.overrides?.shellCommands?.allow ?? []
-          this.pref = {
-            ...this.pref,
-            overrides: {
-              ...this.pref.overrides,
-              shellCommands: {
-                ...this.pref.overrides?.shellCommands,
-                allow: [...existing, response.pattern],
+          const isFileCategory = pending.category === 'file_write' || pending.category === 'file_delete' || pending.category === 'file_read'
+          if (isFileCategory) {
+            const existing = this.pref.overrides?.fileAccess?.allow ?? []
+            this.pref = {
+              ...this.pref,
+              overrides: {
+                ...this.pref.overrides,
+                fileAccess: {
+                  ...this.pref.overrides?.fileAccess,
+                  allow: [...existing, response.pattern],
+                },
               },
-            },
+            }
+          } else {
+            const existing = this.pref.overrides?.shellCommands?.allow ?? []
+            this.pref = {
+              ...this.pref,
+              overrides: {
+                ...this.pref.overrides,
+                shellCommands: {
+                  ...this.pref.overrides?.shellCommands,
+                  allow: [...existing, response.pattern],
+                },
+              },
+            }
           }
         }
         this.sessionApprovalCache.set(pending.cacheKey, true)
