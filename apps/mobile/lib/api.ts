@@ -267,14 +267,6 @@ export const api = {
     const res = await http.post<{ ok: boolean }>('/api/local/security-prefs', prefs)
     return res.data
   },
-
-  async sendPermissionResponse(
-    http: HttpClient,
-    response: { id: string; decision: 'allow_once' | 'always_allow' | 'deny'; pattern?: string },
-  ) {
-    const res = await http.post<{ ok: boolean }>('/agent/permission-response', response)
-    return res.data
-  },
 }
 
 export interface SecurityPrefs {

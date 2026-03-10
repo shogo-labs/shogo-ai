@@ -184,7 +184,7 @@ export function mergePolicy(
 
 export const DEFAULT_SECURITY_PREFERENCE: SecurityPreference = {
   mode: 'balanced',
-  approvalTimeoutSeconds: 60,
+  approvalTimeoutSeconds: 30,
 }
 
 export function parseSecurityPolicy(envValue?: string): SecurityPreference {
