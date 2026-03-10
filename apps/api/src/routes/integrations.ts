@@ -129,37 +129,8 @@ export function integrationRoutes() {
     }
   })
 
-  router.get('/integrations/callback', (c) => {
-    const callbackStatus = c.req.query('status') || 'success'
-    const redirectParam = c.req.query('redirect')
-    const ok = callbackStatus === 'success'
-
-    // On native, the Custom Tab can't window.close(). If a deep-link redirect
-    // param was provided, navigate to it after a short delay so
-    // openAuthSessionAsync detects the scheme change and closes the tab.
-    // Allow shogo:// (dev/prod builds) and exp:// (Expo Go).
-    const isAllowedRedirect = redirectParam
-      && (redirectParam.startsWith('shogo://') || redirectParam.startsWith('exp://'))
-    const redirectScript = ok && isAllowedRedirect
-      ? `setTimeout(function(){ window.location.href = ${JSON.stringify(redirectParam)}; }, 2000);`
-      : ''
-
-    const html = `<!DOCTYPE html>
-<html><head><style>
-  body { font-family: -apple-system, system-ui, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #fafafa; color: #333; }
-  .card { text-align: center; padding: 2rem; }
-  .icon { font-size: 3rem; margin-bottom: 0.5rem; }
-  p { font-size: 0.9rem; color: #666; }
-</style></head><body>
-  <div class="card">
-    <div class="icon">${ok ? '✅' : '❌'}</div>
-    <h3>${ok ? 'Connected!' : 'Connection failed'}</h3>
-    <p>${ok ? 'This window will close automatically...' : 'Please close this window and try again.'}</p>
-  </div>
-  <script>${ok ? 'setTimeout(function(){ window.close(); }, 1500);' : ''}${redirectScript}</script>
-</body></html>`
-    return c.html(html)
-  })
+  // Note: GET /integrations/callback is registered directly on the app
+  // (before auth middleware) in server.ts to avoid auth blocking.
 
   router.get('/integrations/connections', async (c) => {
     const composio = getComposio()

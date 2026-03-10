@@ -14,7 +14,8 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from "react"
-import { View, Text, Pressable } from "react-native"
+import { View, Text, Pressable, Platform } from "react-native"
+import * as ExpoLinking from "expo-linking"
 import { cn } from "@shogo/shared-ui/primitives"
 import { openAuthFlow } from "@shogo/ui-kit/platform"
 import {
@@ -25,8 +26,9 @@ import {
   AlertCircle,
 } from "lucide-react-native"
 import { useLocalSearchParams } from "expo-router"
-import { API_URL } from "../../../lib/api"
+import { API_URL, api } from "../../../lib/api"
 import { useChatContextSafe } from "../ChatContext"
+import { useDomainHttp } from "../../../contexts/domain"
 
 export interface ConnectToolWidgetProps {
   toolkitName: string
@@ -41,6 +43,10 @@ const POLL_INTERVAL_MS = 2500
 const POLL_TIMEOUT_MS = 90000
 const INITIAL_POLL_DELAY_MS = 5000
 
+// Tracks toolkits with an OAuth flow in progress. Module-level so it survives
+// component unmount/remount caused by the Custom Tab deep-link navigation.
+const pendingOAuthToolkits = new Set<string>()
+
 export function ConnectToolWidget({
   toolkitName,
   authUrl,
@@ -49,6 +55,7 @@ export function ConnectToolWidget({
 }: ConnectToolWidgetProps) {
   const [status, setStatus] = useState<ConnectStatus>("idle")
   const chatContext = useChatContextSafe()
+  const http = useDomainHttp()
   const hasSentConfirmation = useRef(false)
   const { id: projectId } = useLocalSearchParams<{ id: string }>()
 
@@ -78,18 +85,24 @@ export function ConnectToolWidget({
     }
   }, [toolkitName, projectId])
 
-  // On mount: check if already connected (handles page reload after OAuth)
+  // On mount: check if already connected (handles page reload after OAuth).
+  // If we're returning from a native OAuth flow (tracked by pendingOAuthToolkits),
+  // also send the confirmation message so the agent continues.
   useEffect(() => {
     let cancelled = false
     checkConnection().then((connected) => {
       if (!cancelled && connected) {
         setStatus("connected")
+        if (pendingOAuthToolkits.has(toolkitName)) {
+          pendingOAuthToolkits.delete(toolkitName)
+          sendConfirmation()
+        }
       }
     })
     return () => {
       cancelled = true
     }
-  }, [checkConnection])
+  }, [checkConnection, toolkitName, sendConfirmation])
 
   // Poll while connecting: wait an initial delay, then poll until connected
   useEffect(() => {
@@ -125,8 +138,40 @@ export function ConnectToolWidget({
 
   const handleConnect = useCallback(async () => {
     setStatus("connecting")
+    const isNative = Platform.OS !== "web"
+    if (isNative) pendingOAuthToolkits.add(toolkitName)
+
+    // Create a fresh connection via the API so the callback redirect uses the
+    // correct scheme for the current environment (exp:// in Expo Go,
+    // shogo:// in standalone builds) instead of the hardcoded agent URL.
+    if (projectId && http) {
+      try {
+        const redirect = isNative
+          ? ExpoLinking.createURL(
+              `integrations-callback?projectId=${encodeURIComponent(projectId)}`
+            )
+          : undefined
+        const callbackUrl = redirect
+          ? `${API_URL}/api/integrations/callback?redirect=${encodeURIComponent(redirect)}`
+          : `${API_URL}/api/integrations/callback`
+        const data = await api.connectIntegration(
+          http,
+          toolkitName,
+          projectId,
+          callbackUrl
+        )
+        const redirectUrl = data.data?.redirectUrl
+        if (redirectUrl) {
+          await openAuthFlow(redirectUrl)
+          return
+        }
+      } catch {
+        // Fall back to agent-provided authUrl
+      }
+    }
+
     await openAuthFlow(authUrl)
-  }, [authUrl])
+  }, [authUrl, http, toolkitName, projectId])
 
   const displayName =
     toolkitName.charAt(0).toUpperCase() + toolkitName.slice(1)

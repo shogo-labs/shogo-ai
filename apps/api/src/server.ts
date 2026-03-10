@@ -739,6 +739,39 @@ app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
 app.get('/api/health', (c) => c.json({ ok: true }))
 app.get('/health', (c) => c.json({ ok: true }))
 
+// OAuth callback for Composio integrations — registered before auth middleware
+// so the page is always reachable (the browser has no session cookie).
+app.get('/api/integrations/callback', (c) => {
+  const callbackStatus = c.req.query('status') || 'success'
+  const redirectParam = c.req.query('redirect')
+  const ok = callbackStatus === 'success'
+
+  // Must use JavaScript redirect (not HTTP 302) for custom schemes so that
+  // openAuthSessionAsync can intercept the navigation within the Custom Tab.
+  // A 302 causes the OS to open the app via intent, bypassing the auth session.
+  const isAllowedRedirect = redirectParam
+    && (redirectParam.startsWith('shogo://') || redirectParam.startsWith('exp://'))
+  const redirectScript = ok && isAllowedRedirect
+    ? `window.location.href = ${JSON.stringify(redirectParam)};`
+    : ''
+
+  const html = `<!DOCTYPE html>
+<html><head><style>
+  body { font-family: -apple-system, system-ui, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #fafafa; color: #333; }
+  .card { text-align: center; padding: 2rem; }
+  .icon { font-size: 3rem; margin-bottom: 0.5rem; }
+  p { font-size: 0.9rem; color: #666; }
+</style></head><body>
+  <div class="card">
+    <div class="icon">${ok ? '✅' : '❌'}</div>
+    <h3>${ok ? 'Connected!' : 'Connection failed'}</h3>
+    <p>${ok ? 'You can close this window.' : 'Please close this window and try again.'}</p>
+  </div>
+  <script>${redirectScript}${ok && !redirectScript ? 'setTimeout(function(){ window.close(); }, 1500);' : ''}</script>
+</body></html>`
+  return c.html(html)
+})
+
 // Platform config (tells frontend about local mode, enabled features, etc.)
 app.get('/api/config', async (c) => {
   const localMode = process.env.SHOGO_LOCAL_MODE === 'true'
@@ -4699,13 +4732,7 @@ app.get('/api/me/activity', authMiddleware, requireAuth, async (c) => {
 // This makes ctx.userId available in route hooks for authorization
 app.use('/api/*', authMiddleware)
 
-// Public endpoints that don't require authentication (e.g. OAuth callback pages)
-const PUBLIC_API_PATHS = ['/api/integrations/callback']
-app.use('/api/*', async (c, next) => {
-  const path = new URL(c.req.url).pathname
-  if (PUBLIC_API_PATHS.some((p) => path === p)) return next()
-  return requireAuth(c, next)
-})
+app.use('/api/*', requireAuth)
 
 // Require project membership for all project-scoped routes
 // Prevents authenticated users from accessing projects they don't belong to
