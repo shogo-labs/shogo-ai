@@ -448,13 +448,31 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       }
       // else: runtime.status === "running" - proceed immediately
 
-      // Use agentPort if available, otherwise calculate from Vite port
-      // Agent runs on port = Vite port + 1000 (e.g., 5200 -> 6200)
       const agentPort = runtime.agentPort || (runtime.port + 1000)
-      return `http://localhost:${agentPort}`
+      const runtimeHost = new URL(runtime.url).hostname
+      return `http://${runtimeHost}:${agentPort}`
     } else {
       throw new Error("No runtime manager available for local development")
     }
+  }
+
+  /**
+   * Make an authenticated fetch to the project's agent runtime.
+   * Resolves the runtime URL and injects the per-project runtime token.
+   */
+  async function fetchFromRuntime(
+    projectId: string,
+    path: string,
+    init?: RequestInit,
+  ): Promise<Response> {
+    const baseUrl = await getProjectUrl(projectId)
+    const { deriveRuntimeToken } = await import("../lib/runtime-token")
+    const headers = new Headers(init?.headers)
+    if (!headers.has("Content-Type")) {
+      headers.set("Content-Type", "application/json")
+    }
+    headers.set("x-runtime-token", deriveRuntimeToken(projectId))
+    return fetch(`${baseUrl}${path}`, { ...init, headers })
   }
 
   /**
@@ -786,25 +804,30 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
     const projectId = c.req.param("projectId")
 
     try {
-      let podUrl: string
-      try {
-        podUrl = await getProjectUrl(projectId)
-      } catch {
-        return c.json({ error: "No active runtime" }, 503)
-      }
-
       const body = await c.req.text()
-      const response = await fetch(`${podUrl}/agent/permission-response`, {
+      const response = await fetchFromRuntime(projectId, "/agent/permission-response", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: body || "{}",
       })
 
       const result = await response.json()
       return c.json(result)
     } catch (error: any) {
+      const isRuntimeDown =
+        error.message?.includes("ECONNREFUSED") ||
+        error.message?.includes("No runtime manager") ||
+        error.message?.includes("not running")
+      if (isRuntimeDown) {
+        return c.json(
+          { error: { code: "runtime_unavailable", message: "No active runtime" } },
+          503
+        )
+      }
       console.error("[ProjectChat] Permission response proxy error:", error)
-      return c.json({ error: error.message }, 500)
+      return c.json(
+        { error: { code: "proxy_error", message: error.message || "Failed to forward permission response" } },
+        500
+      )
     }
   })
 

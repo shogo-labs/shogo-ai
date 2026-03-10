@@ -1694,15 +1694,57 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
   }
 
+  const path = c.req.path.replace(`/api/projects/${projectId}/agent-proxy`, '') || '/'
+  const qs = new URL(c.req.url).search
+
   if (!isKubernetes()) {
-    return c.json({ error: { code: 'not_supported', message: 'Agent proxy only available in Kubernetes' } }, 501)
+    // Local dev: proxy to agent runtime with runtime token so canvas EventSource can connect
+    try {
+      const manager = getRuntimeManager()
+      const runtime = manager.status(projectId)
+      if (!runtime?.agentPort) {
+        return c.json({ error: { code: 'runtime_not_ready', message: 'Agent runtime not running' } }, 503)
+      }
+      const { deriveRuntimeToken } = await import('./lib/runtime-token')
+      const runtimeHost = new URL(runtime.url).hostname
+      const targetUrl = `http://${runtimeHost}:${runtime.agentPort}${path}${qs}`
+
+      const headers = new Headers()
+      const contentType = c.req.header('content-type')
+      if (contentType) headers.set('content-type', contentType)
+      const accept = c.req.header('accept')
+      if (accept) headers.set('accept', accept)
+      headers.set('x-runtime-token', deriveRuntimeToken(projectId))
+      const requestInit: RequestInit = { method: c.req.method, headers }
+      if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+        requestInit.body = await c.req.arrayBuffer()
+      }
+
+      const response = await fetch(targetUrl, requestInit)
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+      responseHeaders.set('access-control-allow-origin', '*')
+      responseHeaders.set('access-control-allow-methods', 'GET, POST, PUT, DELETE, OPTIONS')
+      responseHeaders.set('access-control-allow-headers', '*')
+      const responseContentType = response.headers.get('content-type') || ''
+      if (responseContentType.includes('text/event-stream') || responseContentType.includes('text/plain')) {
+        responseHeaders.set('X-Accel-Buffering', 'no')
+        responseHeaders.set('Cache-Control', 'no-cache, no-transform')
+      }
+      return new Response(response.body, { status: response.status, headers: responseHeaders })
+    } catch (error: any) {
+      console.error('[AgentProxy] Local proxy error:', error)
+      return c.json({ error: { code: 'proxy_error', message: error.message || 'Failed to proxy to agent runtime' } }, 502)
+    }
   }
 
   try {
     const { getProjectPodUrl } = await import('./lib/knative-project-manager')
     const podUrl = await getProjectPodUrl(projectId)
-    const path = c.req.path.replace(`/api/projects/${projectId}/agent-proxy`, '') || '/'
-    const qs = new URL(c.req.url).search
     const targetUrl = `${podUrl}${path}${qs}`
 
     console.log(`[AgentProxy] Proxying ${c.req.method} ${path} to ${targetUrl}`)

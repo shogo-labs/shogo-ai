@@ -13,6 +13,7 @@ import { resolve, join } from 'path'
 import { existsSync, lstatSync, realpathSync } from 'fs'
 import { homedir } from 'os'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
+import { createLogger } from '@shogo/shared-runtime'
 import type {
   SecurityMode,
   SecurityPreference,
@@ -21,6 +22,8 @@ import type {
   PermissionRequest,
   PermissionResponse,
 } from './types'
+
+const log = createLogger('permission-engine')
 
 // Re-export for convenience
 export type { SecurityPreference, PermissionCategory, PermissionCheckResult }
@@ -111,6 +114,10 @@ const DEFAULT_NETWORK_ALLOWLIST: string[] = [
 
 function matchesGlobPattern(value: string, pattern: string): boolean {
   if (pattern === '*') return true
+  // "*.ext" from Always Allow (file extension) → value ends with .ext
+  if (pattern.startsWith('*.')) {
+    return value.endsWith(pattern.slice(1)) || value === pattern.slice(1)
+  }
   if (pattern.endsWith(' *')) {
     return value.startsWith(pattern.slice(0, -1)) || value === pattern.slice(0, -2)
   }
@@ -394,10 +401,15 @@ export class PermissionEngine {
       case 'file_read':
         return { action: 'allow', reason: 'File reads auto-allowed in balanced mode', category }
 
-      case 'file_write':
+      case 'file_write': {
+        const fileAllow = this.pref.overrides?.fileAccess?.allow ?? []
+        if (matchesAnyPattern((params.path as string) || '', fileAllow)) {
+          return { action: 'allow', reason: 'File path on user allowlist (Always Allow)', category }
+        }
         return this.checkWithinWorkspace(params)
           ? { action: 'allow', reason: 'File writes auto-allowed within project directory', category }
           : { action: 'ask', reason: 'File write outside project directory', category }
+      }
 
       case 'file_delete': {
         const fileAllow = this.pref.overrides?.fileAccess?.allow ?? []
@@ -496,15 +508,19 @@ export class PermissionEngine {
 
     // If too many denials, auto-deny without prompting
     if (this.denialCount >= this.MAX_DENIALS_PER_TURN) {
+      log.warn('Too many denials in this turn, auto-denying', { toolName, denials: this.denialCount })
       return false
     }
 
     // If no SSE client connected, fail closed
     if (!this.sendSseEvent) {
+      log.warn('No SSE callback available — cannot prompt user, denying', { toolName })
       return false
     }
 
-    const timeout = (this.pref.approvalTimeoutSeconds ?? 60) * 1000
+    const DEFAULT_TIMEOUT_SECONDS = 30
+    const timeoutSeconds = this.pref.approvalTimeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS
+    const timeoutMs = timeoutSeconds * 1000
     const requestId = `perm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
 
     const request: PermissionRequest = {
@@ -513,29 +529,40 @@ export class PermissionEngine {
       category,
       params,
       reason,
-      timeout: this.pref.approvalTimeoutSeconds ?? 60,
+      timeout: timeoutSeconds,
     }
 
     return new Promise<boolean>((resolvePromise) => {
       const timer = setTimeout(() => {
+        log.warn('Permission approval timed out', { requestId, toolName, timeoutMs })
         this.pendingApprovals.delete(requestId)
         this.denialCount++
         resolvePromise(false)
-      }, timeout)
+      }, timeoutMs)
 
       this.pendingApprovals.set(requestId, { resolve: resolvePromise, timer, cacheKey, category })
 
-      this.sendSseEvent!({
-        type: 'data-permission-request',
-        data: request,
-      })
+      try {
+        this.sendSseEvent!({
+          type: 'data-permission-request',
+          data: request,
+        })
+      } catch (err) {
+        log.error('Failed to send SSE permission request', { requestId, err })
+        clearTimeout(timer)
+        this.pendingApprovals.delete(requestId)
+        resolvePromise(false)
+      }
     })
   }
 
   /** Called when the frontend responds to a permission request */
   handleApprovalResponse(response: PermissionResponse): void {
     const pending = this.pendingApprovals.get(response.id)
-    if (!pending) return
+    if (!pending) {
+      log.warn('Received approval response for unknown request', { requestId: response.id })
+      return
+    }
 
     clearTimeout(pending.timer)
     this.pendingApprovals.delete(response.id)
