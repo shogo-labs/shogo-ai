@@ -213,12 +213,12 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
 
       const isReady = runtime.status === 'running'
 
-      // Build agent URL for the project-runtime server (separate from Vite dev server locally)
-      // In local dev, Vite runs on basePort (e.g. 5200) and agent on basePort+1000 (e.g. 6200)
-      // The frontend needs the agent URL for SSE endpoints like /console-events and /build-events
-      const agentUrl = runtime.agentPort 
-        ? `http://localhost:${runtime.agentPort}` 
-        : runtime.url  // Fallback: in K8s, same URL serves both
+      // Build agent URL as an agent-proxy path through the API server so it works
+      // with tunnels (ngrok) and cross-origin setups. The API server proxies
+      // requests to the actual agent runtime (localhost:agentPort).
+      const host = c.req.header('host') || 'localhost:8002'
+      const protocol = c.req.header('x-forwarded-proto') || 'http'
+      const agentUrl = `${protocol}://${host}/api/projects/${projectId}/agent-proxy`
 
       // Return format matching Kubernetes response for frontend compatibility
       return c.json({

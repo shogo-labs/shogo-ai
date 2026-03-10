@@ -19,6 +19,7 @@ import {
   Users,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { agentFetch } from '../../../lib/agent-fetch'
 
 const POLL_INTERVAL_MS = 5_000
 
@@ -124,15 +125,17 @@ export function StatusPanel({ projectId, agentUrl, visible }: StatusPanelProps) 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const fetchStatus = useCallback(async () => {
+    console.log('[StatusPanel] fetchStatus called, agentUrl:', agentUrl)
     if (!agentUrl) return
     try {
-      const res = await fetch(`${agentUrl}/agent/status`)
+      const res = await agentFetch(`${agentUrl}/agent/status`)
       if (!res.ok) throw new Error('Agent not reachable')
       const data: AgentStatusData = await res.json()
       setStatus(data)
       setError(null)
       setLastFetchedAt(Date.now())
     } catch (err: any) {
+      console.error('[StatusPanel] fetchStatus error:', err)
       setError(err.message)
     }
   }, [agentUrl])

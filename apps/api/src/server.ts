@@ -1688,7 +1688,12 @@ app.all('/api/projects/:projectId/preview', async (c) => {
 app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   const projectId = c.req.param('projectId')
 
+  const hasCookie = !!c.req.header('cookie')
+  const cookiePreview = c.req.header('cookie')?.substring(0, 60) || '(none)'
+  console.log(`[AgentProxy] ${c.req.method} ${c.req.path} | cookie: ${hasCookie} | ${cookiePreview}`)
+
   const userId = await getAuthUserId(c)
+  console.log(`[AgentProxy] getAuthUserId result: ${userId || 'null (401)'}`)
   if (!userId) {
     return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
   }
@@ -1697,19 +1702,32 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
   }
 
-  if (!isKubernetes()) {
-    return c.json({ error: { code: 'not_supported', message: 'Agent proxy only available in Kubernetes' } }, 501)
+  const path = c.req.path.replace(`/api/projects/${projectId}/agent-proxy`, '') || '/'
+  const qs = new URL(c.req.url).search
+
+  let podUrl: string
+
+  if (isKubernetes()) {
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      podUrl = await getProjectPodUrl(projectId)
+    } catch (error: any) {
+      console.error('[AgentProxy] K8s pod resolution error:', error)
+      return c.json({ error: { code: 'proxy_error', message: error.message || 'Failed to resolve agent pod' } }, 502)
+    }
+  } else {
+    const manager = getRuntimeManager()
+    const runtime = manager.status(projectId)
+    if (!runtime || !runtime.agentPort) {
+      return c.json({ error: { code: 'agent_not_running', message: 'Agent runtime is not running for this project' } }, 503)
+    }
+    podUrl = `http://localhost:${runtime.agentPort}`
   }
 
+  const targetUrl = `${podUrl}${path}${qs}`
+  console.log(`[AgentProxy] Proxying ${c.req.method} ${path} to ${targetUrl}`)
+
   try {
-    const { getProjectPodUrl } = await import('./lib/knative-project-manager')
-    const podUrl = await getProjectPodUrl(projectId)
-    const path = c.req.path.replace(`/api/projects/${projectId}/agent-proxy`, '') || '/'
-    const qs = new URL(c.req.url).search
-    const targetUrl = `${podUrl}${path}${qs}`
-
-    console.log(`[AgentProxy] Proxying ${c.req.method} ${path} to ${targetUrl}`)
-
     const headers = new Headers()
     const contentType = c.req.header('content-type')
     if (contentType) headers.set('content-type', contentType)
@@ -1723,6 +1741,11 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     }
 
     const response = await fetch(targetUrl, requestInit)
+    console.log(`[AgentProxy] Upstream response: ${response.status} ${response.statusText} for ${path}`)
+    if (response.status === 401) {
+      const body = await response.clone().text()
+      console.log(`[AgentProxy] 401 body from agent runtime: ${body}`)
+    }
 
     const responseHeaders = new Headers()
     response.headers.forEach((value, key) => {

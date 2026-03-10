@@ -5,9 +5,9 @@ import { View, Text, Pressable } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { SkillsPanel } from './SkillsPanel'
 import { ToolsPanel } from './ToolsPanel'
-import { ServicesPanel } from './ServicesPanel'
+// import { ServicesPanel } from './ServicesPanel'
 
-type SubTab = 'skills' | 'tools' | 'services'
+type SubTab = 'skills' | 'tools' /* | 'services' */
 
 interface CapabilitiesPanelProps {
   projectId: string
@@ -28,7 +28,7 @@ export function CapabilitiesPanel({ projectId, agentUrl, visible }: Capabilities
           {([
             { id: 'skills' as SubTab, label: 'Skills' },
             { id: 'tools' as SubTab, label: 'Tools' },
-            { id: 'services' as SubTab, label: 'Services' },
+            // { id: 'services' as SubTab, label: 'Services' },
           ]).map((tab) => (
             <Pressable
               key={tab.id}
@@ -55,7 +55,7 @@ export function CapabilitiesPanel({ projectId, agentUrl, visible }: Capabilities
       <View className="flex-1 relative">
         <SkillsPanel projectId={projectId} agentUrl={agentUrl} visible={subTab === 'skills'} />
         <ToolsPanel projectId={projectId} agentUrl={agentUrl} visible={subTab === 'tools'} />
-        <ServicesPanel projectId={projectId} agentUrl={agentUrl} visible={subTab === 'services'} />
+        {/* <ServicesPanel projectId={projectId} agentUrl={agentUrl} visible={subTab === 'services'} /> */}
       </View>
     </View>
   )

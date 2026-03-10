@@ -26,6 +26,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { openAuthFlow } from '@shogo/ui-kit/platform'
 import { API_URL, api } from '../../../lib/api'
 import { useDomainHttp } from '../../../contexts/domain'
+import { agentFetch } from '../../../lib/agent-fetch'
 
 interface InstalledTool {
   id: string
@@ -71,11 +72,12 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
   const [composioConnections, setComposioConnections] = useState<Record<string, boolean>>({})
 
   const loadInstalledTools = useCallback(async () => {
+    console.log('[ToolsPanel] loadInstalledTools called, agentUrl:', agentUrl)
     if (!agentUrl) return
     setIsLoading(true)
     setError(null)
     try {
-      const res = await fetch(`${agentUrl}/agent/tools/status`)
+      const res = await agentFetch(`${agentUrl}/agent/tools/status`)
       if (res.ok) {
         const data = await res.json()
         setInstalledTools(data.tools || [])
@@ -91,6 +93,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
         // non-critical
       }
     } catch (err: any) {
+      console.error('[ToolsPanel] loadInstalledTools error:', err)
       setError(err.message)
     } finally {
       setIsLoading(false)
@@ -106,7 +109,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
     setIsSearching(true)
     setError(null)
     try {
-      const res = await fetch(`${agentUrl}/agent/tools/search?q=${encodeURIComponent(searchQuery.trim())}`)
+      const res = await agentFetch(`${agentUrl}/agent/tools/search?q=${encodeURIComponent(searchQuery.trim())}`)
       if (!res.ok) throw new Error('Search failed')
       const data = await res.json()
       setSearchResults(data.results || [])
@@ -139,7 +142,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
       setError(null)
       try {
         const env = envInputs[result.id] || {}
-        const res = await fetch(`${agentUrl}/agent/tools/install`, {
+        const res = await agentFetch(`${agentUrl}/agent/tools/install`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -169,7 +172,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
       setUninstalling(toolId)
       setError(null)
       try {
-        const res = await fetch(`${agentUrl}/agent/tools/${encodeURIComponent(toolId)}`, {
+        const res = await agentFetch(`${agentUrl}/agent/tools/${encodeURIComponent(toolId)}`, {
           method: 'DELETE',
         })
         if (!res.ok) {
