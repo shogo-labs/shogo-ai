@@ -21,6 +21,16 @@
         "EXPO_PUBLIC_API_URL": "https://studio-staging.shogo.ai"
       }
     },
+    "staging": {
+      "channel": "staging",
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://studio-staging.shogo.ai"
+      }
+    },
     "production": {
       "channel": "production",
       "android": {
@@ -33,6 +43,12 @@
     }
   },
   "submit": {
+    "staging": {
+      "android": {
+        "serviceAccountKeyPath": "./google-services.json",
+        "track": "internal"
+      }
+    },
     "production": {
       "android": {
         "serviceAccountKeyPath": "./google-services.json",
