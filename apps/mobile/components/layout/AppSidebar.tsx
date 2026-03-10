@@ -1376,7 +1376,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
             {pendingInvites.length === 0 ? (
               <View className="px-4 pb-5 pt-6 items-center gap-2">
                 <Inbox size={28} className="text-muted-foreground" />
-                <Text className="text-sm font-medium text-card-foreground">No messages or invites pending</Text>
+                <Text className="text-sm font-medium text-card-foreground">No messages or invites pending.</Text>
                 <Text className="text-xs text-muted-foreground text-center">
                   Workspace and project invitations will appear here
                 </Text>
