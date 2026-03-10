@@ -14,8 +14,9 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from "react"
-import { View, Text, Pressable, Platform, Linking } from "react-native"
+import { View, Text, Pressable } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
+import { openAuthFlow } from "@shogo/ui-kit/platform"
 import {
   CheckCircle2,
   Loader2,
@@ -79,7 +80,6 @@ export function ConnectToolWidget({
 
   // On mount: check if already connected (handles page reload after OAuth)
   useEffect(() => {
-    if (Platform.OS !== "web") return
     let cancelled = false
     checkConnection().then((connected) => {
       if (!cancelled && connected) {
@@ -93,7 +93,7 @@ export function ConnectToolWidget({
 
   // Poll while connecting: wait an initial delay, then poll until connected
   useEffect(() => {
-    if (Platform.OS !== "web" || status !== "connecting") return
+    if (status !== "connecting") return
 
     let cancelled = false
 
@@ -123,25 +123,9 @@ export function ConnectToolWidget({
     }
   }, [status, checkConnection, sendConfirmation])
 
-  const handleConnect = useCallback(() => {
-    if (Platform.OS === "web") {
-      setStatus("connecting")
-      const width = 600
-      const height = 700
-      const left = Math.round(
-        window.screenX + (window.outerWidth - width) / 2
-      )
-      const top = Math.round(
-        window.screenY + (window.outerHeight - height) / 2
-      )
-      window.open(
-        authUrl,
-        "composio-connect",
-        `width=${width},height=${height},left=${left},top=${top},popup=true`
-      )
-    } else {
-      Linking.openURL(authUrl)
-    }
+  const handleConnect = useCallback(async () => {
+    setStatus("connecting")
+    await openAuthFlow(authUrl)
   }, [authUrl])
 
   const displayName =

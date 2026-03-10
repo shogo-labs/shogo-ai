@@ -22,7 +22,6 @@ import {
   Pressable,
   Image,
   ScrollView,
-  KeyboardAvoidingView,
   Platform,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
@@ -385,10 +384,7 @@ export function ChatInput({
   }, [])
 
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-      className="p-3 pt-0"
-    >
+    <View className="p-3 pt-0">
       {/* File previews */}
       {pendingFiles.length > 0 && (
         <ScrollView
@@ -766,7 +762,7 @@ export function ChatInput({
           </View>
         </View>
       </View>
-    </KeyboardAvoidingView>
+    </View>
   )
 }
 

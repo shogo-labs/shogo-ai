@@ -28,7 +28,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react"
-import { View, Text, Pressable, ScrollView, Platform, ActivityIndicator } from "react-native"
+import { View, Text, Pressable, ScrollView, Platform, ActivityIndicator, KeyboardAvoidingView } from "react-native"
 import * as SecureStore from "expo-secure-store"
 import { observer } from "mobx-react-lite"
 import { useChat, type UIMessage } from "@ai-sdk/react"
@@ -2043,11 +2043,16 @@ export const ChatPanel = observer(function ChatPanel({
         )}
 
         {/* Chat Panel — full width on mobile (no resize handle) */}
-        <View className="flex-1 flex-col bg-background">
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          className="flex-1 flex-col bg-background"
+          keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
+        >
           {/* Messages with Turn Grouping */}
           <ScrollView
             ref={scrollViewRef}
             className="flex-1 p-4"
+            keyboardShouldPersistTaps="handled"
             onScroll={(e) => {
               const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent
               const isAtBottom =
@@ -2167,7 +2172,7 @@ export const ChatPanel = observer(function ChatPanel({
               onReorderQueuedMessage={handleReorderQueuedMessage}
             />
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </View>
     </ChatContextProvider>
   )

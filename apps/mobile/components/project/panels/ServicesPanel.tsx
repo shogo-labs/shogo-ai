@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   View,
   Text,
@@ -8,8 +8,8 @@ import {
   ScrollView,
   ActivityIndicator,
   Platform,
-  Linking,
 } from 'react-native'
+import * as ExpoLinking from 'expo-linking'
 import {
   Globe,
   RefreshCw,
@@ -19,6 +19,7 @@ import {
   X,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { openAuthFlow } from '@shogo/ui-kit/platform'
 import { API_URL, api } from '../../../lib/api'
 import { useDomainHttp } from '../../../contexts/domain'
 
@@ -35,10 +36,6 @@ interface ServicesPanelProps {
   agentUrl: string | null
   visible: boolean
 }
-
-const POLL_INTERVAL_MS = 2500
-const POLL_TIMEOUT_MS = 90000
-const INITIAL_POLL_DELAY_MS = 5000
 
 const TOOLKIT_DISPLAY: Record<string, { label: string; icon: string }> = {
   gmail: { label: 'Gmail', icon: '📧' },
@@ -62,7 +59,6 @@ export function ServicesPanel({ projectId, agentUrl, visible }: ServicesPanelPro
   const [error, setError] = useState<string | null>(null)
   const [disconnecting, setDisconnecting] = useState<string | null>(null)
   const [reconnecting, setReconnecting] = useState<string | null>(null)
-  const pollCancelRef = useRef(false)
 
   const loadConnections = useCallback(async () => {
     setIsLoading(true)
@@ -98,7 +94,11 @@ export function ServicesPanel({ projectId, agentUrl, visible }: ServicesPanelPro
     setReconnecting(toolkit)
     setError(null)
     try {
-      const callbackUrl = `${API_URL}/api/integrations/callback`
+      const isNative = Platform.OS !== 'web'
+      const redirect = isNative ? ExpoLinking.createURL('integrations-callback') : undefined
+      const callbackUrl = redirect
+        ? `${API_URL}/api/integrations/callback?redirect=${encodeURIComponent(redirect)}`
+        : `${API_URL}/api/integrations/callback`
       const result = await api.connectIntegration(http, toolkit, projectId, callbackUrl)
       const redirectUrl = result.data?.redirectUrl
       if (!redirectUrl) {
@@ -107,49 +107,14 @@ export function ServicesPanel({ projectId, agentUrl, visible }: ServicesPanelPro
         return
       }
 
-      if (Platform.OS === 'web') {
-        const width = 600
-        const height = 700
-        const left = Math.round(window.screenX + (window.outerWidth - width) / 2)
-        const top = Math.round(window.screenY + (window.outerHeight - height) / 2)
-        window.open(
-          redirectUrl,
-          'composio-connect',
-          `width=${width},height=${height},left=${left},top=${top},popup=true`,
-        )
-
-        pollCancelRef.current = false
-        const startTime = Date.now()
-        await new Promise((r) => setTimeout(r, INITIAL_POLL_DELAY_MS))
-        while (!pollCancelRef.current && Date.now() - startTime < POLL_TIMEOUT_MS) {
-          try {
-            const status = await api.getIntegrationStatus(http, toolkit, projectId)
-            if ((status as any)?.data?.connected) {
-              await loadConnections()
-              setReconnecting(null)
-              return
-            }
-          } catch { /* keep polling */ }
-          await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
-        }
-        setReconnecting(null)
-        await loadConnections()
-      } else {
-        await Linking.openURL(redirectUrl)
-        setTimeout(() => {
-          setReconnecting(null)
-          loadConnections()
-        }, 5000)
-      }
+      await openAuthFlow(redirectUrl)
+      setReconnecting(null)
+      await loadConnections()
     } catch (err: any) {
       setError(err.message)
       setReconnecting(null)
     }
   }, [http, projectId, loadConnections])
-
-  useEffect(() => {
-    return () => { pollCancelRef.current = true }
-  }, [])
 
   if (!visible) return null
 

@@ -8,9 +8,9 @@ import {
   ScrollView,
   ActivityIndicator,
   TextInput,
-  Linking,
   Platform,
 } from 'react-native'
+import * as ExpoLinking from 'expo-linking'
 import {
   Wrench,
   RefreshCw,
@@ -23,6 +23,7 @@ import {
   X,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { openAuthFlow } from '@shogo/ui-kit/platform'
 import { API_URL, api } from '../../../lib/api'
 import { useDomainHttp } from '../../../contexts/domain'
 
@@ -192,31 +193,17 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
       setConnecting(result.id)
       setError(null)
       try {
-        const callbackUrl = `${API_URL}/api/integrations/callback`
+        const isNative = Platform.OS !== 'web'
+        const redirect = isNative ? ExpoLinking.createURL('integrations-callback') : undefined
+        const callbackUrl = redirect
+          ? `${API_URL}/api/integrations/callback?redirect=${encodeURIComponent(redirect)}`
+          : `${API_URL}/api/integrations/callback`
         const data = await api.connectIntegration(http, result.composioToolkit, projectId, callbackUrl)
         const redirectUrl = data.data?.redirectUrl
         if (redirectUrl) {
-          if (Platform.OS === 'web') {
-            const popup = window.open(redirectUrl, 'composio-connect', 'width=600,height=700,popup=yes')
-            const checkInterval = setInterval(() => {
-              if (popup?.closed) {
-                clearInterval(checkInterval)
-                setConnecting(null)
-                loadInstalledTools()
-              }
-            }, 500)
-            setTimeout(() => {
-              clearInterval(checkInterval)
-              setConnecting(null)
-              loadInstalledTools()
-            }, 120_000)
-          } else {
-            await Linking.openURL(redirectUrl)
-            setTimeout(() => {
-              setConnecting(null)
-              loadInstalledTools()
-            }, 5000)
-          }
+          await openAuthFlow(redirectUrl)
+          setConnecting(null)
+          await loadInstalledTools()
         }
       } catch (err: any) {
         setError(err.message)

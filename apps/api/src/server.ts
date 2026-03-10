@@ -4699,9 +4699,13 @@ app.get('/api/me/activity', authMiddleware, requireAuth, async (c) => {
 // This makes ctx.userId available in route hooks for authorization
 app.use('/api/*', authMiddleware)
 
-// Require authentication for all routes
-// Unauthenticated requests get 401 Unauthorized
-app.use('/api/*', requireAuth)
+// Public endpoints that don't require authentication (e.g. OAuth callback pages)
+const PUBLIC_API_PATHS = ['/api/integrations/callback']
+app.use('/api/*', async (c, next) => {
+  const path = new URL(c.req.url).pathname
+  if (PUBLIC_API_PATHS.some((p) => path === p)) return next()
+  return requireAuth(c, next)
+})
 
 // Require project membership for all project-scoped routes
 // Prevents authenticated users from accessing projects they don't belong to
