@@ -2111,6 +2111,17 @@ export class AgentGateway {
     parts.push(skillMatchingGuide)
     parts.push(this.promptOverrides.get('mcp_discovery_guide') ?? OPTIMIZED_MCP_DISCOVERY_GUIDE)
 
+    if (this.permissionEngine) {
+      parts.push([
+        '## Security Permissions',
+        '',
+        'This agent runs with a security permission system. Some tool calls may be blocked or require user approval through a UI dialog (not through chat).',
+        '- If a tool result says "Permission denied", the action is permanently blocked. Tell the user it is not available. Do NOT ask them to approve it.',
+        '- If a tool result says the user "declined" an action, they already decided via the security dialog. Acknowledge it briefly and move on. Do NOT ask again or request confirmation in chat.',
+        '- Never try to work around permission denials by re-running the same tool or asking the user to confirm in text.',
+      ].join('\n'))
+    }
+
     return parts.join('\n\n---\n\n')
   }
 

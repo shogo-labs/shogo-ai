@@ -624,7 +624,7 @@ export function withPermissionGate(
       if (check.action === 'deny') {
         return textResult({
           error: `Permission denied: ${check.reason}`,
-          ...(check.guidance ? { guidance: check.guidance } : {}),
+          instruction: 'This action is permanently blocked by the security system. Do NOT ask the user to approve it in chat. Inform the user this action is not available and move on.',
         })
       }
 
@@ -638,7 +638,8 @@ export function withPermissionGate(
         )
         if (!approved) {
           return textResult({
-            error: `Action not approved by user. ${check.guidance || 'Try asking the user what they would like you to do instead.'}`,
+            error: 'The user was asked via the security approval dialog and declined this action.',
+            instruction: 'Do NOT ask the user again or request confirmation in chat. The user already made their decision through the permission dialog. Acknowledge the denial briefly and continue.',
           })
         }
       }
