@@ -57,7 +57,10 @@ export function ConnectToolWidget({
   const chatContext = useChatContextSafe()
   const http = useDomainHttp()
   const hasSentConfirmation = useRef(false)
-  const { id: projectId } = useLocalSearchParams<{ id: string }>()
+  const { id: projectId, fromOAuth } = useLocalSearchParams<{
+    id: string
+    fromOAuth?: string
+  }>()
 
   const sendConfirmation = useCallback(() => {
     if (hasSentConfirmation.current) return
@@ -70,6 +73,13 @@ export function ConnectToolWidget({
   const checkConnection = useCallback(async () => {
     if (!projectId) return false
     try {
+      if (http) {
+        const json = await api.getIntegrationStatus(http, toolkitName, projectId)
+        return (
+          (json as any)?.data?.connected === true ||
+          ((json as any)?.ok === true && (json as any)?.data?.status === "ACTIVE")
+        )
+      }
       const res = await fetch(
         `${API_URL}/api/integrations/status/${encodeURIComponent(toolkitName)}?projectId=${encodeURIComponent(projectId)}`,
         { credentials: "include" }
@@ -83,17 +93,18 @@ export function ConnectToolWidget({
     } catch {
       return false
     }
-  }, [toolkitName, projectId])
+  }, [toolkitName, projectId, http])
 
   // On mount: check if already connected (handles page reload after OAuth).
-  // If we're returning from a native OAuth flow (tracked by pendingOAuthToolkits),
-  // also send the confirmation message so the agent continues.
+  // If we're returning from a native OAuth flow (tracked by pendingOAuthToolkits
+  // or the fromOAuth query param), also send the confirmation message so the
+  // agent continues.
   useEffect(() => {
     let cancelled = false
     checkConnection().then((connected) => {
       if (!cancelled && connected) {
         setStatus("connected")
-        if (pendingOAuthToolkits.has(toolkitName)) {
+        if (pendingOAuthToolkits.has(toolkitName) || fromOAuth === "1") {
           pendingOAuthToolkits.delete(toolkitName)
           sendConfirmation()
         }
@@ -102,7 +113,7 @@ export function ConnectToolWidget({
     return () => {
       cancelled = true
     }
-  }, [checkConnection, toolkitName, sendConfirmation])
+  }, [checkConnection, toolkitName, sendConfirmation, fromOAuth])
 
   // Poll while connecting: wait an initial delay, then poll until connected
   useEffect(() => {
@@ -136,6 +147,15 @@ export function ConnectToolWidget({
     }
   }, [status, checkConnection, sendConfirmation])
 
+  const checkAndConfirm = useCallback(async () => {
+    const connected = await checkConnection()
+    if (connected) {
+      pendingOAuthToolkits.delete(toolkitName)
+      setStatus("connected")
+      sendConfirmation()
+    }
+  }, [checkConnection, toolkitName, sendConfirmation])
+
   const handleConnect = useCallback(async () => {
     setStatus("connecting")
     const isNative = Platform.OS !== "web"
@@ -163,6 +183,7 @@ export function ConnectToolWidget({
         const redirectUrl = data.data?.redirectUrl
         if (redirectUrl) {
           await openAuthFlow(redirectUrl)
+          await checkAndConfirm()
           return
         }
       } catch {
@@ -171,7 +192,8 @@ export function ConnectToolWidget({
     }
 
     await openAuthFlow(authUrl)
-  }, [authUrl, http, toolkitName, projectId])
+    await checkAndConfirm()
+  }, [authUrl, http, toolkitName, projectId, checkAndConfirm])
 
   const displayName =
     toolkitName.charAt(0).toUpperCase() + toolkitName.slice(1)

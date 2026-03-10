@@ -15,7 +15,7 @@ export default function IntegrationsCallback() {
   const { projectId } = useLocalSearchParams<{ projectId?: string }>()
 
   if (projectId) {
-    return <Redirect href={`/(app)/projects/${projectId}`} />
+    return <Redirect href={`/(app)/projects/${projectId}?fromOAuth=1`} />
   }
   return <Redirect href="/" />
 }

@@ -755,17 +755,23 @@ app.get('/api/integrations/callback', (c) => {
     ? `window.location.href = ${JSON.stringify(redirectParam)};`
     : ''
 
+  const successMessage = ok && isAllowedRedirect
+    ? `<p>Redirecting back to Shogo...</p>
+       <p style="margin-top:1rem"><a href="${redirectParam}" style="color:#4F46E5;text-decoration:underline">Tap here if you are not redirected</a></p>`
+    : `<p>${ok ? 'You can close this window.' : 'Please close this window and try again.'}</p>`
+
   const html = `<!DOCTYPE html>
 <html><head><style>
   body { font-family: -apple-system, system-ui, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #fafafa; color: #333; }
   .card { text-align: center; padding: 2rem; }
   .icon { font-size: 3rem; margin-bottom: 0.5rem; }
   p { font-size: 0.9rem; color: #666; }
+  a { color: #4F46E5; text-decoration: underline; }
 </style></head><body>
   <div class="card">
     <div class="icon">${ok ? '✅' : '❌'}</div>
     <h3>${ok ? 'Connected!' : 'Connection failed'}</h3>
-    <p>${ok ? 'You can close this window.' : 'Please close this window and try again.'}</p>
+    ${successMessage}
   </div>
   <script>${redirectScript}${ok && !redirectScript ? 'setTimeout(function(){ window.close(); }, 1500);' : ''}</script>
 </body></html>`
