@@ -72,7 +72,6 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
   const [composioConnections, setComposioConnections] = useState<Record<string, boolean>>({})
 
   const loadInstalledTools = useCallback(async () => {
-    console.log('[ToolsPanel] loadInstalledTools called, agentUrl:', agentUrl)
     if (!agentUrl) return
     setIsLoading(true)
     setError(null)
@@ -93,7 +92,6 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
         // non-critical
       }
     } catch (err: any) {
-      console.error('[ToolsPanel] loadInstalledTools error:', err)
       setError(err.message)
     } finally {
       setIsLoading(false)

@@ -148,7 +148,6 @@ export function ChannelsPanel({ projectId, agentUrl, visible }: ChannelsPanelPro
   const [copiedSnippet, setCopiedSnippet] = useState(false)
 
   const loadChannels = useCallback(async () => {
-    console.log('[ChannelsPanel] loadChannels called, agentUrl:', agentUrl)
     if (!agentUrl) return
     setIsLoading(true)
     setError(null)
@@ -158,7 +157,6 @@ export function ChannelsPanel({ projectId, agentUrl, visible }: ChannelsPanelPro
       const data = await res.json()
       setChannels(data.channels || [])
     } catch (err: any) {
-      console.error('[ChannelsPanel] loadChannels error:', err)
       setError(err.message)
     } finally {
       setIsLoading(false)

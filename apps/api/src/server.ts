@@ -1688,12 +1688,7 @@ app.all('/api/projects/:projectId/preview', async (c) => {
 app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   const projectId = c.req.param('projectId')
 
-  const hasCookie = !!c.req.header('cookie')
-  const cookiePreview = c.req.header('cookie')?.substring(0, 60) || '(none)'
-  console.log(`[AgentProxy] ${c.req.method} ${c.req.path} | cookie: ${hasCookie} | ${cookiePreview}`)
-
   const userId = await getAuthUserId(c)
-  console.log(`[AgentProxy] getAuthUserId result: ${userId || 'null (401)'}`)
   if (!userId) {
     return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
   }
@@ -1741,11 +1736,6 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     }
 
     const response = await fetch(targetUrl, requestInit)
-    console.log(`[AgentProxy] Upstream response: ${response.status} ${response.statusText} for ${path}`)
-    if (response.status === 401) {
-      const body = await response.clone().text()
-      console.log(`[AgentProxy] 401 body from agent runtime: ${body}`)
-    }
 
     const responseHeaders = new Headers()
     response.headers.forEach((value, key) => {

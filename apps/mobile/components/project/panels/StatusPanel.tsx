@@ -64,7 +64,7 @@ interface AgentStatusData {
   }
   channels: ChannelInfo[]
   skills: Array<{ name: string; trigger: string; description: string; native?: boolean }>
-  model: { provider: string; name: string }
+  model?: { provider: string; name: string }
   sessions?: SessionInfo[]
   cronJobs?: CronJobInfo[]
   memory?: MemoryInfo
@@ -125,7 +125,6 @@ export function StatusPanel({ projectId, agentUrl, visible }: StatusPanelProps) 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const fetchStatus = useCallback(async () => {
-    console.log('[StatusPanel] fetchStatus called, agentUrl:', agentUrl)
     if (!agentUrl) return
     try {
       const res = await agentFetch(`${agentUrl}/agent/status`)
@@ -135,7 +134,6 @@ export function StatusPanel({ projectId, agentUrl, visible }: StatusPanelProps) 
       setError(null)
       setLastFetchedAt(Date.now())
     } catch (err: any) {
-      console.error('[StatusPanel] fetchStatus error:', err)
       setError(err.message)
     }
   }, [agentUrl])
@@ -491,12 +489,14 @@ export function StatusPanel({ projectId, agentUrl, visible }: StatusPanelProps) 
             </DashboardSection>
 
             {/* Model Info */}
-            <View className="flex-row items-center gap-2 px-3 py-2 rounded-lg border border-border/40 bg-muted/20">
-              <Zap size={14} className="text-muted-foreground" />
-              <Text className="text-xs text-muted-foreground">Model:</Text>
-              <Text className="text-xs font-medium text-foreground">{status.model.name}</Text>
-              <Text className="text-xs text-muted-foreground">({status.model.provider})</Text>
-            </View>
+            {status.model && (
+              <View className="flex-row items-center gap-2 px-3 py-2 rounded-lg border border-border/40 bg-muted/20">
+                <Zap size={14} className="text-muted-foreground" />
+                <Text className="text-xs text-muted-foreground">Model:</Text>
+                <Text className="text-xs font-medium text-foreground">{status.model.name}</Text>
+                <Text className="text-xs text-muted-foreground">({status.model.provider})</Text>
+              </View>
+            )}
           </View>
         )}
       </ScrollView>

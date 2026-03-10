@@ -34,7 +34,7 @@ export function CapabilitiesPanel({ projectId, agentUrl, visible }: Capabilities
               key={tab.id}
               onPress={() => setSubTab(tab.id)}
               className={cn(
-                'px-3 py-1.5',
+                'px-3 py-1.5 rounded-md',
                 subTab === tab.id ? 'bg-primary' : 'active:bg-muted',
               )}
             >

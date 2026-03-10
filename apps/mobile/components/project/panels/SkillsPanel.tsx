@@ -66,7 +66,6 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
   )
 
   const loadSkills = useCallback(async () => {
-    console.log('[SkillsPanel] loadSkills called, agentUrl:', agentUrl)
     if (!agentUrl) return
     setIsLoading(true)
     setError(null)
@@ -90,7 +89,6 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
         setBundledSkills(bundledData.skills || [])
       }
     } catch (err: any) {
-      console.error('[SkillsPanel] loadSkills error:', err)
       setError(err.message)
     } finally {
       setIsLoading(false)

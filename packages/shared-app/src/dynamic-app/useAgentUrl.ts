@@ -52,7 +52,6 @@ export function useAgentUrl(
         // The server returns agent URLs relative to itself (localhost).
         // On mobile devices localhost refers to the device, not the dev
         // machine, so rewrite the host to match apiBaseUrl.
-        console.log('[useAgentUrl] sandbox/url response:', { agentUrl: data.agentUrl, url: data.url, resolved })
         if (resolved) {
           try {
             const agentParsed = new URL(resolved)
@@ -67,8 +66,6 @@ export function useAgentUrl(
             }
           } catch {}
         }
-        console.log('[useAgentUrl] resolved agentUrl:', resolved)
-
         if (!controller.signal.aborted) {
           setAgentUrl(resolved)
           setError(null)
