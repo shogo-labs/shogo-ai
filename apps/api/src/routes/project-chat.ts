@@ -780,6 +780,35 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
   })
 
   /**
+   * POST /projects/:projectId/permission-response - Proxy permission approval to agent runtime
+   */
+  router.post("/projects/:projectId/permission-response", async (c) => {
+    const projectId = c.req.param("projectId")
+
+    try {
+      let podUrl: string
+      try {
+        podUrl = await getProjectUrl(projectId)
+      } catch {
+        return c.json({ error: "No active runtime" }, 503)
+      }
+
+      const body = await c.req.text()
+      const response = await fetch(`${podUrl}/agent/permission-response`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: body || "{}",
+      })
+
+      const result = await response.json()
+      return c.json(result)
+    } catch (error: any) {
+      console.error("[ProjectChat] Permission response proxy error:", error)
+      return c.json({ error: error.message }, 500)
+    }
+  })
+
+  /**
    * GET /projects/:projectId/chat/status - Check project runtime status
    */
   router.get("/projects/:projectId/chat/status", async (c) => {

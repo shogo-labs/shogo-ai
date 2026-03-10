@@ -2177,12 +2177,11 @@ export const ChatPanel = observer(function ChatPanel({
               onRespond={async (response) => {
                 setPendingPermissionRequest(null)
                 try {
-                  const baseUrl = localAgentUrl
-                    || (projectId ? `${API_URL}/api/projects/${projectId}` : '')
-                  if (baseUrl) {
-                    await fetch(`${baseUrl}/agent/permission-response`, {
+                  if (projectId) {
+                    await fetch(`${API_URL}/api/projects/${projectId}/permission-response`, {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
+                      credentials: 'include',
                       body: JSON.stringify(response),
                     })
                   }
