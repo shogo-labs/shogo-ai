@@ -35,6 +35,8 @@ export async function startLocalServer(): Promise<void> {
     PREWARM_CLAUDE_CODE: 'false',
     AGENT_RUNTIME_ENTRY: path.join(bundleDir, 'agent-runtime.js'),
     MCP_SERVER_PATH: path.join(bundleDir, 'mcp-server.js'),
+    // Security policy is loaded per-runtime from LocalConfig by RuntimeManager;
+    // the desktop server just needs SHOGO_LOCAL_MODE=true to trigger it.
   }
 
   await initializeDatabase(bunPath, env)

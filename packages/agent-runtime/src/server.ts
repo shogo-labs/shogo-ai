@@ -946,6 +946,35 @@ app.post('/agent/heartbeat/trigger', async (c) => {
   }
 })
 
+// Permission approval response (local mode security)
+app.post('/agent/permission-response', async (c) => {
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+
+  const engine = agentGateway.getPermissionEngine()
+  if (!engine) {
+    return c.json({ error: 'Permission engine not active' }, 404)
+  }
+
+  try {
+    const body = await c.req.json() as {
+      id: string
+      decision: 'allow_once' | 'always_allow' | 'deny'
+      pattern?: string
+    }
+
+    if (!body.id || !body.decision) {
+      return c.json({ error: 'Missing id or decision' }, 400)
+    }
+
+    engine.handleApprovalResponse(body)
+    return c.json({ ok: true })
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500)
+  }
+})
+
 // Workspace file read/write endpoints
 app.get('/agent/files/:filename', async (c) => {
   const filename = c.req.param('filename')

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { Platform } from 'react-native'
-import type { HttpClient } from '@shogo-ai/sdk'
+import { HttpClient } from '@shogo-ai/sdk'
 
 export const API_URL = (() => {
   const envUrl = process.env.EXPO_PUBLIC_API_URL
@@ -25,6 +25,18 @@ export const API_URL = (() => {
     default: 'http://localhost:8002',
   })!
 })()
+
+/**
+ * Create a standalone HttpClient for contexts where the SDK domain
+ * provider is not mounted (e.g. onboarding). Prefer `useDomainHttp()`
+ * when inside the app shell.
+ */
+export function createHttpClient(baseUrl?: string): HttpClient {
+  return new HttpClient({
+    baseUrl: baseUrl ?? API_URL!,
+    credentials: Platform.OS === 'web' ? 'include' : 'omit',
+  })
+}
 
 // ─── Backend API helpers ────────────────────────────────────
 // For domain CRUD (projects, chat sessions, etc.) use `useDomainActions()`.
@@ -243,6 +255,41 @@ export const api = {
     const res = await http.post<{ ok: boolean }>('/api/onboarding/complete')
     return res.data
   },
+
+  // ─── Local Security Preferences ───────────────────────────
+
+  async getSecurityPrefs(http: HttpClient) {
+    const res = await http.get<SecurityPrefs>('/api/local/security-prefs')
+    return res.data ?? { mode: 'balanced' as const, approvalTimeoutSeconds: 60 }
+  },
+
+  async saveSecurityPrefs(http: HttpClient, prefs: SecurityPrefs) {
+    const res = await http.post<{ ok: boolean }>('/api/local/security-prefs', prefs)
+    return res.data
+  },
+
+  async sendPermissionResponse(
+    http: HttpClient,
+    projectId: string,
+    response: { id: string; decision: 'allow_once' | 'always_allow' | 'deny'; pattern?: string },
+  ) {
+    const res = await http.post<{ ok: boolean }>(
+      `/api/projects/${projectId}/permission-response`,
+      response,
+    )
+    return res.data
+  },
+}
+
+export interface SecurityPrefs {
+  mode: 'strict' | 'balanced' | 'full_autonomy'
+  overrides?: {
+    shellCommands?: { allow?: string[]; deny?: string[] }
+    fileAccess?: { allow?: string[]; deny?: string[] }
+    network?: { allowedDomains?: string[] }
+    mcpTools?: { autoApprove?: string[] }
+  }
+  approvalTimeoutSeconds?: number
 }
 
 export interface AgentTemplateSummary {

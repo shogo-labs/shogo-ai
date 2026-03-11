@@ -817,21 +817,15 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
       if (!storedPw) {
         return c.json({ ok: false, error: 'Local user password not found in config.' }, 500)
       }
-      // Build a synthetic sign-in request and pass it through Better Auth's handler
-      // so session cookies are set correctly in the response.
-      const baseUrl = process.env.BETTER_AUTH_URL || `http://localhost:${API_PORT}`
-      const signInReq = new Request(`${baseUrl}/api/auth/sign-in/email`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          ...Object.fromEntries(c.req.raw.headers.entries()),
-        },
-        body: JSON.stringify({ email: user.email, password: storedPw.value }),
+      const response = await auth.api.signInEmail({
+        body: { email: user.email, password: storedPw.value },
+        headers: c.req.raw.headers,
+        asResponse: true,
       })
-      return auth.handler(signInReq)
+      return response
     } catch (err: any) {
       console.error('[LocalMode] Auto-sign-in failed:', err)
-      return c.json({ ok: false, error: err.message }, 500)
+      return c.json({ ok: false, error: err?.message || String(err) }, 500)
     }
   })
 
@@ -952,6 +946,48 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
       return c.json({ ok: true, models })
     } catch (err: any) {
       return c.json({ ok: false, error: `Cannot reach LLM server: ${err.message}`, models: [] })
+    }
+  })
+
+  // -------------------------------------------------------------------------
+  // Security Preferences (local mode only)
+  // -------------------------------------------------------------------------
+
+  app.get('/api/local/security-prefs', async (c) => {
+    try {
+      const row = await localDb.localConfig.findUnique({ where: { key: 'SECURITY_PREFS' } })
+      if (!row) {
+        return c.json({ mode: 'balanced', approvalTimeoutSeconds: 60 })
+      }
+      return c.json(JSON.parse(row.value))
+    } catch (err: any) {
+      return c.json({ error: err.message }, 500)
+    }
+  })
+
+  app.post('/api/local/security-prefs', async (c) => {
+    try {
+      const body = await c.req.json<{
+        mode?: string
+        overrides?: Record<string, any>
+        approvalTimeoutSeconds?: number
+      }>()
+
+      const validModes = ['strict', 'balanced', 'full_autonomy']
+      if (body.mode && !validModes.includes(body.mode)) {
+        return c.json({ error: `Invalid mode. Must be one of: ${validModes.join(', ')}` }, 400)
+      }
+
+      const value = JSON.stringify(body)
+      await localDb.localConfig.upsert({
+        where: { key: 'SECURITY_PREFS' },
+        update: { value },
+        create: { key: 'SECURITY_PREFS', value },
+      })
+
+      return c.json({ ok: true })
+    } catch (err: any) {
+      return c.json({ error: err.message }, 500)
     }
   })
 }
@@ -3114,6 +3150,23 @@ app.post('/api/projects/:projectId/chat/wake', async (c) => {
   const url = new URL(c.req.url)
   url.pathname = `/projects/${c.req.param('projectId')}/chat/wake`
   const newReq = new Request(url.toString(), { method: 'POST' })
+  return router.fetch(newReq)
+})
+
+// POST /api/projects/:projectId/permission-response - Proxy permission approval to agent runtime
+app.post('/api/projects/:projectId/permission-response', async (c) => {
+  const authResult = await requireProjectAuth(c)
+  if ('error' in authResult) return authResult.error
+
+  const manager = getRuntimeManager()
+  const router = projectChatRoutes({ runtimeManager: manager })
+  const url = new URL(c.req.url)
+  url.pathname = `/projects/${c.req.param('projectId')}/permission-response`
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body,
+  })
   return router.fetch(newReq)
 })
 

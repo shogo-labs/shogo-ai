@@ -27,11 +27,13 @@ import {
   ArrowRight,
   Check,
   ChevronDown,
+  Shield,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
 import { usePlatformConfig, invalidatePlatformConfigCache } from '../../lib/platform-config'
-import { API_URL } from '../../lib/api'
+import { API_URL, api, createHttpClient } from '../../lib/api'
+import { SecurityPreferenceSelector } from '../../components/security/SecurityPreferenceSelector'
 
 // =============================================================================
 // Types
@@ -60,6 +62,7 @@ interface AgentTemplate {
 type StepId =
   | 'welcome'
   | 'create-account'
+  | 'security-preference'
   | 'configure-ai'
   | 'features'
   | 'templates'
@@ -67,7 +70,7 @@ type StepId =
 
 function getSteps(localMode: boolean, needsSetup: boolean): StepId[] {
   if (localMode && needsSetup) {
-    return ['welcome', 'create-account']
+    return ['welcome', 'create-account', 'security-preference']
   }
   // Cloud onboarding
   return ['welcome', 'features', 'templates', 'get-started']
@@ -113,6 +116,10 @@ export default function OnboardingPage() {
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null)
   const [templatesLoading, setTemplatesLoading] = useState(false)
 
+  // Security preference state (local mode only)
+  const [securityMode, setSecurityMode] = useState<'strict' | 'balanced' | 'full_autonomy'>('balanced')
+  const [isSavingSecurity, setIsSavingSecurity] = useState(false)
+
   // Completing
   const [isCompleting, setIsCompleting] = useState(false)
 
@@ -147,22 +154,33 @@ export default function OnboardingPage() {
     try {
       await signUp(name, email, password)
       invalidatePlatformConfigCache()
-      if (localMode) {
-        // Mark onboarding done and send to super admin for setup
-        await fetch(`${API_URL}/api/onboarding/complete`, {
-          method: 'POST',
-          credentials: 'include',
-        }).catch(() => {})
-        router.replace('/(admin)')
-      } else {
-        goNext()
-      }
+      // In local mode, proceed to security preference step before redirecting
+      goNext()
     } catch (e: any) {
       setAuthError(e.message || 'Failed to create account')
     } finally {
       setIsSigningUp(false)
     }
-  }, [name, email, password, signUp, goNext, localMode, router])
+  }, [name, email, password, signUp, goNext])
+
+  // Save security preference and complete local onboarding
+  const handleSaveSecurityAndComplete = useCallback(async () => {
+    setIsSavingSecurity(true)
+    const http = createHttpClient()
+    try {
+      await api.saveSecurityPrefs(http, {
+        mode: securityMode,
+        approvalTimeoutSeconds: 60,
+      })
+    } catch {
+      // Non-critical — defaults to balanced if save fails
+    }
+
+    await api.completeOnboarding(http).catch(() => {})
+
+    setIsSavingSecurity(false)
+    router.replace('/(admin)')
+  }, [securityMode, router])
 
   // -- Test LLM connection
   const handleTestConnection = useCallback(async () => {
@@ -290,6 +308,15 @@ export default function OnboardingPage() {
             />
           )}
 
+          {currentStep === 'security-preference' && (
+            <SecurityPreferenceStep
+              value={securityMode}
+              onChange={setSecurityMode}
+              onComplete={handleSaveSecurityAndComplete}
+              isLoading={isSavingSecurity}
+            />
+          )}
+
           {currentStep === 'configure-ai' && (
             <ConfigureAIStep
               aiMode={aiMode}
@@ -339,7 +366,7 @@ export default function OnboardingPage() {
           )}
 
           {/* Navigation */}
-          {currentStep !== 'welcome' && currentStep !== 'get-started' && (
+          {currentStep !== 'welcome' && currentStep !== 'get-started' && currentStep !== 'security-preference' && (
             <View className="flex-row items-center justify-between mt-10">
               <Pressable
                 onPress={goBack}
@@ -931,3 +958,57 @@ function ModelSelector({
     </View>
   )
 }
+
+function SecurityPreferenceStep({
+  value,
+  onChange,
+  onComplete,
+  isLoading,
+}: {
+  value: 'strict' | 'balanced' | 'full_autonomy'
+  onChange: (mode: 'strict' | 'balanced' | 'full_autonomy') => void
+  onComplete: () => void
+  isLoading: boolean
+}) {
+  return (
+    <View className="gap-6">
+      <View className="items-center gap-3">
+        <View className="w-14 h-14 rounded-2xl bg-primary/10 items-center justify-center">
+          <Shield size={28} className="text-primary" />
+        </View>
+
+        <Text className="text-2xl font-bold text-foreground text-center">
+          How should Shogo handle permissions?
+        </Text>
+        <Text className="text-sm text-muted-foreground text-center leading-5 max-w-sm">
+          Choose how much control the AI agent has on your machine. You can change this anytime in Settings.
+        </Text>
+      </View>
+
+      <SecurityPreferenceSelector value={value} onChange={onChange} />
+
+      <Text className="text-xs text-muted-foreground text-center leading-4">
+        Regardless of mode, Shogo never accesses ~/.ssh, system credentials, or runs sudo commands.
+      </Text>
+
+      <Pressable
+        onPress={onComplete}
+        disabled={isLoading}
+        className={cn(
+          'flex-row items-center justify-center gap-2 py-3.5 rounded-xl',
+          isLoading ? 'bg-primary/50' : 'bg-primary',
+        )}
+      >
+        {isLoading ? (
+          <ActivityIndicator size="small" className="text-primary-foreground" />
+        ) : (
+          <>
+            <Text className="text-base font-semibold text-primary-foreground">Continue</Text>
+            <ArrowRight size={18} className="text-primary-foreground" />
+          </>
+        )}
+      </Pressable>
+    </View>
+  )
+}
+

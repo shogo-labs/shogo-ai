@@ -45,7 +45,7 @@ import {
 import { useChatTransportConfig } from "@shogo/shared-app/chat"
 import { useSDKDomains, useDomainActions } from "@shogo/shared-app/domain"
 import { cn } from "@shogo/shared-ui/primitives"
-import { API_URL } from "../../lib/api"
+import { API_URL, api, createHttpClient } from "../../lib/api"
 import { authClient } from "../../lib/auth-client"
 import { ChatHeader } from "./ChatHeader"
 import { MessageList } from "./MessageList"
@@ -66,6 +66,7 @@ import {
   getToolCategory as getToolCategoryFromTools,
 } from "./tools/types"
 import { AlertCircle } from "lucide-react-native"
+import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
 
 // ============================================================
 // Agent Mode Persistence
@@ -1067,6 +1068,21 @@ export const ChatPanel = observer(function ChatPanel({
         const { surfaceId, components } = (dataPart as any).data
         onCanvasPreview?.(surfaceId, components)
       }
+
+      // Handle permission approval requests from the agent runtime
+      if ((dataPart as any).type === "data-permission-request") {
+        const req = (dataPart as any).data
+        if (req) {
+          setPendingPermissionRequest({
+            id: req.id,
+            toolName: req.toolName,
+            category: req.category,
+            params: req.params ?? {},
+            reason: req.reason ?? '',
+            timeout: req.timeout ?? 60,
+          })
+        }
+      }
     },
     onFinish: async ({ message }) => {
       const contentLength = (message as any).content?.length ?? message.parts?.length ?? 0
@@ -1178,6 +1194,16 @@ export const ChatPanel = observer(function ChatPanel({
 
   const [emptyResponseError, setEmptyResponseError] = useState<string | null>(null)
   const [pendingInitialMessage, setPendingInitialMessage] = useState<string | null>(null)
+
+  // Permission approval state (local mode security)
+  const [pendingPermissionRequest, setPendingPermissionRequest] = useState<{
+    id: string
+    toolName: string
+    category: string
+    params: Record<string, any>
+    reason: string
+    timeout: number
+  } | null>(null)
 
   const initialMessageRef = useRef<string | undefined>(undefined)
   if (initialMessage != null && initialMessage.trim() !== "") {
@@ -2156,6 +2182,24 @@ export const ChatPanel = observer(function ChatPanel({
                 </View>
               </View>
             </View>
+          )}
+
+          {/* Permission Approval Dialog (Local Mode Security) */}
+          {pendingPermissionRequest && (
+            <PermissionApprovalDialog
+              request={pendingPermissionRequest}
+              onRespond={async (response) => {
+                setPendingPermissionRequest(null)
+                try {
+                  if (projectId) {
+                    const http = createHttpClient()
+                    await api.sendPermissionResponse(http, projectId, response)
+                  }
+                } catch (err) {
+                  console.error('[ChatPanel] Failed to send permission response:', err)
+                }
+              }}
+            />
           )}
 
           {/* Input */}

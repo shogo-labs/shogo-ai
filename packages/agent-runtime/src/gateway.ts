@@ -27,6 +27,7 @@ import type { ChannelAdapter, IncomingMessage, AgentStatus, ChannelStatus, Strea
 import { loadSkills, matchSkill, type Skill } from './skills'
 import { runAgentLoop, type LoopDetectorConfig, type ToolContext } from './agent-loop'
 import { createAllTools, createBasicTools, createHeartbeatTools, textResult } from './gateway-tools'
+import { PermissionEngine, parseSecurityPolicy } from './permission-engine'
 import { getDynamicAppManager } from './dynamic-app-manager'
 import { HookEmitter, loadAllHooks } from './hooks'
 import { parseSlashCommand, type SlashCommandContext } from './slash-commands'
@@ -944,6 +945,10 @@ export class AgentGateway {
   private promotedMockTools: AgentTool[] = []
   /** User's IANA timezone, set from chat requests. Falls back to server timezone. */
   private userTimezone: string | null = null
+  /** Permission engine for local-mode security guardrails */
+  private permissionEngine: PermissionEngine | null = null
+  /** Callback to push permission-related SSE events to the connected client */
+  private _permissionSseCallback?: (event: Record<string, any>) => void
 
   /** Usage from the most recent agentTurn (consumed by server.ts for the finish event) */
   private _lastTurnUsage: {
@@ -968,6 +973,16 @@ export class AgentGateway {
       ),
     })
     this.mcpClientManager.setWorkspaceDir(workspaceDir)
+
+    // Initialize permission engine in local mode
+    if (process.env.SHOGO_LOCAL_MODE === 'true') {
+      const pref = parseSecurityPolicy(process.env.SECURITY_POLICY)
+      this.permissionEngine = new PermissionEngine({
+        preference: pref,
+        workspaceDir,
+      })
+      console.log(`[AgentGateway] Permission engine initialized: mode=${pref.mode}`)
+    }
   }
 
   /** Inject a custom streamFn (used in tests to mock the LLM) */
@@ -982,6 +997,19 @@ export class AgentGateway {
 
   setUserTimezone(tz: string): void {
     this.userTimezone = tz
+  }
+
+  /** Set the SSE writer callback so the permission engine can push approval requests to the UI */
+  setPermissionSseCallback(cb: (event: Record<string, any>) => void): void {
+    this._permissionSseCallback = cb
+    if (this.permissionEngine) {
+      this.permissionEngine.setSseCallback(cb)
+    }
+  }
+
+  /** Get the permission engine (used by server.ts for the approval response endpoint) */
+  getPermissionEngine(): PermissionEngine | null {
+    return this.permissionEngine
   }
 
   /** Install tool-level execute overrides (for eval mocking). Preserves tool schema. */
@@ -1662,6 +1690,17 @@ export class AgentGateway {
     const modelId = session.modelOverride || this.config.model.name
     const provider = this.config.model.provider
 
+    // Reset per-turn state and wire/clear the SSE writer for permission requests.
+    // When there's no uiWriter (cron, heartbeat, channel, webhook turns),
+    // clear the callback so "ask" decisions fail closed instead of writing
+    // to a stale stream from a previous UI turn.
+    if (this.permissionEngine) {
+      this.permissionEngine.resetTurn()
+      this.permissionEngine.setSseCallback(
+        uiWriter ? (event) => uiWriter.write(event) : undefined
+      )
+    }
+
     const toolContext: ToolContext = {
       workspaceDir: this.workspaceDir,
       channels: this.channels,
@@ -1674,6 +1713,7 @@ export class AgentGateway {
       mcpClientManager: this.mcpClientManager,
       connectChannel: (type, config) => this.connectChannel(type, config),
       disconnectChannel: (type) => this.disconnectChannel(type),
+      permissionEngine: this.permissionEngine ?? undefined,
     }
 
     const baseTools = isHeartbeat
@@ -2070,6 +2110,17 @@ export class AgentGateway {
     parts.push(memoryGuide)
     parts.push(skillMatchingGuide)
     parts.push(this.promptOverrides.get('mcp_discovery_guide') ?? OPTIMIZED_MCP_DISCOVERY_GUIDE)
+
+    if (this.permissionEngine) {
+      parts.push([
+        '## Security Permissions',
+        '',
+        'This agent runs with a security permission system. Some tool calls may be blocked or require user approval through a UI dialog (not through chat).',
+        '- If a tool result says "Permission denied", the action is permanently blocked. Tell the user it is not available. Do NOT ask them to approve it.',
+        '- If a tool result says the user "declined" an action, they already decided via the security dialog. Acknowledge it briefly and move on. Do NOT ask again or request confirmation in chat.',
+        '- Never try to work around permission denials by re-running the same tool or asking the user to confirm in text.',
+      ].join('\n'))
+    }
 
     return parts.join('\n\n---\n\n')
   }
