@@ -398,7 +398,7 @@ jobs:
 
           
 # Staging OTA
-# gh workflow run android.yml --ref staging -f mode=ota -f environment=staging
+# gh workflow run android.yml --ref android-build -f mode=ota -f environment=staging
 
 # Staging full build + submit
 # gh workflow run android.yml --ref staging -f mode=full -f environment=staging
