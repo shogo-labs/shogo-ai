@@ -1216,16 +1216,17 @@ export default observer(function AllProjectsPage() {
       <View className="px-4 py-2 gap-2">
         <View className="flex-row items-center gap-2 flex-wrap">
           {/* Search */}
-          <View className="flex-row items-center bg-card border border-input rounded-lg px-3 min-w-[180px] flex-1">
+          <View className="flex-row items-center bg-card border border-input rounded-lg px-3 h-9 min-w-[180px] flex-1">
             <Search size={16} className="text-muted-foreground" />
             <TextInput
-              className="flex-1 h-9 ml-2 text-sm text-foreground web:outline-none"
+              className="flex-1 ml-2 py-0 text-sm text-foreground web:outline-none"
               placeholder="Search projects..."
               placeholderTextColor="#71717a"
               value={searchQuery}
               onChangeText={setSearchQuery}
               autoCapitalize="none"
               autoCorrect={false}
+              textAlignVertical="center"
             />
           </View>
           {/* Sort */}
