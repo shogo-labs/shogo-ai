@@ -739,6 +739,45 @@ app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
 app.get('/api/health', (c) => c.json({ ok: true }))
 app.get('/health', (c) => c.json({ ok: true }))
 
+// OAuth callback for Composio integrations — registered before auth middleware
+// so the page is always reachable (the browser has no session cookie).
+app.get('/api/integrations/callback', (c) => {
+  const callbackStatus = c.req.query('status') || 'success'
+  const redirectParam = c.req.query('redirect')
+  const ok = callbackStatus === 'success'
+
+  // Must use JavaScript redirect (not HTTP 302) for custom schemes so that
+  // openAuthSessionAsync can intercept the navigation within the Custom Tab.
+  // A 302 causes the OS to open the app via intent, bypassing the auth session.
+  const isAllowedRedirect = redirectParam
+    && (redirectParam.startsWith('shogo://') || redirectParam.startsWith('exp://'))
+  const redirectScript = ok && isAllowedRedirect
+    ? `window.location.href = ${JSON.stringify(redirectParam)};`
+    : ''
+
+  const successMessage = ok && isAllowedRedirect
+    ? `<p>Redirecting back to Shogo...</p>
+       <p style="margin-top:1rem"><a href="${redirectParam}" style="color:#4F46E5;text-decoration:underline">Tap here if you are not redirected</a></p>`
+    : `<p>${ok ? 'You can close this window.' : 'Please close this window and try again.'}</p>`
+
+  const html = `<!DOCTYPE html>
+<html><head><style>
+  body { font-family: -apple-system, system-ui, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #fafafa; color: #333; }
+  .card { text-align: center; padding: 2rem; }
+  .icon { font-size: 3rem; margin-bottom: 0.5rem; }
+  p { font-size: 0.9rem; color: #666; }
+  a { color: #4F46E5; text-decoration: underline; }
+</style></head><body>
+  <div class="card">
+    <div class="icon">${ok ? '✅' : '❌'}</div>
+    <h3>${ok ? 'Connected!' : 'Connection failed'}</h3>
+    ${successMessage}
+  </div>
+  <script>${redirectScript}${ok && !redirectScript ? 'setTimeout(function(){ window.close(); }, 1500);' : ''}</script>
+</body></html>`
+  return c.html(html)
+})
+
 // Platform config (tells frontend about local mode, enabled features, etc.)
 app.get('/api/config', async (c) => {
   const localMode = process.env.SHOGO_LOCAL_MODE === 'true'
@@ -1658,19 +1697,32 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
   }
 
-  if (!isKubernetes()) {
-    return c.json({ error: { code: 'not_supported', message: 'Agent proxy only available in Kubernetes' } }, 501)
+  const path = c.req.path.replace(`/api/projects/${projectId}/agent-proxy`, '') || '/'
+  const qs = new URL(c.req.url).search
+
+  let podUrl: string
+
+  if (isKubernetes()) {
+    try {
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      podUrl = await getProjectPodUrl(projectId)
+    } catch (error: any) {
+      console.error('[AgentProxy] K8s pod resolution error:', error)
+      return c.json({ error: { code: 'proxy_error', message: error.message || 'Failed to resolve agent pod' } }, 502)
+    }
+  } else {
+    const manager = getRuntimeManager()
+    const runtime = manager.status(projectId)
+    if (!runtime || !runtime.agentPort) {
+      return c.json({ error: { code: 'agent_not_running', message: 'Agent runtime is not running for this project' } }, 503)
+    }
+    podUrl = `http://localhost:${runtime.agentPort}`
   }
 
+  const targetUrl = `${podUrl}${path}${qs}`
+  console.log(`[AgentProxy] Proxying ${c.req.method} ${path} to ${targetUrl}`)
+
   try {
-    const { getProjectPodUrl } = await import('./lib/knative-project-manager')
-    const podUrl = await getProjectPodUrl(projectId)
-    const path = c.req.path.replace(`/api/projects/${projectId}/agent-proxy`, '') || '/'
-    const qs = new URL(c.req.url).search
-    const targetUrl = `${podUrl}${path}${qs}`
-
-    console.log(`[AgentProxy] Proxying ${c.req.method} ${path} to ${targetUrl}`)
-
     const headers = new Headers()
     const contentType = c.req.header('content-type')
     if (contentType) headers.set('content-type', contentType)
@@ -4699,8 +4751,6 @@ app.get('/api/me/activity', authMiddleware, requireAuth, async (c) => {
 // This makes ctx.userId available in route hooks for authorization
 app.use('/api/*', authMiddleware)
 
-// Require authentication for all routes
-// Unauthenticated requests get 401 Unauthorized
 app.use('/api/*', requireAuth)
 
 // Require project membership for all project-scoped routes

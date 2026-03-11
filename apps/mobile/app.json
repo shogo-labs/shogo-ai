@@ -7,7 +7,6 @@
     "icon": "./assets/icon.png",
     "scheme": "shogo",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": false,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -22,7 +21,8 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#121212"
       },
-      "package": "ai.shogo.mobile"
+      "package": "ai.shogo.mobile",
+      "softInputMode": "adjustResize"
     },
     "web": {
       "bundler": "metro",

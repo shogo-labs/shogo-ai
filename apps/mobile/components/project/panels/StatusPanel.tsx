@@ -19,6 +19,7 @@ import {
   Users,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { agentFetch } from '../../../lib/agent-fetch'
 
 const POLL_INTERVAL_MS = 5_000
 
@@ -63,7 +64,7 @@ interface AgentStatusData {
   }
   channels: ChannelInfo[]
   skills: Array<{ name: string; trigger: string; description: string; native?: boolean }>
-  model: { provider: string; name: string }
+  model?: { provider: string; name: string }
   sessions?: SessionInfo[]
   cronJobs?: CronJobInfo[]
   memory?: MemoryInfo
@@ -126,7 +127,7 @@ export function StatusPanel({ projectId, agentUrl, visible }: StatusPanelProps) 
   const fetchStatus = useCallback(async () => {
     if (!agentUrl) return
     try {
-      const res = await fetch(`${agentUrl}/agent/status`)
+      const res = await agentFetch(`${agentUrl}/agent/status`)
       if (!res.ok) throw new Error('Agent not reachable')
       const data: AgentStatusData = await res.json()
       setStatus(data)
@@ -488,12 +489,14 @@ export function StatusPanel({ projectId, agentUrl, visible }: StatusPanelProps) 
             </DashboardSection>
 
             {/* Model Info */}
-            <View className="flex-row items-center gap-2 px-3 py-2 rounded-lg border border-border/40 bg-muted/20">
-              <Zap size={14} className="text-muted-foreground" />
-              <Text className="text-xs text-muted-foreground">Model:</Text>
-              <Text className="text-xs font-medium text-foreground">{status.model.name}</Text>
-              <Text className="text-xs text-muted-foreground">({status.model.provider})</Text>
-            </View>
+            {status.model && (
+              <View className="flex-row items-center gap-2 px-3 py-2 rounded-lg border border-border/40 bg-muted/20">
+                <Zap size={14} className="text-muted-foreground" />
+                <Text className="text-xs text-muted-foreground">Model:</Text>
+                <Text className="text-xs font-medium text-foreground">{status.model.name}</Text>
+                <Text className="text-xs text-muted-foreground">({status.model.provider})</Text>
+              </View>
+            )}
           </View>
         )}
       </ScrollView>

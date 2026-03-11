@@ -63,7 +63,13 @@ import {
   CapabilitiesPanel,
   MonitorPanel,
 } from '../../../../components/project/panels'
-import { RefreshCw } from 'lucide-react-native'
+import { RefreshCw, MoreHorizontal } from 'lucide-react-native'
+import {
+  Popover,
+  PopoverBackdrop,
+  PopoverBody,
+  PopoverContent,
+} from '../../../../components/ui/popover'
 
 type ActiveTab = 'chat' | 'canvas'
 
@@ -91,6 +97,7 @@ export default observer(function ProjectLayout() {
 
   // Tab state for narrow screens
   const [activeTab, setActiveTab] = useState<ActiveTab>('chat')
+  const [showMoreMenu, setShowMoreMenu] = useState(false)
 
   // Chat session tracking — seed from route param if provided
   const [chatSessionId, setChatSessionId] = useState<string | null>(
@@ -626,10 +633,64 @@ export default observer(function ProjectLayout() {
                 >
                   {tab === 'chat'
                     ? 'Chat'
-                    : `Canvas${activeSurface ? ` (${activeSurface.title || 'Live'})` : ''}`}
+                    : previewTab !== 'dynamic-app' && activeTab === 'canvas'
+                      ? { capabilities: 'Capabilities', channels: 'Channels', monitor: 'Monitor' }[previewTab] ?? 'Canvas'
+                      : `Canvas${activeSurface ? ` (${activeSurface.title || 'Live'})` : ''}`}
                 </Text>
               </Pressable>
             ))}
+            <Popover
+              placement="bottom right"
+              isOpen={showMoreMenu}
+              onOpen={() => setShowMoreMenu(true)}
+              onClose={() => setShowMoreMenu(false)}
+              trigger={(triggerProps) => (
+                <Pressable
+                  {...triggerProps}
+                  className={cn(
+                    'px-3 py-3 items-center justify-center',
+                    showMoreMenu && 'bg-muted',
+                  )}
+                >
+                  <MoreHorizontal size={18} className="text-muted-foreground" />
+                </Pressable>
+              )}
+            >
+              <PopoverBackdrop />
+              <PopoverContent className="min-w-[180px] p-0">
+                <PopoverBody>
+                  {([
+                    { id: 'capabilities', label: 'Capabilities' },
+                    { id: 'channels', label: 'Channels' },
+                    { id: 'monitor', label: 'Monitor' },
+                  ] as const).map((item) => (
+                    <Pressable
+                      key={item.id}
+                      onPress={() => {
+                        setActiveTab('canvas')
+                        setPreviewTab(item.id)
+                        setShowMoreMenu(false)
+                      }}
+                      className={cn(
+                        'px-4 py-3 active:bg-muted',
+                        previewTab === item.id && activeTab === 'canvas' && 'bg-accent',
+                      )}
+                    >
+                      <Text
+                        className={cn(
+                          'text-sm',
+                          previewTab === item.id && activeTab === 'canvas'
+                            ? 'text-foreground font-medium'
+                            : 'text-foreground',
+                        )}
+                      >
+                        {item.label}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </PopoverBody>
+              </PopoverContent>
+            </Popover>
           </View>
           {activeTab === 'chat' ? (
             chatPanel

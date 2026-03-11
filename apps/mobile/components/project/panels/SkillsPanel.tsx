@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { View, Text, Pressable, ScrollView, ActivityIndicator } from 'react-native'
 import { Zap, RefreshCw, BookOpen, Download, Check, Trash2, Plus, ChevronDown, ChevronRight } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { agentFetch } from '../../../lib/agent-fetch'
 
 interface Skill {
   file: string
@@ -48,7 +49,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
       if (skillContent[skillName] || !agentUrl) return
       setLoadingContent(skillName)
       try {
-        const res = await fetch(
+        const res = await agentFetch(
           `${agentUrl}/agent/skills/${encodeURIComponent(skillName)}`,
         )
         if (res.ok) {
@@ -70,8 +71,8 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
     setError(null)
     try {
       const [statusRes, bundledRes] = await Promise.all([
-        fetch(`${agentUrl}/agent/status`),
-        fetch(`${agentUrl}/agent/bundled-skills`),
+        agentFetch(`${agentUrl}/agent/status`),
+        agentFetch(`${agentUrl}/agent/bundled-skills`),
       ])
       if (!statusRes.ok) throw new Error('Agent not reachable')
       const status = await statusRes.json()
@@ -103,7 +104,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
       if (!agentUrl) return
       setInstalling(skillName)
       try {
-        const res = await fetch(`${agentUrl}/agent/bundled-skills/install`, {
+        const res = await agentFetch(`${agentUrl}/agent/bundled-skills/install`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: skillName }),
@@ -127,7 +128,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
       if (!agentUrl) return
       setRemoving(skillName)
       try {
-        const res = await fetch(
+        const res = await agentFetch(
           `${agentUrl}/agent/skills/${encodeURIComponent(skillName)}`,
           { method: 'DELETE' },
         )

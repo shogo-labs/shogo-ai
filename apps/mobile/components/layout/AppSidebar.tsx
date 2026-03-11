@@ -270,31 +270,32 @@ function ExpandableNavItem({
 
   return (
     <View>
-      <Pressable
-        onPress={() => setExpanded(!expanded)}
+      <View
         className={cn(
           'flex-row items-center gap-3 rounded-md px-3 py-2',
-          active ? 'bg-accent' : 'active:bg-accent/50'
+          active ? 'bg-accent' : ''
         )}
       >
-        <Icon
-          size={16}
-          className={active ? 'text-foreground' : 'text-muted-foreground'}
-        />
-        <Pressable onPress={handlePress} className="flex-1">
+        <Pressable onPress={handlePress} className="flex-1 flex-row items-center gap-3 active:opacity-70">
+          <Icon
+            size={16}
+            className={active ? 'text-foreground' : 'text-muted-foreground'}
+          />
           <Text
-            className={cn('text-sm', active ? 'text-foreground' : 'text-muted-foreground')}
+            className={cn('text-sm flex-1', active ? 'text-foreground' : 'text-muted-foreground')}
             numberOfLines={1}
           >
             {label}
           </Text>
         </Pressable>
-        {expanded ? (
-          <ChevronDown size={14} className="text-muted-foreground" />
-        ) : (
-          <ChevronRight size={14} className="text-muted-foreground" />
-        )}
-      </Pressable>
+        <Pressable onPress={() => setExpanded(!expanded)} className="p-1 -mr-1 active:opacity-70">
+          {expanded ? (
+            <ChevronDown size={14} className="text-muted-foreground" />
+          ) : (
+            <ChevronRight size={14} className="text-muted-foreground" />
+          )}
+        </Pressable>
+      </View>
       {expanded && (
         <View className="ml-6 mt-0.5">
           {children}
@@ -1375,7 +1376,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
             {pendingInvites.length === 0 ? (
               <View className="px-4 pb-5 pt-6 items-center gap-2">
                 <Inbox size={28} className="text-muted-foreground" />
-                <Text className="text-sm font-medium text-card-foreground">No messages or invites pending</Text>
+                <Text className="text-sm font-medium text-card-foreground">No messages or invites pending.</Text>
                 <Text className="text-xs text-muted-foreground text-center">
                   Workspace and project invitations will appear here
                 </Text>

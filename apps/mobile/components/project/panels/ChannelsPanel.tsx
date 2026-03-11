@@ -22,6 +22,7 @@ import {
   Check,
 } from 'lucide-react-native'
 import * as Clipboard from 'expo-clipboard'
+import { agentFetch } from '../../../lib/agent-fetch'
 
 interface ChannelInfo {
   type: string
@@ -151,7 +152,7 @@ export function ChannelsPanel({ projectId, agentUrl, visible }: ChannelsPanelPro
     setIsLoading(true)
     setError(null)
     try {
-      const res = await fetch(`${agentUrl}/agent/status`)
+      const res = await agentFetch(`${agentUrl}/agent/status`)
       if (!res.ok) throw new Error('Agent not reachable')
       const data = await res.json()
       setChannels(data.channels || [])
@@ -182,7 +183,7 @@ export function ChannelsPanel({ projectId, agentUrl, visible }: ChannelsPanelPro
     setConnecting(type)
     setFormError(null)
     try {
-      const res = await fetch(`${agentUrl}/agent/channels/connect`, {
+      const res = await agentFetch(`${agentUrl}/agent/channels/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type, config: inputs }),
@@ -212,7 +213,7 @@ export function ChannelsPanel({ projectId, agentUrl, visible }: ChannelsPanelPro
     setDisconnecting(type)
     setFormError(null)
     try {
-      const res = await fetch(`${agentUrl}/agent/channels/disconnect`, {
+      const res = await agentFetch(`${agentUrl}/agent/channels/disconnect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type }),

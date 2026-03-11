@@ -129,25 +129,8 @@ export function integrationRoutes() {
     }
   })
 
-  router.get('/integrations/callback', (c) => {
-    const callbackStatus = c.req.query('status') || 'success'
-    const ok = callbackStatus === 'success'
-    const html = `<!DOCTYPE html>
-<html><head><style>
-  body { font-family: -apple-system, system-ui, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #fafafa; color: #333; }
-  .card { text-align: center; padding: 2rem; }
-  .icon { font-size: 3rem; margin-bottom: 0.5rem; }
-  p { font-size: 0.9rem; color: #666; }
-</style></head><body>
-  <div class="card">
-    <div class="icon">${ok ? '✅' : '❌'}</div>
-    <h3>${ok ? 'Connected!' : 'Connection failed'}</h3>
-    <p>${ok ? 'This window will close automatically...' : 'Please close this window and try again.'}</p>
-  </div>
-  <script>${ok ? 'setTimeout(function(){ window.close(); }, 1500);' : ''}</script>
-</body></html>`
-    return c.html(html)
-  })
+  // Note: GET /integrations/callback is registered directly on the app
+  // (before auth middleware) in server.ts to avoid auth blocking.
 
   router.get('/integrations/connections', async (c) => {
     const composio = getComposio()
@@ -172,12 +155,26 @@ export function integrationRoutes() {
         userIds: [composioUserId],
       })
 
-      const connections = ((accounts as any)?.items || (accounts as any)?.data || []).map((acc: any) => ({
-        id: acc.id,
-        toolkit: acc.toolkit?.slug ?? acc.appName ?? acc.app_name ?? 'unknown',
-        status: acc.status,
-        createdAt: acc.createdAt || acc.created_at,
-      }))
+      const items = (accounts as any)?.items || (accounts as any)?.data || []
+      console.log('[Integrations] Raw connected accounts:', JSON.stringify(items, null, 2))
+
+      const connections = items.map((acc: any) => {
+        const stateVal = acc.state?.val ?? acc.connectionParams ?? {}
+        const accountIdentifier =
+          stateVal.account_id ??
+          stateVal.user_email ??
+          stateVal.email ??
+          acc.memberEmailId ??
+          acc.metadata?.email ??
+          null
+        return {
+          id: acc.id,
+          toolkit: acc.toolkit?.slug ?? acc.appName ?? acc.app_name ?? 'unknown',
+          status: acc.status,
+          createdAt: acc.createdAt || acc.created_at,
+          accountIdentifier,
+        }
+      })
 
       return c.json({ ok: true, data: connections })
     } catch (err: any) {

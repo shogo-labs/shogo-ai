@@ -507,7 +507,7 @@ async function initiateComposioAuth(
 
     const callbackBase = process.env.BETTER_AUTH_URL || process.env.API_URL || 'http://localhost:8002'
     const connection = await session.authorize(toolkitSlug, {
-      callbackUrl: `${callbackBase}/api/integrations/callback?toolkit=${encodeURIComponent(toolkitSlug)}`,
+      callbackUrl: `${callbackBase}/api/integrations/callback?toolkit=${encodeURIComponent(toolkitSlug)}&redirect=${encodeURIComponent('shogo://integrations-callback')}`,
     })
 
     const redirectUrl = (connection as any)?.redirectUrl || (connection as any)?.redirect_url

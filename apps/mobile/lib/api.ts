@@ -122,7 +122,7 @@ export const api = {
   // ─── Integrations ────────────────────────────────────────
 
   async getIntegrationConnections(http: HttpClient, projectId: string) {
-    const res = await http.get<{ data: Array<{ toolkit?: string; status: string }> }>(
+    const res = await http.get<{ data: Array<{ id: string; toolkit?: string; status: string; createdAt?: string; accountIdentifier?: string | null }> }>(
       '/api/integrations/connections',
       { projectId },
     )
