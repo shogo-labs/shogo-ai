@@ -65,32 +65,17 @@ function hasErrorInResult(result: unknown): boolean {
   return 'error' in (result as any)
 }
 
-const TOOLKIT_ACCESS_HINTS: Record<string, string> = {
-  Github: 'Your organization may have OAuth App restrictions enabled. Go to your GitHub org Settings > Third-party access and approve the Composio OAuth app.',
-  Slack: 'The Slack workspace admin may need to approve the app. Go to Slack admin settings > Manage apps to grant access.',
-  Googlecalendar: 'Check that the Google account has granted calendar access. Go to Google Account > Security > Third-party apps to review permissions.',
-  Googledrive: 'Check that the Google account has granted Drive access. Go to Google Account > Security > Third-party apps to review permissions.',
-  Gmail: 'Check that the Google account has granted Gmail access. Go to Google Account > Security > Third-party apps to review permissions.',
-  Notion: 'Ensure the Notion integration has been given access to the required pages. Go to Notion Settings > Connections to manage access.',
-  Linear: 'Verify your Linear API token has the required scopes. Go to Linear Settings > API to check permissions.',
-}
-
-function getUserFriendlyError(toolkit: string, raw: string): string {
-  const lower = raw.toLowerCase()
-  const accessHint = TOOLKIT_ACCESS_HINTS[toolkit]
-    || `Please check your ${toolkit} connection in the Capabilities tab.`
-
-  if (lower.includes('not found') || lower.includes('404'))
-    return `${toolkit} could not access the requested resource — it may be private or the name may be incorrect. ${accessHint}`
-  if (lower.includes('unauthorized') || lower.includes('forbidden') || lower.includes('not_authed') || lower.includes('invalid_auth'))
-    return `${toolkit} authorization failed. ${accessHint}`
-  if (lower.includes('scope') || lower.includes('insufficient') || lower.includes('permission'))
-    return `${toolkit} needs additional permissions. ${accessHint}`
-  if (lower.includes('token_revoked') || lower.includes('token expired') || lower.includes('account_inactive'))
-    return `${toolkit} connection has expired. Please reconnect from the Capabilities tab.`
-  if (lower.includes('rate limit') || lower.includes('too many') || lower.includes('429'))
+function toUserMessage(toolkit: string, raw: string): string {
+  const l = raw.toLowerCase()
+  if (l.includes('tool') && l.includes('not found'))
+    return `${toolkit} integration tools failed to load. Try reconnecting ${toolkit} from the Capabilities tab.`
+  if (l.includes('not found') || l.includes('404'))
+    return `${toolkit} could not access the requested resource — it may be private or require additional permissions. Check your org's third-party access settings.`
+  if (l.includes('unauthorized') || l.includes('forbidden') || l.includes('not_authed') || l.includes('invalid_auth'))
+    return `${toolkit} authorization failed. Please reconnect from the Capabilities tab.`
+  if (l.includes('rate limit') || l.includes('429'))
     return `${toolkit} rate limit reached. Please wait a moment and try again.`
-  return `${toolkit} encountered an error. ${accessHint}`
+  return `${toolkit} encountered an issue: ${raw.length > 120 ? raw.slice(0, 120) + '...' : raw}`
 }
 
 export interface GatewayConfig {
@@ -1786,6 +1771,24 @@ export class AgentGateway {
     const mcpTools = this.mcpClientManager.getTools()
     let assembledTools = mcpTools.length > 0 ? [...baseTools, ...mcpTools] : baseTools
 
+    assembledTools = assembledTools.map(tool => {
+      if (!isComposioTool(tool.name)) return tool
+      const originalExecute = tool.execute
+      const toolkit = extractToolkitName(tool.name)
+      return {
+        ...tool,
+        execute: async (id: string, params: any) => {
+          const result = await originalExecute(id, params)
+          const text = result?.content?.[0]?.text
+          if (typeof text === 'string' && text.includes('"error"')) {
+            const suffix = `\n\nIMPORTANT: Call notify_user_error({ title: "${toolkit} Error", message: "<explain this error to the user in simple terms — what went wrong and how to fix it>" }) to show a notification.`
+            return { ...result, content: [{ type: 'text', text: text + suffix }] }
+          }
+          return result
+        },
+      }
+    })
+
     let staticTools = assembledTools
     if (this.toolMocks.size > 0) {
       const existingNames = new Set(assembledTools.map(t => t.name))
@@ -2023,12 +2026,14 @@ export class AgentGateway {
             if (isComposioTool(toolName) && !pendingToolkitError) {
               if (isError || hasErrorInResult(result)) {
                 const toolkit = extractToolkitName(toolName)
-                const errStr = typeof result === 'string' ? result : JSON.stringify(result ?? '')
+                const rawStr = typeof result === 'string' ? result : JSON.stringify(result ?? '')
+                let cleanError = rawStr
+                try { const p = JSON.parse(rawStr); if (p?.error) cleanError = String(p.error) } catch {}
                 pendingToolkitError = toolkit
                 uiWriter.write({
-                  type: 'data-tool-error-fallback',
+                  type: 'data-tool-error',
                   id: `tool-err-${toolCallId}`,
-                  data: { toolkitName: toolkit, userMessage: getUserFriendlyError(toolkit, errStr) },
+                  data: { toolkitName: toolkit, error: toUserMessage(toolkit, cleanError) },
                 } as any)
               }
             }

@@ -67,7 +67,6 @@ import {
 } from "./tools/types"
 import { AlertCircle } from "lucide-react-native"
 import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
-import { useToast, Toast, ToastTitle, ToastDescription } from "../ui/toast"
 
 // ============================================================
 // Agent Mode Persistence
@@ -709,8 +708,13 @@ export const ChatPanel = observer(function ChatPanel({
 
   const isAgent = projectType === "AGENT"
 
-  const toast = useToast()
-  const errorToastShownRef = useRef(false)
+  const [toolErrorBanner, setToolErrorBanner] = useState<{ toolkitName: string; error: string } | null>(null)
+
+  useEffect(() => {
+    if (!toolErrorBanner) return
+    const timer = setTimeout(() => setToolErrorBanner(null), 10000)
+    return () => clearTimeout(timer)
+  }, [toolErrorBanner])
 
   const nativeHeaders = useMemo(() => {
     if (Platform.OS === 'web') return undefined
@@ -1005,18 +1009,7 @@ export const ChatPanel = observer(function ChatPanel({
         } else if (event.toolName === "notify_user_error") {
           const title = (event.args?.title as string) || "Error"
           const message = (event.args?.message as string) || "Something went wrong."
-          errorToastShownRef.current = true
-          toast.show({
-            id: "agent-error",
-            placement: "top",
-            duration: 8000,
-            render: ({ id: toastId }) => (
-              <Toast nativeID={`toast-${toastId}`} action="error" variant="solid">
-                <ToastTitle>{title}</ToastTitle>
-                <ToastDescription>{message}</ToastDescription>
-              </Toast>
-            ),
-          })
+          setToolErrorBanner({ toolkitName: title, error: message })
         } else {
           console.warn("[ChatPanel:VirtualTool] Unknown virtual tool:", event.toolName)
         }
@@ -1088,21 +1081,11 @@ export const ChatPanel = observer(function ChatPanel({
         }
       }
 
-      if (dataPart.type === "data-tool-error-fallback" && !errorToastShownRef.current) {
-        errorToastShownRef.current = true
-        const { toolkitName, userMessage } = (dataPart as any).data ?? {}
-        const name = toolkitName || "Integration"
-        const desc = userMessage || "An error occurred. Check the chat for details."
-        toast.show({
-          id: "tool-error-fallback",
-          placement: "top",
-          duration: 8000,
-          render: ({ id: toastId }) => (
-            <Toast nativeID={`toast-${toastId}`} action="error" variant="solid">
-              <ToastTitle>{name} Error</ToastTitle>
-              <ToastDescription>{desc}</ToastDescription>
-            </Toast>
-          ),
+      if (dataPart.type === "data-tool-error" && !toolErrorBanner) {
+        const { toolkitName, error: errText } = (dataPart as any).data ?? {}
+        setToolErrorBanner({
+          toolkitName: toolkitName || "Integration",
+          error: typeof errText === "string" ? errText : JSON.stringify(errText ?? ""),
         })
       }
 
@@ -1358,7 +1341,7 @@ export const ChatPanel = observer(function ChatPanel({
 
     if (isStreaming && !wasStreaming) {
       filesChangedFiredRef.current = false
-      errorToastShownRef.current = false
+      setToolErrorBanner(null)
     }
   }, [isStreaming, messages, onFilesChanged])
 
@@ -2206,6 +2189,23 @@ export const ChatPanel = observer(function ChatPanel({
               </View>
             )}
           </ScrollView>
+
+          {/* Tool Error Banner */}
+          {toolErrorBanner && (
+            <View className="px-4 pb-2">
+              <View className="flex-row items-start gap-2 rounded-lg border border-yellow-400/50 bg-yellow-50 dark:bg-yellow-900/20 p-3">
+                <AlertCircle className="h-4 w-4 text-yellow-600 dark:text-yellow-400 shrink-0 mt-0.5" size={16} />
+                <View className="flex-1">
+                  <Text className="text-sm font-medium text-yellow-800 dark:text-yellow-200">
+                    {toolErrorBanner.toolkitName} Error
+                  </Text>
+                  <Text className="text-xs text-yellow-700 dark:text-yellow-300 mt-0.5">
+                    {toolErrorBanner.error}
+                  </Text>
+                </View>
+              </View>
+            </View>
+          )}
 
           {/* Error Alert */}
           {(error || emptyResponseError) && (

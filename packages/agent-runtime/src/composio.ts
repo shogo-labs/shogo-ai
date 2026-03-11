@@ -363,9 +363,12 @@ function createProxyTool(schema: ComposioToolSchema): AgentTool {
     label: `composio: ${schema.slug}`,
     parameters,
     execute: async (_toolCallId: string, params: unknown) => {
+      const toolkit = schema.slug.split('_')[0]
+      const toolkitDisplay = toolkit ? toolkit.charAt(0).toUpperCase() + toolkit.slice(1).toLowerCase() : schema.slug
+
       const client = getComposioClient()
       if (!client || !storedComposioUserId) {
-        return textResult({ error: 'Composio not initialized. Call tool_install first.' })
+        return textResult(`Error: Composio not initialized. Call tool_install first.\n\nIMPORTANT: You MUST call notify_user_error({ title: "${toolkitDisplay} Error", message: "<explain this error to the user in simple terms and tell them how to fix it>" }) to show the user a notification.`)
       }
       const args = (params && typeof params === 'object') ? params as Record<string, any> : {}
       try {
@@ -379,7 +382,8 @@ function createProxyTool(schema: ComposioToolSchema): AgentTool {
         recordTiming(schema.slug, elapsed)
 
         if (!result.successful) {
-          return textResult({ error: result.error || `Tool ${schema.slug} returned an error` })
+          const errorMsg = result.error || `Tool ${schema.slug} returned an error`
+          return textResult(`Error from ${schema.slug}: ${errorMsg}\n\nIMPORTANT: You MUST call notify_user_error({ title: "${toolkitDisplay} Error", message: "<explain this error to the user in simple, helpful terms — what went wrong and how they can fix it>" }) to show the user a prominent notification about this issue.`)
         }
 
         const registry = getTransformRegistry()
@@ -410,7 +414,7 @@ function createProxyTool(schema: ComposioToolSchema): AgentTool {
 
         return textResult(raw + annotation)
       } catch (err: any) {
-        return textResult({ error: `Tool "${schema.slug}" failed: ${err.message}` })
+        return textResult(`Error from ${schema.slug}: ${err.message}\n\nIMPORTANT: You MUST call notify_user_error({ title: "${toolkitDisplay} Error", message: "<explain this error to the user in simple, helpful terms — what went wrong and how they can fix it>" }) to show the user a prominent notification about this issue.`)
       }
     },
   } as AgentTool
