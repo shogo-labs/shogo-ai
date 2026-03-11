@@ -12,7 +12,9 @@ WORKDIR /app
 
 # Build arguments — empty defaults produce relative URLs (proxied by nginx)
 ARG EXPO_PUBLIC_API_URL=
+ARG VITE_GTM_ID=
 ENV EXPO_PUBLIC_API_URL=$EXPO_PUBLIC_API_URL
+ENV EXPO_PUBLIC_GTM_ID=$VITE_GTM_ID
 
 # Install Bun (used for fast dependency installation)
 RUN apk add --no-cache bash curl && \
