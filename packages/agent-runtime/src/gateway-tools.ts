@@ -51,6 +51,8 @@ export interface ToolContext {
   disconnectChannel?: (type: string) => Promise<void>
   /** Lazily-initialized file index engine for RAG over workspace files */
   fileIndexEngine?: FileIndexEngine
+  /** Authenticated user ID from the chat request (for per-user integrations like Composio) */
+  userId?: string
   /** Permission engine for local-mode security guardrails */
   permissionEngine?: PermissionEngine
 }
@@ -2608,7 +2610,7 @@ Pass "autoBind" with surfaceId/dataPath to target a specific canvas. Pass "bind"
         const composioToolkit = await findComposioToolkit(name)
         if (composioToolkit) {
           try {
-            const userId = process.env.USER_ID || 'default'
+            const userId = ctx.userId || process.env.USER_ID || 'default'
             const initialized = await initComposioSession(userId, ctx.projectId)
             if (initialized) {
               const proxy = await registerToolkitProxyTools(ctx.mcpClientManager, composioToolkit.slug)

@@ -1450,7 +1450,7 @@ app.post('/agent/tools/install', async (c) => {
     const composioToolkit = await findComposioToolkit(id)
     if (composioToolkit) {
       try {
-        const userId = process.env.USER_ID || 'default'
+        const userId = c.req.header('X-User-Id') || process.env.USER_ID || 'default'
         const projectId = process.env.PROJECT_ID || 'default'
         await initComposioSession(userId, projectId)
         const proxy = await registerToolkitProxyTools(mcpMgr, composioToolkit.slug)
