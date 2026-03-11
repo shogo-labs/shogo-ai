@@ -1,17 +1,25 @@
 # =============================================================================
 # Android Build & Update Pipeline
 # =============================================================================
-# Automatic (push to staging):
+# Environments:
+#   staging    — push to `staging` branch or manual dispatch with environment=staging
+#   production — push to `main` branch or manual dispatch with environment=production
+#
+# Automatic (push):
+#   staging branch  → environment=staging  (channel=staging,  OTA branch=staging)
+#   main branch     → environment=production (channel=production, OTA branch=production)
 #   - Resolves native fingerprint to detect if native deps changed
 #   - If fingerprint matches the last successful build → OTA update (eas update)
 #   - If fingerprint changed → full native build (expo prebuild + Gradle)
 #
 # Manual (workflow_dispatch):
-#   - Always runs a full native build
-#   - Optionally submits to Play Store
+#   mode=full → fingerprint check, then build or OTA, optional Play Store submit
+#   mode=ota  → fingerprint check, OTA update only (skips build)
+#   environment=staging|production → controls OTA branch + build channel
 #
 # Both build and OTA run on the same GitHub runner environment, so the
 # fingerprint hash is always consistent (no EAS server mismatch).
+# Fingerprint caches are per-environment so staging and production are independent.
 #
 # Required GitHub Secrets:
 #   EXPO_TOKEN                  - Expo token for eas update / eas submit
@@ -28,6 +36,7 @@ on:
   push:
     branches:
       - staging
+      - main
     paths:
       - 'apps/mobile/**'
       - 'packages/domain-stores/**'
@@ -37,25 +46,54 @@ on:
       - 'packages/sdk/**'
   workflow_dispatch:
     inputs:
+      mode:
+        description: 'full = build or OTA + submit · ota = OTA update only'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - ota
+      environment:
+        description: 'Target environment (staging or production)'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
       submit:
-        description: 'Submit to Play Store (internal track)'
+        description: 'Submit to Play Store (internal track) — full mode only'
         required: false
         default: true
         type: boolean
 
 jobs:
   # ===========================================================================
-  # Check if native code changed (push events only)
+  # Check if native code changed
   # ===========================================================================
   check-fingerprint:
     name: Check Native Fingerprint
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
     outputs:
       needs_build: ${{ steps.decide.outputs.needs_build }}
       runtime_version: ${{ steps.fingerprint.outputs.runtime_version }}
+      environment: ${{ steps.resolve-env.outputs.environment }}
 
     steps:
+      - name: Resolve environment
+        id: resolve-env
+        run: |
+          if [ -n "${{ github.event.inputs.environment }}" ]; then
+            ENV="${{ github.event.inputs.environment }}"
+          elif [ "${{ github.ref_name }}" = "main" ]; then
+            ENV="production"
+          else
+            ENV="staging"
+          fi
+          echo "environment=$ENV" >> $GITHUB_OUTPUT
+          echo "Resolved environment: $ENV"
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -71,13 +109,15 @@ jobs:
         id: fingerprint
         working-directory: apps/mobile
         run: |
-          RUNTIME_VERSION=$(npx expo-updates runtimeversion:resolve --platform android 2>/dev/null || echo "")
+          RAW=$(npx expo-updates runtimeversion:resolve --platform android 2>/dev/null || echo "")
 
-          if [ -z "$RUNTIME_VERSION" ]; then
+          if [ -z "$RAW" ]; then
             echo "Could not resolve runtime version"
             echo "runtime_version=unknown" >> $GITHUB_OUTPUT
           else
-            echo "Runtime version (fingerprint): $RUNTIME_VERSION"
+            RUNTIME_VERSION=$(echo "$RAW" | sha256sum | cut -d' ' -f1)
+            echo "Raw output: $RAW"
+            echo "Fingerprint hash: $RUNTIME_VERSION"
             echo "runtime_version=$RUNTIME_VERSION" >> $GITHUB_OUTPUT
           fi
 
@@ -87,7 +127,18 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .fingerprint-android
-          key: android-fingerprint-${{ steps.fingerprint.outputs.runtime_version }}
+          key: android-fingerprint-${{ steps.resolve-env.outputs.environment }}-${{ steps.fingerprint.outputs.runtime_version }}
+
+      - name: Seed cache if missing
+        if: steps.cache.outputs.cache-hit != 'true' && steps.fingerprint.outputs.runtime_version != 'unknown'
+        run: echo "${{ steps.fingerprint.outputs.runtime_version }}" > .fingerprint-android
+
+      - name: Save fingerprint cache
+        if: steps.cache.outputs.cache-hit != 'true' && steps.fingerprint.outputs.runtime_version != 'unknown'
+        uses: actions/cache/save@v4
+        with:
+          path: .fingerprint-android
+          key: android-fingerprint-${{ steps.resolve-env.outputs.environment }}-${{ steps.fingerprint.outputs.runtime_version }}
 
       - name: Determine if build is needed
         id: decide
@@ -97,6 +148,9 @@ jobs:
             echo "needs_build=true" >> $GITHUB_OUTPUT
           elif [ "${{ steps.cache.outputs.cache-hit }}" = "true" ]; then
             echo "Fingerprint cached from previous build → OTA update only"
+            echo "needs_build=false" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.inputs.mode }}" = "ota" ]; then
+            echo "OTA mode: trusting no native changes, seeding cache"
             echo "needs_build=false" >> $GITHUB_OUTPUT
           else
             echo "New fingerprint → full build required"
@@ -139,22 +193,23 @@ jobs:
         working-directory: apps/mobile
         run: |
           eas update \
-            --branch production \
-            --message "${{ github.event.head_commit.message }}" \
+            --branch ${{ needs.check-fingerprint.outputs.environment }} \
+            --message "${{ github.event.head_commit.message || format('Manual OTA from {0}', github.sha) }}" \
             --non-interactive
 
       - name: Summary
         run: |
           echo "## OTA Update Published" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Branch:** production" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** ${{ needs.check-fingerprint.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** ${{ needs.check-fingerprint.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Runtime Version:** ${{ needs.check-fingerprint.outputs.runtime_version }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Devices running a production build will receive this update automatically." >> $GITHUB_STEP_SUMMARY
+          echo "Devices running a ${{ needs.check-fingerprint.outputs.environment }} build will receive this update automatically." >> $GITHUB_STEP_SUMMARY
 
   # ===========================================================================
-  # Full Native Build — native deps changed or manual trigger
+  # Full Native Build — native deps changed (not used in ota mode)
   # Uses expo prebuild + Gradle instead of EAS Build so the fingerprint
   # stays consistent with the OTA update environment.
   # ===========================================================================
@@ -163,10 +218,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: check-fingerprint
     if: >
-      always() && (
-        github.event_name == 'workflow_dispatch' ||
-        (needs.check-fingerprint.result == 'success' && needs.check-fingerprint.outputs.needs_build == 'true')
-      )
+      needs.check-fingerprint.outputs.needs_build == 'true' &&
+      github.event.inputs.mode != 'ota'
 
     steps:
       - name: Checkout
@@ -218,18 +271,34 @@ jobs:
 
       - name: Set versionCode from run number
         working-directory: apps/mobile
+        env:
+          VERSION_CODE_OFFSET: 100
         run: |
           node -e "
             const fs = require('fs');
             const appJson = JSON.parse(fs.readFileSync('app.json', 'utf8'));
-            appJson.expo.android.versionCode = ${{ github.run_number }};
+            const versionCode = ${{ github.run_number }} + parseInt(process.env.VERSION_CODE_OFFSET);
+            appJson.expo.android.versionCode = versionCode;
             fs.writeFileSync('app.json', JSON.stringify(appJson, null, 2) + '\n');
-            console.log('Set versionCode to ${{ github.run_number }}');
+            console.log('Set versionCode to ' + versionCode);
           "
 
       - name: Expo Prebuild
         working-directory: apps/mobile
         run: npx expo prebuild --platform android --clean
+        env:
+          EXPO_UPDATES_CHANNEL: ${{ needs.check-fingerprint.outputs.environment }}
+
+      - name: Tune Gradle for CI
+        working-directory: apps/mobile/android
+        run: |
+          cat >> gradle.properties <<'PROPS'
+          org.gradle.parallel=true
+          org.gradle.caching=true
+          org.gradle.configureondemand=true
+          org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=512m -XX:+HeapDumpOnOutOfMemoryError
+          ksp.incremental=false
+          PROPS
 
       - name: Verify signing secrets
         run: |
@@ -279,7 +348,6 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           EXPO_PUBLIC_API_URL: ${{ vars.MOBILE_API_URL }}
-          # GRADLE_OPTS: -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"
 
       - name: Upload AAB artifact
         uses: actions/upload-artifact@v4
@@ -291,7 +359,8 @@ jobs:
         run: |
           RUNTIME_VERSION="${{ needs.check-fingerprint.outputs.runtime_version }}"
           if [ -z "$RUNTIME_VERSION" ] || [ "$RUNTIME_VERSION" = "unknown" ]; then
-            RUNTIME_VERSION=$(cd apps/mobile && npx expo-updates runtimeversion:resolve --platform android 2>/dev/null || echo "manual-build")
+            RAW=$(cd apps/mobile && npx expo-updates runtimeversion:resolve --platform android 2>/dev/null || echo "manual-build")
+            RUNTIME_VERSION=$(echo "$RAW" | sha256sum | cut -d' ' -f1)
           fi
           echo "$RUNTIME_VERSION" > .fingerprint-android
 
@@ -299,7 +368,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: .fingerprint-android
-          key: android-fingerprint-${{ needs.check-fingerprint.outputs.runtime_version || 'manual' }}
+          key: android-fingerprint-${{ needs.check-fingerprint.outputs.environment }}-${{ needs.check-fingerprint.outputs.runtime_version || 'manual' }}
 
       - name: Decode Google service account key
         if: github.event.inputs.submit != 'false'
@@ -311,6 +380,7 @@ jobs:
         run: |
           eas submit \
             --platform android \
+            --profile ${{ needs.check-fingerprint.outputs.environment }} \
             --path ./android/app/build/outputs/bundle/release/app-release.aab \
             --non-interactive
 
@@ -318,8 +388,26 @@ jobs:
         run: |
           echo "## Android Build Complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** ${{ needs.check-fingerprint.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Channel:** ${{ needs.check-fingerprint.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
           echo "- **versionCode:** ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Submit:** ${{ github.event.inputs.submit != 'false' && 'Play Store (internal track)' || 'Skipped' }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "AAB is available as a workflow artifact." >> $GITHUB_STEP_SUMMARY
+
+          
+# Staging OTA
+# gh workflow run android.yml --ref staging -f mode=ota -f environment=staging
+
+# Staging full build + submit
+# gh workflow run android.yml --ref staging -f mode=full -f environment=staging
+
+# Production OTA
+# gh workflow run android.yml --ref main -f mode=ota -f environment=production
+
+# Production full build + submit
+# gh workflow run android.yml --ref main -f mode=full -f environment=production
+
+# Full build, skip Play Store submit
+# gh workflow run android.yml --ref staging -f mode=full -f environment=staging -f submit=false

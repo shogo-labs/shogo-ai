@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { createContext, useContext, useState, useCallback, useMemo, type ReactNode } from 'react'
 import type { ComponentDefinition, SurfaceState } from '@shogo/shared-app/dynamic-app'
+import { agentFetch } from '../../../lib/agent-fetch'
 
 export interface EditAction {
   action: 'update' | 'add' | 'delete' | 'move'
@@ -83,7 +84,7 @@ export function EditModeProvider({ agentUrl, onEditAction, children }: EditModeP
     }
     if (!agentUrl) return null
     try {
-      const res = await fetch(`${agentUrl}/agent/dynamic-app/edit`, {
+      const res = await agentFetch(`${agentUrl}/agent/dynamic-app/edit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(action),

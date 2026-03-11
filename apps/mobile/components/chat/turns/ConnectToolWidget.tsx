@@ -14,8 +14,10 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from "react"
-import { View, Text, Pressable, Platform, Linking } from "react-native"
+import { View, Text, Pressable, Platform } from "react-native"
+import * as ExpoLinking from "expo-linking"
 import { cn } from "@shogo/shared-ui/primitives"
+import { openAuthFlow } from "@shogo/ui-kit/platform"
 import {
   CheckCircle2,
   Loader2,
@@ -24,8 +26,9 @@ import {
   AlertCircle,
 } from "lucide-react-native"
 import { useLocalSearchParams } from "expo-router"
-import { API_URL } from "../../../lib/api"
+import { API_URL, api } from "../../../lib/api"
 import { useChatContextSafe } from "../ChatContext"
+import { useDomainHttp } from "../../../contexts/domain"
 
 export interface ConnectToolWidgetProps {
   toolkitName: string
@@ -40,6 +43,10 @@ const POLL_INTERVAL_MS = 2500
 const POLL_TIMEOUT_MS = 90000
 const INITIAL_POLL_DELAY_MS = 5000
 
+// Tracks toolkits with an OAuth flow in progress. Module-level so it survives
+// component unmount/remount caused by the Custom Tab deep-link navigation.
+const pendingOAuthToolkits = new Set<string>()
+
 export function ConnectToolWidget({
   toolkitName,
   authUrl,
@@ -48,8 +55,12 @@ export function ConnectToolWidget({
 }: ConnectToolWidgetProps) {
   const [status, setStatus] = useState<ConnectStatus>("idle")
   const chatContext = useChatContextSafe()
+  const http = useDomainHttp()
   const hasSentConfirmation = useRef(false)
-  const { id: projectId } = useLocalSearchParams<{ id: string }>()
+  const { id: projectId, fromOAuth } = useLocalSearchParams<{
+    id: string
+    fromOAuth?: string
+  }>()
 
   const sendConfirmation = useCallback(() => {
     if (hasSentConfirmation.current) return
@@ -62,6 +73,13 @@ export function ConnectToolWidget({
   const checkConnection = useCallback(async () => {
     if (!projectId) return false
     try {
+      if (http) {
+        const json = await api.getIntegrationStatus(http, toolkitName, projectId)
+        return (
+          (json as any)?.data?.connected === true ||
+          ((json as any)?.ok === true && (json as any)?.data?.status === "ACTIVE")
+        )
+      }
       const res = await fetch(
         `${API_URL}/api/integrations/status/${encodeURIComponent(toolkitName)}?projectId=${encodeURIComponent(projectId)}`,
         { credentials: "include" }
@@ -75,25 +93,31 @@ export function ConnectToolWidget({
     } catch {
       return false
     }
-  }, [toolkitName, projectId])
+  }, [toolkitName, projectId, http])
 
-  // On mount: check if already connected (handles page reload after OAuth)
+  // On mount: check if already connected (handles page reload after OAuth).
+  // If we're returning from a native OAuth flow (tracked by pendingOAuthToolkits
+  // or the fromOAuth query param), also send the confirmation message so the
+  // agent continues.
   useEffect(() => {
-    if (Platform.OS !== "web") return
     let cancelled = false
     checkConnection().then((connected) => {
       if (!cancelled && connected) {
         setStatus("connected")
+        if (pendingOAuthToolkits.has(toolkitName) || fromOAuth === "1") {
+          pendingOAuthToolkits.delete(toolkitName)
+          sendConfirmation()
+        }
       }
     })
     return () => {
       cancelled = true
     }
-  }, [checkConnection])
+  }, [checkConnection, toolkitName, sendConfirmation, fromOAuth])
 
   // Poll while connecting: wait an initial delay, then poll until connected
   useEffect(() => {
-    if (Platform.OS !== "web" || status !== "connecting") return
+    if (status !== "connecting") return
 
     let cancelled = false
 
@@ -123,26 +147,53 @@ export function ConnectToolWidget({
     }
   }, [status, checkConnection, sendConfirmation])
 
-  const handleConnect = useCallback(() => {
-    if (Platform.OS === "web") {
-      setStatus("connecting")
-      const width = 600
-      const height = 700
-      const left = Math.round(
-        window.screenX + (window.outerWidth - width) / 2
-      )
-      const top = Math.round(
-        window.screenY + (window.outerHeight - height) / 2
-      )
-      window.open(
-        authUrl,
-        "composio-connect",
-        `width=${width},height=${height},left=${left},top=${top},popup=true`
-      )
-    } else {
-      Linking.openURL(authUrl)
+  const checkAndConfirm = useCallback(async () => {
+    const connected = await checkConnection()
+    if (connected) {
+      pendingOAuthToolkits.delete(toolkitName)
+      setStatus("connected")
+      sendConfirmation()
     }
-  }, [authUrl])
+  }, [checkConnection, toolkitName, sendConfirmation])
+
+  const handleConnect = useCallback(async () => {
+    setStatus("connecting")
+    const isNative = Platform.OS !== "web"
+    if (isNative) pendingOAuthToolkits.add(toolkitName)
+
+    // Create a fresh connection via the API so the callback redirect uses the
+    // correct scheme for the current environment (exp:// in Expo Go,
+    // shogo:// in standalone builds) instead of the hardcoded agent URL.
+    if (projectId && http) {
+      try {
+        const redirect = isNative
+          ? ExpoLinking.createURL(
+              `integrations-callback?projectId=${encodeURIComponent(projectId)}`
+            )
+          : undefined
+        const callbackUrl = redirect
+          ? `${API_URL}/api/integrations/callback?redirect=${encodeURIComponent(redirect)}`
+          : `${API_URL}/api/integrations/callback`
+        const data = await api.connectIntegration(
+          http,
+          toolkitName,
+          projectId,
+          callbackUrl
+        )
+        const redirectUrl = data.data?.redirectUrl
+        if (redirectUrl) {
+          await openAuthFlow(redirectUrl)
+          await checkAndConfirm()
+          return
+        }
+      } catch {
+        // Fall back to agent-provided authUrl
+      }
+    }
+
+    await openAuthFlow(authUrl)
+    await checkAndConfirm()
+  }, [authUrl, http, toolkitName, projectId, checkAndConfirm])
 
   const displayName =
     toolkitName.charAt(0).toUpperCase() + toolkitName.slice(1)

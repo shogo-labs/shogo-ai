@@ -61,11 +61,11 @@ export function useAgentUrl(
               apiParsed.hostname !== 'localhost'
             ) {
               agentParsed.hostname = apiParsed.hostname
-              resolved = agentParsed.origin
+              // Use href to preserve the full path (e.g. /api/projects/{id}/agent-proxy)
+              resolved = agentParsed.href.replace(/\/+$/, '')
             }
           } catch {}
         }
-
         if (!controller.signal.aborted) {
           setAgentUrl(resolved)
           setError(null)

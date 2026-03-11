@@ -74,6 +74,7 @@ import {
 } from '@/components/ui/popover'
 import { useAuth } from '../../../contexts/auth'
 import { ProjectCard } from '../../../components/home/ProjectCard'
+import { useToast, Toast, ToastTitle, ToastDescription } from '@/components/ui/toast'
 
 // Types
 type SortBy = 'lastEdited' | 'dateCreated' | 'alphabetical'
@@ -216,6 +217,7 @@ export default observer(function AllProjectsPage() {
   const store = useSDKDomain() as IDomainStore
   const sdkReady = useSDKReady()
   const actions = useDomainActions()
+  const toast = useToast()
   const { width } = useWindowDimensions()
 
   type VisibilityFilter = 'any' | 'public' | 'private'
@@ -239,6 +241,10 @@ export default observer(function AllProjectsPage() {
   const [visibilityOpen, setVisibilityOpen] = useState(false)
   const [statusOpen, setStatusOpen] = useState(false)
   const [actionMenuProjectId, setActionMenuProjectId] = useState<string | null>(null)
+  const [actionMenuFolderId, setActionMenuFolderId] = useState<string | null>(null)
+  const [renameFolder, setRenameFolder] = useState<Folder | null>(null)
+  const [renameFolderValue, setRenameFolderValue] = useState('')
+  const [singleDeleteFolder, setSingleDeleteFolder] = useState<Folder | null>(null)
 
   // Determine grid columns based on screen width
   const numColumns = viewMode === 'grid' ? (width >= 768 ? 3 : 2) : 1
@@ -506,6 +512,61 @@ export default observer(function AllProjectsPage() {
     setNewFolderModalVisible(false)
   }, [newFolderName, currentWorkspace?.id, currentFolderId, actions, store])
 
+  const handleRenameFolder = useCallback((folder: Folder) => {
+    setRenameFolderValue(folder.name)
+    setRenameFolder(folder)
+  }, [])
+
+  const confirmRenameFolder = useCallback(async () => {
+    if (!renameFolder || !renameFolderValue.trim()) return
+    const folderId = renameFolder.id
+    const newName = renameFolderValue.trim()
+    setRenameFolder(null)
+    try {
+      await actions.updateFolder(folderId, { name: newName })
+      await store?.folderCollection?.loadAll({ workspaceId: currentWorkspace?.id })
+    } catch (err) {
+      console.error('[AllProjectsPage] Rename folder failed:', err)
+    }
+  }, [renameFolder, renameFolderValue, actions, store, currentWorkspace?.id])
+
+  const handleDeleteFolder = useCallback(
+    (folder: Folder) => {
+      setActionMenuFolderId(null)
+      const projectCount = allProjects.filter((p) => p.folderId === folder.id).length
+      if (projectCount > 0) {
+        toast.show({
+          placement: 'top',
+          duration: 5000,
+          render: ({ id }) => (
+            <Toast nativeID={id} variant="outline" action="warning">
+              <ToastTitle>Cannot delete folder</ToastTitle>
+              <ToastDescription>
+                This folder contains {projectCount} project{projectCount !== 1 ? 's' : ''}. Delete or move all projects out first.
+              </ToastDescription>
+            </Toast>
+          ),
+        })
+        return
+      }
+      setSingleDeleteFolder(folder)
+    },
+    [allProjects, toast],
+  )
+
+  const confirmDeleteFolder = useCallback(async () => {
+    if (!singleDeleteFolder) return
+    const folderId = singleDeleteFolder.id
+    setSingleDeleteFolder(null)
+    try {
+      await actions.deleteFolder(folderId)
+      await store?.folderCollection?.loadAll({ workspaceId: currentWorkspace?.id })
+    } catch (err: any) {
+      console.error('[AllProjectsPage] Delete folder failed:', err)
+      Alert.alert('Delete failed', err?.message ?? 'Could not delete folder.')
+    }
+  }, [singleDeleteFolder, actions, store, currentWorkspace?.id])
+
   const handleToggleSelect = useCallback(() => {
     setSelectMode((s) => !s)
     setSelectedIds(new Set())
@@ -646,25 +707,72 @@ export default observer(function AllProjectsPage() {
         return (
           <DroppableView onDrop={(projectId) => handleDragToFolder(projectId, folder.id)}>
             {(isDragOver) => (
-              <Pressable
-                onPress={() => handleFolderPress(folder)}
+              <View
                 className={cn(
                   'flex-1 m-1.5 rounded-2xl border bg-card overflow-hidden',
                   isDragOver ? 'border-2 border-primary bg-primary/5' : 'border-border',
                 )}
               >
-                <View className="bg-muted/40 items-center justify-center" style={{ height: 180 }}>
-                  <FolderOpen size={36} className={isDragOver ? 'text-primary/50' : 'text-muted-foreground/30'} />
+                <Pressable
+                  onPress={() => handleFolderPress(folder)}
+                  className="flex-1"
+                >
+                  <View className="bg-muted/40 items-center justify-center" style={{ height: 180 }}>
+                    <FolderOpen size={36} className={isDragOver ? 'text-primary/50' : 'text-muted-foreground/30'} />
+                  </View>
+                  <View className="px-3 py-2.5">
+                    <Text className="font-medium text-sm text-foreground" numberOfLines={1}>
+                      {folder.name}
+                    </Text>
+                    <Text className="text-xs text-muted-foreground mt-0.5">
+                      {projectCount} project{projectCount !== 1 ? 's' : ''}
+                    </Text>
+                  </View>
+                </Pressable>
+                <View className="absolute top-2 right-2">
+                  <Popover
+                    placement="bottom right"
+                    isOpen={actionMenuFolderId === folder.id}
+                    onOpen={() => setActionMenuFolderId(folder.id)}
+                    onClose={() => setActionMenuFolderId(null)}
+                    trigger={(triggerProps) => (
+                      <Pressable
+                        {...triggerProps}
+                        onPress={(e) => {
+                          e.stopPropagation()
+                          setActionMenuFolderId((prev) => (prev === folder.id ? null : folder.id))
+                        }}
+                        className="w-8 h-8 items-center justify-center rounded-md active:bg-muted"
+                      >
+                        <MoreHorizontal size={18} className="text-muted-foreground" />
+                      </Pressable>
+                    )}
+                  >
+                    <PopoverBackdrop />
+                    <PopoverContent className="p-0 min-w-[150px]">
+                      <PopoverBody>
+                        <Pressable
+                          onPress={() => {
+                            setActionMenuFolderId(null)
+                            handleRenameFolder(folder)
+                          }}
+                          className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
+                        >
+                          <Pencil size={14} className="text-muted-foreground" />
+                          <Text className="text-sm text-foreground">Rename</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={() => handleDeleteFolder(folder)}
+                          className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
+                        >
+                          <Trash2 size={14} className="text-destructive" />
+                          <Text className="text-sm text-destructive">Delete</Text>
+                        </Pressable>
+                      </PopoverBody>
+                    </PopoverContent>
+                  </Popover>
                 </View>
-                <View className="px-3 py-2.5">
-                  <Text className="font-medium text-sm text-foreground" numberOfLines={1}>
-                    {folder.name}
-                  </Text>
-                  <Text className="text-xs text-muted-foreground mt-0.5">
-                    {projectCount} project{projectCount !== 1 ? 's' : ''}
-                  </Text>
-                </View>
-              </Pressable>
+              </View>
             )}
           </DroppableView>
         )
@@ -777,11 +885,14 @@ export default observer(function AllProjectsPage() {
       handleToggleStar,
       handleRenameProject,
       handleDeleteProject,
+      handleRenameFolder,
+      handleDeleteFolder,
       starredIds,
       selectedIds,
       selectMode,
       user?.name,
       actionMenuProjectId,
+      actionMenuFolderId,
     ],
   )
 
@@ -807,25 +918,70 @@ export default observer(function AllProjectsPage() {
         return (
           <DroppableView onDrop={(projectId) => handleDragToFolder(projectId, folder.id)}>
             {(isDragOver) => (
-              <Pressable
-                onPress={() => handleFolderPress(folder)}
+              <View
                 className={cn(
                   'flex-row items-center gap-3 px-4 py-3 border-b',
                   isDragOver ? 'border-primary bg-primary/5 border-b-2' : 'border-border/50',
                 )}
               >
-                <View className="w-12 h-8 rounded-md bg-muted items-center justify-center">
-                  <FolderOpen size={16} className={isDragOver ? 'text-primary' : 'text-muted-foreground'} />
-                </View>
-                <View className="flex-1 min-w-0">
-                  <Text className="font-medium text-sm text-foreground" numberOfLines={1}>
-                    {folder.name}
-                  </Text>
-                  <Text className="text-xs text-muted-foreground">
-                    {projectCount} project{projectCount !== 1 ? 's' : ''}
-                  </Text>
-                </View>
-              </Pressable>
+                <Pressable
+                  onPress={() => handleFolderPress(folder)}
+                  className="flex-1 flex-row items-center gap-3 min-w-0"
+                >
+                  <View className="w-12 h-8 rounded-md bg-muted items-center justify-center">
+                    <FolderOpen size={16} className={isDragOver ? 'text-primary' : 'text-muted-foreground'} />
+                  </View>
+                  <View className="flex-1 min-w-0">
+                    <Text className="font-medium text-sm text-foreground" numberOfLines={1}>
+                      {folder.name}
+                    </Text>
+                    <Text className="text-xs text-muted-foreground">
+                      {projectCount} project{projectCount !== 1 ? 's' : ''}
+                    </Text>
+                  </View>
+                </Pressable>
+                <Popover
+                  placement="bottom right"
+                  isOpen={actionMenuFolderId === folder.id}
+                  onOpen={() => setActionMenuFolderId(folder.id)}
+                  onClose={() => setActionMenuFolderId(null)}
+                  trigger={(triggerProps) => (
+                    <Pressable
+                      {...triggerProps}
+                      onPress={(e) => {
+                        e.stopPropagation()
+                        setActionMenuFolderId((prev) => (prev === folder.id ? null : folder.id))
+                      }}
+                      className="w-8 h-8 items-center justify-center"
+                    >
+                      <MoreHorizontal size={16} className="text-muted-foreground" />
+                    </Pressable>
+                  )}
+                >
+                  <PopoverBackdrop />
+                  <PopoverContent className="p-0 min-w-[150px]">
+                    <PopoverBody>
+                      <Pressable
+                        onPress={() => {
+                          setActionMenuFolderId(null)
+                          handleRenameFolder(folder)
+                        }}
+                        className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
+                      >
+                        <Pencil size={14} className="text-muted-foreground" />
+                        <Text className="text-sm text-foreground">Rename</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => handleDeleteFolder(folder)}
+                        className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
+                      >
+                        <Trash2 size={14} className="text-destructive" />
+                        <Text className="text-sm text-destructive">Delete</Text>
+                      </Pressable>
+                    </PopoverBody>
+                  </PopoverContent>
+                </Popover>
+              </View>
             )}
           </DroppableView>
         )
@@ -983,10 +1139,13 @@ export default observer(function AllProjectsPage() {
       handleToggleStar,
       handleRenameProject,
       handleDeleteProject,
+      handleRenameFolder,
+      handleDeleteFolder,
       starredIds,
       selectedIds,
       selectMode,
       actionMenuProjectId,
+      actionMenuFolderId,
     ],
   )
 
@@ -1398,6 +1557,109 @@ export default observer(function AllProjectsPage() {
                 )}>
                   Create folder
                 </Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Rename Folder Modal */}
+      <Modal
+        visible={!!renameFolder}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setRenameFolder(null)}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 items-center justify-center"
+          onPress={() => setRenameFolder(null)}
+        >
+          <Pressable
+            className="bg-card rounded-xl p-6 w-80 border border-border"
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View className="flex-row items-center justify-between mb-1">
+              <Text className="text-base font-semibold text-foreground">Rename folder</Text>
+              <Pressable onPress={() => setRenameFolder(null)} className="p-1">
+                <X size={20} className="text-muted-foreground" />
+              </Pressable>
+            </View>
+            <Text className="text-sm text-muted-foreground mb-4">
+              Enter a new name for this folder
+            </Text>
+            <TextInput
+              value={renameFolderValue}
+              onChangeText={setRenameFolderValue}
+              placeholder="Folder name"
+              placeholderTextColor="#9ca3af"
+              className="border border-border rounded-md px-3 py-2 text-sm text-foreground bg-background mb-4"
+              autoFocus
+              onSubmitEditing={confirmRenameFolder}
+              selectTextOnFocus
+            />
+            <View className="flex-row gap-2 justify-end">
+              <Pressable
+                onPress={() => setRenameFolder(null)}
+                className="px-4 py-2 rounded-md border border-border active:bg-muted"
+              >
+                <Text className="text-sm text-foreground">Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={confirmRenameFolder}
+                className={cn(
+                  'px-4 py-2 rounded-md',
+                  renameFolderValue.trim() ? 'bg-primary active:bg-primary/80' : 'bg-muted'
+                )}
+                disabled={!renameFolderValue.trim()}
+              >
+                <Text className={cn(
+                  'text-sm',
+                  renameFolderValue.trim() ? 'text-primary-foreground' : 'text-muted-foreground'
+                )}>
+                  Rename
+                </Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Delete Folder Confirmation Modal */}
+      <Modal
+        visible={!!singleDeleteFolder}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSingleDeleteFolder(null)}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 items-center justify-center"
+          onPress={() => setSingleDeleteFolder(null)}
+        >
+          <Pressable
+            className="bg-card rounded-xl p-6 w-80 border border-border"
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View className="flex-row items-center gap-3 mb-3">
+              <View className="w-10 h-10 rounded-full bg-destructive/10 items-center justify-center">
+                <Trash2 size={20} className="text-destructive" />
+              </View>
+              <Text className="text-base font-semibold text-foreground">Delete folder</Text>
+            </View>
+            <Text className="text-sm text-muted-foreground mb-5">
+              Are you sure you want to delete &quot;{singleDeleteFolder?.name}&quot;? This action cannot be undone.
+            </Text>
+            <View className="flex-row gap-2 justify-end">
+              <Pressable
+                onPress={() => setSingleDeleteFolder(null)}
+                className="px-4 py-2 rounded-md border border-border active:bg-muted"
+              >
+                <Text className="text-sm text-foreground">Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={confirmDeleteFolder}
+                className="px-4 py-2 rounded-md bg-destructive active:bg-destructive/80"
+              >
+                <Text className="text-sm text-white font-medium">Delete</Text>
               </Pressable>
             </View>
           </Pressable>

@@ -22,6 +22,7 @@ import { MCP_CATALOG, isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPa
 import { initComposioSession, isComposioEnabled, isComposioInitialized, searchComposioToolkits, findComposioToolkit, registerToolkitProxyTools, checkComposioAuth } from './composio'
 import { autoBindPrimaryEntity } from './composio-auto-bind'
 import { getDynamicAppManager, getByPointer } from './dynamic-app-manager'
+import { withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, type PermissionEngine } from './permission-engine'
 import {
   CANVAS_COMPONENT_SCHEMA,
   BASIC_CANVAS_COMPONENT_SCHEMA,
@@ -50,10 +51,18 @@ export interface ToolContext {
   disconnectChannel?: (type: string) => Promise<void>
   /** Lazily-initialized file index engine for RAG over workspace files */
   fileIndexEngine?: FileIndexEngine
+  /** Authenticated user ID from the chat request (for per-user integrations like Composio) */
+  userId?: string
+  /** Permission engine for local-mode security guardrails */
+  permissionEngine?: PermissionEngine
   /** Emit a user-facing error notification (toast) from any tool */
   onNotifyError?: (title: string, message: string) => void
 }
 
+// Legacy blocked-command check kept as lightweight fallback for contexts
+// without a PermissionEngine (e.g. heartbeat tools in cloud mode).
+// The PermissionEngine's HARD_BLOCKED_COMMAND_PATTERNS is the authoritative
+// version and supersedes this when available.
 const BLOCKED_COMMANDS = [
   'rm -rf /',
   'rm -rf /*',
@@ -90,11 +99,15 @@ function isBlockedCommand(command: string): boolean {
 }
 
 function assertWithinWorkspace(workspaceDir: string, filePath: string): string {
-  const resolved = resolve(workspaceDir, filePath)
-  if (!resolved.startsWith(workspaceDir)) {
-    throw new Error(`Path outside workspace: ${filePath}`)
-  }
-  return resolved
+  return assertWithinWorkspaceSecure(workspaceDir, filePath)
+}
+
+function applyPermissionGate(
+  tool: AgentTool,
+  category: import('./types').PermissionCategory,
+  engine?: PermissionEngine,
+): AgentTool {
+  return engine ? withPermissionGate(tool, category, engine) : tool
 }
 
 export function textResult(data: any): AgentToolResult<any> {
@@ -2599,7 +2612,7 @@ Pass "autoBind" with surfaceId/dataPath to target a specific canvas. Pass "bind"
         const composioToolkit = await findComposioToolkit(name)
         if (composioToolkit) {
           try {
-            const userId = process.env.USER_ID || 'default'
+            const userId = ctx.userId || process.env.USER_ID || 'default'
             const initialized = await initComposioSession(userId, ctx.projectId)
             if (initialized) {
               const proxy = await registerToolkitProxyTools(ctx.mcpClientManager, composioToolkit.slug)
@@ -3181,15 +3194,18 @@ function createNotifyUserErrorTool(ctx: ToolContext): AgentTool {
 
 /** All gateway tools (full set for channel messages) */
 export function createAllTools(ctx: ToolContext): AgentTool[] {
+  const pe = ctx.permissionEngine
+  const g = (tool: AgentTool, cat: import('./types').PermissionCategory) => applyPermissionGate(tool, cat, pe)
+
   return [
-    createExecTool(ctx),
-    createReadFileTool(ctx),
-    createWriteFileTool(ctx),
-    createListFilesTool(ctx),
-    createDeleteFileTool(ctx),
-    createSearchFilesTool(ctx),
-    createWebTool(),
-    createBrowserTool(ctx),
+    g(createExecTool(ctx), 'shell'),
+    g(createReadFileTool(ctx), 'file_read'),
+    g(createWriteFileTool(ctx), 'file_write'),
+    g(createListFilesTool(ctx), 'file_read'),
+    g(createDeleteFileTool(ctx), 'file_delete'),
+    g(createSearchFilesTool(ctx), 'file_read'),
+    g(createWebTool(), 'network'),
+    g(createBrowserTool(ctx), 'network'),
     createMemoryReadTool(ctx),
     createMemoryWriteTool(ctx),
     createMemorySearchTool(ctx),
@@ -3223,15 +3239,18 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
 
 /** Basic agent tools — full non-canvas set + display-only canvas (no mutation tools) */
 export function createBasicTools(ctx: ToolContext): AgentTool[] {
+  const pe = ctx.permissionEngine
+  const g = (tool: AgentTool, cat: import('./types').PermissionCategory) => applyPermissionGate(tool, cat, pe)
+
   return [
-    createExecTool(ctx),
-    createReadFileTool(ctx),
-    createWriteFileTool(ctx),
-    createListFilesTool(ctx),
-    createDeleteFileTool(ctx),
-    createSearchFilesTool(ctx),
-    createWebTool(),
-    createBrowserTool(ctx),
+    g(createExecTool(ctx), 'shell'),
+    g(createReadFileTool(ctx), 'file_read'),
+    g(createWriteFileTool(ctx), 'file_write'),
+    g(createListFilesTool(ctx), 'file_read'),
+    g(createDeleteFileTool(ctx), 'file_delete'),
+    g(createSearchFilesTool(ctx), 'file_read'),
+    g(createWebTool(), 'network'),
+    g(createBrowserTool(ctx), 'network'),
     createMemoryReadTool(ctx),
     createMemoryWriteTool(ctx),
     createMemorySearchTool(ctx),
@@ -3258,11 +3277,14 @@ export function createBasicTools(ctx: ToolContext): AgentTool[] {
 
 /** Reduced tool set for heartbeat ticks (no exec, no send_message) */
 export function createHeartbeatTools(ctx: ToolContext): AgentTool[] {
+  const pe = ctx.permissionEngine
+  const g = (tool: AgentTool, cat: import('./types').PermissionCategory) => applyPermissionGate(tool, cat, pe)
+
   return [
-    createReadFileTool(ctx),
-    createWriteFileTool(ctx),
-    createWebTool(),
-    createBrowserTool(ctx),
+    g(createReadFileTool(ctx), 'file_read'),
+    g(createWriteFileTool(ctx), 'file_write'),
+    g(createWebTool(), 'network'),
+    g(createBrowserTool(ctx), 'network'),
     createMemoryReadTool(ctx),
     createMemoryWriteTool(ctx),
     createMemorySearchTool(ctx),

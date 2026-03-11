@@ -28,7 +28,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react"
-import { View, Text, Pressable, ScrollView, Platform, ActivityIndicator } from "react-native"
+import { View, Text, Pressable, ScrollView, Platform, ActivityIndicator, KeyboardAvoidingView, Keyboard } from "react-native"
 import * as SecureStore from "expo-secure-store"
 import { observer } from "mobx-react-lite"
 import { useChat, type UIMessage } from "@ai-sdk/react"
@@ -45,7 +45,7 @@ import {
 import { useChatTransportConfig } from "@shogo/shared-app/chat"
 import { useSDKDomains, useDomainActions } from "@shogo/shared-app/domain"
 import { cn } from "@shogo/shared-ui/primitives"
-import { API_URL } from "../../lib/api"
+import { API_URL, api, createHttpClient } from "../../lib/api"
 import { authClient } from "../../lib/auth-client"
 import { ChatHeader } from "./ChatHeader"
 import { MessageList } from "./MessageList"
@@ -66,6 +66,7 @@ import {
   getToolCategory as getToolCategoryFromTools,
 } from "./tools/types"
 import { AlertCircle } from "lucide-react-native"
+import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
 import { useToast, Toast, ToastTitle, ToastDescription } from "../ui/toast"
 
 // ============================================================
@@ -554,6 +555,15 @@ export const ChatPanel = observer(function ChatPanel({
   const isLoadingOlderRef = useRef(false)
   const contentHeightBeforeLoadRef = useRef(0)
   const MESSAGE_PAGE_SIZE = 10
+
+  useEffect(() => {
+    const sub = Keyboard.addListener("keyboardDidShow", () => {
+      if (isUserAtBottomRef.current) {
+        scrollViewRef.current?.scrollToEnd({ animated: true })
+      }
+    })
+    return () => sub.remove()
+  }, [])
 
   // Chat session state
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(chatSessionId ?? null)
@@ -1100,6 +1110,21 @@ export const ChatPanel = observer(function ChatPanel({
         const { surfaceId, components } = (dataPart as any).data
         onCanvasPreview?.(surfaceId, components)
       }
+
+      // Handle permission approval requests from the agent runtime
+      if ((dataPart as any).type === "data-permission-request") {
+        const req = (dataPart as any).data
+        if (req) {
+          setPendingPermissionRequest({
+            id: req.id,
+            toolName: req.toolName,
+            category: req.category,
+            params: req.params ?? {},
+            reason: req.reason ?? '',
+            timeout: req.timeout ?? 60,
+          })
+        }
+      }
     },
     onFinish: async ({ message }) => {
       const contentLength = (message as any).content?.length ?? message.parts?.length ?? 0
@@ -1211,6 +1236,16 @@ export const ChatPanel = observer(function ChatPanel({
 
   const [emptyResponseError, setEmptyResponseError] = useState<string | null>(null)
   const [pendingInitialMessage, setPendingInitialMessage] = useState<string | null>(null)
+
+  // Permission approval state (local mode security)
+  const [pendingPermissionRequest, setPendingPermissionRequest] = useState<{
+    id: string
+    toolName: string
+    category: string
+    params: Record<string, any>
+    reason: string
+    timeout: number
+  } | null>(null)
 
   const initialMessageRef = useRef<string | undefined>(undefined)
   if (initialMessage != null && initialMessage.trim() !== "") {
@@ -2086,11 +2121,16 @@ export const ChatPanel = observer(function ChatPanel({
         )}
 
         {/* Chat Panel — full width on mobile (no resize handle) */}
-        <View className="flex-1 flex-col bg-background">
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          className="flex-1 flex-col bg-background"
+          keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 50}
+        >
           {/* Messages with Turn Grouping */}
           <ScrollView
             ref={scrollViewRef}
             className="flex-1 p-4"
+            keyboardShouldPersistTaps="handled"
             onScroll={(e) => {
               const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent
               const isAtBottom =
@@ -2187,6 +2227,24 @@ export const ChatPanel = observer(function ChatPanel({
             </View>
           )}
 
+          {/* Permission Approval Dialog (Local Mode Security) */}
+          {pendingPermissionRequest && (
+            <PermissionApprovalDialog
+              request={pendingPermissionRequest}
+              onRespond={async (response) => {
+                setPendingPermissionRequest(null)
+                try {
+                  if (projectId) {
+                    const http = createHttpClient()
+                    await api.sendPermissionResponse(http, projectId, response)
+                  }
+                } catch (err) {
+                  console.error('[ChatPanel] Failed to send permission response:', err)
+                }
+              }}
+            />
+          )}
+
           {/* Input */}
           <View className="bg-transparent">
             <ChatInput
@@ -2210,7 +2268,7 @@ export const ChatPanel = observer(function ChatPanel({
               onReorderQueuedMessage={handleReorderQueuedMessage}
             />
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </View>
     </ChatContextProvider>
   )

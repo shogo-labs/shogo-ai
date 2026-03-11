@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { View, Text, Pressable, ScrollView, Switch, ActivityIndicator } from 'react-native'
 import { ScrollText, RefreshCw, Trash2 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { agentFetch } from '../../../lib/agent-fetch'
 
 interface LogsPanelProps {
   projectId: string
@@ -22,7 +23,7 @@ export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
   const loadLogs = useCallback(async () => {
     if (!agentUrl) return
     try {
-      const res = await fetch(`${agentUrl}/console-log`)
+      const res = await agentFetch(`${agentUrl}/console-log`)
       if (!res.ok) return
       const data = await res.json()
       setLogs(data.logs || [])

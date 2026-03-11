@@ -20,6 +20,11 @@
     "tailwind-merge": "^3.4.0",
     "class-variance-authority": "^0.7.1"
   },
+  "peerDependencies": {
+    "expo-linking": "*",
+    "expo-web-browser": "*",
+    "react-native": "*"
+  },
   "devDependencies": {
     "typescript": "^5.7.2"
   }

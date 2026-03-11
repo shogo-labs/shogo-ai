@@ -68,7 +68,7 @@ This module deploys the SigNoz K8s Infra Helm chart for comprehensive Kubernetes
 module "signoz" {
   source = "../../modules/signoz"
 
-  cluster_name         = "shogo-staging"
+  cluster_name         = "example-staging"
   signoz_endpoint      = "ingest.us.signoz.cloud:443"
   signoz_ingestion_key = "your-ingestion-key-here"  # Required for SigNoz Cloud
   environment          = "staging"
@@ -81,7 +81,7 @@ module "signoz" {
 module "signoz" {
   source = "../../modules/signoz"
 
-  cluster_name    = "shogo-staging"
+  cluster_name    = "example-staging"
   signoz_endpoint = "http://signoz-otel-collector.signoz.svc.cluster.local:4317"
   environment     = "staging"
 
@@ -97,7 +97,7 @@ module "signoz" {
 module "signoz" {
   source = "../../modules/signoz"
 
-  cluster_name    = "shogo-production"
+  cluster_name    = "example-production"
   signoz_endpoint = "http://signoz-otel-collector.signoz.svc.cluster.local:4317"
   environment     = "production"
 

@@ -946,6 +946,35 @@ app.post('/agent/heartbeat/trigger', async (c) => {
   }
 })
 
+// Permission approval response (local mode security)
+app.post('/agent/permission-response', async (c) => {
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+
+  const engine = agentGateway.getPermissionEngine()
+  if (!engine) {
+    return c.json({ error: 'Permission engine not active' }, 404)
+  }
+
+  try {
+    const body = await c.req.json() as {
+      id: string
+      decision: 'allow_once' | 'always_allow' | 'deny'
+      pattern?: string
+    }
+
+    if (!body.id || !body.decision) {
+      return c.json({ error: 'Missing id or decision' }, 400)
+    }
+
+    engine.handleApprovalResponse(body)
+    return c.json({ ok: true })
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500)
+  }
+})
+
 // Workspace file read/write endpoints
 app.get('/agent/files/:filename', async (c) => {
   const filename = c.req.param('filename')
@@ -1421,7 +1450,7 @@ app.post('/agent/tools/install', async (c) => {
     const composioToolkit = await findComposioToolkit(id)
     if (composioToolkit) {
       try {
-        const userId = process.env.USER_ID || 'default'
+        const userId = c.req.header('X-User-Id') || process.env.USER_ID || 'default'
         const projectId = process.env.PROJECT_ID || 'default'
         await initComposioSession(userId, projectId)
         const proxy = await registerToolkitProxyTools(mcpMgr, composioToolkit.slug)
