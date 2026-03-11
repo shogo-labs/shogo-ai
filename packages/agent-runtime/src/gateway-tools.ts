@@ -55,6 +55,8 @@ export interface ToolContext {
   userId?: string
   /** Permission engine for local-mode security guardrails */
   permissionEngine?: PermissionEngine
+  /** Emit a user-facing error notification (toast) from any tool */
+  onNotifyError?: (title: string, message: string) => void
 }
 
 // Legacy blocked-command check kept as lightweight fallback for contexts
@@ -3170,6 +3172,22 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
   }
 }
 
+function createNotifyUserErrorTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'notify_user_error',
+    description: 'Show an error notification to the user when you detect a problem they need to act on (e.g. access denied, OAuth not configured, private repo, missing permissions). Call this INSTEAD of just writing about the error in chat — the toast is more visible and actionable. Always include a clear title and a message explaining what went wrong and how to fix it.',
+    parameters: Type.Object({
+      title: Type.String({ description: 'Short heading, e.g. "GitHub Access Error"' }),
+      message: Type.String({ description: 'What went wrong and how to fix it' }),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { title, message } = params as { title: string; message: string }
+      ctx.onNotifyError?.(title, message)
+      return textResult({ ok: true, message: 'Error notification shown to user.' })
+    },
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Factory Functions
 // ---------------------------------------------------------------------------
@@ -3215,6 +3233,7 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createToolInstallTool(ctx),
     createToolUninstallTool(ctx),
     createBindingTransformTool(ctx),
+    createNotifyUserErrorTool(ctx),
   ]
 }
 

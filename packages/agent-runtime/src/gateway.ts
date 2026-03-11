@@ -51,6 +51,33 @@ import {
   OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE,
 } from './optimized-prompts'
 
+function isComposioTool(name: string): boolean {
+  return /^[A-Z]+_/.test(name)
+}
+
+function extractToolkitName(name: string): string {
+  const p = name.split('_')[0]
+  return p ? p.charAt(0).toUpperCase() + p.slice(1).toLowerCase() : name
+}
+
+function hasErrorInResult(result: unknown): boolean {
+  if (!result || typeof result !== 'object') return false
+  return 'error' in (result as any)
+}
+
+function toUserMessage(toolkit: string, raw: string): string {
+  const l = raw.toLowerCase()
+  if (l.includes('tool') && l.includes('not found'))
+    return `${toolkit} integration tools failed to load. Try reconnecting ${toolkit} from the Capabilities tab.`
+  if (l.includes('not found') || l.includes('404'))
+    return `${toolkit} could not access the requested resource — it may be private or require additional permissions. Check your org's third-party access settings.`
+  if (l.includes('unauthorized') || l.includes('forbidden') || l.includes('not_authed') || l.includes('invalid_auth'))
+    return `${toolkit} authorization failed. Please reconnect from the Capabilities tab.`
+  if (l.includes('rate limit') || l.includes('429'))
+    return `${toolkit} rate limit reached. Please wait a moment and try again.`
+  return `${toolkit} encountered an issue: ${raw.length > 120 ? raw.slice(0, 120) + '...' : raw}`
+}
+
 export interface GatewayConfig {
   heartbeatInterval: number
   heartbeatEnabled: boolean
@@ -1719,6 +1746,22 @@ export class AgentGateway {
       disconnectChannel: (type) => this.disconnectChannel(type),
       permissionEngine: this.permissionEngine ?? undefined,
       userId: this.currentUserId,
+      onNotifyError: (title, message) => {
+        pendingToolkitError = null
+        if (uiWriter) {
+          uiWriter.write({
+            type: 'data-virtual-tool',
+            id: `vt-notify-${Date.now()}`,
+            data: {
+              type: 'virtual-tool-execute',
+              toolUseId: `vt-${Date.now()}`,
+              toolName: 'notify_user_error',
+              args: { title, message },
+              timestamp: Date.now(),
+            },
+          } as any)
+        }
+      },
     }
 
     const baseTools = isHeartbeat
@@ -1727,6 +1770,24 @@ export class AgentGateway {
 
     const mcpTools = this.mcpClientManager.getTools()
     let assembledTools = mcpTools.length > 0 ? [...baseTools, ...mcpTools] : baseTools
+
+    assembledTools = assembledTools.map(tool => {
+      if (!isComposioTool(tool.name)) return tool
+      const originalExecute = tool.execute
+      const toolkit = extractToolkitName(tool.name)
+      return {
+        ...tool,
+        execute: async (id: string, params: any) => {
+          const result = await originalExecute(id, params)
+          const text = result?.content?.[0]?.text
+          if (typeof text === 'string' && text.includes('"error"')) {
+            const suffix = `\n\nIMPORTANT: Call notify_user_error({ title: "${toolkit} Error", message: "<explain this error to the user in simple terms — what went wrong and how to fix it>" }) to show a notification.`
+            return { ...result, content: [{ type: 'text', text: text + suffix }] }
+          }
+          return result
+        },
+      }
+    })
 
     let staticTools = assembledTools
     if (this.toolMocks.size > 0) {
@@ -1839,6 +1900,7 @@ export class AgentGateway {
 
     // UI stream writer: track current text block for delta streaming
     let uiTextId: string | null = null
+    let pendingToolkitError: string | null = null
 
     // Gate map: onBeforeToolCall stores a promise per toolCallId that
     // resolves once the tool-input-start SSE events have had time to
@@ -1960,6 +2022,21 @@ export class AgentGateway {
               toolCallId,
               output: isError ? { error: typeof result === 'string' ? result : JSON.stringify(result) } : (result ?? { success: true }),
             })
+
+            if (isComposioTool(toolName) && !pendingToolkitError) {
+              if (isError || hasErrorInResult(result)) {
+                const toolkit = extractToolkitName(toolName)
+                const rawStr = typeof result === 'string' ? result : JSON.stringify(result ?? '')
+                let cleanError = rawStr
+                try { const p = JSON.parse(rawStr); if (p?.error) cleanError = String(p.error) } catch {}
+                pendingToolkitError = toolkit
+                uiWriter.write({
+                  type: 'data-tool-error',
+                  id: `tool-err-${toolCallId}`,
+                  data: { toolkitName: toolkit, error: toUserMessage(toolkit, cleanError) },
+                } as any)
+              }
+            }
           }
           await hookEmitter.emit(
             HookEmitter.createEvent('tool', 'after', sessionId, {
@@ -2126,6 +2203,23 @@ export class AgentGateway {
         '- Never try to work around permission denials by re-running the same tool or asking the user to confirm in text.',
       ].join('\n'))
     }
+
+    parts.push([
+      '## CRITICAL: Error Notifications (MUST follow)',
+      '',
+      'You have a tool called `notify_user_error`. You MUST call it whenever:',
+      '- A tool returns an error, 404, or access denied',
+      '- You cannot complete the task the user asked for',
+      '- An integration (GitHub, Slack, Google, etc.) is not working properly',
+      '- You detect a configuration or permission issue the user needs to fix',
+      '',
+      'Usage: `notify_user_error({ title: "GitHub Access Error", message: "The repository CodeGlo/shogo-ai is private or not accessible. Your organization may have OAuth App restrictions enabled. Go to GitHub org Settings > Third-party access to approve." })`',
+      '',
+      'ALWAYS call notify_user_error BEFORE writing the error explanation in chat.',
+      'The title should be short (e.g. "GitHub Access Error", "Slack Auth Expired").',
+      'The message should explain what went wrong AND how to fix it.',
+      'This shows a prominent toast notification that the user will not miss.',
+    ].join('\n'))
 
     return parts.join('\n\n---\n\n')
   }

@@ -339,6 +339,25 @@ const virtualToolsServer = createSdkMcpServer({
         }
       }
     ),
+    sdkTool(
+      'notify_user_error',
+      'Show an error notification to the user when you detect a problem they need to act on (e.g. access denied, OAuth not configured, private repo, missing permissions). Call this INSTEAD of just writing about the error in chat — the toast is more visible and actionable. Always include a clear title and a message explaining what went wrong and how to fix it.',
+      {
+        title: z.string().describe('Short heading, e.g. "GitHub Access Error"'),
+        message: z.string().describe('What went wrong and how to fix it'),
+      },
+      async (args) => {
+        const event: VirtualToolEvent = {
+          type: 'virtual-tool-execute',
+          toolUseId: `vt-${Date.now()}`,
+          toolName: 'notify_user_error',
+          args: args as Record<string, unknown>,
+          timestamp: Date.now(),
+        }
+        virtualToolEvents.emit('virtual-tool', event)
+        return { content: [{ type: 'text', text: 'Error notification shown to user.' }] }
+      }
+    ),
   ]
 })
 
@@ -446,6 +465,7 @@ const ALLOWED_TOOLS = [
   // Virtual tools (SDK MCP server - uses mcp__servername__toolname format)
   'mcp__virtual-tools__set_workspace',
   'mcp__virtual-tools__execute',
+  'mcp__virtual-tools__notify_user_error',
   // File operations
   'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
   // Skill and agent tools
@@ -494,6 +514,7 @@ const SESSION_HOOKS = {
         toolUseId: input.tool_use_id,
         timestamp: Date.now(),
       } satisfies SubagentProgressEvent)
+
       return { continue: true }
     }]
   }],
@@ -3735,7 +3756,6 @@ app.post('/api/chat', async (c) => {
         virtualToolBuffer.push(event)
       }
     }
-
     // Attach listeners BEFORE sending message
     progressEvents.on('progress', onProgress)
     virtualToolEvents.on('virtual-tool', onVirtualTool)
@@ -3911,6 +3931,7 @@ app.post('/api/chat', async (c) => {
                   currentToolId = null
                   currentToolName = null
                   currentToolInput = ''
+
                   writer.write({ type: 'finish-step' })
                   writer.write({ type: 'start-step' })
                   break

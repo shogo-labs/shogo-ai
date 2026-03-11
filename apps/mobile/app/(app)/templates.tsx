@@ -70,6 +70,11 @@ const TEMPLATE_COLORS: Record<string, string> = {
   'code-review-assistant': '#10b981',
   'client-onboarding': '#d946ef',
   'travel-planner': '#06b6d4',
+  'email-slack-alert': '#e11d48',
+  'dev-activity': '#2563eb',
+  'standup-generator': '#16a34a',
+  'slack-monitor': '#7c3aed',
+  'git-insights': '#0d9488',
 }
 
 const FILTER_TABS = [
