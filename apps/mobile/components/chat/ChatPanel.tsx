@@ -45,7 +45,9 @@ import {
 import { useChatTransportConfig } from "@shogo/shared-app/chat"
 import { useSDKDomains, useDomainActions } from "@shogo/shared-app/domain"
 import { cn } from "@shogo/shared-ui/primitives"
+import { usePostHog } from "posthog-react-native"
 import { API_URL, api, createHttpClient } from "../../lib/api"
+import { EVENTS, trackEvent } from "../../lib/analytics"
 import { authClient } from "../../lib/auth-client"
 import { ChatHeader } from "./ChatHeader"
 import { MessageList } from "./MessageList"
@@ -521,6 +523,7 @@ export const ChatPanel = observer(function ChatPanel({
 }: ChatPanelProps) {
   const { studioChat } = useSDKDomains()
   const actions = useDomainActions()
+  const posthog = usePostHog()
 
   const platformFeatures = legacyDomains?.platformFeatures
   const componentBuilder = legacyDomains?.componentBuilder
@@ -1261,6 +1264,7 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Enhanced stop handler
   const handleStop = useCallback(() => {
+    trackEvent(posthog, EVENTS.CHAT_STREAM_STOPPED, { project_id: projectId })
     stop()
 
     const stopUrl = isAgent
@@ -1847,6 +1851,11 @@ export const ChatPanel = observer(function ChatPanel({
             agentMode: selectedAgentMode || agentMode,
             timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           },
+        })
+        trackEvent(posthog, EVENTS.CHAT_MESSAGE_SENT, {
+          agent_mode: selectedAgentMode || agentMode,
+          has_attachments: (imageArray?.length ?? 0) > 0,
+          project_id: projectId,
         })
       } catch (err) {
         console.error("[ChatPanel] Failed to send message:", err)

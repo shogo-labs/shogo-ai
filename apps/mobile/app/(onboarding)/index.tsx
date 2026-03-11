@@ -30,9 +30,11 @@ import {
   Shield,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { usePostHog } from 'posthog-react-native'
 import { useAuth } from '../../contexts/auth'
 import { usePlatformConfig, invalidatePlatformConfigCache } from '../../lib/platform-config'
 import { API_URL, api, createHttpClient } from '../../lib/api'
+import { EVENTS, trackEvent } from '../../lib/analytics'
 import { SecurityPreferenceSelector } from '../../components/security/SecurityPreferenceSelector'
 
 // =============================================================================
@@ -83,6 +85,7 @@ function getSteps(localMode: boolean, needsSetup: boolean): StepId[] {
 export default function OnboardingPage() {
   const router = useRouter()
   const { user, signUp, signIn, isLoading: authLoading } = useAuth()
+  const posthog = usePostHog()
   const { localMode, needsSetup, features } = usePlatformConfig()
   const { width } = useWindowDimensions()
   const isWide = width >= 768
@@ -90,6 +93,10 @@ export default function OnboardingPage() {
   const steps = getSteps(localMode, needsSetup ?? false)
   const [currentStepIdx, setCurrentStepIdx] = useState(0)
   const currentStep = steps[currentStepIdx]
+
+  useEffect(() => {
+    trackEvent(posthog, EVENTS.ONBOARDING_STEP_VIEWED, { step: currentStep })
+  }, [currentStep, posthog])
 
   // Account creation state
   const [name, setName] = useState('')
@@ -252,13 +259,16 @@ export default function OnboardingPage() {
         method: 'POST',
         credentials: 'include',
       })
+      trackEvent(posthog, EVENTS.ONBOARDING_COMPLETED, {
+        selected_template: selectedTemplate || null,
+      })
       router.replace('/(app)')
     } catch {
       router.replace('/(app)')
     } finally {
       setIsCompleting(false)
     }
-  }, [router])
+  }, [router, posthog, selectedTemplate])
 
   // ==========================================================================
   // Render
