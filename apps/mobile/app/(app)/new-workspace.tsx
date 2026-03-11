@@ -70,7 +70,9 @@ export default function NewWorkspacePage() {
       const planId = credits === 100 ? planType : `${planType}_${credits}`
       const isNative = Platform.OS !== 'web'
 
-      const redirectBase = isNative ? ExpoLinking.createURL('checkout-return') : undefined
+      const redirectBase = isNative
+        ? ExpoLinking.createURL('checkout-return')
+        : (typeof window !== 'undefined' ? window.location.origin : undefined)
       console.log('[NewWorkspace] checkout start', { planId, billingInterval, isNative, redirectBase })
 
       const data = await api.createWorkspaceCheckout(http, {
@@ -79,9 +81,9 @@ export default function NewWorkspacePage() {
         billingInterval,
         userId: user.id,
         userEmail: user.email ?? undefined,
-        ...(isNative && redirectBase && {
-          successUrl: `${redirectBase}?workspace={WORKSPACE_ID}&checkout=workspace_created&session_id={CHECKOUT_SESSION_ID}`,
-          cancelUrl: `${redirectBase}?workspace={WORKSPACE_ID}&checkout=canceled`,
+        ...(redirectBase && {
+          successUrl: `${redirectBase}/?workspace={WORKSPACE_ID}&checkout=workspace_created&session_id={CHECKOUT_SESSION_ID}`,
+          cancelUrl: `${redirectBase}/?workspace={WORKSPACE_ID}&checkout=canceled`,
         }),
       })
       console.log('[NewWorkspace] checkout session created', { url: data?.url ? '(received)' : '(missing)', workspaceId: (data as any)?.workspaceId })

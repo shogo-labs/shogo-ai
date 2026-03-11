@@ -109,7 +109,9 @@ export default observer(function BillingPage() {
       const planId = credits === 100 ? planType : `${planType}_${credits}`
       const isNative = Platform.OS !== 'web'
 
-      const redirectBase = isNative ? ExpoLinking.createURL('billing') : undefined
+      const redirectBase = isNative
+        ? ExpoLinking.createURL('billing')
+        : (typeof window !== 'undefined' ? window.location.origin : undefined)
       console.log('[Billing] checkout start', { planId, billingInterval, isNative, redirectBase })
 
       const data = await api.createCheckoutSession(http, {
@@ -117,9 +119,9 @@ export default observer(function BillingPage() {
         planId,
         billingInterval,
         userEmail: user?.email,
-        ...(isNative && redirectBase && {
-          successUrl: `${redirectBase}?workspace=${currentWorkspace.id}&checkout=success&session_id={CHECKOUT_SESSION_ID}`,
-          cancelUrl: `${redirectBase}?workspace=${currentWorkspace.id}&checkout=canceled`,
+        ...(redirectBase && {
+          successUrl: `${redirectBase}/?workspace=${currentWorkspace.id}&checkout=success&session_id={CHECKOUT_SESSION_ID}`,
+          cancelUrl: `${redirectBase}/?workspace=${currentWorkspace.id}&checkout=canceled`,
         }),
       })
       console.log('[Billing] checkout session created', { url: data.url ? '(received)' : '(missing)' })
