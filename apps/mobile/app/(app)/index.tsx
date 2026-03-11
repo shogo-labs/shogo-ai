@@ -18,6 +18,7 @@ import Svg, { Defs, RadialGradient, Stop, Ellipse } from 'react-native-svg'
 import { ProjectCard } from '../../components/home/ProjectCard'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Button } from '@shogo/shared-ui/primitives'
+import { usePostHog } from 'posthog-react-native'
 import { useAuth } from '../../contexts/auth'
 import {
   useProjectCollection,
@@ -30,6 +31,7 @@ import { CompactChatInput } from '../../components/chat/CompactChatInput'
 import { setPendingImageData } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { api } from '../../lib/api'
+import { EVENTS, trackEvent } from '../../lib/analytics'
 
 interface AgentTemplate {
   id: string
@@ -275,6 +277,7 @@ function TemplateCard({
 const HomeScreen = observer(function HomeScreen() {
   const router = useRouter()
   const { user, isAuthenticated } = useAuth()
+  const posthog = usePostHog()
   const projects = useProjectCollection()
   const workspaces = useWorkspaceCollection()
   const membersColl = useMemberCollection()
@@ -393,6 +396,8 @@ const HomeScreen = observer(function HomeScreen() {
         return
       }
 
+      trackEvent(posthog, EVENTS.PROJECT_CREATED, { source: 'prompt' })
+
       if (imageData && imageData.length > 0) {
         setPendingImageData(imageData)
       }
@@ -408,7 +413,7 @@ const HomeScreen = observer(function HomeScreen() {
     } finally {
       setIsCreating(false)
     }
-  }, [actions, user?.id, currentWorkspace?.id, projects, router])
+  }, [actions, user?.id, currentWorkspace?.id, projects, router, posthog])
 
   const handleTemplatePress = useCallback(async (template: AgentTemplate) => {
     if (!user?.id || !currentWorkspace?.id) {
@@ -430,6 +435,12 @@ const HomeScreen = observer(function HomeScreen() {
         contextType: 'project',
         contextId: newProject.id,
       })
+      trackEvent(posthog, EVENTS.PROJECT_CREATED, {
+        source: 'template',
+        template_id: template.id,
+        template_name: template.name,
+      })
+
       const onboardingMessage = `The "${template.name}" template has been installed. Can you describe what's been set up and walk me through how to customize it or connect my own tools?`
       projects.loadAll()
       router.push({
@@ -446,7 +457,7 @@ const HomeScreen = observer(function HomeScreen() {
     } finally {
       setLoadingTemplate(null)
     }
-  }, [actions, user?.id, currentWorkspace?.id, projects, router])
+  }, [actions, user?.id, currentWorkspace?.id, projects, router, posthog])
 
   if (!isAuthenticated) {
     return (

@@ -9,6 +9,7 @@ import { StatusBar } from 'expo-status-bar'
 import { useColorScheme } from 'react-native'
 import { GluestackUIProvider } from '@/components/ui/gluestack-ui-provider'
 import { AuthProvider } from '../contexts/auth'
+import { PostHogProvider } from '../contexts/posthog'
 import { ThemeProvider, useTheme } from '../contexts/theme'
 
 function RootLayoutInner() {
@@ -23,16 +24,18 @@ function RootLayoutInner() {
 
   return (
     <GluestackUIProvider mode={resolvedMode}>
-      <AuthProvider>
-        <StatusBar style={resolvedMode === 'dark' ? 'light' : 'dark'} />
-        <Stack screenOptions={{ headerShown: false, lazy: true }}>
-          <Stack.Screen name="index" />
-          <Stack.Screen name="(auth)" />
-          <Stack.Screen name="(onboarding)" />
-          <Stack.Screen name="(app)" />
-          <Stack.Screen name="(admin)" />
-        </Stack>
-      </AuthProvider>
+      <PostHogProvider>
+        <AuthProvider>
+          <StatusBar style={resolvedMode === 'dark' ? 'light' : 'dark'} />
+          <Stack screenOptions={{ headerShown: false, lazy: true }}>
+            <Stack.Screen name="index" />
+            <Stack.Screen name="(auth)" />
+            <Stack.Screen name="(onboarding)" />
+            <Stack.Screen name="(app)" />
+            <Stack.Screen name="(admin)" />
+          </Stack>
+        </AuthProvider>
+      </PostHogProvider>
     </GluestackUIProvider>
   )
 }

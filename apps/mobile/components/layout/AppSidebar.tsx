@@ -28,7 +28,9 @@ import {
   useWindowDimensions,
   Platform,
 } from 'react-native'
+import { usePostHog } from 'posthog-react-native'
 import { useTheme } from '../../contexts/theme'
+import { EVENTS, trackEvent } from '../../lib/analytics'
 import {
   Popover,
   PopoverBackdrop,
@@ -559,6 +561,7 @@ function WorkspaceSwitcher({
   onSwitchWorkspace,
   onCreateWorkspace,
 }: WorkspaceSwitcherProps) {
+  const posthog = usePostHog()
   const [isOpen, setIsOpen] = useState(false)
 
   const wsInitial = currentWorkspace?.name?.[0]?.toUpperCase() ?? 'W'
@@ -687,7 +690,7 @@ function WorkspaceSwitcher({
               <>
                 <View className="px-3 py-2">
                   <Pressable
-                    onPress={() => { onNavigate('/(app)/billing'); setIsOpen(false) }}
+                    onPress={() => { trackEvent(posthog, EVENTS.UPGRADE_CLICKED); onNavigate('/(app)/billing'); setIsOpen(false) }}
                     className="flex-row items-center justify-center gap-2 h-9 rounded-md"
                     style={Platform.OS === 'web'
                       ? { backgroundImage: 'linear-gradient(to right, #3b82f6, #9333ea)' } as any
@@ -930,6 +933,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const { features } = usePlatformConfig()
 
   const { user, signOut } = useAuth()
+  const posthog = usePostHog()
   const projects = useProjectCollection()
   const workspaces = useWorkspaceCollection()
   const actions = useDomainActions()
@@ -1062,11 +1066,12 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
 
   const handleSwitchWorkspace = useCallback(
     (workspaceId: string) => {
+      trackEvent(posthog, EVENTS.WORKSPACE_SWITCHED)
       setSelectedWorkspaceId(workspaceId)
       setActiveWorkspaceId(workspaceId)
       projects.loadAll({ workspaceId }).catch(() => {})
     },
-    [projects]
+    [projects, posthog]
   )
 
   const handleCreateWorkspace = useCallback(
@@ -1086,6 +1091,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
       try {
         const newWorkspace = await actions.createWorkspace(name, undefined, user.id)
         if (newWorkspace?.id) {
+          trackEvent(posthog, EVENTS.WORKSPACE_CREATED)
           setSelectedWorkspaceId(newWorkspace.id)
           await workspaces.loadAll()
           await projects.loadAll({ workspaceId: newWorkspace.id })
@@ -1094,14 +1100,15 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
         console.warn('Failed to create workspace:', e)
       }
     },
-    [actions, user?.id, workspaces, projects]
+    [actions, user?.id, workspaces, projects, posthog]
   )
 
   const handleSignOut = useCallback(async () => {
+    trackEvent(posthog, EVENTS.SIGN_OUT)
     try {
       await signOut()
     } catch {}
-  }, [signOut])
+  }, [signOut, posthog])
 
   const onNavPress = useCallback(() => {
     if (!isWide) onClose?.()
