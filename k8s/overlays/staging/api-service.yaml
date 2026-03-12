@@ -97,6 +97,8 @@ spec:
               value: "8002"
             - name: NODE_ENV
               value: "staging"
+            - name: SYSTEM_NAMESPACE
+              value: "shogo-staging-system"
             - name: NODE_TLS_REJECT_UNAUTHORIZED
               value: "0"
             # Project runtime configuration - namespace for project pods
