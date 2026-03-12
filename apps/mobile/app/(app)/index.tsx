@@ -318,6 +318,34 @@ const HomeScreen = observer(function HomeScreen() {
 
   const currentWorkspace = useActiveWorkspace()
 
+  // Deep-link: auto-create project from pending template (website referral)
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof localStorage === 'undefined') return
+    const pendingId = localStorage.getItem('pending_template_id')
+    if (!pendingId || !currentWorkspace?.id || !user?.id) return
+    if (homeTemplates.length === 0) return
+
+    const template = homeTemplates.find(t => t.id === pendingId)
+    if (!template) {
+      // Template not in the first 6; fetch full list to find it
+      api.getAgentTemplates(http).then((all) => {
+        const found = all.find((t: AgentTemplate) => t.id === pendingId)
+        if (found) {
+          localStorage.removeItem('pending_template_id')
+          handleTemplatePress(found)
+        } else {
+          localStorage.removeItem('pending_template_id')
+        }
+      }).catch(() => {
+        localStorage.removeItem('pending_template_id')
+      })
+      return
+    }
+
+    localStorage.removeItem('pending_template_id')
+    handleTemplatePress(template)
+  }, [homeTemplates, currentWorkspace?.id, user?.id])
+
   const myProjects = useMemo(() => {
     try {
       return [...(projects?.all ?? [])]

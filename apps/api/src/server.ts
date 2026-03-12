@@ -708,6 +708,11 @@ const getAllowedOrigins = (): string[] => {
   return [`http://localhost:${VITE_PORT}`, 'http://localhost:*']
 }
 
+// Public endpoints: echo request origin so both credentialed (studio app)
+// and non-credentialed (marketing website) requests are allowed.
+app.use('/api/agent-templates', cors({ origin: (origin) => origin || '*', credentials: true }))
+app.use('/api/agent-templates/*', cors({ origin: (origin) => origin || '*', credentials: true }))
+
 // Enable CORS for development and production
 const allowedOrigins = getAllowedOrigins()
 app.use('/*', cors({

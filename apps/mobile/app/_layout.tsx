@@ -4,6 +4,8 @@ import '../polyfills'
 import '../global.css'
 import '../lib/icon-interop'
 
+import { useEffect } from 'react'
+import { Platform } from 'react-native'
 import { Stack } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
 import { useColorScheme } from 'react-native'
@@ -12,7 +14,25 @@ import { AuthProvider } from '../contexts/auth'
 import { PostHogProvider } from '../contexts/posthog'
 import { ThemeProvider, useTheme } from '../contexts/theme'
 
+const PENDING_TEMPLATE_KEY = 'pending_template_id'
+
+function useCaptureTemplateDeepLink() {
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return
+    const params = new URLSearchParams(window.location.search)
+    const templateId = params.get('template')
+    if (templateId) {
+      localStorage.setItem(PENDING_TEMPLATE_KEY, templateId)
+      params.delete('template')
+      const qs = params.toString()
+      const clean = window.location.pathname + (qs ? `?${qs}` : '')
+      window.history.replaceState({}, '', clean)
+    }
+  }, [])
+}
+
 function RootLayoutInner() {
+  useCaptureTemplateDeepLink()
   const systemColorScheme = useColorScheme()
   const { theme, isLoaded } = useTheme()
 

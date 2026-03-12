@@ -137,7 +137,17 @@ export default function OnboardingPage() {
       setTemplatesLoading(true)
       fetch(`${API_URL}/api/agent-templates`, { credentials: 'include' })
         .then(r => r.json())
-        .then((data: any) => setTemplates(data.templates ?? []))
+        .then((data: any) => {
+          const list: AgentTemplate[] = data.templates ?? []
+          setTemplates(list)
+          // Deep-link: pre-select template from website referral
+          if (Platform.OS === 'web' && typeof localStorage !== 'undefined') {
+            const pending = localStorage.getItem('pending_template_id')
+            if (pending && list.some(t => t.id === pending)) {
+              setSelectedTemplate(pending)
+            }
+          }
+        })
         .catch(() => {})
         .finally(() => setTemplatesLoading(false))
     }
