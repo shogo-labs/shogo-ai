@@ -27,6 +27,7 @@ import {
   Modal,
   useWindowDimensions,
   Platform,
+  Image,
 } from 'react-native'
 import { usePostHogSafe } from '../../contexts/posthog'
 import { useTheme } from '../../contexts/theme'
@@ -1136,13 +1137,17 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
               onPress={() => { router.push('/(app)' as any); onNavPress() }}
               className="flex-row items-center gap-2"
             >
-              <View className="h-8 w-8 rounded-lg bg-blue-500 items-center justify-center"
-                style={Platform.OS === 'web'
-                  ? { backgroundImage: 'linear-gradient(to bottom right, #3b82f6, #9333ea)' } as any
-                  : undefined}
-              >
-                <Text className="text-white font-bold text-sm">S</Text>
-              </View>
+              {Platform.OS === 'web' ? (
+                <Image
+                  source={require('../../assets/favicon.png')}
+                  style={{ width: 32, height: 32 }}
+                  resizeMode="contain"
+                />
+              ) : (
+                <View className="h-8 w-8 rounded-lg bg-blue-500 items-center justify-center">
+                  <Text className="text-white font-bold text-sm">S</Text>
+                </View>
+              )}
               <Text className="font-semibold text-foreground">Shogo</Text>
             </Pressable>
             <Pressable onPress={toggleCollapse} className="h-8 w-8 items-center justify-center rounded-md active:bg-muted">
@@ -1153,12 +1158,20 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
         {collapsed && (
           <Pressable
             onPress={toggleCollapse}
-            className="h-8 w-8 rounded-lg bg-blue-500 items-center justify-center"
-            style={Platform.OS === 'web'
-              ? { backgroundImage: 'linear-gradient(to bottom right, #3b82f6, #9333ea)' } as any
-              : undefined}
           >
-            <Text className="text-white font-bold text-sm">S</Text>
+            {Platform.OS === 'web' ? (
+              <Image
+                source={require('../../assets/favicon.png')}
+                style={{ width: 32, height: 32 }}
+                resizeMode="contain"
+              />
+            ) : (
+              <View
+                className="h-8 w-8 rounded-lg bg-blue-500 items-center justify-center"
+              >
+                <Text className="text-white font-bold text-sm">S</Text>
+              </View>
+            )}
           </Pressable>
         )}
       </View>
