@@ -1139,8 +1139,8 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
             >
               {Platform.OS === 'web' ? (
                 <Image
-                  source={require('../../assets/favicon.png')}
-                  style={{ width: 32, height: 32 }}
+                  source={require('../../assets/shogo-logo.svg')}
+                  style={{ width: collapsed ? 24 : 32, height: collapsed ? 24 : 32 }}
                   resizeMode="contain"
                 />
               ) : (
@@ -1161,7 +1161,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
           >
             {Platform.OS === 'web' ? (
               <Image
-                source={require('../../assets/favicon.png')}
+                source={require('../../assets/shogo-logo.svg')}
                 style={{ width: 32, height: 32 }}
                 resizeMode="contain"
               />

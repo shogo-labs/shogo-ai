@@ -305,7 +305,7 @@ export function LoginScreen({ onSignIn, onSignUp, onGoogleSignIn, isLoading, err
             <View className="items-center mb-6">
               {Platform.OS === 'web' && (
                 <Image
-                  source={require('../../../../apps/mobile/assets/favicon.png')}
+                  source={require('../../../../apps/mobile/assets/shogo-logo.svg')}
                   style={{ width: 80, height: 80, marginBottom: 16 }}
                   resizeMode="contain"
                 />
