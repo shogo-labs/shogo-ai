@@ -17,6 +17,7 @@ metadata:
     # Increase timeout for long-running MCP operations
     nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-body-size: "12m"
 spec:
   ingressClassName: nginx
   rules:
