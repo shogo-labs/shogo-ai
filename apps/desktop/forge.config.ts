@@ -10,6 +10,13 @@ const config: ForgeConfig = {
     name: 'Shogo',
     ...(hasIcon ? { icon: './resources/icon' } : {}),
     asar: true,
+    ...(process.env.WINDOWS_CERT_PATH && process.env.WINDOWS_CERT_PASSWORD ? {
+      windowsSign: {
+        certificateFile: process.env.WINDOWS_CERT_PATH,
+        certificatePassword: process.env.WINDOWS_CERT_PASSWORD,
+        timestampServer: 'http://timestamp.digicert.com'
+      }
+    } : {}),
     extraResource: [
       './resources/bun',
       './resources/web',

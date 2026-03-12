@@ -157,6 +157,21 @@ jobs:
         working-directory: apps/desktop
         run: npx tsc
 
+      - name: Prepare Windows Code Signing
+        if: matrix.platform == 'win32'
+        shell: bash
+        env:
+          WINDOWS_CERT_BASE64: ${{ secrets.WINDOWS_CERT_BASE64 }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          if [ -n "$WINDOWS_CERT_BASE64" ]; then
+            echo "$WINDOWS_CERT_BASE64" | base64 -d > "apps/desktop/windows-cert.pfx"
+            echo "WINDOWS_CERT_PATH=apps/desktop/windows-cert.pfx" >> $GITHUB_ENV
+            echo "WINDOWS_CERT_PASSWORD=$WINDOWS_CERT_PASSWORD" >> $GITHUB_ENV
+          else
+            echo "No code signing certificate provided. Skipping code signing."
+          fi
+
       - name: Package with Electron Forge
         working-directory: apps/desktop
         run: npx electron-forge make --arch=${{ matrix.arch }}
