@@ -868,7 +868,7 @@ function AccountTab() {
               Username
             </Text>
             <Text className="text-sm text-muted-foreground mt-0.5">
-              Your public identifier and profile URL.
+              Your public display name and profile identifier.
             </Text>
             <View className="flex-row gap-3 items-start mt-3">
               <View className="flex-1">
@@ -913,24 +913,6 @@ function AccountTab() {
             <Input className="mt-3" value={user?.email || ''} disabled />
           </View>
 
-          <Separator />
-
-          {/* Name */}
-          <View className="px-6 py-5">
-            <Text className="text-sm font-semibold text-foreground">Name</Text>
-            <Text className="text-sm text-muted-foreground mt-0.5">
-              Your full name, as visible to others.
-            </Text>
-            <Input
-              className="mt-3"
-              value={name}
-              onChangeText={(t) => {
-                setName(t)
-                setSaveStatus('idle')
-              }}
-              placeholder="Enter your name"
-            />
-          </View>
         </CardContent>
       </Card>
 

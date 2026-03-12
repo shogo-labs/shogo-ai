@@ -1746,22 +1746,6 @@ export class AgentGateway {
       disconnectChannel: (type) => this.disconnectChannel(type),
       permissionEngine: this.permissionEngine ?? undefined,
       userId: this.currentUserId,
-      onNotifyError: (title, message) => {
-        pendingToolkitError = null
-        if (uiWriter) {
-          uiWriter.write({
-            type: 'data-virtual-tool',
-            id: `vt-notify-${Date.now()}`,
-            data: {
-              type: 'virtual-tool-execute',
-              toolUseId: `vt-${Date.now()}`,
-              toolName: 'notify_user_error',
-              args: { title, message },
-              timestamp: Date.now(),
-            },
-          } as any)
-        }
-      },
     }
 
     const baseTools = isHeartbeat
@@ -1770,24 +1754,6 @@ export class AgentGateway {
 
     const mcpTools = this.mcpClientManager.getTools()
     let assembledTools = mcpTools.length > 0 ? [...baseTools, ...mcpTools] : baseTools
-
-    assembledTools = assembledTools.map(tool => {
-      if (!isComposioTool(tool.name)) return tool
-      const originalExecute = tool.execute
-      const toolkit = extractToolkitName(tool.name)
-      return {
-        ...tool,
-        execute: async (id: string, params: any) => {
-          const result = await originalExecute(id, params)
-          const text = result?.content?.[0]?.text
-          if (typeof text === 'string' && text.includes('"error"')) {
-            const suffix = `\n\nIMPORTANT: Call notify_user_error({ title: "${toolkit} Error", message: "<explain this error to the user in simple terms — what went wrong and how to fix it>" }) to show a notification.`
-            return { ...result, content: [{ type: 'text', text: text + suffix }] }
-          }
-          return result
-        },
-      }
-    })
 
     let staticTools = assembledTools
     if (this.toolMocks.size > 0) {

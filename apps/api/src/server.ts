@@ -339,25 +339,6 @@ const virtualToolsServer = createSdkMcpServer({
         }
       }
     ),
-    sdkTool(
-      'notify_user_error',
-      'Show an error notification to the user when you detect a problem they need to act on (e.g. access denied, OAuth not configured, private repo, missing permissions). Call this INSTEAD of just writing about the error in chat — the toast is more visible and actionable. Always include a clear title and a message explaining what went wrong and how to fix it.',
-      {
-        title: z.string().describe('Short heading, e.g. "GitHub Access Error"'),
-        message: z.string().describe('What went wrong and how to fix it'),
-      },
-      async (args) => {
-        const event: VirtualToolEvent = {
-          type: 'virtual-tool-execute',
-          toolUseId: `vt-${Date.now()}`,
-          toolName: 'notify_user_error',
-          args: args as Record<string, unknown>,
-          timestamp: Date.now(),
-        }
-        virtualToolEvents.emit('virtual-tool', event)
-        return { content: [{ type: 'text', text: 'Error notification shown to user.' }] }
-      }
-    ),
   ]
 })
 
@@ -465,7 +446,6 @@ const ALLOWED_TOOLS = [
   // Virtual tools (SDK MCP server - uses mcp__servername__toolname format)
   'mcp__virtual-tools__set_workspace',
   'mcp__virtual-tools__execute',
-  'mcp__virtual-tools__notify_user_error',
   // File operations
   'Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS',
   // Skill and agent tools
@@ -707,11 +687,6 @@ const getAllowedOrigins = (): string[] => {
   // Default: localhost on any port (dev mode) - allows playwright and vite
   return [`http://localhost:${VITE_PORT}`, 'http://localhost:*']
 }
-
-// Public endpoints: echo request origin so both credentialed (studio app)
-// and non-credentialed (marketing website) requests are allowed.
-app.use('/api/agent-templates', cors({ origin: (origin) => origin || '*', credentials: true }))
-app.use('/api/agent-templates/*', cors({ origin: (origin) => origin || '*', credentials: true }))
 
 // Enable CORS for development and production
 const allowedOrigins = getAllowedOrigins()
