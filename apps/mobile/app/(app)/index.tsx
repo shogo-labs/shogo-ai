@@ -18,7 +18,7 @@ import Svg, { Defs, RadialGradient, Stop, Ellipse } from 'react-native-svg'
 import { ProjectCard } from '../../components/home/ProjectCard'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Button } from '@shogo/shared-ui/primitives'
-import { usePostHog } from 'posthog-react-native'
+import { usePostHogSafe } from '../../contexts/posthog'
 import { useAuth } from '../../contexts/auth'
 import {
   useProjectCollection,
@@ -277,7 +277,7 @@ function TemplateCard({
 const HomeScreen = observer(function HomeScreen() {
   const router = useRouter()
   const { user, isAuthenticated } = useAuth()
-  const posthog = usePostHog()
+  const posthog = usePostHogSafe()
   const projects = useProjectCollection()
   const workspaces = useWorkspaceCollection()
   const membersColl = useMemberCollection()

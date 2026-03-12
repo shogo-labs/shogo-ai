@@ -28,7 +28,7 @@ import {
   useWindowDimensions,
   Platform,
 } from 'react-native'
-import { usePostHog } from 'posthog-react-native'
+import { usePostHogSafe } from '../../contexts/posthog'
 import { useTheme } from '../../contexts/theme'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import {
@@ -561,7 +561,7 @@ function WorkspaceSwitcher({
   onSwitchWorkspace,
   onCreateWorkspace,
 }: WorkspaceSwitcherProps) {
-  const posthog = usePostHog()
+  const posthog = usePostHogSafe()
   const [isOpen, setIsOpen] = useState(false)
 
   const wsInitial = currentWorkspace?.name?.[0]?.toUpperCase() ?? 'W'
@@ -933,7 +933,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const { features } = usePlatformConfig()
 
   const { user, signOut } = useAuth()
-  const posthog = usePostHog()
+  const posthog = usePostHogSafe()
   const projects = useProjectCollection()
   const workspaces = useWorkspaceCollection()
   const actions = useDomainActions()

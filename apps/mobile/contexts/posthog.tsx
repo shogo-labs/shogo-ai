@@ -29,12 +29,23 @@ export function PostHogProvider({ children }: { children: ReactNode }) {
   )
 }
 
+/**
+ * Safe wrapper around usePostHog that returns null when PostHog is not
+ * configured (EXPO_PUBLIC_POSTHOG_API_KEY unset). apiKey is a module-level
+ * constant so the branch is stable across all renders.
+ */
+// eslint-disable-next-line react-hooks/rules-of-hooks -- apiKey is a module constant; branch never changes
+export const usePostHogSafe = apiKey
+  ? usePostHog
+  : () => null
+
 export function usePostHogIdentify() {
-  const posthog = usePostHog()
+  const posthog = usePostHogSafe()
   const { user, isAuthenticated } = useAuth()
   const prevUserId = useRef<string | null>(null)
 
   useEffect(() => {
+    if (!posthog) return
     if (isAuthenticated && user?.id && user.id !== prevUserId.current) {
       posthog.identify(user.id, { email: user.email, name: user.name })
       posthog.register({ platform: Platform.OS })

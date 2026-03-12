@@ -19,9 +19,8 @@ import { useState, useCallback, useEffect } from 'react'
 import { View, useWindowDimensions } from 'react-native'
 import { Slot, usePathname, useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import { usePostHog } from 'posthog-react-native'
 import { useAuth } from '../../contexts/auth'
-import { usePostHogIdentify } from '../../contexts/posthog'
+import { usePostHogIdentify, usePostHogSafe } from '../../contexts/posthog'
 import { DomainProvider } from '../../contexts/domain'
 import { AppSidebar } from '../../components/layout/AppSidebar'
 import { AppHeader } from '../../components/layout/AppHeader'
@@ -41,10 +40,10 @@ export default function AppLayout() {
   const isSettingsPage = pathname === '/settings' || pathname === '/(app)/settings' || pathname.includes('/settings')
 
   usePostHogIdentify()
-  const posthog = usePostHog()
+  const posthog = usePostHogSafe()
 
   useEffect(() => {
-    if (isAuthenticated) {
+    if (isAuthenticated && posthog) {
       posthog.screen(pathname)
     }
   }, [pathname, isAuthenticated, posthog])

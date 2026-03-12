@@ -30,7 +30,7 @@ import {
   Shield,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { usePostHog } from 'posthog-react-native'
+import { usePostHogSafe } from '../../contexts/posthog'
 import { useAuth } from '../../contexts/auth'
 import { usePlatformConfig, invalidatePlatformConfigCache } from '../../lib/platform-config'
 import { API_URL, api, createHttpClient } from '../../lib/api'
@@ -85,7 +85,7 @@ function getSteps(localMode: boolean, needsSetup: boolean): StepId[] {
 export default function OnboardingPage() {
   const router = useRouter()
   const { user, signUp, signIn, isLoading: authLoading } = useAuth()
-  const posthog = usePostHog()
+  const posthog = usePostHogSafe()
   const { localMode, needsSetup, features } = usePlatformConfig()
   const { width } = useWindowDimensions()
   const isWide = width >= 768
@@ -95,6 +95,7 @@ export default function OnboardingPage() {
   const currentStep = steps[currentStepIdx]
 
   useEffect(() => {
+    if (!posthog) return
     trackEvent(posthog, EVENTS.ONBOARDING_STEP_VIEWED, { step: currentStep })
   }, [currentStep, posthog])
 
