@@ -8,7 +8,7 @@
  */
 
 import React, { useState, useEffect, useMemo, useRef } from 'react'
-import { View, Text, TextInput, ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform, Pressable, useWindowDimensions } from 'react-native'
+import { View, Text, TextInput, ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform, Pressable, useWindowDimensions, Image } from 'react-native'
 import { Button } from '../primitives/Button'
 import { Card, CardContent } from '../primitives/Card'
 import { Input } from '../primitives/Input'
@@ -303,6 +303,13 @@ export function LoginScreen({ onSignIn, onSignUp, onGoogleSignIn, isLoading, err
         <Card className="w-full max-w-md self-center">
           <CardContent className="p-6">
             <View className="items-center mb-6">
+              {Platform.OS === 'web' && (
+                <Image
+                  source={require('../../../../apps/mobile/assets/shogo-logo.svg')}
+                  style={{ width: 80, height: 80, marginBottom: 16 }}
+                  resizeMode="contain"
+                />
+              )}
               <Text className="text-2xl font-bold text-foreground">Shogo AI Studio</Text>
               <Text className="text-sm text-muted-foreground mt-1">
                 Sign in to your account or create a new one
