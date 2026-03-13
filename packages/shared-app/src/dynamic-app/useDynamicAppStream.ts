@@ -34,6 +34,7 @@ export interface DynamicAppStreamOptions {
 
 export function useDynamicAppStream(agentUrl: string | null, options?: DynamicAppStreamOptions) {
   const [surfaces, setSurfaces] = useState<Map<string, SurfaceState>>(new Map())
+  const [activeSurfaceId, setActiveSurfaceId] = useState<string | null>(null)
   const [connected, setConnected] = useState(false)
   const [connecting, setConnecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -44,6 +45,12 @@ export function useDynamicAppStream(agentUrl: string | null, options?: DynamicAp
   const receivedFirstMessage = useRef(false)
 
   const applyMessage = useCallback((msg: DynamicAppMessage) => {
+    if (msg.type === 'createSurface' || msg.type === 'updateComponents' || msg.type === 'updateData') {
+      setActiveSurfaceId(msg.surfaceId)
+    } else if (msg.type === 'clearAll') {
+      setActiveSurfaceId(null)
+    }
+
     setSurfaces((prev) => {
       const next = new Map(prev)
       const now = new Date().toISOString()
@@ -265,6 +272,7 @@ export function useDynamicAppStream(agentUrl: string | null, options?: DynamicAp
         next.set(surfaceId, { ...surface, dataModel: newDataModel, updatedAt: new Date().toISOString() })
         return next
       })
+      setActiveSurfaceId(surfaceId)
 
       if (options?.persist && agentUrl) {
         fetch(`${agentUrl}/agent/dynamic-app/data-change`, {
@@ -289,11 +297,12 @@ export function useDynamicAppStream(agentUrl: string | null, options?: DynamicAp
       reconnectTimeoutRef.current = null
     }
     setSurfaces(new Map())
+    setActiveSurfaceId(null)
     setConnected(false)
     setError(null)
     reconnectAttemptRef.current = 0
     connect()
   }, [connect])
 
-  return { surfaces, connected, connecting, error, dispatchAction, updateLocalData, reconnect, applyMessage }
+  return { surfaces, activeSurfaceId, setActiveSurfaceId, connected, connecting, error, dispatchAction, updateLocalData, reconnect, applyMessage }
 }
