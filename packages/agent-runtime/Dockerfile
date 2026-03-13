@@ -84,7 +84,8 @@ RUN echo "https://dl-cdn.alpinelinux.org/alpine/v3.21/main" >> /etc/apk/reposito
     apk add --no-cache \
     curl bash git tar gzip \
     'nodejs>22' npm \
-    chromium nss freetype harfbuzz ca-certificates ttf-freefont
+    chromium nss freetype harfbuzz ca-certificates ttf-freefont \
+    aws-cli
 
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
