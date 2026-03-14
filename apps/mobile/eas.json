@@ -29,7 +29,8 @@
       "autoIncrement": true,
       "env": {
         "EXPO_PUBLIC_API_URL": "https://studio-staging.shogo.ai",
-        "EXPO_PUBLIC_POSTHOG_API_KEY": "phc_N6Tv9TMyudjngmiZ8MrswiwyBE3oU1wbOpIVsedF4RB"
+        "EXPO_PUBLIC_POSTHOG_API_KEY": "phc_N6Tv9TMyudjngmiZ8MrswiwyBE3oU1wbOpIVsedF4RB",
+        "EXPO_PUBLIC_APP_ENV": "staging"
       }
     },
     "production": {
@@ -40,7 +41,8 @@
       "autoIncrement": true,
       "env": {
         "EXPO_PUBLIC_API_URL": "https://api.example.com",
-        "EXPO_PUBLIC_POSTHOG_API_KEY": "phc_N6Tv9TMyudjngmiZ8MrswiwyBE3oU1wbOpIVsedF4RB"
+        "EXPO_PUBLIC_POSTHOG_API_KEY": "phc_N6Tv9TMyudjngmiZ8MrswiwyBE3oU1wbOpIVsedF4RB",
+        "EXPO_PUBLIC_APP_ENV": "production"
       }
     }
   },

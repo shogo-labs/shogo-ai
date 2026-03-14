@@ -7,6 +7,7 @@ import { useAuth } from './auth'
 
 const apiKey = process.env.EXPO_PUBLIC_POSTHOG_API_KEY
 const host = process.env.EXPO_PUBLIC_POSTHOG_HOST || 'https://us.i.posthog.com'
+const appEnv = process.env.EXPO_PUBLIC_APP_ENV || 'development'
 const isWeb = Platform.OS === 'web'
 
 export function PostHogProvider({ children }: { children: ReactNode }) {
@@ -48,7 +49,7 @@ export function usePostHogIdentify() {
     if (!posthog) return
     if (isAuthenticated && user?.id && user.id !== prevUserId.current) {
       posthog.identify(user.id, { email: user.email, name: user.name })
-      posthog.register({ platform: Platform.OS })
+      posthog.register({ platform: Platform.OS, environment: appEnv })
       prevUserId.current = user.id
     } else if (!isAuthenticated && prevUserId.current) {
       posthog.reset()
