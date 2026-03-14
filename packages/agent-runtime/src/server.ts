@@ -309,6 +309,13 @@ app.use('/agent/*', async (c, next) => {
   await next()
 })
 app.use('/pool/*', async (c, next) => {
+  // Before assignment, pool endpoints must be reachable by the API server
+  // to deliver the project config (including RUNTIME_AUTH_SECRET itself).
+  // After assignment, normal auth applies.
+  if (IS_POOL_MODE && !poolAssigned) {
+    await next()
+    return
+  }
   const denied = checkRuntimeAuth(c)
   if (denied) return denied
   await next()
