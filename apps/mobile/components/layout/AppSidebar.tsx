@@ -548,6 +548,7 @@ interface WorkspaceSwitcherProps {
   onNavigate: (href: string) => void
   onSwitchWorkspace: (workspaceId: string) => void
   onCreateWorkspace: () => void
+  localMode?: boolean
 }
 
 function WorkspaceSwitcher({
@@ -561,6 +562,7 @@ function WorkspaceSwitcher({
   onNavigate,
   onSwitchWorkspace,
   onCreateWorkspace,
+  localMode,
 }: WorkspaceSwitcherProps) {
   const posthog = usePostHogSafe()
   const [isOpen, setIsOpen] = useState(false)
@@ -640,13 +642,15 @@ function WorkspaceSwitcher({
                 <Settings size={14} className="text-muted-foreground" />
                 <Text className="text-xs text-foreground">Settings</Text>
               </Pressable>
-              <Pressable
-                onPress={() => { onNavigate('/(app)/settings?tab=people'); setIsOpen(false) }}
-                className="flex-1 flex-row items-center justify-center gap-1.5 h-8 rounded-md border border-border active:bg-muted"
-              >
-                <Users size={14} className="text-muted-foreground" />
-                <Text className="text-xs text-foreground">Invite</Text>
-              </Pressable>
+              {!localMode && (
+                <Pressable
+                  onPress={() => { onNavigate('/(app)/settings?tab=people'); setIsOpen(false) }}
+                  className="flex-1 flex-row items-center justify-center gap-1.5 h-8 rounded-md border border-border active:bg-muted"
+                >
+                  <Users size={14} className="text-muted-foreground" />
+                  <Text className="text-xs text-foreground">Invite</Text>
+                </Pressable>
+              )}
             </View>
           )}
 
@@ -756,18 +760,20 @@ function WorkspaceSwitcher({
           <View className="h-px bg-border" />
 
           {/* ── Pinned bottom: create workspace ── */}
-          <View className="p-1">
-            <Pressable
-              onPress={() => {
-                setIsOpen(false)
-                onCreateWorkspace()
-              }}
-              className="flex-row items-center gap-2 px-4 py-2 rounded-md active:bg-muted"
-            >
-              <Plus size={16} className="text-muted-foreground" />
-              <Text className="text-sm text-foreground">Create new workspace</Text>
-            </Pressable>
-          </View>
+          {!localMode && (
+            <View className="p-1">
+              <Pressable
+                onPress={() => {
+                  setIsOpen(false)
+                  onCreateWorkspace()
+                }}
+                className="flex-row items-center gap-2 px-4 py-2 rounded-md active:bg-muted"
+              >
+                <Plus size={16} className="text-muted-foreground" />
+                <Text className="text-sm text-foreground">Create new workspace</Text>
+              </Pressable>
+            </View>
+          )}
         </View>
       </PopoverContent>
     </Popover>
@@ -931,7 +937,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const router = useRouter()
   const insets = useSafeAreaInsets()
   const isWide = width >= 768
-  const { features } = usePlatformConfig()
+  const { features, localMode } = usePlatformConfig()
 
   const { user, signOut } = useAuth()
   const posthog = usePostHogSafe()
@@ -1189,6 +1195,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
           onNavigate={(href) => { router.push(href as any); onNavPress() }}
           onSwitchWorkspace={handleSwitchWorkspace}
           onCreateWorkspace={handleCreateWorkspace}
+          localMode={localMode}
         />
       </View>
 

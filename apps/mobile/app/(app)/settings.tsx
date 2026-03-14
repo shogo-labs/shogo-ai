@@ -111,7 +111,6 @@ const MOBILE_NAV_ITEMS: NavItem[] = [
 
 const LOCAL_NAV_ITEMS: NavItem[] = [
   { id: 'workspace', label: 'Workspace', icon: Building2 },
-  { id: 'people', label: 'People', icon: Users },
   { id: 'account', label: 'Account', icon: User },
   { id: 'security', label: 'Security', icon: Shield },
 ]
@@ -120,12 +119,14 @@ function TabBar({
   activeTab,
   onTabChange,
   showBilling = true,
+  localMode = false,
 }: {
   activeTab: TabId
   onTabChange: (tab: TabId) => void
   showBilling?: boolean
+  localMode?: boolean
 }) {
-  const items = showBilling ? MOBILE_NAV_ITEMS : LOCAL_NAV_ITEMS
+  const items = (showBilling && !localMode) ? MOBILE_NAV_ITEMS : LOCAL_NAV_ITEMS
   return (
     <ScrollView
       horizontal
@@ -183,18 +184,20 @@ function SettingsSidebar({
   workspaceName,
   userName,
   showBilling = true,
+  localMode = false,
 }: {
   activeTab: TabId
   onTabChange: (tab: TabId) => void
   workspaceName: string
   userName: string
   showBilling?: boolean
+  localMode?: boolean
 }) {
   const router = useRouter()
 
   const workspaceItems: SidebarItem[] = [
     { id: 'workspace', label: workspaceName || 'Workspace', avatar: (workspaceName?.[0] || 'W').toUpperCase() },
-    { id: 'people', label: 'People' },
+    ...(!(localMode || !showBilling) ? [{ id: 'people' as TabId, label: 'People' }] : []),
     ...(showBilling
       ? [{ id: 'billing' as TabId, label: 'Billing' }]
       : []),
@@ -280,7 +283,7 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
   const store = useDomain() as IDomainStore
   const actions = useDomainActions()
   const { user } = useAuth()
-  const { features: wsFeatures } = usePlatformConfig()
+  const { features: wsFeatures, localMode } = usePlatformConfig()
   const workspaces = useWorkspaceCollection()
   const members = useMemberCollection()
   const http = useDomainHttp()
@@ -479,59 +482,63 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
         </CardContent>
       </Card>
 
-      {/* Leave workspace */}
-      <Card>
-        <CardContent className="p-0">
-          <View className="px-6 py-5 flex-row items-center justify-between">
-            <View className="flex-1 mr-4">
-              <Text className="text-base font-semibold text-foreground">
-                Leave workspace
-              </Text>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                Leave this workspace. You will lose access to its projects and data.
-              </Text>
-            </View>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={workspaces.all.length <= 1 || (isOwner && !workspaceMembers.some(
-                (m: any) => m.role === 'owner' && m.userId !== user?.id
-              ))}
-              onPress={() => setIsLeaveDialogOpen(true)}
-            >
-              Leave workspace
-            </Button>
-          </View>
-
-          {isOwner && (
-            <>
-              <Separator />
+      {!localMode && (
+        <>
+          {/* Leave workspace */}
+          <Card>
+            <CardContent className="p-0">
               <View className="px-6 py-5 flex-row items-center justify-between">
                 <View className="flex-1 mr-4">
-                  <Text className="text-base font-semibold text-destructive">
-                    Delete workspace
+                  <Text className="text-base font-semibold text-foreground">
+                    Leave workspace
                   </Text>
                   <Text className="text-sm text-muted-foreground mt-0.5">
-                    {canDelete
-                      ? 'Permanently delete this workspace and all its data.'
-                      : isPersonalWorkspace
-                      ? 'Your personal workspace cannot be deleted.'
-                      : 'You cannot delete your only workspace.'}
+                    Leave this workspace. You will lose access to its projects and data.
                   </Text>
                 </View>
                 <Button
-                  variant="destructive"
+                  variant="outline"
                   size="sm"
-                  disabled={!canDelete}
-                  onPress={() => setIsDeleteDialogOpen(true)}
+                  disabled={workspaces.all.length <= 1 || (isOwner && !workspaceMembers.some(
+                    (m: any) => m.role === 'owner' && m.userId !== user?.id
+                  ))}
+                  onPress={() => setIsLeaveDialogOpen(true)}
                 >
-                  Delete
+                  Leave workspace
                 </Button>
               </View>
-            </>
-          )}
-        </CardContent>
-      </Card>
+
+              {isOwner && (
+                <>
+                  <Separator />
+                  <View className="px-6 py-5 flex-row items-center justify-between">
+                    <View className="flex-1 mr-4">
+                      <Text className="text-base font-semibold text-destructive">
+                        Delete workspace
+                      </Text>
+                      <Text className="text-sm text-muted-foreground mt-0.5">
+                        {canDelete
+                          ? 'Permanently delete this workspace and all its data.'
+                          : isPersonalWorkspace
+                          ? 'Your personal workspace cannot be deleted.'
+                          : 'You cannot delete your only workspace.'}
+                      </Text>
+                    </View>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      disabled={!canDelete}
+                      onPress={() => setIsDeleteDialogOpen(true)}
+                    >
+                      Delete
+                    </Button>
+                  </View>
+                </>
+              )}
+            </CardContent>
+          </Card>
+        </>
+      )}
 
       {/* Leave Workspace Confirmation Modal */}
       <Modal
@@ -2292,17 +2299,24 @@ function InviteMembersModal({
 // MAIN SETTINGS PAGE
 // ============================================================================
 
-function SettingsContent({ activeTab }: { activeTab: TabId }) {
+const SettingsContent = observer(function SettingsContent({ 
+  activeTab, 
+  localMode = false 
+}: { 
+  activeTab: TabId, 
+  localMode?: boolean 
+}) {
+  const isLocal = localMode
   return (
     <>
       {activeTab === 'workspace' && <WorkspaceSettingsTab />}
-      {activeTab === 'people' && <PeopleTab />}
+      {activeTab === 'people' && !isLocal && <PeopleTab />}
       {activeTab === 'account' && <AccountTab />}
-      {activeTab === 'billing' && <BillingTab />}
+      {activeTab === 'billing' && !isLocal && <BillingTab />}
       {activeTab === 'security' && <SecuritySettingsPanel />}
     </>
   )
-}
+})
 
 export default observer(function SettingsPage() {
   const router = useRouter()
@@ -2311,15 +2325,20 @@ export default observer(function SettingsPage() {
   const isWide = width >= 768
   const { user } = useAuth()
   const currentWorkspace = useActiveWorkspace()
-  const { features } = usePlatformConfig()
+  const { features, localMode } = usePlatformConfig()
 
   const [activeTab, setActiveTab] = useState<TabId>(
     () => {
       const requested = params.tab as TabId
-      if (requested === 'billing' && !features.billing) return 'workspace'
       return ALL_TAB_IDS.includes(requested) ? requested : 'workspace'
     }
   )
+
+  useEffect(() => {
+    const isLocal = localMode || !features.billing
+    if (activeTab === 'billing' && !features.billing) setActiveTab('workspace')
+    if (activeTab === 'people' && isLocal) setActiveTab('workspace')
+  }, [activeTab, features.billing, localMode])
 
   const workspaceName = currentWorkspace?.name || ''
   const userName = user?.name || ''
@@ -2333,6 +2352,7 @@ export default observer(function SettingsPage() {
           workspaceName={workspaceName}
           userName={userName}
           showBilling={features.billing}
+          localMode={localMode}
         />
         <ScrollView
           className="flex-1"
@@ -2349,7 +2369,7 @@ export default observer(function SettingsPage() {
                 <Text className="text-sm text-muted-foreground">Docs</Text>
               </Pressable>
             </View>
-            <SettingsContent activeTab={activeTab} />
+            <SettingsContent activeTab={activeTab} localMode={localMode || !features.billing} />
           </View>
         </ScrollView>
       </View>
@@ -2365,14 +2385,19 @@ export default observer(function SettingsPage() {
         <Text className="text-xl font-bold text-foreground">Settings</Text>
       </View>
 
-      <TabBar activeTab={activeTab} onTabChange={setActiveTab} showBilling={features.billing} />
+      <TabBar 
+        activeTab={activeTab} 
+        onTabChange={setActiveTab} 
+        showBilling={features.billing} 
+        localMode={localMode || !features.billing} 
+      />
 
       <ScrollView
         className="flex-1"
         contentContainerClassName="p-4 pb-10"
         showsVerticalScrollIndicator={false}
       >
-        <SettingsContent activeTab={activeTab} />
+        <SettingsContent activeTab={activeTab} localMode={localMode || !features.billing} />
       </ScrollView>
     </View>
   )
