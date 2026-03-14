@@ -384,13 +384,21 @@ function useRenderedChildren(
 
 interface MultiSurfaceRendererProps {
   surfaces: Map<string, SurfaceState>
+  activeSurfaceId?: string | null
   agentUrl: string | null
   onAction: (surfaceId: string, name: string, context?: Record<string, unknown>) => void
   onDataChange?: (surfaceId: string, path: string, value: unknown, options?: { persist?: boolean }) => void
 }
 
-export function MultiSurfaceRenderer({ surfaces, agentUrl, onAction, onDataChange }: MultiSurfaceRendererProps) {
-  const surfaceList = useMemo(() => [...surfaces.values()], [surfaces])
+export function MultiSurfaceRenderer({ surfaces, activeSurfaceId, agentUrl, onAction, onDataChange }: MultiSurfaceRendererProps) {
+  if (activeSurfaceId) {
+    const active = surfaces.get(activeSurfaceId)
+    if (active) {
+      return <DynamicAppRenderer surface={active} agentUrl={agentUrl} onAction={onAction} onDataChange={onDataChange} />
+    }
+  }
+
+  const surfaceList = Array.from(surfaces.values())
 
   if (surfaceList.length === 0) {
     return null

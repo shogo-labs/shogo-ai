@@ -99,6 +99,10 @@ export interface ConfigureApiMessage {
   }>
 }
 
+export interface ClearAllMessage {
+  type: 'clearAll'
+}
+
 export type DynamicAppMessage =
   | CreateSurfaceMessage
   | UpdateComponentsMessage
@@ -106,6 +110,7 @@ export type DynamicAppMessage =
   | DeleteSurfaceMessage
   | DeleteComponentsMessage
   | ConfigureApiMessage
+  | ClearAllMessage
 
 // ---------------------------------------------------------------------------
 // Surface State (client-side)

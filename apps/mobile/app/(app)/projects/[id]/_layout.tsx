@@ -175,9 +175,18 @@ export default observer(function ProjectLayout() {
 
   const handleUpdateCanvasSettings = useCallback(async (themeSettings: Record<string, unknown>) => {
     if (!projectId) return
-    const merged = { ...(project?.settings ?? {}), ...themeSettings }
-    await actions.updateProject(projectId, { settings: merged })
-    setProject((prev: any) => prev ? { ...prev, settings: merged } : prev)
+    let currentSettings: Record<string, unknown> = {}
+    if (typeof project?.settings === 'string') {
+      try {
+        currentSettings = JSON.parse(project.settings)
+      } catch {}
+    } else if (project?.settings && typeof project.settings === 'object') {
+      currentSettings = project.settings as Record<string, unknown>
+    }
+    const merged = { ...currentSettings, ...themeSettings }
+    const settingsStr = JSON.stringify(merged)
+    await actions.updateProject(projectId, { settings: settingsStr as any })
+    setProject((prev: any) => prev ? { ...prev, settings: settingsStr } : prev)
   }, [projectId, project?.settings, actions])
 
   const allProjects = useMemo(() => {
@@ -207,11 +216,13 @@ export default observer(function ProjectLayout() {
     credentials: Platform.OS === 'web' ? 'include' : 'omit',
     headers: nativeHeaders,
   })
-  const { surfaces, connected, dispatchAction, updateLocalData, reconnect, applyMessage } = useDynamicAppStream(
+  const { surfaces, activeSurfaceId, connected, dispatchAction, updateLocalData, reconnect, applyMessage } = useDynamicAppStream(
     agentUrl,
     nativeHeaders ? { headers: nativeHeaders } : undefined,
   )
-  const activeSurface = surfaces.size > 0 ? Array.from(surfaces.values())[0] : null
+  const activeSurface = useMemo(() => {
+    return activeSurfaceId ? surfaces.get(activeSurfaceId) || null : null
+  }, [surfaces, activeSurfaceId])
 
   // Canvas action handler
   const handleCanvasAction = useCallback(
