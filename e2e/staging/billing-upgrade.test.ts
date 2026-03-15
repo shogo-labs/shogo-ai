@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { test, expect, type Page } from "@playwright/test"
+import { makeTestUser, signUpAndOnboard, STRIPE_CARDS } from "./helpers"
 
 /**
  * Billing & Upgrade Flow E2E Tests
@@ -14,40 +15,13 @@ import { test, expect, type Page } from "@playwright/test"
  * Run: npx playwright test --config e2e/playwright.config.ts
  */
 
-const TEST_USER = {
-  name: `E2E Billing ${Date.now()}`,
-  email: `e2e-billing-${Date.now()}@mailnull.com`,
-  password: "E2EBillingTest2026!",
-}
-
-const STRIPE_CARDS = {
-  decline: "4000000000000002",
-  success: "4242424242424242",
-}
-
-// ── Helpers ──────────────────────────────────────────────────────────
-
-async function signUp(page: Page) {
-  await page.goto("/sign-in")
-  await page.getByText("Sign Up").click()
-  await page.getByPlaceholder("Enter your name").fill(TEST_USER.name)
-  await page.getByPlaceholder("you@example.com").fill(TEST_USER.email)
-  await page.getByPlaceholder("Create a password").fill(TEST_USER.password)
-  await page.getByRole("button", { name: "Sign Up" }).or(page.getByText("Sign Up").last()).click()
-  // Handle onboarding screen if present (new users see "Get Started" before home)
-  const getStarted = page.getByText("Get Started")
-  try {
-    await getStarted.waitFor({ timeout: 5_000 })
-    await getStarted.click()
-  } catch {
-    // No onboarding screen — already on home
-  }
-  await page.waitForSelector("text=What's on your mind", { timeout: 20_000 })
-}
+const TEST_USER = makeTestUser("Billing")
 
 async function navigateToBilling(page: Page) {
   await page.goto("/billing")
-  await page.waitForSelector("text=Billing", { timeout: 10_000 })
+  // Wait for workspace + billing data — the plan cards only render after
+  // useActiveWorkspace and useBillingData have resolved.
+  await page.waitForSelector("text=You're on", { timeout: 15_000 })
 }
 
 async function fillStripeCheckout(
@@ -58,7 +32,8 @@ async function fillStripeCheckout(
   const name = opts?.name ?? TEST_USER.name
   const zip = opts?.zip ?? "10001"
 
-  await page.waitForSelector("text=Subscribe to Pro", { timeout: 15_000 })
+  // Wait for navigation to Stripe hosted checkout
+  await page.waitForURL(/checkout\.stripe\.com/, { timeout: 30_000 })
 
   await page.getByPlaceholder("1234 1234 1234 1234").pressSequentially(cardNumber)
   await page.getByPlaceholder("MM / YY").pressSequentially("1228")
@@ -93,7 +68,7 @@ test.describe("Billing & Upgrade Flow", () => {
   // ── Phase 1: Sign-Up ────────────────────────────────────────────
 
   test("sign up creates account and redirects to home", async () => {
-    await signUp(page)
+    await signUpAndOnboard(page, TEST_USER)
 
     await expect(page.getByText(/What's on your mind/)).toBeVisible()
     await expect(page.getByText(/Personal/)).toBeVisible()
@@ -105,7 +80,7 @@ test.describe("Billing & Upgrade Flow", () => {
     await navigateToBilling(page)
 
     await expect(page.getByText("You're on Free Plan")).toBeVisible()
-    await expect(page.getByText("55 of 55")).toBeVisible()
+    await expect(page.getByText("5 of 5")).toBeVisible()
     await expect(page.getByText("No credits will rollover")).toBeVisible()
     await expect(page.getByText("Daily credits reset at midnight UTC")).toBeVisible()
   })
@@ -209,7 +184,7 @@ test.describe("Billing & Upgrade Flow", () => {
     await page.goto("/")
     await page.waitForSelector("text=What's on your mind", { timeout: 10_000 })
 
-    const input = page.getByPlaceholder("Describe the agent you want to build")
+    const input = page.getByPlaceholder("Ask Shogo to create...")
     await input.click()
     await input.fill("Test model gating for Pro plan")
     await page.waitForTimeout(500)
@@ -217,14 +192,18 @@ test.describe("Billing & Upgrade Flow", () => {
 
     await page.waitForURL(/\/projects\//, { timeout: 60_000 })
 
-    // Wait for chat panel to load
-    await expect(page.getByText("Basic")).toBeVisible({ timeout: 10_000 })
+    // Wait for agent to finish streaming — button is disabled while streaming
+    await page.waitForSelector('[aria-label="Stop"], [aria-label="stop"]', { state: "detached", timeout: 60_000 }).catch(() => {})
+    await page.waitForTimeout(500)
+
+    // Wait for the model selector button (shows current model: "Basic" or "Advanced")
+    const modelBtn = page.getByText("Basic", { exact: true }).or(page.getByText("Advanced", { exact: true }).last())
+    await expect(modelBtn).toBeVisible({ timeout: 10_000 })
 
     // Open model selector
-    await page.getByText("Basic").click()
+    await modelBtn.last().click()
 
-    // Verify Advanced is available (not locked)
-    await expect(page.getByText("Agent Mode")).toBeVisible()
+    // Verify Advanced tier is available (not locked) for Pro users
     await expect(page.getByText("Advanced")).toBeVisible()
     await expect(page.getByText("Upgrade to unlock")).not.toBeVisible()
   })

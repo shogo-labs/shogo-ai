@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { test, expect, type Page } from "@playwright/test"
+import { test, expect } from "@playwright/test"
+import { makeTestUser, signUpAndOnboard } from "./helpers"
 
 /**
  * Composio Integration E2E Tests
@@ -24,32 +25,7 @@ import { test, expect, type Page } from "@playwright/test"
 
 const STAGING_API_URL = process.env.STAGING_API_URL || "https://studio-staging.shogo.ai"
 
-const TEST_USER = {
-  name: `E2E Composio ${Date.now()}`,
-  email: `e2e-composio-${Date.now()}@mailnull.com`,
-  password: "E2EComposioTest2026!",
-}
-
-async function signUp(page: Page) {
-  await page.goto("/sign-in")
-  await page.getByText("Sign Up").click()
-  await page.getByPlaceholder("Enter your name").fill(TEST_USER.name)
-  await page.getByPlaceholder("you@example.com").fill(TEST_USER.email)
-  await page.getByPlaceholder("Create a password").fill(TEST_USER.password)
-  await page
-    .getByRole("button", { name: "Sign Up" })
-    .or(page.getByText("Sign Up").last())
-    .click()
-  // Handle onboarding screen if present (new users see "Get Started" before home)
-  const getStarted = page.getByText("Get Started")
-  try {
-    await getStarted.waitFor({ timeout: 5_000 })
-    await getStarted.click()
-  } catch {
-    // No onboarding screen — already on home
-  }
-  await page.waitForSelector("text=What's on your mind", { timeout: 20_000 })
-}
+const TEST_USER = makeTestUser("Composio")
 
 test.describe("Composio Integrations", () => {
   test.describe.configure({ mode: "serial" })
@@ -58,7 +34,7 @@ test.describe("Composio Integrations", () => {
 
   test.beforeAll(async ({ browser }) => {
     page = await browser.newPage()
-    await signUp(page)
+    await signUpAndOnboard(page, TEST_USER)
   })
 
   test.afterAll(async () => {
@@ -74,7 +50,7 @@ test.describe("Composio Integrations", () => {
   })
 
   test("MCP catalog includes composio authType fields", async () => {
-    const input = page.getByPlaceholder("Describe the agent you want to build")
+    const input = page.getByPlaceholder("Ask Shogo to create...")
     await input.click()
     await input.fill("Test composio integrations")
     await page.waitForTimeout(500)

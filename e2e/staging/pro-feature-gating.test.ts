@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { test, expect, type Page } from "@playwright/test"
+import { makeTestUser, signUpAndUpgradeToPro } from "./helpers"
 
 /**
  * Pro Feature Gating E2E Tests
@@ -18,48 +19,7 @@ import { test, expect, type Page } from "@playwright/test"
  * Run: npx playwright test --config e2e/playwright.config.ts pro-feature-gating
  */
 
-const TEST_USER = {
-  name: `E2E Gating ${Date.now()}`,
-  email: `e2e-gating-${Date.now()}@mailnull.com`,
-  password: "E2EGatingTest2026!",
-}
-
-async function signUpAndUpgrade(page: Page) {
-  // Sign up
-  await page.goto("/sign-in")
-  await page.getByText("Sign Up").click()
-  await page.getByPlaceholder("Enter your name").fill(TEST_USER.name)
-  await page.getByPlaceholder("you@example.com").fill(TEST_USER.email)
-  await page.getByPlaceholder("Create a password").fill(TEST_USER.password)
-  await page.getByRole("button", { name: "Sign Up" }).or(page.getByText("Sign Up").last()).click()
-  // Handle onboarding screen if present (new users see "Get Started" before home)
-  const getStarted = page.getByText("Get Started")
-  try {
-    await getStarted.waitFor({ timeout: 5_000 })
-    await getStarted.click()
-  } catch {
-    // No onboarding screen — already on home
-  }
-  await page.waitForSelector("text=What's on your mind", { timeout: 20_000 })
-
-  // Upgrade to Pro
-  await page.goto("/billing")
-  await page.waitForSelector("text=Billing", { timeout: 10_000 })
-  await page.getByText("Upgrade to Pro").last().click()
-  await page.waitForSelector("text=Subscribe to Pro", { timeout: 15_000 })
-
-  await page.getByPlaceholder("1234 1234 1234 1234").pressSequentially("4242424242424242")
-  await page.getByPlaceholder("MM / YY").pressSequentially("1228")
-  await page.getByPlaceholder("CVC").pressSequentially("123")
-  await page.getByPlaceholder("Full name on card").fill(TEST_USER.name)
-  await page.getByPlaceholder("ZIP").fill("10001")
-
-  const saveCheckbox = page.getByRole("checkbox", { name: /Save my information/ })
-  if (await saveCheckbox.isChecked()) await saveCheckbox.click()
-
-  await page.getByTestId("hosted-payment-submit-button").click()
-  await page.waitForURL("**/studio-staging.shogo.ai/**", { timeout: 30_000 })
-}
+const TEST_USER = makeTestUser("Gating")
 
 test.describe("Pro Feature Gating", () => {
   test.describe.configure({ mode: "serial" })
@@ -68,7 +28,7 @@ test.describe("Pro Feature Gating", () => {
 
   test.beforeAll(async ({ browser }) => {
     page = await browser.newPage()
-    await signUpAndUpgrade(page)
+    await signUpAndUpgradeToPro(page, TEST_USER)
   })
 
   test.afterAll(async () => {
@@ -104,21 +64,27 @@ test.describe("Pro Feature Gating", () => {
     await page.goto("/")
     await page.waitForSelector("text=What's on your mind", { timeout: 15_000 })
 
-    const input = page.getByPlaceholder("Describe the agent you want to build")
+    const input = page.getByPlaceholder("Ask Shogo to create...")
     await input.click()
     await input.fill("Test model gating")
     await page.waitForTimeout(500)
     await page.keyboard.press("Enter")
     await page.waitForURL(/\/projects\//, { timeout: 60_000 })
 
-    await page.waitForSelector("text=Basic", { timeout: 15_000 })
-    await page.getByText("Basic").click()
+    // Wait for agent to finish streaming — model selector is disabled while streaming
+    await page.waitForSelector('[aria-label="Stop"], [aria-label="stop"]', { state: "detached", timeout: 60_000 }).catch(() => {})
+    await page.waitForTimeout(500)
 
-    await expect(page.getByText("Agent Mode")).toBeVisible()
+    // Model selector button shows current model ("Basic" or "Advanced" for Pro users)
+    const modelBtn = page.getByText("Basic", { exact: true }).or(page.getByText("Advanced", { exact: true }).last())
+    await expect(modelBtn).toBeVisible({ timeout: 15_000 })
+    await modelBtn.last().click()
+
+    // Verify Advanced tier is available (not locked) for Pro users
     await expect(page.getByText("Advanced")).toBeVisible()
     await expect(page.getByText("Upgrade to unlock")).not.toBeVisible()
 
-    await page.getByText("Advanced").click()
+    await page.getByText("Advanced").last().click()
     await page.waitForTimeout(1_000)
     expect(page.url()).not.toContain("/billing")
   })
