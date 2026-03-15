@@ -98,6 +98,8 @@ export interface ProjectTopBarProps {
   onToggleStar?: () => void
   onMoveToFolder?: (folderId: string | null) => void
   folders?: { id: string; name: string }[]
+  /** Tab IDs to hide from the tab bar (e.g. ['dynamic-app'] to hide Canvas) */
+  hiddenTabs?: string[]
 }
 
 export function ProjectTopBar({
@@ -125,6 +127,7 @@ export function ProjectTopBar({
   onToggleStar,
   onMoveToFolder,
   folders = [],
+  hiddenTabs = [],
 }: ProjectTopBarProps) {
   const router = useRouter()
   const { width } = useWindowDimensions()
@@ -246,7 +249,7 @@ export function ProjectTopBar({
           className="flex-shrink mx-2"
           accessibilityRole="tablist"
         >
-          {AGENT_TABS.map((tab) => (
+          {AGENT_TABS.filter((tab) => !hiddenTabs.includes(tab.id)).map((tab) => (
             <Pressable
               key={tab.id}
               onPress={() => onTabChange?.(tab.id)}

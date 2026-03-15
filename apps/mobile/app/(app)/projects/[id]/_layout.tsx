@@ -173,21 +173,29 @@ export default observer(function ProjectLayout() {
     await actions.moveProjectToFolder(projectId, folderId)
   }, [projectId, actions])
 
-  const handleUpdateCanvasSettings = useCallback(async (themeSettings: Record<string, unknown>) => {
-    if (!projectId) return
-    let currentSettings: Record<string, unknown> = {}
+  const projectSettings = useMemo<Record<string, unknown>>(() => {
     if (typeof project?.settings === 'string') {
-      try {
-        currentSettings = JSON.parse(project.settings)
-      } catch {}
-    } else if (project?.settings && typeof project.settings === 'object') {
-      currentSettings = project.settings as Record<string, unknown>
+      try { return JSON.parse(project.settings) } catch { return {} }
     }
-    const merged = { ...currentSettings, ...themeSettings }
+    if (project?.settings && typeof project.settings === 'object') {
+      return project.settings as Record<string, unknown>
+    }
+    return {}
+  }, [project?.settings])
+
+  const canvasEnabled = projectSettings.canvasEnabled !== false
+
+  const updateProjectSettings = useCallback(async (patch: Record<string, unknown>) => {
+    if (!projectId) return
+    const merged = { ...projectSettings, ...patch }
     const settingsStr = JSON.stringify(merged)
     await actions.updateProject(projectId, { settings: settingsStr as any })
     setProject((prev: any) => prev ? { ...prev, settings: settingsStr } : prev)
-  }, [projectId, project?.settings, actions])
+  }, [projectId, projectSettings, actions])
+
+  const handleUpdateCanvasSettings = useCallback(async (themeSettings: Record<string, unknown>) => {
+    await updateProjectSettings(themeSettings)
+  }, [updateProjectSettings])
 
   const allProjects = useMemo(() => {
     try {
@@ -411,6 +419,34 @@ export default observer(function ProjectLayout() {
   const [showChatSessions, setShowChatSessions] = useState(false)
   const [previewTab, setPreviewTab] = useState('dynamic-app')
 
+  useEffect(() => {
+    if (!canvasEnabled) {
+      if (previewTab === 'dynamic-app') setPreviewTab('capabilities')
+      if (activeTab === 'canvas') setActiveTab('chat')
+    }
+  }, [canvasEnabled, previewTab, activeTab])
+
+  const handleCanvasToggle = useCallback(async (enabled: boolean) => {
+    await updateProjectSettings({ canvasEnabled: enabled })
+    if (agentUrl) {
+      try {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+        if (nativeHeaders) Object.assign(headers, nativeHeaders())
+        await fetch(`${agentUrl}/agent/config`, {
+          method: 'PATCH',
+          headers,
+          credentials: Platform.OS === 'web' ? 'include' : 'omit',
+          body: JSON.stringify({ canvasEnabled: enabled }),
+        })
+      } catch (err) {
+        console.error('[ProjectLayout] Failed to push canvas config to runtime:', err)
+      }
+    }
+    if (!enabled && previewTab === 'dynamic-app') {
+      setPreviewTab('capabilities')
+    }
+  }, [updateProjectSettings, agentUrl, nativeHeaders, previewTab])
+
   const [sessionNames, setSessionNames] = useState<Record<string, string>>({})
 
   useEffect(() => {
@@ -514,7 +550,7 @@ export default observer(function ProjectLayout() {
     />
   )
 
-  const canvasPanel = (
+  const canvasPanel = canvasEnabled ? (
     <CanvasThemeProvider projectSettings={project?.settings} onUpdateSettings={handleUpdateCanvasSettings}>
       <EditModeProvider agentUrl={agentUrl}>
         <CanvasPanel
@@ -528,7 +564,9 @@ export default observer(function ProjectLayout() {
         />
       </EditModeProvider>
     </CanvasThemeProvider>
-  )
+  ) : null
+
+  const hiddenTabs = canvasEnabled ? [] : ['dynamic-app']
 
   return (
     <>
@@ -560,6 +598,7 @@ export default observer(function ProjectLayout() {
             onToggleStar={handleToggleStar}
             onMoveToFolder={handleMoveToFolder}
             folders={folders}
+            hiddenTabs={hiddenTabs}
           />
           <View className="flex-1 flex-row">
             {!chatCollapsed && (
@@ -584,14 +623,16 @@ export default observer(function ProjectLayout() {
               </View>
             )}
             <View className="flex-1 relative">
-              <View
-                className="absolute inset-0"
-                style={previewTab !== 'dynamic-app' ? { display: 'none' } : undefined}
-              >
-                {canvasPanel}
-              </View>
+              {canvasEnabled && (
+                <View
+                  className="absolute inset-0"
+                  style={previewTab !== 'dynamic-app' ? { display: 'none' } : undefined}
+                >
+                  {canvasPanel}
+                </View>
+              )}
               <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
-              <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} />
+              <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} canvasEnabled={canvasEnabled} onCanvasToggle={handleCanvasToggle} />
               <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} />
               <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} />
             </View>
@@ -618,13 +659,14 @@ export default observer(function ProjectLayout() {
             onToggleStar={handleToggleStar}
             onMoveToFolder={handleMoveToFolder}
             folders={folders}
+            hiddenTabs={hiddenTabs}
             onTabChange={(tabId) => {
               setPreviewTab(tabId)
               if (tabId !== 'dynamic-app') setActiveTab('canvas')
             }}
           />
           <View className="flex-row border-b border-border">
-            {(['chat', 'canvas'] as ActiveTab[]).map((tab) => (
+            {(canvasEnabled ? ['chat', 'canvas'] as ActiveTab[] : ['chat'] as ActiveTab[]).map((tab) => (
               <Pressable
                 key={tab}
                 onPress={() => {
@@ -705,12 +747,12 @@ export default observer(function ProjectLayout() {
           </View>
           {activeTab === 'chat' ? (
             chatPanel
-          ) : previewTab === 'dynamic-app' ? (
+          ) : previewTab === 'dynamic-app' && canvasEnabled ? (
             canvasPanel
           ) : (
             <View className="flex-1 relative">
               <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
-              <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} />
+              <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} canvasEnabled={canvasEnabled} onCanvasToggle={handleCanvasToggle} />
               <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} />
               <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} />
             </View>

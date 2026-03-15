@@ -98,6 +98,8 @@ export interface GatewayConfig {
   mainSessionIds?: string[]
   /** MCP servers to spawn on gateway start — tools from these become available to the agent */
   mcpServers?: Record<string, MCPServerConfig>
+  /** Whether canvas tools and UI are enabled for this project (default: true) */
+  canvasEnabled?: boolean
 }
 
 function isBasicAgent(): boolean {
@@ -1134,6 +1136,7 @@ export class AgentGateway {
       channels: [],
       model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
       maxSessionMessages: 30,
+      canvasEnabled: true,
     }
     const configPath = join(this.workspaceDir, 'config.json')
     if (existsSync(configPath)) {
@@ -1153,6 +1156,11 @@ export class AgentGateway {
       }
     }
     return defaults
+  }
+
+  reloadConfig(): void {
+    this.config = this.loadConfig()
+    console.log(`[AgentGateway] Config reloaded (canvasEnabled=${this.config.canvasEnabled})`)
   }
 
   async start(): Promise<void> {
@@ -1755,6 +1763,10 @@ export class AgentGateway {
     const mcpTools = this.mcpClientManager.getTools()
     let assembledTools = mcpTools.length > 0 ? [...baseTools, ...mcpTools] : baseTools
 
+    if (this.config.canvasEnabled === false) {
+      assembledTools = assembledTools.filter(t => !t.name.startsWith('canvas_'))
+    }
+
     let staticTools = assembledTools
     if (this.toolMocks.size > 0) {
       const existingNames = new Set(assembledTools.map(t => t.name))
@@ -2146,11 +2158,13 @@ export class AgentGateway {
     const memoryGuide = this.promptOverrides.get('memory_guide') ?? OPTIMIZED_MEMORY_GUIDE
     const skillMatchingGuide = this.promptOverrides.get('skill_matching_guide') ?? OPTIMIZED_SKILL_MATCHING_GUIDE
 
-    if (isBasicAgent()) {
-      parts.push(BASIC_CANVAS_TOOLS_GUIDE + BASIC_CANVAS_EXAMPLES)
-    } else {
-      const canvasExamples = this.promptOverrides.get('canvas_examples') ?? OPTIMIZED_CANVAS_EXAMPLES
-      parts.push(CANVAS_TOOLS_GUIDE_PREFIX + canvasExamples)
+    if (this.config.canvasEnabled !== false) {
+      if (isBasicAgent()) {
+        parts.push(BASIC_CANVAS_TOOLS_GUIDE + BASIC_CANVAS_EXAMPLES)
+      } else {
+        const canvasExamples = this.promptOverrides.get('canvas_examples') ?? OPTIMIZED_CANVAS_EXAMPLES
+        parts.push(CANVAS_TOOLS_GUIDE_PREFIX + canvasExamples)
+      }
     }
     parts.push(PERSONALITY_EVOLUTION_GUIDE_PREFIX + personalityGuide)
     parts.push(toolPlanningGuide)

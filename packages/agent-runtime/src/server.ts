@@ -502,6 +502,31 @@ app.get('/agent/status', (c) => {
   return c.json(status)
 })
 
+// Update agent config — merge fields into config.json and hot-reload the gateway
+app.patch('/agent/config', async (c) => {
+  const body = await c.req.json() as Record<string, unknown>
+  if (!body || typeof body !== 'object') {
+    return c.json({ error: 'Request body must be a JSON object' }, 400)
+  }
+  try {
+    const configPath = join(AGENT_DIR, 'config.json')
+    let fileConfig: Record<string, unknown> = {}
+    if (existsSync(configPath)) {
+      try {
+        fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'))
+      } catch {
+        fileConfig = {}
+      }
+    }
+    Object.assign(fileConfig, body)
+    writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8')
+    agentGateway?.reloadConfig()
+    return c.json({ ok: true })
+  } catch (error: any) {
+    return c.json({ error: error.message || 'Failed to update config' }, 500)
+  }
+})
+
 // Channel connect — persist to config.json and hot-connect via the gateway
 app.post('/agent/channels/connect', async (c) => {
   if (!agentGateway) {
