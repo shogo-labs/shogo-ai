@@ -30,6 +30,8 @@ export interface DynamicAppStreamState {
 
 export interface DynamicAppStreamOptions {
   headers?: () => Record<string, string>
+  /** Pass true for cross-origin web requests so the browser sends auth cookies with the EventSource. */
+  withCredentials?: boolean
 }
 
 export function useDynamicAppStream(agentUrl: string | null, options?: DynamicAppStreamOptions) {
@@ -161,8 +163,12 @@ export function useDynamicAppStream(agentUrl: string | null, options?: DynamicAp
 
     const url = `${agentUrl}/agent/dynamic-app/stream`
     const extraHeaders = options?.headers?.()
-    const es: EventSource = extraHeaders
-      ? new (EventSource as any)(url, { headers: extraHeaders })
+    const needsCredentials = options?.withCredentials
+    const esInit: EventSourceInit & { headers?: Record<string, string> } = {}
+    if (extraHeaders) esInit.headers = extraHeaders
+    if (needsCredentials) esInit.withCredentials = true
+    const es = Object.keys(esInit).length > 0
+      ? new (EventSource as any)(url, esInit)
       : new EventSource(url)
     eventSourceRef.current = es
 

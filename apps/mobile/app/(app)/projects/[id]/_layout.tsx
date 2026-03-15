@@ -226,7 +226,10 @@ export default observer(function ProjectLayout() {
   })
   const { surfaces, activeSurfaceId, connected, dispatchAction, updateLocalData, reconnect, applyMessage } = useDynamicAppStream(
     agentUrl,
-    nativeHeaders ? { headers: nativeHeaders } : undefined,
+    {
+      ...(nativeHeaders ? { headers: nativeHeaders } : {}),
+      withCredentials: Platform.OS === 'web',
+    },
   )
   const activeSurface = useMemo(() => {
     return activeSurfaceId ? surfaces.get(activeSurfaceId) || null : null
