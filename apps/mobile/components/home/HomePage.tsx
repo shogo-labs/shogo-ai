@@ -71,7 +71,7 @@ export const HomePage = observer(function HomePage({
         showsVerticalScrollIndicator={false}
       >
         {/* Gradient background orbs */}
-        <View className="absolute inset-0 overflow-hidden" pointerEvents="none">
+        <View className="absolute inset-0 overflow-hidden" style={{ pointerEvents: 'none' }}>
           <View
             className="absolute w-[500px] h-[500px] rounded-full opacity-20"
             style={Platform.select({

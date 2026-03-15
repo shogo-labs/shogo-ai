@@ -289,17 +289,18 @@ app.use('*', async (c, next) => {
 // Authenticate /agent/* and /pool/* endpoints with a per-project secret.
 // Tokens are derived from HMAC(projectId, signingSecret) and injected at pod creation.
 // Health/readiness probes and external channel webhooks are excluded.
-const RUNTIME_SECRET = process.env.RUNTIME_AUTH_SECRET
-
+// NOTE: Read process.env dynamically — in warm-pool mode the secret is injected
+// via POST /pool/assign after the module has already loaded.
 function checkRuntimeAuth(c: any): Response | null {
-  if (!RUNTIME_SECRET) {
+  const runtimeSecret = process.env.RUNTIME_AUTH_SECRET
+  if (!runtimeSecret) {
     if (process.env.NODE_ENV !== 'production') return null
     console.error('[agent-runtime] RUNTIME_AUTH_SECRET not set — rejecting request')
     return c.json({ error: 'Unauthorized — RUNTIME_AUTH_SECRET not configured' }, 401)
   }
   const auth = c.req.header('authorization') || ''
   const token = c.req.header('x-runtime-token') || ''
-  if (auth === `Bearer ${RUNTIME_SECRET}` || token === RUNTIME_SECRET) return null
+  if (auth === `Bearer ${runtimeSecret}` || token === runtimeSecret) return null
   return c.json({ error: 'Unauthorized — missing or invalid runtime token' }, 401)
 }
 

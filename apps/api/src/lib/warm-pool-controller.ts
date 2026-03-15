@@ -809,9 +809,13 @@ export class WarmPoolController {
       (async () => {
         try {
           const api = getCustomApi()
-          await api.deleteNamespacedCustomObject(
-            'serving.knative.dev', 'v1', this.namespace, 'services', serviceToDelete
-          )
+          await api.deleteNamespacedCustomObject({
+            group: KNATIVE_GROUP,
+            version: KNATIVE_VERSION,
+            namespace: this.namespace,
+            plural: 'services',
+            name: serviceToDelete,
+          })
           console.log(`[WarmPool] evictProject: deleted Knative Service ${serviceToDelete}`)
         } catch (err: any) {
           if (err.statusCode !== 404) {

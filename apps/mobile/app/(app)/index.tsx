@@ -115,7 +115,7 @@ function LovableGradient({ isDark }: { isDark: boolean }) {
   if (Platform.OS !== 'web') {
     const o = isDark ? 0.35 : 1
     return (
-      <View className="absolute inset-0 overflow-hidden" pointerEvents="none">
+      <View className="absolute inset-0 overflow-hidden" style={{ pointerEvents: 'none' }}>
         <Svg width="100%" height="100%" style={{ position: 'absolute' }}>
           <Defs>
             <RadialGradient id="orb1" cx="50%" cy="50%" rx="50%" ry="50%">
@@ -145,7 +145,7 @@ function LovableGradient({ isDark }: { isDark: boolean }) {
   }
 
   return (
-    <View className="absolute inset-0 overflow-hidden" pointerEvents="none">
+    <View className="absolute inset-0 overflow-hidden" style={{ pointerEvents: 'none' }}>
       <style dangerouslySetInnerHTML={{ __html: GRADIENT_CSS }} />
       <div
         style={{

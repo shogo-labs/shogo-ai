@@ -437,6 +437,8 @@ function WelcomeStep({
 
       <Pressable
         onPress={onNext}
+        accessibilityRole="button"
+        accessibilityLabel="Get Started"
         className="flex-row items-center gap-2 bg-primary px-8 py-3.5 rounded-xl mt-4"
       >
         <Text className="text-base font-semibold text-primary-foreground">Get Started</Text>
@@ -678,6 +680,8 @@ function ConfigureAIStep({
         <Pressable
           onPress={onSave}
           disabled={isSaving || (aiMode === 'api-keys' && !anthropicKey)}
+          accessibilityRole="button"
+          accessibilityLabel="Save and Continue"
           className={cn(
             'flex-row items-center justify-center gap-2 py-3.5 rounded-xl',
             isSaving || (aiMode === 'api-keys' && !anthropicKey) ? 'bg-primary/50' : 'bg-primary'
@@ -745,6 +749,8 @@ function FeaturesStep({ onNext }: { onNext: () => void }) {
 
       <Pressable
         onPress={onNext}
+        accessibilityRole="button"
+        accessibilityLabel="Continue"
         className="flex-row items-center justify-center gap-2 bg-primary py-3.5 rounded-xl"
       >
         <Text className="text-base font-semibold text-primary-foreground">Continue</Text>
@@ -826,6 +832,8 @@ function TemplatesStep({
 
       <Pressable
         onPress={onNext}
+        accessibilityRole="button"
+        accessibilityLabel={selectedTemplate ? 'Continue with template' : 'Skip and continue'}
         className="flex-row items-center justify-center gap-2 bg-primary py-3.5 rounded-xl"
       >
         <Text className="text-base font-semibold text-primary-foreground">
@@ -877,6 +885,9 @@ function GetStartedStep({
       <Pressable
         onPress={onComplete}
         disabled={isCompleting}
+        accessibilityRole="button"
+        accessibilityLabel="Enter Shogo"
+        accessibilityState={{ disabled: isCompleting }}
         className={cn(
           'flex-row items-center gap-2 px-8 py-3.5 rounded-xl mt-2',
           isCompleting ? 'bg-primary/50' : 'bg-primary'
@@ -1015,6 +1026,9 @@ function SecurityPreferenceStep({
       <Pressable
         onPress={onComplete}
         disabled={isLoading}
+        accessibilityRole="button"
+        accessibilityLabel="Continue"
+        accessibilityState={{ disabled: isLoading }}
         className={cn(
           'flex-row items-center justify-center gap-2 py-3.5 rounded-xl',
           isLoading ? 'bg-primary/50' : 'bg-primary',

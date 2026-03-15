@@ -165,7 +165,7 @@ const Popover = React.forwardRef<
       {...props}
       className={popoverStyle({ size, class: className })}
       context={{ size, placement }}
-      pointerEvents="box-none"
+      style={{ pointerEvents: 'box-none' }}
     />
   );
 });
@@ -191,7 +191,7 @@ const PopoverContent = React.forwardRef<
         },
       }}
       {...props}
-      pointerEvents="auto"
+      style={{ pointerEvents: 'auto' }}
     >
       <View
         className={popoverContentStyle({

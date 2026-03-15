@@ -747,16 +747,51 @@ function CanvasPanel({
   const showTreePanel = editMode?.showTreePanel ?? false
   const surfaceId = surface?.surfaceId ?? null
 
+  const CONNECTION_TIMEOUT_MS = 60_000
+  const [timedOut, setTimedOut] = useState(false)
+  useEffect(() => {
+    if (connected && agentUrl) {
+      setTimedOut(false)
+      return
+    }
+    setTimedOut(false)
+    const timer = setTimeout(() => setTimedOut(true), CONNECTION_TIMEOUT_MS)
+    return () => clearTimeout(timer)
+  }, [connected, agentUrl])
+
   if (!agentUrl) {
     return (
       <View className="flex-1 items-center justify-center px-6">
-        <ActivityIndicator size="large" className="mb-4" />
-        <Text className="text-muted-foreground text-center">
-          Connecting to agent runtime...
-        </Text>
-        <Text className="text-muted-foreground text-xs text-center mt-2">
-          Send a message in the Chat tab to wake the agent
-        </Text>
+        {timedOut ? (
+          <>
+            <View className="w-3 h-3 rounded-full mb-3 bg-destructive" />
+            <Text className="text-foreground font-semibold mb-1">
+              Connection timed out
+            </Text>
+            <Text className="text-muted-foreground text-center text-sm">
+              The agent runtime could not be reached. This may be a temporary issue — try refreshing or come back later.
+            </Text>
+            {onRefresh && (
+              <Pressable
+                onPress={onRefresh}
+                className="mt-4 flex-row items-center gap-2 rounded-md border border-border px-4 py-2 active:opacity-70"
+              >
+                <RefreshCw size={14} className="text-muted-foreground" />
+                <Text className="text-muted-foreground text-sm">Retry</Text>
+              </Pressable>
+            )}
+          </>
+        ) : (
+          <>
+            <ActivityIndicator size="large" className="mb-4" />
+            <Text className="text-muted-foreground text-center">
+              Connecting to agent runtime...
+            </Text>
+            <Text className="text-muted-foreground text-xs text-center mt-2">
+              Send a message in the Chat tab to wake the agent
+            </Text>
+          </>
+        )}
       </View>
     )
   }
@@ -773,24 +808,30 @@ function CanvasPanel({
               <View
                 className={cn(
                   'w-3 h-3 rounded-full mb-3',
-                  connected ? 'bg-emerald-500' : 'bg-muted',
+                  connected ? 'bg-emerald-500' : timedOut ? 'bg-destructive' : 'bg-muted',
                 )}
               />
               <Text className="text-foreground font-semibold mb-1">
-                {connected ? 'Connected' : 'Waiting for connection...'}
+                {connected
+                  ? 'Connected'
+                  : timedOut
+                    ? 'Connection timed out'
+                    : 'Waiting for connection...'}
               </Text>
               <Text className="text-muted-foreground text-center text-sm">
                 {connected
                   ? 'The canvas will appear once the agent creates a UI. Ask it to build something!'
-                  : 'Connecting to the agent runtime...'}
+                  : timedOut
+                    ? 'The agent runtime could not be reached. Try refreshing or come back later.'
+                    : 'Connecting to the agent runtime...'}
               </Text>
-              {connected && onRefresh && (
+              {(connected || timedOut) && onRefresh && (
                 <Pressable
                   onPress={onRefresh}
                   className="mt-4 flex-row items-center gap-2 rounded-md border border-border px-4 py-2 active:opacity-70"
                 >
                   <RefreshCw size={14} className="text-muted-foreground" />
-                  <Text className="text-muted-foreground text-sm">Refresh</Text>
+                  <Text className="text-muted-foreground text-sm">{timedOut ? 'Retry' : 'Refresh'}</Text>
                 </Pressable>
               )}
             </View>

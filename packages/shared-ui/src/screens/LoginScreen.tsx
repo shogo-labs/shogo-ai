@@ -316,11 +316,14 @@ export function LoginScreen({ onSignIn, onSignUp, onGoogleSignIn, isLoading, err
               </Text>
             </View>
 
-            <View className="flex-row bg-secondary rounded-lg p-1 mb-5">
+            <View className="flex-row bg-secondary rounded-lg p-1 mb-5" accessibilityRole="tablist">
               {(['signin', 'signup'] as Tab[]).map((tab) => (
                 <Pressable
                   key={tab}
                   onPress={() => switchTab(tab)}
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected: activeTab === tab }}
+                  accessibilityLabel={tab === 'signin' ? 'Sign In' : 'Sign Up'}
                   className={cn(
                     'flex-1 py-2 rounded-md items-center',
                     activeTab === tab ? 'bg-card' : '',

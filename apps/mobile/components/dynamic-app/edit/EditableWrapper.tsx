@@ -44,8 +44,8 @@ export function EditableWrapper({ componentId, componentType, children }: Editab
             borderRadius: 4,
             minHeight: 8,
           },
+          { pointerEvents: 'box-none' },
         ]}
-        pointerEvents="box-none"
       >
         {children}
       </View>
