@@ -372,7 +372,10 @@ function UserMenuContent({
   return (
     <>
       {/* User info header */}
-      <View className="px-4 py-3 border-b border-border">
+      <View
+        className="px-4 py-3 border-b border-border"
+        accessibilityLabel={`Signed in as ${user?.name || 'User'}${user?.email ? `, ${user.email}` : ''}`}
+      >
         <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
           {user?.name || 'User'}
         </Text>
@@ -382,9 +385,11 @@ function UserMenuContent({
       </View>
 
       {/* Menu items */}
-      <View className="py-1">
+      <View accessibilityRole="menu" className="py-1">
         <Pressable
           onPress={() => { onNavigate('/(app)/profile'); onClose() }}
+          accessibilityRole="menuitem"
+          accessibilityLabel="Profile"
           className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
         >
           <User size={18} className="text-muted-foreground" />
@@ -393,6 +398,9 @@ function UserMenuContent({
 
         <Pressable
           onPress={() => setAppearanceOpen(!appearanceOpen)}
+          accessibilityRole="menuitem"
+          accessibilityLabel="Appearance"
+          accessibilityState={{ expanded: appearanceOpen }}
           className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
         >
           <Monitor size={18} className="text-muted-foreground" />
@@ -405,7 +413,7 @@ function UserMenuContent({
         </Pressable>
 
         {appearanceOpen && (
-          <View className="pl-11 pr-4 py-1">
+          <View accessibilityRole="radiogroup" accessibilityLabel="Theme options" className="pl-11 pr-4 py-1">
             {([
               { value: 'light' as const, label: 'Light', Icon: Sun },
               { value: 'dark' as const, label: 'Dark', Icon: Moon },
@@ -414,6 +422,9 @@ function UserMenuContent({
               <Pressable
                 key={value}
                 onPress={() => setTheme(value)}
+                accessibilityRole="radio"
+                accessibilityLabel={label}
+                accessibilityState={{ checked: theme === value }}
                 className="flex-row items-center gap-3 py-2.5 active:bg-muted rounded-md px-2"
               >
                 <Icon size={16} className={theme === value ? 'text-primary' : 'text-muted-foreground'} />
@@ -429,6 +440,8 @@ function UserMenuContent({
         {isSuperAdmin && (
           <Pressable
             onPress={() => { onNavigate('/(admin)'); onClose() }}
+            accessibilityRole="menuitem"
+            accessibilityLabel="Super Admin panel"
             className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
           >
             <Shield size={18} className="text-primary" />
@@ -441,9 +454,11 @@ function UserMenuContent({
         <>
           <View className="h-px bg-border" />
 
-          <View className="py-1">
+          <View accessibilityRole="menu" className="py-1">
             <Pressable
               onPress={() => { onSignOut(); onClose() }}
+              accessibilityRole="menuitem"
+              accessibilityLabel="Sign out"
               className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
             >
               <LogOut size={18} className="text-muted-foreground" />
@@ -468,7 +483,14 @@ function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bo
         onOpen={() => setIsOpen(true)}
         onClose={() => setIsOpen(false)}
         trigger={(triggerProps) => (
-          <Pressable {...triggerProps} className="rounded-full active:opacity-80">
+          <Pressable
+            {...triggerProps}
+            accessibilityRole="button"
+            accessibilityLabel={`${user?.name || 'User'} — open user menu`}
+            accessibilityHint="Opens menu with profile, appearance, and sign out options"
+            accessibilityState={{ expanded: isOpen }}
+            className="rounded-full active:opacity-80"
+          >
             <Avatar
               fallback={getInitials(user?.name)}
               src={user?.image}
@@ -495,7 +517,14 @@ function UserMenu({ user, onSignOut, onNavigate, isSuperAdmin, isWide = true, bo
 
   return (
     <>
-      <Pressable onPress={() => setIsOpen(true)} className="rounded-full active:opacity-80">
+      <Pressable
+        onPress={() => setIsOpen(true)}
+        accessibilityRole="button"
+        accessibilityLabel={`${user?.name || 'User'} — open user menu`}
+        accessibilityHint="Opens menu with profile, appearance, and sign out options"
+        accessibilityState={{ expanded: isOpen }}
+        className="rounded-full active:opacity-80"
+      >
         <Avatar
           fallback={getInitials(user?.name)}
           src={user?.image}
