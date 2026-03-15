@@ -830,10 +830,12 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
     }
   })
 
+  const API_KEY_NAMES = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_API_KEY'] as const
+
   app.get('/api/local/api-keys', async (c) => {
     try {
       const rows = await localDb.localConfig.findMany({
-        where: { key: { in: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'] } },
+        where: { key: { in: [...API_KEY_NAMES] } },
       })
       const keys: Record<string, string> = {}
       for (const row of rows) {
@@ -846,37 +848,29 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
   })
 
   app.put('/api/local/api-keys', async (c) => {
-    const body = await c.req.json<{ anthropicApiKey?: string; openaiApiKey?: string }>()
+    const body = await c.req.json<{ anthropicApiKey?: string; openaiApiKey?: string; googleApiKey?: string }>()
+
+    const keyMap: Array<[string | undefined, string]> = [
+      [body.anthropicApiKey, 'ANTHROPIC_API_KEY'],
+      [body.openaiApiKey, 'OPENAI_API_KEY'],
+      [body.googleApiKey, 'GOOGLE_API_KEY'],
+    ]
 
     const upserts: Promise<any>[] = []
-    if (body.anthropicApiKey !== undefined) {
-      if (body.anthropicApiKey) {
+    for (const [value, envKey] of keyMap) {
+      if (value === undefined) continue
+      if (value) {
         upserts.push(
           localDb.localConfig.upsert({
-            where: { key: 'ANTHROPIC_API_KEY' },
-            update: { value: body.anthropicApiKey },
-            create: { key: 'ANTHROPIC_API_KEY', value: body.anthropicApiKey },
+            where: { key: envKey },
+            update: { value },
+            create: { key: envKey, value },
           })
         )
-        process.env.ANTHROPIC_API_KEY = body.anthropicApiKey
+        process.env[envKey] = value
       } else {
-        upserts.push(localDb.localConfig.deleteMany({ where: { key: 'ANTHROPIC_API_KEY' } }))
-        delete process.env.ANTHROPIC_API_KEY
-      }
-    }
-    if (body.openaiApiKey !== undefined) {
-      if (body.openaiApiKey) {
-        upserts.push(
-          localDb.localConfig.upsert({
-            where: { key: 'OPENAI_API_KEY' },
-            update: { value: body.openaiApiKey },
-            create: { key: 'OPENAI_API_KEY', value: body.openaiApiKey },
-          })
-        )
-        process.env.OPENAI_API_KEY = body.openaiApiKey
-      } else {
-        upserts.push(localDb.localConfig.deleteMany({ where: { key: 'OPENAI_API_KEY' } }))
-        delete process.env.OPENAI_API_KEY
+        upserts.push(localDb.localConfig.deleteMany({ where: { key: envKey } }))
+        delete process.env[envKey]
       }
     }
     await Promise.all(upserts)
@@ -891,6 +885,9 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
     'LOCAL_LLM_ADVANCED_MODEL',
     'LOCAL_EMBEDDING_MODEL',
     'LOCAL_EMBEDDING_DIMENSIONS',
+    'IMAGE_GEN_PROVIDER',
+    'LOCAL_IMAGE_GEN_BASE_URL',
+    'LOCAL_IMAGE_GEN_MODEL',
   ]
 
   app.get('/api/local/llm-config', async (c) => {
@@ -5083,7 +5080,7 @@ console.log(`   AI Proxy: POST http://localhost:${API_PORT}/api/ai/v1/chat/compl
 console.log(`   AI Models: GET  http://localhost:${API_PORT}/api/ai/v1/models`)
 console.log(`   AI Proxy Health: GET  http://localhost:${API_PORT}/api/ai/proxy/health`)
 console.log(`   CORS origin: http://localhost:${VITE_PORT}`)
-console.log(`   AI Providers: Anthropic=${!!process.env.ANTHROPIC_API_KEY}, OpenAI=${!!process.env.OPENAI_API_KEY}`)
+console.log(`   AI Providers: Anthropic=${!!process.env.ANTHROPIC_API_KEY}, OpenAI=${!!process.env.OPENAI_API_KEY}, Google=${!!process.env.GOOGLE_API_KEY}`)
 
 // Local mode: restore saved API keys and auto-seed default user on startup
 if (process.env.SHOGO_LOCAL_MODE === 'true') {

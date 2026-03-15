@@ -43,7 +43,7 @@ logTiming('Server module loading...')
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { createUIMessageStream, createUIMessageStreamResponse } from 'ai'
-import { resolve, dirname, join } from 'path'
+import { resolve, dirname, join, extname } from 'path'
 import {
   existsSync,
   readFileSync,
@@ -1188,6 +1188,22 @@ app.post('/agent/workspace/upload', async (c) => {
 })
 
 // Download a file
+const DOWNLOAD_MIME_TYPES: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.pdf': 'application/pdf',
+  '.json': 'application/json',
+  '.txt': 'text/plain',
+  '.csv': 'text/csv',
+  '.html': 'text/html',
+  '.css': 'text/css',
+  '.js': 'application/javascript',
+}
+
 app.get('/agent/workspace/download/*', (c) => {
   const subPath = c.req.path.replace('/agent/workspace/download/', '')
   if (!subPath) return c.json({ error: 'Path required' }, 400)
@@ -1198,11 +1214,14 @@ app.get('/agent/workspace/download/*', (c) => {
 
   const content = readFileSync(resolved)
   const fileName = subPath.split('/').pop() || 'download'
+  const ext = extname(fileName).toLowerCase()
+  const contentType = DOWNLOAD_MIME_TYPES[ext] || 'application/octet-stream'
+  const isInline = contentType.startsWith('image/') || contentType === 'application/pdf'
 
   return new Response(content, {
     headers: {
-      'Content-Type': 'application/octet-stream',
-      'Content-Disposition': `attachment; filename="${fileName}"`,
+      'Content-Type': contentType,
+      'Content-Disposition': `${isInline ? 'inline' : 'attachment'}; filename="${fileName}"`,
       'Content-Length': String(content.length),
     },
   })

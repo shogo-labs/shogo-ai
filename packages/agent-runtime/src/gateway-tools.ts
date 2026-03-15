@@ -55,6 +55,10 @@ export interface ToolContext {
   userId?: string
   /** Permission engine for local-mode security guardrails */
   permissionEngine?: PermissionEngine
+  /** AI Proxy URL for image generation and other proxy-routed calls */
+  aiProxyUrl?: string
+  /** AI Proxy token for authenticating proxy calls */
+  aiProxyToken?: string
 }
 
 // Legacy blocked-command check kept as lightweight fallback for contexts
@@ -3171,6 +3175,152 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
 }
 
 // ---------------------------------------------------------------------------
+// Image Generation Tool
+// ---------------------------------------------------------------------------
+
+function createGenerateImageTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'generate_image',
+    description:
+      'Generate an image from a text prompt using AI (DALL-E, GPT Image, Imagen, etc). ' +
+      'The image is saved to the agent workspace. Optionally provide a reference_image path ' +
+      'to edit/modify an existing workspace image instead of generating from scratch.',
+    label: 'Generate Image',
+    parameters: Type.Object({
+      prompt: Type.String({ description: 'Text description of the image to generate, or edit instruction when using reference_image' }),
+      filename: Type.Optional(Type.String({ description: 'Destination filename (default: auto-generated). Saved under images/ directory.' })),
+      size: Type.Optional(Type.String({ description: 'Image size: "1024x1024", "1024x1792", "1792x1024" (default: "1024x1024")' })),
+      model: Type.Optional(Type.String({ description: 'Image model: "dall-e-3", "gpt-image-1", "imagen-4", etc. (default: "dall-e-3")' })),
+      quality: Type.Optional(Type.String({ description: 'Image quality: "standard" or "hd" (default: "standard")' })),
+      reference_image: Type.Optional(Type.String({ description: 'Path to a workspace image to use as reference for editing (e.g. "images/logo.png")' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const {
+        prompt,
+        filename,
+        size = '1024x1024',
+        model = 'dall-e-3',
+        quality = 'standard',
+        reference_image,
+      } = params as {
+        prompt: string
+        filename?: string
+        size?: string
+        model?: string
+        quality?: string
+        reference_image?: string
+      }
+
+      const proxyUrl = ctx.aiProxyUrl || process.env.AI_PROXY_URL
+      const proxyToken = ctx.aiProxyToken || process.env.AI_PROXY_TOKEN
+      if (!proxyUrl || !proxyToken) {
+        return textResult({ error: 'Image generation is not available: AI proxy not configured.' })
+      }
+
+      const imagesDir = join(ctx.workspaceDir, 'images')
+      mkdirSync(imagesDir, { recursive: true })
+
+      const outputFilename = filename || `generated-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.png`
+      const safeFilename = outputFilename.replace(/[^a-zA-Z0-9._-]/g, '_')
+      const outputPath = join(imagesDir, safeFilename)
+
+      // Prevent path traversal
+      const resolvedOutput = resolve(outputPath)
+      const resolvedImagesDir = resolve(imagesDir)
+      if (!resolvedOutput.startsWith(resolvedImagesDir)) {
+        return textResult({ error: 'Invalid filename: path traversal detected.' })
+      }
+
+      try {
+        let responseData: any
+
+        if (reference_image) {
+          const refPath = assertWithinWorkspace(ctx.workspaceDir, reference_image)
+          if (!existsSync(refPath)) {
+            return textResult({ error: `Reference image not found: ${reference_image}` })
+          }
+
+          const imageBuffer = readFileSync(refPath)
+          const refExt = extname(refPath).toLowerCase()
+          const mimeMap: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' }
+          const mimeType = mimeMap[refExt] || 'image/png'
+
+          const formData = new FormData()
+          formData.append('image', new Blob([imageBuffer], { type: mimeType }), `reference${refExt || '.png'}`)
+          formData.append('prompt', prompt)
+          formData.append('model', 'dall-e-2')
+          formData.append('size', size)
+          formData.append('n', '1')
+
+          const editUrl = proxyUrl.replace(/\/v1$/, '/v1/images/edits')
+          const response = await fetch(editUrl, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${proxyToken}` },
+            body: formData,
+          })
+
+          if (!response.ok) {
+            const errText = await response.text()
+            return textResult({ error: `Image edit failed (${response.status}): ${errText}` })
+          }
+
+          responseData = await response.json()
+        } else {
+          const genUrl = proxyUrl.replace(/\/v1$/, '/v1/images/generations')
+          const response = await fetch(genUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${proxyToken}`,
+            },
+            body: JSON.stringify({
+              prompt,
+              model,
+              size,
+              quality,
+              n: 1,
+              response_format: 'b64_json',
+            }),
+          })
+
+          if (!response.ok) {
+            const errText = await response.text()
+            return textResult({ error: `Image generation failed (${response.status}): ${errText}` })
+          }
+
+          responseData = await response.json()
+        }
+
+        if (responseData.error) {
+          return textResult({ error: responseData.error.message || 'Image generation failed' })
+        }
+
+        const imageData = responseData.data?.[0]
+        if (!imageData?.b64_json) {
+          return textResult({ error: 'No image data received from provider' })
+        }
+
+        const imageBuffer = Buffer.from(imageData.b64_json, 'base64')
+        writeFileSync(outputPath, imageBuffer)
+
+        const relativePath = `images/${safeFilename}`
+        return textResult({
+          path: relativePath,
+          size,
+          model,
+          quality,
+          bytes: imageBuffer.length,
+          revised_prompt: imageData.revised_prompt || prompt,
+          reference_image: reference_image || undefined,
+        })
+      } catch (err: any) {
+        return textResult({ error: `Image generation error: ${err.message}` })
+      }
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Factory Functions
 // ---------------------------------------------------------------------------
 
@@ -3215,7 +3365,7 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createToolInstallTool(ctx),
     createToolUninstallTool(ctx),
     createBindingTransformTool(ctx),
-    createNotifyUserErrorTool(ctx),
+    g(createGenerateImageTool(ctx), 'network'),
   ]
 }
 
@@ -3254,6 +3404,7 @@ export function createBasicTools(ctx: ToolContext): AgentTool[] {
     createToolInstallTool(ctx),
     createToolUninstallTool(ctx),
     createBindingTransformTool(ctx),
+    g(createGenerateImageTool(ctx), 'network'),
   ]
 }
 

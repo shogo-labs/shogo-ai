@@ -74,6 +74,9 @@ export interface ChatContextValue {
 
   /** Current error state, or null if no error */
   error: string | null
+
+  /** Agent URL for workspace file access (e.g. downloading generated images) */
+  agentUrl?: string | null
 }
 
 // ============================================================================

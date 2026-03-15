@@ -1754,6 +1754,8 @@ export class AgentGateway {
       disconnectChannel: (type) => this.disconnectChannel(type),
       permissionEngine: this.permissionEngine ?? undefined,
       userId: this.currentUserId,
+      aiProxyUrl: process.env.AI_PROXY_URL,
+      aiProxyToken: process.env.AI_PROXY_TOKEN,
     }
 
     const baseTools = isHeartbeat

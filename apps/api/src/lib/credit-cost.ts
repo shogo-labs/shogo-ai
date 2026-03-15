@@ -94,3 +94,41 @@ export function calculateCreditCost(
   // Enforce model-specific minimum
   return Math.max(rounded, config.minimumCharge)
 }
+
+// =============================================================================
+// Image Generation Credit Costs
+// =============================================================================
+
+export const IMAGE_CREDIT_CONFIG: Record<string, { base: number; hdMultiplier: number; largeSizeMultiplier: number }> = {
+  'dall-e-3':       { base: 2.0, hdMultiplier: 2.0, largeSizeMultiplier: 1.5 },
+  'dall-e-2':       { base: 1.0, hdMultiplier: 1.0, largeSizeMultiplier: 1.0 },
+  'gpt-image-1':    { base: 3.0, hdMultiplier: 1.5, largeSizeMultiplier: 1.5 },
+  'gpt-image-1.5':  { base: 3.0, hdMultiplier: 1.5, largeSizeMultiplier: 1.5 },
+  'imagen-4':       { base: 1.5, hdMultiplier: 1.0, largeSizeMultiplier: 1.5 },
+  'imagen-4-ultra': { base: 3.0, hdMultiplier: 1.0, largeSizeMultiplier: 1.5 },
+  'imagen-4-fast':  { base: 1.0, hdMultiplier: 1.0, largeSizeMultiplier: 1.5 },
+}
+
+const LARGE_IMAGE_SIZES = new Set(['1792x1024', '1024x1792', '1536x1024', '1024x1536'])
+
+/**
+ * Calculate credit cost for image generation (flat per-image, not token-based).
+ */
+export function calculateImageCreditCost(
+  model: string,
+  quality: string = 'standard',
+  size: string = '1024x1024',
+): number {
+  const config = IMAGE_CREDIT_CONFIG[model] || IMAGE_CREDIT_CONFIG['dall-e-3']
+  let cost = config.base
+
+  if (quality === 'hd' || quality === 'high') {
+    cost *= config.hdMultiplier
+  }
+
+  if (LARGE_IMAGE_SIZES.has(size)) {
+    cost *= config.largeSizeMultiplier
+  }
+
+  return Math.ceil(cost * CREDIT_MARKUP_FACTOR * 10) / 10
+}

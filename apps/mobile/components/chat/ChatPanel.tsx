@@ -2045,6 +2045,8 @@ export const ChatPanel = observer(function ChatPanel({
       "",
   }))
 
+  const resolvedAgentUrl = localAgentUrl || (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
+
   const contextValue: ChatContextValue = {
     currentSession: currentSession
       ? { id: currentSession.id, name: currentSession.name }
@@ -2054,6 +2056,7 @@ export const ChatPanel = observer(function ChatPanel({
     isLoading: isStreaming,
     isPolling,
     error: error?.message ?? null,
+    agentUrl: resolvedAgentUrl,
   }
 
   const handleCompactSubmit = useCallback(

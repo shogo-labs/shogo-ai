@@ -24,6 +24,7 @@ import type { MessagePart, GroupedMessagePart } from "./types"
 import { type ToolCallData, getToolCategory } from "../tools/types"
 import { useChatContextSafe } from "../ChatContext"
 import { MarkdownText } from "../MarkdownText"
+import { GenerateImageWidget } from "./GenerateImageWidget"
 
 export interface AssistantContentProps {
   message: UIMessage
@@ -122,7 +123,7 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
   return result
 }
 
-const UNGROUPABLE_TOOLS = new Set(["AskUserQuestion", "TodoWrite", "tool_install"])
+const UNGROUPABLE_TOOLS = new Set(["AskUserQuestion", "TodoWrite", "tool_install", "generate_image"])
 const MIN_GROUP_SIZE = 2
 
 function groupConsecutiveParts(parts: MessagePart[]): GroupedMessagePart[] {
@@ -337,6 +338,12 @@ export function AssistantContent({
                 />
               )
             }
+          }
+
+          if (part.tool.toolName === "generate_image") {
+            return (
+              <GenerateImageWidget key={part.id} tool={part.tool} />
+            )
           }
 
           return (

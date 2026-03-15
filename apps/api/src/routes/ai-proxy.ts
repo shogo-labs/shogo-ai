@@ -954,6 +954,209 @@ async function recordUsage(
 }
 
 // =============================================================================
+// Image Generation
+// =============================================================================
+
+type ImageProvider = 'openai' | 'google' | 'local'
+
+interface ImageModelConfig {
+  provider: ImageProvider
+  apiModel: string
+  displayName: string
+}
+
+interface ImageGenerationResponse {
+  created: number
+  data: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>
+}
+
+const IMAGE_MODEL_REGISTRY: Record<string, ImageModelConfig> = {
+  'dall-e-3': { provider: 'openai', apiModel: 'dall-e-3', displayName: 'DALL-E 3' },
+  'dall-e-2': { provider: 'openai', apiModel: 'dall-e-2', displayName: 'DALL-E 2' },
+  'gpt-image-1': { provider: 'openai', apiModel: 'gpt-image-1', displayName: 'GPT Image 1' },
+  'gpt-image-1.5': { provider: 'openai', apiModel: 'gpt-image-1.5', displayName: 'GPT Image 1.5' },
+  'imagen-4': { provider: 'google', apiModel: 'imagen-4.0-generate-001', displayName: 'Imagen 4' },
+  'imagen-4-ultra': { provider: 'google', apiModel: 'imagen-4.0-ultra-generate-001', displayName: 'Imagen 4 Ultra' },
+  'imagen-4-fast': { provider: 'google', apiModel: 'imagen-4.0-fast-generate-001', displayName: 'Imagen 4 Fast' },
+}
+
+function resolveImageModel(model: string): ImageModelConfig | null {
+  if (IMAGE_MODEL_REGISTRY[model]) return IMAGE_MODEL_REGISTRY[model]
+
+  for (const [key, config] of Object.entries(IMAGE_MODEL_REGISTRY)) {
+    if (key.startsWith(model) || config.apiModel.startsWith(model)) return config
+  }
+
+  const localBaseUrl = process.env.LOCAL_IMAGE_GEN_BASE_URL
+  if (localBaseUrl && (model === 'local' || model === process.env.LOCAL_IMAGE_GEN_MODEL)) {
+    return { provider: 'local', apiModel: model, displayName: 'Local Image Model' }
+  }
+
+  return null
+}
+
+function getImageProviderApiKey(provider: ImageProvider): string | null {
+  switch (provider) {
+    case 'openai': return process.env.OPENAI_API_KEY || null
+    case 'google': return process.env.GOOGLE_API_KEY || null
+    case 'local': return 'local'
+    default: return null
+  }
+}
+
+async function generateImageOpenAI(
+  apiKey: string,
+  model: string,
+  params: { prompt: string; size?: string; quality?: string; n?: number },
+): Promise<ImageGenerationResponse> {
+  const body: Record<string, unknown> = {
+    model,
+    prompt: params.prompt,
+    size: params.size || '1024x1024',
+    n: params.n || 1,
+    response_format: 'b64_json',
+  }
+  if (params.quality) body.quality = params.quality
+
+  const response = await fetch('https://api.openai.com/v1/images/generations', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+  })
+
+  if (!response.ok) {
+    const errorText = await response.text()
+    throw new Error(`OpenAI image generation error (${response.status}): ${errorText}`)
+  }
+
+  return await response.json() as ImageGenerationResponse
+}
+
+async function generateImageGoogle(
+  apiKey: string,
+  model: string,
+  params: { prompt: string; size?: string; n?: number },
+): Promise<ImageGenerationResponse> {
+  const sizeToAspect: Record<string, string> = {
+    '1024x1024': '1:1',
+    '1024x1792': '9:16',
+    '1792x1024': '16:9',
+    '1536x1024': '3:2',
+    '1024x1536': '2:3',
+  }
+
+  const body = {
+    instances: [{ prompt: params.prompt }],
+    parameters: {
+      sampleCount: params.n || 1,
+      aspectRatio: sizeToAspect[params.size || '1024x1024'] || '1:1',
+    },
+  }
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:predict`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,
+      },
+      body: JSON.stringify(body),
+    }
+  )
+
+  if (!response.ok) {
+    const errorText = await response.text()
+    throw new Error(`Google Imagen error (${response.status}): ${errorText}`)
+  }
+
+  const googleResult = await response.json() as {
+    predictions?: Array<{ bytesBase64Encoded: string; mimeType?: string }>
+  }
+
+  return {
+    created: Math.floor(Date.now() / 1000),
+    data: (googleResult.predictions || []).map(p => ({
+      b64_json: p.bytesBase64Encoded,
+      revised_prompt: params.prompt,
+    })),
+  }
+}
+
+async function generateImageLocal(
+  _model: string,
+  params: { prompt: string; size?: string; quality?: string; n?: number },
+): Promise<ImageGenerationResponse> {
+  const baseUrl = process.env.LOCAL_IMAGE_GEN_BASE_URL
+  if (!baseUrl) throw new Error('LOCAL_IMAGE_GEN_BASE_URL is not configured')
+
+  const localModel = process.env.LOCAL_IMAGE_GEN_MODEL || _model
+  const body: Record<string, unknown> = {
+    model: localModel,
+    prompt: params.prompt,
+    size: params.size || '1024x1024',
+    n: params.n || 1,
+    response_format: 'b64_json',
+  }
+  if (params.quality) body.quality = params.quality
+
+  const response = await fetch(`${baseUrl}/v1/images/generations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+
+  if (!response.ok) {
+    const errorText = await response.text()
+    throw new Error(`Local image generation error (${response.status}): ${errorText}`)
+  }
+
+  return await response.json() as ImageGenerationResponse
+}
+
+import { calculateImageCreditCost } from '../lib/credit-cost'
+
+async function recordImageUsage(
+  tokenPayload: ProxyTokenPayload,
+  model: string,
+  quality: string,
+  size: string,
+  n: number,
+) {
+  try {
+    const creditCost = calculateImageCreditCost(model, quality, size) * n
+    if (creditCost === 0) return
+
+    const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
+
+    if (hasSession(tokenPayload.projectId)) {
+      accumulateUsage(tokenPayload.projectId, `image:${model}`, 0, 0)
+      console.log(`[AI Proxy] 🎨 Accumulated image gen for session (project: ${tokenPayload.projectId}, model: ${model})`)
+    }
+
+    const result = await billingService.consumeCredits(
+      tokenPayload.workspaceId,
+      tokenPayload.projectId || null,
+      billingUserId,
+      'ai_image_generation',
+      creditCost,
+      { model, quality, size, n }
+    )
+
+    if (result.success) {
+      console.log(`[AI Proxy] 🎨 Charged ${creditCost} credits (image gen, model: ${model}) — remaining: ${result.remainingCredits}`)
+    } else {
+      console.warn(`[AI Proxy] ⚠️ Could not charge image credits: ${result.error}`)
+    }
+  } catch (err) {
+    console.error('[AI Proxy] Failed to charge image credits:', err)
+  }
+}
+
+// =============================================================================
 // Routes
 // =============================================================================
 
@@ -1469,18 +1672,199 @@ export function aiProxyRoutes() {
   })
 
   // =========================================================================
+  // Image Generation Endpoints
+  // =========================================================================
+
+  /**
+   * POST /ai/v1/images/generations - Text-to-image generation proxy
+   *
+   * Routes to OpenAI DALL-E, Google Imagen, or a local provider based on the
+   * requested model. Always returns base64 JSON regardless of provider.
+   */
+  router.post('/ai/v1/images/generations', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
+        401
+      )
+    }
+
+    if (!await billingService.hasCredits(tokenPayload.workspaceId)) {
+      return c.json(
+        { error: { message: 'Insufficient credits. Please upgrade your plan.', type: 'billing_error', code: 'insufficient_credits' } },
+        402
+      )
+    }
+
+    try {
+      const body = await c.req.json() as {
+        prompt: string
+        model?: string
+        size?: string
+        quality?: string
+        n?: number
+        response_format?: string
+      }
+
+      if (!body.prompt) {
+        return c.json(
+          { error: { message: 'prompt is required', type: 'invalid_request_error', code: 'missing_prompt' } },
+          400
+        )
+      }
+
+      const model = body.model || 'dall-e-3'
+      const imageModel = resolveImageModel(model)
+      if (!imageModel) {
+        return c.json(
+          { error: { message: `Image model '${model}' is not supported.`, type: 'invalid_request_error', code: 'model_not_found' } },
+          400
+        )
+      }
+
+      const apiKey = getImageProviderApiKey(imageModel.provider)
+      if (!apiKey) {
+        return c.json(
+          { error: { message: `Image provider '${imageModel.provider}' is not configured on this server.`, type: 'server_error', code: 'provider_not_configured' } },
+          503
+        )
+      }
+
+      console.log(`[AI Proxy] 🎨 Image generation: ${tokenPayload.projectId} → ${imageModel.provider}/${imageModel.apiModel}`)
+
+      let result: ImageGenerationResponse
+      if (imageModel.provider === 'openai') {
+        result = await generateImageOpenAI(apiKey, imageModel.apiModel, body)
+      } else if (imageModel.provider === 'google') {
+        result = await generateImageGoogle(apiKey, imageModel.apiModel, body)
+      } else if (imageModel.provider === 'local') {
+        result = await generateImageLocal(imageModel.apiModel, body)
+      } else {
+        return c.json(
+          { error: { message: `Unsupported image provider: ${imageModel.provider}`, type: 'server_error', code: 'unsupported_provider' } },
+          500
+        )
+      }
+
+      recordImageUsage(tokenPayload, model, body.quality || 'standard', body.size || '1024x1024', body.n || 1)
+
+      return c.json(result)
+    } catch (error: any) {
+      console.error('[AI Proxy] Image generation error:', error.message)
+      const statusCode = error.message?.includes('429') ? 429 : error.message?.includes('503') ? 503 : 500
+      return c.json(
+        { error: { message: error.message || 'Image generation failed', type: 'server_error', code: 'generation_error' } },
+        statusCode
+      )
+    }
+  })
+
+  /**
+   * POST /ai/v1/images/edits - Image editing proxy (reference image + prompt)
+   *
+   * Accepts multipart/form-data with an image file and prompt.
+   * Routes to OpenAI's /v1/images/edits endpoint.
+   */
+  router.post('/ai/v1/images/edits', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
+        401
+      )
+    }
+
+    if (!await billingService.hasCredits(tokenPayload.workspaceId)) {
+      return c.json(
+        { error: { message: 'Insufficient credits. Please upgrade your plan.', type: 'billing_error', code: 'insufficient_credits' } },
+        402
+      )
+    }
+
+    try {
+      const formData = await c.req.formData()
+      const prompt = formData.get('prompt') as string
+      const imageFile = formData.get('image') as File | null
+      const model = (formData.get('model') as string) || 'dall-e-2'
+      const size = (formData.get('size') as string) || '1024x1024'
+      const n = parseInt((formData.get('n') as string) || '1', 10)
+      const quality = (formData.get('quality') as string) || 'standard'
+
+      if (!prompt) {
+        return c.json(
+          { error: { message: 'prompt is required', type: 'invalid_request_error', code: 'missing_prompt' } },
+          400
+        )
+      }
+      if (!imageFile) {
+        return c.json(
+          { error: { message: 'image file is required for edits', type: 'invalid_request_error', code: 'missing_image' } },
+          400
+        )
+      }
+
+      const openaiKey = process.env.OPENAI_API_KEY
+      if (!openaiKey) {
+        return c.json(
+          { error: { message: 'OpenAI is not configured on this server (required for image edits).', type: 'server_error', code: 'provider_not_configured' } },
+          503
+        )
+      }
+
+      console.log(`[AI Proxy] 🎨 Image edit: ${tokenPayload.projectId} → openai/${model}`)
+
+      // OpenAI edits endpoint only supports dall-e-2
+      const editModel = 'dall-e-2'
+      const forwardForm = new FormData()
+      forwardForm.append('image', imageFile)
+      forwardForm.append('prompt', prompt)
+      forwardForm.append('model', editModel)
+      forwardForm.append('size', size)
+      forwardForm.append('n', String(n))
+      forwardForm.append('response_format', 'b64_json')
+
+      const response = await fetch('https://api.openai.com/v1/images/edits', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${openaiKey}` },
+        body: forwardForm,
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`OpenAI image edit error (${response.status}): ${errorText}`)
+      }
+
+      const result = await response.json() as ImageGenerationResponse
+
+      recordImageUsage(tokenPayload, model, quality, size, n)
+
+      return c.json(result)
+    } catch (error: any) {
+      console.error('[AI Proxy] Image edit error:', error.message)
+      const statusCode = error.message?.includes('429') ? 429 : error.message?.includes('503') ? 503 : 500
+      return c.json(
+        { error: { message: error.message || 'Image edit failed', type: 'server_error', code: 'edit_error' } },
+        statusCode
+      )
+    }
+  })
+
+  // =========================================================================
   // GET /ai/proxy/health - Health check for the AI proxy
   // =========================================================================
   router.get('/ai/proxy/health', (c) => {
     const providers: Record<string, boolean> = {
       anthropic: !!process.env.ANTHROPIC_API_KEY,
       openai: !!process.env.OPENAI_API_KEY,
+      google: !!process.env.GOOGLE_API_KEY,
     }
 
     return c.json({
       status: 'ok',
       providers,
       modelCount: Object.keys(MODEL_REGISTRY).length,
+      imageModelCount: Object.keys(IMAGE_MODEL_REGISTRY).length,
     })
   })
 
