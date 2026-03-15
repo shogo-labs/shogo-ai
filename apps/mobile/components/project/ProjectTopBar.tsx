@@ -244,11 +244,15 @@ export function ProjectTopBar({
           showsHorizontalScrollIndicator={false}
           contentContainerClassName="flex-row items-center gap-0.5"
           className="flex-shrink mx-2"
+          accessibilityRole="tablist"
         >
           {AGENT_TABS.map((tab) => (
             <Pressable
               key={tab.id}
               onPress={() => onTabChange?.(tab.id)}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: activeTab === tab.id }}
+              aria-selected={activeTab === tab.id}
               className={cn(
                 'px-2.5 py-1 rounded-md',
                 activeTab === tab.id

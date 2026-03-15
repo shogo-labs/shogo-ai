@@ -10,7 +10,8 @@
 import { types, Instance, SnapshotIn, SnapshotOut } from "mobx-state-tree"
 
 // Referenced models (use types.late() to avoid circular imports)
-import { WorkspaceModel } from "./workspace.model"
+// WorkspaceModel uses require() inside types.late() to break the
+// workspace ↔ project circular module reference.
 import { FolderModel } from "./folder.model"
 import { MemberModel } from "./member.model"
 import { FeatureSessionModel } from "./feature-session.model"
@@ -44,7 +45,7 @@ export const ProjectModel = types
     siteDescription: types.optional(types.string, ""),
     thumbnailUrl: types.optional(types.string, ""),
     settings: types.frozen<Record<string, unknown> | null>(null),
-    workspace: types.safeReference(types.late(() => WorkspaceModel)),
+    workspace: types.safeReference(types.late(() => require("./workspace.model").WorkspaceModel)),
     folder: types.safeReference(types.late(() => FolderModel)),
     members: types.optional(types.array(types.safeReference(types.late(() => MemberModel))), []),
     featureSessions: types.optional(types.array(types.safeReference(types.late(() => FeatureSessionModel))), []),

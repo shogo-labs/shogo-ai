@@ -273,6 +273,11 @@ export default function OnboardingPage() {
       trackEvent(posthog, EVENTS.ONBOARDING_COMPLETED, {
         selected_template: selectedTemplate || null,
       })
+      // Persist the template so the home screen's deep-link effect can create
+      // the project automatically after navigation (same path as website referrals).
+      if (selectedTemplate) {
+        localStorage.setItem('pending_template_id', selectedTemplate)
+      }
       router.replace('/(app)')
     } catch {
       router.replace('/(app)')
@@ -869,7 +874,7 @@ function GetStartedStep({
         <Text className="text-2xl font-bold text-foreground text-center">You're all set!</Text>
         <Text className="text-base text-muted-foreground text-center leading-6 max-w-sm">
           {template
-            ? `We'll create a "${template.name}" project for you to explore.`
+            ? `We'll set up a "${template.name}" project for you to explore.`
             : 'You can create your first project from the home screen.'}
         </Text>
       </View>

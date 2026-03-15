@@ -13,6 +13,7 @@ import { GluestackUIProvider } from '@/components/ui/gluestack-ui-provider'
 import { AuthProvider } from '../contexts/auth'
 import { PostHogProvider } from '../contexts/posthog'
 import { ThemeProvider, useTheme } from '../contexts/theme'
+import { RootErrorBoundary } from '../components/RootErrorBoundary'
 
 const PENDING_TEMPLATE_KEY = 'pending_template_id'
 
@@ -62,8 +63,10 @@ function RootLayoutInner() {
 
 export default function RootLayout() {
   return (
-    <ThemeProvider>
-      <RootLayoutInner />
-    </ThemeProvider>
+    <RootErrorBoundary>
+      <ThemeProvider>
+        <RootLayoutInner />
+      </ThemeProvider>
+    </RootErrorBoundary>
   )
 }

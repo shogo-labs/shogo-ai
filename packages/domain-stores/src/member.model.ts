@@ -9,10 +9,9 @@
 
 import { types, Instance, SnapshotIn, SnapshotOut } from "mobx-state-tree"
 
-// Referenced models (use types.late() to avoid circular imports)
-import { UserModel } from "./user.model"
-import { WorkspaceModel } from "./workspace.model"
-import { ProjectModel } from "./project.model"
+// Cyclic model references are resolved lazily to avoid "Require cycle" warnings.
+// types.late() defers resolution until the MST tree is first instantiated, by
+// which point all modules are fully evaluated.
 
 // ============================================================================
 // Member Model
@@ -28,9 +27,9 @@ export const MemberModel = types
     isBillingAdmin: types.boolean,
     createdAt: types.optional(types.number, 0),
     updatedAt: types.number,
-    user: types.safeReference(types.late(() => UserModel)),
-    workspace: types.safeReference(types.late(() => WorkspaceModel)),
-    project: types.safeReference(types.late(() => ProjectModel)),
+    user: types.safeReference(types.late(() => require("./user.model").UserModel)),
+    workspace: types.safeReference(types.late(() => require("./workspace.model").WorkspaceModel)),
+    project: types.safeReference(types.late(() => require("./project.model").ProjectModel)),
   })
   .views(self => ({
     /** Check if this is a new/unsaved entity */

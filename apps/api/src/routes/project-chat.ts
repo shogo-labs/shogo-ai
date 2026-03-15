@@ -14,6 +14,7 @@
 
 import { Hono } from "hono"
 import { resolve } from "path"
+import { existsSync } from "fs"
 import { trace, SpanStatusCode } from "@opentelemetry/api"
 
 import { prisma } from "../lib/prisma"
@@ -359,18 +360,23 @@ async function trackUsageFromStream(
     }
   }
 
-  // Auto-checkpoint: create a git snapshot when the agent modified files
+  // Auto-checkpoint: create a git snapshot when the agent modified files.
+  // In Kubernetes the workspace lives on the agent pod, not on the API pod,
+  // so the local path doesn't exist. Skip silently instead of logging a warning
+  // on every streamed response.
   if (hasFileModifyingTools(toolCallMap) && !streamInterrupted) {
     const workspacePath = resolve(WORKSPACES_DIR, project.id)
-    const toolNames = [...new Set([...toolCallMap.values()].map(tc => tc.toolName))].join(', ')
-    checkpointService.createCheckpoint({
-      projectId: project.id,
-      workspacePath,
-      message: `AI: ${toolNames} (${toolCallMap.size} tool calls)`,
-      isAutomatic: true,
-    }).catch((err) => {
-      console.warn('[ProjectChat] Auto-checkpoint failed (non-blocking):', err.message)
-    })
+    if (existsSync(workspacePath)) {
+      const toolNames = [...new Set([...toolCallMap.values()].map(tc => tc.toolName))].join(', ')
+      checkpointService.createCheckpoint({
+        projectId: project.id,
+        workspacePath,
+        message: `AI: ${toolNames} (${toolCallMap.size} tool calls)`,
+        isAutomatic: true,
+      }).catch((err) => {
+        console.warn('[ProjectChat] Auto-checkpoint failed (non-blocking):', err.message)
+      })
+    }
   }
 }
 

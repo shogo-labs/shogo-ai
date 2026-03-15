@@ -93,6 +93,14 @@ const PROMOTED_POD_IDLE_TIMEOUT_MS = parseInt(
 const PROMOTED_POD_GC_MAX_ORPHANS_PER_CYCLE = 20
 const PROMOTED_POD_GC_MAX_IDLE_EVICTIONS_PER_CYCLE = 10
 
+// Promoted pod grace period: skip eviction of pods assigned within this window.
+// Newly-promoted pods start at 0 replicas (still pulling/booting) and will
+// return 401 until they are ready — the same race condition as namespace GC.
+const PROMOTED_POD_GRACE_MS = parseInt(
+  process.env.PROMOTED_POD_GRACE_MS || String(2 * 60 * 1000),
+  10
+)
+
 // Full-namespace GC: sweep ALL Knative services (not just warm-pool-labeled)
 // and delete ones that have no matching project in the DB.
 const NAMESPACE_GC_INTERVAL_CYCLES = parseInt(process.env.NAMESPACE_GC_INTERVAL_CYCLES || '10', 10) // every N reconcile cycles
@@ -121,6 +129,8 @@ export interface PromotedPodInfo {
   projectId: string
   url: string
   createdAt: number
+  /** Unix ms when this pod was first observed as promoted in this process (used for grace period) */
+  promotedAt: number
   ready: boolean
 }
 
@@ -1017,6 +1027,16 @@ export class WarmPoolController {
         if (orphansDeleted >= PROMOTED_POD_GC_MAX_ORPHANS_PER_CYCLE) break
         if (activeServiceNames.has(pod.serviceName)) continue
 
+        // Skip pods in their grace period — the DB write for knativeServiceName
+        // may still be in-flight when orphan GC runs after a rapid assignment.
+        const ageMs = Date.now() - pod.promotedAt
+        if (ageMs < PROMOTED_POD_GRACE_MS) {
+          console.log(
+            `[WarmPool GC] Skipping recently-promoted orphan candidate ${pod.serviceName} (age ${Math.round(ageMs / 1000)}s < grace ${PROMOTED_POD_GRACE_MS / 1000}s)`
+          )
+          continue
+        }
+
         console.log(
           `[WarmPool GC] Deleting orphaned promoted pod ${pod.serviceName} (project ${pod.projectId} no longer maps to it)`
         )
@@ -1034,6 +1054,17 @@ export class WarmPoolController {
 
       for (const pod of activePods) {
         if (idleEvicted >= PROMOTED_POD_GC_MAX_IDLE_EVICTIONS_PER_CYCLE) break
+
+        // Grace period: skip eviction for pods promoted within the last
+        // PROMOTED_POD_GRACE_MS. A freshly-assigned pod returns 401 on
+        // /pool/activity until it has fully initialised with project config.
+        const ageMs = Date.now() - pod.promotedAt
+        if (ageMs < PROMOTED_POD_GRACE_MS) {
+          console.log(
+            `[WarmPool GC] Skipping recently-promoted pod ${pod.serviceName} for project ${pod.projectId} (age ${Math.round(ageMs / 1000)}s < grace ${PROMOTED_POD_GRACE_MS / 1000}s)`
+          )
+          continue
+        }
 
         try {
           const resp = await fetch(`${pod.url}/pool/activity`, {
@@ -1344,12 +1375,17 @@ export class WarmPoolController {
           const projectId = labels['shogo.io/project'] || ''
           const conditions = service.status?.conditions || []
           const readyCondition = conditions.find((c: any) => c.type === 'Ready')
+          // Preserve promotedAt from the existing in-memory record so the grace
+          // period is anchored to when this process first observed the promotion,
+          // not to when the K8s service was created (which is earlier).
+          const existing = this.promotedPods.find((p) => p.serviceName === name)
           newPromotedPods.push({
             serviceName: name,
             type,
             projectId,
             url: `http://${name}.${this.namespace}.svc.cluster.local`,
             createdAt,
+            promotedAt: existing?.promotedAt ?? Date.now(),
             ready: readyCondition?.status === 'True',
           })
           continue

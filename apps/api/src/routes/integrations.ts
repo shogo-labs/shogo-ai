@@ -25,6 +25,21 @@ const SUPPORTED_TOOLKITS = [
 
 const TOOLKIT_AUTH_CONFIG_OVERRIDES: Record<string, string> = {}
 
+/**
+ * Load optional Composio auth config overrides from environment variables.
+ *
+ * Without these overrides Composio uses its shared default OAuth apps, which
+ * request a very broad set of scopes (e.g. 28+ Slack scopes). Set these env
+ * vars to a custom Composio auth config ID to restrict scopes to only what
+ * the integration actually needs:
+ *
+ *   COMPOSIO_SLACK_AUTH_CONFIG  — create in Composio dashboard with scopes:
+ *     chat:write, channels:read, channels:write, im:write, users:read
+ *   COMPOSIO_GOOGLE_AUTH_CONFIG — covers googlecalendar, gmail, googledrive
+ *   COMPOSIO_GITHUB_AUTH_CONFIG — covers github
+ *   COMPOSIO_LINEAR_AUTH_CONFIG — covers linear
+ *   COMPOSIO_NOTION_AUTH_CONFIG — covers notion
+ */
 function loadAuthConfigs() {
   const envMap: Record<string, string[]> = {
     COMPOSIO_GOOGLE_AUTH_CONFIG: ['googlecalendar', 'gmail', 'googledrive'],
@@ -34,13 +49,24 @@ function loadAuthConfigs() {
     COMPOSIO_NOTION_AUTH_CONFIG: ['notion'],
   }
 
+  const missing: string[] = []
   for (const [envKey, toolkits] of Object.entries(envMap)) {
     const value = process.env[envKey]
     if (value) {
       for (const toolkit of toolkits) {
         TOOLKIT_AUTH_CONFIG_OVERRIDES[toolkit] = value
       }
+    } else {
+      missing.push(envKey)
     }
+  }
+
+  if (missing.length > 0) {
+    console.warn(
+      `[Integrations] No custom auth config for: ${missing.join(', ')}. ` +
+      'Composio default OAuth apps will be used (broad scopes). ' +
+      'Set these env vars to a Composio auth config ID to restrict OAuth scopes.'
+    )
   }
 }
 
