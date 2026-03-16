@@ -1296,14 +1296,16 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
               collapsed={collapsed}
               onNavPress={onNavPress}
             />
-            <NavItem
-              icon={Users}
-              label="Shared with me"
-              href="/(app)/shared"
-              active={isRouteActive(pathname, '/(app)/shared')}
-              collapsed={collapsed}
-              onNavPress={onNavPress}
-            />
+            {!localMode && (
+              <NavItem
+                icon={Users}
+                label="Shared with me"
+                href="/(app)/shared"
+                active={isRouteActive(pathname, '/(app)/shared')}
+                collapsed={collapsed}
+                onNavPress={onNavPress}
+              />
+            )}
           </View>
         </NavSection>
 
