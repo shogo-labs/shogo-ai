@@ -63,7 +63,7 @@ import {
   CapabilitiesPanel,
   MonitorPanel,
 } from '../../../../components/project/panels'
-import { RefreshCw, MoreHorizontal, History, PanelLeft, PanelLeftClose } from 'lucide-react-native'
+import { RefreshCw, MoreHorizontal, History, PanelLeft, PanelLeftClose, Plus } from 'lucide-react-native'
 import {
   Popover,
   PopoverBackdrop,
@@ -772,6 +772,12 @@ export default observer(function ProjectLayout() {
               >
                 {isWide && (
                   <View className="absolute top-2 right-2 z-10 flex-row items-center gap-1">
+                    <Pressable
+                      onPress={handleCreateNewSession}
+                      className="h-7 w-7 items-center justify-center rounded-md bg-background/80 active:bg-muted"
+                    >
+                      <Plus size={14} className="text-muted-foreground" />
+                    </Pressable>
                     <Pressable
                       onPress={() => setShowChatSessions((s) => !s)}
                       className={cn(
