@@ -63,7 +63,7 @@ import {
   CapabilitiesPanel,
   MonitorPanel,
 } from '../../../../components/project/panels'
-import { RefreshCw, MoreHorizontal } from 'lucide-react-native'
+import { RefreshCw, MoreHorizontal, History, PanelLeft, PanelLeftClose } from 'lucide-react-native'
 import {
   Popover,
   PopoverBackdrop,
@@ -584,7 +584,7 @@ export default observer(function ProjectLayout() {
   const hiddenTabs: string[] = []
   const isChatFullscreen = isWide && !canvasEnabled && previewTab === 'chat-fullscreen'
 
-  const chatHidden = isWide ? (chatCollapsed || isChatFullscreen) : activeTab !== 'chat'
+  const chatHidden = isWide ? isChatFullscreen : activeTab !== 'chat'
   const canvasAreaHidden = (!isWide && activeTab === 'chat') || isChatFullscreen
 
   return (
@@ -598,10 +598,6 @@ export default observer(function ProjectLayout() {
             projectId={projectId!}
             projectType={project.type}
             projects={allProjects}
-            showChatSessions={showChatSessions}
-            isChatCollapsed={chatCollapsed}
-            onChatSessionsToggle={() => setShowChatSessions((s) => !s)}
-            onChatCollapseToggle={() => setChatCollapsed((c) => !c)}
             activeTab={previewTab}
             onTabChange={setPreviewTab}
             hasActiveSubscription={effectiveHasActiveSubscription}
@@ -757,30 +753,61 @@ export default observer(function ProjectLayout() {
 
           {/* Normal left chat panel (unmounted when chat-fullscreen is active to avoid duplicate ChatPanel) */}
           {!isChatFullscreen && (
-            <View
-              className={cn(
-                isWide ? 'w-[480px] border-r border-border' : 'flex-1',
-              )}
-              style={chatHidden ? { display: 'none' } : undefined}
-            >
-              {isWide && showChatSessions && (
-                <View className="border-b border-border">
-                  <ChatSessionPicker
-                    sessions={chatSessions}
-                    currentSessionId={chatSessionId ?? undefined}
-                    onSelect={(sessionId) => {
-                      setChatSessionId(sessionId)
-                      setShowChatSessions(false)
-                    }}
-                    onCreate={handleCreateNewSession}
-                    onLoadMore={handleLoadMoreSessions}
-                    hasMore={store?.chatSessionCollection?.hasMore ?? false}
-                    isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
-                  />
-                </View>
-              )}
-              {chatPanel}
-            </View>
+            isWide && chatCollapsed ? (
+              <View className="w-10 border-r border-border items-center pt-2">
+                <Pressable
+                  onPress={() => setChatCollapsed(false)}
+                  className="h-7 w-7 items-center justify-center rounded-md active:bg-muted"
+                >
+                  <PanelLeft size={14} className="text-muted-foreground" />
+                </Pressable>
+              </View>
+            ) : (
+              <View
+                className={cn(
+                  'relative',
+                  isWide ? 'w-[480px] border-r border-border' : 'flex-1',
+                )}
+                style={chatHidden ? { display: 'none' } : undefined}
+              >
+                {isWide && (
+                  <View className="absolute top-2 right-2 z-10 flex-row items-center gap-1">
+                    <Pressable
+                      onPress={() => setShowChatSessions((s) => !s)}
+                      className={cn(
+                        'h-7 w-7 items-center justify-center rounded-md',
+                        showChatSessions ? 'bg-accent' : 'bg-background/80 active:bg-muted'
+                      )}
+                    >
+                      <History size={14} className={showChatSessions ? 'text-foreground' : 'text-muted-foreground'} />
+                    </Pressable>
+                    <Pressable
+                      onPress={() => setChatCollapsed(true)}
+                      className="h-7 w-7 items-center justify-center rounded-md bg-background/80 active:bg-muted"
+                    >
+                      <PanelLeftClose size={14} className="text-muted-foreground" />
+                    </Pressable>
+                  </View>
+                )}
+                {isWide && showChatSessions && (
+                  <View className="border-b border-border">
+                    <ChatSessionPicker
+                      sessions={chatSessions}
+                      currentSessionId={chatSessionId ?? undefined}
+                      onSelect={(sessionId) => {
+                        setChatSessionId(sessionId)
+                        setShowChatSessions(false)
+                      }}
+                      onCreate={handleCreateNewSession}
+                      onLoadMore={handleLoadMoreSessions}
+                      hasMore={store?.chatSessionCollection?.hasMore ?? false}
+                      isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
+                    />
+                  </View>
+                )}
+                {chatPanel}
+              </View>
+            )
           )}
 
           {/* Right panel area (canvas / files / capabilities / channels / monitor) */}

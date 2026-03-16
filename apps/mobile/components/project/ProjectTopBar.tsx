@@ -216,33 +216,7 @@ export function ProjectTopBar({
           </PopoverContent>
         </Popover>
 
-        {isWide && !isChatFullscreen && (
-          <>
-            <Pressable
-              onPress={onChatSessionsToggle}
-              className={cn(
-                'h-7 w-7 items-center justify-center rounded-md',
-                showChatSessions ? 'bg-accent' : 'active:bg-muted'
-              )}
-            >
-              <History size={14} className={showChatSessions ? 'text-foreground' : 'text-muted-foreground'} />
-            </Pressable>
-
-            <Pressable
-              onPress={onChatCollapseToggle}
-              className={cn(
-                'h-7 w-7 items-center justify-center rounded-md',
-                isChatCollapsed ? 'bg-accent' : 'active:bg-muted'
-              )}
-            >
-              {isChatCollapsed ? (
-                <PanelLeft size={14} className="text-foreground" />
-              ) : (
-                <PanelLeftClose size={14} className="text-muted-foreground" />
-              )}
-            </Pressable>
-          </>
-        )}
+        {/* Chat history + collapse icons moved to float inside chat panel */}
       </View>
 
       {/* Center: Tab buttons (wide only) */}
