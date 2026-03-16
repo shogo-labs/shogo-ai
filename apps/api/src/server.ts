@@ -3091,6 +3091,87 @@ async function requireProjectAuth(c: any): Promise<{ error: Response } | { proje
   return { projectId }
 }
 
+// =============================================================================
+// Heartbeat Config Routes (session-authenticated, for the mobile/web UI)
+// =============================================================================
+
+app.get('/api/projects/:projectId/heartbeat', async (c) => {
+  const authResult = await requireProjectAuth(c)
+  if ('error' in authResult) return authResult.error
+
+  const config = await prisma.agentConfig.findUnique({
+    where: { projectId: authResult.projectId },
+    select: {
+      heartbeatEnabled: true,
+      heartbeatInterval: true,
+      nextHeartbeatAt: true,
+      lastHeartbeatAt: true,
+      quietHoursStart: true,
+      quietHoursEnd: true,
+      quietHoursTimezone: true,
+      modelName: true,
+    },
+  })
+
+  if (!config) {
+    return c.json({ error: 'Agent config not found' }, 404)
+  }
+
+  return c.json(config)
+})
+
+app.patch('/api/projects/:projectId/heartbeat', async (c) => {
+  const authResult = await requireProjectAuth(c)
+  if ('error' in authResult) return authResult.error
+
+  const body = await c.req.json()
+  const data: Record<string, any> = {}
+
+  if (typeof body.heartbeatEnabled === 'boolean') {
+    data.heartbeatEnabled = body.heartbeatEnabled
+  }
+  if (typeof body.heartbeatInterval === 'number' && body.heartbeatInterval >= 60) {
+    data.heartbeatInterval = body.heartbeatInterval
+  }
+  if (body.quietHoursStart !== undefined) data.quietHoursStart = body.quietHoursStart || null
+  if (body.quietHoursEnd !== undefined) data.quietHoursEnd = body.quietHoursEnd || null
+  if (body.quietHoursTimezone !== undefined) data.quietHoursTimezone = body.quietHoursTimezone || null
+
+  const existing = await prisma.agentConfig.findUnique({
+    where: { projectId: authResult.projectId },
+  })
+  if (!existing) {
+    return c.json({ error: 'Agent config not found' }, 404)
+  }
+
+  const enabled = data.heartbeatEnabled ?? existing.heartbeatEnabled
+  const interval = data.heartbeatInterval ?? existing.heartbeatInterval
+
+  if (enabled) {
+    const jitter = Math.floor(Math.random() * interval * 0.1) * 1000
+    data.nextHeartbeatAt = new Date(Date.now() + interval * 1000 + jitter)
+  } else {
+    data.nextHeartbeatAt = null
+  }
+
+  const updated = await prisma.agentConfig.update({
+    where: { projectId: authResult.projectId },
+    data,
+    select: {
+      heartbeatEnabled: true,
+      heartbeatInterval: true,
+      nextHeartbeatAt: true,
+      lastHeartbeatAt: true,
+      quietHoursStart: true,
+      quietHoursEnd: true,
+      quietHoursTimezone: true,
+      modelName: true,
+    },
+  })
+
+  return c.json(updated)
+})
+
 // POST /api/projects/:projectId/chat - Proxy chat to project pod
 app.post('/api/projects/:projectId/chat', async (c) => {
   const authResult = await requireProjectAuth(c)
@@ -5165,6 +5246,14 @@ if (isKubernetes()) {
       startInfraMetricsCollector(prisma)
     } catch (err: any) {
       console.error('[InfraCollector] Failed to start (non-fatal):', err.message)
+    }
+
+    try {
+      const { startHeartbeatScheduler } = await import('./lib/heartbeat-scheduler')
+      await startHeartbeatScheduler()
+      console.log('[HeartbeatScheduler] Heartbeat scheduler started')
+    } catch (err: any) {
+      console.error('[HeartbeatScheduler] Failed to start heartbeat scheduler (non-fatal):', err.message)
     }
   }, 2000)
 }

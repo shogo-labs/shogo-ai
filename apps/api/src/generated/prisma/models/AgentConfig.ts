@@ -39,6 +39,11 @@ export type AgentConfigMinAggregateOutputType = {
   projectId: string | null
   heartbeatInterval: number | null
   heartbeatEnabled: boolean | null
+  nextHeartbeatAt: Date | null
+  lastHeartbeatAt: Date | null
+  quietHoursStart: string | null
+  quietHoursEnd: string | null
+  quietHoursTimezone: string | null
   modelProvider: string | null
   modelName: string | null
   createdAt: Date | null
@@ -50,6 +55,11 @@ export type AgentConfigMaxAggregateOutputType = {
   projectId: string | null
   heartbeatInterval: number | null
   heartbeatEnabled: boolean | null
+  nextHeartbeatAt: Date | null
+  lastHeartbeatAt: Date | null
+  quietHoursStart: string | null
+  quietHoursEnd: string | null
+  quietHoursTimezone: string | null
   modelProvider: string | null
   modelName: string | null
   createdAt: Date | null
@@ -61,6 +71,11 @@ export type AgentConfigCountAggregateOutputType = {
   projectId: number
   heartbeatInterval: number
   heartbeatEnabled: number
+  nextHeartbeatAt: number
+  lastHeartbeatAt: number
+  quietHoursStart: number
+  quietHoursEnd: number
+  quietHoursTimezone: number
   channels: number
   modelProvider: number
   modelName: number
@@ -83,6 +98,11 @@ export type AgentConfigMinAggregateInputType = {
   projectId?: true
   heartbeatInterval?: true
   heartbeatEnabled?: true
+  nextHeartbeatAt?: true
+  lastHeartbeatAt?: true
+  quietHoursStart?: true
+  quietHoursEnd?: true
+  quietHoursTimezone?: true
   modelProvider?: true
   modelName?: true
   createdAt?: true
@@ -94,6 +114,11 @@ export type AgentConfigMaxAggregateInputType = {
   projectId?: true
   heartbeatInterval?: true
   heartbeatEnabled?: true
+  nextHeartbeatAt?: true
+  lastHeartbeatAt?: true
+  quietHoursStart?: true
+  quietHoursEnd?: true
+  quietHoursTimezone?: true
   modelProvider?: true
   modelName?: true
   createdAt?: true
@@ -105,6 +130,11 @@ export type AgentConfigCountAggregateInputType = {
   projectId?: true
   heartbeatInterval?: true
   heartbeatEnabled?: true
+  nextHeartbeatAt?: true
+  lastHeartbeatAt?: true
+  quietHoursStart?: true
+  quietHoursEnd?: true
+  quietHoursTimezone?: true
   channels?: true
   modelProvider?: true
   modelName?: true
@@ -204,6 +234,11 @@ export type AgentConfigGroupByOutputType = {
   projectId: string
   heartbeatInterval: number
   heartbeatEnabled: boolean
+  nextHeartbeatAt: Date | null
+  lastHeartbeatAt: Date | null
+  quietHoursStart: string | null
+  quietHoursEnd: string | null
+  quietHoursTimezone: string | null
   channels: runtime.JsonValue
   modelProvider: string
   modelName: string
@@ -239,6 +274,11 @@ export type AgentConfigWhereInput = {
   projectId?: Prisma.StringFilter<"AgentConfig"> | string
   heartbeatInterval?: Prisma.IntFilter<"AgentConfig"> | number
   heartbeatEnabled?: Prisma.BoolFilter<"AgentConfig"> | boolean
+  nextHeartbeatAt?: Prisma.DateTimeNullableFilter<"AgentConfig"> | Date | string | null
+  lastHeartbeatAt?: Prisma.DateTimeNullableFilter<"AgentConfig"> | Date | string | null
+  quietHoursStart?: Prisma.StringNullableFilter<"AgentConfig"> | string | null
+  quietHoursEnd?: Prisma.StringNullableFilter<"AgentConfig"> | string | null
+  quietHoursTimezone?: Prisma.StringNullableFilter<"AgentConfig"> | string | null
   channels?: Prisma.JsonFilter<"AgentConfig">
   modelProvider?: Prisma.StringFilter<"AgentConfig"> | string
   modelName?: Prisma.StringFilter<"AgentConfig"> | string
@@ -252,6 +292,11 @@ export type AgentConfigOrderByWithRelationInput = {
   projectId?: Prisma.SortOrder
   heartbeatInterval?: Prisma.SortOrder
   heartbeatEnabled?: Prisma.SortOrder
+  nextHeartbeatAt?: Prisma.SortOrderInput | Prisma.SortOrder
+  lastHeartbeatAt?: Prisma.SortOrderInput | Prisma.SortOrder
+  quietHoursStart?: Prisma.SortOrderInput | Prisma.SortOrder
+  quietHoursEnd?: Prisma.SortOrderInput | Prisma.SortOrder
+  quietHoursTimezone?: Prisma.SortOrderInput | Prisma.SortOrder
   channels?: Prisma.SortOrder
   modelProvider?: Prisma.SortOrder
   modelName?: Prisma.SortOrder
@@ -268,6 +313,11 @@ export type AgentConfigWhereUniqueInput = Prisma.AtLeast<{
   NOT?: Prisma.AgentConfigWhereInput | Prisma.AgentConfigWhereInput[]
   heartbeatInterval?: Prisma.IntFilter<"AgentConfig"> | number
   heartbeatEnabled?: Prisma.BoolFilter<"AgentConfig"> | boolean
+  nextHeartbeatAt?: Prisma.DateTimeNullableFilter<"AgentConfig"> | Date | string | null
+  lastHeartbeatAt?: Prisma.DateTimeNullableFilter<"AgentConfig"> | Date | string | null
+  quietHoursStart?: Prisma.StringNullableFilter<"AgentConfig"> | string | null
+  quietHoursEnd?: Prisma.StringNullableFilter<"AgentConfig"> | string | null
+  quietHoursTimezone?: Prisma.StringNullableFilter<"AgentConfig"> | string | null
   channels?: Prisma.JsonFilter<"AgentConfig">
   modelProvider?: Prisma.StringFilter<"AgentConfig"> | string
   modelName?: Prisma.StringFilter<"AgentConfig"> | string
@@ -281,6 +331,11 @@ export type AgentConfigOrderByWithAggregationInput = {
   projectId?: Prisma.SortOrder
   heartbeatInterval?: Prisma.SortOrder
   heartbeatEnabled?: Prisma.SortOrder
+  nextHeartbeatAt?: Prisma.SortOrderInput | Prisma.SortOrder
+  lastHeartbeatAt?: Prisma.SortOrderInput | Prisma.SortOrder
+  quietHoursStart?: Prisma.SortOrderInput | Prisma.SortOrder
+  quietHoursEnd?: Prisma.SortOrderInput | Prisma.SortOrder
+  quietHoursTimezone?: Prisma.SortOrderInput | Prisma.SortOrder
   channels?: Prisma.SortOrder
   modelProvider?: Prisma.SortOrder
   modelName?: Prisma.SortOrder
@@ -301,6 +356,11 @@ export type AgentConfigScalarWhereWithAggregatesInput = {
   projectId?: Prisma.StringWithAggregatesFilter<"AgentConfig"> | string
   heartbeatInterval?: Prisma.IntWithAggregatesFilter<"AgentConfig"> | number
   heartbeatEnabled?: Prisma.BoolWithAggregatesFilter<"AgentConfig"> | boolean
+  nextHeartbeatAt?: Prisma.DateTimeNullableWithAggregatesFilter<"AgentConfig"> | Date | string | null
+  lastHeartbeatAt?: Prisma.DateTimeNullableWithAggregatesFilter<"AgentConfig"> | Date | string | null
+  quietHoursStart?: Prisma.StringNullableWithAggregatesFilter<"AgentConfig"> | string | null
+  quietHoursEnd?: Prisma.StringNullableWithAggregatesFilter<"AgentConfig"> | string | null
+  quietHoursTimezone?: Prisma.StringNullableWithAggregatesFilter<"AgentConfig"> | string | null
   channels?: Prisma.JsonWithAggregatesFilter<"AgentConfig">
   modelProvider?: Prisma.StringWithAggregatesFilter<"AgentConfig"> | string
   modelName?: Prisma.StringWithAggregatesFilter<"AgentConfig"> | string
@@ -312,6 +372,11 @@ export type AgentConfigCreateInput = {
   id?: string
   heartbeatInterval?: number
   heartbeatEnabled?: boolean
+  nextHeartbeatAt?: Date | string | null
+  lastHeartbeatAt?: Date | string | null
+  quietHoursStart?: string | null
+  quietHoursEnd?: string | null
+  quietHoursTimezone?: string | null
   channels?: Prisma.JsonNullValueInput | runtime.InputJsonValue
   modelProvider?: string
   modelName?: string
@@ -325,6 +390,11 @@ export type AgentConfigUncheckedCreateInput = {
   projectId: string
   heartbeatInterval?: number
   heartbeatEnabled?: boolean
+  nextHeartbeatAt?: Date | string | null
+  lastHeartbeatAt?: Date | string | null
+  quietHoursStart?: string | null
+  quietHoursEnd?: string | null
+  quietHoursTimezone?: string | null
   channels?: Prisma.JsonNullValueInput | runtime.InputJsonValue
   modelProvider?: string
   modelName?: string
@@ -336,6 +406,11 @@ export type AgentConfigUpdateInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
   heartbeatInterval?: Prisma.IntFieldUpdateOperationsInput | number
   heartbeatEnabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  nextHeartbeatAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  lastHeartbeatAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  quietHoursStart?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  quietHoursEnd?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  quietHoursTimezone?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   channels?: Prisma.JsonNullValueInput | runtime.InputJsonValue
   modelProvider?: Prisma.StringFieldUpdateOperationsInput | string
   modelName?: Prisma.StringFieldUpdateOperationsInput | string
@@ -349,6 +424,11 @@ export type AgentConfigUncheckedUpdateInput = {
   projectId?: Prisma.StringFieldUpdateOperationsInput | string
   heartbeatInterval?: Prisma.IntFieldUpdateOperationsInput | number
   heartbeatEnabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  nextHeartbeatAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  lastHeartbeatAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  quietHoursStart?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  quietHoursEnd?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  quietHoursTimezone?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   channels?: Prisma.JsonNullValueInput | runtime.InputJsonValue
   modelProvider?: Prisma.StringFieldUpdateOperationsInput | string
   modelName?: Prisma.StringFieldUpdateOperationsInput | string
@@ -361,6 +441,11 @@ export type AgentConfigCreateManyInput = {
   projectId: string
   heartbeatInterval?: number
   heartbeatEnabled?: boolean
+  nextHeartbeatAt?: Date | string | null
+  lastHeartbeatAt?: Date | string | null
+  quietHoursStart?: string | null
+  quietHoursEnd?: string | null
+  quietHoursTimezone?: string | null
   channels?: Prisma.JsonNullValueInput | runtime.InputJsonValue
   modelProvider?: string
   modelName?: string
@@ -372,6 +457,11 @@ export type AgentConfigUpdateManyMutationInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
   heartbeatInterval?: Prisma.IntFieldUpdateOperationsInput | number
   heartbeatEnabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  nextHeartbeatAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  lastHeartbeatAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  quietHoursStart?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  quietHoursEnd?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  quietHoursTimezone?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   channels?: Prisma.JsonNullValueInput | runtime.InputJsonValue
   modelProvider?: Prisma.StringFieldUpdateOperationsInput | string
   modelName?: Prisma.StringFieldUpdateOperationsInput | string
@@ -384,6 +474,11 @@ export type AgentConfigUncheckedUpdateManyInput = {
   projectId?: Prisma.StringFieldUpdateOperationsInput | string
   heartbeatInterval?: Prisma.IntFieldUpdateOperationsInput | number
   heartbeatEnabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  nextHeartbeatAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  lastHeartbeatAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  quietHoursStart?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  quietHoursEnd?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  quietHoursTimezone?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   channels?: Prisma.JsonNullValueInput | runtime.InputJsonValue
   modelProvider?: Prisma.StringFieldUpdateOperationsInput | string
   modelName?: Prisma.StringFieldUpdateOperationsInput | string
@@ -401,6 +496,11 @@ export type AgentConfigCountOrderByAggregateInput = {
   projectId?: Prisma.SortOrder
   heartbeatInterval?: Prisma.SortOrder
   heartbeatEnabled?: Prisma.SortOrder
+  nextHeartbeatAt?: Prisma.SortOrder
+  lastHeartbeatAt?: Prisma.SortOrder
+  quietHoursStart?: Prisma.SortOrder
+  quietHoursEnd?: Prisma.SortOrder
+  quietHoursTimezone?: Prisma.SortOrder
   channels?: Prisma.SortOrder
   modelProvider?: Prisma.SortOrder
   modelName?: Prisma.SortOrder
@@ -417,6 +517,11 @@ export type AgentConfigMaxOrderByAggregateInput = {
   projectId?: Prisma.SortOrder
   heartbeatInterval?: Prisma.SortOrder
   heartbeatEnabled?: Prisma.SortOrder
+  nextHeartbeatAt?: Prisma.SortOrder
+  lastHeartbeatAt?: Prisma.SortOrder
+  quietHoursStart?: Prisma.SortOrder
+  quietHoursEnd?: Prisma.SortOrder
+  quietHoursTimezone?: Prisma.SortOrder
   modelProvider?: Prisma.SortOrder
   modelName?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
@@ -428,6 +533,11 @@ export type AgentConfigMinOrderByAggregateInput = {
   projectId?: Prisma.SortOrder
   heartbeatInterval?: Prisma.SortOrder
   heartbeatEnabled?: Prisma.SortOrder
+  nextHeartbeatAt?: Prisma.SortOrder
+  lastHeartbeatAt?: Prisma.SortOrder
+  quietHoursStart?: Prisma.SortOrder
+  quietHoursEnd?: Prisma.SortOrder
+  quietHoursTimezone?: Prisma.SortOrder
   modelProvider?: Prisma.SortOrder
   modelName?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
@@ -482,6 +592,11 @@ export type AgentConfigCreateWithoutProjectInput = {
   id?: string
   heartbeatInterval?: number
   heartbeatEnabled?: boolean
+  nextHeartbeatAt?: Date | string | null
+  lastHeartbeatAt?: Date | string | null
+  quietHoursStart?: string | null
+  quietHoursEnd?: string | null
+  quietHoursTimezone?: string | null
   channels?: Prisma.JsonNullValueInput | runtime.InputJsonValue
   modelProvider?: string
   modelName?: string
@@ -493,6 +608,11 @@ export type AgentConfigUncheckedCreateWithoutProjectInput = {
   id?: string
   heartbeatInterval?: number
   heartbeatEnabled?: boolean
+  nextHeartbeatAt?: Date | string | null
+  lastHeartbeatAt?: Date | string | null
+  quietHoursStart?: string | null
+  quietHoursEnd?: string | null
+  quietHoursTimezone?: string | null
   channels?: Prisma.JsonNullValueInput | runtime.InputJsonValue
   modelProvider?: string
   modelName?: string
@@ -520,6 +640,11 @@ export type AgentConfigUpdateWithoutProjectInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
   heartbeatInterval?: Prisma.IntFieldUpdateOperationsInput | number
   heartbeatEnabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  nextHeartbeatAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  lastHeartbeatAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  quietHoursStart?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  quietHoursEnd?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  quietHoursTimezone?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   channels?: Prisma.JsonNullValueInput | runtime.InputJsonValue
   modelProvider?: Prisma.StringFieldUpdateOperationsInput | string
   modelName?: Prisma.StringFieldUpdateOperationsInput | string
@@ -531,6 +656,11 @@ export type AgentConfigUncheckedUpdateWithoutProjectInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
   heartbeatInterval?: Prisma.IntFieldUpdateOperationsInput | number
   heartbeatEnabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  nextHeartbeatAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  lastHeartbeatAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  quietHoursStart?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  quietHoursEnd?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  quietHoursTimezone?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   channels?: Prisma.JsonNullValueInput | runtime.InputJsonValue
   modelProvider?: Prisma.StringFieldUpdateOperationsInput | string
   modelName?: Prisma.StringFieldUpdateOperationsInput | string
@@ -545,6 +675,11 @@ export type AgentConfigSelect<ExtArgs extends runtime.Types.Extensions.InternalA
   projectId?: boolean
   heartbeatInterval?: boolean
   heartbeatEnabled?: boolean
+  nextHeartbeatAt?: boolean
+  lastHeartbeatAt?: boolean
+  quietHoursStart?: boolean
+  quietHoursEnd?: boolean
+  quietHoursTimezone?: boolean
   channels?: boolean
   modelProvider?: boolean
   modelName?: boolean
@@ -558,6 +693,11 @@ export type AgentConfigSelectCreateManyAndReturn<ExtArgs extends runtime.Types.E
   projectId?: boolean
   heartbeatInterval?: boolean
   heartbeatEnabled?: boolean
+  nextHeartbeatAt?: boolean
+  lastHeartbeatAt?: boolean
+  quietHoursStart?: boolean
+  quietHoursEnd?: boolean
+  quietHoursTimezone?: boolean
   channels?: boolean
   modelProvider?: boolean
   modelName?: boolean
@@ -571,6 +711,11 @@ export type AgentConfigSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.E
   projectId?: boolean
   heartbeatInterval?: boolean
   heartbeatEnabled?: boolean
+  nextHeartbeatAt?: boolean
+  lastHeartbeatAt?: boolean
+  quietHoursStart?: boolean
+  quietHoursEnd?: boolean
+  quietHoursTimezone?: boolean
   channels?: boolean
   modelProvider?: boolean
   modelName?: boolean
@@ -584,6 +729,11 @@ export type AgentConfigSelectScalar = {
   projectId?: boolean
   heartbeatInterval?: boolean
   heartbeatEnabled?: boolean
+  nextHeartbeatAt?: boolean
+  lastHeartbeatAt?: boolean
+  quietHoursStart?: boolean
+  quietHoursEnd?: boolean
+  quietHoursTimezone?: boolean
   channels?: boolean
   modelProvider?: boolean
   modelName?: boolean
@@ -591,7 +741,7 @@ export type AgentConfigSelectScalar = {
   updatedAt?: boolean
 }
 
-export type AgentConfigOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "projectId" | "heartbeatInterval" | "heartbeatEnabled" | "channels" | "modelProvider" | "modelName" | "createdAt" | "updatedAt", ExtArgs["result"]["agentConfig"]>
+export type AgentConfigOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "projectId" | "heartbeatInterval" | "heartbeatEnabled" | "nextHeartbeatAt" | "lastHeartbeatAt" | "quietHoursStart" | "quietHoursEnd" | "quietHoursTimezone" | "channels" | "modelProvider" | "modelName" | "createdAt" | "updatedAt", ExtArgs["result"]["agentConfig"]>
 export type AgentConfigInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   project?: boolean | Prisma.ProjectDefaultArgs<ExtArgs>
 }
@@ -612,6 +762,11 @@ export type $AgentConfigPayload<ExtArgs extends runtime.Types.Extensions.Interna
     projectId: string
     heartbeatInterval: number
     heartbeatEnabled: boolean
+    nextHeartbeatAt: Date | null
+    lastHeartbeatAt: Date | null
+    quietHoursStart: string | null
+    quietHoursEnd: string | null
+    quietHoursTimezone: string | null
     channels: runtime.JsonValue
     modelProvider: string
     modelName: string
@@ -1045,6 +1200,11 @@ export interface AgentConfigFieldRefs {
   readonly projectId: Prisma.FieldRef<"AgentConfig", 'String'>
   readonly heartbeatInterval: Prisma.FieldRef<"AgentConfig", 'Int'>
   readonly heartbeatEnabled: Prisma.FieldRef<"AgentConfig", 'Boolean'>
+  readonly nextHeartbeatAt: Prisma.FieldRef<"AgentConfig", 'DateTime'>
+  readonly lastHeartbeatAt: Prisma.FieldRef<"AgentConfig", 'DateTime'>
+  readonly quietHoursStart: Prisma.FieldRef<"AgentConfig", 'String'>
+  readonly quietHoursEnd: Prisma.FieldRef<"AgentConfig", 'String'>
+  readonly quietHoursTimezone: Prisma.FieldRef<"AgentConfig", 'String'>
   readonly channels: Prisma.FieldRef<"AgentConfig", 'Json'>
   readonly modelProvider: Prisma.FieldRef<"AgentConfig", 'String'>
   readonly modelName: Prisma.FieldRef<"AgentConfig", 'String'>

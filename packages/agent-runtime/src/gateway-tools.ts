@@ -41,7 +41,6 @@ export interface ToolContext {
   channels: Map<string, import('./types').ChannelAdapter>
   config: import('./gateway').GatewayConfig
   projectId: string
-  cronManager?: import('./cron-manager').CronManager
   sessionId?: string
   sandbox?: Partial<import('./types').SandboxConfig>
   mainSessionIds?: string[]
@@ -926,79 +925,6 @@ function createChannelListTool(ctx: ToolContext): AgentTool {
         connected: statuses,
         configured,
       })
-    },
-  }
-}
-
-function createCronTool(ctx: ToolContext): AgentTool {
-  return {
-    name: 'cron',
-    description:
-      'Manage scheduled jobs. Actions: "add" (create/update), "remove", "list", "enable", "disable", "trigger".',
-    label: 'Manage Cron Jobs',
-    parameters: Type.Object({
-      action: Type.Union([
-        Type.Literal('add'),
-        Type.Literal('remove'),
-        Type.Literal('list'),
-        Type.Literal('enable'),
-        Type.Literal('disable'),
-        Type.Literal('trigger'),
-      ], { description: 'Action to perform' }),
-      name: Type.Optional(Type.String({ description: 'Job name (required for add/remove/enable/disable/trigger)' })),
-      intervalSeconds: Type.Optional(Type.Number({ description: 'Run interval in seconds (required for add)' })),
-      prompt: Type.Optional(Type.String({ description: 'Prompt to execute when job fires (required for add)' })),
-    }),
-    execute: async (_toolCallId, params) => {
-      const { action, name, intervalSeconds, prompt } = params as {
-        action: string
-        name?: string
-        intervalSeconds?: number
-        prompt?: string
-      }
-
-      const cm = ctx.cronManager
-      if (!cm) {
-        return textResult({ error: 'Cron manager not available' })
-      }
-
-      try {
-        switch (action) {
-          case 'list':
-            return textResult({ jobs: cm.listJobs() })
-
-          case 'add': {
-            if (!name || !intervalSeconds || !prompt) {
-              return textResult({ error: 'add requires name, intervalSeconds, and prompt' })
-            }
-            const job = cm.addJob({ name, intervalSeconds, prompt })
-            return textResult({ ok: true, job })
-          }
-
-          case 'remove':
-            if (!name) return textResult({ error: 'remove requires name' })
-            return textResult({ ok: cm.removeJob(name), name })
-
-          case 'enable':
-            if (!name) return textResult({ error: 'enable requires name' })
-            return textResult({ ok: cm.enableJob(name), name })
-
-          case 'disable':
-            if (!name) return textResult({ error: 'disable requires name' })
-            return textResult({ ok: cm.disableJob(name), name })
-
-          case 'trigger': {
-            if (!name) return textResult({ error: 'trigger requires name' })
-            const result = await cm.triggerJob(name)
-            return textResult({ ok: result.success, result })
-          }
-
-          default:
-            return textResult({ error: `Unknown action: ${action}` })
-        }
-      } catch (err: any) {
-        return textResult({ error: err.message })
-      }
     },
   }
 }
@@ -3345,7 +3271,6 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createChannelConnectTool(ctx),
     createChannelDisconnectTool(ctx),
     createChannelListTool(ctx),
-    createCronTool(ctx),
     createCanvasCreateTool(),
     createCanvasUpdateTool(),
     createCanvasDataTool(),
@@ -3388,7 +3313,6 @@ export function createBasicTools(ctx: ToolContext): AgentTool[] {
     createMemorySearchTool(ctx),
     createSendMessageTool(ctx),
     createChannelConnectTool(ctx),
-    createCronTool(ctx),
     createCanvasCreateTool(),
     createCanvasUpdateTool(),
     createCanvasDataTool(),
@@ -3421,6 +3345,5 @@ export function createHeartbeatTools(ctx: ToolContext): AgentTool[] {
     createMemoryReadTool(ctx),
     createMemoryWriteTool(ctx),
     createMemorySearchTool(ctx),
-    createCronTool(ctx),
   ]
 }

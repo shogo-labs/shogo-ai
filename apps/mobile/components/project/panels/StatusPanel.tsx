@@ -5,37 +5,82 @@ import { View, Text, Pressable, ScrollView, ActivityIndicator } from 'react-nati
 import {
   Activity,
   Radio,
-  Clock,
   Brain,
   Timer,
   RefreshCw,
   CheckCircle,
   XCircle,
   WifiOff,
-  Calendar,
   MessageSquare,
   Zap,
   HardDrive,
   Users,
+  DollarSign,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { Switch } from '@/components/ui/switch'
 import { agentFetch } from '../../../lib/agent-fetch'
+import { API_URL } from '../../../lib/api'
 import { usePlatformConfig } from '../../../lib/platform-config'
 
 const POLL_INTERVAL_MS = 5_000
+
+const CREDIT_MARKUP = 1.3
+const ESTIMATED_TOKENS_PER_TICK = 3000
+const MODEL_CREDITS: Record<string, { perBatch: number; batchSize: number }> = {
+  haiku: { perBatch: 0.025, batchSize: 5000 },
+  sonnet: { perBatch: 0.1, batchSize: 5000 },
+  opus: { perBatch: 0.5, batchSize: 5000 },
+}
+
+function modelNameToBillingTier(modelName: string): string {
+  const lower = modelName.toLowerCase()
+  if (lower.includes('opus')) return 'opus'
+  if (lower.includes('haiku')) return 'haiku'
+  return 'sonnet'
+}
+
+function estimateDailyCost(
+  intervalSeconds: number,
+  modelName: string,
+  quietHoursStart?: string | null,
+  quietHoursEnd?: string | null,
+): { ticksPerDay: number; creditsPerTick: number; creditsPerDay: number } {
+  let activeHours = 24
+  if (quietHoursStart && quietHoursEnd) {
+    const [sh, sm] = quietHoursStart.split(':').map(Number)
+    const [eh, em] = quietHoursEnd.split(':').map(Number)
+    const startMin = sh * 60 + sm
+    const endMin = eh * 60 + em
+    const quietMinutes = endMin > startMin ? endMin - startMin : (1440 - startMin) + endMin
+    activeHours = Math.max(1, (1440 - quietMinutes) / 60)
+  }
+
+  const ticksPerDay = Math.floor((activeHours * 3600) / intervalSeconds)
+  const tier = modelNameToBillingTier(modelName)
+  const config = MODEL_CREDITS[tier] || MODEL_CREDITS.sonnet
+  const creditsPerTick =
+    Math.ceil(((ESTIMATED_TOKENS_PER_TICK / config.batchSize) * config.perBatch * CREDIT_MARKUP) * 10) / 10
+
+  return { ticksPerDay, creditsPerTick, creditsPerDay: Math.ceil(ticksPerDay * creditsPerTick * 10) / 10 }
+}
+
+interface HeartbeatConfig {
+  heartbeatEnabled: boolean
+  heartbeatInterval: number
+  nextHeartbeatAt: string | null
+  lastHeartbeatAt: string | null
+  quietHoursStart: string | null
+  quietHoursEnd: string | null
+  quietHoursTimezone: string | null
+  modelName: string
+}
 
 interface ChannelInfo {
   type: string
   connected: boolean
   error?: string
   metadata?: Record<string, unknown>
-}
-
-interface CronJobInfo {
-  name: string
-  intervalSeconds: number
-  enabled: boolean
-  lastRunAt: string | null
 }
 
 interface SessionInfo {
@@ -60,14 +105,12 @@ interface AgentStatusData {
     enabled: boolean
     intervalSeconds: number
     lastTick: string | null
-    nextTick: string | null
     quietHours: { start: string; end: string; timezone: string }
   }
   channels: ChannelInfo[]
   skills: Array<{ name: string; trigger: string; description: string; native?: boolean }>
   model?: { provider: string; name: string }
   sessions?: SessionInfo[]
-  cronJobs?: CronJobInfo[]
   memory?: MemoryInfo
 }
 
@@ -118,6 +161,15 @@ function timeAgo(dateStr: string | null): string {
   return `${Math.floor(diff / 86_400_000)}d ago`
 }
 
+function timeUntil(dateStr: string): string {
+  const diff = new Date(dateStr).getTime() - Date.now()
+  if (diff <= 0) return 'Now'
+  if (diff < 60_000) return `${Math.ceil(diff / 1000)}s`
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ${Math.floor((diff % 3_600_000) / 60_000)}m`
+  return `${Math.floor(diff / 86_400_000)}d`
+}
+
 export function StatusPanel({ projectId, agentUrl, visible }: StatusPanelProps) {
   const { localMode } = usePlatformConfig()
   const [status, setStatus] = useState<AgentStatusData | null>(null)
@@ -125,6 +177,37 @@ export function StatusPanel({ projectId, agentUrl, visible }: StatusPanelProps) 
   const [error, setError] = useState<string | null>(null)
   const [lastFetchedAt, setLastFetchedAt] = useState<number | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [hbConfig, setHbConfig] = useState<HeartbeatConfig | null>(null)
+  const [hbToggling, setHbToggling] = useState(false)
+
+  const fetchHeartbeatConfig = useCallback(async () => {
+    try {
+      const res = await agentFetch(`${API_URL}/api/projects/${projectId}/heartbeat`)
+      if (res.ok) {
+        setHbConfig(await res.json())
+      }
+    } catch {
+      // non-fatal
+    }
+  }, [projectId])
+
+  const toggleHeartbeat = useCallback(async (enabled: boolean) => {
+    setHbToggling(true)
+    try {
+      const res = await agentFetch(`${API_URL}/api/projects/${projectId}/heartbeat`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ heartbeatEnabled: enabled }),
+      })
+      if (res.ok) {
+        setHbConfig(await res.json())
+      }
+    } catch (err: any) {
+      console.error('[StatusPanel] Failed to toggle heartbeat:', err.message)
+    } finally {
+      setHbToggling(false)
+    }
+  }, [projectId])
 
   const fetchStatus = useCallback(async () => {
     if (!agentUrl) return
@@ -142,9 +225,9 @@ export function StatusPanel({ projectId, agentUrl, visible }: StatusPanelProps) 
 
   const loadInitial = useCallback(async () => {
     setIsLoading(true)
-    await fetchStatus()
+    await Promise.all([fetchStatus(), fetchHeartbeatConfig()])
     setIsLoading(false)
-  }, [fetchStatus])
+  }, [fetchStatus, fetchHeartbeatConfig])
 
   useEffect(() => {
     if (!visible) {
@@ -170,8 +253,6 @@ export function StatusPanel({ projectId, agentUrl, visible }: StatusPanelProps) 
 
   const connectedChannels = status?.channels.filter((c) => c.connected).length ?? 0
   const totalChannels = status?.channels.length ?? 0
-  const enabledCrons = status?.cronJobs?.filter((j) => j.enabled).length ?? 0
-  const totalCrons = status?.cronJobs?.length ?? 0
   const totalSessions = status?.sessions?.length ?? 0
   const totalTokens = status?.sessions?.reduce((acc, s) => acc + s.estimatedTokens, 0) ?? 0
 
@@ -251,16 +332,6 @@ export function StatusPanel({ projectId, agentUrl, visible }: StatusPanelProps) 
                 value={`${connectedChannels}/${totalChannels}`}
               />
               <StatCard
-                icon={
-                  <Clock
-                    size={16}
-                    className={enabledCrons > 0 ? 'text-amber-500' : 'text-muted-foreground'}
-                  />
-                }
-                label="Cron Jobs"
-                value={`${enabledCrons}/${totalCrons}`}
-              />
-              <StatCard
                 icon={<Brain size={16} className="text-purple-500" />}
                 label="Memory"
                 value={status.memory ? `${status.memory.fileCount} files` : '0 files'}
@@ -309,54 +380,6 @@ export function StatusPanel({ projectId, agentUrl, visible }: StatusPanelProps) 
                       </View>
                     )
                   })}
-                </View>
-              )}
-            </DashboardSection>
-
-            {/* Cron Jobs Section */}
-            <DashboardSection
-              title="Cron Jobs"
-              icon={<Calendar size={14} className="text-muted-foreground" />}
-              badge={`${enabledCrons} active`}
-            >
-              {!status.cronJobs || status.cronJobs.length === 0 ? (
-                <EmptyRow text="No cron jobs scheduled" />
-              ) : (
-                <View className="gap-1.5">
-                  {status.cronJobs.map((job) => (
-                    <View
-                      key={job.name}
-                      className="flex-row items-center gap-3 px-3 py-2 rounded-md bg-muted/40"
-                    >
-                      <View
-                        className={cn(
-                          'h-2 w-2 rounded-full',
-                          job.enabled ? 'bg-emerald-500' : 'bg-muted-foreground/40',
-                        )}
-                      />
-                      <View className="flex-1">
-                        <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
-                          {job.name}
-                        </Text>
-                        <Text className="text-xs text-muted-foreground">
-                          Every {formatInterval(job.intervalSeconds)}
-                        </Text>
-                      </View>
-                      <View className="items-end">
-                        <Text
-                          className={cn(
-                            'text-xs',
-                            job.enabled ? 'text-emerald-500' : 'text-muted-foreground',
-                          )}
-                        >
-                          {job.enabled ? 'Active' : 'Disabled'}
-                        </Text>
-                        <Text className="text-[10px] text-muted-foreground">
-                          {timeAgo(job.lastRunAt)}
-                        </Text>
-                      </View>
-                    </View>
-                  ))}
                 </View>
               )}
             </DashboardSection>
@@ -450,48 +473,95 @@ export function StatusPanel({ projectId, agentUrl, visible }: StatusPanelProps) 
             <DashboardSection
               title="Heartbeat"
               icon={<Activity size={14} className="text-muted-foreground" />}
+              badge={
+                hbConfig
+                  ? hbConfig.heartbeatEnabled ? 'Active' : 'Off'
+                  : status.heartbeat.enabled ? 'Active' : 'Off'
+              }
             >
-              <View className="flex-row flex-wrap gap-x-6 gap-y-2 px-3 py-2">
-                <View>
-                  <Text className="text-xs text-muted-foreground">Status</Text>
-                  <Text
-                    className={cn(
-                      'text-sm font-semibold',
-                      status.heartbeat.enabled ? 'text-emerald-500' : 'text-muted-foreground',
+              <View className="px-3 py-2.5 gap-3">
+                {/* Toggle row */}
+                <View className="flex-row items-center justify-between">
+                  <View className="flex-1">
+                    <Text className="text-sm font-medium text-foreground">
+                      Periodic check-ins
+                    </Text>
+                    <Text className="text-xs text-muted-foreground mt-0.5">
+                      Agent wakes up on a schedule to check for work
+                    </Text>
+                  </View>
+                  <Switch
+                    value={hbConfig?.heartbeatEnabled ?? status.heartbeat.enabled}
+                    onValueChange={toggleHeartbeat}
+                    disabled={hbToggling}
+                    size="sm"
+                  />
+                </View>
+
+                {/* Stats row (when enabled) */}
+                {(hbConfig?.heartbeatEnabled ?? status.heartbeat.enabled) && (
+                  <>
+                    <View className="flex-row flex-wrap gap-x-6 gap-y-2">
+                      <View>
+                        <Text className="text-xs text-muted-foreground">Interval</Text>
+                        <Text className="text-sm font-semibold text-foreground">
+                          {formatInterval(hbConfig?.heartbeatInterval ?? status.heartbeat.intervalSeconds)}
+                        </Text>
+                      </View>
+                      <View>
+                        <Text className="text-xs text-muted-foreground">Last Tick</Text>
+                        <Text className="text-sm font-semibold text-foreground">
+                          {timeAgo(hbConfig?.lastHeartbeatAt ?? status.heartbeat.lastTick)}
+                        </Text>
+                      </View>
+                      {hbConfig?.nextHeartbeatAt && (
+                        <View>
+                          <Text className="text-xs text-muted-foreground">Next</Text>
+                          <Text className="text-sm font-semibold text-foreground">
+                            {timeUntil(hbConfig.nextHeartbeatAt)}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+
+                    {/* Quiet hours */}
+                    {(hbConfig?.quietHoursStart || status.heartbeat.quietHours?.start) &&
+                     (hbConfig?.quietHoursEnd || status.heartbeat.quietHours?.end) && (
+                      <Text className="text-xs text-muted-foreground">
+                        Quiet hours:{' '}
+                        {hbConfig?.quietHoursStart ?? status.heartbeat.quietHours.start} –{' '}
+                        {hbConfig?.quietHoursEnd ?? status.heartbeat.quietHours.end}{' '}
+                        ({hbConfig?.quietHoursTimezone ?? status.heartbeat.quietHours.timezone})
+                      </Text>
                     )}
-                  >
-                    {status.heartbeat.enabled ? 'Enabled' : 'Disabled'}
-                  </Text>
-                </View>
-                <View>
-                  <Text className="text-xs text-muted-foreground">Interval</Text>
-                  <Text className="text-sm font-semibold text-foreground">
-                    {formatInterval(status.heartbeat.intervalSeconds)}
-                  </Text>
-                </View>
-                <View>
-                  <Text className="text-xs text-muted-foreground">Last Tick</Text>
-                  <Text className="text-sm font-semibold text-foreground">
-                    {timeAgo(status.heartbeat.lastTick)}
-                  </Text>
-                </View>
-                <View>
-                  <Text className="text-xs text-muted-foreground">Next Tick</Text>
-                  <Text className="text-sm font-semibold text-foreground">
-                    {status.heartbeat.nextTick
-                      ? new Date(status.heartbeat.nextTick).toLocaleTimeString()
-                      : '-'}
-                  </Text>
-                </View>
+
+                    {/* Cost estimate */}
+                    {!localMode && (() => {
+                      const modelName = hbConfig?.modelName ?? status.model?.name ?? 'claude-sonnet-4-5'
+                      const interval = hbConfig?.heartbeatInterval ?? status.heartbeat.intervalSeconds
+                      const cost = estimateDailyCost(
+                        interval,
+                        modelName,
+                        hbConfig?.quietHoursStart,
+                        hbConfig?.quietHoursEnd,
+                      )
+                      return (
+                        <View className="flex-row items-center gap-2 px-2.5 py-2 rounded-md bg-muted/50 border border-border/30">
+                          <DollarSign size={13} className="text-amber-500" />
+                          <View className="flex-1">
+                            <Text className="text-xs text-foreground">
+                              ~{cost.creditsPerDay} credits/day
+                            </Text>
+                            <Text className="text-[10px] text-muted-foreground">
+                              ~{cost.ticksPerDay} ticks/day × ~{cost.creditsPerTick} credits/tick
+                            </Text>
+                          </View>
+                        </View>
+                      )
+                    })()}
+                  </>
+                )}
               </View>
-              {status.heartbeat.quietHours?.start && status.heartbeat.quietHours?.end && (
-                <View className="px-3 pb-2">
-                  <Text className="text-xs text-muted-foreground">
-                    Quiet hours: {status.heartbeat.quietHours.start} -{' '}
-                    {status.heartbeat.quietHours.end} ({status.heartbeat.quietHours.timezone})
-                  </Text>
-                </View>
-              )}
             </DashboardSection>
 
             {/* Model Info */}

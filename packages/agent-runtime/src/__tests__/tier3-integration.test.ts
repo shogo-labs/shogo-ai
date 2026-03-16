@@ -3,8 +3,8 @@
 /**
  * Tier 3 Integration Tests
  *
- * End-to-end tests for loop detection, session compaction,
- * and agent-managed cron through the full gateway stack.
+ * End-to-end tests for loop detection and session compaction
+ * through the full gateway stack.
  *
  * Uses Pi Agent Core's mock streamFn instead of fetch interception.
  */
@@ -226,70 +226,6 @@ describe('Tier 3: Session TTL expiry', () => {
   })
 })
 
-describe('Tier 3: Cron manager integration', () => {
-  let gateway: AgentGateway
-
-  afterEach(async () => {
-    if (gateway) await gateway.stop()
-    rmSync(TEST_DIR, { recursive: true, force: true })
-  })
-
-  test('cron tool adds and lists jobs', async () => {
-    setupWorkspace()
-
-    const mockStream = createMockStreamFn([
-      buildToolUseResponse([{ name: 'cron', arguments: {
-        action: 'add',
-        name: 'daily-report',
-        intervalSeconds: 86400,
-        prompt: 'Generate daily report',
-      }, id: 'toolu_1' }]),
-      buildToolUseResponse([{ name: 'cron', arguments: { action: 'list' }, id: 'toolu_2' }]),
-      buildTextResponse('Created daily-report job running every 24h.'),
-    ])
-
-    gateway = new AgentGateway(TEST_DIR, 'test-project')
-    gateway.setStreamFn(mockStream)
-    await gateway.start()
-
-    const response = await gateway.processChatMessage('Set up a daily report cron job')
-    expect(response).toContain('daily-report')
-
-    const cm = gateway.getCronManager()
-    const jobs = cm.listJobs()
-    expect(jobs).toHaveLength(1)
-    expect(jobs[0].name).toBe('daily-report')
-    expect(jobs[0].intervalSeconds).toBe(86400)
-
-    const cronPath = join(TEST_DIR, 'cron.json')
-    expect(existsSync(cronPath)).toBe(true)
-  })
-
-  test('persisted cron jobs load on restart', async () => {
-    setupWorkspace()
-
-    writeFileSync(
-      join(TEST_DIR, 'cron.json'),
-      JSON.stringify([{
-        name: 'persistent-job',
-        intervalSeconds: 600,
-        prompt: 'Do a thing',
-        enabled: true,
-        createdAt: new Date().toISOString(),
-      }])
-    )
-
-    const mockStream = createMockStreamFn([buildTextResponse('ok')])
-
-    gateway = new AgentGateway(TEST_DIR, 'test-project')
-    gateway.setStreamFn(mockStream)
-    await gateway.start()
-
-    const cm = gateway.getCronManager()
-    expect(cm.listJobs()).toHaveLength(1)
-    expect(cm.getJob('persistent-job')?.prompt).toBe('Do a thing')
-  })
-})
 
 describe('Tier 3: Status includes Tier 3 info', () => {
   let gateway: AgentGateway
@@ -299,7 +235,7 @@ describe('Tier 3: Status includes Tier 3 info', () => {
     rmSync(TEST_DIR, { recursive: true, force: true })
   })
 
-  test('/status includes sessions and cron info', async () => {
+  test('/status includes sessions info', async () => {
     setupWorkspace()
 
     const mockStream = createMockStreamFn([buildTextResponse('Hello!')])
@@ -309,106 +245,10 @@ describe('Tier 3: Status includes Tier 3 info', () => {
     await gateway.start()
 
     await gateway.processChatMessage('Hi')
-    gateway.getCronManager().addJob({
-      name: 'status-test',
-      intervalSeconds: 300,
-      prompt: 'test',
-    })
 
     const status = gateway.getStatus()
     expect(status.sessions).toBeDefined()
     expect(status.sessions!.length).toBeGreaterThanOrEqual(1)
-    expect(status.cronJobs).toBeDefined()
-    expect(status.cronJobs!).toHaveLength(1)
-    expect(status.cronJobs![0].name).toBe('status-test')
   })
 })
 
-describe('Tier 3: Combined scenario — cron + compaction + loop detection', () => {
-  let gateway: AgentGateway
-
-  afterEach(async () => {
-    if (gateway) await gateway.stop()
-    rmSync(TEST_DIR, { recursive: true, force: true })
-  })
-
-  test('long conversation with cron job setup and session compaction', async () => {
-    setupWorkspace()
-
-    writeFileSync(
-      join(TEST_DIR, 'config.json'),
-      JSON.stringify({
-        heartbeatInterval: 1800,
-        heartbeatEnabled: false,
-        quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
-        channels: [],
-        model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
-        session: { maxMessages: 6, keepRecentMessages: 2 },
-      })
-    )
-
-    const mockStream = createMockStreamFn([
-      // Turn 1: Agent sets up a cron job
-      buildToolUseResponse([{ name: 'cron', arguments: {
-        action: 'add',
-        name: 'check-logs',
-        intervalSeconds: 600,
-        prompt: 'Check application logs for errors',
-      }, id: 'toolu_1' }]),
-      buildTextResponse('Set up check-logs cron job to run every 10 minutes.'),
-      // Turn 2
-      buildTextResponse('The job is configured and running.'),
-      // Turn 3
-      buildTextResponse('Everything looks good.'),
-      // Turn 4 (should trigger compaction)
-      buildTextResponse('Session is now compacted, continuing.'),
-    ])
-
-    gateway = new AgentGateway(TEST_DIR, 'test-project')
-    gateway.setStreamFn(mockStream)
-    await gateway.start()
-
-    const mockTelegram = new MockChannel('telegram')
-    mockTelegram.connected = true
-    injectMockChannel(gateway, mockTelegram)
-
-    await gateway.processMessage({
-      text: 'Set up a cron job to check logs every 10 minutes',
-      channelId: 'chat-1',
-      channelType: 'telegram',
-      senderId: 'user-1',
-    })
-
-    await gateway.processMessage({
-      text: 'Is the job running?',
-      channelId: 'chat-1',
-      channelType: 'telegram',
-      senderId: 'user-1',
-    })
-
-    await gateway.processMessage({
-      text: 'How does it look?',
-      channelId: 'chat-1',
-      channelType: 'telegram',
-      senderId: 'user-1',
-    })
-
-    await gateway.processMessage({
-      text: 'Great, anything else to report?',
-      channelId: 'chat-1',
-      channelType: 'telegram',
-      senderId: 'user-1',
-    })
-
-    const cm = gateway.getCronManager()
-    expect(cm.listJobs()).toHaveLength(1)
-    expect(cm.getJob('check-logs')?.enabled).toBe(true)
-
-    const sm = gateway.getSessionManager()
-    const session = sm.get('chat-1')
-    expect(session).toBeDefined()
-    expect(session!.compactionCount).toBeGreaterThanOrEqual(1)
-
-    expect(mockTelegram.sentMessages).toHaveLength(4)
-  })
-})

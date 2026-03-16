@@ -90,7 +90,46 @@ const IS_POOL_MODE = currentProjectId === POOL_PROJECT_ID || process.env.WARM_PO
 let poolAssigned = false
 let poolAssignedAt: number | null = null
 let lastRequestAt: number = Date.now()
-const INTERNAL_PATHS = new Set(['/health', '/ready', '/pool/activity', '/pool/assign'])
+const INTERNAL_PATHS = new Set(['/health', '/ready', '/pool/activity', '/pool/assign', '/agent/heartbeat/trigger'])
+
+const SA_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token'
+
+function deriveApiUrl(): string | null {
+  if (process.env.SHOGO_API_URL) return process.env.SHOGO_API_URL
+  if (process.env.API_URL) return process.env.API_URL
+  const proxyUrl = process.env.AI_PROXY_URL
+  if (proxyUrl) {
+    try {
+      const url = new URL(proxyUrl)
+      return `${url.protocol}//${url.host}`
+    } catch { /* invalid URL */ }
+  }
+  const systemNs = process.env.SYSTEM_NAMESPACE || 'shogo-system'
+  return `http://api.${systemNs}.svc.cluster.local`
+}
+
+async function reportHeartbeatComplete(projectId: string): Promise<void> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl) return
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  try {
+    if (existsSync(SA_TOKEN_PATH)) {
+      headers['Authorization'] = `Bearer ${readFileSync(SA_TOKEN_PATH, 'utf-8').trim()}`
+    }
+  } catch { /* not in K8s */ }
+
+  const url = `${apiUrl}/api/internal/heartbeat/complete`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ projectId }),
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (!res.ok) {
+    throw new Error(`Heartbeat complete report failed: HTTP ${res.status}`)
+  }
+}
 
 if (!currentProjectId) {
   console.error(
@@ -965,18 +1004,27 @@ app.delete('/agent/tool-mocks', (c) => {
   return c.json({ ok: true })
 })
 
-// Heartbeat manual trigger
+// Heartbeat trigger (called by external HeartbeatScheduler).
+// ACKs immediately and runs the heartbeat asynchronously so the scheduler
+// doesn't block. Reports completion back to the API when done.
 app.post('/agent/heartbeat/trigger', async (c) => {
   if (!agentGateway) {
     return c.json({ error: 'Agent gateway not running' }, 503)
   }
 
-  try {
-    const result = await agentGateway.triggerHeartbeat()
-    return c.json({ result })
-  } catch (error: any) {
-    return c.json({ error: error.message }, 500)
-  }
+  // Fire-and-forget: run heartbeat asynchronously
+  const projectId = currentProjectId
+  agentGateway.triggerHeartbeat().then(async () => {
+    try {
+      await reportHeartbeatComplete(projectId)
+    } catch (err: any) {
+      console.error('[Heartbeat] Failed to report completion:', err.message)
+    }
+  }).catch((err: any) => {
+    console.error('[Heartbeat] Heartbeat tick failed:', err.message)
+  })
+
+  return c.json({ ok: true, async: true })
 })
 
 // Permission approval response (local mode security)

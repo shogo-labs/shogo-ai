@@ -185,6 +185,15 @@ export default observer(function ProjectLayout() {
 
   const canvasEnabled = projectSettings.canvasEnabled !== false
 
+  const capabilitySettings = useMemo(() => ({
+    canvasEnabled: projectSettings.canvasEnabled !== false,
+    webEnabled: projectSettings.webEnabled !== false,
+    shellEnabled: projectSettings.shellEnabled !== false,
+    cronEnabled: projectSettings.cronEnabled !== false,
+    imageGenEnabled: projectSettings.imageGenEnabled !== false,
+    memoryEnabled: projectSettings.memoryEnabled !== false,
+  }), [projectSettings])
+
   const updateProjectSettings = useCallback(async (patch: Record<string, unknown>) => {
     if (!projectId) return
     const merged = { ...projectSettings, ...patch }
@@ -429,8 +438,8 @@ export default observer(function ProjectLayout() {
     }
   }, [canvasEnabled, previewTab, activeTab])
 
-  const handleCanvasToggle = useCallback(async (enabled: boolean) => {
-    await updateProjectSettings({ canvasEnabled: enabled })
+  const handleCapabilityToggle = useCallback(async (key: string, enabled: boolean) => {
+    await updateProjectSettings({ [key]: enabled })
     if (agentUrl) {
       try {
         const headers: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -439,13 +448,13 @@ export default observer(function ProjectLayout() {
           method: 'PATCH',
           headers,
           credentials: Platform.OS === 'web' ? 'include' : 'omit',
-          body: JSON.stringify({ canvasEnabled: enabled }),
+          body: JSON.stringify({ [key]: enabled }),
         })
       } catch (err) {
-        console.error('[ProjectLayout] Failed to push canvas config to runtime:', err)
+        console.error(`[ProjectLayout] Failed to push ${key} config to runtime:`, err)
       }
     }
-    if (!enabled && previewTab === 'dynamic-app') {
+    if (key === 'canvasEnabled' && !enabled && previewTab === 'dynamic-app') {
       setPreviewTab('capabilities')
     }
   }, [updateProjectSettings, agentUrl, nativeHeaders, previewTab])
@@ -635,7 +644,7 @@ export default observer(function ProjectLayout() {
                 </View>
               )}
               <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
-              <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} canvasEnabled={canvasEnabled} onCanvasToggle={handleCanvasToggle} />
+              <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} />
               <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} />
               <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} />
             </View>
@@ -755,7 +764,7 @@ export default observer(function ProjectLayout() {
           ) : (
             <View className="flex-1 relative">
               <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
-              <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} canvasEnabled={canvasEnabled} onCanvasToggle={handleCanvasToggle} />
+              <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} />
               <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} />
               <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} />
             </View>

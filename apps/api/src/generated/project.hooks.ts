@@ -242,14 +242,21 @@ export const projectHooks: ProjectHooks = {
     })
     if (existing) return
 
+    const heartbeatEnabled = template.settings.heartbeatEnabled
+    const heartbeatInterval = template.settings.heartbeatInterval
+    const jitter = Math.floor(Math.random() * heartbeatInterval * 0.1) * 1000
+
     await ctx.prisma.agentConfig.create({
       data: {
         projectId: record.id,
-        heartbeatInterval: template.settings.heartbeatInterval,
-        heartbeatEnabled: template.settings.heartbeatEnabled,
+        heartbeatInterval,
+        heartbeatEnabled,
         modelProvider: template.settings.modelProvider,
         modelName: template.settings.modelName,
         channels: [],
+        nextHeartbeatAt: heartbeatEnabled
+          ? new Date(Date.now() + heartbeatInterval * 1000 + jitter)
+          : null,
       },
     })
   },

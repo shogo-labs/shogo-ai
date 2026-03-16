@@ -153,12 +153,10 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
 
   return (
     <View className="absolute inset-0 flex-col" style={{ display: visible ? 'flex' : 'none' }}>
-      {/* Header */}
       <View className="px-4 py-3 border-b border-border flex-row items-center gap-2">
         <Zap size={16} className="text-muted-foreground" />
         <Text className="text-sm font-medium text-foreground">Skills</Text>
         <Text className="text-xs text-muted-foreground">{skills.length} installed</Text>
-
         <View className="ml-auto flex-row items-center gap-1">
           <Pressable
             onPress={() => setShowLibrary(!showLibrary)}
@@ -168,12 +166,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
             )}
           >
             <BookOpen size={12} className={showLibrary ? 'text-primary-foreground' : 'text-muted-foreground'} />
-            <Text
-              className={cn(
-                'text-xs',
-                showLibrary ? 'text-primary-foreground' : 'text-muted-foreground',
-              )}
-            >
+            <Text className={cn('text-xs', showLibrary ? 'text-primary-foreground' : 'text-muted-foreground')}>
               Library
             </Text>
           </Pressable>

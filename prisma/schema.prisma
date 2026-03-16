@@ -171,15 +171,20 @@ model Project {
 }
 
 model AgentConfig {
-  id                String   @id @default(uuid())
-  projectId         String   @unique
-  heartbeatInterval Int      @default(1800)
-  heartbeatEnabled  Boolean  @default(false)
-  channels          Json     @default("[]")
-  modelProvider     String   @default("anthropic")
-  modelName         String   @default("claude-sonnet-4-5")
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  id                 String    @id @default(uuid())
+  projectId          String    @unique
+  heartbeatInterval  Int       @default(1800)
+  heartbeatEnabled   Boolean   @default(false)
+  nextHeartbeatAt    DateTime?
+  lastHeartbeatAt    DateTime?
+  quietHoursStart    String?
+  quietHoursEnd      String?
+  quietHoursTimezone String?
+  channels           Json      @default("[]")
+  modelProvider      String    @default("anthropic")
+  modelName          String    @default("claude-sonnet-4-5")
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 

@@ -22,11 +22,11 @@ import {
   Download,
   X,
   AlertTriangle,
-  LogOut,
   ExternalLink,
   Loader2,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { Tooltip, TooltipContent, TooltipText } from '@/components/ui/tooltip'
 import { openAuthFlow } from '@shogo/ui-kit/platform'
 import { API_URL, api } from '../../../lib/api'
 import { useDomainHttp } from '../../../contexts/domain'
@@ -271,8 +271,13 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
   }, [http, loadInstalledTools])
 
   const connectionEntries = Object.entries(composioConnections)
-  const hasConnections = connectionEntries.length > 0
-  const expiredConnections = connectionEntries.filter(([, info]) => info.status !== 'active')
+  const expiredConnections = connectionEntries.filter(([, info]) =>
+    info.status !== 'active' && info.status !== 'initializing',
+  )
+  const visibleConnections = connectionEntries.filter(([, info]) =>
+    info.status !== 'initializing',
+  )
+  const hasConnections = visibleConnections.length > 0
 
   if (!visible) return null
 
@@ -280,7 +285,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
     <View className="absolute inset-0 flex-col">
       <View className="px-4 py-3 border-b border-border flex-row items-center gap-2">
         <Wrench size={16} className="text-muted-foreground" />
-        <Text className="text-sm font-medium text-foreground">Tools</Text>
+        <Text className="text-sm font-medium text-foreground">Integrations</Text>
         <Text className="text-xs text-muted-foreground">
           {installedTools.length} installed
         </Text>
@@ -306,181 +311,6 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
           </View>
         ) : (
           <View className="gap-4">
-            {/* Installed Tools Section */}
-            {installedTools.length > 0 && (
-              <View className="gap-2">
-                <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                  Installed
-                </Text>
-                {installedTools.map((tool) => {
-                  const isUninstalling = uninstalling === tool.id
-                  return (
-                    <View
-                      key={tool.id}
-                      className="border border-border rounded-lg px-3 py-2.5 flex-row items-center gap-3"
-                    >
-                      <View className="w-8 h-8 rounded-md bg-primary/10 items-center justify-center">
-                        <Wrench size={14} className="text-primary" />
-                      </View>
-                      <View className="flex-1">
-                        <View className="flex-row items-center gap-2">
-                          <Text className="text-sm font-medium text-foreground">{tool.name}</Text>
-                          <View className={cn(
-                            'px-1.5 py-0.5 rounded-full',
-                            tool.source === 'managed' ? 'bg-blue-500/10' : 'bg-muted',
-                          )}>
-                            <Text className={cn(
-                              'text-[10px] font-medium',
-                              tool.source === 'managed' ? 'text-blue-600' : 'text-muted-foreground',
-                            )}>
-                              {tool.source}
-                            </Text>
-                          </View>
-                          <View className={cn(
-                            'w-1.5 h-1.5 rounded-full',
-                            tool.status === 'running' ? 'bg-green-500' : 'bg-red-500',
-                          )} />
-                        </View>
-                        <Text className="text-xs text-muted-foreground mt-0.5">
-                          {tool.toolCount} tool{tool.toolCount !== 1 ? 's' : ''}
-                        </Text>
-                      </View>
-                      <Pressable
-                        onPress={() => handleUninstall(tool.id)}
-                        disabled={isUninstalling}
-                        className={cn(
-                          'p-2 rounded-md active:bg-destructive/10',
-                          isUninstalling && 'opacity-50',
-                        )}
-                      >
-                        {isUninstalling ? (
-                          <ActivityIndicator size="small" />
-                        ) : (
-                          <Trash2 size={14} className="text-muted-foreground" />
-                        )}
-                      </Pressable>
-                    </View>
-                  )
-                })}
-              </View>
-            )}
-
-            {/* Connections Section */}
-            {hasConnections && (
-              <View className="gap-2">
-                <View className="flex-row items-center gap-2">
-                  <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                    Connections
-                  </Text>
-                  {expiredConnections.length > 0 && (
-                    <View className="px-1.5 py-0.5 rounded-full bg-orange-500/10 flex-row items-center gap-1">
-                      <AlertTriangle size={9} color="#f97316" />
-                      <Text className="text-[10px] text-orange-600 font-medium">
-                        {expiredConnections.length} expired
-                      </Text>
-                    </View>
-                  )}
-                </View>
-                {connectionEntries.map(([toolkit, info]) => {
-                  const isActive = info.status === 'active'
-                  const isReconnecting = reconnectingToolkit === toolkit
-                  const isDisconnecting = disconnecting === info.connectionId
-                  const displayName = toolkit.charAt(0).toUpperCase() + toolkit.slice(1)
-
-                  return (
-                    <View
-                      key={toolkit}
-                      className={cn(
-                        'border rounded-lg px-3 py-2.5 flex-row items-center gap-3',
-                        isActive ? 'border-border' : 'border-orange-400/50 bg-orange-50/50 dark:bg-orange-900/10',
-                      )}
-                    >
-                      <View className={cn(
-                        'w-8 h-8 rounded-md items-center justify-center',
-                        isActive ? 'bg-green-500/10' : 'bg-orange-500/10',
-                      )}>
-                        {isActive ? (
-                          <Link2 size={14} className="text-green-600" />
-                        ) : (
-                          <AlertTriangle size={14} className="text-orange-500" />
-                        )}
-                      </View>
-                      <View className="flex-1">
-                        <View className="flex-row items-center gap-2">
-                          <Text className="text-sm font-medium text-foreground">
-                            {displayName}
-                          </Text>
-                          <View className={cn(
-                            'w-1.5 h-1.5 rounded-full',
-                            isActive ? 'bg-green-500' : 'bg-orange-500',
-                          )} />
-                        </View>
-                        {isActive && info.accountIdentifier ? (
-                          <Text className="text-xs text-muted-foreground mt-0.5" numberOfLines={1}>
-                            {info.accountIdentifier}
-                          </Text>
-                        ) : !isActive ? (
-                          <Text className="text-xs text-orange-600 dark:text-orange-400 mt-0.5" numberOfLines={1}>
-                            {info.statusReason || `Status: ${info.status}`}
-                          </Text>
-                        ) : (
-                          <Text className="text-xs text-muted-foreground mt-0.5">Connected</Text>
-                        )}
-                      </View>
-                      <View className="flex-row items-center gap-1">
-                        {!isActive && (
-                          <Pressable
-                            onPress={() => handleReconnect(toolkit)}
-                            disabled={isReconnecting || isDisconnecting}
-                            className={cn(
-                              'p-2 rounded-md active:bg-orange-100 dark:active:bg-orange-900/30',
-                              (isReconnecting || isDisconnecting) && 'opacity-50',
-                            )}
-                          >
-                            {isReconnecting ? (
-                              <Loader2 size={14} className="text-orange-500" />
-                            ) : (
-                              <ExternalLink size={14} className="text-orange-500" />
-                            )}
-                          </Pressable>
-                        )}
-                        {isActive && (
-                          <Pressable
-                            onPress={() => handleReconnect(toolkit)}
-                            disabled={isReconnecting || isDisconnecting}
-                            className={cn(
-                              'p-2 rounded-md active:bg-muted',
-                              (isReconnecting || isDisconnecting) && 'opacity-50',
-                            )}
-                          >
-                            {isReconnecting ? (
-                              <Loader2 size={14} className="text-muted-foreground" />
-                            ) : (
-                              <ExternalLink size={14} className="text-muted-foreground" />
-                            )}
-                          </Pressable>
-                        )}
-                        <Pressable
-                          onPress={() => handleDisconnect(info.connectionId)}
-                          disabled={isDisconnecting || isReconnecting}
-                          className={cn(
-                            'p-2 rounded-md active:bg-destructive/10',
-                            (isDisconnecting || isReconnecting) && 'opacity-50',
-                          )}
-                        >
-                          {isDisconnecting ? (
-                            <ActivityIndicator size="small" />
-                          ) : (
-                            <LogOut size={14} className="text-muted-foreground" />
-                          )}
-                        </Pressable>
-                      </View>
-                    </View>
-                  )
-                })}
-              </View>
-            )}
-
             {/* Search & Discover Section */}
             <View className="gap-2">
               <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
@@ -490,7 +320,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
                 <View className="flex-1 flex-row items-center border border-border rounded-lg bg-background px-3">
                   <Search size={14} className="text-muted-foreground" />
                   <TextInput
-                    placeholder="Search tools (e.g. &quot;google calendar&quot;, &quot;slack&quot;, &quot;postgres&quot;)..."
+                    placeholder='Search tools (e.g. "google calendar", "slack", "postgres")...'
                     placeholderTextColor="#999"
                     value={searchQuery}
                     onChangeText={setSearchQuery}
@@ -667,10 +497,196 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
 
               {!searchQuery && searchResults.length === 0 && (
                 <Text className="text-xs text-muted-foreground text-center py-4">
-                  Search for tools to add new capabilities to your agent.
+                  Search for integrations to add new capabilities to your agent.
                 </Text>
               )}
             </View>
+
+            {/* Installed Tools Section */}
+            {installedTools.length > 0 && (
+              <View className="gap-2">
+                <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                  Installed
+                </Text>
+                {installedTools.map((tool) => {
+                  const isUninstalling = uninstalling === tool.id
+                  return (
+                    <View
+                      key={tool.id}
+                      className="border border-border rounded-lg px-3 py-2.5 flex-row items-center gap-3"
+                    >
+                      <View className="w-8 h-8 rounded-md bg-primary/10 items-center justify-center">
+                        <Wrench size={14} className="text-primary" />
+                      </View>
+                      <View className="flex-1">
+                        <View className="flex-row items-center gap-2">
+                          <Text className="text-sm font-medium text-foreground">{tool.name}</Text>
+                          <View className={cn(
+                            'px-1.5 py-0.5 rounded-full',
+                            tool.source === 'managed' ? 'bg-blue-500/10' : 'bg-muted',
+                          )}>
+                            <Text className={cn(
+                              'text-[10px] font-medium',
+                              tool.source === 'managed' ? 'text-blue-600' : 'text-muted-foreground',
+                            )}>
+                              {tool.source}
+                            </Text>
+                          </View>
+                          <View className={cn(
+                            'w-1.5 h-1.5 rounded-full',
+                            tool.status === 'running' ? 'bg-green-500' : 'bg-red-500',
+                          )} />
+                        </View>
+                        <Text className="text-xs text-muted-foreground mt-0.5">
+                          {tool.toolCount} tool{tool.toolCount !== 1 ? 's' : ''}
+                        </Text>
+                      </View>
+                      <Tooltip
+                        trigger={(triggerProps) => (
+                          <Pressable
+                            {...triggerProps}
+                            onPress={() => handleUninstall(tool.id)}
+                            disabled={isUninstalling}
+                            className={cn(
+                              'p-2 rounded-md active:bg-destructive/10',
+                              isUninstalling && 'opacity-50',
+                            )}
+                          >
+                            {isUninstalling ? (
+                              <ActivityIndicator size="small" />
+                            ) : (
+                              <Trash2 size={14} className="text-destructive/70" />
+                            )}
+                          </Pressable>
+                        )}
+                      >
+                        <TooltipContent>
+                          <TooltipText>Uninstall integration</TooltipText>
+                        </TooltipContent>
+                      </Tooltip>
+                    </View>
+                  )
+                })}
+              </View>
+            )}
+
+            {/* Connections Section */}
+            {hasConnections && (
+              <View className="gap-2">
+                <View className="flex-row items-center gap-2">
+                  <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                    Connections
+                  </Text>
+                  {expiredConnections.length > 0 && (
+                    <View className="px-1.5 py-0.5 rounded-full bg-orange-500/10 flex-row items-center gap-1">
+                      <AlertTriangle size={9} color="#f97316" />
+                      <Text className="text-[10px] text-orange-600 font-medium">
+                        {expiredConnections.length} expired
+                      </Text>
+                    </View>
+                  )}
+                </View>
+                {visibleConnections.map(([toolkit, info]) => {
+                  const isActive = info.status === 'active'
+                  const isReconnecting = reconnectingToolkit === toolkit
+                  const isDisconnecting = disconnecting === info.connectionId
+                  const displayName = toolkit.charAt(0).toUpperCase() + toolkit.slice(1)
+
+                  return (
+                    <View
+                      key={toolkit}
+                      className={cn(
+                        'border rounded-lg px-3 py-2.5 flex-row items-center gap-3',
+                        isActive ? 'border-border' : 'border-orange-400/50 bg-orange-50/50 dark:bg-orange-900/10',
+                      )}
+                    >
+                      <View className={cn(
+                        'w-8 h-8 rounded-md items-center justify-center',
+                        isActive ? 'bg-green-500/10' : 'bg-orange-500/10',
+                      )}>
+                        {isActive ? (
+                          <Link2 size={14} className="text-green-600" />
+                        ) : (
+                          <AlertTriangle size={14} className="text-orange-500" />
+                        )}
+                      </View>
+                      <View className="flex-1">
+                        <View className="flex-row items-center gap-2">
+                          <Text className="text-sm font-medium text-foreground">
+                            {displayName}
+                          </Text>
+                          <View className={cn(
+                            'w-1.5 h-1.5 rounded-full',
+                            isActive ? 'bg-green-500' : 'bg-orange-500',
+                          )} />
+                        </View>
+                        {isActive && info.accountIdentifier ? (
+                          <Text className="text-xs text-muted-foreground mt-0.5" numberOfLines={1}>
+                            {info.accountIdentifier}
+                          </Text>
+                        ) : !isActive ? (
+                          <Text className="text-xs text-orange-600 dark:text-orange-400 mt-0.5" numberOfLines={1}>
+                            {info.statusReason || `Status: ${info.status}`}
+                          </Text>
+                        ) : (
+                          <Text className="text-xs text-muted-foreground mt-0.5">Connected</Text>
+                        )}
+                      </View>
+                      <View className="flex-row items-center gap-1">
+                        <Tooltip
+                          trigger={(triggerProps) => (
+                            <Pressable
+                              {...triggerProps}
+                              onPress={() => handleReconnect(toolkit)}
+                              disabled={isReconnecting || isDisconnecting}
+                              className={cn(
+                                'p-2 rounded-md',
+                                isActive ? 'active:bg-muted' : 'active:bg-orange-100 dark:active:bg-orange-900/30',
+                                (isReconnecting || isDisconnecting) && 'opacity-50',
+                              )}
+                            >
+                              {isReconnecting ? (
+                                <Loader2 size={14} className={isActive ? 'text-muted-foreground' : 'text-orange-500'} />
+                              ) : (
+                                <ExternalLink size={14} className={isActive ? 'text-muted-foreground' : 'text-orange-500'} />
+                              )}
+                            </Pressable>
+                          )}
+                        >
+                          <TooltipContent>
+                            <TooltipText>{isActive ? 'Reconnect' : 'Fix connection'}</TooltipText>
+                          </TooltipContent>
+                        </Tooltip>
+                        <Tooltip
+                          trigger={(triggerProps) => (
+                            <Pressable
+                              {...triggerProps}
+                              onPress={() => handleDisconnect(info.connectionId)}
+                              disabled={isDisconnecting || isReconnecting}
+                              className={cn(
+                                'p-2 rounded-md active:bg-destructive/10',
+                                (isDisconnecting || isReconnecting) && 'opacity-50',
+                              )}
+                            >
+                              {isDisconnecting ? (
+                                <ActivityIndicator size="small" />
+                              ) : (
+                                <Trash2 size={14} className="text-destructive/70" />
+                              )}
+                            </Pressable>
+                          )}
+                        >
+                          <TooltipContent>
+                            <TooltipText>Disconnect</TooltipText>
+                          </TooltipContent>
+                        </Tooltip>
+                      </View>
+                    </View>
+                  )
+                })}
+              </View>
+            )}
+
           </View>
         )}
       </ScrollView>

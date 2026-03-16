@@ -69,4 +69,105 @@ app.get('/pod-config/:projectId', async (c) => {
   }
 })
 
+/**
+ * POST /api/internal/heartbeat/complete
+ *
+ * Called by the agent pod after a heartbeat tick finishes.
+ * Updates lastHeartbeatAt in the DB. Authenticated via K8s SA token.
+ */
+app.post('/heartbeat/complete', async (c) => {
+  const authHeader = c.req.header('Authorization')
+  if (!authHeader?.startsWith('Bearer ')) {
+    return c.json({ error: 'Missing or invalid Authorization header' }, 401)
+  }
+
+  const token = authHeader.slice(7)
+  const identity = await validatePodToken(token)
+  if (!identity) {
+    return c.json({ error: 'Invalid or unauthorized service account token' }, 403)
+  }
+
+  const body = await c.req.json()
+  const projectId = body.projectId as string
+
+  if (!projectId || typeof projectId !== 'string') {
+    return c.json({ error: 'projectId is required' }, 400)
+  }
+
+  try {
+    const { prisma } = await import('../lib/prisma')
+    await prisma.agentConfig.updateMany({
+      where: { projectId },
+      data: { lastHeartbeatAt: new Date() },
+    })
+
+    return c.json({ ok: true })
+  } catch (err: any) {
+    console.error(`[Internal] Failed to update heartbeat completion for ${projectId}:`, err.message)
+    return c.json({ error: 'Failed to update heartbeat completion' }, 500)
+  }
+})
+
+/**
+ * PUT /api/internal/heartbeat/config/:projectId
+ *
+ * Update heartbeat scheduling config for an agent. Manages nextHeartbeatAt
+ * based on enabled/disabled state and interval changes.
+ */
+app.put('/heartbeat/config/:projectId', async (c) => {
+  const authHeader = c.req.header('Authorization')
+  if (!authHeader?.startsWith('Bearer ')) {
+    return c.json({ error: 'Missing or invalid Authorization header' }, 401)
+  }
+
+  const token = authHeader.slice(7)
+  const identity = await validatePodToken(token)
+  if (!identity) {
+    return c.json({ error: 'Invalid or unauthorized service account token' }, 403)
+  }
+
+  const projectId = c.req.param('projectId')
+  const body = await c.req.json()
+
+  try {
+    const { prisma } = await import('../lib/prisma')
+    const data: Record<string, any> = {}
+
+    if (typeof body.heartbeatEnabled === 'boolean') {
+      data.heartbeatEnabled = body.heartbeatEnabled
+    }
+    if (typeof body.heartbeatInterval === 'number' && body.heartbeatInterval >= 60) {
+      data.heartbeatInterval = body.heartbeatInterval
+    }
+    if (body.quietHoursStart !== undefined) data.quietHoursStart = body.quietHoursStart || null
+    if (body.quietHoursEnd !== undefined) data.quietHoursEnd = body.quietHoursEnd || null
+    if (body.quietHoursTimezone !== undefined) data.quietHoursTimezone = body.quietHoursTimezone || null
+
+    const existing = await prisma.agentConfig.findUnique({ where: { projectId } })
+    if (!existing) {
+      return c.json({ error: 'Agent config not found' }, 404)
+    }
+
+    const enabled = data.heartbeatEnabled ?? existing.heartbeatEnabled
+    const interval = data.heartbeatInterval ?? existing.heartbeatInterval
+
+    if (enabled) {
+      const jitter = Math.floor(Math.random() * interval * 0.1) * 1000
+      data.nextHeartbeatAt = new Date(Date.now() + interval * 1000 + jitter)
+    } else {
+      data.nextHeartbeatAt = null
+    }
+
+    await prisma.agentConfig.update({
+      where: { projectId },
+      data,
+    })
+
+    return c.json({ ok: true, nextHeartbeatAt: data.nextHeartbeatAt })
+  } catch (err: any) {
+    console.error(`[Internal] Failed to update heartbeat config for ${projectId}:`, err.message)
+    return c.json({ error: 'Failed to update heartbeat config' }, 500)
+  }
+})
+
 export default app

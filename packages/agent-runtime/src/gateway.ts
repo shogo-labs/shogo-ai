@@ -33,7 +33,6 @@ import { HookEmitter, loadAllHooks } from './hooks'
 import { parseSlashCommand, type SlashCommandContext } from './slash-commands'
 import { SessionManager, type SessionManagerConfig } from './session-manager'
 import { SqliteSessionPersistence } from './sqlite-session-persistence'
-import { CronManager, type CronJob } from './cron-manager'
 import { BlockChunker } from './block-chunker'
 import { CanvasStreamParser } from './canvas-stream-parser'
 import { MCPClientManager, type MCPServerConfig } from './mcp-client'
@@ -112,6 +111,16 @@ export interface GatewayConfig {
   mcpServers?: Record<string, MCPServerConfig>
   /** Whether canvas tools and UI are enabled for this project (default: true) */
   canvasEnabled?: boolean
+  /** Whether web search & browser tools are enabled (default: true) */
+  webEnabled?: boolean
+  /** Whether shell/exec tool is enabled (default: true) */
+  shellEnabled?: boolean
+  /** Whether cron/scheduling tool is enabled (default: true) */
+  cronEnabled?: boolean
+  /** Whether image generation tool is enabled (default: true) */
+  imageGenEnabled?: boolean
+  /** Whether memory tools are enabled (default: true) */
+  memoryEnabled?: boolean
 }
 
 function isBasicAgent(): boolean {
@@ -958,17 +967,14 @@ export class AgentGateway {
   private projectId: string
   private config: GatewayConfig
   private currentUserId: string | undefined
-  private heartbeatTimer: ReturnType<typeof setInterval> | null = null
   private channels: Map<string, ChannelAdapter> = new Map()
   private skills: Skill[] = []
   private configSkills: Array<{ name: string; trigger?: string; description?: string }> = []
   private running = false
   private lastHeartbeatTick: Date | null = null
-  private nextHeartbeatTick: Date | null = null
   private hookEmitter: HookEmitter = new HookEmitter()
   private pendingEvents: string[] = []
   private sessionManager: SessionManager
-  private cronManager: CronManager
   private sessionPersistence: SqliteSessionPersistence | null = null
   private mcpClientManager: MCPClientManager = new MCPClientManager()
   /** Optional custom stream function, injected for testing */
@@ -1007,13 +1013,6 @@ export class AgentGateway {
     this.projectId = projectId
     this.config = this.loadConfig()
     this.sessionManager = new SessionManager(this.config.session)
-    this.cronManager = new CronManager({
-      persistPath: join(workspaceDir, 'cron.json'),
-      onJobFire: (job) => this.agentTurn(
-        `[CRON: ${job.name}]\n${job.prompt}`,
-        `cron:${job.name}`
-      ),
-    })
     this.mcpClientManager.setWorkspaceDir(workspaceDir)
 
     // Initialize permission engine in local mode
@@ -1172,7 +1171,9 @@ export class AgentGateway {
 
   reloadConfig(): void {
     this.config = this.loadConfig()
-    console.log(`[AgentGateway] Config reloaded (canvasEnabled=${this.config.canvasEnabled})`)
+    const caps = ['canvas', 'web', 'shell', 'cron', 'imageGen', 'memory'] as const
+    const flags = caps.map(c => `${c}=${this.config[`${c}Enabled` as keyof GatewayConfig] !== false}`).join(', ')
+    console.log(`[AgentGateway] Config reloaded (${flags})`)
   }
 
   async start(): Promise<void> {
@@ -1205,16 +1206,10 @@ export class AgentGateway {
       }
     }
 
-    // Start heartbeat
-    if (this.config.heartbeatEnabled && this.config.heartbeatInterval > 0) {
-      this.startHeartbeat()
-    }
-
-    // Start cron manager
-    this.cronManager.start()
-    const cronJobs = this.cronManager.listJobs()
-    if (cronJobs.length > 0) {
-      console.log(`[AgentGateway] Loaded ${cronJobs.length} cron jobs`)
+    if (this.config.heartbeatEnabled) {
+      console.log(
+        `[AgentGateway] Heartbeat enabled (externally scheduled, interval ${this.config.heartbeatInterval}s)`
+      )
     }
 
     // Start configured MCP servers
@@ -1259,12 +1254,6 @@ export class AgentGateway {
     console.log('[AgentGateway] Stopping...')
     this.running = false
 
-    if (this.heartbeatTimer) {
-      clearInterval(this.heartbeatTimer)
-      this.heartbeatTimer = null
-    }
-
-    this.cronManager.stop()
     this.sessionManager.destroy()
     this.sessionPersistence?.close()
     await this.mcpClientManager.stopAll()
@@ -1315,22 +1304,6 @@ export class AgentGateway {
   // Heartbeat
   // ---------------------------------------------------------------------------
 
-  private startHeartbeat(): void {
-    const intervalMs = this.config.heartbeatInterval * 1000
-    console.log(
-      `[AgentGateway] Heartbeat enabled: every ${this.config.heartbeatInterval}s`
-    )
-
-    this.nextHeartbeatTick = new Date(Date.now() + intervalMs)
-
-    this.heartbeatTimer = setInterval(async () => {
-      try {
-        await this.heartbeatTick()
-      } catch (error: any) {
-        console.error('[AgentGateway] Heartbeat error:', error.message)
-      }
-    }, intervalMs)
-  }
 
   private isInQuietHours(): boolean {
     if (!this.config.quietHours.start || !this.config.quietHours.end) {
@@ -1375,8 +1348,6 @@ export class AgentGateway {
 
   async heartbeatTick(): Promise<string> {
     this.lastHeartbeatTick = new Date()
-    const intervalMs = this.config.heartbeatInterval * 1000
-    this.nextHeartbeatTick = new Date(Date.now() + intervalMs)
 
     const heartbeatPath = join(this.workspaceDir, 'HEARTBEAT.md')
     if (!existsSync(heartbeatPath)) {
@@ -1757,7 +1728,6 @@ export class AgentGateway {
       channels: this.channels,
       config: this.config,
       projectId: this.projectId,
-      cronManager: this.cronManager,
       sessionId,
       sandbox: this.config.sandbox,
       mainSessionIds: this.config.mainSessionIds,
@@ -1779,6 +1749,21 @@ export class AgentGateway {
 
     if (this.config.canvasEnabled === false) {
       assembledTools = assembledTools.filter(t => !t.name.startsWith('canvas_'))
+    }
+    if (this.config.webEnabled === false) {
+      assembledTools = assembledTools.filter(t => t.name !== 'web' && t.name !== 'browser')
+    }
+    if (this.config.shellEnabled === false) {
+      assembledTools = assembledTools.filter(t => t.name !== 'exec')
+    }
+    if (this.config.cronEnabled === false) {
+      assembledTools = assembledTools.filter(t => t.name !== 'cron')
+    }
+    if (this.config.imageGenEnabled === false) {
+      assembledTools = assembledTools.filter(t => t.name !== 'generate_image')
+    }
+    if (this.config.memoryEnabled === false) {
+      assembledTools = assembledTools.filter(t => !t.name.startsWith('memory_'))
     }
 
     let staticTools = assembledTools
@@ -2184,7 +2169,9 @@ export class AgentGateway {
     parts.push(PERSONALITY_EVOLUTION_GUIDE_PREFIX + personalityGuide)
     parts.push(toolPlanningGuide)
     parts.push(this.promptOverrides.get('constraint_awareness_guide') ?? OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE)
-    parts.push(memoryGuide)
+    if (this.config.memoryEnabled !== false) {
+      parts.push(memoryGuide)
+    }
     parts.push(skillMatchingGuide)
     parts.push(this.promptOverrides.get('mcp_discovery_guide') ?? OPTIMIZED_MCP_DISCOVERY_GUIDE)
 
@@ -2461,19 +2448,12 @@ export class AgentGateway {
         enabled: this.config.heartbeatEnabled,
         intervalSeconds: this.config.heartbeatInterval,
         lastTick: this.lastHeartbeatTick?.toISOString() ?? null,
-        nextTick: this.nextHeartbeatTick?.toISOString() ?? null,
         quietHours: this.config.quietHours,
       },
       channels: channelStatuses,
       skills: [...fsSkills, ...configSkills],
       model: this.config.model,
       sessions: this.sessionManager.getAllStats(),
-      cronJobs: this.cronManager.listJobs().map((j) => ({
-        name: j.name,
-        intervalSeconds: j.intervalSeconds,
-        enabled: j.enabled,
-        lastRunAt: j.lastRunAt ?? null,
-      })),
     }
   }
 
@@ -2483,10 +2463,6 @@ export class AgentGateway {
     this.skills = loadSkills(join(this.workspaceDir, 'skills'))
     this.configSkills = this.loadConfigSkills()
 
-    // Auto-start heartbeat if it was just enabled via config change
-    if (this.config.heartbeatEnabled && !prevEnabled && this.config.heartbeatInterval > 0) {
-      this.startHeartbeat()
-    }
   }
 
   private loadConfigSkills(): Array<{ name: string; trigger?: string; description?: string }> {
@@ -2502,10 +2478,6 @@ export class AgentGateway {
 
   getHookEmitter(): HookEmitter {
     return this.hookEmitter
-  }
-
-  getCronManager(): CronManager {
-    return this.cronManager
   }
 
   getSessionManager(): SessionManager {

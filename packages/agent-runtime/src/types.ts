@@ -67,7 +67,6 @@ export interface AgentStatus {
     enabled: boolean
     intervalSeconds: number
     lastTick: string | null
-    nextTick: string | null
     quietHours: { start: string; end: string; timezone: string }
   }
   channels: ChannelStatus[]
@@ -80,12 +79,6 @@ export interface AgentStatus {
     compactedSummary: boolean
     compactionCount: number
     idleSeconds: number
-  }>
-  cronJobs?: Array<{
-    name: string
-    intervalSeconds: number
-    enabled: boolean
-    lastRunAt: string | null
   }>
 }
 
