@@ -4279,7 +4279,7 @@ app.post('/api/billing/checkout', async (c) => {
     }
 
     const body = await c.req.json()
-    const { workspaceId, planId, billingInterval, userEmail, successUrl: clientSuccessUrl, cancelUrl: clientCancelUrl } = body
+    const { workspaceId, planId, billingInterval, userEmail, referralId, successUrl: clientSuccessUrl, cancelUrl: clientCancelUrl } = body
 
     if (!workspaceId || !planId || !billingInterval) {
       return c.json({ error: { code: 'invalid_request', message: 'Missing required fields' } }, 400)
@@ -4314,8 +4314,8 @@ app.post('/api/billing/checkout', async (c) => {
       success_url: successUrl,
       cancel_url: cancelUrl,
       metadata,
-      // Pre-fill customer email to skip the email field in checkout
       ...(userEmail && { customer_email: userEmail }),
+      ...(referralId && { client_reference_id: referralId }),
     })
 
     return c.json({ sessionId: session.id, url: session.url }, 200)
@@ -4364,7 +4364,7 @@ app.post('/api/billing/workspace-checkout', async (c) => {
     }
 
     const body = await c.req.json()
-    const { workspaceName, planId, billingInterval, userEmail, userId, successUrl: clientSuccessUrl, cancelUrl: clientCancelUrl } = body
+    const { workspaceName, planId, billingInterval, userEmail, userId, referralId, successUrl: clientSuccessUrl, cancelUrl: clientCancelUrl } = body
 
     if (!workspaceName || !planId || !billingInterval || !userId) {
       return c.json({ error: { code: 'invalid_request', message: 'Missing required fields: workspaceName, planId, billingInterval, userId' } }, 400)
@@ -4407,6 +4407,7 @@ app.post('/api/billing/workspace-checkout', async (c) => {
       cancel_url: cancelUrl,
       metadata,
       ...(userEmail && { customer_email: userEmail }),
+      ...(referralId && { client_reference_id: referralId }),
     })
 
     return c.json({ sessionId: session.id, url: session.url, workspaceId: newWorkspaceId }, 200)

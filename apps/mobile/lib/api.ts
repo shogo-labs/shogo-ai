@@ -49,6 +49,7 @@ export interface CheckoutParams {
   planId: string
   billingInterval: 'monthly' | 'annual'
   userEmail?: string
+  referralId?: string
 }
 
 export interface WorkspaceCheckoutParams {
@@ -57,6 +58,7 @@ export interface WorkspaceCheckoutParams {
   billingInterval: 'monthly' | 'annual'
   userId: string
   userEmail?: string
+  referralId?: string
 }
 
 export const api = {

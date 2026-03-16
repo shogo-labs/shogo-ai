@@ -30,6 +30,7 @@ import {
 import { useAuth } from '../../contexts/auth'
 import { useDomainHttp } from '../../contexts/domain'
 import { api } from '../../lib/api'
+import { getRewardfulReferral } from '../../lib/rewardful'
 import {
   PRO_TIERS,
   BUSINESS_TIERS,
@@ -81,6 +82,7 @@ export default function NewWorkspacePage() {
         billingInterval,
         userId: user.id,
         userEmail: user.email ?? undefined,
+        referralId: getRewardfulReferral(),
         ...(redirectBase && {
           successUrl: `${redirectBase}/?workspace={WORKSPACE_ID}&checkout=workspace_created&session_id={CHECKOUT_SESSION_ID}`,
           cancelUrl: `${redirectBase}/?workspace={WORKSPACE_ID}&checkout=canceled`,

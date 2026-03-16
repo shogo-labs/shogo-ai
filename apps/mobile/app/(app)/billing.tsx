@@ -34,6 +34,7 @@ import {
 import { useAuth } from '../../contexts/auth'
 import { useWorkspaceCollection, useDomainHttp } from '../../contexts/domain'
 import { api } from '../../lib/api'
+import { getRewardfulReferral } from '../../lib/rewardful'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useDomainActions } from '@shogo/shared-app/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
@@ -119,6 +120,7 @@ export default observer(function BillingPage() {
         planId,
         billingInterval,
         userEmail: user?.email,
+        referralId: getRewardfulReferral(),
         ...(redirectBase && {
           successUrl: `${redirectBase}/?workspace=${currentWorkspace.id}&checkout=success&session_id={CHECKOUT_SESSION_ID}`,
           cancelUrl: `${redirectBase}/?workspace=${currentWorkspace.id}&checkout=canceled`,

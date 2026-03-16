@@ -401,6 +401,7 @@ export function createDomainActions(store: IDomainStore) {
       planId: string
       billingInterval: "monthly" | "annual"
       userEmail?: string
+      referralId?: string
     }) => {
       const env = getEnv<ISDKEnvironment>(store)
       const res = await env.http.post<{ url?: string }>("/api/billing/checkout", params)

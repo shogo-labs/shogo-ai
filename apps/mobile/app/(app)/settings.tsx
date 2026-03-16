@@ -62,6 +62,7 @@ import { useDomainActions } from '@shogo/shared-app/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { setActiveWorkspaceId } from '../../lib/workspace-store'
 import { api, API_URL } from '../../lib/api'
+import { getRewardfulReferral } from '../../lib/rewardful'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { usePlatformConfig } from '../../lib/platform-config'
 import {
@@ -1164,6 +1165,7 @@ const BillingTab = observer(function BillingTab() {
           planId,
           billingInterval: annual ? 'annual' : 'monthly',
           userEmail: user?.email,
+          referralId: getRewardfulReferral(),
         })
         if (data.url) {
           if (Platform.OS === 'web') {
