@@ -65,7 +65,9 @@ import {
   type ToolCallData,
   getToolCategory as getToolCategoryFromTools,
 } from "./tools/types"
-import { AlertCircle } from "lucide-react-native"
+import * as ExpoLinking from "expo-linking"
+import { AlertCircle, RefreshCw, X } from "lucide-react-native"
+import { openAuthFlow } from "@shogo/ui-kit/platform"
 import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
 
 // ============================================================
@@ -708,10 +710,12 @@ export const ChatPanel = observer(function ChatPanel({
 
   const isAgent = projectType === "AGENT"
 
-  const [toolErrorBanner, setToolErrorBanner] = useState<{ toolkitName: string; error: string } | null>(null)
+  const [toolErrorBanner, setToolErrorBanner] = useState<{ toolkitName: string; error: string; isAuthError?: boolean } | null>(null)
+  const [reconnecting, setReconnecting] = useState(false)
 
   useEffect(() => {
     if (!toolErrorBanner) return
+    if (toolErrorBanner.isAuthError) return
     const timer = setTimeout(() => setToolErrorBanner(null), 10000)
     return () => clearTimeout(timer)
   }, [toolErrorBanner])
@@ -1078,10 +1082,11 @@ export const ChatPanel = observer(function ChatPanel({
       }
 
       if (dataPart.type === "data-tool-error" && !toolErrorBanner) {
-        const { toolkitName, error: errText } = (dataPart as any).data ?? {}
+        const { toolkitName, error: errText, isAuthError: authErr } = (dataPart as any).data ?? {}
         setToolErrorBanner({
           toolkitName: toolkitName || "Integration",
           error: typeof errText === "string" ? errText : JSON.stringify(errText ?? ""),
+          isAuthError: !!authErr,
         })
       }
 
@@ -2192,15 +2197,93 @@ export const ChatPanel = observer(function ChatPanel({
           {/* Tool Error Banner */}
           {toolErrorBanner && (
             <View className="px-4 pb-2">
-              <View className="flex-row items-start gap-2 rounded-lg border border-yellow-400/50 bg-yellow-50 dark:bg-yellow-900/20 p-3">
-                <AlertCircle className="h-4 w-4 text-yellow-600 dark:text-yellow-400 shrink-0 mt-0.5" size={16} />
-                <View className="flex-1">
-                  <Text className="text-sm font-medium text-yellow-800 dark:text-yellow-200">
-                    {toolErrorBanner.toolkitName} Error
-                  </Text>
-                  <Text className="text-xs text-yellow-700 dark:text-yellow-300 mt-0.5">
+              <View className={cn(
+                "flex-row items-start gap-2 rounded-lg p-3",
+                toolErrorBanner.isAuthError
+                  ? "border border-orange-400/50 bg-orange-50 dark:bg-orange-900/20"
+                  : "border border-yellow-400/50 bg-yellow-50 dark:bg-yellow-900/20",
+              )}>
+                <AlertCircle
+                  className={cn(
+                    "shrink-0 mt-0.5",
+                    toolErrorBanner.isAuthError
+                      ? "text-orange-600 dark:text-orange-400"
+                      : "text-yellow-600 dark:text-yellow-400",
+                  )}
+                  size={16}
+                />
+                <View className="flex-1 gap-1.5">
+                  <View className="flex-row items-center justify-between">
+                    <Text className={cn(
+                      "text-sm font-medium",
+                      toolErrorBanner.isAuthError
+                        ? "text-orange-800 dark:text-orange-200"
+                        : "text-yellow-800 dark:text-yellow-200",
+                    )}>
+                      {toolErrorBanner.isAuthError
+                        ? `${toolErrorBanner.toolkitName} Connection Expired`
+                        : `${toolErrorBanner.toolkitName} Error`}
+                    </Text>
+                    <Pressable
+                      onPress={() => setToolErrorBanner(null)}
+                      className="p-1 -mr-1 -mt-1 rounded active:bg-black/10"
+                      hitSlop={8}
+                    >
+                      <X size={14} className={cn(
+                        toolErrorBanner.isAuthError
+                          ? "text-orange-600 dark:text-orange-400"
+                          : "text-yellow-600 dark:text-yellow-400",
+                      )} />
+                    </Pressable>
+                  </View>
+                  <Text className={cn(
+                    "text-xs",
+                    toolErrorBanner.isAuthError
+                      ? "text-orange-700 dark:text-orange-300"
+                      : "text-yellow-700 dark:text-yellow-300",
+                  )}>
                     {toolErrorBanner.error}
                   </Text>
+                  {toolErrorBanner.isAuthError && projectId && (
+                    <Pressable
+                      onPress={async () => {
+                        const toolkit = toolErrorBanner.toolkitName.toLowerCase()
+                        setReconnecting(true)
+                        try {
+                          const http = createHttpClient()
+                          const isNative = Platform.OS !== 'web'
+                          const redirect = isNative ? ExpoLinking.createURL('integrations-callback') : undefined
+                          const callbackUrl = redirect
+                            ? `${API_URL}/api/integrations/callback?redirect=${encodeURIComponent(redirect)}`
+                            : `${API_URL}/api/integrations/callback`
+                          const data = await api.connectIntegration(http, toolkit, projectId, callbackUrl)
+                          const redirectUrl = data.data?.redirectUrl
+                          if (redirectUrl) {
+                            await openAuthFlow(redirectUrl)
+                            setToolErrorBanner(null)
+                          }
+                        } catch {
+                          // Connection attempt failed — banner stays visible
+                        } finally {
+                          setReconnecting(false)
+                        }
+                      }}
+                      disabled={reconnecting}
+                      className={cn(
+                        "self-start flex-row items-center gap-1.5 rounded-md border border-orange-400/50 bg-orange-100 dark:bg-orange-800/30 px-3 py-1.5 active:opacity-70",
+                        reconnecting && "opacity-50",
+                      )}
+                    >
+                      {reconnecting ? (
+                        <ActivityIndicator size="small" />
+                      ) : (
+                        <RefreshCw size={12} className="text-orange-700 dark:text-orange-300" />
+                      )}
+                      <Text className="text-xs font-medium text-orange-700 dark:text-orange-300">
+                        Reconnect
+                      </Text>
+                    </Pressable>
+                  )}
                 </View>
               </View>
             </View>

@@ -197,6 +197,7 @@ export function integrationRoutes() {
           id: acc.id,
           toolkit: acc.toolkit?.slug ?? acc.appName ?? acc.app_name ?? 'unknown',
           status: acc.status,
+          statusReason: acc.statusReason ?? acc.status_reason ?? null,
           createdAt: acc.createdAt || acc.created_at,
           accountIdentifier,
         }

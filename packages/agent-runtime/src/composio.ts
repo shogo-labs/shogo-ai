@@ -303,6 +303,18 @@ export function buildComposioUserId(userId: string, projectId: string): string {
 // Proxy tool registration
 // ---------------------------------------------------------------------------
 
+const COMPOSIO_AUTH_ERROR_PATTERNS = [
+  'unauthorized', 'forbidden', 'not_authed', 'invalid_auth',
+  'token expired', 'refresh token', 'invalid_grant', 'expired',
+  'revoked', 'auth_expired', 'credentials', 'oauth',
+  'access denied', 'authentication failed',
+]
+
+function isComposioAuthError(raw: string): boolean {
+  const l = raw.toLowerCase()
+  return COMPOSIO_AUTH_ERROR_PATTERNS.some(p => l.includes(p))
+}
+
 function textResult(data: any): AgentToolResult<any> {
   return {
     content: [{ type: 'text', text: typeof data === 'string' ? data : JSON.stringify(data) }],
@@ -379,7 +391,9 @@ function createProxyTool(schema: ComposioToolSchema): AgentTool {
         recordTiming(schema.slug, elapsed)
 
         if (!result.successful) {
-          return textResult({ error: result.error || `Tool ${schema.slug} returned an error` })
+          const errMsg = result.error || `Tool ${schema.slug} returned an error`
+          const authExpired = isComposioAuthError(errMsg)
+          return textResult({ error: errMsg, ...(authExpired && { authExpired: true }) })
         }
 
         const registry = getTransformRegistry()
@@ -410,7 +424,9 @@ function createProxyTool(schema: ComposioToolSchema): AgentTool {
 
         return textResult(raw + annotation)
       } catch (err: any) {
-        return textResult({ error: `Tool "${schema.slug}" failed: ${err.message}` })
+        const errMsg = `Tool "${schema.slug}" failed: ${err.message}`
+        const authExpired = isComposioAuthError(err.message)
+        return textResult({ error: errMsg, ...(authExpired && { authExpired: true }) })
       }
     },
   } as AgentTool

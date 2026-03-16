@@ -65,14 +65,26 @@ function hasErrorInResult(result: unknown): boolean {
   return 'error' in (result as any)
 }
 
+const AUTH_ERROR_PATTERNS = [
+  'unauthorized', 'forbidden', 'not_authed', 'invalid_auth',
+  'token expired', 'refresh token', 'invalid_grant', 'expired',
+  'revoked', 'auth_expired', 'authexpired', 'credentials',
+  'oauth', 'access denied', 'authentication failed',
+]
+
+function isAuthError(raw: string): boolean {
+  const l = raw.toLowerCase()
+  return AUTH_ERROR_PATTERNS.some(p => l.includes(p))
+}
+
 function toUserMessage(toolkit: string, raw: string): string {
   const l = raw.toLowerCase()
   if (l.includes('tool') && l.includes('not found'))
     return `${toolkit} integration tools failed to load. Try reconnecting ${toolkit} from the Capabilities tab.`
   if (l.includes('not found') || l.includes('404'))
     return `${toolkit} could not access the requested resource — it may be private or require additional permissions. Check your org's third-party access settings.`
-  if (l.includes('unauthorized') || l.includes('forbidden') || l.includes('not_authed') || l.includes('invalid_auth'))
-    return `${toolkit} authorization failed. Please reconnect from the Capabilities tab.`
+  if (isAuthError(raw))
+    return `${toolkit} authorization failed or connection expired. Please reconnect from the Capabilities tab.`
   if (l.includes('rate limit') || l.includes('429'))
     return `${toolkit} rate limit reached. Please wait a moment and try again.`
   return `${toolkit} encountered an issue: ${raw.length > 120 ? raw.slice(0, 120) + '...' : raw}`
@@ -2010,10 +2022,11 @@ export class AgentGateway {
                 let cleanError = rawStr
                 try { const p = JSON.parse(rawStr); if (p?.error) cleanError = String(p.error) } catch {}
                 pendingToolkitError = toolkit
+                const authError = isAuthError(cleanError)
                 uiWriter.write({
                   type: 'data-tool-error',
                   id: `tool-err-${toolCallId}`,
-                  data: { toolkitName: toolkit, error: toUserMessage(toolkit, cleanError) },
+                  data: { toolkitName: toolkit, error: toUserMessage(toolkit, cleanError), isAuthError: authError },
                 } as any)
               }
             }

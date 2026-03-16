@@ -11,13 +11,30 @@
 import { useState } from "react"
 import { View, Text, Pressable, ScrollView } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { CheckCircle2, XCircle, Loader2, ChevronRight, ChevronDown } from "lucide-react-native"
+import { CheckCircle2, XCircle, Loader2, ChevronRight, ChevronDown, AlertTriangle } from "lucide-react-native"
 import {
   type ToolCallData,
   formatToolName,
   getToolNamespace,
   getToolKeyArg,
 } from "../tools/types"
+
+const AUTH_ERROR_PATTERNS = [
+  'unauthorized', 'forbidden', 'not_authed', 'invalid_auth',
+  'token expired', 'refresh token', 'invalid_grant', 'expired',
+  'revoked', 'auth_expired', 'authexpired', 'credentials',
+  'authorization failed', 'connection expired', 'authentication failed',
+]
+
+function detectAuthError(tool: ToolCallData): boolean {
+  if (tool.state !== 'error') return false
+  const errorText = (tool.error ?? '').toLowerCase()
+  const resultText = typeof tool.result === 'string' ? tool.result.toLowerCase()
+    : typeof tool.result === 'object' && tool.result ? JSON.stringify(tool.result).toLowerCase()
+    : ''
+  const combined = errorText + ' ' + resultText
+  return AUTH_ERROR_PATTERNS.some(p => combined.includes(p))
+}
 
 export interface InlineToolWidgetProps {
   tool: ToolCallData
@@ -46,8 +63,9 @@ export function InlineToolWidget({
   const displayName = formatToolName(tool.toolName)
   const namespace = getToolNamespace(tool.toolName)
   const keyArg = getToolKeyArg(tool.toolName, tool.args)
+  const isAuthErr = detectAuthError(tool)
 
-  const StateIcon = {
+  const StateIcon = isAuthErr ? AlertTriangle : {
     streaming: Loader2,
     success: CheckCircle2,
     error: XCircle,
@@ -128,7 +146,7 @@ export function InlineToolWidget({
             "w-3 h-3",
             tool.state === "streaming" && "text-blue-400",
             tool.state === "success" && "text-green-500",
-            tool.state === "error" && "text-red-500"
+            tool.state === "error" && (isAuthErr ? "text-orange-500" : "text-red-500"),
           )}
         />
       </Pressable>
@@ -162,7 +180,23 @@ export function InlineToolWidget({
             </View>
           )}
 
-          {tool.state === "error" && (
+          {tool.state === "error" && isAuthErr && (
+            <View className="gap-0.5">
+              <Text className="text-[9px] font-medium text-orange-500 uppercase tracking-wide">
+                Connection Expired
+              </Text>
+              <View className="bg-orange-500/10 rounded p-1.5">
+                <Text className="text-[10px] font-mono text-orange-600 dark:text-orange-400" selectable>
+                  {getDisplayableResult() || "Authorization failed or token expired"}
+                </Text>
+                <Text className="text-[9px] text-orange-500 mt-1">
+                  Reconnect from the banner above or the Capabilities tab.
+                </Text>
+              </View>
+            </View>
+          )}
+
+          {tool.state === "error" && !isAuthErr && (
             <View className="gap-0.5">
               <Text className="text-[9px] font-medium text-red-500 uppercase tracking-wide">
                 Error

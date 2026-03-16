@@ -21,6 +21,10 @@ import {
   Key,
   Download,
   X,
+  AlertTriangle,
+  LogOut,
+  ExternalLink,
+  Loader2,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { openAuthFlow } from '@shogo/ui-kit/platform'
@@ -50,6 +54,13 @@ interface SearchResult {
   icon?: string
 }
 
+interface ComposioConnectionInfo {
+  connectionId: string
+  status: string
+  statusReason?: string | null
+  accountIdentifier?: string | null
+}
+
 interface ToolsPanelProps {
   projectId: string
   agentUrl: string | null
@@ -69,7 +80,9 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
   const [envInputs, setEnvInputs] = useState<Record<string, Record<string, string>>>({})
   const [showEnvForm, setShowEnvForm] = useState<string | null>(null)
   const [connecting, setConnecting] = useState<string | null>(null)
-  const [composioConnections, setComposioConnections] = useState<Record<string, boolean>>({})
+  const [disconnecting, setDisconnecting] = useState<string | null>(null)
+  const [reconnectingToolkit, setReconnectingToolkit] = useState<string | null>(null)
+  const [composioConnections, setComposioConnections] = useState<Record<string, ComposioConnectionInfo>>({})
 
   const loadInstalledTools = useCallback(async () => {
     if (!agentUrl) return
@@ -83,9 +96,17 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
       }
       try {
         const connections = await api.getIntegrationConnections(http, projectId)
-        const connMap: Record<string, boolean> = {}
+        const connMap: Record<string, ComposioConnectionInfo> = {}
         for (const conn of connections) {
-          connMap[conn.toolkit?.toLowerCase() ?? ''] = conn.status === 'active'
+          const key = conn.toolkit?.toLowerCase() ?? ''
+          if (key) {
+            connMap[key] = {
+              connectionId: conn.id,
+              status: conn.status?.toLowerCase() ?? 'unknown',
+              statusReason: conn.statusReason,
+              accountIdentifier: conn.accountIdentifier,
+            }
+          }
         }
         setComposioConnections(connMap)
       } catch {
@@ -214,6 +235,45 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
     [http, projectId, loadInstalledTools],
   )
 
+  const handleReconnect = useCallback(async (toolkit: string) => {
+    setReconnectingToolkit(toolkit)
+    setError(null)
+    try {
+      const isNative = Platform.OS !== 'web'
+      const redirect = isNative ? ExpoLinking.createURL('integrations-callback') : undefined
+      const callbackUrl = redirect
+        ? `${API_URL}/api/integrations/callback?redirect=${encodeURIComponent(redirect)}`
+        : `${API_URL}/api/integrations/callback`
+      const data = await api.connectIntegration(http, toolkit, projectId, callbackUrl)
+      const redirectUrl = data.data?.redirectUrl
+      if (redirectUrl) {
+        await openAuthFlow(redirectUrl)
+        await loadInstalledTools()
+      }
+    } catch (err: any) {
+      setError(err.message)
+    } finally {
+      setReconnectingToolkit(null)
+    }
+  }, [http, projectId, loadInstalledTools])
+
+  const handleDisconnect = useCallback(async (connectionId: string) => {
+    setDisconnecting(connectionId)
+    setError(null)
+    try {
+      await api.disconnectIntegration(http, connectionId)
+      await loadInstalledTools()
+    } catch (err: any) {
+      setError(err.message)
+    } finally {
+      setDisconnecting(null)
+    }
+  }, [http, loadInstalledTools])
+
+  const connectionEntries = Object.entries(composioConnections)
+  const hasConnections = connectionEntries.length > 0
+  const expiredConnections = connectionEntries.filter(([, info]) => info.status !== 'active')
+
   if (!visible) return null
 
   return (
@@ -305,6 +365,122 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
               </View>
             )}
 
+            {/* Connections Section */}
+            {hasConnections && (
+              <View className="gap-2">
+                <View className="flex-row items-center gap-2">
+                  <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                    Connections
+                  </Text>
+                  {expiredConnections.length > 0 && (
+                    <View className="px-1.5 py-0.5 rounded-full bg-orange-500/10 flex-row items-center gap-1">
+                      <AlertTriangle size={9} color="#f97316" />
+                      <Text className="text-[10px] text-orange-600 font-medium">
+                        {expiredConnections.length} expired
+                      </Text>
+                    </View>
+                  )}
+                </View>
+                {connectionEntries.map(([toolkit, info]) => {
+                  const isActive = info.status === 'active'
+                  const isReconnecting = reconnectingToolkit === toolkit
+                  const isDisconnecting = disconnecting === info.connectionId
+                  const displayName = toolkit.charAt(0).toUpperCase() + toolkit.slice(1)
+
+                  return (
+                    <View
+                      key={toolkit}
+                      className={cn(
+                        'border rounded-lg px-3 py-2.5 flex-row items-center gap-3',
+                        isActive ? 'border-border' : 'border-orange-400/50 bg-orange-50/50 dark:bg-orange-900/10',
+                      )}
+                    >
+                      <View className={cn(
+                        'w-8 h-8 rounded-md items-center justify-center',
+                        isActive ? 'bg-green-500/10' : 'bg-orange-500/10',
+                      )}>
+                        {isActive ? (
+                          <Link2 size={14} className="text-green-600" />
+                        ) : (
+                          <AlertTriangle size={14} className="text-orange-500" />
+                        )}
+                      </View>
+                      <View className="flex-1">
+                        <View className="flex-row items-center gap-2">
+                          <Text className="text-sm font-medium text-foreground">
+                            {displayName}
+                          </Text>
+                          <View className={cn(
+                            'w-1.5 h-1.5 rounded-full',
+                            isActive ? 'bg-green-500' : 'bg-orange-500',
+                          )} />
+                        </View>
+                        {isActive && info.accountIdentifier ? (
+                          <Text className="text-xs text-muted-foreground mt-0.5" numberOfLines={1}>
+                            {info.accountIdentifier}
+                          </Text>
+                        ) : !isActive ? (
+                          <Text className="text-xs text-orange-600 dark:text-orange-400 mt-0.5" numberOfLines={1}>
+                            {info.statusReason || `Status: ${info.status}`}
+                          </Text>
+                        ) : (
+                          <Text className="text-xs text-muted-foreground mt-0.5">Connected</Text>
+                        )}
+                      </View>
+                      <View className="flex-row items-center gap-1">
+                        {!isActive && (
+                          <Pressable
+                            onPress={() => handleReconnect(toolkit)}
+                            disabled={isReconnecting || isDisconnecting}
+                            className={cn(
+                              'p-2 rounded-md active:bg-orange-100 dark:active:bg-orange-900/30',
+                              (isReconnecting || isDisconnecting) && 'opacity-50',
+                            )}
+                          >
+                            {isReconnecting ? (
+                              <Loader2 size={14} className="text-orange-500" />
+                            ) : (
+                              <ExternalLink size={14} className="text-orange-500" />
+                            )}
+                          </Pressable>
+                        )}
+                        {isActive && (
+                          <Pressable
+                            onPress={() => handleReconnect(toolkit)}
+                            disabled={isReconnecting || isDisconnecting}
+                            className={cn(
+                              'p-2 rounded-md active:bg-muted',
+                              (isReconnecting || isDisconnecting) && 'opacity-50',
+                            )}
+                          >
+                            {isReconnecting ? (
+                              <Loader2 size={14} className="text-muted-foreground" />
+                            ) : (
+                              <ExternalLink size={14} className="text-muted-foreground" />
+                            )}
+                          </Pressable>
+                        )}
+                        <Pressable
+                          onPress={() => handleDisconnect(info.connectionId)}
+                          disabled={isDisconnecting || isReconnecting}
+                          className={cn(
+                            'p-2 rounded-md active:bg-destructive/10',
+                            (isDisconnecting || isReconnecting) && 'opacity-50',
+                          )}
+                        >
+                          {isDisconnecting ? (
+                            <ActivityIndicator size="small" />
+                          ) : (
+                            <LogOut size={14} className="text-muted-foreground" />
+                          )}
+                        </Pressable>
+                      </View>
+                    </View>
+                  )
+                })}
+              </View>
+            )}
+
             {/* Search & Discover Section */}
             <View className="gap-2">
               <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
@@ -350,9 +526,10 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
                     const isInstalling = installing === result.id
                     const isOAuthConnecting = connecting === result.id
                     const showingEnv = showEnvForm === result.id
-                    const isConnected = result.composioToolkit
-                      ? !!composioConnections[result.composioToolkit.toLowerCase()]
-                      : false
+                    const connInfo = result.composioToolkit
+                      ? composioConnections[result.composioToolkit.toLowerCase()]
+                      : undefined
+                    const isConnected = !!connInfo && connInfo.status === 'active'
 
                     return (
                       <View
