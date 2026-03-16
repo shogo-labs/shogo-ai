@@ -100,6 +100,8 @@ export interface ProjectTopBarProps {
   folders?: { id: string; name: string }[]
   /** Tab IDs to hide from the tab bar (e.g. ['dynamic-app'] to hide Canvas) */
   hiddenTabs?: string[]
+  /** When false, replaces the Canvas tab with a full-screen Chat tab */
+  canvasEnabled?: boolean
 }
 
 export function ProjectTopBar({
@@ -128,12 +130,15 @@ export function ProjectTopBar({
   onMoveToFolder,
   folders = [],
   hiddenTabs = [],
+  canvasEnabled = true,
 }: ProjectTopBarProps) {
   const router = useRouter()
   const { width } = useWindowDimensions()
   const isWide = width >= 768
   const [showDropdown, setShowDropdown] = useState(false)
   const [dropdownKey, setDropdownKey] = useState(0)
+
+  const isChatFullscreen = !canvasEnabled && activeTab === 'chat-fullscreen'
 
   const handleBack = useCallback(() => {
     router.push('/(app)' as any)
@@ -211,7 +216,7 @@ export function ProjectTopBar({
           </PopoverContent>
         </Popover>
 
-        {isWide && (
+        {isWide && !isChatFullscreen && (
           <>
             <Pressable
               onPress={onChatSessionsToggle}
@@ -249,7 +254,15 @@ export function ProjectTopBar({
           className="flex-shrink mx-2"
           accessibilityRole="tablist"
         >
-          {AGENT_TABS.filter((tab) => !hiddenTabs.includes(tab.id)).map((tab) => (
+          {AGENT_TABS
+            .map((tab) => {
+              if (tab.id === 'dynamic-app' && !canvasEnabled) {
+                return { id: 'chat-fullscreen', label: 'Chat' }
+              }
+              return tab
+            })
+            .filter((tab) => !hiddenTabs.includes(tab.id))
+            .map((tab) => (
             <Pressable
               key={tab.id}
               onPress={() => onTabChange?.(tab.id)}

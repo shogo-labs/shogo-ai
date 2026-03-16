@@ -277,3 +277,169 @@ export function ChatSessionPicker({
     </Popover>
   )
 }
+
+/**
+ * Always-visible sidebar variant of the session picker.
+ * Renders the full session list inline (no popover) to fill its container.
+ */
+export function ChatSessionSidebar({
+  sessions,
+  currentSessionId,
+  onSelect,
+  onCreate,
+  onRename,
+  onLoadMore,
+  hasMore,
+  isLoadingMore,
+}: ChatSessionPickerProps) {
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
+  const [editValue, setEditValue] = useState("")
+  const [searchQuery, setSearchQuery] = useState("")
+
+  const sortedSessions = useMemo(() => {
+    return [...sessions].sort((a, b) => b.updatedAt - a.updatedAt)
+  }, [sessions])
+
+  const filteredSessions = useMemo(() => {
+    if (!searchQuery.trim()) return sortedSessions
+    const query = searchQuery.toLowerCase()
+    return sortedSessions.filter((session) =>
+      session.name.toLowerCase().includes(query)
+    )
+  }, [sortedSessions, searchQuery])
+
+  const handleSessionSelect = (sessionId: string) => {
+    if (editingSessionId === sessionId) return
+    setEditingSessionId(null)
+    onSelect(sessionId)
+  }
+
+  const handleStartEdit = (session: ChatSession) => {
+    setEditingSessionId(session.id)
+    setEditValue(session.name)
+  }
+
+  const handleSaveEdit = () => {
+    if (editingSessionId && editValue.trim() && onRename) {
+      onRename(editingSessionId, editValue.trim())
+    }
+    setEditingSessionId(null)
+  }
+
+  const handleCancelEdit = () => {
+    setEditingSessionId(null)
+  }
+
+  const handleEndReached = useCallback(() => {
+    if (hasMore && !isLoadingMore && !searchQuery.trim()) {
+      onLoadMore?.()
+    }
+  }, [hasMore, isLoadingMore, searchQuery, onLoadMore])
+
+  const renderSession = ({ item: session }: ListRenderItemInfo<ChatSession>) => {
+    const isEditing = editingSessionId === session.id
+    const isCurrent = session.id === currentSessionId
+
+    return (
+      <Pressable
+        onPress={() => handleSessionSelect(session.id)}
+        className={cn(
+          "px-4 py-3 border-b border-gray-200/50 dark:border-gray-700/50",
+          isCurrent && "bg-primary/10"
+        )}
+      >
+        {isEditing ? (
+          <View className="flex-row items-center gap-2">
+            <TextInput
+              value={editValue}
+              onChangeText={setEditValue}
+              onSubmitEditing={handleSaveEdit}
+              autoFocus
+              className="flex-1 h-8 px-2 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-foreground"
+            />
+            <Pressable onPress={handleSaveEdit} className="p-1">
+              <Check className="h-4 w-4 text-green-500" size={16} />
+            </Pressable>
+            <Pressable onPress={handleCancelEdit} className="p-1">
+              <X className="h-4 w-4 text-red-500" size={16} />
+            </Pressable>
+          </View>
+        ) : (
+          <>
+            <View className="flex-row items-center justify-between">
+              <Text className="font-medium text-sm text-foreground flex-1" numberOfLines={1}>
+                {session.name}
+              </Text>
+              <View className="flex-row items-center gap-2 shrink-0">
+                {onRename && (
+                  <Pressable onPress={() => handleStartEdit(session)} className="p-1">
+                    <Pencil className="h-3 w-3 text-gray-400" size={12} />
+                  </Pressable>
+                )}
+                <Text className="text-xs text-gray-400">
+                  {formatRelativeTime(session.updatedAt)}
+                </Text>
+              </View>
+            </View>
+            {session.messageCount >= 0 && (
+              <Text className="text-xs text-gray-400 mt-0.5">
+                {session.messageCount} message{session.messageCount !== 1 ? 's' : ''}
+              </Text>
+            )}
+          </>
+        )}
+      </Pressable>
+    )
+  }
+
+  return (
+    <View className="flex-1">
+      <View className="flex-row items-center justify-between px-4 py-3 border-b border-border">
+        <Text className="text-sm font-semibold text-foreground">Chat History</Text>
+        <Pressable
+          onPress={onCreate}
+          className="h-7 w-7 items-center justify-center rounded-md active:bg-muted"
+        >
+          <Plus className="text-muted-foreground" size={16} />
+        </Pressable>
+      </View>
+
+      {sessions.length > 0 && (
+        <View className="px-3 py-2 border-b border-border">
+          <View className="flex-row items-center gap-2 bg-muted rounded-md px-3 py-2">
+            <Search className="text-muted-foreground" size={14} />
+            <TextInput
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="Search chats..."
+              placeholderTextColor="#9ca3af"
+              className="flex-1 text-sm text-foreground"
+            />
+          </View>
+        </View>
+      )}
+
+      {filteredSessions.length === 0 && searchQuery ? (
+        <View className="py-8 items-center">
+          <Text className="text-sm text-muted-foreground">No chats found</Text>
+        </View>
+      ) : (
+        <FlatList
+          data={filteredSessions}
+          renderItem={renderSession}
+          keyExtractor={(item) => item.id}
+          className="flex-1"
+          onEndReached={handleEndReached}
+          onEndReachedThreshold={0.5}
+          ListFooterComponent={
+            isLoadingMore ? (
+              <View className="py-3 items-center">
+                <ActivityIndicator size="small" />
+              </View>
+            ) : null
+          }
+        />
+      )}
+    </View>
+  )
+}

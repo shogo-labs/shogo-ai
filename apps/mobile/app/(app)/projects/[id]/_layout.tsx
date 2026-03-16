@@ -48,7 +48,7 @@ import { API_URL, api } from '../../../../lib/api'
 import { usePlatformConfig } from '../../../../lib/platform-config'
 import { consumePendingFiles } from '../../../../lib/pending-image-store'
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
-import { ChatSessionPicker, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
+import { ChatSessionPicker, ChatSessionSidebar, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
 import { DynamicAppRenderer } from '../../../../components/dynamic-app/DynamicAppRenderer'
 import { EditModeProvider, useEditModeOptional } from '../../../../components/dynamic-app/edit/EditModeContext'
 import { EditToolbar } from '../../../../components/dynamic-app/edit/EditToolbar'
@@ -433,8 +433,11 @@ export default observer(function ProjectLayout() {
 
   useEffect(() => {
     if (!canvasEnabled) {
-      if (previewTab === 'dynamic-app') setPreviewTab('capabilities')
+      if (previewTab === 'dynamic-app') setPreviewTab('chat-fullscreen')
       if (activeTab === 'canvas') setActiveTab('chat')
+    }
+    if (canvasEnabled) {
+      if (previewTab === 'chat-fullscreen') setPreviewTab('dynamic-app')
     }
   }, [canvasEnabled, previewTab, activeTab])
 
@@ -455,7 +458,7 @@ export default observer(function ProjectLayout() {
       }
     }
     if (key === 'canvasEnabled' && !enabled && previewTab === 'dynamic-app') {
-      setPreviewTab('capabilities')
+      setPreviewTab('chat-fullscreen')
     }
   }, [updateProjectSettings, agentUrl, nativeHeaders, previewTab])
 
@@ -578,10 +581,11 @@ export default observer(function ProjectLayout() {
     </CanvasThemeProvider>
   ) : null
 
-  const hiddenTabs = canvasEnabled ? [] : ['dynamic-app']
+  const hiddenTabs: string[] = []
+  const isChatFullscreen = isWide && !canvasEnabled && previewTab === 'chat-fullscreen'
 
-  const chatHidden = isWide ? chatCollapsed : activeTab !== 'chat'
-  const canvasAreaHidden = !isWide && activeTab === 'chat'
+  const chatHidden = isWide ? (chatCollapsed || isChatFullscreen) : activeTab !== 'chat'
+  const canvasAreaHidden = (!isWide && activeTab === 'chat') || isChatFullscreen
 
   return (
     <>
@@ -614,6 +618,7 @@ export default observer(function ProjectLayout() {
             onMoveToFolder={handleMoveToFolder}
             folders={folders}
             hiddenTabs={hiddenTabs}
+            canvasEnabled={canvasEnabled}
           />
         ) : (
           <ProjectTopBar
@@ -636,9 +641,10 @@ export default observer(function ProjectLayout() {
             onMoveToFolder={handleMoveToFolder}
             folders={folders}
             hiddenTabs={hiddenTabs}
+            canvasEnabled={canvasEnabled}
             onTabChange={(tabId) => {
               setPreviewTab(tabId)
-              if (tabId !== 'dynamic-app') setActiveTab('canvas')
+              if (tabId !== 'dynamic-app' && tabId !== 'chat-fullscreen') setActiveTab('canvas')
             }}
           />
         )}
@@ -729,31 +735,55 @@ export default observer(function ProjectLayout() {
 
         {/* Content — chat panel stays mounted across layout/tab changes */}
         <View className={cn('flex-1', isWide && 'flex-row')}>
-          <View
-            className={cn(
-              isWide ? 'w-[480px] border-r border-border' : 'flex-1',
-            )}
-            style={chatHidden ? { display: 'none' } : undefined}
-          >
-            {isWide && showChatSessions && (
-              <View className="border-b border-border">
-                <ChatSessionPicker
+          {/* Full-screen chat with history sidebar (canvas disabled, Chat tab active) */}
+          {isChatFullscreen && (
+            <View className="flex-1 flex-row">
+              <View className="w-[280px] border-r border-border bg-background">
+                <ChatSessionSidebar
                   sessions={chatSessions}
                   currentSessionId={chatSessionId ?? undefined}
-                  onSelect={(sessionId) => {
-                    setChatSessionId(sessionId)
-                    setShowChatSessions(false)
-                  }}
+                  onSelect={(sessionId) => setChatSessionId(sessionId)}
                   onCreate={handleCreateNewSession}
                   onLoadMore={handleLoadMoreSessions}
                   hasMore={store?.chatSessionCollection?.hasMore ?? false}
                   isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
                 />
               </View>
-            )}
-            {chatPanel}
-          </View>
+              <View className="flex-1">
+                {chatPanel}
+              </View>
+            </View>
+          )}
 
+          {/* Normal left chat panel (unmounted when chat-fullscreen is active to avoid duplicate ChatPanel) */}
+          {!isChatFullscreen && (
+            <View
+              className={cn(
+                isWide ? 'w-[480px] border-r border-border' : 'flex-1',
+              )}
+              style={chatHidden ? { display: 'none' } : undefined}
+            >
+              {isWide && showChatSessions && (
+                <View className="border-b border-border">
+                  <ChatSessionPicker
+                    sessions={chatSessions}
+                    currentSessionId={chatSessionId ?? undefined}
+                    onSelect={(sessionId) => {
+                      setChatSessionId(sessionId)
+                      setShowChatSessions(false)
+                    }}
+                    onCreate={handleCreateNewSession}
+                    onLoadMore={handleLoadMoreSessions}
+                    hasMore={store?.chatSessionCollection?.hasMore ?? false}
+                    isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
+                  />
+                </View>
+              )}
+              {chatPanel}
+            </View>
+          )}
+
+          {/* Right panel area (canvas / files / capabilities / channels / monitor) */}
           <View
             className="flex-1 relative"
             style={canvasAreaHidden ? { display: 'none' } : undefined}
