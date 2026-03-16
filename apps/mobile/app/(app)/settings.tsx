@@ -92,9 +92,9 @@ import {
 
 const DOCS_URL = 'https://docs.shogo.ai'
 
-type TabId = 'workspace' | 'people' | 'billing' | 'security'
+type TabId = 'workspace' | 'people' | 'account' | 'billing' | 'security'
 
-const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'billing', 'security']
+const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'billing', 'security']
 
 interface NavItem {
   id: TabId
@@ -105,11 +105,13 @@ interface NavItem {
 const MOBILE_NAV_ITEMS: NavItem[] = [
   { id: 'workspace', label: 'Workspace', icon: Building2 },
   { id: 'people', label: 'People', icon: Users },
+  { id: 'account', label: 'Account', icon: User },
   { id: 'billing', label: 'Billing', icon: CreditCard },
 ]
 
 const LOCAL_NAV_ITEMS: NavItem[] = [
   { id: 'workspace', label: 'Workspace', icon: Building2 },
+  { id: 'account', label: 'Account', icon: User },
   { id: 'security', label: 'Security', icon: Shield },
 ]
 
@@ -207,11 +209,14 @@ function SettingsSidebar({
       label: 'Workspace',
       items: workspaceItems,
     },
-    ...(!showBilling ? [{
-      id: 'security',
-      label: 'Security',
-      items: [{ id: 'security' as TabId, label: 'Security' }],
-    }] : []),
+    {
+      id: 'account',
+      label: 'Account',
+      items: [
+        { id: 'account', label: userName || 'Account' },
+        ...(!showBilling ? [{ id: 'security' as TabId, label: 'Security' }] : []),
+      ],
+    },
   ]
 
   return (
@@ -293,10 +298,6 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [deleteConfirmText, setDeleteConfirmText] = useState('')
-  const [isAccountDeleteDialogOpen, setIsAccountDeleteDialogOpen] = useState(false)
-  const [isDeletingAccount, setIsDeletingAccount] = useState(false)
-  const [accountDeleteConfirmText, setAccountDeleteConfirmText] = useState('')
-  const { signOut } = useAuth()
 
   const originalName = currentWorkspace?.name || ''
   const hasChanges = name !== originalName
@@ -359,32 +360,6 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
       console.error('Failed to delete workspace:', error)
     } finally {
       setIsDeleting(false)
-    }
-  }
-
-  const handleSignOut = async () => {
-    await signOut()
-    router.replace('/(auth)/sign-in')
-  }
-
-  const handleDeleteAccount = async () => {
-    if (accountDeleteConfirmText !== 'DELETE' || !user?.id || !http) return
-    setIsDeletingAccount(true)
-    try {
-      await actions.deleteAccount(user.id)
-      await signOut()
-      router.replace('/(auth)/sign-in')
-    } catch (error) {
-      console.error('Failed to delete account:', error)
-      if (Platform.OS === 'web') {
-        window.alert('Failed to delete account. Please try again.')
-      } else {
-        RNAlert.alert('Error', 'Failed to delete account. Please try again.')
-      }
-    } finally {
-      setIsDeletingAccount(false)
-      setIsAccountDeleteDialogOpen(false)
-      setAccountDeleteConfirmText('')
     }
   }
 
@@ -486,16 +461,20 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
             <>
               <Separator />
 
-              {/* Email */}
-              <View className="px-6 py-5">
-                <Text className="text-base font-semibold text-foreground">
-                  Email
-                </Text>
-                <Text className="text-sm text-muted-foreground mt-0.5">
-                  The email address associated with your account.
-                </Text>
-                <View className="mt-3 p-3 bg-muted/30 border border-border rounded-lg">
-                  <Text className="text-sm text-foreground">{user?.email}</Text>
+              {/* Default monthly member credit limit */}
+              <View className="px-6 py-5 flex-row items-start justify-between">
+                <View className="flex-[0.45] mr-4 pt-1">
+                  <Text className="text-base font-semibold text-foreground">
+                    Default monthly member credit limit
+                  </Text>
+                  <Text className="text-sm text-muted-foreground mt-0.5">
+                    The default monthly credit limit for members of this workspace. Leave empty to use no limit.
+                  </Text>
+                </View>
+                <View className="flex-[0.55]">
+                  <Input
+                    placeholder="Enter default monthly member credit limit (optional)"
+                  />
                 </View>
               </View>
             </>
@@ -554,33 +533,10 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
                       Delete
                     </Button>
                   </View>
-
-                  <Separator />
-                  <View className="px-6 py-5 flex-row items-center justify-between">
-                    <View className="flex-1 mr-4">
-                      <Text className="text-base font-semibold text-destructive">
-                        Delete account
-                      </Text>
-                      <Text className="text-sm text-muted-foreground mt-0.5">
-                        Permanently delete your Shogo account. This cannot be undone.
-                      </Text>
-                    </View>
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onPress={() => setIsAccountDeleteDialogOpen(true)}
-                    >
-                      Delete
-                    </Button>
-                  </View>
                 </>
               )}
             </CardContent>
           </Card>
-
-          <Button variant="destructive" onPress={handleSignOut} className="mt-8">
-            Sign Out
-          </Button>
         </>
       )}
 
@@ -715,65 +671,455 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
           </Pressable>
         </Pressable>
       </Modal>
-      {/* Delete Account Confirmation Modal */}
-      <Modal
-        visible={isAccountDeleteDialogOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => { setIsAccountDeleteDialogOpen(false); setAccountDeleteConfirmText('') }}
-      >
-        <Pressable
-          className="flex-1 bg-black/50 justify-center items-center px-6"
-          onPress={() => { setIsAccountDeleteDialogOpen(false); setAccountDeleteConfirmText('') }}
-        >
-          <Pressable className="bg-background rounded-xl p-6 w-full max-w-sm gap-4">
-            <View className="flex-row items-center justify-between">
-              <Text className="text-lg font-semibold text-destructive">
-                Delete account
-              </Text>
-              <Pressable onPress={() => { setIsAccountDeleteDialogOpen(false); setAccountDeleteConfirmText('') }} className="p-1">
-                <X size={20} className="text-muted-foreground" />
-              </Pressable>
-            </View>
-            <Text className="text-sm text-muted-foreground">
-              This action is irreversible. This will permanently delete your
-              Shogo account.
-            </Text>
-            <Text className="text-sm text-muted-foreground">
-              Please type "DELETE" to confirm.
-            </Text>
-            <Input
-              value={accountDeleteConfirmText}
-              onChangeText={setAccountDeleteConfirmText}
-              placeholder='Type "DELETE"'
-            />
-            <View className="flex-row gap-2 justify-end">
-              <Button
-                variant="outline"
-                size="sm"
-                onPress={() => {
-                  setIsAccountDeleteDialogOpen(false)
-                  setAccountDeleteConfirmText('')
-                }}
-                disabled={isDeletingAccount}
-              >
-                Cancel
-              </Button>
-              <Button
-                variant="destructive"
-                size="sm"
-                onPress={handleDeleteAccount}
-                disabled={accountDeleteConfirmText !== 'DELETE' || isDeletingAccount}
-              >
-                {isDeletingAccount ? 'Deleting...' : 'Delete account'}
-              </Button>
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
     </View>
   )
 })
+
+// ============================================================================
+// ACCOUNT TAB
+// ============================================================================
+
+const CHAT_SUGGESTIONS_KEY = 'shogo:chat-suggestions'
+
+interface ActivityData {
+  totalMessages: number
+  dailyAverage: number
+  daysActive: number
+  daysInPeriod: number
+  currentStreak: number
+  dailyCounts: Record<string, number>
+}
+
+function AccountTab() {
+  const { user, signOut, updateUser } = useAuth()
+  const http = useDomainHttp()
+  const router = useRouter()
+  const { localMode } = usePlatformConfig()
+
+  const [name, setName] = useState(user?.name || '')
+  const [isSaving, setIsSaving] = useState(false)
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
+  const [chatSuggestions, setChatSuggestions] = useState(true)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [deleteConfirmText, setDeleteConfirmText] = useState('')
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
+  const [activity, setActivity] = useState<ActivityData | null>(null)
+
+  const originalName = user?.name || ''
+  const hasNameChanges = name !== originalName
+  const hasChanges = hasNameChanges
+
+  useEffect(() => {
+    setName(user?.name || '')
+  }, [user?.name])
+
+  useEffect(() => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      const stored = window.localStorage.getItem(CHAT_SUGGESTIONS_KEY)
+      if (stored !== null) setChatSuggestions(stored !== 'false')
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!http) return
+    let cancelled = false
+    api.getMyActivity(http)
+      .then((data) => { if (!cancelled) setActivity(data) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [http])
+
+  const handleToggleChatSuggestions = useCallback((value: boolean) => {
+    setChatSuggestions(value)
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      window.localStorage.setItem(CHAT_SUGGESTIONS_KEY, String(value))
+    }
+  }, [])
+
+  const handleSave = async () => {
+    if (!hasChanges || isSaving || !user?.id) return
+    if (hasNameChanges && !name.trim()) return
+    setIsSaving(true)
+    setSaveStatus('idle')
+    try {
+      await updateUser({ name: name.trim() })
+      setSaveStatus('saved')
+      setTimeout(() => setSaveStatus('idle'), 2000)
+    } catch (error) {
+      console.error('Failed to save account settings:', error)
+      setSaveStatus('error')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const handleSignOut = async () => {
+    await signOut()
+    router.replace('/(auth)/sign-in')
+  }
+
+  const handleDeleteAccount = async () => {
+    if (deleteConfirmText !== 'DELETE' || !user?.id || !http) return
+    setIsDeleting(true)
+    try {
+      await api.deleteAccount(http, user.id)
+      await signOut()
+      router.replace('/(auth)/sign-in')
+    } catch (error) {
+      console.error('Failed to delete account:', error)
+      if (Platform.OS === 'web') {
+        window.alert('Failed to delete account. Please try again.')
+      } else {
+        RNAlert.alert('Error', 'Failed to delete account. Please try again.')
+      }
+    } finally {
+      setIsDeleting(false)
+      setIsDeleteDialogOpen(false)
+      setDeleteConfirmText('')
+    }
+  }
+
+  const handleLinkCompany = () => {
+    if (Platform.OS === 'web') {
+      window.alert('SSO linking is coming soon.')
+    } else {
+      RNAlert.alert('Coming Soon', 'SSO linking is coming soon.')
+    }
+  }
+
+  const handleVerify2FA = () => {
+    if (Platform.OS === 'web') {
+      window.alert('Two-factor authentication is coming soon.')
+    } else {
+      RNAlert.alert('Coming Soon', 'Two-factor authentication is coming soon.')
+    }
+  }
+
+  return (
+    <View className="gap-8">
+      <View>
+        <Text className="text-xl font-semibold text-foreground">
+          Account settings
+        </Text>
+        <Text className="text-sm text-muted-foreground mt-1">
+          Personalize how others see and interact with you on Shogo.
+        </Text>
+      </View>
+
+      {/* Activity */}
+      <Card>
+        <CardContent className="p-5 gap-3">
+          <View className="flex-row items-center gap-2">
+            <MessageSquare size={16} className="text-primary" />
+            <Text className="text-sm text-foreground">
+              {activity?.totalMessages ?? 0} messages sent on
+            </Text>
+            <Sparkles size={16} className="text-primary" />
+            <Text className="text-sm font-bold text-foreground">Shogo</Text>
+            <Text className="text-sm text-foreground">in the last year</Text>
+          </View>
+          <View className="h-20 bg-muted/50 rounded items-center justify-center">
+            <Text className="text-xs text-muted-foreground">
+              Activity heatmap coming soon
+            </Text>
+          </View>
+          <View className="flex-row gap-4">
+            <View className="flex-1">
+              <Text className="text-xs text-muted-foreground">Daily average</Text>
+              <Text className="text-sm font-medium text-foreground">
+                {activity?.dailyAverage ?? 0} msgs
+              </Text>
+            </View>
+            <View className="flex-1">
+              <Text className="text-xs text-muted-foreground">Days active</Text>
+              <Text className="text-sm font-medium text-foreground">
+                {activity?.daysActive ?? 0} ({activity ? Math.round((activity.daysActive / activity.daysInPeriod) * 100) : 0}%)
+              </Text>
+            </View>
+            <View className="flex-1">
+              <Text className="text-xs text-muted-foreground">Current streak</Text>
+              <Text className="text-sm font-medium text-foreground">
+                {activity?.currentStreak ?? 0} days
+              </Text>
+            </View>
+          </View>
+        </CardContent>
+      </Card>
+
+      {/* Profile */}
+      <Card>
+        <CardContent className="p-0">
+          {/* Avatar */}
+          <View className="px-6 py-5 flex-row items-center justify-between">
+            <View className="flex-1 mr-4">
+              <Text className="text-sm font-semibold text-foreground">
+                Avatar
+              </Text>
+              <Text className="text-sm text-muted-foreground mt-0.5">
+                Your avatar is fetched from your identity provider or
+                automatically generated.
+              </Text>
+            </View>
+            <View className="h-10 w-10 rounded-full bg-primary items-center justify-center">
+              <Text className="text-sm font-semibold text-primary-foreground">
+                {user?.name?.[0]?.toUpperCase() || 'U'}
+              </Text>
+            </View>
+          </View>
+
+          <Separator />
+
+          {/* Username */}
+          <View className="px-6 py-5">
+            <Text className="text-sm font-semibold text-foreground">
+              Username
+            </Text>
+            <Text className="text-sm text-muted-foreground mt-0.5">
+              Your public display name and profile identifier.
+            </Text>
+            <View className="flex-row gap-3 items-start mt-3">
+              <View className="flex-1">
+                <Input
+                  value={name}
+                  onChangeText={(t) => {
+                    setName(t)
+                    setSaveStatus('idle')
+                  }}
+                  placeholder="Enter a username"
+                />
+              </View>
+              <Button
+                variant="outline"
+                size="sm"
+                onPress={handleSave}
+                disabled={!hasNameChanges || !name.trim() || isSaving}
+              >
+                {isSaving ? 'Saving...' : 'Update'}
+              </Button>
+            </View>
+            {saveStatus === 'saved' && (
+              <Text className="text-xs text-green-600 mt-1">
+                Updated successfully!
+              </Text>
+            )}
+            {saveStatus === 'error' && (
+              <Text className="text-xs text-destructive mt-1">
+                Failed to update. Please try again.
+              </Text>
+            )}
+          </View>
+
+          <Separator />
+
+          {/* Email */}
+          <View className="px-6 py-5">
+            <Text className="text-sm font-semibold text-foreground">Email</Text>
+            <Text className="text-sm text-muted-foreground mt-0.5">
+              Your email address associated with your account.
+            </Text>
+            <Input className="mt-3" value={user?.email || ''} disabled />
+          </View>
+
+        </CardContent>
+      </Card>
+
+      {/* Preferences */}
+      <Card>
+        <CardContent className="p-0">
+          <View className="px-6 py-5 flex-row items-center justify-between">
+            <View className="flex-1 mr-4">
+              <Text className="text-sm font-semibold text-foreground">
+                Chat suggestions
+              </Text>
+              <Text className="text-sm text-muted-foreground mt-0.5">
+                Show helpful suggestions in the chat interface.
+              </Text>
+            </View>
+            <Switch
+              checked={chatSuggestions}
+              onCheckedChange={handleToggleChatSuggestions}
+            />
+          </View>
+        </CardContent>
+      </Card>
+
+      {/* Linked accounts */}
+      <Card>
+        <CardContent className="p-0">
+          <View className="px-6 py-5">
+            <Text className="text-sm font-semibold text-foreground">
+              Linked accounts
+            </Text>
+            <Text className="text-sm text-muted-foreground mt-0.5">
+              Manage accounts linked for sign-in.
+            </Text>
+            <View className="mt-3 gap-3">
+              <View className="bg-muted/50 rounded-lg p-3 flex-row items-center gap-3">
+                <View className="h-8 w-8 rounded bg-muted items-center justify-center">
+                  <User size={16} className="text-muted-foreground" />
+                </View>
+                <View className="flex-1">
+                  <View className="flex-row items-center gap-2">
+                    <Text className="text-sm font-medium text-foreground">
+                      Password
+                    </Text>
+                    <Badge variant="secondary">
+                      <Text className="text-[10px] text-secondary-foreground">
+                        Primary
+                      </Text>
+                    </Badge>
+                  </View>
+                  <Text className="text-xs text-muted-foreground">{user?.email}</Text>
+                </View>
+              </View>
+              <View className="border border-dashed border-border rounded-lg p-3 flex-row items-center gap-3">
+                <View className="h-8 w-8 rounded bg-muted items-center justify-center">
+                  <Building2 size={16} className="text-muted-foreground" />
+                </View>
+                <View className="flex-1">
+                  <Text className="text-sm font-medium text-foreground">
+                    Link company account
+                  </Text>
+                  <Text className="text-xs text-muted-foreground">
+                    Use your organization's single sign-on
+                  </Text>
+                </View>
+                <Button variant="outline" size="sm" onPress={handleLinkCompany}>
+                  Link
+                </Button>
+              </View>
+            </View>
+          </View>
+
+          <Separator />
+
+          {/* Two-factor authentication */}
+          <View className="px-6 py-5">
+            <Text className="text-sm font-semibold text-foreground">
+              Two-factor authentication
+            </Text>
+            <Text className="text-sm text-muted-foreground mt-0.5">
+              Secure your account with a one-time code via an authenticator app
+              or SMS.
+            </Text>
+            <View className="mt-3 bg-muted/50 rounded-lg p-3 flex-row items-center gap-3">
+              <Shield size={20} className="text-muted-foreground" />
+              <View className="flex-1">
+                <Text className="text-sm font-medium text-foreground">
+                  Re-authentication required
+                </Text>
+                <Text className="text-xs text-muted-foreground">
+                  For security, please re-authenticate to manage two-factor
+                  settings.
+                </Text>
+              </View>
+              <Button variant="outline" size="sm" onPress={handleVerify2FA}>
+                Verify
+              </Button>
+            </View>
+          </View>
+
+          {!localMode && (
+            <>
+              <Separator />
+
+              {/* Delete account */}
+              <View className="px-6 py-5">
+                <View className="flex-row items-center justify-between">
+                  <View className="flex-1 mr-4">
+                    <Text className="text-sm font-semibold text-foreground">
+                      Delete account
+                    </Text>
+                    <Text className="text-sm text-muted-foreground mt-0.5">
+                      Permanently delete your Shogo account. This cannot be undone.
+                    </Text>
+                  </View>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onPress={() => setIsDeleteDialogOpen(true)}
+                  >
+                    Delete
+                  </Button>
+                </View>
+                {isDeleteDialogOpen && (
+                  <View className="mt-4 p-4 border border-destructive/30 rounded-lg bg-destructive/5">
+                    <Text className="text-sm text-foreground font-medium">
+                      Are you sure? This action is irreversible.
+                    </Text>
+                    <Text className="text-sm text-muted-foreground mt-1">
+                      Type "DELETE" to confirm.
+                    </Text>
+                    <Input
+                      className="mt-2"
+                      value={deleteConfirmText}
+                      onChangeText={setDeleteConfirmText}
+                      placeholder='Type "DELETE"'
+                    />
+                    <View className="flex-row gap-2 mt-3">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onPress={() => {
+                          setIsDeleteDialogOpen(false)
+                          setDeleteConfirmText('')
+                        }}
+                        disabled={isDeleting}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onPress={handleDeleteAccount}
+                        disabled={deleteConfirmText !== 'DELETE' || isDeleting}
+                      >
+                        {isDeleting ? 'Deleting...' : 'Permanently delete'}
+                      </Button>
+                    </View>
+                  </View>
+                )}
+              </View>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Sign Out */}
+      {!localMode && (
+        <Button variant="destructive" onPress={handleSignOut} className="w-full">
+          Sign Out
+        </Button>
+      )}
+
+      {/* Save changes bar */}
+      {hasChanges && (
+        <View className="bg-background border-t border-border px-4 py-3 flex-row items-center justify-between">
+          <Text className="text-sm text-muted-foreground">
+            You have unsaved changes
+          </Text>
+          <View className="flex-row items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onPress={() => setName(originalName)}
+              disabled={isSaving}
+            >
+              Discard
+            </Button>
+            <Button
+              size="sm"
+              onPress={handleSave}
+              disabled={!hasChanges || (hasNameChanges && !name.trim()) || isSaving}
+            >
+              {isSaving ? 'Saving...' : 'Save changes'}
+            </Button>
+          </View>
+        </View>
+      )}
+    </View>
+  )
+}
 
 // ============================================================================
 // BILLING TAB — Lovable-style layout
@@ -1148,8 +1494,8 @@ const PeopleTab = observer(function PeopleTab() {
 
         if (user?.email) {
           try {
-            const pending = await invitations.loadAll({ email: user.email })
-            setReceivedInvites(pending.filter(i => i.status === 'pending'))
+            const pending = await api.getReceivedInvitations(http, user.email)
+            setReceivedInvites(pending)
           } catch {}
         }
       }
@@ -1965,6 +2311,7 @@ const SettingsContent = observer(function SettingsContent({
     <>
       {activeTab === 'workspace' && <WorkspaceSettingsTab />}
       {activeTab === 'people' && !isLocal && <PeopleTab />}
+      {activeTab === 'account' && <AccountTab />}
       {activeTab === 'billing' && !isLocal && <BillingTab />}
       {activeTab === 'security' && <SecuritySettingsPanel />}
     </>
