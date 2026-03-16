@@ -376,6 +376,17 @@ export function createDomainActions(store: IDomainStore) {
     },
 
     // =========================================================================
+    // User Actions
+    // =========================================================================
+
+    /**
+     * Delete user account
+     */
+    deleteAccount: async (userId: string) => {
+      return store.userCollection.delete(userId)
+    },
+
+    // =========================================================================
     // Workspace Management Actions
     // =========================================================================
 

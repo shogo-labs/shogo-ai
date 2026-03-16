@@ -35,6 +35,7 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useProjectCollection } from '../../contexts/domain'
+import { usePlatformConfig } from '../../lib/platform-config'
 
 // ─── Types ────────────────────────────────────────────────
 
@@ -67,6 +68,7 @@ export const CommandPalette = observer(function CommandPalette({
 }: CommandPaletteProps) {
   const router = useRouter()
   const projects = useProjectCollection()
+  const { localMode } = usePlatformConfig()
   const [query, setQuery] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
   const inputRef = useRef<TextInput>(null)
@@ -100,7 +102,7 @@ export const CommandPalette = observer(function CommandPalette({
         category: 'navigation',
         keywords: ['starred', 'favorites'],
       },
-      {
+      !localMode && {
         id: 'nav-shared',
         label: 'Shared with me',
         description: 'View shared projects',
@@ -145,7 +147,7 @@ export const CommandPalette = observer(function CommandPalette({
         category: 'settings',
         keywords: ['members', 'team', 'invite'],
       },
-    ]
+    ].filter(Boolean) as CommandItem[]
 
     let projectList: any[] = []
     try { projectList = projects?.all?.slice() ?? [] } catch { projectList = [] }
