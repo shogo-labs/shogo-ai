@@ -693,6 +693,42 @@ app.post('/agent/chat', async (c) => {
     return c.json({ error: 'message is required — send { messages: [{ role: "user", parts: [{ type: "text", text: "..." }] }] }' }, 400)
   }
 
+  // Save uploaded files to the agent's files/ directory so they're accessible
+  // to the agent via its workspace tools (read_file, list_files, etc.)
+  if (userFileParts.length > 0) {
+    mkdirSync(FILES_DIR, { recursive: true })
+    const savedPaths: string[] = []
+    for (const fp of userFileParts) {
+      try {
+        const url = fp.url!
+        const base64Match = url.match(/^data:[^;]*;base64,(.+)$/)
+        if (!base64Match) continue
+
+        const mediaType = fp.mediaType || 'application/octet-stream'
+        const ext = mimeToExtension(mediaType)
+        const baseName = fp.name
+          ? fp.name.replace(/[^a-zA-Z0-9._-]/g, '_')
+          : `upload-${Date.now()}-${Math.random().toString(36).slice(2, 6)}${ext}`
+        const resolved = resolveFilesPath(baseName)
+        if (!resolved) continue
+
+        const dir = dirname(resolved)
+        mkdirSync(dir, { recursive: true })
+        writeFileSync(resolved, Buffer.from(base64Match[1], 'base64'))
+        savedPaths.push(baseName)
+        console.log(`[AgentChat] Saved uploaded file to files/${baseName}`)
+
+        try { getFileIndexEngine().indexFile(resolved) } catch { /* best-effort */ }
+      } catch (err: any) {
+        console.error(`[AgentChat] Failed to save uploaded file:`, err.message)
+      }
+    }
+    if (savedPaths.length > 0) {
+      const note = savedPaths.map(p => `files/${p}`).join(', ')
+      userText = (userText || '') + `\n\n[Uploaded file(s) saved to workspace: ${note}]`
+    }
+  }
+
   // Seed the chat session with prior conversation history from the request.
   // AI SDK clients and eval runners send the full message array each turn;
   // the session is the authoritative store so we only seed when it's empty
@@ -1112,6 +1148,28 @@ function resolveFilesPath(subPath: string): string | null {
   const resolved = resolve(FILES_DIR, subPath)
   if (!resolved.startsWith(resolve(FILES_DIR))) return null
   return resolved
+}
+
+const MIME_EXTENSIONS: Record<string, string> = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+  'image/svg+xml': '.svg',
+  'application/pdf': '.pdf',
+  'text/plain': '.txt',
+  'text/csv': '.csv',
+  'text/markdown': '.md',
+  'application/json': '.json',
+  'application/xml': '.xml',
+  'text/html': '.html',
+  'text/css': '.css',
+  'application/javascript': '.js',
+  'application/typescript': '.ts',
+}
+
+function mimeToExtension(mimeType: string): string {
+  return MIME_EXTENSIONS[mimeType] || `.${mimeType.split('/').pop() || 'bin'}`
 }
 
 function walkFilesTree(dir: string, rootDir: string): any[] {
