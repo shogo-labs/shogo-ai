@@ -180,6 +180,7 @@ export class HeartbeatScheduler {
 
     // Use raw SQL with FOR UPDATE SKIP LOCKED for multi-pod safety.
     // Atomically select and claim due heartbeats in a single transaction.
+    // Only trigger for workspaces with an active paid subscription.
     const dueAgents = await prisma.$queryRaw<Array<{
       id: string
       projectId: string
@@ -188,13 +189,16 @@ export class HeartbeatScheduler {
       quietHoursEnd: string | null
       quietHoursTimezone: string | null
     }>>`
-      SELECT "id", "projectId", "heartbeatInterval",
-             "quietHoursStart", "quietHoursEnd", "quietHoursTimezone"
-      FROM "agent_configs"
-      WHERE "heartbeatEnabled" = true
-        AND "nextHeartbeatAt" <= NOW()
-      ORDER BY "nextHeartbeatAt" ASC
-      FOR UPDATE SKIP LOCKED
+      SELECT ac."id", ac."projectId", ac."heartbeatInterval",
+             ac."quietHoursStart", ac."quietHoursEnd", ac."quietHoursTimezone"
+      FROM "agent_configs" ac
+      JOIN "projects" p ON p."id" = ac."projectId"
+      JOIN "subscriptions" s ON s."workspaceId" = p."workspaceId"
+        AND s."status" IN ('active', 'trialing')
+      WHERE ac."heartbeatEnabled" = true
+        AND ac."nextHeartbeatAt" <= NOW()
+      ORDER BY ac."nextHeartbeatAt" ASC
+      FOR UPDATE OF ac SKIP LOCKED
       LIMIT ${BATCH_SIZE}
     `
 
@@ -241,11 +245,15 @@ export class HeartbeatScheduler {
   private async triggerAgent(projectId: string): Promise<void> {
     try {
       const { getProjectPodUrl } = await import('./knative-project-manager')
+      const { deriveRuntimeToken } = await import('./runtime-token')
       const podUrl = await getProjectPodUrl(projectId)
 
       const response = await fetch(`${podUrl}/agent/heartbeat/trigger`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-runtime-token': deriveRuntimeToken(projectId),
+        },
         signal: AbortSignal.timeout(TRIGGER_TIMEOUT_MS),
       })
 

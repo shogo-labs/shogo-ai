@@ -16,6 +16,7 @@ import {
   HardDrive,
   Users,
   DollarSign,
+  Lock,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Switch } from '@/components/ui/switch'
@@ -118,6 +119,7 @@ interface StatusPanelProps {
   projectId: string
   agentUrl: string | null
   visible: boolean
+  isPaidPlan?: boolean
 }
 
 const CHANNEL_META: Record<string, { name: string; emoji: string }> = {
@@ -170,7 +172,7 @@ function timeUntil(dateStr: string): string {
   return `${Math.floor(diff / 86_400_000)}d`
 }
 
-export function StatusPanel({ projectId, agentUrl, visible }: StatusPanelProps) {
+export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: StatusPanelProps) {
   const { localMode } = usePlatformConfig()
   const [status, setStatus] = useState<AgentStatusData | null>(null)
   const [isLoading, setIsLoading] = useState(false)
@@ -474,12 +476,28 @@ export function StatusPanel({ projectId, agentUrl, visible }: StatusPanelProps) 
               title="Heartbeat"
               icon={<Activity size={14} className="text-muted-foreground" />}
               badge={
-                hbConfig
-                  ? hbConfig.heartbeatEnabled ? 'Active' : 'Off'
-                  : status.heartbeat.enabled ? 'Active' : 'Off'
+                !localMode && !isPaidPlan
+                  ? 'Pro'
+                  : hbConfig
+                    ? hbConfig.heartbeatEnabled ? 'Active' : 'Off'
+                    : status.heartbeat.enabled ? 'Active' : 'Off'
               }
             >
               <View className="px-3 py-2.5 gap-3">
+                {!localMode && !isPaidPlan ? (
+                  <View className="flex-row items-center gap-3 py-1">
+                    <Lock size={16} className="text-muted-foreground" />
+                    <View className="flex-1">
+                      <Text className="text-sm font-medium text-foreground">
+                        Scheduled heartbeats
+                      </Text>
+                      <Text className="text-xs text-muted-foreground mt-0.5">
+                        Upgrade to a paid plan to enable periodic agent check-ins
+                      </Text>
+                    </View>
+                  </View>
+                ) : (
+                <>
                 {/* Toggle row */}
                 <View className="flex-row items-center justify-between">
                   <View className="flex-1">
@@ -560,6 +578,8 @@ export function StatusPanel({ projectId, agentUrl, visible }: StatusPanelProps) 
                       )
                     })()}
                   </>
+                )}
+                </>
                 )}
               </View>
             </DashboardSection>

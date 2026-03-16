@@ -13,9 +13,10 @@ interface MonitorPanelProps {
   projectId: string
   agentUrl: string | null
   visible: boolean
+  isPaidPlan?: boolean
 }
 
-export function MonitorPanel({ projectId, agentUrl, visible }: MonitorPanelProps) {
+export function MonitorPanel({ projectId, agentUrl, visible, isPaidPlan }: MonitorPanelProps) {
   const [subTab, setSubTab] = useState<SubTab>('overview')
 
   if (!visible) return null
@@ -53,7 +54,7 @@ export function MonitorPanel({ projectId, agentUrl, visible }: MonitorPanelProps
 
       {/* Sub-panel content */}
       <View className="flex-1 relative">
-        <StatusPanel projectId={projectId} agentUrl={agentUrl} visible={subTab === 'overview'} />
+        <StatusPanel projectId={projectId} agentUrl={agentUrl} visible={subTab === 'overview'} isPaidPlan={isPaidPlan} />
         <AnalyticsPanel projectId={projectId} agentUrl={agentUrl} visible={subTab === 'analytics'} />
         <LogsPanel projectId={projectId} agentUrl={agentUrl} visible={subTab === 'logs'} />
       </View>

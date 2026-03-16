@@ -3139,6 +3139,7 @@ app.patch('/api/projects/:projectId/heartbeat', async (c) => {
 
   const existing = await prisma.agentConfig.findUnique({
     where: { projectId: authResult.projectId },
+    include: { project: { select: { workspaceId: true } } },
   })
   if (!existing) {
     return c.json({ error: 'Agent config not found' }, 404)
@@ -3146,6 +3147,16 @@ app.patch('/api/projects/:projectId/heartbeat', async (c) => {
 
   const enabled = data.heartbeatEnabled ?? existing.heartbeatEnabled
   const interval = data.heartbeatInterval ?? existing.heartbeatInterval
+
+  if (enabled && existing.project?.workspaceId) {
+    const isPaid = await billingService.hasPaidSubscription(existing.project.workspaceId)
+    if (!isPaid) {
+      return c.json(
+        { error: { code: 'paywall', message: 'Heartbeats require a paid plan. Please upgrade to enable scheduled heartbeats.' } },
+        402
+      )
+    }
+  }
 
   if (enabled) {
     const jitter = Math.floor(Math.random() * interval * 0.1) * 1000
