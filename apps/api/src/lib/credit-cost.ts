@@ -15,30 +15,22 @@
  * - Haiku (basic): 0.025 credits
  * - Sonnet (advanced): 0.1 credits
  * - Opus: 0.5 credits
- *
- * Minimum charges:
- * - Haiku (basic): 0.2 credits
- * - Sonnet (advanced): 0.5 credits
- * - Opus: 1.0 credits
  */
 
-export const CREDIT_MARKUP_FACTOR = 1.2
+export const CREDIT_MARKUP_FACTOR = 1.3
 
 export const MODEL_CREDIT_CONFIG = {
   haiku: {
     creditsPerTokenBatch: 0.025,
     tokenBatchSize: 5000,
-    minimumCharge: 0.2,
   },
   sonnet: {
     creditsPerTokenBatch: 0.1,
     tokenBatchSize: 5000,
-    minimumCharge: 0.5,
   },
   opus: {
     creditsPerTokenBatch: 0.5,
     tokenBatchSize: 5000,
-    minimumCharge: 1.0,
   },
 } as const
 
@@ -69,7 +61,7 @@ export function proxyModelToBillingModel(proxyModel: string): ModelName {
  *
  * @param totalTokens - Combined input + output tokens
  * @param modelOrAgentMode - Model name ('haiku', 'sonnet', 'opus') or agent mode ('basic', 'advanced')
- * @returns Credits to charge (with model-specific minimum)
+ * @returns Credits to charge
  */
 export function calculateCreditCost(
   totalTokens: number,
@@ -85,14 +77,9 @@ export function calculateCreditCost(
 
   const config = MODEL_CREDIT_CONFIG[model]
 
-  // Calculate raw credits based on tokens, with markup
   const rawCredits = (totalTokens / config.tokenBatchSize) * config.creditsPerTokenBatch * CREDIT_MARKUP_FACTOR
 
-  // Round up to nearest 0.1
-  const rounded = Math.ceil(rawCredits * 10) / 10
-
-  // Enforce model-specific minimum
-  return Math.max(rounded, config.minimumCharge)
+  return Math.ceil(rawCredits * 10) / 10
 }
 
 // =============================================================================

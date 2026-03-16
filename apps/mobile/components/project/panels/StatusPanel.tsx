@@ -20,6 +20,7 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { agentFetch } from '../../../lib/agent-fetch'
+import { usePlatformConfig } from '../../../lib/platform-config'
 
 const POLL_INTERVAL_MS = 5_000
 
@@ -118,6 +119,7 @@ function timeAgo(dateStr: string | null): string {
 }
 
 export function StatusPanel({ projectId, agentUrl, visible }: StatusPanelProps) {
+  const { localMode } = usePlatformConfig()
   const [status, setStatus] = useState<AgentStatusData | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -431,9 +433,13 @@ export function StatusPanel({ projectId, agentUrl, visible }: StatusPanelProps) 
                     </View>
                   ))}
                   <View className="flex-row items-center justify-between px-3 py-1.5">
-                    <Text className="text-xs text-muted-foreground">Total estimated tokens</Text>
+                    <Text className="text-xs text-muted-foreground">
+                      {localMode ? 'Total estimated tokens' : 'Credits used'}
+                    </Text>
                     <Text className="text-xs font-medium text-foreground">
-                      {(totalTokens / 1000).toFixed(1)}k
+                      {localMode
+                        ? `${(totalTokens / 1000).toFixed(1)}k`
+                        : `${(totalTokens / 1000).toFixed(1)}`}
                     </Text>
                   </View>
                 </View>

@@ -129,31 +129,29 @@ describe('Proxy Billing Session', () => {
     expect(totalTokens).toBe(150)
   })
 
-  test('single API call charges based on total tokens (no minimum inflation)', async () => {
+  test('single API call charges based on total tokens', async () => {
     openSession('proj-single', 'ws-1', 'user-1')
     accumulateUsage('proj-single', 'claude-sonnet-4-5', 2000, 1000)
 
     const { creditCost, totalTokens } = await closeSession('proj-single')
 
     // 3000 tokens at sonnet rate: (3000/5000) * 0.1 * 1.2 = 0.072, rounds up to 0.1
-    // But minimum is 0.5, so should be 0.5
     expect(totalTokens).toBe(3000)
-    expect(creditCost).toBe(0.5) // minimum charge
+    expect(creditCost).toBe(0.1)
   })
 
-  test('many API calls charge based on total (not N * minimum)', async () => {
+  test('many small API calls charge based on total tokens', async () => {
     openSession('proj-many', 'ws-1', 'user-1')
 
-    // 5 small API calls, each would hit 0.5 minimum individually = 2.5 credits
     for (let i = 0; i < 5; i++) {
       accumulateUsage('proj-many', 'claude-sonnet-4-5', 400, 200)
     }
 
     const { creditCost, totalTokens } = await closeSession('proj-many')
 
-    // Total: 3000 tokens → same 0.5 credit minimum (NOT 5 * 0.5 = 2.5)
+    // 3000 tokens at sonnet rate: (3000/5000) * 0.1 * 1.2 = 0.072, rounds up to 0.1
     expect(totalTokens).toBe(3000)
-    expect(creditCost).toBe(0.5)
+    expect(creditCost).toBe(0.1)
 
     expect(consumeCreditsCalls.length).toBe(1)
   })
