@@ -244,6 +244,13 @@ spec:
                   name: api-secrets
                   key: OPENAI_API_KEY
                   optional: true
+            # Google Gemini / Imagen
+            - name: GOOGLE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GOOGLE_API_KEY
+                  optional: true
             # Observability
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "https://ingest.us.signoz.cloud:443"

@@ -402,6 +402,14 @@ jobs:
             SECRET_ARGS+=(--from-literal=COMPOSIO_PROJECT_ID="${{ secrets.COMPOSIO_PROJECT_ID }}")
           fi
 
+          # AI provider keys (optional - for image generation and LLM proxy)
+          if [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then
+            SECRET_ARGS+=(--from-literal=OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}")
+          fi
+          if [ -n "${{ secrets.GOOGLE_API_KEY }}" ]; then
+            SECRET_ARGS+=(--from-literal=GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}")
+          fi
+
           # Load test bypass key (optional - allows load tests to skip rate limiting)
           if [ -n "${{ secrets.LOAD_TEST_SECRET }}" ]; then
             SECRET_ARGS+=(--from-literal=LOAD_TEST_SECRET="${{ secrets.LOAD_TEST_SECRET }}")
@@ -689,6 +697,14 @@ jobs:
           fi
           if [ -n "${{ secrets.COMPOSIO_PROJECT_ID }}" ]; then
             SECRET_ARGS+=(--from-literal=COMPOSIO_PROJECT_ID="${{ secrets.COMPOSIO_PROJECT_ID }}")
+          fi
+
+          # AI provider keys (optional - for image generation and LLM proxy)
+          if [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then
+            SECRET_ARGS+=(--from-literal=OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}")
+          fi
+          if [ -n "${{ secrets.GOOGLE_API_KEY }}" ]; then
+            SECRET_ARGS+=(--from-literal=GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}")
           fi
 
           # Load test bypass key (optional - allows load tests to skip rate limiting)
