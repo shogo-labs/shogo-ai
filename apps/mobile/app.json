@@ -4,7 +4,7 @@
     "slug": "shogo",
     "version": "0.1.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/shogo-icon.png",
     "scheme": "shogo",
     "userInterfaceStyle": "automatic",
     "splash": {
@@ -27,7 +27,7 @@
     "web": {
       "bundler": "metro",
       "output": "single",
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/shogo-icon.png"
     },
     "plugins": [
       "expo-router",
