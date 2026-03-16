@@ -14,8 +14,10 @@ import {
   AlertTriangle,
   Cpu,
   Check,
+  Lock,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { usePlatformConfig } from '../../../lib/platform-config'
 import { Switch } from '@/components/ui/switch'
 import {
   Popover,
@@ -141,6 +143,7 @@ interface CapabilitiesPanelProps {
   visible: boolean
   capabilities: CapabilitySettings
   onCapabilityToggle: (key: string, enabled: boolean) => void
+  isPaidPlan?: boolean
 }
 
 export function CapabilitiesPanel({
@@ -149,7 +152,10 @@ export function CapabilitiesPanel({
   visible,
   capabilities,
   onCapabilityToggle,
+  isPaidPlan,
 }: CapabilitiesPanelProps) {
+  const { localMode } = usePlatformConfig()
+  const canSelectAllModels = localMode || isPaidPlan
   const [subTab, setSubTab] = useState<SubTab>('built-in')
   const [expandedCap, setExpandedCap] = useState<string | null>(null)
   const [pendingToggle, setPendingToggle] = useState<{ key: string; enabled: boolean } | null>(null)
@@ -299,28 +305,39 @@ export function CapabilitiesPanel({
                           {group.models.map((model) => {
                             const isSelected = currentModel?.name === model.name
                               || (currentModel?.name && model.name === currentModel.name.replace(/-\d{8}$/, ''))
+                            const isLocked = !canSelectAllModels && model.tier !== 'economy'
                             return (
                               <Pressable
                                 key={model.name}
-                                onPress={() => handleModelChange(model)}
+                                onPress={() => !isLocked && handleModelChange(model)}
                                 className={cn(
-                                  'flex-row items-center gap-2.5 px-3 py-2 active:bg-muted',
-                                  isSelected && 'bg-accent',
+                                  'flex-row items-center gap-2.5 px-3 py-2',
+                                  isLocked ? 'opacity-50' : 'active:bg-muted',
+                                  isSelected && !isLocked && 'bg-accent',
                                 )}
                               >
                                 <View className="flex-1">
-                                  <Text className="text-sm text-foreground">{model.displayName}</Text>
+                                  <Text className={cn('text-sm', isLocked ? 'text-muted-foreground' : 'text-foreground')}>{model.displayName}</Text>
                                 </View>
-                                <Text className={cn(
-                                  'text-[10px]',
-                                  model.tier === 'premium' ? 'text-amber-500' :
-                                  model.tier === 'economy' ? 'text-emerald-500' :
-                                  'text-muted-foreground',
-                                )}>
-                                  {TIER_LABELS[model.tier]}
-                                </Text>
-                                {isSelected && (
-                                  <Check size={14} className="text-primary" />
+                                {isLocked ? (
+                                  <View className="flex-row items-center gap-1">
+                                    <Lock size={10} className="text-muted-foreground" />
+                                    <Text className="text-[10px] font-medium text-muted-foreground">Pro</Text>
+                                  </View>
+                                ) : (
+                                  <>
+                                    <Text className={cn(
+                                      'text-[10px]',
+                                      model.tier === 'premium' ? 'text-amber-500' :
+                                      model.tier === 'economy' ? 'text-emerald-500' :
+                                      'text-muted-foreground',
+                                    )}>
+                                      {TIER_LABELS[model.tier]}
+                                    </Text>
+                                    {isSelected && (
+                                      <Check size={14} className="text-primary" />
+                                    )}
+                                  </>
                                 )}
                               </Pressable>
                             )
