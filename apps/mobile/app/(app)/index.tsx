@@ -28,7 +28,8 @@ import {
   useDomainHttp,
 } from '../../contexts/domain'
 import { CompactChatInput } from '../../components/chat/CompactChatInput'
-import { setPendingImageData } from '../../lib/pending-image-store'
+import type { FileAttachment } from '../../components/chat/ChatInput'
+import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { api } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
@@ -388,7 +389,7 @@ const HomeScreen = observer(function HomeScreen() {
     return name.split(' ')[0] || 'there'
   }, [user?.name])
 
-  const handlePromptSubmit = useCallback(async (text: string, imageData?: string[]) => {
+  const handlePromptSubmit = useCallback(async (text: string, files?: FileAttachment[]) => {
     if (!text.trim() || !user?.id || !currentWorkspace?.id) return
     setIsCreating(true)
     try {
@@ -426,8 +427,8 @@ const HomeScreen = observer(function HomeScreen() {
 
       trackEvent(posthog, EVENTS.PROJECT_CREATED, { source: 'prompt' })
 
-      if (imageData && imageData.length > 0) {
-        setPendingImageData(imageData)
+      if (files && files.length > 0) {
+        setPendingFiles(files)
       }
       projects.loadAll()
       router.push({

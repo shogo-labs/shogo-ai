@@ -46,7 +46,7 @@ import { useAuth } from '../../../../contexts/auth'
 import { authClient } from '../../../../lib/auth-client'
 import { API_URL, api } from '../../../../lib/api'
 import { usePlatformConfig } from '../../../../lib/platform-config'
-import { consumePendingImageData } from '../../../../lib/pending-image-store'
+import { consumePendingFiles } from '../../../../lib/pending-image-store'
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
 import { ChatSessionPicker, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
 import { DynamicAppRenderer } from '../../../../components/dynamic-app/DynamicAppRenderer'
@@ -91,9 +91,9 @@ export default observer(function ProjectLayout() {
   const actions = useDomainActions()
   const projects = useProjectCollection()
 
-  // Capture initialMessage and imageData once so they don't re-fire on re-renders
+  // Capture initialMessage and files once so they don't re-fire on re-renders
   const [capturedInitialMessage] = useState(() => params.initialMessage ?? undefined)
-  const [capturedInitialImageData] = useState(() => consumePendingImageData())
+  const [capturedInitialFiles] = useState(() => consumePendingFiles())
 
   // Tab state for narrow screens
   const [activeTab, setActiveTab] = useState<ActiveTab>('chat')
@@ -555,7 +555,7 @@ export default observer(function ProjectLayout() {
       projectId={projectId}
       projectType={isAgentProject ? 'AGENT' : 'APP'}
       initialMessage={capturedInitialMessage}
-      initialImageData={capturedInitialImageData}
+      initialFiles={capturedInitialFiles}
       billingData={features.billing ? billingData : { hasActiveSubscription: true, refetchCreditLedger: () => {} }}
       onCanvasPreview={handleCanvasPreview}
       className="flex-1"
@@ -580,12 +580,15 @@ export default observer(function ProjectLayout() {
 
   const hiddenTabs = canvasEnabled ? [] : ['dynamic-app']
 
+  const chatHidden = isWide ? chatCollapsed : activeTab !== 'chat'
+  const canvasAreaHidden = !isWide && activeTab === 'chat'
+
   return (
     <>
       <Stack.Screen options={{ headerShown: false }} />
 
-      {isWide ? (
-        <View className="flex-1 bg-background">
+      <View className="flex-1 bg-background">
+        {isWide ? (
           <ProjectTopBar
             projectName={project.name}
             projectId={projectId!}
@@ -612,46 +615,7 @@ export default observer(function ProjectLayout() {
             folders={folders}
             hiddenTabs={hiddenTabs}
           />
-          <View className="flex-1 flex-row">
-            {!chatCollapsed && (
-              <View className="w-[480px] border-r border-border">
-                {showChatSessions && (
-                  <View className="border-b border-border">
-                    <ChatSessionPicker
-                      sessions={chatSessions}
-                      currentSessionId={chatSessionId ?? undefined}
-                      onSelect={(sessionId) => {
-                        setChatSessionId(sessionId)
-                        setShowChatSessions(false)
-                      }}
-                      onCreate={handleCreateNewSession}
-                      onLoadMore={handleLoadMoreSessions}
-                      hasMore={store?.chatSessionCollection?.hasMore ?? false}
-                      isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
-                    />
-                  </View>
-                )}
-                {chatPanel}
-              </View>
-            )}
-            <View className="flex-1 relative">
-              {canvasEnabled && (
-                <View
-                  className="absolute inset-0"
-                  style={previewTab !== 'dynamic-app' ? { display: 'none' } : undefined}
-                >
-                  {canvasPanel}
-                </View>
-              )}
-              <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
-              <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} />
-              <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} />
-              <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
-            </View>
-          </View>
-        </View>
-      ) : (
-        <View className="flex-1 bg-background">
+        ) : (
           <ProjectTopBar
             projectName={project.name}
             projectId={projectId!}
@@ -677,6 +641,10 @@ export default observer(function ProjectLayout() {
               if (tabId !== 'dynamic-app') setActiveTab('canvas')
             }}
           />
+        )}
+
+        {/* Tab bar — narrow screens only */}
+        {!isWide && (
           <View className="flex-row border-b border-border">
             {(canvasEnabled ? ['chat', 'canvas'] as ActiveTab[] : ['chat'] as ActiveTab[]).map((tab) => (
               <Pressable
@@ -757,20 +725,54 @@ export default observer(function ProjectLayout() {
               </PopoverContent>
             </Popover>
           </View>
-          {activeTab === 'chat' ? (
-            chatPanel
-          ) : previewTab === 'dynamic-app' && canvasEnabled ? (
-            canvasPanel
-          ) : (
-            <View className="flex-1 relative">
-              <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
-              <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} />
-              <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} />
-              <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
-            </View>
-          )}
+        )}
+
+        {/* Content — chat panel stays mounted across layout/tab changes */}
+        <View className={cn('flex-1', isWide && 'flex-row')}>
+          <View
+            className={cn(
+              isWide ? 'w-[480px] border-r border-border' : 'flex-1',
+            )}
+            style={chatHidden ? { display: 'none' } : undefined}
+          >
+            {isWide && showChatSessions && (
+              <View className="border-b border-border">
+                <ChatSessionPicker
+                  sessions={chatSessions}
+                  currentSessionId={chatSessionId ?? undefined}
+                  onSelect={(sessionId) => {
+                    setChatSessionId(sessionId)
+                    setShowChatSessions(false)
+                  }}
+                  onCreate={handleCreateNewSession}
+                  onLoadMore={handleLoadMoreSessions}
+                  hasMore={store?.chatSessionCollection?.hasMore ?? false}
+                  isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
+                />
+              </View>
+            )}
+            {chatPanel}
+          </View>
+
+          <View
+            className="flex-1 relative"
+            style={canvasAreaHidden ? { display: 'none' } : undefined}
+          >
+            {canvasEnabled && (
+              <View
+                className="absolute inset-0"
+                style={previewTab !== 'dynamic-app' ? { display: 'none' } : undefined}
+              >
+                {canvasPanel}
+              </View>
+            )}
+            <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
+            <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} />
+            <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} />
+            <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
+          </View>
         </View>
-      )}
+      </View>
     </>
   )
 })

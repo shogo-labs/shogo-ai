@@ -15,6 +15,7 @@ import { useState, useRef, useCallback, forwardRef, useEffect } from "react"
 import { View, Text, TextInput, Pressable, Image, ScrollView, Platform } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { Paperclip, Send, Loader2, X, File, FileText, ImageIcon } from "lucide-react-native"
+import type { FileAttachment } from "./ChatInput"
 
 export type ProjectType = "APP" | "AGENT"
 
@@ -30,7 +31,7 @@ interface AttachedFile {
 }
 
 export interface CompactChatInputProps {
-  onSubmit: (prompt: string, imageData?: string[]) => void
+  onSubmit: (prompt: string, files?: FileAttachment[]) => void
   disabled?: boolean
   isLoading?: boolean
   placeholder?: string
@@ -80,8 +81,10 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       const trimmedContent = value.trim()
       if ((!trimmedContent && pendingFiles.length === 0) || disabled || isLoading) return
 
-      const fileData =
-        pendingFiles.length > 0 ? pendingFiles.map((f) => f.dataUrl) : undefined
+      const fileData: FileAttachment[] | undefined =
+        pendingFiles.length > 0
+          ? pendingFiles.map((f) => ({ dataUrl: f.dataUrl, name: f.name, type: f.type }))
+          : undefined
 
       onSubmit(trimmedContent, fileData)
       setFileError(null)

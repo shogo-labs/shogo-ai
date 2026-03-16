@@ -49,7 +49,7 @@ import { API_URL, api, createHttpClient } from "../../lib/api"
 import { authClient } from "../../lib/auth-client"
 import { ChatHeader } from "./ChatHeader"
 import { MessageList } from "./MessageList"
-import { ChatInput, type AgentMode } from "./ChatInput"
+import { ChatInput, type AgentMode, type FileAttachment } from "./ChatInput"
 import { CompactChatInput } from "./CompactChatInput"
 import { ExpandTab } from "./ExpandTab"
 import { ToolCallDisplay, type ToolCallState } from "./ToolCallDisplay"
@@ -175,8 +175,8 @@ export interface ChatPanelProps {
   isCollapsed?: boolean
   onCollapsedChange?: (collapsed: boolean) => void
   initialMessage?: string
-  initialImageData?: string[]
-  onCompactSubmit?: (prompt: string, imageData?: string[]) => void
+  initialFiles?: FileAttachment[]
+  onCompactSubmit?: (prompt: string, files?: FileAttachment[]) => void
   compactValue?: string
   onCompactValueChange?: (value: string) => void
   onChatError?: (error: Error | null) => void
@@ -505,7 +505,7 @@ export const ChatPanel = observer(function ChatPanel({
   isCollapsed: controlledIsCollapsed,
   onCollapsedChange,
   initialMessage,
-  initialImageData,
+  initialFiles,
   onCompactSubmit,
   compactValue,
   onCompactValueChange,
@@ -676,12 +676,12 @@ export const ChatPanel = observer(function ChatPanel({
   const isLoadingMessagesRef = useRef(false)
   const hasInjectedInitialMessageRef = useRef(false)
   const isSendingMessageRef = useRef(false)
-  const lastUserInputRef = useRef<{ content: string; imageData?: string[] } | null>(null)
+  const lastUserInputRef = useRef<{ content: string; files?: FileAttachment[] } | null>(null)
 
   type QueuedMessage = {
     id: string
     content: string
-    imageData?: string[]
+    files?: FileAttachment[]
     selectedAgentMode?: AgentMode
   }
   const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([])
@@ -1777,34 +1777,35 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Internal function that actually sends a message (used by queue processor)
   const sendMessageInternal = useCallback(
-    async (content: string, imageData?: string[], selectedAgentMode?: AgentMode) => {
+    async (content: string, files?: FileAttachment[], selectedAgentMode?: AgentMode) => {
       if (!currentSessionId) {
         console.warn("[ChatPanel] No session ID - message will be lost!")
         return
       }
 
-      const imageArray = imageData || []
+      const fileArray = files || []
 
-      if (!content.trim() && imageArray.length === 0) {
+      if (!content.trim() && fileArray.length === 0) {
         return
       }
 
       const trimmedContent = content.trim()
-      lastUserInputRef.current = { content: trimmedContent, imageData: imageArray }
+      lastUserInputRef.current = { content: trimmedContent, files: fileArray }
 
       const parts: Array<
-        { type: "text"; text: string } | { type: "file"; mediaType: string; url: string }
+        { type: "text"; text: string } | { type: "file"; mediaType: string; url: string; name?: string }
       > = []
 
       if (trimmedContent) {
         parts.push({ type: "text", text: trimmedContent })
       }
 
-      imageArray.forEach((dataUrl) => {
+      fileArray.forEach((file) => {
         parts.push({
           type: "file",
-          mediaType: extractMediaType(dataUrl),
-          url: dataUrl,
+          mediaType: file.type || extractMediaType(file.dataUrl),
+          url: file.dataUrl,
+          ...(file.name ? { name: file.name } : {}),
         })
       })
 
@@ -1815,23 +1816,24 @@ export const ChatPanel = observer(function ChatPanel({
           sessionId: currentSessionId,
           role: "user",
           content: trimmedContent,
-          imageData: imageArray.length > 0 ? imageArray[0] : undefined,
+          imageData: fileArray.length > 0 ? fileArray[0].dataUrl : undefined,
           parts: parts.length > 0 ? JSON.stringify(parts) : undefined,
         })
         .catch((err) => console.warn("[ChatPanel] Failed to persist user message:", err))
 
       const messagePayload: {
         text: string
-        files?: Array<{ type: "file"; mediaType: string; url: string }>
+        files?: Array<{ type: "file"; mediaType: string; url: string; name?: string }>
       } = {
         text: trimmedContent,
       }
 
-      if (imageArray.length > 0) {
-        messagePayload.files = imageArray.map((dataUrl) => ({
+      if (fileArray.length > 0) {
+        messagePayload.files = fileArray.map((file) => ({
           type: "file" as const,
-          mediaType: extractMediaType(dataUrl),
-          url: dataUrl,
+          mediaType: file.type || extractMediaType(file.dataUrl),
+          url: file.dataUrl,
+          ...(file.name ? { name: file.name } : {}),
         }))
       }
 
@@ -1886,7 +1888,7 @@ export const ChatPanel = observer(function ChatPanel({
     try {
       await sendMessageInternal(
         nextMessage.content,
-        nextMessage.imageData,
+        nextMessage.files,
         nextMessage.selectedAgentMode
       )
     } catch (err) {
@@ -1940,15 +1942,13 @@ export const ChatPanel = observer(function ChatPanel({
 
   // Handle message submission
   const handleSendMessage = useCallback(
-    async (content: string, imageData?: string[], selectedAgentMode?: AgentMode) => {
+    async (content: string, files?: FileAttachment[], selectedAgentMode?: AgentMode) => {
       if (!currentSessionId) {
         console.warn("[ChatPanel] No session ID - message will be lost!")
         return
       }
 
-      const imageArray = imageData || []
-
-      if (!content.trim() && imageArray.length === 0) {
+      if (!content.trim() && (!files || files.length === 0)) {
         return
       }
 
@@ -1960,27 +1960,22 @@ export const ChatPanel = observer(function ChatPanel({
           {
             id: `queue-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
             content: trimmedContent,
-            imageData: imageArray,
+            files,
             selectedAgentMode,
           },
         ])
         return
       }
 
-      await sendMessageInternal(trimmedContent, imageArray, selectedAgentMode)
+      await sendMessageInternal(trimmedContent, files, selectedAgentMode)
     },
     [isStreaming, sendMessageInternal, currentSessionId]
   )
 
   // Handle form submit from ChatInput
   const handleInputSubmit = useCallback(
-    (content: string, imageData?: string | string[], selectedAgentMode?: AgentMode) => {
-      const normalizedImageData = imageData
-        ? Array.isArray(imageData)
-          ? imageData
-          : [imageData]
-        : undefined
-      handleSendMessage(content, normalizedImageData, selectedAgentMode)
+    (content: string, files?: FileAttachment[], selectedAgentMode?: AgentMode) => {
+      handleSendMessage(content, files, selectedAgentMode)
     },
     [handleSendMessage]
   )
@@ -1997,9 +1992,9 @@ export const ChatPanel = observer(function ChatPanel({
 
     hasInjectedInitialMessageRef.current = true
     setPendingInitialMessage(initialMessage)
-    handleSendMessage(initialMessage, initialImageData)
+    handleSendMessage(initialMessage, initialFiles)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialMessage, initialImageData, currentSessionId, isInitialLoadComplete, handleSendMessage])
+  }, [initialMessage, initialFiles, currentSessionId, isInitialLoadComplete, handleSendMessage])
 
   // Programmatic message injection
   const lastInjectedRef = useRef<string | null>(null)
@@ -2065,8 +2060,8 @@ export const ChatPanel = observer(function ChatPanel({
   }
 
   const handleCompactSubmit = useCallback(
-    (prompt: string, imageData?: string[]) => {
-      onCompactSubmit?.(prompt, imageData)
+    (prompt: string, files?: FileAttachment[]) => {
+      onCompactSubmit?.(prompt, files)
     },
     [onCompactSubmit]
   )

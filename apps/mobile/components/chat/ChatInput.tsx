@@ -70,6 +70,12 @@ interface AttachedFile {
   size: number
 }
 
+export interface FileAttachment {
+  dataUrl: string
+  name: string
+  type: string
+}
+
 interface SkillOption {
   name: string
   description: string
@@ -99,12 +105,12 @@ const AGENT_MODES: AgentModeConfig[] = [
 export type QueuedMessage = {
   id: string
   content: string
-  imageData?: string[]
+  files?: FileAttachment[]
   selectedAgentMode?: AgentMode
 }
 
 export interface ChatInputProps {
-  onSubmit: (content: string, imageData?: string | string[], agentMode?: AgentMode) => void
+  onSubmit: (content: string, files?: FileAttachment[], agentMode?: AgentMode) => void
   disabled?: boolean
   placeholder?: string
   isStreaming?: boolean
@@ -343,8 +349,10 @@ export function ChatInput({
     const trimmedContent = inputValue.trim()
     if ((!trimmedContent && pendingFiles.length === 0) || disabled || isProcessingFiles) return
 
-    const fileData =
-      pendingFiles.length > 0 ? pendingFiles.map((f) => f.dataUrl) : undefined
+    const fileData: FileAttachment[] | undefined =
+      pendingFiles.length > 0
+        ? pendingFiles.map((f) => ({ dataUrl: f.dataUrl, name: f.name, type: f.type }))
+        : undefined
 
     onSubmit(trimmedContent, fileData, agentMode)
     setInputValue("")
@@ -482,8 +490,8 @@ export function ChatInput({
                   <View className="flex-1 min-w-0">
                     <Text className="text-xs text-foreground" numberOfLines={1}>
                       {msg.content ||
-                        (msg.imageData && msg.imageData.length > 0
-                          ? `${msg.imageData.length} image(s)`
+                        (msg.files && msg.files.length > 0
+                          ? `${msg.files.length} file(s)`
                           : "Empty message")}
                     </Text>
                   </View>
