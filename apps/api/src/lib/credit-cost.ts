@@ -46,13 +46,12 @@ export function agentModeToModel(agentMode?: AgentMode): ModelName {
 }
 
 /**
- * Map a proxy model string (e.g. "claude-sonnet", "claude-haiku-4-5") to a billing ModelName.
+ * Map a proxy model string (e.g. "claude-sonnet", "claude-haiku-4-5", "gpt-5-mini") to a billing ModelName.
  */
 export function proxyModelToBillingModel(proxyModel: string): ModelName {
   const lower = proxyModel.toLowerCase()
-  if (lower.includes('opus')) return 'opus'
-  if (lower.includes('haiku')) return 'haiku'
-  // Default to sonnet for any sonnet variant or unknown models
+  if (lower.includes('opus') || lower === 'gpt-5.4' || lower === 'o3') return 'opus'
+  if (lower.includes('haiku') || lower.includes('nano') || lower.includes('mini')) return 'haiku'
   return 'sonnet'
 }
 

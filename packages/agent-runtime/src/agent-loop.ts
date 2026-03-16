@@ -40,7 +40,7 @@ export interface AgentLoopOptions {
   apiKey?: string
   /** Provider name (default: 'anthropic') */
   provider?: string
-  /** Model ID string (e.g. 'claude-sonnet-4-5') */
+  /** Model ID string (e.g. 'claude-sonnet-4-6') */
   model: string
   /** System prompt */
   system: string

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useState, useCallback } from 'react'
-import { View, Text, Pressable, ScrollView } from 'react-native'
+import { useState, useCallback, useEffect, useRef } from 'react'
+import { View, Text, Pressable, ScrollView, ActivityIndicator } from 'react-native'
 import {
   LayoutDashboard,
   Globe,
@@ -12,9 +12,18 @@ import {
   ChevronDown,
   ChevronRight,
   AlertTriangle,
+  Cpu,
+  Check,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Switch } from '@/components/ui/switch'
+import {
+  Popover,
+  PopoverBackdrop,
+  PopoverBody,
+  PopoverContent,
+} from '@/components/ui/popover'
+import { agentFetch } from '../../../lib/agent-fetch'
 import { SkillsPanel } from './SkillsPanel'
 import { ToolsPanel } from './ToolsPanel'
 
@@ -95,6 +104,35 @@ const CAPABILITIES: CapabilityDef[] = [
   },
 ]
 
+interface ModelOption {
+  provider: string
+  name: string
+  displayName: string
+  tier: 'premium' | 'standard' | 'economy'
+}
+
+const AVAILABLE_MODELS: ModelOption[] = [
+  { provider: 'anthropic', name: 'claude-opus-4-6', displayName: 'Claude Opus 4.6', tier: 'premium' },
+  { provider: 'anthropic', name: 'claude-sonnet-4-6', displayName: 'Claude Sonnet 4.6', tier: 'standard' },
+  { provider: 'anthropic', name: 'claude-haiku-4-5', displayName: 'Claude Haiku 4.5', tier: 'economy' },
+  { provider: 'openai', name: 'gpt-5.4', displayName: 'GPT-5.4', tier: 'premium' },
+  { provider: 'openai', name: 'gpt-5-mini', displayName: 'GPT-5 Mini', tier: 'standard' },
+  { provider: 'openai', name: 'gpt-5-nano', displayName: 'GPT-5 Nano', tier: 'economy' },
+  { provider: 'openai', name: 'o3', displayName: 'o3', tier: 'premium' },
+  { provider: 'openai', name: 'o4-mini', displayName: 'o4 Mini', tier: 'standard' },
+]
+
+const MODEL_GROUPS = [
+  { label: 'Anthropic', models: AVAILABLE_MODELS.filter(m => m.provider === 'anthropic') },
+  { label: 'OpenAI', models: AVAILABLE_MODELS.filter(m => m.provider === 'openai') },
+]
+
+const TIER_LABELS: Record<ModelOption['tier'], string> = {
+  premium: 'Premium',
+  standard: 'Standard',
+  economy: 'Economy',
+}
+
 type SubTab = 'built-in' | 'skills' | 'integrations'
 
 interface CapabilitiesPanelProps {
@@ -116,6 +154,46 @@ export function CapabilitiesPanel({
   const [expandedCap, setExpandedCap] = useState<string | null>(null)
   const [pendingToggle, setPendingToggle] = useState<{ key: string; enabled: boolean } | null>(null)
 
+  const [currentModel, setCurrentModel] = useState<{ provider: string; name: string } | null>(null)
+  const [modelPickerOpen, setModelPickerOpen] = useState(false)
+  const [modelUpdating, setModelUpdating] = useState(false)
+  const fetchedRef = useRef(false)
+
+  useEffect(() => {
+    if (!visible || !agentUrl || fetchedRef.current) return
+    fetchedRef.current = true
+    agentFetch(`${agentUrl}/agent/status`)
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data?.model) setCurrentModel(data.model)
+      })
+      .catch(() => {})
+  }, [visible, agentUrl])
+
+  const handleModelChange = useCallback(async (model: ModelOption) => {
+    if (!agentUrl) return
+    if (currentModel?.name === model.name && currentModel?.provider === model.provider) {
+      setModelPickerOpen(false)
+      return
+    }
+    setModelUpdating(true)
+    try {
+      const res = await agentFetch(`${agentUrl}/agent/config`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: { provider: model.provider, name: model.name } }),
+      })
+      if (res.ok) {
+        setCurrentModel({ provider: model.provider, name: model.name })
+      }
+    } catch (err) {
+      console.error('[CapabilitiesPanel] Failed to update model:', err)
+    } finally {
+      setModelUpdating(false)
+      setModelPickerOpen(false)
+    }
+  }, [agentUrl, currentModel])
+
   const handleToggle = useCallback((cap: CapabilityDef, enabled: boolean) => {
     if (!enabled && cap.warning) {
       setPendingToggle({ key: cap.key, enabled })
@@ -132,6 +210,10 @@ export function CapabilitiesPanel({
   }, [pendingToggle, onCapabilityToggle])
 
   if (!visible) return null
+
+  const resolvedModel = AVAILABLE_MODELS.find(
+    m => m.name === currentModel?.name || (currentModel?.name && m.name === currentModel.name.replace(/-\d{8}$/, ''))
+  )
 
   const enabledCount = Object.values(capabilities).filter(Boolean).length
 
@@ -171,7 +253,88 @@ export function CapabilitiesPanel({
       {/* Built-in capabilities tab */}
       {subTab === 'built-in' && (
         <ScrollView className="flex-1" contentContainerStyle={{ paddingBottom: 24 }}>
-          <View className="px-4 gap-2 pt-3">
+          {/* Model selector */}
+          <View className="px-4 pt-3 pb-1">
+            <View className="border border-border rounded-lg px-3 py-2.5 flex-row items-center gap-3">
+              <View className="w-8 h-8 rounded-md items-center justify-center bg-primary/10">
+                <Cpu size={15} className="text-primary" />
+              </View>
+              <View className="flex-1">
+                <Text className="text-xs text-muted-foreground">Model</Text>
+                <Popover
+                  placement="bottom left"
+                  isOpen={modelPickerOpen}
+                  onOpen={() => setModelPickerOpen(true)}
+                  onClose={() => setModelPickerOpen(false)}
+                  trigger={(triggerProps) => (
+                    <Pressable
+                      {...triggerProps}
+                      onPress={() => setModelPickerOpen(prev => !prev)}
+                      className="flex-row items-center gap-1.5 mt-0.5"
+                      disabled={modelUpdating}
+                    >
+                      {modelUpdating ? (
+                        <ActivityIndicator size="small" />
+                      ) : (
+                        <>
+                          <Text className="text-sm font-medium text-foreground">
+                            {resolvedModel?.displayName ?? currentModel?.name ?? 'Loading...'}
+                          </Text>
+                          <ChevronDown size={14} className="text-muted-foreground" />
+                        </>
+                      )}
+                    </Pressable>
+                  )}
+                >
+                  <PopoverBackdrop />
+                  <PopoverContent className="p-0 min-w-[220px]">
+                    <PopoverBody>
+                      {MODEL_GROUPS.map((group) => (
+                        <View key={group.label}>
+                          <View className="px-3 pt-2.5 pb-1">
+                            <Text className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                              {group.label}
+                            </Text>
+                          </View>
+                          {group.models.map((model) => {
+                            const isSelected = currentModel?.name === model.name
+                              || (currentModel?.name && model.name === currentModel.name.replace(/-\d{8}$/, ''))
+                            return (
+                              <Pressable
+                                key={model.name}
+                                onPress={() => handleModelChange(model)}
+                                className={cn(
+                                  'flex-row items-center gap-2.5 px-3 py-2 active:bg-muted',
+                                  isSelected && 'bg-accent',
+                                )}
+                              >
+                                <View className="flex-1">
+                                  <Text className="text-sm text-foreground">{model.displayName}</Text>
+                                </View>
+                                <Text className={cn(
+                                  'text-[10px]',
+                                  model.tier === 'premium' ? 'text-amber-500' :
+                                  model.tier === 'economy' ? 'text-emerald-500' :
+                                  'text-muted-foreground',
+                                )}>
+                                  {TIER_LABELS[model.tier]}
+                                </Text>
+                                {isSelected && (
+                                  <Check size={14} className="text-primary" />
+                                )}
+                              </Pressable>
+                            )
+                          })}
+                        </View>
+                      ))}
+                    </PopoverBody>
+                  </PopoverContent>
+                </Popover>
+              </View>
+            </View>
+          </View>
+
+          <View className="px-4 gap-2 pt-2">
             {CAPABILITIES.map((cap) => {
               const enabled = capabilities[cap.key]
               const isExpanded = expandedCap === cap.key

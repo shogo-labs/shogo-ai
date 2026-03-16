@@ -59,7 +59,7 @@ function configJson(overrides: Record<string, any> = {}): string {
     heartbeatEnabled: true,
     quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
     channels: [],
-    model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
+    model: { provider: 'anthropic', name: 'claude-sonnet-4-6' },
     ...overrides,
   }, null, 2)
 }

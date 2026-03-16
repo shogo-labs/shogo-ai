@@ -92,10 +92,10 @@ const MODEL_REGISTRY: Record<string, ModelConfig> = {
     apiModel: 'claude-opus-4-6',
     displayName: 'Claude Opus 4.6',
   },
-  'claude-sonnet-4-5-20250929': {
+  'claude-sonnet-4-6': {
     provider: 'anthropic',
-    apiModel: 'claude-sonnet-4-5-20250929',
-    displayName: 'Claude Sonnet 4.5',
+    apiModel: 'claude-sonnet-4-6',
+    displayName: 'Claude Sonnet 4.6',
   },
   'claude-haiku-4-5-20251001': {
     provider: 'anthropic',
@@ -106,6 +106,11 @@ const MODEL_REGISTRY: Record<string, ModelConfig> = {
   // ---------------------------------------------------------------------------
   // Anthropic models — Legacy (still available)
   // ---------------------------------------------------------------------------
+  'claude-sonnet-4-5-20250929': {
+    provider: 'anthropic',
+    apiModel: 'claude-sonnet-4-5-20250929',
+    displayName: 'Claude Sonnet 4.5',
+  },
   'claude-opus-4-5-20251101': {
     provider: 'anthropic',
     apiModel: 'claude-opus-4-5-20251101',
@@ -138,8 +143,42 @@ const MODEL_REGISTRY: Record<string, ModelConfig> = {
   },
 
   // ---------------------------------------------------------------------------
-  // OpenAI models
+  // OpenAI models — Current generation
   // ---------------------------------------------------------------------------
+  'gpt-5.4': {
+    provider: 'openai',
+    apiModel: 'gpt-5.4',
+    displayName: 'GPT-5.4',
+  },
+  'gpt-5-mini': {
+    provider: 'openai',
+    apiModel: 'gpt-5-mini',
+    displayName: 'GPT-5 Mini',
+  },
+  'gpt-5-nano': {
+    provider: 'openai',
+    apiModel: 'gpt-5-nano',
+    displayName: 'GPT-5 Nano',
+  },
+  'o3': {
+    provider: 'openai',
+    apiModel: 'o3',
+    displayName: 'o3',
+  },
+  'o4-mini': {
+    provider: 'openai',
+    apiModel: 'o4-mini',
+    displayName: 'o4 Mini',
+  },
+
+  // ---------------------------------------------------------------------------
+  // OpenAI models — Legacy (still available)
+  // ---------------------------------------------------------------------------
+  'gpt-4.1': {
+    provider: 'openai',
+    apiModel: 'gpt-4.1',
+    displayName: 'GPT-4.1',
+  },
   'gpt-4o': {
     provider: 'openai',
     apiModel: 'gpt-4o',
@@ -172,22 +211,19 @@ const MODEL_REGISTRY: Record<string, ModelConfig> = {
   },
 }
 
-// Convenience aliases — current generation
-MODEL_REGISTRY['claude-opus-4-6'] = MODEL_REGISTRY['claude-opus-4-6']
-MODEL_REGISTRY['claude-sonnet-4-5'] = MODEL_REGISTRY['claude-sonnet-4-5-20250929']
+// Convenience aliases — current generation (Anthropic)
+MODEL_REGISTRY['claude-opus'] = MODEL_REGISTRY['claude-opus-4-6']
+MODEL_REGISTRY['claude-sonnet'] = MODEL_REGISTRY['claude-sonnet-4-6']
+MODEL_REGISTRY['claude-haiku'] = MODEL_REGISTRY['claude-haiku-4-5-20251001']
 MODEL_REGISTRY['claude-haiku-4-5'] = MODEL_REGISTRY['claude-haiku-4-5-20251001']
 
-// Convenience aliases — legacy
+// Convenience aliases — legacy (Anthropic)
+MODEL_REGISTRY['claude-sonnet-4-5'] = MODEL_REGISTRY['claude-sonnet-4-5-20250929']
 MODEL_REGISTRY['claude-opus-4-5'] = MODEL_REGISTRY['claude-opus-4-5-20251101']
 MODEL_REGISTRY['claude-opus-4-1'] = MODEL_REGISTRY['claude-opus-4-1-20250805']
 MODEL_REGISTRY['claude-sonnet-4-0'] = MODEL_REGISTRY['claude-sonnet-4-20250514']
 MODEL_REGISTRY['claude-3-7-sonnet-latest'] = MODEL_REGISTRY['claude-3-7-sonnet-20250219']
 MODEL_REGISTRY['claude-opus-4-0'] = MODEL_REGISTRY['claude-opus-4-20250514']
-
-// Short convenience aliases
-MODEL_REGISTRY['claude-opus'] = MODEL_REGISTRY['claude-opus-4-6']
-MODEL_REGISTRY['claude-sonnet'] = MODEL_REGISTRY['claude-sonnet-4-5-20250929']
-MODEL_REGISTRY['claude-haiku'] = MODEL_REGISTRY['claude-haiku-4-5-20251001']
 
 // =============================================================================
 // Provider Routing
@@ -227,7 +263,7 @@ function resolveModel(model: string): ModelConfig | null {
       displayName: model,
     }
   }
-  if (model.startsWith('gpt') || model.startsWith('o1') || model.startsWith('o3')) {
+  if (model.startsWith('gpt') || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('o4')) {
     return {
       provider: 'openai',
       apiModel: model,
@@ -276,7 +312,7 @@ function resolveAgentModel(model: string): { resolvedModel: string; isLocal: boo
     return { resolvedModel: 'claude-haiku-4-5', isLocal: false }
   }
   if (model === 'advanced') {
-    return { resolvedModel: 'claude-sonnet-4-5', isLocal: false }
+    return { resolvedModel: 'claude-sonnet-4-6', isLocal: false }
   }
   return { resolvedModel: model, isLocal: false }
 }
