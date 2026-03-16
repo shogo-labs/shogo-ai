@@ -1067,8 +1067,10 @@ export class WarmPoolController {
         }
 
         try {
+          const { deriveRuntimeToken } = await import('./runtime-token')
           const resp = await fetch(`${pod.url}/pool/activity`, {
             signal: AbortSignal.timeout(5000),
+            headers: { 'x-runtime-token': deriveRuntimeToken(pod.projectId) },
           })
           if (resp.ok) {
             const activity = await resp.json() as { idleSeconds: number }
