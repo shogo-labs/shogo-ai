@@ -9,6 +9,7 @@ import {
   TextInput,
   ActivityIndicator,
   Platform,
+  useWindowDimensions,
 } from 'react-native'
 import {
   FileText,
@@ -23,6 +24,7 @@ import {
   Search,
   ChevronRight,
   ChevronDown,
+  ChevronLeft,
   X,
   FolderPlus,
   FilePlus,
@@ -171,7 +173,13 @@ function formatSize(bytes: number): string {
 // Main Panel
 // ---------------------------------------------------------------------------
 
+const NARROW_BREAKPOINT = 600
+
 export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowserPanelProps) {
+  const { width } = useWindowDimensions()
+  const isNarrow = width < NARROW_BREAKPOINT
+  const [showEditorOnNarrow, setShowEditorOnNarrow] = useState(false)
+
   const [tree, setTree] = useState<FileEntry[]>([])
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [isWorkspaceFile, setIsWorkspaceFile] = useState(false)
@@ -221,6 +229,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
     setIsLoadingFile(true)
     setError(null)
     setIsWorkspaceFile(false)
+    setShowEditorOnNarrow(true)
     try {
       const res = await fetch(`${agentUrl}/agent/workspace/files/${encodeURIComponent(path)}`)
       if (!res.ok) throw new Error('Failed to load file')
@@ -240,6 +249,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
     setIsLoadingFile(true)
     setError(null)
     setIsWorkspaceFile(true)
+    setShowEditorOnNarrow(true)
     try {
       const res = await fetch(`${agentUrl}/agent/files/${filename}`)
       if (!res.ok) throw new Error('Failed to load file')
@@ -463,10 +473,13 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
 
   if (!visible) return null
 
+  const showSidebar = !isNarrow || !showEditorOnNarrow
+  const showEditor = !isNarrow || showEditorOnNarrow
+
   return (
     <View className="absolute inset-0 flex-row" style={{ display: visible ? 'flex' : 'none' }}>
       {/* Sidebar */}
-      <View className="w-56 border-r border-border bg-muted/30 flex-col">
+      <View className={cn('border-r border-border bg-muted/30 flex-col', isNarrow ? 'flex-1' : 'w-56')} style={!showSidebar ? { display: 'none' } : undefined}>
         {/* Search bar */}
         <View className="p-2 border-b border-border">
           <View className="flex-row items-center bg-background border border-border rounded-md px-2">
@@ -686,11 +699,19 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
       </View>
 
       {/* Editor area */}
-      <View className="flex-1 flex-col">
+      <View className="flex-1 flex-col" style={!showEditor ? { display: 'none' } : undefined}>
         {selectedPath ? (
           <>
             {/* Toolbar */}
             <View className="px-3 py-2 border-b border-border flex-row items-center gap-2">
+              {isNarrow && (
+                <Pressable
+                  onPress={() => setShowEditorOnNarrow(false)}
+                  className="p-1 rounded-md active:bg-muted mr-1"
+                >
+                  <ChevronLeft size={18} className="text-foreground" />
+                </Pressable>
+              )}
               <FileText size={14} className="text-muted-foreground" />
               <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
                 {isWorkspaceFile
