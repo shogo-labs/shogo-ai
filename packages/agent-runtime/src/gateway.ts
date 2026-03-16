@@ -1148,6 +1148,7 @@ export class AgentGateway {
       model: { provider: 'anthropic', name: 'claude-sonnet-4-6' },
       maxSessionMessages: 30,
       canvasEnabled: true,
+      mainSessionIds: ['chat'],
     }
     const configPath = join(this.workspaceDir, 'config.json')
     if (existsSync(configPath)) {
