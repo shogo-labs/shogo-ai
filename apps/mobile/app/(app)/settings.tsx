@@ -43,7 +43,6 @@ import {
   Sparkles,
   MapPin,
   BookOpen,
-  MessageSquare,
   X,
   Search,
   UserPlus,
@@ -457,29 +456,6 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
               Set username
             </Button>
           </View>
-
-          {wsFeatures.billing && (
-            <>
-              <Separator />
-
-              {/* Default monthly member credit limit */}
-              <View className="px-6 py-5 flex-row items-start justify-between">
-                <View className="flex-[0.45] mr-4 pt-1">
-                  <Text className="text-base font-semibold text-foreground">
-                    Default monthly member credit limit
-                  </Text>
-                  <Text className="text-sm text-muted-foreground mt-0.5">
-                    The default monthly credit limit for members of this workspace. Leave empty to use no limit.
-                  </Text>
-                </View>
-                <View className="flex-[0.55]">
-                  <Input
-                    placeholder="Enter default monthly member credit limit (optional)"
-                  />
-                </View>
-              </View>
-            </>
-          )}
         </CardContent>
       </Card>
 
@@ -680,17 +656,6 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
 // ACCOUNT TAB
 // ============================================================================
 
-const CHAT_SUGGESTIONS_KEY = 'shogo:chat-suggestions'
-
-interface ActivityData {
-  totalMessages: number
-  dailyAverage: number
-  daysActive: number
-  daysInPeriod: number
-  currentStreak: number
-  dailyCounts: Record<string, number>
-}
-
 function AccountTab() {
   const { user, signOut, updateUser } = useAuth()
   const http = useDomainHttp()
@@ -700,11 +665,9 @@ function AccountTab() {
   const [name, setName] = useState(user?.name || '')
   const [isSaving, setIsSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
-  const [chatSuggestions, setChatSuggestions] = useState(true)
   const [isDeleting, setIsDeleting] = useState(false)
   const [deleteConfirmText, setDeleteConfirmText] = useState('')
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
-  const [activity, setActivity] = useState<ActivityData | null>(null)
 
   const originalName = user?.name || ''
   const hasNameChanges = name !== originalName
@@ -713,29 +676,6 @@ function AccountTab() {
   useEffect(() => {
     setName(user?.name || '')
   }, [user?.name])
-
-  useEffect(() => {
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
-      const stored = window.localStorage.getItem(CHAT_SUGGESTIONS_KEY)
-      if (stored !== null) setChatSuggestions(stored !== 'false')
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!http) return
-    let cancelled = false
-    api.getMyActivity(http)
-      .then((data) => { if (!cancelled) setActivity(data) })
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [http])
-
-  const handleToggleChatSuggestions = useCallback((value: boolean) => {
-    setChatSuggestions(value)
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
-      window.localStorage.setItem(CHAT_SUGGESTIONS_KEY, String(value))
-    }
-  }, [])
 
   const handleSave = async () => {
     if (!hasChanges || isSaving || !user?.id) return
@@ -780,22 +720,6 @@ function AccountTab() {
     }
   }
 
-  const handleLinkCompany = () => {
-    if (Platform.OS === 'web') {
-      window.alert('SSO linking is coming soon.')
-    } else {
-      RNAlert.alert('Coming Soon', 'SSO linking is coming soon.')
-    }
-  }
-
-  const handleVerify2FA = () => {
-    if (Platform.OS === 'web') {
-      window.alert('Two-factor authentication is coming soon.')
-    } else {
-      RNAlert.alert('Coming Soon', 'Two-factor authentication is coming soon.')
-    }
-  }
-
   return (
     <View className="gap-8">
       <View>
@@ -806,46 +730,6 @@ function AccountTab() {
           Personalize how others see and interact with you on Shogo.
         </Text>
       </View>
-
-      {/* Activity */}
-      <Card>
-        <CardContent className="p-5 gap-3">
-          <View className="flex-row items-center gap-2">
-            <MessageSquare size={16} className="text-primary" />
-            <Text className="text-sm text-foreground">
-              {activity?.totalMessages ?? 0} messages sent on
-            </Text>
-            <Sparkles size={16} className="text-primary" />
-            <Text className="text-sm font-bold text-foreground">Shogo</Text>
-            <Text className="text-sm text-foreground">in the last year</Text>
-          </View>
-          <View className="h-20 bg-muted/50 rounded items-center justify-center">
-            <Text className="text-xs text-muted-foreground">
-              Activity heatmap coming soon
-            </Text>
-          </View>
-          <View className="flex-row gap-4">
-            <View className="flex-1">
-              <Text className="text-xs text-muted-foreground">Daily average</Text>
-              <Text className="text-sm font-medium text-foreground">
-                {activity?.dailyAverage ?? 0} msgs
-              </Text>
-            </View>
-            <View className="flex-1">
-              <Text className="text-xs text-muted-foreground">Days active</Text>
-              <Text className="text-sm font-medium text-foreground">
-                {activity?.daysActive ?? 0} ({activity ? Math.round((activity.daysActive / activity.daysInPeriod) * 100) : 0}%)
-              </Text>
-            </View>
-            <View className="flex-1">
-              <Text className="text-xs text-muted-foreground">Current streak</Text>
-              <Text className="text-sm font-medium text-foreground">
-                {activity?.currentStreak ?? 0} days
-              </Text>
-            </View>
-          </View>
-        </CardContent>
-      </Card>
 
       {/* Profile */}
       <Card>
@@ -924,108 +808,11 @@ function AccountTab() {
         </CardContent>
       </Card>
 
-      {/* Preferences */}
-      <Card>
-        <CardContent className="p-0">
-          <View className="px-6 py-5 flex-row items-center justify-between">
-            <View className="flex-1 mr-4">
-              <Text className="text-sm font-semibold text-foreground">
-                Chat suggestions
-              </Text>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                Show helpful suggestions in the chat interface.
-              </Text>
-            </View>
-            <Switch
-              checked={chatSuggestions}
-              onCheckedChange={handleToggleChatSuggestions}
-            />
-          </View>
-        </CardContent>
-      </Card>
-
-      {/* Linked accounts */}
-      <Card>
-        <CardContent className="p-0">
-          <View className="px-6 py-5">
-            <Text className="text-sm font-semibold text-foreground">
-              Linked accounts
-            </Text>
-            <Text className="text-sm text-muted-foreground mt-0.5">
-              Manage accounts linked for sign-in.
-            </Text>
-            <View className="mt-3 gap-3">
-              <View className="bg-muted/50 rounded-lg p-3 flex-row items-center gap-3">
-                <View className="h-8 w-8 rounded bg-muted items-center justify-center">
-                  <User size={16} className="text-muted-foreground" />
-                </View>
-                <View className="flex-1">
-                  <View className="flex-row items-center gap-2">
-                    <Text className="text-sm font-medium text-foreground">
-                      Password
-                    </Text>
-                    <Badge variant="secondary">
-                      <Text className="text-[10px] text-secondary-foreground">
-                        Primary
-                      </Text>
-                    </Badge>
-                  </View>
-                  <Text className="text-xs text-muted-foreground">{user?.email}</Text>
-                </View>
-              </View>
-              <View className="border border-dashed border-border rounded-lg p-3 flex-row items-center gap-3">
-                <View className="h-8 w-8 rounded bg-muted items-center justify-center">
-                  <Building2 size={16} className="text-muted-foreground" />
-                </View>
-                <View className="flex-1">
-                  <Text className="text-sm font-medium text-foreground">
-                    Link company account
-                  </Text>
-                  <Text className="text-xs text-muted-foreground">
-                    Use your organization's single sign-on
-                  </Text>
-                </View>
-                <Button variant="outline" size="sm" onPress={handleLinkCompany}>
-                  Link
-                </Button>
-              </View>
-            </View>
-          </View>
-
-          <Separator />
-
-          {/* Two-factor authentication */}
-          <View className="px-6 py-5">
-            <Text className="text-sm font-semibold text-foreground">
-              Two-factor authentication
-            </Text>
-            <Text className="text-sm text-muted-foreground mt-0.5">
-              Secure your account with a one-time code via an authenticator app
-              or SMS.
-            </Text>
-            <View className="mt-3 bg-muted/50 rounded-lg p-3 flex-row items-center gap-3">
-              <Shield size={20} className="text-muted-foreground" />
-              <View className="flex-1">
-                <Text className="text-sm font-medium text-foreground">
-                  Re-authentication required
-                </Text>
-                <Text className="text-xs text-muted-foreground">
-                  For security, please re-authenticate to manage two-factor
-                  settings.
-                </Text>
-              </View>
-              <Button variant="outline" size="sm" onPress={handleVerify2FA}>
-                Verify
-              </Button>
-            </View>
-          </View>
-
-          {!localMode && (
-            <>
-              <Separator />
-
-              {/* Delete account */}
-              <View className="px-6 py-5">
+      {!localMode && (
+        <Card>
+          <CardContent className="p-0">
+            {/* Delete account */}
+            <View className="px-6 py-5">
                 <View className="flex-row items-center justify-between">
                   <View className="flex-1 mr-4">
                     <Text className="text-sm font-semibold text-foreground">
@@ -1081,10 +868,9 @@ function AccountTab() {
                   </View>
                 )}
               </View>
-            </>
-          )}
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Sign Out */}
       {!localMode && (
