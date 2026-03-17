@@ -9,6 +9,7 @@ import {
   Platform,
   ActivityIndicator,
   Alert,
+  useWindowDimensions,
 } from 'react-native'
 import { useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
@@ -202,11 +203,13 @@ function TemplateCard({
   isLoading,
   onPress,
   isDark,
+  compact,
 }: {
   template: AgentTemplate
   isLoading: boolean
   onPress: () => void
   isDark: boolean
+  compact?: boolean
 }) {
   const color = TEMPLATE_COLORS[template.id] || '#6366f1'
 
@@ -227,36 +230,42 @@ function TemplateCard({
     >
       <View
         style={{
-          height: 180,
+          height: compact ? 100 : 180,
           backgroundColor: isDark ? `${color}15` : `${color}08`,
           borderBottomWidth: 1,
           borderBottomColor: isDark ? 'rgba(255,255,255,0.06)' : '#f3f4f6',
         }}
         className="items-center justify-center"
       >
-        <Text style={{ fontSize: 48 }}>{template.icon}</Text>
-        <Text
-          style={{ color, fontSize: 11, fontWeight: '600', marginTop: 8, opacity: 0.7 }}
-        >
-          Preview coming soon
-        </Text>
+        <Text style={{ fontSize: compact ? 36 : 48 }}>{template.icon}</Text>
       </View>
 
-      <View className="px-4 py-3.5">
-        <View className="flex-row items-center justify-between">
-          <Text className="text-[15px] font-semibold text-card-foreground">
+      <View className={compact ? 'px-3 py-2.5' : 'px-4 py-3.5'}>
+        <View className="flex-row items-center justify-between gap-1">
+          <Text
+            className={cn(
+              'font-semibold text-card-foreground flex-1',
+              compact ? 'text-[13px]' : 'text-[15px]',
+            )}
+            numberOfLines={1}
+          >
             {template.name}
           </Text>
-          <View className="rounded-full px-2.5 py-0.5 bg-muted">
-            <Text className="text-[11px] font-medium text-muted-foreground">
-              {template.tags[0]
-                ? template.tags[0].charAt(0).toUpperCase() + template.tags[0].slice(1)
-                : template.category}
-            </Text>
-          </View>
+          {!compact && (
+            <View className="rounded-full px-2.5 py-0.5 bg-muted flex-shrink-0">
+              <Text className="text-[11px] font-medium text-muted-foreground">
+                {template.tags[0]
+                  ? template.tags[0].charAt(0).toUpperCase() + template.tags[0].slice(1)
+                  : template.category}
+              </Text>
+            </View>
+          )}
         </View>
         <Text
-          className="text-[13px] mt-1 leading-[18px] text-muted-foreground"
+          className={cn(
+            'mt-1 leading-[18px] text-muted-foreground',
+            compact ? 'text-[11px]' : 'text-[13px]',
+          )}
           numberOfLines={2}
         >
           {template.description}
@@ -285,6 +294,9 @@ const HomeScreen = observer(function HomeScreen() {
   const http = useDomainHttp()
   const actions = useDomainActions()
   const isDark = useDarkMode()
+  const { width: screenWidth } = useWindowDimensions()
+  const isMobile = screenWidth < 640
+  const gridColumns = screenWidth < 640 ? 2 : screenWidth < 1024 ? 2 : 3
 
   const [prompt, setPrompt] = useState('')
   const [isCreating, setIsCreating] = useState(false)
@@ -515,19 +527,30 @@ const HomeScreen = observer(function HomeScreen() {
     <View className="flex-1 bg-background">
       <ScrollView className="flex-1" contentContainerStyle={{ flexGrow: 1 }}>
         {/* Hero section with gradient */}
-        <View className="relative" style={{ minHeight: 420 }}>
+        <View className="relative" style={{ minHeight: isMobile ? 340 : 420 }}>
           <LovableGradient isDark={isDark} />
 
-          <View className="relative items-center justify-center px-6 pt-16 pb-12">
+          <View
+            className="relative items-center justify-center"
+            style={{
+              paddingHorizontal: isMobile ? 16 : 24,
+              paddingTop: isMobile ? 48 : 64,
+              paddingBottom: isMobile ? 32 : 48,
+            }}
+          >
             <Text
               className="text-center font-bold mb-2 text-foreground"
-              style={{ fontSize: 36, lineHeight: 44, letterSpacing: -0.5 }}
+              style={{
+                fontSize: isMobile ? 26 : 36,
+                lineHeight: isMobile ? 34 : 44,
+                letterSpacing: -0.5,
+              }}
             >
               What's on your mind, {firstName}?
             </Text>
             <Text
               className="text-center mb-8 text-muted-foreground"
-              style={{ fontSize: 16 }}
+              style={{ fontSize: isMobile ? 14 : 16 }}
             >
               Build agents by chatting with AI
             </Text>
@@ -562,18 +585,26 @@ const HomeScreen = observer(function HomeScreen() {
           style={{
             marginTop: -24,
             paddingTop: 20,
-            marginLeft: 20,
-            marginRight: 20,
+            marginLeft: isMobile ? 8 : 20,
+            marginRight: isMobile ? 8 : 20,
           }}
         >
-          <View className="flex-row items-center justify-between px-6 mb-5">
-            <View className="flex-row items-center gap-1">
+          <View
+            className="flex-row items-center mb-5"
+            style={{ paddingHorizontal: isMobile ? 12 : 24, gap: 4 }}
+          >
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ alignItems: 'center', gap: 2 }}
+              className="flex-1"
+            >
               {TAB_ITEMS.map((tab) => (
                 <Pressable
                   key={tab.key}
                   onPress={() => setActiveTab(tab.key)}
                   className={cn(
-                    'px-3.5 py-2 rounded-lg',
+                    'px-3 py-2 rounded-lg',
                     activeTab === tab.key && 'bg-muted',
                   )}
                 >
@@ -584,20 +615,21 @@ const HomeScreen = observer(function HomeScreen() {
                         ? 'text-foreground font-semibold'
                         : 'text-muted-foreground'
                     )}
+                    numberOfLines={1}
                   >
                     {tab.label}
                   </Text>
                 </Pressable>
               ))}
-            </View>
+            </ScrollView>
 
             {activeTab === 'templates' && (
               <Pressable
                 onPress={() => router.push('/(app)/templates' as any)}
-                className="flex-row items-center gap-1 active:opacity-70"
+                className="flex-row items-center gap-1 active:opacity-70 flex-shrink-0"
               >
                 <Text className="text-[13px] font-medium text-foreground">
-                  Browse all
+                  Browse
                 </Text>
                 <ArrowRight size={14} className="text-foreground" />
               </Pressable>
@@ -605,7 +637,7 @@ const HomeScreen = observer(function HomeScreen() {
             {activeTab === 'shared' && (
               <Pressable
                 onPress={() => router.push('/(app)/shared' as any)}
-                className="flex-row items-center gap-1 active:opacity-70"
+                className="flex-row items-center gap-1 active:opacity-70 flex-shrink-0"
               >
                 <Text className="text-[13px] font-medium text-foreground">
                   View all
@@ -615,15 +647,15 @@ const HomeScreen = observer(function HomeScreen() {
             )}
           </View>
 
-          <View className="px-6 pb-10">
+          <View style={{ paddingHorizontal: isMobile ? 12 : 24, paddingBottom: 40 }}>
             {activeTab === 'templates' && (
               homeTemplates.length > 0 ? (
                 <View
-                  className="gap-4"
+                  className="gap-3"
                   style={Platform.OS === 'web' ? {
                     display: 'grid' as any,
-                    gridTemplateColumns: 'repeat(3, 1fr)',
-                    gap: 16,
+                    gridTemplateColumns: `repeat(${gridColumns}, 1fr)`,
+                    gap: isMobile ? 10 : 16,
                     maxWidth: 1100,
                     marginHorizontal: 'auto',
                   } as any : {}}
@@ -635,6 +667,7 @@ const HomeScreen = observer(function HomeScreen() {
                       isLoading={loadingTemplate === template.id}
                       onPress={() => handleTemplatePress(template)}
                       isDark={isDark}
+                      compact={isMobile}
                     />
                   ))}
                 </View>
@@ -648,11 +681,11 @@ const HomeScreen = observer(function HomeScreen() {
             {activeTab === 'projects' && (
               myProjects.length > 0 ? (
                 <View
-                  className="gap-4"
+                  className="gap-3"
                   style={Platform.OS === 'web' ? {
                     display: 'grid' as any,
-                    gridTemplateColumns: 'repeat(3, 1fr)',
-                    gap: 16,
+                    gridTemplateColumns: `repeat(${gridColumns}, 1fr)`,
+                    gap: isMobile ? 10 : 16,
                     maxWidth: 1100,
                     marginHorizontal: 'auto',
                   } as any : {}}
@@ -666,6 +699,7 @@ const HomeScreen = observer(function HomeScreen() {
                       createdAt={project.createdAt}
                       onPress={() => router.push(`/(app)/projects/${project.id}`)}
                       isDark={isDark}
+                      compact={isMobile}
                     />
                   ))}
                 </View>
@@ -679,11 +713,11 @@ const HomeScreen = observer(function HomeScreen() {
             {activeTab === 'shared' && (
               sharedProjects.length > 0 ? (
                 <View
-                  className="gap-4"
+                  className="gap-3"
                   style={Platform.OS === 'web' ? {
                     display: 'grid' as any,
-                    gridTemplateColumns: 'repeat(3, 1fr)',
-                    gap: 16,
+                    gridTemplateColumns: `repeat(${gridColumns}, 1fr)`,
+                    gap: isMobile ? 10 : 16,
                     maxWidth: 1100,
                     marginHorizontal: 'auto',
                   } as any : {}}
@@ -698,6 +732,7 @@ const HomeScreen = observer(function HomeScreen() {
                       onPress={() => router.push(`/(app)/projects/${project.id}`)}
                       isDark={isDark}
                       badge="Shared"
+                      compact={isMobile}
                     />
                   ))}
                 </View>

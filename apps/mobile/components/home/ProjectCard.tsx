@@ -46,6 +46,9 @@ export interface ProjectCardProps {
   /** Small pill badge shown over the header (e.g. "Shared") */
   badge?: string
 
+  /** Compact mode for mobile screens */
+  compact?: boolean
+
   // Callbacks
   onPress: () => void
   onLongPress?: () => void
@@ -70,6 +73,7 @@ export function ProjectCard({
   isStarred,
   selectMode,
   badge,
+  compact,
   onPress,
   onLongPress,
   onStarToggle,
@@ -105,7 +109,7 @@ export function ProjectCard({
       {/* Header */}
       <View
         style={{
-          height: 180,
+          height: compact ? 100 : 180,
           backgroundColor: isDark ? `${color}18` : `${color}0d`,
           borderBottomWidth: 1,
           borderBottomColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)',
@@ -120,12 +124,14 @@ export function ProjectCard({
           />
         ) : (
           <View className="items-center justify-center gap-2">
-            <FolderOpen size={32} style={{ color: `${color}99` }} />
-            <Text
-              style={{ color, fontSize: 11, fontWeight: '600', opacity: 0.7 }}
-            >
-              {initial}
-            </Text>
+            <FolderOpen size={compact ? 24 : 32} style={{ color: `${color}99` }} />
+            {!compact && (
+              <Text
+                style={{ color, fontSize: 11, fontWeight: '600', opacity: 0.7 }}
+              >
+                {initial}
+              </Text>
+            )}
           </View>
         )}
 
@@ -176,20 +182,26 @@ export function ProjectCard({
       </View>
 
       {/* Info */}
-      <View className="px-4 py-3.5">
+      <View className={compact ? 'px-3 py-2.5' : 'px-4 py-3.5'}>
         <View className="flex-row items-center gap-2.5">
           {renderLeading?.()}
           <View className="flex-1 min-w-0">
             <Text
-              className="font-semibold text-[15px] text-card-foreground"
+              className={cn(
+                'font-semibold text-card-foreground',
+                compact ? 'text-[13px]' : 'text-[15px]',
+              )}
               numberOfLines={1}
             >
               {name || 'Untitled'}
             </Text>
             {subtitle ? (
               <Text
-                className="text-[13px] mt-0.5 leading-[18px] text-muted-foreground"
-                numberOfLines={2}
+                className={cn(
+                  'mt-0.5 leading-[18px] text-muted-foreground',
+                  compact ? 'text-[11px]' : 'text-[13px]',
+                )}
+                numberOfLines={compact ? 1 : 2}
               >
                 {subtitle}
               </Text>

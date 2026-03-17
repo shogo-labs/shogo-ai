@@ -63,13 +63,7 @@ import {
   CapabilitiesPanel,
   MonitorPanel,
 } from '../../../../components/project/panels'
-import { RefreshCw, MoreHorizontal, History, PanelLeft, PanelLeftClose, Plus } from 'lucide-react-native'
-import {
-  Popover,
-  PopoverBackdrop,
-  PopoverBody,
-  PopoverContent,
-} from '../../../../components/ui/popover'
+import { RefreshCw, History, PanelLeft, PanelLeftClose, Plus, MessageSquare } from 'lucide-react-native'
 
 type ActiveTab = 'chat' | 'canvas'
 
@@ -97,7 +91,6 @@ export default observer(function ProjectLayout() {
 
   // Tab state for narrow screens
   const [activeTab, setActiveTab] = useState<ActiveTab>('chat')
-  const [showMoreMenu, setShowMoreMenu] = useState(false)
 
   // Chat session tracking — seed from route param if provided
   const [chatSessionId, setChatSessionId] = useState<string | null>(
@@ -580,6 +573,7 @@ export default observer(function ProjectLayout() {
             onDataChange={updateLocalData}
             authHeaders={nativeHeaders}
             onRefresh={reconnect}
+            fullBleed={!isWide}
           />
         </EditModeProvider>
       </CanvasThemeProvider>
@@ -593,6 +587,7 @@ export default observer(function ProjectLayout() {
 
   const chatHidden = isWide ? isChatFullscreen : activeTab !== 'chat'
   const canvasAreaHidden = (!isWide && activeTab === 'chat') || isChatFullscreen
+  const narrowOnCanvas = !isWide && activeTab === 'canvas'
 
   return (
     <>
@@ -623,7 +618,7 @@ export default observer(function ProjectLayout() {
             hiddenTabs={hiddenTabs}
             canvasEnabled={canvasEnabled}
           />
-        ) : (
+        ) : !narrowOnCanvas ? (
           <ProjectTopBar
             projectName={project.name}
             projectId={projectId!}
@@ -645,96 +640,18 @@ export default observer(function ProjectLayout() {
             folders={folders}
             hiddenTabs={hiddenTabs}
             canvasEnabled={canvasEnabled}
+            narrowActiveTab={activeTab}
+            narrowPreviewTab={previewTab}
+            onNarrowTabChange={(tab) => {
+              setActiveTab(tab)
+              if (tab === 'canvas') setPreviewTab('dynamic-app')
+            }}
             onTabChange={(tabId) => {
               setPreviewTab(tabId)
               if (tabId !== 'dynamic-app' && tabId !== 'chat-fullscreen') setActiveTab('canvas')
             }}
           />
-        )}
-
-        {/* Tab bar — narrow screens only */}
-        {!isWide && (
-          <View className="flex-row border-b border-border">
-            {(canvasEnabled ? ['chat', 'canvas'] as ActiveTab[] : ['chat'] as ActiveTab[]).map((tab) => (
-              <Pressable
-                key={tab}
-                onPress={() => {
-                  setActiveTab(tab)
-                  if (tab === 'canvas') setPreviewTab('dynamic-app')
-                }}
-                className={cn(
-                  'flex-1 py-3 items-center',
-                  activeTab === tab && 'border-b-2 border-primary',
-                )}
-              >
-                <Text
-                  className={cn(
-                    'text-sm font-medium',
-                    activeTab === tab ? 'text-primary' : 'text-muted-foreground',
-                  )}
-                >
-                  {tab === 'chat'
-                    ? 'Chat'
-                    : previewTab !== 'dynamic-app' && activeTab === 'canvas'
-                      ? { capabilities: 'Capabilities', channels: 'Channels', monitor: 'Monitor' }[previewTab] ?? 'Canvas'
-                      : `Canvas${activeSurface ? ` (${activeSurface.title || 'Live'})` : ''}`}
-                </Text>
-              </Pressable>
-            ))}
-            <Popover
-              placement="bottom right"
-              isOpen={showMoreMenu}
-              onOpen={() => setShowMoreMenu(true)}
-              onClose={() => setShowMoreMenu(false)}
-              trigger={(triggerProps) => (
-                <Pressable
-                  {...triggerProps}
-                  className={cn(
-                    'px-3 py-3 items-center justify-center',
-                    showMoreMenu && 'bg-muted',
-                  )}
-                >
-                  <MoreHorizontal size={18} className="text-muted-foreground" />
-                </Pressable>
-              )}
-            >
-              <PopoverBackdrop />
-              <PopoverContent className="min-w-[180px] p-0">
-                <PopoverBody>
-                  {([
-                    { id: 'capabilities', label: 'Capabilities' },
-                    { id: 'channels', label: 'Channels' },
-                    { id: 'monitor', label: 'Monitor' },
-                  ] as const).map((item) => (
-                    <Pressable
-                      key={item.id}
-                      onPress={() => {
-                        setActiveTab('canvas')
-                        setPreviewTab(item.id)
-                        setShowMoreMenu(false)
-                      }}
-                      className={cn(
-                        'px-4 py-3 active:bg-muted',
-                        previewTab === item.id && activeTab === 'canvas' && 'bg-accent',
-                      )}
-                    >
-                      <Text
-                        className={cn(
-                          'text-sm',
-                          previewTab === item.id && activeTab === 'canvas'
-                            ? 'text-foreground font-medium'
-                            : 'text-foreground',
-                        )}
-                      >
-                        {item.label}
-                      </Text>
-                    </Pressable>
-                  ))}
-                </PopoverBody>
-              </PopoverContent>
-            </Popover>
-          </View>
-        )}
+        ) : null}
 
         {/* Content — chat panel stays mounted across layout/tab changes */}
         <View className={cn('flex-1', isWide && 'flex-row')}>
@@ -831,6 +748,26 @@ export default observer(function ProjectLayout() {
             className="flex-1 relative"
             style={canvasAreaHidden ? { display: 'none' } : undefined}
           >
+            {/* Floating chat button on mobile canvas — bottom right */}
+            {narrowOnCanvas && (
+              <View
+                className="absolute bottom-0 right-0 z-10"
+                style={{ paddingBottom: 24, paddingRight: 16 }}
+                pointerEvents="box-none"
+              >
+                <Pressable
+                  onPress={() => setActiveTab('chat')}
+                  className="flex-row items-center gap-1.5 rounded-full bg-primary px-4 py-2.5 shadow-lg"
+                  style={Platform.OS === 'web' ? {
+                    boxShadow: '0 4px 12px rgba(0,0,0,0.15), 0 2px 4px rgba(0,0,0,0.1)',
+                  } as any : {}}
+                >
+                  <MessageSquare size={16} color="#fff" />
+                  <Text className="text-sm font-semibold text-primary-foreground">Chat</Text>
+                </Pressable>
+              </View>
+            )}
+
             {canvasEnabled && (
               <View
                 className="absolute inset-0"
@@ -862,6 +799,7 @@ function CanvasPanel({
   onDataChange,
   authHeaders,
   onRefresh,
+  fullBleed,
 }: {
   surface: any | null
   connected: boolean
@@ -870,6 +808,7 @@ function CanvasPanel({
   onDataChange?: (surfaceId: string, path: string, value: unknown) => void
   authHeaders?: () => Record<string, string>
   onRefresh?: () => void
+  fullBleed?: boolean
 }) {
   const editMode = useEditModeOptional()
   const isEditMode = editMode?.isEditMode ?? false
@@ -930,9 +869,9 @@ function CanvasPanel({
   if (!surface) {
     return (
       <View className="flex-1">
-        <View className="flex-1 p-3">
-          <CanvasThemedContainer>
-            <EditToolbar surfaceId={null} trailing={themePicker} />
+        <View className={cn('flex-1', !fullBleed && 'p-3')}>
+          <CanvasThemedContainer noBorder={fullBleed}>
+            {!fullBleed && <EditToolbar surfaceId={null} trailing={themePicker} />}
             <View className="flex-1 items-center justify-center px-6">
               <View
                 className={cn(
@@ -969,12 +908,12 @@ function CanvasPanel({
         {isEditMode && showTreePanel && (
           <ComponentTreePanel surfaceId={surfaceId} components={surface.components} />
         )}
-        <View className="flex-1 p-3">
-          <CanvasThemedContainer>
-            <EditToolbar surfaceId={surfaceId} components={surface.components} trailing={themePicker} />
+        <View className={cn('flex-1', !fullBleed && 'p-3')}>
+          <CanvasThemedContainer noBorder={fullBleed}>
+            {!fullBleed && <EditToolbar surfaceId={surfaceId} components={surface.components} trailing={themePicker} />}
             <ScrollView
               className="flex-1"
-              contentContainerStyle={{ padding: 16 }}
+              contentContainerStyle={{ padding: fullBleed ? 0 : 16 }}
               {...(Platform.OS === 'web' ? { dataSet: { thumbnailTarget: '' } } as any : {})}
             >
               <DynamicAppRenderer

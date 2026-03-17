@@ -51,6 +51,7 @@ import {
   FolderInput,
   Info,
   SunMoon,
+  MoreHorizontal,
   X,
 } from 'lucide-react-native'
 import { cn, Badge, Progress } from '@shogo/shared-ui/primitives'
@@ -102,6 +103,12 @@ export interface ProjectTopBarProps {
   hiddenTabs?: string[]
   /** When false, replaces the Canvas tab with a full-screen Chat tab */
   canvasEnabled?: boolean
+  /** Narrow-screen: which main panel is visible (chat or canvas) */
+  narrowActiveTab?: 'chat' | 'canvas'
+  /** Narrow-screen: callback when main panel changes */
+  onNarrowTabChange?: (tab: 'chat' | 'canvas') => void
+  /** Narrow-screen: which sub-panel is showing in the canvas area */
+  narrowPreviewTab?: string
 }
 
 export function ProjectTopBar({
@@ -131,12 +138,16 @@ export function ProjectTopBar({
   folders = [],
   hiddenTabs = [],
   canvasEnabled = true,
+  narrowActiveTab,
+  onNarrowTabChange,
+  narrowPreviewTab,
 }: ProjectTopBarProps) {
   const router = useRouter()
   const { width } = useWindowDimensions()
   const isWide = width >= 768
   const [showDropdown, setShowDropdown] = useState(false)
   const [dropdownKey, setDropdownKey] = useState(0)
+  const [showNarrowMore, setShowNarrowMore] = useState(false)
 
   const isChatFullscreen = !canvasEnabled && activeTab === 'chat-fullscreen'
 
@@ -156,9 +167,18 @@ export function ProjectTopBar({
 
   const typeLabel = projectType === 'AGENT' ? 'Agent project' : 'App project'
 
+  const narrowMoreItems = [
+    ...(canvasEnabled ? [
+      { id: 'capabilities', label: 'Capabilities' },
+      { id: 'channels', label: 'Channels' },
+      { id: 'monitor', label: 'Monitor' },
+    ] : []),
+    ...(!hasActiveSubscription ? [{ id: '_upgrade', label: 'Upgrade' }] : []),
+  ]
+
   return (
     <View className="h-12 bg-background/95 flex-row items-center justify-between px-3 border-b border-border">
-      {/* Left: Back + project name + toggles */}
+      {/* Left: Back + project name */}
       <View className="flex-row items-center gap-1 flex-shrink-0">
         <Pressable
           onPress={handleBack}
@@ -176,15 +196,20 @@ export function ProjectTopBar({
           trigger={(triggerProps) => (
             <Pressable
               {...triggerProps}
-              className="flex-row items-center gap-1.5 px-1.5 py-1 rounded-md active:bg-muted max-w-[200px]"
+              className={cn(
+                'flex-row items-center gap-1.5 px-1.5 py-1 rounded-md active:bg-muted',
+                isWide ? 'max-w-[200px]' : 'max-w-[140px]',
+              )}
             >
-              <View>
+              <View className="flex-shrink min-w-0">
                 <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
                   {projectName}
                 </Text>
-                <Text className="text-[10px] text-muted-foreground">{typeLabel}</Text>
+                {isWide && (
+                  <Text className="text-[10px] text-muted-foreground">{typeLabel}</Text>
+                )}
               </View>
-              <ChevronDown size={12} className="text-muted-foreground" />
+              <ChevronDown size={12} className="text-muted-foreground flex-shrink-0" />
             </Pressable>
           )}
         >
@@ -215,12 +240,38 @@ export function ProjectTopBar({
             </PopoverBody>
           </PopoverContent>
         </Popover>
-
-        {/* Chat history + collapse icons moved to float inside chat panel */}
       </View>
 
-      {/* Center: Tab buttons (wide only) */}
-      {isWide && (
+      {/* Center: Narrow segmented control OR wide tab buttons */}
+      {!isWide && onNarrowTabChange ? (
+        <View className="flex-row items-center bg-muted rounded-lg p-0.5 mx-2">
+          {(canvasEnabled ? ['chat', 'canvas'] as const : ['chat'] as const).map((tab) => {
+            const isActive = narrowActiveTab === tab
+            return (
+              <Pressable
+                key={tab}
+                onPress={() => {
+                  onNarrowTabChange(tab)
+                  if (tab === 'canvas') onTabChange?.('dynamic-app')
+                }}
+                className={cn(
+                  'px-3 py-1 rounded-md',
+                  isActive && 'bg-background shadow-sm',
+                )}
+              >
+                <Text
+                  className={cn(
+                    'text-xs font-medium',
+                    isActive ? 'text-foreground' : 'text-muted-foreground',
+                  )}
+                >
+                  {tab === 'chat' ? 'Chat' : 'Canvas'}
+                </Text>
+              </Pressable>
+            )
+          })}
+        </View>
+      ) : isWide ? (
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -263,34 +314,98 @@ export function ProjectTopBar({
             </Pressable>
           ))}
         </ScrollView>
-      )}
+      ) : null}
 
-      {/* Right: GitHub (app only), Upgrade, Publish (app only) */}
+      {/* Right actions */}
       <View className="flex-row items-center gap-1.5 flex-shrink-0">
-        {projectType !== 'AGENT' && (
-          <Pressable
-            onPress={() => router.push({ pathname: '/(app)/settings', params: { tab: 'github' } } as any)}
-            className="h-8 w-8 items-center justify-center rounded-md active:bg-muted"
+        {/* Narrow: overflow menu for secondary panels + upgrade */}
+        {!isWide && narrowMoreItems.length > 0 && (
+          <Popover
+            placement="bottom right"
+            isOpen={showNarrowMore}
+            onOpen={() => setShowNarrowMore(true)}
+            onClose={() => setShowNarrowMore(false)}
+            trigger={(triggerProps) => (
+              <Pressable
+                {...triggerProps}
+                className={cn(
+                  'h-8 w-8 items-center justify-center rounded-md',
+                  showNarrowMore ? 'bg-muted' : 'active:bg-muted',
+                )}
+              >
+                <MoreHorizontal size={16} className="text-muted-foreground" />
+              </Pressable>
+            )}
           >
-            <Github size={16} className="text-muted-foreground" />
-          </Pressable>
+            <PopoverBackdrop />
+            <PopoverContent className="min-w-[180px] p-0">
+              <PopoverBody>
+                {narrowMoreItems.map((item) => (
+                  <Pressable
+                    key={item.id}
+                    onPress={() => {
+                      if (item.id === '_upgrade') {
+                        router.push('/(app)/billing' as any)
+                      } else {
+                        onNarrowTabChange?.('canvas')
+                        onTabChange?.(item.id)
+                      }
+                      setShowNarrowMore(false)
+                    }}
+                    className={cn(
+                      'px-4 py-3 active:bg-muted',
+                      narrowPreviewTab === item.id && narrowActiveTab === 'canvas' && 'bg-accent',
+                    )}
+                  >
+                    <View className="flex-row items-center gap-2.5">
+                      {item.id === '_upgrade' && <Zap size={14} className="text-muted-foreground" />}
+                      <Text
+                        className={cn(
+                          'text-sm',
+                          narrowPreviewTab === item.id && narrowActiveTab === 'canvas'
+                            ? 'text-foreground font-medium'
+                            : 'text-foreground',
+                        )}
+                      >
+                        {item.label}
+                      </Text>
+                    </View>
+                  </Pressable>
+                ))}
+              </PopoverBody>
+            </PopoverContent>
+          </Popover>
         )}
 
-        {!hasActiveSubscription && (
-          <Pressable
-            onPress={() => router.push('/(app)/billing' as any)}
-            className="h-8 flex-row items-center gap-1.5 px-2.5 rounded-md border border-border active:bg-muted"
-          >
-            <Zap size={14} className="text-muted-foreground" />
-            <Text className="text-xs font-medium text-foreground">Upgrade</Text>
-          </Pressable>
-        )}
+        {/* Wide: show full buttons */}
+        {isWide && (
+          <>
+            {projectType !== 'AGENT' && (
+              <Pressable
+                onPress={() => router.push({ pathname: '/(app)/settings', params: { tab: 'github' } } as any)}
+                className="h-8 w-8 items-center justify-center rounded-md active:bg-muted"
+              >
+                <Github size={16} className="text-muted-foreground" />
+              </Pressable>
+            )}
 
-        {projectType !== 'AGENT' && (
-          <PublishDropdown
-            projectId={projectId}
-            projectName={projectName}
-          />
+            {!hasActiveSubscription && (
+              <Pressable
+                onPress={() => router.push('/(app)/billing' as any)}
+                className="h-8 flex-row items-center gap-1.5 px-2.5 rounded-md border border-border active:bg-muted"
+              >
+                <Zap size={14} className="text-muted-foreground" />
+                <Text className="text-xs font-medium text-foreground">Upgrade</Text>
+              </Pressable>
+            )}
+
+            {projectType !== 'AGENT' && (
+              <PublishDropdown
+                projectId={projectId}
+                projectName={projectName}
+              />
+            )}
+          </>
         )}
       </View>
     </View>

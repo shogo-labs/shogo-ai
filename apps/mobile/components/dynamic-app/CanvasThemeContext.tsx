@@ -232,7 +232,7 @@ const GLUESTACK_DARK: Record<string, string> = {
  * directly via the style attribute (React Native Web's View strips
  * unknown properties like --color-*).
  */
-export function CanvasThemedContainer({ children }: { children: ReactNode }) {
+export function CanvasThemedContainer({ children, noBorder }: { children: ReactNode; noBorder?: boolean }) {
   const { resolvedIsDark, activePreset } = useCanvasTheme()
   const vars = resolvedIsDark ? activePreset.dark : activePreset.light
 
@@ -251,8 +251,10 @@ export function CanvasThemedContainer({ children }: { children: ReactNode }) {
           flex: 1,
           flexDirection: 'column',
           overflow: 'hidden',
-          borderRadius: 16,
-          border: '1px solid rgb(var(--color-border, 228 228 231))',
+          ...(noBorder ? {} : {
+            borderRadius: 16,
+            border: '1px solid rgb(var(--color-border, 228 228 231))',
+          }),
           backgroundColor: `rgb(${vars['--color-background']})`,
           color: `rgb(${vars['--color-foreground']})`,
         }}
@@ -263,7 +265,7 @@ export function CanvasThemedContainer({ children }: { children: ReactNode }) {
   }
 
   return (
-    <View className="flex-1 overflow-hidden rounded-2xl border border-border">
+    <View className={noBorder ? 'flex-1 overflow-hidden' : 'flex-1 overflow-hidden rounded-2xl border border-border'}>
       {children}
     </View>
   )
