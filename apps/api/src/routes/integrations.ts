@@ -127,6 +127,21 @@ export function integrationRoutes() {
       return c.json({ error: 'toolkit and projectId are required' }, 400)
     }
 
+    if (!SUPPORTED_TOOLKITS.includes(toolkit as typeof SUPPORTED_TOOLKITS[number])) {
+      return c.json({ error: `Unsupported toolkit '${toolkit}'. Supported: ${SUPPORTED_TOOLKITS.join(', ')}` }, 400)
+    }
+
+    if (callbackUrl) {
+      try {
+        const parsed = new URL(callbackUrl)
+        if (!['http:', 'https:'].includes(parsed.protocol)) {
+          return c.json({ error: 'callbackUrl must use http or https protocol' }, 400)
+        }
+      } catch {
+        return c.json({ error: 'callbackUrl must be a valid URL' }, 400)
+      }
+    }
+
     const composioUserId = buildComposioUserId(auth.userId, projectId)
     const authConfigOverride = TOOLKIT_AUTH_CONFIG_OVERRIDES[toolkit]
 
@@ -182,7 +197,6 @@ export function integrationRoutes() {
       })
 
       const items = (accounts as any)?.items || (accounts as any)?.data || []
-      console.log('[Integrations] Raw connected accounts:', JSON.stringify(items, null, 2))
 
       const connections = items.map((acc: any) => {
         const stateVal = acc.state?.val ?? acc.connectionParams ?? {}
@@ -205,7 +219,9 @@ export function integrationRoutes() {
 
       return c.json({ ok: true, data: connections })
     } catch (err: any) {
-      console.error(`[Integrations] List connections error:`, err.message)
+      console.error(`[Integrations] List connections error for user ${composioUserId}:`, err.message)
+      // Return 200 with empty data so clients (SDK/mobile) don't throw on 5xx; they get [] and can show UI.
+      // Backend still logs the error. Clients that want to show "unavailable" can check for a future _meta flag.
       return c.json({ ok: true, data: [] })
     }
   })
@@ -249,6 +265,10 @@ export function integrationRoutes() {
       return c.json({ error: 'projectId query parameter required' }, 400)
     }
 
+    if (!SUPPORTED_TOOLKITS.includes(toolkit as typeof SUPPORTED_TOOLKITS[number])) {
+      return c.json({ error: `Unsupported toolkit '${toolkit}'. Supported: ${SUPPORTED_TOOLKITS.join(', ')}` }, 400)
+    }
+
     // Check both the authenticated user's entity and the 'default' entity.
     // The agent runtime prefers the X-User-Id header from the chat request,
     // falling back to process.env.USER_ID then 'default'.
@@ -282,8 +302,10 @@ export function integrationRoutes() {
         },
       })
     } catch (err: any) {
-      console.error(`[Integrations] Status check error:`, err.message)
-      return c.json({ ok: true, data: { connected: false, enabled: true } })
+      console.error(`[Integrations] Status check error for ${toolkit}:`, err.message)
+      // Return 200 with connected: false so clients don't throw on 5xx; they get safe data.
+      // Backend still logs the error.
+      return c.json({ ok: true, data: { connected: false, status: null, connectionId: null, enabled: true } })
     }
   })
 
