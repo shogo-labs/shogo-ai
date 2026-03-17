@@ -702,17 +702,7 @@ app.post('/agent/stop', async (c) => {
 
   const aborted = agentGateway.abortCurrentTurn('chat')
 
-  // Also interrupt any active code agent session
-  try {
-    const { interruptCodeAgent } = require('./code-agent')
-    await interruptCodeAgent({
-      workspaceDir: WORKSPACE_DIR,
-      aiProxy: process.env.AI_PROXY_URL && process.env.AI_PROXY_TOKEN
-        ? { url: process.env.AI_PROXY_URL, token: process.env.AI_PROXY_TOKEN }
-        : null,
-      getModelTier: () => 'sonnet' as const,
-    })
-  } catch { /* code agent not active */ }
+  // code_agent removed — subagent aborts are handled by the parent agent loop's abort signal
 
   return c.json({ stopped: aborted })
 })
@@ -803,7 +793,41 @@ app.post('/templates/copy', async (c) => {
     const envPath = join(projectDir, '.env')
     const envLines = existsSync(envPath) ? readFileSync(envPath, 'utf-8').split('\n') : []
     const filtered = envLines.filter(l => !l.trim().startsWith('DATABASE_URL'))
-    writeFileSync(envPath, [...filtered, 'DATABASE_URL="file:./dev.db"', ''].join('\n'), 'utf-8')
+    const devDbPath = join(projectDir, 'prisma', 'dev.db')
+    writeFileSync(envPath, [...filtered, `DATABASE_URL="file:${devDbPath}"`, ''].join('\n'), 'utf-8')
+
+    // Ensure Prisma schema has url = env("DATABASE_URL") for SQLite
+    const schemaPath = join(projectDir, 'prisma', 'schema.prisma')
+    if (existsSync(schemaPath)) {
+      let schema = readFileSync(schemaPath, 'utf-8')
+      if (!schema.includes('url') && schema.includes('provider = "sqlite"')) {
+        schema = schema.replace(
+          'provider = "sqlite"',
+          'provider = "sqlite"\n  url      = env("DATABASE_URL")'
+        )
+        writeFileSync(schemaPath, schema, 'utf-8')
+        console.log(`[templates/copy] Added url to Prisma schema`)
+      }
+    }
+
+    // Rewrite db.tsx to use plain SQLite (templates ship with PrismaPg adapter)
+    const dbTsxPath = join(projectDir, 'src', 'lib', 'db.tsx')
+    if (existsSync(dbTsxPath)) {
+      const SQLITE_DB_TSX = `import { PrismaClient } from '../generated/prisma/client'
+
+const globalForPrisma = globalThis as unknown as { prisma: PrismaClient | undefined }
+
+export const prisma =
+  globalForPrisma.prisma ??
+  new PrismaClient({
+    log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'],
+  })
+
+if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma
+`
+      writeFileSync(dbTsxPath, SQLITE_DB_TSX, 'utf-8')
+      console.log(`[templates/copy] Rewrote db.tsx for SQLite`)
+    }
 
     const pm = getPreviewManager()
     const result = await pm.restart()
