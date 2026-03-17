@@ -806,27 +806,34 @@ app.post('/templates/copy', async (c) => {
           'provider = "sqlite"\n  url      = env("DATABASE_URL")'
         )
         writeFileSync(schemaPath, schema, 'utf-8')
-        console.log(`[templates/copy] Added url to Prisma schema`)
       }
+      console.log(`[templates/copy] Patched Prisma schema for SQLite`)
     }
 
-    // Rewrite db.tsx to use plain SQLite (templates ship with PrismaPg adapter)
+    // Rewrite db.tsx to use @prisma/adapter-libsql for SQLite
+    // (templates ship with PrismaPg adapter but run on SQLite in the runtime)
     const dbTsxPath = join(projectDir, 'src', 'lib', 'db.tsx')
     if (existsSync(dbTsxPath)) {
-      const SQLITE_DB_TSX = `import { PrismaClient } from '../generated/prisma/client'
+      const SQLITE_DB_TSX = `import { PrismaLibSQL } from '@prisma/adapter-libsql'
+import { createClient } from '@libsql/client'
+import { PrismaClient } from '../generated/prisma/client'
 
 const globalForPrisma = globalThis as unknown as { prisma: PrismaClient | undefined }
+
+const libsql = createClient({ url: process.env.DATABASE_URL ?? 'file:./prisma/dev.db' })
+const adapter = new PrismaLibSQL(libsql)
 
 export const prisma =
   globalForPrisma.prisma ??
   new PrismaClient({
+    adapter,
     log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'],
   })
 
 if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma
 `
       writeFileSync(dbTsxPath, SQLITE_DB_TSX, 'utf-8')
-      console.log(`[templates/copy] Rewrote db.tsx for SQLite`)
+      console.log(`[templates/copy] Rewrote db.tsx for SQLite with libsql adapter`)
     }
 
     const pm = getPreviewManager()
