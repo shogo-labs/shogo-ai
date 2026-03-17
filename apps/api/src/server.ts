@@ -17,7 +17,7 @@ import { createAnthropic } from '@ai-sdk/anthropic'
 import { resolve, join, isAbsolute } from 'path'
 import { fileURLToPath } from 'url'
 import { readdir, stat, mkdir, appendFile } from 'fs/promises'
-import { existsSync, mkdirSync } from 'fs'
+import { existsSync, mkdirSync, cpSync, rmSync } from 'fs'
 import { auth } from './auth'
 import { getPriceId } from './config/stripe-prices'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
@@ -1119,6 +1119,75 @@ app.get('/api/templates', async (c) => {
   } catch (error: any) {
     console.error('[Templates] Error loading templates:', error)
     return c.json({ error: { code: 'template_error', message: error.message } }, 500)
+  }
+})
+
+/**
+ * POST /api/projects/:projectId/apply-template
+ * Copies an SDK app template into the project workspace directory.
+ * Works in both local dev (where agent-runtime doesn't have /templates/copy)
+ * and production (Knative pods).
+ */
+app.post('/api/projects/:projectId/apply-template', async (c) => {
+  const projectId = c.req.param('projectId')
+  const userId = await getAuthUserId(c)
+  if (!userId) return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  const workspaceId = await verifyProjectAccess(userId, projectId)
+  if (!workspaceId) return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+
+  try {
+    const body = await c.req.json() as { template: string; name: string }
+    if (!body.template || !body.name) {
+      return c.json({ ok: false, error: 'Missing required fields: template, name' }, 400)
+    }
+
+    const projectDir = resolve(WORKSPACES_DIR, projectId)
+    if (!existsSync(projectDir)) {
+      mkdirSync(projectDir, { recursive: true })
+    }
+
+    const templatesDir = resolve(PROJECT_ROOT, 'packages/sdk/examples')
+    const templatePath = resolve(templatesDir, body.template)
+
+    if (!existsSync(templatePath)) {
+      return c.json({ ok: false, error: `Template '${body.template}' not found` }, 404)
+    }
+
+    const srcDir = resolve(projectDir, 'src')
+    if (existsSync(srcDir)) rmSync(srcDir, { recursive: true, force: true })
+
+    cpSync(templatePath, projectDir, {
+      recursive: true,
+      filter: (src) => !src.includes('.git') && !src.includes('template.json'),
+    })
+    console.log(`[apply-template] Copied template '${body.template}' to ${projectDir}`)
+
+    // In local dev, trigger Vite restart via the runtime manager's preview port
+    if (!isKubernetes()) {
+      const manager = getRuntimeManager()
+      const runtime = manager.status(projectId)
+      if (runtime?.agentPort) {
+        fetch(`http://localhost:${runtime.agentPort}/preview/restart`, { method: 'POST' }).catch(() => {})
+      }
+    } else {
+      // In production, proxy to the pod's /templates/copy endpoint
+      try {
+        const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+        const podUrl = await getProjectPodUrl(projectId)
+        await fetch(`${podUrl}/templates/copy`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+      } catch (err) {
+        console.warn('[apply-template] Could not proxy to pod, files copied locally:', err)
+      }
+    }
+
+    return c.json({ ok: true, message: `Template '${body.template}' applied successfully` })
+  } catch (error: any) {
+    console.error('[apply-template] Error:', error)
+    return c.json({ ok: false, error: error.message || 'Failed to apply template' }, 500)
   }
 })
 

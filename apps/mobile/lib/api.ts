@@ -246,6 +246,11 @@ export const api = {
     return res.data?.templates ?? []
   },
 
+  async getAppTemplates(http: HttpClient) {
+    const res = await http.get<{ templates: AppTemplateSummary[] }>('/api/templates')
+    return res.data?.templates ?? []
+  },
+
   // ─── Admin ───────────────────────────────────────────────
 
   async getMe(http: HttpClient) {
@@ -308,4 +313,23 @@ export interface AgentTemplateSummary {
     modelName: string
   }
   skills: string[]
+}
+
+export interface AppTemplateSummary {
+  name: string
+  description: string
+  complexity: 'beginner' | 'intermediate' | 'advanced'
+  features: string[]
+  models: string[]
+  tags: string[]
+  useCases: string[]
+  techStack: {
+    database: string
+    orm?: string
+    frontend: string
+    router?: string
+    sdk?: string
+    backend?: string
+    [key: string]: string | undefined
+  }
 }

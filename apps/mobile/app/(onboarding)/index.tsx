@@ -57,6 +57,37 @@ interface AgentTemplate {
   tags: string[]
 }
 
+interface AppTemplate {
+  name: string
+  description: string
+  complexity: 'beginner' | 'intermediate' | 'advanced'
+  tags: string[]
+}
+
+const APP_TEMPLATE_ICONS: Record<string, string> = {
+  'todo-app': '✅',
+  'crm': '🤝',
+  'kanban': '📋',
+  'expense-tracker': '💰',
+  'booking-app': '📅',
+  'inventory': '📦',
+  'ai-chat': '🤖',
+  'form-builder': '📝',
+  'feedback-form': '💬',
+}
+
+const APP_TEMPLATE_COLORS: Record<string, string> = {
+  'todo-app': '#3b82f6',
+  'crm': '#f97316',
+  'kanban': '#8b5cf6',
+  'expense-tracker': '#10b981',
+  'booking-app': '#ec4899',
+  'inventory': '#06b6d4',
+  'ai-chat': '#ef4444',
+  'form-builder': '#f59e0b',
+  'feedback-form': '#84cc16',
+}
+
 // =============================================================================
 // Step definitions
 // =============================================================================
@@ -121,7 +152,9 @@ export default function OnboardingPage() {
 
   // Template state
   const [templates, setTemplates] = useState<AgentTemplate[]>([])
+  const [appTemplates, setAppTemplates] = useState<AppTemplate[]>([])
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null)
+  const [selectedAppTemplate, setSelectedAppTemplate] = useState<string | null>(null)
   const [templatesLoading, setTemplatesLoading] = useState(false)
 
   // Security preference state (local mode only)
@@ -135,16 +168,23 @@ export default function OnboardingPage() {
   useEffect(() => {
     if (currentStep === 'templates' && templates.length === 0) {
       setTemplatesLoading(true)
-      fetch(`${API_URL}/api/agent-templates`, { credentials: 'include' })
-        .then(r => r.json())
-        .then((data: any) => {
-          const list: AgentTemplate[] = data.templates ?? []
-          setTemplates(list)
-          // Deep-link: pre-select template from website referral
+      Promise.all([
+        fetch(`${API_URL}/api/agent-templates`, { credentials: 'include' }).then(r => r.json()),
+        fetch(`${API_URL}/api/templates`, { credentials: 'include' }).then(r => r.json()),
+      ])
+        .then(([agentData, appData]: any[]) => {
+          const agentList: AgentTemplate[] = agentData.templates ?? []
+          const appList: AppTemplate[] = appData.templates ?? []
+          setTemplates(agentList)
+          setAppTemplates(appList)
           if (Platform.OS === 'web' && typeof localStorage !== 'undefined') {
             const pending = localStorage.getItem('pending_template_id')
-            if (pending && list.some(t => t.id === pending)) {
+            if (pending && agentList.some(t => t.id === pending)) {
               setSelectedTemplate(pending)
+            }
+            const pendingApp = localStorage.getItem('pending_app_template')
+            if (pendingApp && appList.some(t => t.name === pendingApp)) {
+              setSelectedAppTemplate(pendingApp)
             }
           }
         })
@@ -272,11 +312,12 @@ export default function OnboardingPage() {
       })
       trackEvent(posthog, EVENTS.ONBOARDING_COMPLETED, {
         selected_template: selectedTemplate || null,
+        selected_app_template: selectedAppTemplate || null,
       })
-      // Persist the template so the home screen's deep-link effect can create
-      // the project automatically after navigation (same path as website referrals).
       if (selectedTemplate) {
         localStorage.setItem('pending_template_id', selectedTemplate)
+      } else if (selectedAppTemplate) {
+        localStorage.setItem('pending_app_template', selectedAppTemplate)
       }
       router.replace('/(app)')
     } catch {
@@ -284,7 +325,7 @@ export default function OnboardingPage() {
     } finally {
       setIsCompleting(false)
     }
-  }, [router, posthog, selectedTemplate])
+  }, [router, posthog, selectedTemplate, selectedAppTemplate])
 
   // ==========================================================================
   // Render
@@ -374,8 +415,11 @@ export default function OnboardingPage() {
           {currentStep === 'templates' && (
             <TemplatesStep
               templates={templates}
+              appTemplates={appTemplates}
               selectedTemplate={selectedTemplate}
-              onSelect={setSelectedTemplate}
+              selectedAppTemplate={selectedAppTemplate}
+              onSelectAgent={(id) => { setSelectedTemplate(id); setSelectedAppTemplate(null) }}
+              onSelectApp={(name) => { setSelectedAppTemplate(name); setSelectedTemplate(null) }}
               isLoading={templatesLoading}
               onNext={goNext}
             />
@@ -385,7 +429,9 @@ export default function OnboardingPage() {
             <GetStartedStep
               localMode={localMode}
               selectedTemplate={selectedTemplate}
+              selectedAppTemplate={selectedAppTemplate}
               templates={templates}
+              appTemplates={appTemplates}
               onComplete={handleComplete}
               isCompleting={isCompleting}
             />
@@ -778,17 +824,26 @@ const TEMPLATE_COLORS: Record<string, string> = {
 
 function TemplatesStep({
   templates,
+  appTemplates,
   selectedTemplate,
-  onSelect,
+  selectedAppTemplate,
+  onSelectAgent,
+  onSelectApp,
   isLoading,
   onNext,
 }: {
   templates: AgentTemplate[]
+  appTemplates: AppTemplate[]
   selectedTemplate: string | null
-  onSelect: (id: string | null) => void
+  selectedAppTemplate: string | null
+  onSelectAgent: (id: string | null) => void
+  onSelectApp: (name: string | null) => void
   isLoading: boolean
   onNext: () => void
 }) {
+  const [mode, setMode] = useState<'agents' | 'apps'>('agents')
+  const hasSelection = !!selectedTemplate || !!selectedAppTemplate
+
   return (
     <View className="gap-6">
       <View className="gap-2">
@@ -798,11 +853,33 @@ function TemplatesStep({
         </Text>
       </View>
 
+      <View className="flex-row items-center gap-1 rounded-lg bg-muted p-1" style={{ alignSelf: 'flex-start' }}>
+        {(['agents', 'apps'] as const).map((m) => (
+          <Pressable
+            key={m}
+            onPress={() => setMode(m)}
+            className={cn(
+              'px-3 py-1.5 rounded-md',
+              mode === m && 'bg-background',
+            )}
+          >
+            <Text
+              className={cn(
+                'text-[13px]',
+                mode === m ? 'text-foreground font-semibold' : 'text-muted-foreground',
+              )}
+            >
+              {m === 'agents' ? 'Agents' : 'Apps'}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+
       {isLoading ? (
         <View className="items-center py-12">
           <ActivityIndicator size="large" />
         </View>
-      ) : (
+      ) : mode === 'agents' ? (
         <View className="gap-3">
           {templates.slice(0, 6).map(t => {
             const color = TEMPLATE_COLORS[t.id] || '#6366f1'
@@ -810,7 +887,7 @@ function TemplatesStep({
             return (
               <Pressable
                 key={t.id}
-                onPress={() => onSelect(isSelected ? null : t.id)}
+                onPress={() => onSelectAgent(isSelected ? null : t.id)}
                 className={cn(
                   'flex-row items-center gap-3.5 p-3.5 rounded-xl border',
                   isSelected ? 'border-primary bg-primary/5' : 'border-border bg-card'
@@ -833,16 +910,49 @@ function TemplatesStep({
             )
           })}
         </View>
+      ) : (
+        <View className="gap-3">
+          {appTemplates.slice(0, 6).map(t => {
+            const color = APP_TEMPLATE_COLORS[t.name] || '#6366f1'
+            const icon = APP_TEMPLATE_ICONS[t.name] || '🧩'
+            const isSelected = selectedAppTemplate === t.name
+            const displayName = t.name.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+            return (
+              <Pressable
+                key={t.name}
+                onPress={() => onSelectApp(isSelected ? null : t.name)}
+                className={cn(
+                  'flex-row items-center gap-3.5 p-3.5 rounded-xl border',
+                  isSelected ? 'border-primary bg-primary/5' : 'border-border bg-card'
+                )}
+              >
+                <View
+                  className="w-10 h-10 rounded-lg items-center justify-center"
+                  style={{ backgroundColor: `${color}15` }}
+                >
+                  <Text style={{ fontSize: 20 }}>{icon}</Text>
+                </View>
+                <View className="flex-1">
+                  <Text className="text-sm font-semibold text-foreground">{displayName}</Text>
+                  <Text className="text-xs text-muted-foreground mt-0.5" numberOfLines={1}>
+                    {t.description}
+                  </Text>
+                </View>
+                {isSelected && <Check size={18} className="text-primary" />}
+              </Pressable>
+            )
+          })}
+        </View>
       )}
 
       <Pressable
         onPress={onNext}
         accessibilityRole="button"
-        accessibilityLabel={selectedTemplate ? 'Continue with template' : 'Skip and continue'}
+        accessibilityLabel={hasSelection ? 'Continue with template' : 'Skip and continue'}
         className="flex-row items-center justify-center gap-2 bg-primary py-3.5 rounded-xl"
       >
         <Text className="text-base font-semibold text-primary-foreground">
-          {selectedTemplate ? 'Continue with template' : 'Skip & continue'}
+          {hasSelection ? 'Continue with template' : 'Skip & continue'}
         </Text>
         <ArrowRight size={18} color="#fff" />
       </Pressable>
@@ -853,17 +963,25 @@ function TemplatesStep({
 function GetStartedStep({
   localMode,
   selectedTemplate,
+  selectedAppTemplate,
   templates,
+  appTemplates,
   onComplete,
   isCompleting,
 }: {
   localMode: boolean
   selectedTemplate: string | null
+  selectedAppTemplate: string | null
   templates: AgentTemplate[]
+  appTemplates: AppTemplate[]
   onComplete: () => void
   isCompleting: boolean
 }) {
-  const template = templates.find(t => t.id === selectedTemplate)
+  const agentTemplate = templates.find(t => t.id === selectedTemplate)
+  const appTemplate = appTemplates.find(t => t.name === selectedAppTemplate)
+  const templateName = agentTemplate?.name
+    ?? (appTemplate ? appTemplate.name.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ') : null)
+
   return (
     <View className="items-center gap-6">
       <View className="w-16 h-16 rounded-full bg-green-500/10 items-center justify-center">
@@ -873,8 +991,8 @@ function GetStartedStep({
       <View className="items-center gap-3">
         <Text className="text-2xl font-bold text-foreground text-center">You're all set!</Text>
         <Text className="text-base text-muted-foreground text-center leading-6 max-w-sm">
-          {template
-            ? `We'll set up a "${template.name}" project for you to explore.`
+          {templateName
+            ? `We'll set up a "${templateName}" project for you to explore.`
             : 'You can create your first project from the home screen.'}
         </Text>
       </View>

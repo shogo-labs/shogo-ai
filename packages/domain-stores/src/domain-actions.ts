@@ -94,6 +94,10 @@ export function createDomainActions(store: IDomainStore) {
       _type?: string,
       templateId?: string
     ) => {
+      const settings = _type === 'APP'
+        ? { activeMode: 'app', canvasEnabled: false }
+        : undefined
+
       const project = await store.projectCollection.create({
         name,
         workspaceId,
@@ -104,6 +108,7 @@ export function createDomainActions(store: IDomainStore) {
         accessLevel: "anyone",
         schemas: [],
         ...(templateId ? { templateId } : {}),
+        ...(settings ? { settings } : {}),
       })
 
       return project

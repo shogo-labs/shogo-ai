@@ -16,6 +16,7 @@ import { ThemeProvider, useTheme } from '../contexts/theme'
 import { RootErrorBoundary } from '../components/RootErrorBoundary'
 
 const PENDING_TEMPLATE_KEY = 'pending_template_id'
+const PENDING_APP_TEMPLATE_KEY = 'pending_app_template'
 
 function useCaptureTemplateDeepLink() {
   useEffect(() => {
@@ -25,6 +26,13 @@ function useCaptureTemplateDeepLink() {
     if (templateId) {
       localStorage.setItem(PENDING_TEMPLATE_KEY, templateId)
       params.delete('template')
+    }
+    const appTemplateName = params.get('app_template')
+    if (appTemplateName) {
+      localStorage.setItem(PENDING_APP_TEMPLATE_KEY, appTemplateName)
+      params.delete('app_template')
+    }
+    if (templateId || appTemplateName) {
       const qs = params.toString()
       const clean = window.location.pathname + (qs ? `?${qs}` : '')
       window.history.replaceState({}, '', clean)

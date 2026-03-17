@@ -91,6 +91,51 @@ export async function signUpAndOnboard(page: Page, user: TestUser): Promise<void
 }
 
 /**
+ * Signs up and onboards, selecting an app template by name during the
+ * templates step. Leaves the browser on the home screen.
+ */
+export async function signUpAndOnboardWithAppTemplate(
+  page: Page,
+  user: TestUser,
+  templateDisplayName: string
+): Promise<void> {
+  await page.goto("/sign-in")
+  await page.getByText("Sign Up").click()
+  await page.getByPlaceholder("Enter your name").fill(user.name)
+  await page.getByPlaceholder("you@example.com").fill(user.email)
+  await page.getByPlaceholder("Create a password").fill(user.password)
+  await page
+    .getByRole("button", { name: "Sign Up" })
+    .or(page.getByText("Sign Up").last())
+    .click()
+
+  try {
+    await page.getByRole("button", { name: "Get Started" }).waitFor({ timeout: 10_000 })
+    await page.getByRole("button", { name: "Get Started" }).click()
+  } catch {}
+
+  try {
+    await page.getByRole("button", { name: "Continue" }).waitFor({ timeout: 10_000 })
+    await page.getByRole("button", { name: "Continue" }).click()
+  } catch {}
+
+  // Templates step: switch to Apps tab, select an app template
+  try {
+    await page.getByRole("button", { name: /Skip.*continue/i }).waitFor({ timeout: 10_000 })
+    await page.getByText("Apps").click()
+    await page.getByText(templateDisplayName).click()
+    await page.getByRole("button", { name: /Continue with template/i }).click()
+  } catch {}
+
+  try {
+    await page.getByRole("button", { name: "Enter Shogo" }).waitFor({ timeout: 10_000 })
+    await page.getByRole("button", { name: "Enter Shogo" }).click()
+  } catch {}
+
+  await page.waitForSelector("text=What's on your mind", { timeout: 30_000 })
+}
+
+/**
  * Signs up, completes onboarding, then upgrades the account to Pro using
  * the Stripe test card 4242424242424242.
  *
