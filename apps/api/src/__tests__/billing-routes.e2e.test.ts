@@ -93,7 +93,7 @@ describe("Billing Routes E2E", () => {
   })
 
   describe("POST /api/billing/portal", () => {
-    test("accepts workspaceId in query params", async () => {
+    test("accepts workspaceId in query params and returns portal URL or expected error", async () => {
       if (!apiAvailable) return
 
       const response = await fetch(
@@ -103,10 +103,13 @@ describe("Billing Routes E2E", () => {
         }
       )
 
-      // TODO: Portal currently returns 501 — this blocks the "Manage" button
-      // in the billing UI. Once implemented, this should return 200 with a
-      // Stripe customer portal URL. See E2E_QA_REPORT_UPGRADE_FLOW_2026-02-26.md
-      expect(response.status).toBe(501)
+      // Portal is implemented: 200 with url when customer exists, 404 when not, 503 when Stripe not configured
+      expect([200, 404, 503]).toContain(response.status)
+      if (response.status === 200) {
+        const data = await response.json()
+        expect(data).toHaveProperty("url")
+        expect(typeof data.url).toBe("string")
+      }
     })
 
     test("rejects request without workspaceId", async () => {
