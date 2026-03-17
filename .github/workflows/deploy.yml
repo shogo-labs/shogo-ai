@@ -277,12 +277,6 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Ensure ECR repository exists
-        run: |
-          aws ecr describe-repositories --repository-names shogo/shogo-runtime-base --region ${{ env.AWS_REGION }} 2>/dev/null || \
-          aws ecr create-repository --repository-name shogo/shogo-runtime-base --region ${{ env.AWS_REGION }} \
-            --image-scanning-configuration scanOnPush=true
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
