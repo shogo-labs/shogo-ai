@@ -779,14 +779,14 @@ export default observer(function ProjectLayout() {
               >
                 {isWide && (
                   <View
-                    className="absolute top-2 z-10 items-center gap-1"
-                    style={{ right: -14 }}
+                    className="absolute top-2 items-center gap-1"
+                    style={{ right: -14, zIndex: 9999 }}
                   >
                     <Pressable
-                      onPress={handleCreateNewSession}
+                      onPress={() => setChatCollapsed(true)}
                       className="h-7 w-7 items-center justify-center rounded-md bg-background/80 border border-border active:bg-muted"
                     >
-                      <Plus size={14} className="text-muted-foreground" />
+                      <PanelLeftClose size={14} className="text-muted-foreground" />
                     </Pressable>
                     <Pressable
                       onPress={() => setShowChatSessions((s) => !s)}
@@ -798,10 +798,10 @@ export default observer(function ProjectLayout() {
                       <History size={14} className={showChatSessions ? 'text-foreground' : 'text-muted-foreground'} />
                     </Pressable>
                     <Pressable
-                      onPress={() => setChatCollapsed(true)}
+                      onPress={handleCreateNewSession}
                       className="h-7 w-7 items-center justify-center rounded-md bg-background/80 border border-border active:bg-muted"
                     >
-                      <PanelLeftClose size={14} className="text-muted-foreground" />
+                      <Plus size={14} className="text-muted-foreground" />
                     </Pressable>
                   </View>
                 )}
