@@ -34,7 +34,6 @@ async function createTestFixtures(overrides: {
       id: projectId,
       name: 'Test Agent',
       workspaceId,
-      type: 'AGENT',
     },
   })
   createdProjectIds.push(projectId)

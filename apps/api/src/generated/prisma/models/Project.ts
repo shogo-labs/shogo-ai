@@ -39,7 +39,6 @@ export type ProjectMinAggregateOutputType = {
   publishedAt: Date | null
   accessLevel: $Enums.AccessLevel | null
   category: $Enums.ProjectCategory | null
-  type: $Enums.ProjectType | null
   siteTitle: string | null
   siteDescription: string | null
   thumbnailUrl: string | null
@@ -62,7 +61,6 @@ export type ProjectMaxAggregateOutputType = {
   publishedAt: Date | null
   accessLevel: $Enums.AccessLevel | null
   category: $Enums.ProjectCategory | null
-  type: $Enums.ProjectType | null
   siteTitle: string | null
   siteDescription: string | null
   thumbnailUrl: string | null
@@ -86,7 +84,6 @@ export type ProjectCountAggregateOutputType = {
   publishedAt: number
   accessLevel: number
   category: number
-  type: number
   siteTitle: number
   siteDescription: number
   thumbnailUrl: number
@@ -112,7 +109,6 @@ export type ProjectMinAggregateInputType = {
   publishedAt?: true
   accessLevel?: true
   category?: true
-  type?: true
   siteTitle?: true
   siteDescription?: true
   thumbnailUrl?: true
@@ -135,7 +131,6 @@ export type ProjectMaxAggregateInputType = {
   publishedAt?: true
   accessLevel?: true
   category?: true
-  type?: true
   siteTitle?: true
   siteDescription?: true
   thumbnailUrl?: true
@@ -159,7 +154,6 @@ export type ProjectCountAggregateInputType = {
   publishedAt?: true
   accessLevel?: true
   category?: true
-  type?: true
   siteTitle?: true
   siteDescription?: true
   thumbnailUrl?: true
@@ -257,7 +251,6 @@ export type ProjectGroupByOutputType = {
   publishedAt: Date | null
   accessLevel: $Enums.AccessLevel
   category: $Enums.ProjectCategory | null
-  type: $Enums.ProjectType
   siteTitle: string | null
   siteDescription: string | null
   thumbnailUrl: string | null
@@ -303,7 +296,6 @@ export type ProjectWhereInput = {
   publishedAt?: Prisma.DateTimeNullableFilter<"Project"> | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFilter<"Project"> | $Enums.AccessLevel
   category?: Prisma.EnumProjectCategoryNullableFilter<"Project"> | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFilter<"Project"> | $Enums.ProjectType
   siteTitle?: Prisma.StringNullableFilter<"Project"> | string | null
   siteDescription?: Prisma.StringNullableFilter<"Project"> | string | null
   thumbnailUrl?: Prisma.StringNullableFilter<"Project"> | string | null
@@ -339,7 +331,6 @@ export type ProjectOrderByWithRelationInput = {
   publishedAt?: Prisma.SortOrderInput | Prisma.SortOrder
   accessLevel?: Prisma.SortOrder
   category?: Prisma.SortOrderInput | Prisma.SortOrder
-  type?: Prisma.SortOrder
   siteTitle?: Prisma.SortOrderInput | Prisma.SortOrder
   siteDescription?: Prisma.SortOrderInput | Prisma.SortOrder
   thumbnailUrl?: Prisma.SortOrderInput | Prisma.SortOrder
@@ -378,7 +369,6 @@ export type ProjectWhereUniqueInput = Prisma.AtLeast<{
   publishedAt?: Prisma.DateTimeNullableFilter<"Project"> | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFilter<"Project"> | $Enums.AccessLevel
   category?: Prisma.EnumProjectCategoryNullableFilter<"Project"> | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFilter<"Project"> | $Enums.ProjectType
   siteTitle?: Prisma.StringNullableFilter<"Project"> | string | null
   siteDescription?: Prisma.StringNullableFilter<"Project"> | string | null
   thumbnailUrl?: Prisma.StringNullableFilter<"Project"> | string | null
@@ -414,7 +404,6 @@ export type ProjectOrderByWithAggregationInput = {
   publishedAt?: Prisma.SortOrderInput | Prisma.SortOrder
   accessLevel?: Prisma.SortOrder
   category?: Prisma.SortOrderInput | Prisma.SortOrder
-  type?: Prisma.SortOrder
   siteTitle?: Prisma.SortOrderInput | Prisma.SortOrder
   siteDescription?: Prisma.SortOrderInput | Prisma.SortOrder
   thumbnailUrl?: Prisma.SortOrderInput | Prisma.SortOrder
@@ -445,7 +434,6 @@ export type ProjectScalarWhereWithAggregatesInput = {
   publishedAt?: Prisma.DateTimeNullableWithAggregatesFilter<"Project"> | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelWithAggregatesFilter<"Project"> | $Enums.AccessLevel
   category?: Prisma.EnumProjectCategoryNullableWithAggregatesFilter<"Project"> | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeWithAggregatesFilter<"Project"> | $Enums.ProjectType
   siteTitle?: Prisma.StringNullableWithAggregatesFilter<"Project"> | string | null
   siteDescription?: Prisma.StringNullableWithAggregatesFilter<"Project"> | string | null
   thumbnailUrl?: Prisma.StringNullableWithAggregatesFilter<"Project"> | string | null
@@ -468,7 +456,6 @@ export type ProjectCreateInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -504,7 +491,6 @@ export type ProjectUncheckedCreateInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -536,7 +522,6 @@ export type ProjectUpdateInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -572,7 +557,6 @@ export type ProjectUncheckedUpdateInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -606,7 +590,6 @@ export type ProjectCreateManyInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -629,7 +612,6 @@ export type ProjectUpdateManyMutationInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -654,7 +636,6 @@ export type ProjectUncheckedUpdateManyInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -697,7 +678,6 @@ export type ProjectCountOrderByAggregateInput = {
   publishedAt?: Prisma.SortOrder
   accessLevel?: Prisma.SortOrder
   category?: Prisma.SortOrder
-  type?: Prisma.SortOrder
   siteTitle?: Prisma.SortOrder
   siteDescription?: Prisma.SortOrder
   thumbnailUrl?: Prisma.SortOrder
@@ -721,7 +701,6 @@ export type ProjectMaxOrderByAggregateInput = {
   publishedAt?: Prisma.SortOrder
   accessLevel?: Prisma.SortOrder
   category?: Prisma.SortOrder
-  type?: Prisma.SortOrder
   siteTitle?: Prisma.SortOrder
   siteDescription?: Prisma.SortOrder
   thumbnailUrl?: Prisma.SortOrder
@@ -744,7 +723,6 @@ export type ProjectMinOrderByAggregateInput = {
   publishedAt?: Prisma.SortOrder
   accessLevel?: Prisma.SortOrder
   category?: Prisma.SortOrder
-  type?: Prisma.SortOrder
   siteTitle?: Prisma.SortOrder
   siteDescription?: Prisma.SortOrder
   thumbnailUrl?: Prisma.SortOrder
@@ -827,10 +805,6 @@ export type EnumAccessLevelFieldUpdateOperationsInput = {
 
 export type NullableEnumProjectCategoryFieldUpdateOperationsInput = {
   set?: $Enums.ProjectCategory | null
-}
-
-export type EnumProjectTypeFieldUpdateOperationsInput = {
-  set?: $Enums.ProjectType
 }
 
 export type ProjectCreateNestedOneWithoutAgentConfigInput = {
@@ -1025,7 +999,6 @@ export type ProjectCreateWithoutWorkspaceInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -1059,7 +1032,6 @@ export type ProjectUncheckedCreateWithoutWorkspaceInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -1122,7 +1094,6 @@ export type ProjectScalarWhereInput = {
   publishedAt?: Prisma.DateTimeNullableFilter<"Project"> | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFilter<"Project"> | $Enums.AccessLevel
   category?: Prisma.EnumProjectCategoryNullableFilter<"Project"> | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFilter<"Project"> | $Enums.ProjectType
   siteTitle?: Prisma.StringNullableFilter<"Project"> | string | null
   siteDescription?: Prisma.StringNullableFilter<"Project"> | string | null
   thumbnailUrl?: Prisma.StringNullableFilter<"Project"> | string | null
@@ -1145,7 +1116,6 @@ export type ProjectCreateWithoutAgentConfigInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -1180,7 +1150,6 @@ export type ProjectUncheckedCreateWithoutAgentConfigInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -1227,7 +1196,6 @@ export type ProjectUpdateWithoutAgentConfigInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -1262,7 +1230,6 @@ export type ProjectUncheckedUpdateWithoutAgentConfigInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -1293,7 +1260,6 @@ export type ProjectCreateWithoutCheckpointsInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -1328,7 +1294,6 @@ export type ProjectUncheckedCreateWithoutCheckpointsInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -1375,7 +1340,6 @@ export type ProjectUpdateWithoutCheckpointsInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -1410,7 +1374,6 @@ export type ProjectUncheckedUpdateWithoutCheckpointsInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -1441,7 +1404,6 @@ export type ProjectCreateWithoutGithubConnectionInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -1476,7 +1438,6 @@ export type ProjectUncheckedCreateWithoutGithubConnectionInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -1523,7 +1484,6 @@ export type ProjectUpdateWithoutGithubConnectionInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -1558,7 +1518,6 @@ export type ProjectUncheckedUpdateWithoutGithubConnectionInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -1589,7 +1548,6 @@ export type ProjectCreateWithoutStarredByInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -1624,7 +1582,6 @@ export type ProjectUncheckedCreateWithoutStarredByInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -1671,7 +1628,6 @@ export type ProjectUpdateWithoutStarredByInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -1706,7 +1662,6 @@ export type ProjectUncheckedUpdateWithoutStarredByInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -1737,7 +1692,6 @@ export type ProjectCreateWithoutMembersInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -1772,7 +1726,6 @@ export type ProjectUncheckedCreateWithoutMembersInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -1819,7 +1772,6 @@ export type ProjectUpdateWithoutMembersInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -1854,7 +1806,6 @@ export type ProjectUncheckedUpdateWithoutMembersInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -1885,7 +1836,6 @@ export type ProjectCreateWithoutInviteLinksInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -1920,7 +1870,6 @@ export type ProjectUncheckedCreateWithoutInviteLinksInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -1967,7 +1916,6 @@ export type ProjectUpdateWithoutInviteLinksInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -2002,7 +1950,6 @@ export type ProjectUncheckedUpdateWithoutInviteLinksInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -2033,7 +1980,6 @@ export type ProjectCreateWithoutFolderInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -2067,7 +2013,6 @@ export type ProjectUncheckedCreateWithoutFolderInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -2125,7 +2070,6 @@ export type ProjectCreateWithoutUsageEventsInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -2160,7 +2104,6 @@ export type ProjectUncheckedCreateWithoutUsageEventsInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -2207,7 +2150,6 @@ export type ProjectUpdateWithoutUsageEventsInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -2242,7 +2184,6 @@ export type ProjectUncheckedUpdateWithoutUsageEventsInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -2273,7 +2214,6 @@ export type ProjectCreateWithoutChatSessionsInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -2308,7 +2248,6 @@ export type ProjectUncheckedCreateWithoutChatSessionsInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -2355,7 +2294,6 @@ export type ProjectUpdateWithoutChatSessionsInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -2390,7 +2328,6 @@ export type ProjectUncheckedUpdateWithoutChatSessionsInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -2421,7 +2358,6 @@ export type ProjectCreateWithoutFeatureSessionsInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -2456,7 +2392,6 @@ export type ProjectUncheckedCreateWithoutFeatureSessionsInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -2503,7 +2438,6 @@ export type ProjectUpdateWithoutFeatureSessionsInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -2538,7 +2472,6 @@ export type ProjectUncheckedUpdateWithoutFeatureSessionsInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -2570,7 +2503,6 @@ export type ProjectCreateManyWorkspaceInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -2593,7 +2525,6 @@ export type ProjectUpdateWithoutWorkspaceInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -2627,7 +2558,6 @@ export type ProjectUncheckedUpdateWithoutWorkspaceInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -2660,7 +2590,6 @@ export type ProjectUncheckedUpdateManyWithoutWorkspaceInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -2684,7 +2613,6 @@ export type ProjectCreateManyFolderInput = {
   publishedAt?: Date | string | null
   accessLevel?: $Enums.AccessLevel
   category?: $Enums.ProjectCategory | null
-  type?: $Enums.ProjectType
   siteTitle?: string | null
   siteDescription?: string | null
   thumbnailUrl?: string | null
@@ -2707,7 +2635,6 @@ export type ProjectUpdateWithoutFolderInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -2741,7 +2668,6 @@ export type ProjectUncheckedUpdateWithoutFolderInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -2774,7 +2700,6 @@ export type ProjectUncheckedUpdateManyWithoutFolderInput = {
   publishedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   accessLevel?: Prisma.EnumAccessLevelFieldUpdateOperationsInput | $Enums.AccessLevel
   category?: Prisma.NullableEnumProjectCategoryFieldUpdateOperationsInput | $Enums.ProjectCategory | null
-  type?: Prisma.EnumProjectTypeFieldUpdateOperationsInput | $Enums.ProjectType
   siteTitle?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   siteDescription?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   thumbnailUrl?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -2884,7 +2809,6 @@ export type ProjectSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs 
   publishedAt?: boolean
   accessLevel?: boolean
   category?: boolean
-  type?: boolean
   siteTitle?: boolean
   siteDescription?: boolean
   thumbnailUrl?: boolean
@@ -2921,7 +2845,6 @@ export type ProjectSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Exten
   publishedAt?: boolean
   accessLevel?: boolean
   category?: boolean
-  type?: boolean
   siteTitle?: boolean
   siteDescription?: boolean
   thumbnailUrl?: boolean
@@ -2948,7 +2871,6 @@ export type ProjectSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.Exten
   publishedAt?: boolean
   accessLevel?: boolean
   category?: boolean
-  type?: boolean
   siteTitle?: boolean
   siteDescription?: boolean
   thumbnailUrl?: boolean
@@ -2975,7 +2897,6 @@ export type ProjectSelectScalar = {
   publishedAt?: boolean
   accessLevel?: boolean
   category?: boolean
-  type?: boolean
   siteTitle?: boolean
   siteDescription?: boolean
   thumbnailUrl?: boolean
@@ -2984,7 +2905,7 @@ export type ProjectSelectScalar = {
   settings?: boolean
 }
 
-export type ProjectOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "name" | "description" | "workspaceId" | "tier" | "status" | "schemas" | "createdBy" | "createdAt" | "updatedAt" | "folderId" | "publishedSubdomain" | "publishedAt" | "accessLevel" | "category" | "type" | "siteTitle" | "siteDescription" | "thumbnailUrl" | "templateId" | "knativeServiceName" | "settings", ExtArgs["result"]["project"]>
+export type ProjectOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "name" | "description" | "workspaceId" | "tier" | "status" | "schemas" | "createdBy" | "createdAt" | "updatedAt" | "folderId" | "publishedSubdomain" | "publishedAt" | "accessLevel" | "category" | "siteTitle" | "siteDescription" | "thumbnailUrl" | "templateId" | "knativeServiceName" | "settings", ExtArgs["result"]["project"]>
 export type ProjectInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   workspace?: boolean | Prisma.WorkspaceDefaultArgs<ExtArgs>
   folder?: boolean | Prisma.Project$folderArgs<ExtArgs>
@@ -3039,7 +2960,6 @@ export type $ProjectPayload<ExtArgs extends runtime.Types.Extensions.InternalArg
     publishedAt: Date | null
     accessLevel: $Enums.AccessLevel
     category: $Enums.ProjectCategory | null
-    type: $Enums.ProjectType
     siteTitle: string | null
     siteDescription: string | null
     thumbnailUrl: string | null
@@ -3495,7 +3415,6 @@ export interface ProjectFieldRefs {
   readonly publishedAt: Prisma.FieldRef<"Project", 'DateTime'>
   readonly accessLevel: Prisma.FieldRef<"Project", 'AccessLevel'>
   readonly category: Prisma.FieldRef<"Project", 'ProjectCategory'>
-  readonly type: Prisma.FieldRef<"Project", 'ProjectType'>
   readonly siteTitle: Prisma.FieldRef<"Project", 'String'>
   readonly siteDescription: Prisma.FieldRef<"Project", 'String'>
   readonly thumbnailUrl: Prisma.FieldRef<"Project", 'String'>

@@ -61,7 +61,9 @@ import { PublishDropdown } from './PublishDropdown'
 import { usePlatformConfig } from '../../lib/platform-config'
 
 const AGENT_TABS = [
+  { id: 'chat-fullscreen', label: 'Chat' },
   { id: 'dynamic-app', label: 'Canvas' },
+  { id: 'app-preview', label: 'App' },
   { id: 'files', label: 'Files' },
   { id: 'capabilities', label: 'Capabilities' },
   { id: 'channels', label: 'Channels' },
@@ -71,13 +73,11 @@ const AGENT_TABS = [
 export interface ProjectSwitcherItem {
   id: string
   name: string
-  type?: string
 }
 
 export interface ProjectTopBarProps {
   projectName: string
   projectId: string
-  projectType?: string
   projects?: ProjectSwitcherItem[]
   showChatSessions?: boolean
   isChatCollapsed?: boolean
@@ -103,6 +103,8 @@ export interface ProjectTopBarProps {
   hiddenTabs?: string[]
   /** When false, replaces the Canvas tab with a full-screen Chat tab */
   canvasEnabled?: boolean
+  /** Active agent mode — controls which visual tabs are shown */
+  activeMode?: 'none' | 'canvas' | 'app'
   /** Narrow-screen: which main panel is visible (chat or canvas) */
   narrowActiveTab?: 'chat' | 'canvas'
   /** Narrow-screen: callback when main panel changes */
@@ -114,7 +116,6 @@ export interface ProjectTopBarProps {
 export function ProjectTopBar({
   projectName,
   projectId,
-  projectType = 'AGENT',
   projects = [],
   showChatSessions = false,
   isChatCollapsed = false,
@@ -138,6 +139,7 @@ export function ProjectTopBar({
   folders = [],
   hiddenTabs = [],
   canvasEnabled = true,
+  activeMode = 'canvas',
   narrowActiveTab,
   onNarrowTabChange,
   narrowPreviewTab,
@@ -165,7 +167,7 @@ export function ProjectTopBar({
     }
   }, [projectId, onProjectSwitch, router])
 
-  const typeLabel = projectType === 'AGENT' ? 'Agent project' : 'App project'
+  const typeLabel = 'Project'
 
   const narrowMoreItems = [
     ...(canvasEnabled ? [
@@ -245,14 +247,19 @@ export function ProjectTopBar({
       {/* Center: Narrow segmented control OR wide tab buttons */}
       {!isWide && onNarrowTabChange ? (
         <View className="flex-row items-center bg-muted rounded-lg p-0.5 mx-2">
-          {(canvasEnabled ? ['chat', 'canvas'] as const : ['chat'] as const).map((tab) => {
-            const isActive = narrowActiveTab === tab
+          {(activeMode === 'none'
+            ? [{ key: 'chat', label: 'Chat', tabId: undefined }] as const
+            : activeMode === 'app'
+              ? [{ key: 'chat', label: 'Chat', tabId: undefined }, { key: 'canvas', label: 'App', tabId: 'app-preview' }] as const
+              : [{ key: 'chat', label: 'Chat', tabId: undefined }, { key: 'canvas', label: 'Canvas', tabId: 'dynamic-app' }] as const
+          ).map((tab) => {
+            const isActive = narrowActiveTab === tab.key
             return (
               <Pressable
-                key={tab}
+                key={tab.key}
                 onPress={() => {
-                  onNarrowTabChange(tab)
-                  if (tab === 'canvas') onTabChange?.('dynamic-app')
+                  onNarrowTabChange(tab.key as 'chat' | 'canvas')
+                  if (tab.tabId) onTabChange?.(tab.tabId)
                 }}
                 className={cn(
                   'px-3 py-1 rounded-md',
@@ -265,7 +272,7 @@ export function ProjectTopBar({
                     isActive ? 'text-foreground' : 'text-muted-foreground',
                   )}
                 >
-                  {tab === 'chat' ? 'Chat' : 'Canvas'}
+                  {tab.label}
                 </Text>
               </Pressable>
             )
@@ -280,12 +287,6 @@ export function ProjectTopBar({
           accessibilityRole="tablist"
         >
           {AGENT_TABS
-            .map((tab) => {
-              if (tab.id === 'dynamic-app' && !canvasEnabled) {
-                return { id: 'chat-fullscreen', label: 'Chat' }
-              }
-              return tab
-            })
             .filter((tab) => !hiddenTabs.includes(tab.id))
             .map((tab) => (
             <Pressable
@@ -380,14 +381,12 @@ export function ProjectTopBar({
         {/* Wide: show full buttons */}
         {isWide && (
           <>
-            {projectType !== 'AGENT' && (
-              <Pressable
-                onPress={() => router.push({ pathname: '/(app)/settings', params: { tab: 'github' } } as any)}
-                className="h-8 w-8 items-center justify-center rounded-md active:bg-muted"
-              >
-                <Github size={16} className="text-muted-foreground" />
-              </Pressable>
-            )}
+            <Pressable
+              onPress={() => router.push({ pathname: '/(app)/settings', params: { tab: 'github' } } as any)}
+              className="h-8 w-8 items-center justify-center rounded-md active:bg-muted"
+            >
+              <Github size={16} className="text-muted-foreground" />
+            </Pressable>
 
             {!hasActiveSubscription && (
               <Pressable
@@ -397,13 +396,6 @@ export function ProjectTopBar({
                 <Zap size={14} className="text-muted-foreground" />
                 <Text className="text-xs font-medium text-foreground">Upgrade</Text>
               </Pressable>
-            )}
-
-            {projectType !== 'AGENT' && (
-              <PublishDropdown
-                projectId={projectId}
-                projectName={projectName}
-              />
             )}
           </>
         )}
@@ -1071,8 +1063,6 @@ function ProjectSwitcherView({
           <View className="py-1">
             {filtered.map((project) => {
               const isCurrent = project.id === currentProjectId
-              const isAgent = project.type === 'AGENT'
-              const TypeIcon = isAgent ? Bot : AppWindow
               return (
                 <Pressable
                   key={project.id}
@@ -1084,19 +1074,16 @@ function ProjectSwitcherView({
                 >
                   <View className={cn(
                     'h-8 w-8 rounded-md items-center justify-center',
-                    isAgent ? 'bg-primary/10' : 'bg-emerald-500/10',
+                    'bg-primary/10',
                   )}>
-                    <TypeIcon
+                    <Bot
                       size={15}
-                      className={isAgent ? 'text-primary' : 'text-emerald-600'}
+                      className="text-primary"
                     />
                   </View>
                   <View className="flex-1 min-w-0">
                     <Text className="text-sm text-foreground" numberOfLines={1}>
                       {project.name}
-                    </Text>
-                    <Text className="text-[11px] text-muted-foreground">
-                      {isAgent ? 'Agent' : 'App'}
                     </Text>
                   </View>
                   {isCurrent && (

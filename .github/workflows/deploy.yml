@@ -100,8 +100,8 @@ jobs:
       has_changes: ${{ steps.set-matrix.outputs.has_changes }}
       api_changed: ${{ steps.set-matrix.outputs.api_changed }}
       web_changed: ${{ steps.set-matrix.outputs.web_changed }}
-      agent_runtime_changed: ${{ steps.set-matrix.outputs.agent_runtime_changed }}
-      project_runtime_changed: ${{ steps.set-matrix.outputs.project_runtime_changed }}
+      runtime_changed: ${{ steps.set-matrix.outputs.runtime_changed }}
+      runtime_base_changed: ${{ steps.set-matrix.outputs.runtime_base_changed }}
       docs_changed: ${{ steps.set-matrix.outputs.docs_changed }}
     steps:
       - name: Checkout code
@@ -140,14 +140,21 @@ jobs:
           SHARED=$(has_match '^(package\.json|bun\.lock|tsconfig\.base\.json|scripts/)')
           SDK=$(has_match '^packages/sdk/')
           SHARED_RUNTIME=$(has_match '^packages/shared-runtime/')
-          AGENT_RUNTIME_PKG=$(has_match '^packages/agent-runtime/')
-          PROJECT_RUNTIME_PKG=$(has_match '^packages/project-runtime/')
+          RUNTIME_PKG=$(has_match '^packages/(agent-runtime|project-runtime)/')
           API_APP=$(has_match '^(apps/api/|prisma/|prisma\.config\.ts|templates/runtime-template/)')
           WEB_APP=$(has_match '^(apps/mobile/|packages/domain-stores/|packages/shared-app/|packages/shared-ui/|packages/ui-kit/)')
           DOCS_APP=$(has_match '^apps/docs/')
 
+          # Base image: templates, Dockerfile.base, or SDK examples
+          BASE_DOCKERFILE=$(has_match '^packages/agent-runtime/Dockerfile\.base')
+          SDK_EXAMPLES=$(has_match '^packages/sdk/examples/')
+          RUNTIME_BASE_CHANGED=false
+          if [ "$BASE_DOCKERFILE" = "true" ] || [ "$SDK_EXAMPLES" = "true" ]; then
+            RUNTIME_BASE_CHANGED=true
+          fi
+
           API_CHANGED=false
-          if [ "$SHARED" = "true" ] || [ "$SDK" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$AGENT_RUNTIME_PKG" = "true" ] || [ "$API_APP" = "true" ]; then
+          if [ "$SHARED" = "true" ] || [ "$SDK" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$RUNTIME_PKG" = "true" ] || [ "$API_APP" = "true" ]; then
             API_CHANGED=true
           fi
 
@@ -156,14 +163,10 @@ jobs:
             WEB_CHANGED=true
           fi
 
-          AGENT_RUNTIME_CHANGED=false
-          if [ "$SHARED" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$AGENT_RUNTIME_PKG" = "true" ]; then
-            AGENT_RUNTIME_CHANGED=true
-          fi
-
-          PROJECT_RUNTIME_CHANGED=false
-          if [ "$SHARED" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$PROJECT_RUNTIME_PKG" = "true" ]; then
-            PROJECT_RUNTIME_CHANGED=true
+          # Runtime rebuilds when source changes OR when base image changes
+          RUNTIME_CHANGED=false
+          if [ "$SHARED" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$RUNTIME_PKG" = "true" ] || [ "$RUNTIME_BASE_CHANGED" = "true" ]; then
+            RUNTIME_CHANGED=true
           fi
 
           DOCS_CHANGED=false
@@ -173,8 +176,8 @@ jobs:
 
           echo "api_changed=$API_CHANGED" >> $GITHUB_OUTPUT
           echo "web_changed=$WEB_CHANGED" >> $GITHUB_OUTPUT
-          echo "agent_runtime_changed=$AGENT_RUNTIME_CHANGED" >> $GITHUB_OUTPUT
-          echo "project_runtime_changed=$PROJECT_RUNTIME_CHANGED" >> $GITHUB_OUTPUT
+          echo "runtime_changed=$RUNTIME_CHANGED" >> $GITHUB_OUTPUT
+          echo "runtime_base_changed=$RUNTIME_BASE_CHANGED" >> $GITHUB_OUTPUT
           echo "docs_changed=$DOCS_CHANGED" >> $GITHUB_OUTPUT
 
           ENTRIES=""
@@ -185,8 +188,7 @@ jobs:
 
           [ "$API_CHANGED" = "true" ] && add_entry '{"image":"api","dockerfile":"apps/api/Dockerfile","ecr_name":"shogo-api","build_args":"api"}'
           [ "$WEB_CHANGED" = "true" ] && add_entry '{"image":"web","dockerfile":"apps/mobile/Dockerfile","ecr_name":"shogo-web","build_args":"web"}'
-          [ "$AGENT_RUNTIME_CHANGED" = "true" ] && add_entry '{"image":"agent-runtime","dockerfile":"packages/agent-runtime/Dockerfile","ecr_name":"agent-runtime","build_args":""}'
-          [ "$PROJECT_RUNTIME_CHANGED" = "true" ] && add_entry '{"image":"project-runtime","dockerfile":"packages/project-runtime/Dockerfile","ecr_name":"project-runtime","build_args":""}'
+          [ "$RUNTIME_CHANGED" = "true" ] && add_entry '{"image":"runtime","dockerfile":"packages/agent-runtime/Dockerfile","ecr_name":"shogo-runtime","build_args":"runtime"}'
           [ "$DOCS_CHANGED" = "true" ] && add_entry '{"image":"docs","dockerfile":"apps/docs/Dockerfile","ecr_name":"shogo-docs","build_args":""}'
 
           if [ -z "$ENTRIES" ]; then
@@ -202,8 +204,8 @@ jobs:
           echo "📊 Changes detected:"
           echo "  api: $API_CHANGED"
           echo "  web: $WEB_CHANGED"
-          echo "  agent-runtime: $AGENT_RUNTIME_CHANGED"
-          echo "  project-runtime: $PROJECT_RUNTIME_CHANGED"
+          echo "  runtime: $RUNTIME_CHANGED"
+          echo "  runtime_base: $RUNTIME_BASE_CHANGED"
           echo "  docs: $DOCS_CHANGED"
 
   # ===========================================================================
@@ -235,13 +237,81 @@ jobs:
         continue-on-error: true  # Don't fail on type errors for now
 
   # ===========================================================================
+  # Stage 1.5: Build Runtime Base Image (only when templates/deps change)
+  # ===========================================================================
+  build-base-image:
+    name: Build Runtime Base Image
+    runs-on: ubuntu-latest
+    needs: [resolve-config, detect-changes]
+    if: needs.detect-changes.outputs.runtime_base_changed == 'true'
+    environment: ${{ needs.resolve-config.outputs.environment }}
+    timeout-minutes: 45
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: github-actions-build-base
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Ensure ECR repository exists
+        run: |
+          aws ecr describe-repositories --repository-names shogo/shogo-runtime-base --region ${{ env.AWS_REGION }} 2>/dev/null || \
+          aws ecr create-repository --repository-name shogo/shogo-runtime-base --region ${{ env.AWS_REGION }} \
+            --image-scanning-configuration scanOnPush=true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push base image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/agent-runtime/Dockerfile.base
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ needs.resolve-config.outputs.ecr_registry }}/shogo/shogo-runtime-base:latest
+            ${{ needs.resolve-config.outputs.ecr_registry }}/shogo/shogo-runtime-base:${{ github.sha }}
+          cache-from: type=gha,scope=runtime-base
+          cache-to: type=gha,mode=max,scope=runtime-base
+
+  # ===========================================================================
   # Stage 2: Build and Push Docker Images (in parallel)
   # ===========================================================================
   build-and-push:
     name: Build ${{ matrix.image }}
     runs-on: ubuntu-latest
-    needs: [resolve-config, detect-changes]
-    if: needs.detect-changes.outputs.has_changes == 'true'
+    needs: [resolve-config, detect-changes, build-base-image]
+    if: |
+      always() &&
+      needs.resolve-config.result == 'success' &&
+      needs.detect-changes.result == 'success' &&
+      needs.detect-changes.outputs.has_changes == 'true' &&
+      (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped')
     environment: ${{ needs.resolve-config.outputs.environment }}
     timeout-minutes: 30
     
@@ -255,17 +325,16 @@ jobs:
 
     steps:
       - name: Free disk space (large runtime images)
-        if: matrix.image == 'agent-runtime' || matrix.image == 'project-runtime'
+        if: matrix.image == 'runtime'
         uses: jlumbroso/free-disk-space@main
         with:
-          # Frees ~31GB - keeps only what's needed for Docker builds
-          tool-cache: false      # Keep tool cache (node, etc)
-          android: true          # Remove Android SDK (~10GB)
-          dotnet: true           # Remove .NET (~2GB)
-          haskell: true          # Remove Haskell (~5GB)
-          large-packages: true   # Remove large apt packages (~5GB)
-          docker-images: true    # Remove pre-cached Docker images (~3GB)
-          swap-storage: true     # Remove swap (~4GB)
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
 
       - name: Checkout code
         uses: actions/checkout@v4
@@ -298,6 +367,7 @@ jobs:
             ${{ matrix.build_args == 'api' && format('ALLOWED_ORIGINS={0}', vars.ALLOWED_ORIGINS) || '' }}
             ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_API_URL={0}', vars.EXPO_PUBLIC_API_URL) || '' }}
             ${{ matrix.build_args == 'web' && needs.resolve-config.outputs.environment == 'production' && format('VITE_GTM_ID={0}', secrets.VITE_GTM_ID) || '' }}
+            ${{ matrix.build_args == 'runtime' && format('BASE_IMAGE={0}/shogo/shogo-runtime-base:latest', needs.resolve-config.outputs.ecr_registry) || '' }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 
@@ -308,11 +378,12 @@ jobs:
   deploy:
     name: Deploy to EKS (${{ needs.resolve-config.outputs.environment }})
     runs-on: ubuntu-latest
-    needs: [resolve-config, detect-changes, build-and-push]
+    needs: [resolve-config, detect-changes, build-base-image, build-and-push]
     if: |
       always() &&
       needs.resolve-config.result == 'success' &&
       needs.detect-changes.result == 'success' &&
+      (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped') &&
       (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped')
     environment: ${{ needs.resolve-config.outputs.environment }}
     
@@ -530,7 +601,7 @@ jobs:
           kubectl wait --for=condition=ready ksvc/docs -n ${{ env.NS_SYSTEM }} --timeout=300s || true
 
       - name: Restart image prepuller
-        if: needs.detect-changes.outputs.agent_runtime_changed == 'true' || needs.detect-changes.outputs.project_runtime_changed == 'true'
+        if: needs.detect-changes.outputs.runtime_changed == 'true'
         run: |
           echo "🔄 Restarting image-prepuller to pull new runtime images..."
           
@@ -597,8 +668,8 @@ jobs:
         env:
           API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
           WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
-          AGENT_RUNTIME_CHANGED: ${{ needs.detect-changes.outputs.agent_runtime_changed }}
-          PROJECT_RUNTIME_CHANGED: ${{ needs.detect-changes.outputs.project_runtime_changed }}
+          RUNTIME_CHANGED: ${{ needs.detect-changes.outputs.runtime_changed }}
+          RUNTIME_BASE_CHANGED: ${{ needs.detect-changes.outputs.runtime_base_changed }}
           DOCS_CHANGED: ${{ needs.detect-changes.outputs.docs_changed }}
         run: |
           echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
@@ -613,8 +684,8 @@ jobs:
           echo "|---------|--------|" >> $GITHUB_STEP_SUMMARY
           [ "$API_CHANGED" = "true" ] && echo "| API | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| API | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
           [ "$WEB_CHANGED" = "true" ] && echo "| Web | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| Web | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
-          [ "$AGENT_RUNTIME_CHANGED" = "true" ] && echo "| Agent Runtime | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| Agent Runtime | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
-          [ "$PROJECT_RUNTIME_CHANGED" = "true" ] && echo "| Project Runtime | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| Project Runtime | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
+          [ "$RUNTIME_BASE_CHANGED" = "true" ] && echo "| Runtime Base | 🟢 Rebuilt (templates/deps changed) |" >> $GITHUB_STEP_SUMMARY || echo "| Runtime Base | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
+          [ "$RUNTIME_CHANGED" = "true" ] && echo "| Runtime | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| Runtime | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
           [ "$DOCS_CHANGED" = "true" ] && echo "| Docs | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| Docs | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Endpoints" >> $GITHUB_STEP_SUMMARY
@@ -633,12 +704,13 @@ jobs:
   deploy-eu:
     name: Deploy to EKS EU (${{ needs.resolve-config.outputs.environment }})
     runs-on: ubuntu-latest
-    needs: [resolve-config, detect-changes, build-and-push]
+    needs: [resolve-config, detect-changes, build-base-image, build-and-push]
     if: |
       always() &&
       needs.resolve-config.outputs.multi_region == 'true' &&
       needs.resolve-config.result == 'success' &&
       needs.detect-changes.result == 'success' &&
+      (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped') &&
       (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped')
     environment: ${{ needs.resolve-config.outputs.environment }}
 

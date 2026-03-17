@@ -200,7 +200,6 @@ export const ProjectScalarFieldEnum = {
   publishedAt: 'publishedAt',
   accessLevel: 'accessLevel',
   category: 'category',
-  type: 'type',
   siteTitle: 'siteTitle',
   siteDescription: 'siteDescription',
   thumbnailUrl: 'thumbnailUrl',

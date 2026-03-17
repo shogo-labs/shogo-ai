@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, test, expect, beforeEach, afterEach, beforeAll, afterAll } from 'bun:test'
 import { mkdirSync, rmSync } from 'fs'
-import { createAllTools, type ToolContext } from '../gateway-tools'
+import { createTools, type ToolContext } from '../gateway-tools'
 
 const TEST_DIR = '/tmp/test-web-search'
 
@@ -24,9 +24,9 @@ function createCtx(): ToolContext {
 }
 
 function getWebTool(ctx: ToolContext) {
-  const tools = createAllTools(ctx)
+  const tools = createTools(ctx)
   const tool = tools.find(t => t.name === 'web')
-  if (!tool) throw new Error('web tool not found in createAllTools()')
+  if (!tool) throw new Error('web tool not found in createTools()')
   return tool
 }
 
@@ -46,9 +46,9 @@ describe('web tool', () => {
     rmSync(TEST_DIR, { recursive: true, force: true })
   })
 
-  test('tool is registered in createAllTools', () => {
+  test('tool is registered in createTools', () => {
     const ctx = createCtx()
-    const tools = createAllTools(ctx)
+    const tools = createTools(ctx)
     const names = tools.map(t => t.name)
     expect(names).toContain('web')
   })

@@ -24,7 +24,6 @@ export interface EvalRunnerConfig {
   timeoutMs: number
   verbose: boolean
   workspaceDir: string
-  agentMode?: 'basic' | 'advanced'
 }
 
 const DEFAULT_CONFIG: EvalRunnerConfig = {
@@ -65,7 +64,6 @@ export async function sendTurn(
 
     try {
       const body: Record<string, unknown> = { messages }
-      if (config.agentMode) body.agentMode = config.agentMode
 
       const res = await fetch(config.agentEndpoint, {
         method: 'POST',

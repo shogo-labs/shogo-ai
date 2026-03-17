@@ -3,7 +3,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { View, Text, Pressable, ScrollView, ActivityIndicator } from 'react-native'
 import {
-  LayoutDashboard,
   Globe,
   Terminal,
   Clock,
@@ -15,6 +14,9 @@ import {
   Cpu,
   Check,
   Lock,
+  MessageSquare,
+  LayoutDashboard,
+  Code,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { usePlatformConfig } from '../../../lib/platform-config'
@@ -48,20 +50,15 @@ interface CapabilityDef {
   warning?: string
 }
 
+type AgentMode = 'none' | 'canvas' | 'app'
+
+const AGENT_TYPES: { mode: AgentMode; label: string; description: string; icon: typeof MessageSquare }[] = [
+  { mode: 'none', label: 'Normal', description: 'Chat-only agent', icon: MessageSquare },
+  { mode: 'canvas', label: 'Canvas', description: 'Visual dashboards', icon: LayoutDashboard },
+  { mode: 'app', label: 'App', description: 'Full-stack apps', icon: Code },
+]
+
 const CAPABILITIES: CapabilityDef[] = [
-  {
-    key: 'canvasEnabled',
-    label: 'Canvas',
-    description: 'Build interactive visual dashboards and apps',
-    disabledDescription: 'Chat-only mode — no visual UI',
-    icon: LayoutDashboard,
-    toolNames: [
-      'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch',
-      'canvas_delete', 'canvas_action_wait', 'canvas_components',
-      'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query',
-      'canvas_api_hooks', 'canvas_api_bind', 'canvas_trigger_action', 'canvas_inspect',
-    ],
-  },
   {
     key: 'webEnabled',
     label: 'Web Access',
@@ -144,6 +141,8 @@ interface CapabilitiesPanelProps {
   capabilities: CapabilitySettings
   onCapabilityToggle: (key: string, enabled: boolean) => void
   isPaidPlan?: boolean
+  activeMode?: AgentMode
+  onModeChange?: (mode: AgentMode) => void
 }
 
 export function CapabilitiesPanel({
@@ -153,6 +152,8 @@ export function CapabilitiesPanel({
   capabilities,
   onCapabilityToggle,
   isPaidPlan,
+  activeMode = 'none',
+  onModeChange,
 }: CapabilitiesPanelProps) {
   const { localMode } = usePlatformConfig()
   const canSelectAllModels = localMode || isPaidPlan
@@ -221,7 +222,7 @@ export function CapabilitiesPanel({
     m => m.name === currentModel?.name || (currentModel?.name && m.name === currentModel.name.replace(/-\d{8}$/, ''))
   )
 
-  const enabledCount = Object.values(capabilities).filter(Boolean).length
+  const enabledCount = CAPABILITIES.filter(c => capabilities[c.key]).length
 
   const TABS: { id: SubTab; label: string }[] = [
     { id: 'built-in', label: `Built-in (${enabledCount}/${CAPABILITIES.length})` },
@@ -259,6 +260,37 @@ export function CapabilitiesPanel({
       {/* Built-in capabilities tab */}
       {subTab === 'built-in' && (
         <ScrollView className="flex-1" contentContainerStyle={{ paddingBottom: 24 }}>
+          {/* Agent type selector */}
+          <View className="px-4 pt-3 pb-1">
+            <Text className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Agent Type</Text>
+            <View className="flex-row gap-2">
+              {AGENT_TYPES.map(({ mode, label, description, icon: Icon }) => {
+                const isActive = activeMode === mode
+                return (
+                  <Pressable
+                    key={mode}
+                    onPress={() => onModeChange?.(mode)}
+                    className={cn(
+                      'flex-1 border rounded-lg px-3 py-2.5 items-center gap-1.5',
+                      isActive
+                        ? 'border-primary bg-primary/10'
+                        : 'border-border active:bg-muted',
+                    )}
+                  >
+                    <Icon size={18} className={isActive ? 'text-primary' : 'text-muted-foreground'} />
+                    <Text className={cn(
+                      'text-xs font-semibold',
+                      isActive ? 'text-primary' : 'text-foreground',
+                    )}>
+                      {label}
+                    </Text>
+                    <Text className="text-[10px] text-muted-foreground text-center">{description}</Text>
+                  </Pressable>
+                )
+              })}
+            </View>
+          </View>
+
           {/* Model selector */}
           <View className="px-4 pt-3 pb-1">
             <View className="border border-border rounded-lg px-3 py-2.5 flex-row items-center gap-3">

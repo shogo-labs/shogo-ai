@@ -3,12 +3,9 @@
 /**
  * Runtime Type Registry
  *
- * Centralizes configuration for agent and project runtime types.
- * Used by warm-pool-controller and knative-project-manager to avoid
- * hardcoded `isAgentProject ? X : Y` branching.
+ * Single unified runtime configuration. All projects use the same
+ * runtime image with mode switching (canvas / app / none).
  */
-
-export type RuntimeType = 'agent' | 'project'
 
 export interface RuntimeTypeConfig {
   /** Returns the container image for this runtime type */
@@ -23,56 +20,31 @@ export interface RuntimeTypeConfig {
   containerName: string
 }
 
-export const RUNTIME_TYPES: Record<RuntimeType, RuntimeTypeConfig> = {
-  agent: {
-    image: () => process.env.AGENT_RUNTIME_IMAGE || (() => {
-      console.error('[RuntimeTypes] AGENT_RUNTIME_IMAGE env var not set — falling back to ghcr.io default which will likely fail in EKS.')
-      return 'ghcr.io/shogo-ai/agent-runtime:latest'
-    })(),
-    workDir: '/app/agent',
-    extraEnv: { AGENT_DIR: '/app/agent' },
-    componentLabel: 'agent-runtime',
-    containerName: 'agent-runtime',
-  },
-  project: {
-    image: () => process.env.PROJECT_RUNTIME_IMAGE || 'ghcr.io/shogo-ai/project-runtime:latest',
-    workDir: '/app/project',
-    extraEnv: {},
-    componentLabel: 'project-runtime',
-    containerName: 'project-runtime',
-  },
+export const RUNTIME_CONFIG: RuntimeTypeConfig = {
+  image: () => process.env.RUNTIME_IMAGE || (() => {
+    console.error('[RuntimeTypes] RUNTIME_IMAGE env var not set — falling back to ghcr.io default which will likely fail in EKS.')
+    return 'ghcr.io/shogo-ai/runtime:latest'
+  })(),
+  workDir: '/app/workspace',
+  extraEnv: { WORKSPACE_DIR: '/app/workspace' },
+  componentLabel: 'runtime',
+  containerName: 'runtime',
 }
 
 /**
- * Map a Prisma ProjectType enum value to a RuntimeType.
- */
-export function runtimeTypeFromProjectType(type: 'APP' | 'AGENT'): RuntimeType {
-  return type === 'AGENT' ? 'agent' : 'project'
-}
-
-/**
- * Get the RuntimeTypeConfig for a given runtime type.
- */
-export function getRuntimeConfig(type: RuntimeType): RuntimeTypeConfig {
-  return RUNTIME_TYPES[type]
-}
-
-/**
- * Build the base environment variables for a pod of the given runtime type.
+ * Build the base environment variables for a runtime pod.
  * Returns an array in the K8s env format: [{ name, value }].
  */
 export function buildRuntimeEnv(
-  type: RuntimeType,
   projectId: string,
   extra?: Record<string, string>
 ): Array<{ name: string; value: string }> {
-  const cfg = RUNTIME_TYPES[type]
   const env: Array<{ name: string; value: string }> = [
     { name: 'PROJECT_ID', value: projectId },
-    { name: 'PROJECT_DIR', value: cfg.workDir },
+    { name: 'WORKSPACE_DIR', value: RUNTIME_CONFIG.workDir },
   ]
 
-  for (const [key, value] of Object.entries(cfg.extraEnv)) {
+  for (const [key, value] of Object.entries(RUNTIME_CONFIG.extraEnv)) {
     env.push({ name: key, value })
   }
 

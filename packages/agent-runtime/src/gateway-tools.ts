@@ -119,6 +119,48 @@ export function textResult(data: any): AgentToolResult<any> {
 }
 
 // ---------------------------------------------------------------------------
+// Mode Switching Tool
+// ---------------------------------------------------------------------------
+
+export interface ModeSwitchHandler {
+  onModeSwitch: (mode: 'canvas' | 'app' | 'none', reason: string) => void
+  getAllowedModes: () => Array<'canvas' | 'app' | 'none'>
+  getActiveMode: () => 'canvas' | 'app' | 'none'
+}
+
+function createSwitchModeTool(ctx: ToolContext, modeHandler: ModeSwitchHandler): AgentTool {
+  return {
+    name: 'switch_mode',
+    description:
+      'Switch the visual output mode. Use "canvas" for dashboards/widgets, "app" for full-stack apps with custom code, "none" for conversation only.',
+    label: 'Switch Mode',
+    parameters: Type.Object({
+      mode: Type.Union([Type.Literal('canvas'), Type.Literal('app'), Type.Literal('none')]),
+      reason: Type.String({ description: 'Brief explanation of why this mode fits the request' }),
+    }),
+    execute: async (_id, params) => {
+      const { mode, reason } = params as { mode: 'canvas' | 'app' | 'none'; reason: string }
+
+      const allowed = modeHandler.getAllowedModes()
+      if (!allowed.includes(mode)) {
+        return textResult({
+          error: true,
+          message: `Mode "${mode}" is not available on this plan. Available modes: ${allowed.join(', ')}`,
+        })
+      }
+
+      const current = modeHandler.getActiveMode()
+      if (current === mode) {
+        return textResult({ switched: false, mode, message: `Already in ${mode} mode.` })
+      }
+
+      modeHandler.onModeSwitch(mode, reason)
+      return textResult({ switched: true, previousMode: current, mode, reason })
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Tool Definitions (created via factory)
 // ---------------------------------------------------------------------------
 
@@ -181,7 +223,7 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
 function createWriteFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'write_file',
-    description: 'Write content to a file in the agent workspace. Creates parent directories as needed.',
+    description: 'Write content to a file in the agent workspace (config files, skills, markdown). Creates parent directories as needed. Do NOT use this for application code — use the code_agent tool instead.',
     label: 'Write File',
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace' }),
@@ -3271,12 +3313,12 @@ function createGenerateImageTool(ctx: ToolContext): AgentTool {
 // Factory Functions
 // ---------------------------------------------------------------------------
 
-/** All gateway tools (full set for channel messages) */
-export function createAllTools(ctx: ToolContext): AgentTool[] {
+/** All gateway tools (unified set for all agents) */
+export function createTools(ctx: ToolContext, modeHandler?: ModeSwitchHandler, extraTools?: AgentTool[]): AgentTool[] {
   const pe = ctx.permissionEngine
   const g = (tool: AgentTool, cat: import('./types').PermissionCategory) => applyPermissionGate(tool, cat, pe)
 
-  return [
+  const tools: AgentTool[] = [
     g(createExecTool(ctx), 'shell'),
     g(createReadFileTool(ctx), 'file_read'),
     g(createWriteFileTool(ctx), 'file_write'),
@@ -3298,7 +3340,7 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createCanvasDataPatchTool(),
     createCanvasDeleteTool(),
     createCanvasActionWaitTool(),
-    createCanvasComponentsTool(),
+    createCanvasComponentsTool({ basic: true }),
     createCanvasApiSchemaTool(),
     createCanvasApiSeedTool(),
     createCanvasApiQueryTool(),
@@ -3313,44 +3355,15 @@ export function createAllTools(ctx: ToolContext): AgentTool[] {
     createBindingTransformTool(ctx),
     g(createGenerateImageTool(ctx), 'network'),
   ]
-}
 
-/** Basic agent tools — full non-canvas set + display-only canvas (no mutation tools) */
-export function createBasicTools(ctx: ToolContext): AgentTool[] {
-  const pe = ctx.permissionEngine
-  const g = (tool: AgentTool, cat: import('./types').PermissionCategory) => applyPermissionGate(tool, cat, pe)
+  if (modeHandler) {
+    tools.push(createSwitchModeTool(ctx, modeHandler))
+  }
+  if (extraTools) {
+    tools.push(...extraTools)
+  }
 
-  return [
-    g(createExecTool(ctx), 'shell'),
-    g(createReadFileTool(ctx), 'file_read'),
-    g(createWriteFileTool(ctx), 'file_write'),
-    g(createListFilesTool(ctx), 'file_read'),
-    g(createDeleteFileTool(ctx), 'file_delete'),
-    g(createSearchFilesTool(ctx), 'file_read'),
-    g(createWebTool(), 'network'),
-    g(createBrowserTool(ctx), 'network'),
-    createMemoryReadTool(ctx),
-    createMemoryWriteTool(ctx),
-    createMemorySearchTool(ctx),
-    createSendMessageTool(ctx),
-    createChannelConnectTool(ctx),
-    createCanvasCreateTool(),
-    createCanvasUpdateTool(),
-    createCanvasDataTool(),
-    createCanvasDeleteTool(),
-    createCanvasComponentsTool({ basic: true }),
-    createCanvasApiSchemaTool(),
-    createCanvasApiSeedTool(),
-    createCanvasApiQueryTool(),
-    createCanvasApiBindTool(ctx),
-    createCanvasInspectTool(),
-    createPersonalityUpdateTool(ctx),
-    createToolSearchTool(),
-    createToolInstallTool(ctx),
-    createToolUninstallTool(ctx),
-    createBindingTransformTool(ctx),
-    g(createGenerateImageTool(ctx), 'network'),
-  ]
+  return tools
 }
 
 /** Reduced tool set for heartbeat ticks (no exec, no send_message) */

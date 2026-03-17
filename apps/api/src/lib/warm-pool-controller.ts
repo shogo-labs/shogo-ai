@@ -31,7 +31,7 @@ import { trace, SpanStatusCode, metrics } from '@opentelemetry/api'
 import { generateProxyToken } from './ai-proxy-token'
 import * as databaseService from '../services/database.service'
 import { ensureCapacityForPods, getCapacitySummary } from './proactive-node-scaler'
-import { RUNTIME_TYPES, type RuntimeType as SharedRuntimeType } from '@shogo/shared-runtime'
+import { RUNTIME_CONFIG } from '@shogo/shared-runtime'
 
 const poolTracer = trace.getTracer('shogo-warm-pool')
 const meter = metrics.getMeter('shogo-warm-pool')
@@ -71,12 +71,9 @@ const WARM_POOL_MAX_AGE_MS = parseInt(
 )
 
 // Per-node pool sizing: pool scales with cluster capacity.
-// 2 nodes idle → small pool. Pre-scale to 5 nodes → bigger pool.
-const WARM_POOL_AGENTS_PER_NODE = parseInt(process.env.WARM_POOL_AGENTS_PER_NODE || '2', 10)
-const WARM_POOL_PROJECTS_PER_NODE = parseInt(process.env.WARM_POOL_PROJECTS_PER_NODE || '0', 10)
+const WARM_POOL_PODS_PER_NODE = parseInt(process.env.WARM_POOL_PODS_PER_NODE || '2', 10)
 // Absolute minimum warm pods regardless of node count
-const WARM_POOL_MIN_AGENTS = parseInt(process.env.WARM_POOL_MIN_AGENTS || '2', 10)
-const WARM_POOL_MIN_PROJECTS = parseInt(process.env.WARM_POOL_MIN_PROJECTS || '0', 10)
+const WARM_POOL_MIN_PODS = parseInt(process.env.WARM_POOL_MIN_PODS || '2', 10)
 
 // Promoted pod GC: clean up orphaned/idle promoted pods
 const PROMOTED_POD_GC_ENABLED = process.env.PROMOTED_POD_GC_ENABLED !== 'false'
@@ -103,15 +100,11 @@ const NAMESPACE_GC_CREATION_GRACE_MS = 5 * 60 * 1000 // skip services created wi
 
 const POOL_PROJECT_ID = '__POOL__'
 const POOL_LABEL_KEY = 'shogo.io/warm-pool'
-const POOL_TYPE_LABEL_KEY = 'shogo.io/warm-pool-type'
 const POOL_STATUS_LABEL_KEY = 'shogo.io/warm-pool-status'
-
-export type RuntimeType = 'project' | 'agent'
 
 export interface WarmPodInfo {
   id: string
   serviceName: string
-  type: RuntimeType
   url: string
   createdAt: number
   ready: boolean
@@ -119,7 +112,6 @@ export interface WarmPodInfo {
 
 export interface PromotedPodInfo {
   serviceName: string
-  type: RuntimeType
   projectId: string
   url: string
   createdAt: number
@@ -137,8 +129,7 @@ export interface GcStats {
 }
 
 export interface WarmPoolConfig {
-  projectPoolSize?: number
-  agentPoolSize?: number
+  poolSize?: number
   reconcileIntervalMs?: number
   maxPodAgeMs?: number
   namespace?: string
@@ -204,16 +195,14 @@ function getCoreApi(): k8s.CoreV1Api {
 
 export class WarmPoolController {
   private namespace: string
-  private poolSize: { project: number; agent: number }
+  private poolSize: number
   private reconcileIntervalMs: number
   private maxPodAgeMs: number
   private reconcileTimer: ReturnType<typeof setInterval> | null = null
 
   // Mutable config (can be updated at runtime via updateConfig)
-  private _minAgents: number
-  private _minProjects: number
-  private _agentsPerNode: number
-  private _projectsPerNode: number
+  private _minPods: number
+  private _podsPerNode: number
   private _idleTimeoutMs: number
   private _gcEnabled: boolean
 
@@ -252,16 +241,11 @@ export class WarmPoolController {
 
   constructor(config: WarmPoolConfig = {}) {
     this.namespace = config.namespace || NAMESPACE
-    this._minAgents = config.agentPoolSize ?? WARM_POOL_MIN_AGENTS
-    this._minProjects = config.projectPoolSize ?? WARM_POOL_MIN_PROJECTS
-    this._agentsPerNode = WARM_POOL_AGENTS_PER_NODE
-    this._projectsPerNode = WARM_POOL_PROJECTS_PER_NODE
+    this._minPods = config.poolSize ?? WARM_POOL_MIN_PODS
+    this._podsPerNode = WARM_POOL_PODS_PER_NODE
     this._idleTimeoutMs = PROMOTED_POD_IDLE_TIMEOUT_MS
     this._gcEnabled = PROMOTED_POD_GC_ENABLED
-    this.poolSize = {
-      project: this._minProjects,
-      agent: this._minAgents,
-    }
+    this.poolSize = this._minPods
     this.reconcileIntervalMs = config.reconcileIntervalMs ?? WARM_POOL_RECONCILE_INTERVAL
     this.maxPodAgeMs = config.maxPodAgeMs ?? WARM_POOL_MAX_AGE_MS
   }
@@ -273,19 +257,17 @@ export class WarmPoolController {
     }
 
     console.log(
-      `[WarmPool] Starting warm pool controller (project: ${this.poolSize.project}, agent: ${this.poolSize.agent})`
+      `[WarmPool] Starting warm pool controller (poolSize: ${this.poolSize})`
     )
     this.started = true
 
     // Register OTEL observable gauges for real-time pool visibility in SigNoz
     const self = this
     poolAvailableGauge.addCallback((result) => {
-      result.observe(self.countAvailable('project'), { type: 'project' })
-      result.observe(self.countAvailable('agent'), { type: 'agent' })
+      result.observe(self.countAvailable())
     })
     poolTargetGauge.addCallback((result) => {
-      result.observe(self.poolSize.project, { type: 'project' })
-      result.observe(self.poolSize.agent, { type: 'agent' })
+      result.observe(self.poolSize)
     })
 
     // Initial reconciliation
@@ -327,15 +309,13 @@ export class WarmPoolController {
       const nodeCount = await this.countReadyNodes()
       if (nodeCount <= 0) return
 
-      const prevProject = this.poolSize.project
-      const prevAgent = this.poolSize.agent
+      const prev = this.poolSize
 
-      this.poolSize.project = Math.max(this._minProjects, nodeCount * this._projectsPerNode)
-      this.poolSize.agent = Math.max(this._minAgents, nodeCount * this._agentsPerNode)
+      this.poolSize = Math.max(this._minPods, nodeCount * this._podsPerNode)
 
-      if (this.poolSize.project !== prevProject || this.poolSize.agent !== prevAgent) {
+      if (this.poolSize !== prev) {
         console.log(
-          `[WarmPool] Node-based sizing: ${nodeCount} nodes → project:${this.poolSize.project} (${this._projectsPerNode}/node), agent:${this.poolSize.agent} (${this._agentsPerNode}/node)`
+          `[WarmPool] Node-based sizing: ${nodeCount} nodes → ${this.poolSize} pods (${this._podsPerNode}/node)`
         )
       }
     } catch (err: any) {
@@ -388,14 +368,14 @@ export class WarmPoolController {
     await this.discoverExistingPods()
 
     // Clean up stale pods (older than maxPodAgeMs).
-    // Limit to 1 deletion per pool type per cycle so replacements are created
+    // Limit to 1 deletion per cycle so replacements are created
     // before all warm pods are gone (prevents empty-pool cold starts).
     const now = Date.now()
-    const recycledTypes = new Set<string>()
+    let recycledOne = false
     for (const [id, pod] of this.available) {
       if (now - pod.createdAt > this.maxPodAgeMs) {
-        if (recycledTypes.has(pod.type)) continue
-        recycledTypes.add(pod.type)
+        if (recycledOne) continue
+        recycledOne = true
         console.log(
           `[WarmPool] Recycling stale warm pod ${pod.serviceName} (age: ${Math.round(
             (now - pod.createdAt) / 1000
@@ -422,50 +402,33 @@ export class WarmPoolController {
     }
 
     // Trim excess pods when pool shrinks (e.g., nodes scaled down).
-    // Delete oldest excess pods, 2 per type per cycle, to converge to target.
-    for (const type of ['project', 'agent'] as const) {
-      const available = [...this.available.values()].filter((p) => p.type === type)
-      const excess = available.length - this.poolSize[type]
-      if (excess > 0) {
-        const toRemove = available
-          .sort((a, b) => a.createdAt - b.createdAt)
-          .slice(0, Math.min(excess, 2))
-        for (const pod of toRemove) {
-          console.log(`[WarmPool] Trimming excess ${type} pod ${pod.serviceName} (${available.length} available, target ${this.poolSize[type]})`)
-          this.available.delete(pod.id)
-          this.deleteWarmPodService(pod.serviceName).catch((err) => {
-            console.error(`[WarmPool] Failed to trim pod ${pod.serviceName}:`, err.message)
-          })
-        }
+    const allAvailable = [...this.available.values()]
+    const excess = allAvailable.length - this.poolSize
+    if (excess > 0) {
+      const toRemove = allAvailable
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .slice(0, Math.min(excess, 2))
+      for (const pod of toRemove) {
+        console.log(`[WarmPool] Trimming excess pod ${pod.serviceName} (${allAvailable.length} available, target ${this.poolSize})`)
+        this.available.delete(pod.id)
+        this.deleteWarmPodService(pod.serviceName).catch((err) => {
+          console.error(`[WarmPool] Failed to trim pod ${pod.serviceName}:`, err.message)
+        })
       }
     }
 
-    // Count available pods per type (only count ready or recently-created ones)
-    const counts: Record<RuntimeType, number> = { project: 0, agent: 0 }
-    for (const pod of this.available.values()) {
-      counts[pod.type]++
-    }
-
-    // Also count pending creations to avoid over-provisioning
-    const pending: Record<RuntimeType, number> = { project: 0, agent: 0 }
-    for (const key of this.pendingCreations) {
-      const type = key.startsWith('project-') ? 'project' : 'agent' as RuntimeType
-      pending[type]++
-    }
-
-    // Create missing warm pods (deficit = target - available - pending)
-    const totalDeficit =
-      Math.max(0, this.poolSize.project - counts.project - pending.project) +
-      Math.max(0, this.poolSize.agent - counts.agent - pending.agent)
+    const availableCount = this.countAvailable()
+    const pendingCount = this.pendingCreations.size
+    const deficit = this.poolSize - availableCount - pendingCount
 
     // Proactive node scaling: ensure cluster has capacity BEFORE creating pods
-    if (totalDeficit > 0) {
+    if (deficit > 0) {
       try {
-        const nodesAdded = await ensureCapacityForPods(totalDeficit)
+        const nodesAdded = await ensureCapacityForPods(deficit)
         if (nodesAdded > 0) {
           nodeScaleUpCounter.add(1, { nodes_added: nodesAdded, trigger: 'reconcile' })
           console.log(
-            `[WarmPool] Proactive scale-up: requested ${nodesAdded} additional nodes for ${totalDeficit} pods`
+            `[WarmPool] Proactive scale-up: requested ${nodesAdded} additional nodes for ${deficit} pods`
           )
         }
       } catch (err: any) {
@@ -473,35 +436,32 @@ export class WarmPoolController {
       }
     }
 
-    for (const type of ['project', 'agent'] as const) {
-      const deficit = this.poolSize[type] - counts[type] - pending[type]
-      if (deficit > 0) {
-        console.log(
-          `[WarmPool] Replenishing ${type}: creating ${deficit} pods (available: ${counts[type]}, pending: ${pending[type]}, target: ${this.poolSize[type]})`
-        )
-      }
-      for (let i = 0; i < deficit; i++) {
-        const id = crypto.randomUUID().slice(0, 8)
-        const creationKey = `${type}-${id}`
-        if (this.pendingCreations.has(creationKey)) continue
+    if (deficit > 0) {
+      console.log(
+        `[WarmPool] Replenishing: creating ${deficit} pods (available: ${availableCount}, pending: ${pendingCount}, target: ${this.poolSize})`
+      )
+    }
+    for (let i = 0; i < deficit; i++) {
+      const id = crypto.randomUUID().slice(0, 8)
+      const creationKey = `pool-${id}`
+      if (this.pendingCreations.has(creationKey)) continue
 
-        this.pendingCreations.add(creationKey)
-        this.createWarmPod(type, id)
-          .then((pod) => {
-            if (pod) {
-              this.available.set(pod.id, pod)
-              console.log(
-                `[WarmPool] Created warm pod ${pod.serviceName} (pool: ${type}, now available: ${this.countAvailable(type)}/${this.poolSize[type]})`
-              )
-            }
-          })
-          .catch((err) => {
-            console.error(`[WarmPool] Failed to create warm ${type} pod:`, err.message)
-          })
-          .finally(() => {
-            this.pendingCreations.delete(creationKey)
-          })
-      }
+      this.pendingCreations.add(creationKey)
+      this.createWarmPod(id)
+        .then((pod) => {
+          if (pod) {
+            this.available.set(pod.id, pod)
+            console.log(
+              `[WarmPool] Created warm pod ${pod.serviceName} (now available: ${this.countAvailable()}/${this.poolSize})`
+            )
+          }
+        })
+        .catch((err) => {
+          console.error(`[WarmPool] Failed to create warm pod:`, err.message)
+        })
+        .finally(() => {
+          this.pendingCreations.delete(creationKey)
+        })
     }
   }
 
@@ -514,13 +474,12 @@ export class WarmPoolController {
    * 30s reconcile cycle. This handles thundering-herd scenarios where
    * multiple users arrive simultaneously (e.g. dry runs).
    */
-  claim(type: RuntimeType): WarmPodInfo | null {
-    // Find the oldest available pod of the requested type
+  claim(): WarmPodInfo | null {
+    // Find the oldest available ready pod
     let oldest: WarmPodInfo | null = null
     let oldestId: string | null = null
 
     for (const [id, pod] of this.available) {
-      if (pod.type !== type) continue
       if (!pod.ready) continue
       if (!oldest || pod.createdAt < oldest.createdAt) {
         oldest = pod
@@ -531,13 +490,13 @@ export class WarmPoolController {
     if (oldest && oldestId) {
       this.available.delete(oldestId)
       this.claimedServiceNames.add(oldest.serviceName)
-      const remaining = this.countAvailable(type)
-      const target = this.poolSize[type]
+      const remaining = this.countAvailable()
+      const target = this.poolSize
       const utilization = 1 - remaining / target
 
-      poolAssignedCounter.add(1, { type })
+      poolAssignedCounter.add(1)
       console.log(
-        `[WarmPool] Claimed warm pod ${oldest.serviceName} for ${type} (remaining: ${remaining}/${target}, utilization: ${Math.round(utilization * 100)}%)`
+        `[WarmPool] Claimed warm pod ${oldest.serviceName} (remaining: ${remaining}/${target}, utilization: ${Math.round(utilization * 100)}%)`
       )
 
       // Burst detection: if pool is more than 50% depleted, schedule
@@ -545,7 +504,7 @@ export class WarmPoolController {
       // within the same burst batch into one reconcile pass)
       if (utilization >= 0.5) {
         console.warn(
-          `[WarmPool] BURST DETECTED: ${type} pool at ${Math.round(utilization * 100)}% utilization — scheduling immediate replenishment`
+          `[WarmPool] BURST DETECTED: pool at ${Math.round(utilization * 100)}% utilization — scheduling immediate replenishment`
         )
         this.scheduleBurstReconcile()
       } else {
@@ -558,8 +517,8 @@ export class WarmPoolController {
       return oldest
     }
 
-    poolColdStartCounter.add(1, { type })
-    console.warn(`[WarmPool] COLD START: no warm ${type} pod available — user will experience delay`)
+    poolColdStartCounter.add(1)
+    console.warn(`[WarmPool] COLD START: no warm pod available — user will experience delay`)
     return null
   }
 
@@ -592,7 +551,6 @@ export class WarmPoolController {
       attributes: {
         'project.id': projectId,
         'pod.name': pod.serviceName,
-        'pod.type': pod.type,
       },
     }, async (span) => {
       const startTime = Date.now()
@@ -838,16 +796,13 @@ export class WarmPoolController {
    */
   getStatus(): {
     enabled: boolean
-    available: { project: number; agent: number }
+    available: number
     assigned: number
-    targetSize: { project: number; agent: number }
+    targetSize: number
   } {
     return {
       enabled: WARM_POOL_ENABLED && this.started,
-      available: {
-        project: this.countAvailable('project'),
-        agent: this.countAvailable('agent'),
-      },
+      available: this.countAvailable(),
       assigned: this.assigned.size,
       targetSize: this.poolSize,
     }
@@ -857,20 +812,16 @@ export class WarmPoolController {
    * Get the current runtime config (for admin API reads).
    */
   getConfig(): {
-    warmPoolMinAgents: number
-    warmPoolMinProjects: number
-    warmPoolAgentsPerNode: number
-    warmPoolProjectsPerNode: number
+    warmPoolMinPods: number
+    warmPoolPodsPerNode: number
     reconcileIntervalMs: number
     maxPodAgeMs: number
     promotedPodIdleTimeoutMs: number
     promotedPodGcEnabled: boolean
   } {
     return {
-      warmPoolMinAgents: this._minAgents,
-      warmPoolMinProjects: this._minProjects,
-      warmPoolAgentsPerNode: this._agentsPerNode,
-      warmPoolProjectsPerNode: this._projectsPerNode,
+      warmPoolMinPods: this._minPods,
+      warmPoolPodsPerNode: this._podsPerNode,
       reconcileIntervalMs: this.reconcileIntervalMs,
       maxPodAgeMs: this.maxPodAgeMs,
       promotedPodIdleTimeoutMs: this._idleTimeoutMs,
@@ -883,10 +834,8 @@ export class WarmPoolController {
    * Restarts the reconcile timer if the interval changes.
    */
   updateConfig(patch: {
-    warmPoolMinAgents?: number
-    warmPoolMinProjects?: number
-    warmPoolAgentsPerNode?: number
-    warmPoolProjectsPerNode?: number
+    warmPoolMinPods?: number
+    warmPoolPodsPerNode?: number
     reconcileIntervalMs?: number
     maxPodAgeMs?: number
     promotedPodIdleTimeoutMs?: number
@@ -894,21 +843,13 @@ export class WarmPoolController {
   }): void {
     const changes: string[] = []
 
-    if (patch.warmPoolMinAgents !== undefined && patch.warmPoolMinAgents !== this._minAgents) {
-      this._minAgents = patch.warmPoolMinAgents
-      changes.push(`minAgents=${patch.warmPoolMinAgents}`)
+    if (patch.warmPoolMinPods !== undefined && patch.warmPoolMinPods !== this._minPods) {
+      this._minPods = patch.warmPoolMinPods
+      changes.push(`minPods=${patch.warmPoolMinPods}`)
     }
-    if (patch.warmPoolMinProjects !== undefined && patch.warmPoolMinProjects !== this._minProjects) {
-      this._minProjects = patch.warmPoolMinProjects
-      changes.push(`minProjects=${patch.warmPoolMinProjects}`)
-    }
-    if (patch.warmPoolAgentsPerNode !== undefined && patch.warmPoolAgentsPerNode !== this._agentsPerNode) {
-      this._agentsPerNode = patch.warmPoolAgentsPerNode
-      changes.push(`agentsPerNode=${patch.warmPoolAgentsPerNode}`)
-    }
-    if (patch.warmPoolProjectsPerNode !== undefined && patch.warmPoolProjectsPerNode !== this._projectsPerNode) {
-      this._projectsPerNode = patch.warmPoolProjectsPerNode
-      changes.push(`projectsPerNode=${patch.warmPoolProjectsPerNode}`)
+    if (patch.warmPoolPodsPerNode !== undefined && patch.warmPoolPodsPerNode !== this._podsPerNode) {
+      this._podsPerNode = patch.warmPoolPodsPerNode
+      changes.push(`podsPerNode=${patch.warmPoolPodsPerNode}`)
     }
     if (patch.maxPodAgeMs !== undefined && patch.maxPodAgeMs !== this.maxPodAgeMs) {
       this.maxPodAgeMs = patch.maxPodAgeMs
@@ -923,9 +864,8 @@ export class WarmPoolController {
       changes.push(`gcEnabled=${patch.promotedPodGcEnabled}`)
     }
 
-    // Recalculate pool size immediately with new min values
-    this.poolSize.agent = Math.max(this._minAgents, this.poolSize.agent)
-    this.poolSize.project = Math.max(this._minProjects, this.poolSize.project)
+    // Recalculate pool size immediately with new min value
+    this.poolSize = Math.max(this._minPods, this.poolSize)
 
     // Restart timer if interval changed
     if (patch.reconcileIntervalMs !== undefined && patch.reconcileIntervalMs !== this.reconcileIntervalMs) {
@@ -943,7 +883,6 @@ export class WarmPoolController {
 
     if (changes.length > 0) {
       console.log(`[WarmPool] Config updated: ${changes.join(', ')}`)
-      // Trigger immediate reconcile to apply new settings
       if (this.started) {
         this.reconcile().catch((err) => {
           console.error('[WarmPool] Post-config reconciliation error:', err.message)
@@ -1256,10 +1195,10 @@ export class WarmPoolController {
   // Private helpers
   // ===========================================================================
 
-  private countAvailable(type: RuntimeType): number {
+  private countAvailable(): number {
     let count = 0
     for (const pod of this.available.values()) {
-      if (pod.type === type && pod.ready) count++
+      if (pod.ready) count++
     }
     return count
   }
@@ -1276,15 +1215,13 @@ export class WarmPoolController {
 
     // AI Proxy token
     const tokenStart = Date.now()
-    let projectType: string | null = null
     try {
       const { prisma } = await import('./prisma')
       const project = await prisma.project.findUnique({
         where: { id: projectId },
-        select: { workspaceId: true, type: true, templateId: true, name: true },
+        select: { workspaceId: true, templateId: true, name: true },
       })
       if (project) {
-        projectType = project.type
         if (project.templateId) env.TEMPLATE_ID = project.templateId
         if (project.name) env.AGENT_NAME = project.name
         const { getProjectOwnerUserId } = await import('./project-user-context')
@@ -1299,11 +1236,10 @@ export class WarmPoolController {
     } catch (err: any) {
       console.error(`[WarmPool] Failed to generate proxy token for ${projectId}:`, err.message)
     }
-    console.log(`[WarmPool] buildProjectEnv: proxy token took ${Date.now() - tokenStart}ms (type=${projectType})`)
+    console.log(`[WarmPool] buildProjectEnv: proxy token took ${Date.now() - tokenStart}ms`)
 
-    // Dev projects use SQLite (no external database provisioning needed).
-    // The project-runtime defaults DATABASE_URL to file:./prisma/dev.db.
-    console.log(`[WarmPool] buildProjectEnv: dev project uses SQLite — no DB provisioning (type=${projectType})`)
+    // Dev projects use SQLite — no external database provisioning needed
+    console.log(`[WarmPool] buildProjectEnv: dev project uses SQLite — no DB provisioning`)
 
     // Per-project runtime auth tokens (deterministic — derived from signing secret + projectId)
     const { deriveRuntimeToken, deriveWebhookToken } = await import('./runtime-token')
@@ -1346,12 +1282,11 @@ export class WarmPoolController {
       for (const service of items) {
         const name = service.metadata?.name
         const labels = service.metadata?.labels || {}
-        const type = labels[POOL_TYPE_LABEL_KEY] as RuntimeType
         const status = labels[POOL_STATUS_LABEL_KEY]
         const createdAt = new Date(service.metadata?.creationTimestamp).getTime()
         const id = name
 
-        if (!name || !type) continue
+        if (!name) continue
         discoveredIds.add(id)
 
         // Collect promoted pods for GC and admin visibility
@@ -1365,7 +1300,6 @@ export class WarmPoolController {
           const existing = this.promotedPods.find((p) => p.serviceName === name)
           newPromotedPods.push({
             serviceName: name,
-            type,
             projectId,
             url: `http://${name}.${this.namespace}.svc.cluster.local`,
             createdAt,
@@ -1417,7 +1351,6 @@ export class WarmPoolController {
         this.available.set(id, {
           id,
           serviceName: name,
-          type,
           url,
           createdAt,
           ready,
@@ -1440,16 +1373,15 @@ export class WarmPoolController {
   /**
    * Create a warm pool Knative Service.
    */
-  private async createWarmPod(type: RuntimeType, id: string): Promise<WarmPodInfo | null> {
-    const serviceName = `warm-pool-${type}-${id}`
-    const rtConfig = RUNTIME_TYPES[type]
-    const image = rtConfig.image()
-    const workDir = rtConfig.workDir
+  private async createWarmPod(id: string): Promise<WarmPodInfo | null> {
+    const serviceName = `warm-pool-${id}`
+    const image = RUNTIME_CONFIG.image()
+    const workDir = RUNTIME_CONFIG.workDir
 
-    const extraEnvEntries = Object.entries(rtConfig.extraEnv).map(([name, value]) => ({ name, value }))
+    const extraEnvEntries = Object.entries(RUNTIME_CONFIG.extraEnv).map(([name, value]) => ({ name, value }))
     const env: Array<{ name: string; value?: string; valueFrom?: any }> = [
       { name: 'PROJECT_ID', value: POOL_PROJECT_ID },
-      { name: 'PROJECT_DIR', value: workDir },
+      { name: 'WORKSPACE_DIR', value: workDir },
       ...extraEnvEntries,
       { name: 'SCHEMAS_PATH', value: '/app/.schemas' },
       { name: 'WARM_POOL_MODE', value: 'true' },
@@ -1467,7 +1399,7 @@ export class WarmPoolController {
     // OTEL tracing — propagate to warm pool pods so they send traces to SigNoz
     if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
       env.push({ name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: process.env.OTEL_EXPORTER_OTLP_ENDPOINT })
-      env.push({ name: 'OTEL_SERVICE_NAME', value: `shogo-${type}-runtime` })
+      env.push({ name: 'OTEL_SERVICE_NAME', value: `shogo-runtime` })
       if (process.env.SIGNOZ_INGESTION_KEY) {
         env.push({
           name: 'SIGNOZ_INGESTION_KEY',
@@ -1512,9 +1444,8 @@ export class WarmPoolController {
         labels: {
           'app.kubernetes.io/part-of': 'shogo',
           [POOL_LABEL_KEY]: 'true',
-          [POOL_TYPE_LABEL_KEY]: type,
           [POOL_STATUS_LABEL_KEY]: 'available',
-          'shogo.io/component': rtConfig.componentLabel,
+          'shogo.io/component': RUNTIME_CONFIG.componentLabel,
         },
       },
       spec: {
@@ -1547,7 +1478,7 @@ export class WarmPoolController {
             },
             containers: [
               {
-                name: rtConfig.containerName,
+                name: RUNTIME_CONFIG.containerName,
                 image,
                 imagePullPolicy: 'Always',
                 ports: [{ containerPort: 8080, name: 'http1' }],
@@ -1612,7 +1543,6 @@ export class WarmPoolController {
     return {
       id: serviceName,
       serviceName,
-      type,
       url,
       createdAt: Date.now(),
       ready: false, // will be updated by discovery on next reconcile

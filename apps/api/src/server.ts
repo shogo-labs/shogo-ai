@@ -68,21 +68,6 @@ const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 // Namespace for project runtime pods (configurable for staging/production)
 const PROJECT_NAMESPACE = process.env.PROJECT_NAMESPACE || 'shogo-workspaces'
 
-// Cache of project types to avoid repeated DB lookups on every proxy call.
-// Entries never change after creation so a simple in-memory map is sufficient.
-const projectTypeCache = new Map<string, string>()
-
-async function getProjectType(projectId: string): Promise<string> {
-  const cached = projectTypeCache.get(projectId)
-  if (cached) return cached
-  const row = await prisma.project.findUnique({
-    where: { id: projectId },
-    select: { type: true },
-  })
-  const type = row?.type ?? 'APP'
-  projectTypeCache.set(projectId, type)
-  return type
-}
 
 /**
  * Extract the authenticated user from the request via Better Auth session.
@@ -1480,9 +1465,7 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
     const manager = getKnativeProjectManager()
     const status = await manager.getStatus(projectId)
 
-    // Check if this is an agent project (needed for agentUrl)
-    const projectRecord = await prisma.project.findUnique({ where: { id: projectId }, select: { type: true } })
-    const isAgent = projectRecord?.type === 'AGENT'
+    // All unified projects have an agent URL
     
     // Build the preview URL based on mode
     const host = c.req.header('x-original-host') || c.req.header('host') || 'localhost'
@@ -1512,8 +1495,8 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
     console.log(`[sandbox/url] legacyProxyUrl=${legacyProxyUrl}`)
     console.log(`[sandbox/url] status: exists=${status.exists} ready=${status.ready}`)
     
-    // Agent URL for test chat (proxied through API to avoid CORS issues)
-    const agentUrl = isAgent ? `${protocol}://${host}/api/projects/${projectId}/agent-proxy` : undefined
+    // Agent URL for chat (proxied through API to avoid CORS issues)
+    const agentUrl = `${protocol}://${host}/api/projects/${projectId}/agent-proxy`
 
     // If pod is already running, return immediately
     if (status.exists && status.ready) {
@@ -1804,10 +1787,7 @@ app.get('/api/projects/:projectId/files', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
-    if (await getProjectType(projectId) === 'AGENT') {
-      return c.json({ files: [] })
-    }
-    // In Kubernetes: Proxy to project-runtime pod
+    // In Kubernetes: Proxy to runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
       const podUrl = await getProjectPodUrl(projectId)
@@ -2059,10 +2039,7 @@ app.get('/api/projects/:projectId/terminal/commands', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
-    if (await getProjectType(projectId) === 'AGENT') {
-      return c.json({ commands: [] })
-    }
-    // In Kubernetes: Proxy to project-runtime pod
+    // In Kubernetes: Proxy to runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
       const podUrl = await getProjectPodUrl(projectId)
@@ -2274,10 +2251,7 @@ app.get('/api/projects/:projectId/tests/list', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
-    if (await getProjectType(projectId) === 'AGENT') {
-      return c.json({ tests: [] })
-    }
-    // In Kubernetes: Proxy to project-runtime pod
+    // In Kubernetes: Proxy to runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
       const podUrl = await getProjectPodUrl(projectId)
@@ -2860,10 +2834,7 @@ app.get('/api/projects/:projectId/database/url', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
-    if (await getProjectType(projectId) === 'AGENT') {
-      return c.json({ url: null, status: 'error', error: { code: 'not_supported', message: 'Database not available for agent projects' } }, 400)
-    }
-    // In Kubernetes: Proxy to project-runtime pod
+    // In Kubernetes: Proxy to runtime pod
     try {
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
       const podUrl = await getProjectPodUrl(projectId)
@@ -3454,10 +3425,8 @@ app.post('/api/admin/warm-pool/evict-all', async (c) => {
 // =============================================================================
 
 const INFRA_SETTINGS_KEYS = [
-  'warmPoolMinAgents',
-  'warmPoolMinProjects',
-  'warmPoolAgentsPerNode',
-  'warmPoolProjectsPerNode',
+  'warmPoolMinPods',
+  'warmPoolPodsPerNode',
   'reconcileIntervalMs',
   'maxPodAgeMs',
   'promotedPodIdleTimeoutMs',

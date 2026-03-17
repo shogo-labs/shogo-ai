@@ -103,8 +103,8 @@ spec:
               value: "shogo-system"
             - name: PROJECT_NAMESPACE
               value: "shogo-workspaces"
-            - name: PROJECT_RUNTIME_IMAGE
-              value: "097357356677.dkr.ecr.eu-west-1.amazonaws.com/shogo/project-runtime:production-latest"
+            - name: RUNTIME_IMAGE
+              value: "097357356677.dkr.ecr.eu-west-1.amazonaws.com/shogo/runtime:production-latest"
             - name: S3_WORKSPACES_BUCKET
               value: "shogo-workspaces-production-eu"
             - name: S3_REGION
@@ -240,11 +240,9 @@ spec:
                   name: signoz-credentials
                   key: SIGNOZ_INGESTION_KEY
                   optional: true
-            # Runtime images for warm pool
-            - name: AGENT_RUNTIME_IMAGE
-              value: "097357356677.dkr.ecr.eu-west-1.amazonaws.com/shogo/agent-runtime:production-latest"
-            - name: PROJECT_RUNTIME_IMAGE
-              value: "097357356677.dkr.ecr.eu-west-1.amazonaws.com/shogo/project-runtime:production-latest"
+            # Runtime image for warm pool
+            - name: RUNTIME_IMAGE
+              value: "097357356677.dkr.ecr.eu-west-1.amazonaws.com/shogo/runtime:production-latest"
             - name: WARM_POOL_AGENTS_PER_NODE
               value: "0"
             - name: WARM_POOL_PROJECTS_PER_NODE

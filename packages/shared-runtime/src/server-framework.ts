@@ -29,10 +29,10 @@ import { checkSelfAssign } from './self-assign'
 export interface RuntimeAppConfig {
   /** Display name used in logs (e.g. 'agent-runtime', 'project-runtime') */
   name: string
-  /** Workspace directory (AGENT_DIR or PROJECT_DIR) */
+  /** Workspace directory (WORKSPACE_DIR) */
   workDir: string
   /** Runtime type identifier */
-  runtimeType: 'agent' | 'project'
+  runtimeType: string
   /** Paths excluded from external activity tracking (health probes, etc.) */
   internalPaths?: string[]
   /** Auth-protected path prefixes (e.g. ['/agent', '/pool']) */
@@ -230,7 +230,7 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
     return c.json({ error: 'Unauthorized — missing or invalid runtime token' }, 401)
   }
 
-  const authPrefixes = config.authPrefixes ?? [`/${config.runtimeType === 'agent' ? 'agent' : 'preview'}`, '/pool']
+  const authPrefixes = config.authPrefixes ?? [`/${config.runtimeType === 'project' ? 'preview' : 'agent'}`, '/pool']
   for (const prefix of authPrefixes) {
     if (prefix === '/pool') {
       app.use(`${prefix}/*`, async (c, next) => {

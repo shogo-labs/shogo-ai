@@ -30,23 +30,12 @@ const __dirname = dirname(__filename)
 const BUNDLED_TEMPLATE_DIR = join(__dirname, '..', '..', '..', '..', '..', 'templates', 'runtime-template')
 
 /**
- * Path to the project-runtime server.
- * Used for local development to run the agent chat endpoint.
- */
-const PROJECT_RUNTIME_SERVER = join(__dirname, '..', '..', '..', '..', '..', 'packages', 'project-runtime', 'src', 'server.ts')
-
-/**
- * Path to the agent-runtime server.
+ * Path to the unified runtime server.
  * In desktop mode, AGENT_RUNTIME_ENTRY points to the bun-built bundle.
  * Falls back to source path for cloud/local dev.
  */
-const AGENT_RUNTIME_SERVER = process.env.AGENT_RUNTIME_ENTRY
+const RUNTIME_SERVER = process.env.AGENT_RUNTIME_ENTRY
   || join(__dirname, '..', '..', '..', '..', '..', 'packages', 'agent-runtime', 'src', 'server.ts')
-
-/**
- * Path to the MCP server (for project-runtime to spawn).
- */
-const MCP_SERVER_PATH = join(__dirname, '..', '..', '..', '..', '..', 'packages', 'project-runtime', 'src', 'mcp-templates.ts')
 
 /** Default configuration values */
 const DEFAULT_CONFIG: IRuntimeConfig = {
@@ -409,20 +398,19 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     return projectDir
   }
 
-  private async getProjectInfo(projectId: string): Promise<{ type: 'APP' | 'AGENT'; templateId?: string; name?: string }> {
+  private async getProjectInfo(projectId: string): Promise<{ templateId?: string; name?: string }> {
     try {
       const { prisma } = await import('../prisma')
       const project = await prisma.project.findUnique({
         where: { id: projectId },
-        select: { type: true, templateId: true, name: true },
+        select: { templateId: true, name: true },
       })
       return {
-        type: (project?.type as 'APP' | 'AGENT') || 'APP',
         templateId: project?.templateId ?? undefined,
         name: project?.name ?? undefined,
       }
     } catch {
-      return { type: 'APP' }
+      return {}
     }
   }
 
@@ -516,7 +504,6 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     }
 
     const projectInfo = await this.getProjectInfo(projectId)
-    const isAgentProject = projectInfo.type === 'AGENT'
 
     // Ensure project directory exists with dependencies
     const projectDir = await this.ensureProjectDirectory(projectId)
@@ -541,9 +528,6 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     this.runtimes.set(projectId, runtime)
 
     try {
-      // Agent projects don't need a Vite dev server — only the agent-runtime
-      if (!isAgentProject) {
-
       // Build Vite environment - override DATABASE_URL with projects database if available
       // This ensures project runtimes connect to the isolated projects database, not the platform database
       const viteEnv: Record<string, string> = {
@@ -705,24 +689,21 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         }
       })
 
-      } // end if (!isAgentProject) — skip Vite for agent projects
-
-      // Spawn runtime agent server for local development
-      const runtimeServerPath = isAgentProject ? AGENT_RUNTIME_SERVER : PROJECT_RUNTIME_SERVER
+      // Spawn unified runtime server for local development
+      const runtimeServerPath = RUNTIME_SERVER
       if (existsSync(runtimeServerPath)) {
-        console.log(`[RuntimeManager] Starting ${isAgentProject ? 'agent' : 'project'} runtime for ${projectId} on port ${agentPort}`)
+        console.log(`[RuntimeManager] Starting unified runtime for ${projectId} on port ${agentPort}`)
         
         // Build environment for runtime
         const runtimeEnv: Record<string, string> = {
           ...process.env as Record<string, string>,
           PROJECT_ID: projectId,
           PROJECT_DIR: projectDir,
-          ...(isAgentProject ? { AGENT_DIR: projectDir } : {}),
+          WORKSPACE_DIR: projectDir,
           ...(projectInfo.templateId ? { TEMPLATE_ID: projectInfo.templateId } : {}),
           ...(projectInfo.name ? { AGENT_NAME: projectInfo.name } : {}),
           PORT: String(agentPort),
           SCHEMAS_PATH: join(this.config.workspacesDir || process.cwd(), '..', '.schemas'),
-          MCP_SERVER_PATH: MCP_SERVER_PATH,
           NODE_ENV: 'development',
         }
         
@@ -818,8 +799,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         console.warn(`[RuntimeManager] Runtime server not found at ${runtimeServerPath}, skipping startup`)
       }
 
-      // Wait for Vite to start (skip for agent projects — no Vite)
-      if (!isAgentProject) {
+      // Wait for Vite dev server if it was started
+      if (runtime.process) {
         await this.waitForReady(projectId, port, 30000)
       }
 

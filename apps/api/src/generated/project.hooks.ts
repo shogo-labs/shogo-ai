@@ -228,11 +228,11 @@ export const projectHooks: ProjectHooks = {
   },
 
   /**
-   * When an AGENT project is created with a templateId, auto-create an AgentConfig
+   * When a project is created with a templateId, auto-create an AgentConfig
    * row populated from the template's settings.
    */
   afterCreate: async (record, ctx) => {
-    if (record.type !== 'AGENT' || !record.templateId) return
+    if (!record.templateId) return
 
     const template = getAgentTemplateById(record.templateId)
     if (!template) return

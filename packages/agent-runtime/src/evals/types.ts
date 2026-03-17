@@ -24,10 +24,11 @@ export type EvalCategory =
   | 'mcp-orchestration'
   | 'tool-system'
   | 'template'
+  | 'mode-switching'
+  | 'code-agent'
+  | 'cross-mode'
 
 export type ValidationPhase = 'intention' | 'execution' | 'interaction'
-
-export type AgentVariant = 'basic' | 'advanced'
 
 export interface AgentEval {
   id: string
@@ -49,8 +50,8 @@ export interface AgentEval {
   toolMocks?: import('./tool-mocks').ToolMockMap
   /** Files to write into the workspace before running the eval (path relative to workspace root -> content) */
   workspaceFiles?: Record<string, string>
-  /** Which agent variant this eval requires. Defaults to 'basic' (runs on both). Set to 'advanced' for evals that need mutation/trigger/hooks tools. */
-  requiredAgent?: AgentVariant
+  /** Visual mode to activate before running the eval (e.g. 'canvas'). Defaults to 'none'. */
+  initialMode?: 'canvas' | 'app' | 'none'
 }
 
 export interface ConversationTurn {

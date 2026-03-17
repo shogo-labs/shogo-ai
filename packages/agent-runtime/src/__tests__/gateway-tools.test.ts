@@ -3,7 +3,7 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'fs'
 import { join } from 'path'
-import { createAllTools, createHeartbeatTools, type ToolContext } from '../gateway-tools'
+import { createTools, createHeartbeatTools, type ToolContext } from '../gateway-tools'
 import { MockChannel } from './helpers/mock-channel'
 
 const TEST_DIR = '/tmp/test-gateway-tools'
@@ -25,7 +25,7 @@ function createCtx(overrides?: Partial<ToolContext>): ToolContext {
 }
 
 function getTool(ctx: ToolContext, name: string) {
-  const tools = createAllTools(ctx)
+  const tools = createTools(ctx)
   const tool = tools.find((t) => t.name === name)
   if (!tool) throw new Error(`Tool not found: ${name}`)
   return tool
@@ -182,16 +182,16 @@ describe('gateway-tools', () => {
   })
 
   describe('tool sets', () => {
-    test('createAllTools returns expected tools', () => {
-      expect(createAllTools(createCtx())).toHaveLength(35)
-      expect(createAllTools(createCtx()).find((t) => t.name === 'cron')).toBeUndefined()
-      expect(createAllTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()
-      expect(createAllTools(createCtx()).find((t) => t.name === 'browser')).toBeDefined()
-      expect(createAllTools(createCtx()).find((t) => t.name === 'canvas_create')).toBeDefined()
-      expect(createAllTools(createCtx()).find((t) => t.name === 'canvas_update')).toBeDefined()
-      expect(createAllTools(createCtx()).find((t) => t.name === 'canvas_data')).toBeDefined()
-      expect(createAllTools(createCtx()).find((t) => t.name === 'canvas_delete')).toBeDefined()
-      expect(createAllTools(createCtx()).find((t) => t.name === 'canvas_action_wait')).toBeDefined()
+    test('createTools returns expected tools', () => {
+      expect(createTools(createCtx())).toHaveLength(35)
+      expect(createTools(createCtx()).find((t) => t.name === 'cron')).toBeUndefined()
+      expect(createTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()
+      expect(createTools(createCtx()).find((t) => t.name === 'browser')).toBeDefined()
+      expect(createTools(createCtx()).find((t) => t.name === 'canvas_create')).toBeDefined()
+      expect(createTools(createCtx()).find((t) => t.name === 'canvas_update')).toBeDefined()
+      expect(createTools(createCtx()).find((t) => t.name === 'canvas_data')).toBeDefined()
+      expect(createTools(createCtx()).find((t) => t.name === 'canvas_delete')).toBeDefined()
+      expect(createTools(createCtx()).find((t) => t.name === 'canvas_action_wait')).toBeDefined()
     })
 
     test('createHeartbeatTools excludes exec and send_message', () => {
@@ -203,7 +203,7 @@ describe('gateway-tools', () => {
     })
 
     test('all tools have TypeBox parameters and label', () => {
-      const tools = createAllTools(createCtx())
+      const tools = createTools(createCtx())
       for (const tool of tools) {
         expect(tool.label).toBeTruthy()
         expect(tool.parameters).toBeDefined()

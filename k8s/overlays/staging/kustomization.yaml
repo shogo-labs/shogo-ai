@@ -36,11 +36,7 @@ images:
   - name: shogo-docs
     newName: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-docs
     newTag: staging-latest
-  # Project runtime image for pre-puller DaemonSet
-  - name: shogo-project-runtime
-    newName: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/project-runtime
-    newTag: staging-latest
-  # Agent runtime image for pre-puller DaemonSet
-  - name: shogo-agent-runtime
-    newName: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/agent-runtime
+  # Unified runtime image for pre-puller DaemonSet
+  - name: shogo-runtime
+    newName: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/runtime
     newTag: staging-latest

@@ -3681,7 +3681,6 @@ export const ProjectScalarFieldEnum = {
   publishedAt: 'publishedAt',
   accessLevel: 'accessLevel',
   category: 'category',
-  type: 'type',
   siteTitle: 'siteTitle',
   siteDescription: 'siteDescription',
   thumbnailUrl: 'thumbnailUrl',
@@ -4435,20 +4434,6 @@ export type EnumProjectCategoryFieldRefInput<$PrismaModel> = FieldRefInputType<$
  * Reference to a field of type 'ProjectCategory[]'
  */
 export type ListEnumProjectCategoryFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'ProjectCategory[]'>
-    
-
-
-/**
- * Reference to a field of type 'ProjectType'
- */
-export type EnumProjectTypeFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'ProjectType'>
-    
-
-
-/**
- * Reference to a field of type 'ProjectType[]'
- */
-export type ListEnumProjectTypeFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'ProjectType[]'>
     
 
 

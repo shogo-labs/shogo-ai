@@ -40,7 +40,6 @@ export const ProjectModel = types
     publishedAt: types.optional(types.number, 0),
     accessLevel: types.enumeration("AccessLevel", ["anyone", "authenticated", "private"]),
     category: types.optional(types.string, ""),
-    type: types.optional(types.enumeration("ProjectType", ["APP", "AGENT"]), "APP"),
     siteTitle: types.optional(types.string, ""),
     siteDescription: types.optional(types.string, ""),
     thumbnailUrl: types.optional(types.string, ""),

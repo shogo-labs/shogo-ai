@@ -124,7 +124,7 @@ describe('Warm Pool + Knative Integration', () => {
           name: 'warm-pool-project-test123',
           labels: {
             'shogo.io/warm-pool': 'true',
-            'shogo.io/warm-pool-type': 'project',
+            
             'shogo.io/warm-pool-status': 'available',
           },
           creationTimestamp: new Date().toISOString(),
@@ -214,19 +214,17 @@ describe('Warm Pool + Knative Integration', () => {
     })
 
     test('should handle agent projects correctly', async () => {
-      // Mock project as AGENT type
       mockPrismaProject.findUnique.mockResolvedValueOnce({
         workspaceId: 'test-workspace',
-        type: 'AGENT',
       })
 
-      // Set up a warm agent pod
+      // Set up a warm pod
       const warmAgentPod = {
         metadata: {
           name: 'warm-pool-agent-abc456',
           labels: {
             'shogo.io/warm-pool': 'true',
-            'shogo.io/warm-pool-type': 'agent',
+            
             'shogo.io/warm-pool-status': 'available',
           },
           creationTimestamp: new Date().toISOString(),
@@ -261,7 +259,7 @@ describe('Warm Pool + Knative Integration', () => {
           name: `warm-pool-project-${i}`,
           labels: {
             'shogo.io/warm-pool': 'true',
-            'shogo.io/warm-pool-type': 'project',
+            
             'shogo.io/warm-pool-status': 'available',
           },
           creationTimestamp: new Date(Date.now() - i * 1000).toISOString(),
@@ -303,7 +301,7 @@ describe('Warm Pool + Knative Integration', () => {
           name: `warm-pool-project-${i}`,
           labels: {
             'shogo.io/warm-pool': 'true',
-            'shogo.io/warm-pool-type': 'project',
+            
             'shogo.io/warm-pool-status': 'available',
           },
           creationTimestamp: new Date(Date.now() - i * 1000).toISOString(),
@@ -346,7 +344,7 @@ describe('Warm Pool + Knative Integration', () => {
       const assignedPod: WarmPodInfo = {
         id: 'warm-pool-project-cleanup',
         serviceName: 'warm-pool-project-cleanup',
-        type: 'project',
+        
         url: 'http://warm-pool-project-cleanup.test-namespace.svc.cluster.local',
         createdAt: Date.now(),
         ready: true,
@@ -399,7 +397,7 @@ describe('Warm Pool + Knative Integration', () => {
           name: 'warm-pool-project-initial',
           labels: {
             'shogo.io/warm-pool': 'true',
-            'shogo.io/warm-pool-type': 'project',
+            
             'shogo.io/warm-pool-status': 'available',
           },
           creationTimestamp: new Date().toISOString(),
@@ -425,7 +423,7 @@ describe('Warm Pool + Knative Integration', () => {
       })
 
       // Claim the pod
-      const pod = warmPoolController.claim('project')
+      const pod = warmPoolController.claim()
       expect(pod).not.toBeNull()
 
       // Wait for replenishment
@@ -444,7 +442,7 @@ describe('Warm Pool + Knative Integration', () => {
           name: 'warm-pool-project-error',
           labels: {
             'shogo.io/warm-pool': 'true',
-            'shogo.io/warm-pool-type': 'project',
+            
             'shogo.io/warm-pool-status': 'available',
           },
           creationTimestamp: new Date().toISOString(),
@@ -547,7 +545,7 @@ describe('Warm Pool + Knative Integration', () => {
       expect(mockK8sCustomApi.createNamespacedCustomObject).not.toHaveBeenCalled()
 
       // Should return null when claiming
-      const pod = disabledController.claim('project')
+      const pod = disabledController.claim()
       expect(pod).toBeNull()
     })
   })

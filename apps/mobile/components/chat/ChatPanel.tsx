@@ -186,9 +186,11 @@ export interface ChatPanelProps {
   selectedThemeId?: string
   onSelectTheme?: (themeId: string) => void
   onCreateTheme?: () => void
-  projectType?: "APP" | "AGENT"
+  projectType?: string
   /** Called with canvas preview components streamed through the chat channel */
   onCanvasPreview?: (surfaceId: string, components: any[]) => void
+  /** Called when the agent switches visual mode via switch_mode tool */
+  onModeSwitch?: (mode: "canvas" | "app" | "none", reason: string) => void
   /** Legacy domain stores (platformFeatures, componentBuilder) — optional on mobile */
   legacyDomains?: {
     platformFeatures?: any
@@ -518,6 +520,7 @@ export const ChatPanel = observer(function ChatPanel({
   onCreateTheme,
   projectType,
   onCanvasPreview,
+  onModeSwitch,
   legacyDomains,
   billingData,
 }: ChatPanelProps) {
@@ -707,8 +710,6 @@ export const ChatPanel = observer(function ChatPanel({
   const MAX_RECENT_TOOLS = 8
   const [accumulatedSubagentTools, setAccumulatedSubagentTools] = useState<ToolCallData[]>([])
   const processedProgressEventsRef = useRef<Set<string>>(new Set())
-
-  const isAgent = projectType === "AGENT"
 
   const [toolErrorBanner, setToolErrorBanner] = useState<{ toolkitName: string; error: string; isAuthError?: boolean } | null>(null)
   const [reconnecting, setReconnecting] = useState(false)
@@ -1095,6 +1096,12 @@ export const ChatPanel = observer(function ChatPanel({
         onCanvasPreview?.(surfaceId, components)
       }
 
+      if (dataPart.type === "data-mode-switch") {
+        const { mode, reason } = (dataPart as any).data as { mode: "canvas" | "app" | "none"; reason: string }
+        console.log("[ChatPanel:ModeSwitch]", mode, reason)
+        onModeSwitch?.(mode, reason)
+      }
+
       // Handle permission approval requests from the agent runtime
       if ((dataPart as any).type === "data-permission-request") {
         const req = (dataPart as any).data
@@ -1264,13 +1271,11 @@ export const ChatPanel = observer(function ChatPanel({
   const handleStop = useCallback(() => {
     stop()
 
-    const stopUrl = isAgent
-      ? null
-      : localAgentUrl
-        ? `${localAgentUrl}/agent/chat/stop`
-        : projectId
-          ? `${API_URL}/api/projects/${projectId}/chat/stop`
-          : null
+    const stopUrl = localAgentUrl
+      ? `${localAgentUrl}/agent/stop`
+      : projectId
+        ? `${API_URL}/api/projects/${projectId}/agent/stop`
+        : null
     if (stopUrl) {
       fetch(stopUrl, {
         method: "POST",
@@ -1280,7 +1285,7 @@ export const ChatPanel = observer(function ChatPanel({
         console.warn("[ChatPanel] Failed to send stop signal to backend:", err)
       })
     }
-  }, [stop, projectId, isAgent, localAgentUrl])
+  }, [stop, projectId, localAgentUrl])
 
   // Idle timeout to force-complete hung streams
   const idleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)

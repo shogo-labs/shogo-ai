@@ -124,8 +124,7 @@ export class S3Sync {
         '*.log',              // Log files
         'playwright-report',  // Test artifacts
         'test-results',       // Test artifacts
-        'dev.db',             // Local SQLite (we use Postgres in K8s)
-        'dev.db-journal',     // SQLite journal
+        'project/node_modules', // App dependencies (cached separately via deps archive)
         '.bun',               // Bun cache (can be regenerated)
       ],
       syncInterval: config.syncInterval ?? 30000, // 30 seconds default

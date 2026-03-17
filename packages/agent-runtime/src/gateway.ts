@@ -26,7 +26,7 @@ import { Type } from '@sinclair/typebox'
 import type { ChannelAdapter, IncomingMessage, AgentStatus, ChannelStatus, StreamChunkConfig, SandboxConfig } from './types'
 import { loadSkills, matchSkill, type Skill } from './skills'
 import { runAgentLoop, type LoopDetectorConfig, type ToolContext } from './agent-loop'
-import { createAllTools, createBasicTools, createHeartbeatTools, textResult } from './gateway-tools'
+import { createTools, createHeartbeatTools, textResult, type ModeSwitchHandler } from './gateway-tools'
 import { PermissionEngine, parseSecurityPolicy } from './permission-engine'
 import { getDynamicAppManager } from './dynamic-app-manager'
 import { HookEmitter, loadAllHooks } from './hooks'
@@ -40,7 +40,6 @@ import { initComposioSession, resetComposioSession, isComposioEnabled, isComposi
 import type { FilePart } from './file-attachment-utils'
 import { parseFileAttachments } from './file-attachment-utils'
 import {
-  OPTIMIZED_CANVAS_EXAMPLES,
   OPTIMIZED_MEMORY_GUIDE,
   OPTIMIZED_PERSONALITY_GUIDE,
   OPTIMIZED_TOOL_PLANNING_GUIDE,
@@ -89,6 +88,8 @@ function toUserMessage(toolkit: string, raw: string): string {
   return `${toolkit} encountered an issue: ${raw.length > 120 ? raw.slice(0, 120) + '...' : raw}`
 }
 
+export type VisualMode = 'canvas' | 'app' | 'none'
+
 export interface GatewayConfig {
   heartbeatInterval: number
   heartbeatEnabled: boolean
@@ -109,8 +110,10 @@ export interface GatewayConfig {
   mainSessionIds?: string[]
   /** MCP servers to spawn on gateway start — tools from these become available to the agent */
   mcpServers?: Record<string, MCPServerConfig>
-  /** Whether canvas tools and UI are enabled for this project (default: true) */
-  canvasEnabled?: boolean
+  /** Active visual mode: canvas, app, or none (default: 'none') */
+  activeMode?: VisualMode
+  /** Modes this project is allowed to use (default: all modes for paid, ['canvas','none'] for basic) */
+  allowedModes?: VisualMode[]
   /** Whether web search & browser tools are enabled (default: true) */
   webEnabled?: boolean
   /** Whether shell/exec tool is enabled (default: true) */
@@ -121,19 +124,12 @@ export interface GatewayConfig {
   imageGenEnabled?: boolean
   /** Whether memory tools are enabled (default: true) */
   memoryEnabled?: boolean
+  /** Whether canvas tools are enabled (default: true). Automatically set false when switching to app/none mode. */
+  canvasEnabled?: boolean
 }
 
-function isBasicAgent(): boolean {
-  const variant = process.env.AGENT_VARIANT?.toLowerCase()
-  return !variant || variant === 'basic'
-}
 
-const CANVAS_TOOLS_GUIDE_PREFIX = `## Canvas (Dynamic UI)
-
-You have canvas tools that let you build interactive dashboards the user can see in real time.
-Use them whenever a visual display would be more helpful than plain text.
-
-**IMPORTANT: You build dashboards and agent tools — NOT apps.**
+const _REMOVED_ADVANCED_GUIDE = `removed
 You are an agent builder, not an app builder. If a user asks you to "build an app", "create an application",
 or anything that sounds like a standalone application, politely redirect them: explain that you specialize
 in building **agents** and **dashboards** (data displays, monitoring panels, operational views, triage boards,
@@ -586,13 +582,11 @@ You have canvas tools that let you build dashboards the user can see in real tim
 Use them whenever a visual display would be more helpful than plain text.
 This agent supports **display + interactive** components — you can show data AND let users toggle, select, and delete records directly.
 
-**IMPORTANT: You build dashboards and agent tools — NOT apps.**
-You are an agent builder, not an app builder. If a user asks you to "build an app", "create an application",
-or anything that sounds like a standalone application, politely redirect them: explain that you specialize
-in building **agents** and **dashboards** (data displays, monitoring panels, operational views, triage boards,
-analytics dashboards, etc.). You do NOT build apps like todo apps, CRMs, project management apps, or any
-standalone application. Dashboards display data, provide metrics, and let users take quick actions — they
-are NOT full applications.
+**IMPORTANT: Canvas is for dashboards — NOT full apps.**
+Canvas mode builds dashboards (data displays, monitoring panels, operational views, triage boards,
+analytics dashboards). If a user asks for a full application (SaaS product, multi-page app, custom
+backend, etc.), switch to **app** mode with \`switch_mode("app")\` and delegate to \`code_agent\` instead.
+Dashboards display data, provide metrics, and let users take quick actions — they are NOT full applications.
 
 **CRITICAL: YOU do the work. Canvas shows the results.**
 When a user asks you to "create", "build", "make", "set up", or "draft" something, DO that work
@@ -1059,6 +1053,8 @@ export class AgentGateway {
   private permissionEngine: PermissionEngine | null = null
   /** Callback to push permission-related SSE events to the connected client */
   private _permissionSseCallback?: (event: Record<string, any>) => void
+  /** Claude Code sub-agent tool (created when code-agent module is available) */
+  private codeAgentTool: import('@mariozechner/pi-agent-core').AgentTool | null = null
 
   /** Usage from the most recent agentTurn (consumed by server.ts for the finish event) */
   private _lastTurnUsage: {
@@ -1085,6 +1081,26 @@ export class AgentGateway {
         workspaceDir,
       })
       console.log(`[AgentGateway] Permission engine initialized: mode=${pref.mode}`)
+    }
+
+    // Initialize code agent tool (lazy — only used when mode=app)
+    try {
+      const { createCodeAgentTool } = require('./code-agent')
+      this.codeAgentTool = createCodeAgentTool({
+        workspaceDir,
+        aiProxy: process.env.AI_PROXY_URL && process.env.AI_PROXY_TOKEN
+          ? { url: process.env.AI_PROXY_URL, token: process.env.AI_PROXY_TOKEN }
+          : null,
+        getModelTier: () => {
+          const name = this.config.model.name
+          if (name.includes('haiku')) return 'haiku' as const
+          if (name.includes('opus')) return 'opus' as const
+          return 'sonnet' as const
+        },
+      })
+      console.log(`[AgentGateway] Code agent tool initialized`)
+    } catch {
+      console.log(`[AgentGateway] Code agent not available (claude-agent-sdk not installed)`)
     }
   }
 
@@ -1209,7 +1225,8 @@ export class AgentGateway {
       channels: [],
       model: { provider: 'anthropic', name: 'claude-sonnet-4-6' },
       maxSessionMessages: 30,
-      canvasEnabled: true,
+      activeMode: 'none',
+      allowedModes: ['canvas', 'app', 'none'],
       mainSessionIds: ['chat'],
     }
     const configPath = join(this.workspaceDir, 'config.json')
@@ -1236,7 +1253,7 @@ export class AgentGateway {
     this.config = this.loadConfig()
     const caps = ['canvas', 'web', 'shell', 'cron', 'imageGen', 'memory'] as const
     const flags = caps.map(c => `${c}=${this.config[`${c}Enabled` as keyof GatewayConfig] !== false}`).join(', ')
-    console.log(`[AgentGateway] Config reloaded (${flags})`)
+    console.log(`[AgentGateway] Config reloaded (mode=${this.config.activeMode || 'none'}, ${flags})`)
   }
 
   async start(): Promise<void> {
@@ -1816,16 +1833,67 @@ export class AgentGateway {
       aiProxyToken: process.env.AI_PROXY_TOKEN,
     }
 
+    const modeHandler = {
+      onModeSwitch: (mode: VisualMode, reason: string) => {
+        this.setActiveMode(mode)
+        const enableCanvas = mode === 'canvas'
+        // Persist to config.json
+        const configPath = join(this.workspaceDir, 'config.json')
+        try {
+          const config = existsSync(configPath) ? JSON.parse(readFileSync(configPath, 'utf-8')) : {}
+          config.activeMode = mode
+          config.canvasEnabled = enableCanvas
+          writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
+        } catch { /* non-fatal */ }
+        this.reloadConfig()
+        // Emit SSE event for UI mode switching
+        if (uiWriter) {
+          uiWriter.write({ type: 'data-mode-switch', data: { mode, reason } })
+        }
+      },
+      getAllowedModes: () => this.getAllowedModes(),
+      getActiveMode: () => this.getActiveMode(),
+    }
+
+    // Build extra tools (code_agent) that are mode-filtered downstream.
+    // Wrap code_agent to inject uiWriter so Claude Code's internal tool
+    // calls (Write, Bash, Read, etc.) stream through the SSE connection.
+    const extraTools: import('@mariozechner/pi-agent-core').AgentTool[] = []
+    if (this.codeAgentTool) {
+      const originalCodeAgent = this.codeAgentTool
+      extraTools.push({
+        ...originalCodeAgent,
+        execute: async (id, params, signal, onUpdate) => {
+          const context = { uiWriter, abortSignal: signal }
+          return originalCodeAgent.execute(id, params, context as any, onUpdate)
+        },
+      })
+    }
+
     const baseTools = isHeartbeat
       ? createHeartbeatTools(toolContext)
-      : isBasicAgent() ? createBasicTools(toolContext) : createAllTools(toolContext)
+      : createTools(toolContext, modeHandler, extraTools)
 
     const mcpTools = this.mcpClientManager.getTools()
     let assembledTools = mcpTools.length > 0 ? [...baseTools, ...mcpTools] : baseTools
 
-    if (this.config.canvasEnabled === false) {
+    // Mode-based visual tool filtering
+    // Canvas tools are only available when canvasEnabled is true OR activeMode is 'canvas'.
+    // In 'app' mode or when canvasEnabled is explicitly false, strip all canvas_ tools.
+    const activeMode = this.config.activeMode || 'none'
+    if (activeMode === 'app' || this.config.canvasEnabled === false) {
       assembledTools = assembledTools.filter(t => !t.name.startsWith('canvas_'))
     }
+    // Keep code_agent available in ALL visual modes so the agent can
+    // switch_mode('app') + code_agent in the same turn from any starting mode.
+    // Only strip for heartbeats where autonomous code generation is not wanted.
+    if (isHeartbeat) {
+      assembledTools = assembledTools.filter(t =>
+        t.name !== 'code_agent' && t.name !== 'preview_status' && t.name !== 'preview_restart'
+      )
+    }
+
+    // Capability toggles (independent of mode)
     if (this.config.webEnabled === false) {
       assembledTools = assembledTools.filter(t => t.name !== 'web' && t.name !== 'browser')
     }
@@ -2253,14 +2321,16 @@ export class AgentGateway {
     const memoryGuide = this.promptOverrides.get('memory_guide') ?? OPTIMIZED_MEMORY_GUIDE
     const skillMatchingGuide = this.promptOverrides.get('skill_matching_guide') ?? OPTIMIZED_SKILL_MATCHING_GUIDE
 
-    if (this.config.canvasEnabled !== false) {
-      if (isBasicAgent()) {
-        parts.push(BASIC_CANVAS_TOOLS_GUIDE + BASIC_CANVAS_EXAMPLES)
-      } else {
-        const canvasExamples = this.promptOverrides.get('canvas_examples') ?? OPTIMIZED_CANVAS_EXAMPLES
-        parts.push(CANVAS_TOOLS_GUIDE_PREFIX + canvasExamples)
-      }
+    const activeMode = this.config.activeMode || 'none'
+    // Inject mode-specific prompt sections
+    if (activeMode === 'canvas') {
+      parts.push(BASIC_CANVAS_TOOLS_GUIDE + BASIC_CANVAS_EXAMPLES)
+    } else if (activeMode === 'none') {
+      parts.push(`\n## Canvas Tools Available\nYou have canvas_create, canvas_update, canvas_data, and other canvas tools available. When the user asks for a visual display, dashboard, or interactive UI, switch to canvas mode with switch_mode first for detailed guidance, then use the canvas tools. You can also use canvas tools directly — they will work in any non-app mode.\n`)
+      parts.push(`\n## App Building Available\nYou have the \`code_agent\` tool available for building full applications. When the user asks for an app, website, SaaS product, or anything requiring custom code: (1) call switch_mode("app"), (2) call code_agent with a detailed task description. NEVER write application code yourself with write_file — always delegate to code_agent which handles scaffolding, templates, and implementation.\n`)
     }
+    // Mode context injection
+    parts.push(`\n## Current Mode\nActive visual mode: **${activeMode}**. Use switch_mode to change.\n`)
     parts.push(PERSONALITY_EVOLUTION_GUIDE_PREFIX + personalityGuide)
     parts.push(toolPlanningGuide)
     parts.push(this.promptOverrides.get('constraint_awareness_guide') ?? OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE)
@@ -2581,5 +2651,30 @@ export class AgentGateway {
 
   getMCPClientManager(): MCPClientManager {
     return this.mcpClientManager
+  }
+
+  getActiveMode(): VisualMode {
+    return this.config.activeMode || 'none'
+  }
+
+  setActiveMode(mode: VisualMode): void {
+    this.config.activeMode = mode
+  }
+
+  getAllowedModes(): VisualMode[] {
+    return this.config.allowedModes || ['canvas', 'app', 'none']
+  }
+
+  /** Map of sessionId -> AbortController for cancelling in-progress agent turns */
+  private turnAbortControllers = new Map<string, AbortController>()
+
+  abortCurrentTurn(sessionId: string): boolean {
+    const controller = this.turnAbortControllers.get(sessionId)
+    if (controller) {
+      controller.abort()
+      this.turnAbortControllers.delete(sessionId)
+      return true
+    }
+    return false
   }
 }

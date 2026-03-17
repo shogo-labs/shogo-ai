@@ -1,9 +1,9 @@
 #!/bin/bash
 # =============================================================================
-# Agent Runtime Entrypoint
+# Unified Runtime Entrypoint
 # =============================================================================
-# Simpler than project-runtime: no Vite build, no template deps, no Prisma.
-# Just S3 sync for agent workspace files + start the agent server.
+# Starts the unified Shogo runtime: Pi agent with optional app building
+# capabilities (Claude Code + Vite). Mode switching happens at runtime.
 # =============================================================================
 
 set -e
@@ -16,10 +16,10 @@ log_timing() {
 }
 
 log_timing "=================================================="
-log_timing "Agent Runtime Starting"
+log_timing "Shogo Unified Runtime Starting"
 log_timing "=================================================="
 log_timing "PROJECT_ID: ${PROJECT_ID:-not set}"
-log_timing "AGENT_DIR: ${AGENT_DIR:-/app/agent}"
+log_timing "WORKSPACE_DIR: ${WORKSPACE_DIR:-/app/workspace}"
 log_timing "NODE_ENV: ${NODE_ENV:-production}"
 log_timing "S3_WORKSPACES_BUCKET: ${S3_WORKSPACES_BUCKET:-not set}"
 log_timing "=================================================="
@@ -29,19 +29,20 @@ if [ -z "$PROJECT_ID" ]; then
   exit 1
 fi
 
-AGENT_DIR="${AGENT_DIR:-/app/agent}"
-export AGENT_DIR
+WORKSPACE_DIR="${WORKSPACE_DIR:-/app/workspace}"
+export WORKSPACE_DIR
 
 # =============================================================================
-# Ensure agent workspace directory exists with default config
+# Ensure workspace directory exists
 # =============================================================================
-mkdir -p "$AGENT_DIR"
+mkdir -p "$WORKSPACE_DIR" "$WORKSPACE_DIR/project"
 
-if [ ! -f "$AGENT_DIR/config.json" ]; then
-  log_timing "Creating default agent config..."
-  cat > "$AGENT_DIR/config.json" << 'EOF'
+if [ ! -f "$WORKSPACE_DIR/config.json" ]; then
+  log_timing "Creating default workspace config..."
+  cat > "$WORKSPACE_DIR/config.json" << 'EOF'
 {
-  "model": { "provider": "anthropic", "name": "claude-sonnet-4-20250514" },
+  "model": { "provider": "anthropic", "name": "claude-sonnet-4-6" },
+  "activeMode": "none",
   "heartbeat": { "enabled": false, "intervalMs": 300000 },
   "channels": [],
   "skills": [],
@@ -52,9 +53,9 @@ EOF
 fi
 
 # =============================================================================
-# Start the agent server
+# Start the unified server
 # =============================================================================
-log_timing "Starting agent server..."
+log_timing "Starting unified runtime server..."
 cd /app/packages/agent-runtime
 
 export STARTUP_TIME="$STARTUP_TIME"

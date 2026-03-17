@@ -474,7 +474,6 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Build todo app with CRUD API',
     category: 'canvas',
     level: 3,
-    requiredAgent: 'advanced' as const,
     input: 'I want to track my todos — adding, completing, and deleting them. Set me up with a few sample ones to start.',
     maxScore: 100,
     validationCriteria: [
@@ -571,7 +570,6 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Interactive button actions',
     category: 'canvas',
     level: 3,
-    requiredAgent: 'advanced' as const,
     input: 'I need a quick poll — give people two options, A and B, and let them pick one.',
     maxScore: 100,
     validationCriteria: [
@@ -868,7 +866,6 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Support ticket system with CRUD',
     category: 'canvas',
     level: 3,
-    requiredAgent: 'advanced' as const,
     input: 'I need a way to manage support tickets. Should have priority levels and status tracking. Throw in some example tickets to start.',
     maxScore: 100,
     validationCriteria: [
@@ -965,7 +962,6 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Invoice management with CRUD',
     category: 'canvas',
     level: 3,
-    requiredAgent: 'advanced' as const,
     input: 'Help me track my invoices — client, amount, due date, and whether they\'re paid. Add a few sample invoices to start.',
     maxScore: 100,
     validationCriteria: [
@@ -1069,7 +1065,6 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Recruiting pipeline with CRUD',
     category: 'canvas',
     level: 3,
-    requiredAgent: 'advanced' as const,
     input: 'I need to track job applicants through our hiring process — who applied, what role, what stage they\'re at, and how they rate. Seed it with a few sample candidates.',
     maxScore: 100,
     validationCriteria: [
@@ -1246,7 +1241,6 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: E-commerce order management with CRUD (multi-turn)',
     category: 'canvas',
     level: 4,
-    requiredAgent: 'advanced' as const,
     conversationHistory: [
       { role: 'user', content: 'I need to manage my incoming orders — can you help me track revenue, shipments, and the order list?' },
     ],
@@ -1357,7 +1351,6 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: CRUD app with self-testing via trigger+inspect',
     category: 'canvas',
     level: 4,
-    requiredAgent: 'advanced' as const,
     input: 'Build me a quick todo tracker with a couple sample items. Make sure it actually works.',
     maxScore: 100,
     validationCriteria: [
@@ -1458,7 +1451,6 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Counter with trigger/inspect verification loop (multi-turn)',
     category: 'canvas',
     level: 4,
-    requiredAgent: 'advanced' as const,
     conversationHistory: [
       { role: 'user', content: 'Make me a simple counter on the canvas — just a number display and a button I can click to increment it. Start the count at 0.' },
     ],
@@ -1527,7 +1519,6 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Full CRUD roundtrip with verification',
     category: 'canvas',
     level: 5,
-    requiredAgent: 'advanced' as const,
     input: 'Build me a contacts list where I can add, edit, and delete people — name, email, phone. Seed a couple entries, then run through each operation to make sure it all works and tell me the results.',
     maxScore: 100,
     validationCriteria: [
@@ -1637,7 +1628,6 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Faithful trigger resolves mutations from button definitions',
     category: 'canvas',
     level: 5,
-    requiredAgent: 'advanced' as const,
     input: 'Build a task list where I can add tasks, mark them done, and delete them. Seed 3 tasks. Test every action to make sure it works — I need to know the buttons actually function when clicked.',
     maxScore: 100,
     validationCriteria: [
@@ -1762,7 +1752,6 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Expense tracker with auto-updating metrics and validation hooks',
     category: 'canvas',
     level: 3,
-    requiredAgent: 'advanced' as const,
     input: 'Build an expense tracker with a list of expenses and summary metrics showing total spent, expense count, and average expense. The metrics should update automatically when expenses are added or removed. Also make sure expenses can\'t be added with a negative amount or without a description. Seed 3 sample expenses, then test it.',
     maxScore: 100,
     validationCriteria: [
@@ -1883,7 +1872,6 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Project management with cascade-delete, recompute, and audit log hooks',
     category: 'canvas',
     level: 4,
-    requiredAgent: 'advanced' as const,
     input: 'Build a project management board. Each project has a name and status. Each task has a title, status, and belongs to a project (projectId). Show metrics for total projects, total tasks, and completed task count. When a project is deleted, its tasks should be automatically removed too. Keep an activity log of all changes. Seed 2 projects with 3 tasks each, then test: add a new task, delete a project (should cascade-delete its tasks), and verify the activity log.',
     maxScore: 100,
     validationCriteria: [
@@ -2019,7 +2007,6 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Full hooks lifecycle with all 5 action types',
     category: 'canvas',
     level: 5,
-    requiredAgent: 'advanced' as const,
     input: 'Build a customer order system. Customers have a name and email. Orders have a customer name, amount, and status (pending/shipped/delivered). I need: (1) metrics for total revenue, order count, and average order value that auto-update, (2) validation so orders can\'t have negative amounts and must have a status, (3) emails should be stored lowercase and trimmed, (4) when a customer is deleted, their orders should be removed too, (5) an activity log tracking all changes. Seed 3 customers and 5 orders. Test adding a new order and verify everything works.',
     maxScore: 100,
     validationCriteria: [
@@ -2246,7 +2233,6 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Visual Quality: CRUD app has proper layout hierarchy',
     category: 'canvas',
     level: 3,
-    requiredAgent: 'advanced' as const,
     input: 'Build an expense tracker with categories, amounts, and budget tracking',
     maxScore: 100,
     validationCriteria: [
@@ -2718,7 +2704,6 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Searchable contact list',
     category: 'canvas',
     level: 2,
-    requiredAgent: 'advanced' as const,
     input: 'Build me a contact list with a search bar. I should be able to type a name and filter the list. Seed it with 6 sample contacts with name, email, and company fields.',
     maxScore: 100,
     validationCriteria: [
@@ -2795,7 +2780,6 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Product catalog with search and CRUD',
     category: 'canvas',
     level: 3,
-    requiredAgent: 'advanced' as const,
     input: 'I need a product catalog manager. Products have a name, category, price, and stock count. Include a search bar to filter products by name or category, and buttons to add new products and delete existing ones. Add 5 sample products.',
     maxScore: 100,
     validationCriteria: [
@@ -2899,7 +2883,6 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: FAQ knowledge base with search and category filter',
     category: 'canvas',
     level: 3,
-    requiredAgent: 'advanced' as const,
     input: 'Create a FAQ knowledge base. Each entry has a question, answer, and category (General, Billing, Technical). Add a search bar that filters across both question and answer text, and a category dropdown to filter by category. Seed with 6 sample FAQs.',
     maxScore: 100,
     validationCriteria: [
@@ -2993,7 +2976,6 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Canvas: Employee directory with server-side search',
     category: 'canvas',
     level: 4,
-    requiredAgent: 'advanced' as const,
     input: 'Build an employee directory for a large company. Employees have name, department, title, email, and phone. I need a search bar that searches across name and title — this should use the API to filter since there could be thousands of employees. Include department metrics at the top. Seed with 8 sample employees across 3 departments.',
     maxScore: 100,
     validationCriteria: [
@@ -3227,6 +3209,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     id: 'action-not-ui-campaign',
     name: 'Action-Not-UI: Create ad campaign (agent does the work)',
     category: 'canvas',
+    initialMode: 'none',
     level: 2,
     input: 'Create a Google Ads campaign for $20/day targeting sign-ups for our web app shogo.ai. We want to spend $20 a day and get sign ups.',
     maxScore: 100,
@@ -3289,6 +3272,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     id: 'action-not-ui-email-templates',
     name: 'Action-Not-UI: Draft email templates (agent writes them)',
     category: 'canvas',
+    initialMode: 'none',
     level: 2,
     input: 'Draft 3 email templates for onboarding new users to our SaaS product.',
     maxScore: 100,
@@ -3356,6 +3340,7 @@ export const CANVAS_EVALS: AgentEval[] = [
     id: 'action-not-ui-content-calendar',
     name: 'Action-Not-UI: Create content calendar (agent produces it)',
     category: 'canvas',
+    initialMode: 'none',
     level: 2,
     input: 'Create a social media content calendar for next week. We post on Twitter and LinkedIn daily.',
     maxScore: 100,
@@ -3580,7 +3565,6 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'sendToAgent: Task tracker with CRUD + auto-prioritize',
     category: 'canvas',
     level: 4,
-    requiredAgent: 'advanced' as const,
     input: 'Build a task tracker with add, complete, and delete. Also add an \'Auto-prioritize\' button where you re-order tasks by importance.',
     maxScore: 100,
     validationCriteria: [
@@ -3787,7 +3771,6 @@ export const CANVAS_EVALS: AgentEval[] = [
     name: 'Negative: Simple CRUD todo should not use sendToAgent',
     category: 'canvas',
     level: 3,
-    requiredAgent: 'advanced' as const,
     input: 'Track my todos -- adding, completing, and deleting them. Set me up with a few sample ones to start.',
     maxScore: 100,
     validationCriteria: [

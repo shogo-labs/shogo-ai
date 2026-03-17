@@ -42,27 +42,8 @@ spec:
       # Low priority - don't block other workloads
       priorityClassName: ""
       containers:
-        - name: project-runtime-prepull
-          image: shogo-project-runtime
-          imagePullPolicy: Always
-          command: ["sleep", "infinity"]
-          resources:
-            requests:
-              memory: "1Mi"
-              cpu: "1m"
-            limits:
-              memory: "8Mi"
-              cpu: "10m"
-          securityContext:
-            readOnlyRootFilesystem: true
-            runAsNonRoot: true
-            runAsUser: 1000
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop:
-                - ALL
-        - name: agent-runtime-prepull
-          image: shogo-agent-runtime
+        - name: runtime-prepull
+          image: shogo-runtime
           imagePullPolicy: Always
           command: ["sleep", "infinity"]
           resources:

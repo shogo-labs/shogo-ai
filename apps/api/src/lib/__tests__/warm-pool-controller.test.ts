@@ -125,8 +125,8 @@ describe('WarmPoolController', () => {
     process.env.S3_WORKSPACES_BUCKET = 'test-bucket'
 
     controller = new WarmPoolController({
-      projectPoolSize: 2,
-      agentPoolSize: 1,
+      poolSize: 3,
+      
       reconcileIntervalMs: 1000,
       maxPodAgeMs: 60000,
     })
@@ -165,7 +165,7 @@ describe('WarmPoolController', () => {
             name: 'warm-pool-project-abc123',
             labels: {
               'shogo.io/warm-pool': 'true',
-              'shogo.io/warm-pool-type': 'project',
+              
               'shogo.io/warm-pool-status': 'available',
             },
             creationTimestamp: new Date().toISOString(),
@@ -179,7 +179,7 @@ describe('WarmPoolController', () => {
             name: 'warm-pool-agent-def456',
             labels: {
               'shogo.io/warm-pool': 'true',
-              'shogo.io/warm-pool-type': 'agent',
+              
               'shogo.io/warm-pool-status': 'available',
             },
             creationTimestamp: new Date().toISOString(),
@@ -211,7 +211,7 @@ describe('WarmPoolController', () => {
             name: 'warm-pool-project-abc123',
             labels: {
               'shogo.io/warm-pool': 'true',
-              'shogo.io/warm-pool-type': 'project',
+              
               'shogo.io/warm-pool-status': 'assigned', // Already assigned
             },
             creationTimestamp: new Date().toISOString(),
@@ -304,7 +304,7 @@ describe('WarmPoolController', () => {
             name: 'warm-pool-project-old',
             labels: {
               'shogo.io/warm-pool': 'true',
-              'shogo.io/warm-pool-type': 'project',
+              
               'shogo.io/warm-pool-status': 'available',
             },
             creationTimestamp: new Date(now - 30000).toISOString(), // Older
@@ -318,7 +318,7 @@ describe('WarmPoolController', () => {
             name: 'warm-pool-project-new',
             labels: {
               'shogo.io/warm-pool': 'true',
-              'shogo.io/warm-pool-type': 'project',
+              
               'shogo.io/warm-pool-status': 'available',
             },
             creationTimestamp: new Date(now - 10000).toISOString(), // Newer
@@ -336,7 +336,7 @@ describe('WarmPoolController', () => {
       await controller.start()
       await new Promise(resolve => setTimeout(resolve, 100))
 
-      const pod = controller.claim('project')
+      const pod = controller.claim()
       expect(pod).not.toBeNull()
       expect(pod?.serviceName).toBe('warm-pool-project-old') // Should claim older pod
 
@@ -350,7 +350,7 @@ describe('WarmPoolController', () => {
       await controller.start()
       await new Promise(resolve => setTimeout(resolve, 100))
 
-      const pod = controller.claim('project')
+      const pod = controller.claim()
       expect(pod).toBeNull()
     })
 
@@ -361,7 +361,7 @@ describe('WarmPoolController', () => {
             name: 'warm-pool-project-notready',
             labels: {
               'shogo.io/warm-pool': 'true',
-              'shogo.io/warm-pool-type': 'project',
+              
               'shogo.io/warm-pool-status': 'available',
             },
             creationTimestamp: new Date().toISOString(),
@@ -379,7 +379,7 @@ describe('WarmPoolController', () => {
       await controller.start()
       await new Promise(resolve => setTimeout(resolve, 100))
 
-      const pod = controller.claim('project')
+      const pod = controller.claim()
       expect(pod).toBeNull()
     })
   })
@@ -389,7 +389,7 @@ describe('WarmPoolController', () => {
       const mockPod: WarmPodInfo = {
         id: 'test-pod',
         serviceName: 'warm-pool-project-test',
-        type: 'project',
+        
         url: 'http://warm-pool-project-test.test-namespace.svc.cluster.local',
         createdAt: Date.now(),
         ready: true,
@@ -423,7 +423,7 @@ describe('WarmPoolController', () => {
       const mockPod: WarmPodInfo = {
         id: 'test-pod',
         serviceName: 'warm-pool-project-test',
-        type: 'project',
+        
         url: 'http://warm-pool-project-test.test-namespace.svc.cluster.local',
         createdAt: Date.now(),
         ready: true,
@@ -454,7 +454,7 @@ describe('WarmPoolController', () => {
             name: 'warm-pool-project-stale',
             labels: {
               'shogo.io/warm-pool': 'true',
-              'shogo.io/warm-pool-type': 'project',
+              
               'shogo.io/warm-pool-status': 'available',
             },
             creationTimestamp: new Date(staleTimestamp).toISOString(),
@@ -494,7 +494,7 @@ describe('WarmPoolController', () => {
       const mockPod: WarmPodInfo = {
         id: 'test-pod',
         serviceName: 'warm-pool-project-test',
-        type: 'project',
+        
         url: 'http://warm-pool-project-test.test-namespace.svc.cluster.local',
         createdAt: Date.now(),
         ready: true,
@@ -519,7 +519,7 @@ describe('WarmPoolController', () => {
             name: 'warm-pool-project-abc',
             labels: {
               'shogo.io/warm-pool': 'true',
-              'shogo.io/warm-pool-type': 'project',
+              
               'shogo.io/warm-pool-status': 'available',
             },
             creationTimestamp: new Date().toISOString(),
@@ -543,7 +543,7 @@ describe('WarmPoolController', () => {
       mockK8sCustomApi.createNamespacedCustomObject.mockClear()
 
       // Claim the pod — this triggers async reconcile() for replenishment
-      const pod = controller.claim('project')
+      const pod = controller.claim()
       expect(pod).not.toBeNull()
 
       // Give the burst reconcile time to fire (debounced to 500ms)
@@ -559,7 +559,7 @@ describe('WarmPoolController', () => {
       const mockPod: WarmPodInfo = {
         id: 'test-pod',
         serviceName: 'warm-pool-agent-abc123',
-        type: 'agent',
+        
         url: 'http://warm-pool-agent-abc123.test-namespace.svc.cluster.local',
         createdAt: Date.now(),
         ready: true,
@@ -596,7 +596,7 @@ describe('WarmPoolController', () => {
             name: 'warm-pool-project-promoted',
             labels: {
               'shogo.io/warm-pool': 'true',
-              'shogo.io/warm-pool-type': 'project',
+              
               'shogo.io/warm-pool-status': 'promoted',
             },
             creationTimestamp: new Date().toISOString(),
@@ -610,7 +610,7 @@ describe('WarmPoolController', () => {
             name: 'warm-pool-project-available',
             labels: {
               'shogo.io/warm-pool': 'true',
-              'shogo.io/warm-pool-type': 'project',
+              
               'shogo.io/warm-pool-status': 'available',
             },
             creationTimestamp: new Date().toISOString(),
@@ -640,7 +640,7 @@ describe('WarmPoolController', () => {
             name: 'warm-pool-project-promoted-1',
             labels: {
               'shogo.io/warm-pool': 'true',
-              'shogo.io/warm-pool-type': 'project',
+              
               'shogo.io/warm-pool-status': 'promoted',
             },
             creationTimestamp: new Date().toISOString(),
@@ -666,7 +666,7 @@ describe('WarmPoolController', () => {
       const mockPod: WarmPodInfo = {
         id: 'test-pod',
         serviceName: 'warm-pool-agent-envtest',
-        type: 'agent',
+        
         url: 'http://warm-pool-agent-envtest.test-namespace.svc.cluster.local',
         createdAt: Date.now(),
         ready: true,

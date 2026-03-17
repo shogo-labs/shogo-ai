@@ -91,7 +91,7 @@ export function createDomainActions(store: IDomainStore) {
       workspaceId: string,
       description: string | undefined,
       userId: string,
-      type?: "APP" | "AGENT",
+      _type?: string,
       templateId?: string
     ) => {
       const project = await store.projectCollection.create({
@@ -103,7 +103,6 @@ export function createDomainActions(store: IDomainStore) {
         status: "draft",
         accessLevel: "anyone",
         schemas: [],
-        type: type || "APP",
         ...(templateId ? { templateId } : {}),
       })
 

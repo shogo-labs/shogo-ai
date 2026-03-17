@@ -101,8 +101,6 @@ export default observer(function ProjectLayout() {
   const [project, setProject] = useState<any>(null)
   const [isLoading, setIsLoading] = useState(true)
 
-  const isAgentProject = project?.type === 'AGENT'
-
   const { features } = usePlatformConfig()
   const billingData = useBillingData(features.billing ? project?.workspaceId : undefined)
 
@@ -177,6 +175,7 @@ export default observer(function ProjectLayout() {
   }, [project?.settings])
 
   const canvasEnabled = projectSettings.canvasEnabled !== false
+  const activeMode = (projectSettings.activeMode as 'canvas' | 'app' | 'none') || (canvasEnabled ? 'canvas' : 'none')
 
   const capabilitySettings = useMemo(() => ({
     canvasEnabled: projectSettings.canvasEnabled !== false,
@@ -205,7 +204,6 @@ export default observer(function ProjectLayout() {
       return items.map((p: any) => ({
         id: p.id,
         name: p.name || 'Untitled',
-        type: p.type || 'APP',
       }))
     } catch {
       return []
@@ -227,8 +225,8 @@ export default observer(function ProjectLayout() {
     headers: nativeHeaders,
   })
 
-  // Dynamic app canvas (AGENT projects only -- APP projects use iframe preview)
-  const dynamicAppStreamUrl = isAgentProject ? agentUrl : null
+  // Dynamic app canvas — all unified projects use the agent URL for canvas streaming
+  const dynamicAppStreamUrl = agentUrl
   const { surfaces, activeSurfaceId, connected, dispatchAction, updateLocalData, reconnect, applyMessage } = useDynamicAppStream(
     dynamicAppStreamUrl,
     {
@@ -430,7 +428,7 @@ export default observer(function ProjectLayout() {
   useEffect(() => {
     if (!canvasEnabled) {
       if (previewTab === 'dynamic-app') setPreviewTab('chat-fullscreen')
-      if (activeTab === 'canvas') setActiveTab('chat')
+      if (activeTab === 'canvas' && previewTab !== 'app-preview') setActiveTab('chat')
     }
     if (canvasEnabled) {
       if (previewTab === 'chat-fullscreen') setPreviewTab('dynamic-app')
@@ -457,6 +455,31 @@ export default observer(function ProjectLayout() {
       setPreviewTab('chat-fullscreen')
     }
   }, [updateProjectSettings, agentUrl, nativeHeaders, previewTab])
+
+  const handleModeSwitch = useCallback(async (mode: 'canvas' | 'app' | 'none', _reason: string) => {
+    const enableCanvas = mode === 'canvas'
+
+    await updateProjectSettings({ activeMode: mode, canvasEnabled: enableCanvas })
+
+    if (agentUrl) {
+      try {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+        if (nativeHeaders) Object.assign(headers, nativeHeaders())
+        await fetch(`${agentUrl}/agent/config`, {
+          method: 'PATCH',
+          headers,
+          credentials: Platform.OS === 'web' ? 'include' : 'omit',
+          body: JSON.stringify({ activeMode: mode, canvasEnabled: enableCanvas }),
+        })
+      } catch (err) {
+        console.error('[ProjectLayout] Failed to push mode switch config to runtime:', err)
+      }
+    }
+  }, [isWide, updateProjectSettings, agentUrl, nativeHeaders])
+
+  const handleManualModeChange = useCallback((mode: 'canvas' | 'app' | 'none') => {
+    handleModeSwitch(mode, 'User selected agent type')
+  }, [handleModeSwitch])
 
   const [sessionNames, setSessionNames] = useState<Record<string, string>>({})
 
@@ -552,38 +575,39 @@ export default observer(function ProjectLayout() {
       workspaceId={project?.workspaceId}
       userId={user?.id}
       projectId={projectId}
-      projectType={isAgentProject ? 'AGENT' : 'APP'}
+      projectType="unified"
       initialMessage={capturedInitialMessage}
       initialFiles={capturedInitialFiles}
       billingData={features.billing ? billingData : { hasActiveSubscription: true, refetchCreditLedger: () => {} }}
       onCanvasPreview={handleCanvasPreview}
+      onModeSwitch={handleModeSwitch}
       className="flex-1"
     />
   )
 
   const canvasPanel = canvasEnabled ? (
-    isAgentProject ? (
-      <CanvasThemeProvider projectSettings={project?.settings} onUpdateSettings={handleUpdateCanvasSettings}>
-        <EditModeProvider agentUrl={agentUrl}>
-          <CanvasPanel
-            surface={activeSurface}
-            connected={connected}
-            agentUrl={agentUrl}
-            onAction={handleCanvasAction}
-            onDataChange={updateLocalData}
-            authHeaders={nativeHeaders}
-            onRefresh={reconnect}
-            fullBleed={!isWide}
-          />
-        </EditModeProvider>
-      </CanvasThemeProvider>
-    ) : (
-      <AppPreviewPanel previewUrl={previewUrl} />
-    )
+    <CanvasThemeProvider projectSettings={project?.settings} onUpdateSettings={handleUpdateCanvasSettings}>
+      <EditModeProvider agentUrl={agentUrl}>
+        <CanvasPanel
+          surface={activeSurface}
+          connected={connected}
+          agentUrl={agentUrl}
+          onAction={handleCanvasAction}
+          onDataChange={updateLocalData}
+          authHeaders={nativeHeaders}
+          onRefresh={reconnect}
+          fullBleed={!isWide}
+        />
+      </EditModeProvider>
+    </CanvasThemeProvider>
   ) : null
 
   const hiddenTabs: string[] = []
-  const isChatFullscreen = isWide && !canvasEnabled && previewTab === 'chat-fullscreen'
+  if (activeMode !== 'none') hiddenTabs.push('chat-fullscreen')
+  if (activeMode !== 'canvas') hiddenTabs.push('dynamic-app')
+  if (activeMode !== 'app') hiddenTabs.push('app-preview')
+
+  const isChatFullscreen = isWide && activeMode === 'none' && previewTab === 'chat-fullscreen'
 
   const chatHidden = isWide ? isChatFullscreen : activeTab !== 'chat'
   const canvasAreaHidden = (!isWide && activeTab === 'chat') || isChatFullscreen
@@ -598,7 +622,6 @@ export default observer(function ProjectLayout() {
           <ProjectTopBar
             projectName={project.name}
             projectId={projectId!}
-            projectType={project.type}
             projects={allProjects}
             activeTab={previewTab}
             onTabChange={setPreviewTab}
@@ -617,12 +640,12 @@ export default observer(function ProjectLayout() {
             folders={folders}
             hiddenTabs={hiddenTabs}
             canvasEnabled={canvasEnabled}
+            activeMode={activeMode}
           />
         ) : !narrowOnCanvas ? (
           <ProjectTopBar
             projectName={project.name}
             projectId={projectId!}
-            projectType={project.type}
             projects={allProjects}
             activeTab={previewTab}
             hasActiveSubscription={effectiveHasActiveSubscription}
@@ -640,15 +663,18 @@ export default observer(function ProjectLayout() {
             folders={folders}
             hiddenTabs={hiddenTabs}
             canvasEnabled={canvasEnabled}
+            activeMode={activeMode}
             narrowActiveTab={activeTab}
             narrowPreviewTab={previewTab}
             onNarrowTabChange={(tab) => {
               setActiveTab(tab)
-              if (tab === 'canvas') setPreviewTab('dynamic-app')
+              if (tab === 'canvas') {
+                setPreviewTab(activeMode === 'app' ? 'app-preview' : 'dynamic-app')
+              }
             }}
             onTabChange={(tabId) => {
               setPreviewTab(tabId)
-              if (tabId !== 'dynamic-app' && tabId !== 'chat-fullscreen') setActiveTab('canvas')
+              if (tabId !== 'dynamic-app' && tabId !== 'app-preview' && tabId !== 'chat-fullscreen') setActiveTab('canvas')
             }}
           />
         ) : null}
@@ -776,8 +802,13 @@ export default observer(function ProjectLayout() {
                 {canvasPanel}
               </View>
             )}
+            {previewTab === 'app-preview' && (
+              <View className="absolute inset-0">
+                <AppPreviewPanel previewUrl={previewUrl ?? null} />
+              </View>
+            )}
             <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
-            <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} />
+            <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} activeMode={activeMode} onModeChange={handleManualModeChange} />
             <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} />
             <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
           </View>

@@ -74,10 +74,7 @@ export {
 } from './server-framework'
 
 export {
-  RUNTIME_TYPES,
-  getRuntimeConfig,
-  runtimeTypeFromProjectType,
+  RUNTIME_CONFIG,
   buildRuntimeEnv,
-  type RuntimeType,
   type RuntimeTypeConfig,
 } from './runtime-types'

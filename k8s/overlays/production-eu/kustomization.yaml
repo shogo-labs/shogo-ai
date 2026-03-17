@@ -27,9 +27,6 @@ images:
   - name: shogo-web
     newName: 097357356677.dkr.ecr.eu-west-1.amazonaws.com/shogo/shogo-web
     newTag: production-latest
-  - name: shogo-project-runtime
-    newName: 097357356677.dkr.ecr.eu-west-1.amazonaws.com/shogo/project-runtime
-    newTag: production-latest
-  - name: shogo-agent-runtime
-    newName: 097357356677.dkr.ecr.eu-west-1.amazonaws.com/shogo/agent-runtime
+  - name: shogo-runtime
+    newName: 097357356677.dkr.ecr.eu-west-1.amazonaws.com/shogo/runtime
     newTag: production-latest

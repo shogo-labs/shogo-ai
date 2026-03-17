@@ -15,7 +15,7 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'fs'
 import { join } from 'path'
-import { createAllTools, type ToolContext } from '../gateway-tools'
+import { createTools, type ToolContext } from '../gateway-tools'
 
 const TEST_DIR = '/tmp/test-generate-image'
 
@@ -38,7 +38,7 @@ function createCtx(overrides?: Partial<ToolContext>): ToolContext {
 }
 
 function getImageTool(ctx: ToolContext) {
-  const tools = createAllTools(ctx)
+  const tools = createTools(ctx)
   const tool = tools.find((t) => t.name === 'generate_image')
   if (!tool) throw new Error('generate_image tool not found')
   return tool
@@ -54,9 +54,9 @@ describe('generate_image tool', () => {
     rmSync(TEST_DIR, { recursive: true, force: true })
   })
 
-  test('is registered in createAllTools', () => {
+  test('is registered in createTools', () => {
     const ctx = createCtx()
-    const tools = createAllTools(ctx)
+    const tools = createTools(ctx)
     const names = tools.map((t) => t.name)
     expect(names).toContain('generate_image')
   })

@@ -24,6 +24,7 @@ import {
   readdirSync,
   statSync,
   rmSync,
+  renameSync,
 } from 'fs'
 import {
   createRuntimeApp, traceOperation,
@@ -47,7 +48,7 @@ const MONOREPO_ROOT = resolve(__dirname, '../../..')
 // Configuration
 // =============================================================================
 
-const AGENT_DIR = process.env.AGENT_DIR || process.env.PROJECT_DIR || '/app/agent'
+const WORKSPACE_DIR = process.env.WORKSPACE_DIR || process.env.AGENT_DIR || process.env.PROJECT_DIR || '/app/workspace'
 const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
 const MCP_SERVER_PATH =
   process.env.MCP_SERVER_PATH ||
@@ -102,14 +103,14 @@ let s3SyncInstance: import('@shogo/shared-runtime').S3Sync | null = null
 
 const { app, state, logTiming } = await createRuntimeApp({
   name: 'agent-runtime',
-  workDir: AGENT_DIR,
-  runtimeType: 'agent',
+  workDir: WORKSPACE_DIR,
+  runtimeType: 'unified',
   internalPaths: ['/agent/heartbeat/trigger'],
   authPrefixes: ['/agent', '/pool'],
   async onAssign(projectId, envVars) {
     // Clean workspace to prevent cross-project file leakage
     for (const subdir of ['files', 'memory', 'skills']) {
-      const dirPath = join(AGENT_DIR, subdir)
+      const dirPath = join(WORKSPACE_DIR, subdir)
       if (existsSync(dirPath)) {
         rmSync(dirPath, { recursive: true, force: true })
         mkdirSync(dirPath, { recursive: true })
@@ -147,13 +148,13 @@ app.get('/ready', (c) => c.json({ ready: true }))
 // =============================================================================
 
 function ensureWorkspaceFiles(): void {
-  const templateMarker = join(AGENT_DIR, '.template')
+  const templateMarker = join(WORKSPACE_DIR, '.template')
   const templateIdFromEnv = process.env.TEMPLATE_ID
   const templateIdFromFile = existsSync(templateMarker) ? readFileSync(templateMarker, 'utf-8').trim() : undefined
   const templateId = templateIdFromEnv || templateIdFromFile
 
   if (templateId) {
-    const seeded = seedWorkspaceFromTemplate(AGENT_DIR, templateId, process.env.AGENT_NAME)
+    const seeded = seedWorkspaceFromTemplate(WORKSPACE_DIR, templateId, process.env.AGENT_NAME)
     if (seeded) {
       logTiming(`Workspace seeded from template: ${templateId}`)
       return
@@ -161,8 +162,34 @@ function ensureWorkspaceFiles(): void {
     logTiming(`Template "${templateId}" not found, falling back to defaults`)
   }
 
-  seedWorkspaceDefaults(AGENT_DIR)
+  seedWorkspaceDefaults(WORKSPACE_DIR)
   logTiming('Workspace defaults seeded')
+
+  // Migrate legacy APP layout: if package.json exists at workspace root (no AGENTS.md),
+  // this is a legacy APP project — move app files into project/ subdirectory
+  const legacyPkgJson = join(WORKSPACE_DIR, 'package.json')
+  const agentsMd = join(WORKSPACE_DIR, 'AGENTS.md')
+  if (existsSync(legacyPkgJson) && !existsSync(agentsMd)) {
+    const projectDir = join(WORKSPACE_DIR, 'project')
+    mkdirSync(projectDir, { recursive: true })
+    const appFiles = ['package.json', 'bun.lock', 'tsconfig.json', 'vite.config.ts', 'tailwind.config.ts', 'postcss.config.js', 'components.json', '.gitignore']
+    for (const f of appFiles) {
+      const src = join(WORKSPACE_DIR, f)
+      if (existsSync(src)) renameSync(src, join(projectDir, f))
+    }
+    for (const d of ['src', 'prisma', 'dist', 'public', 'node_modules']) {
+      const src = join(WORKSPACE_DIR, d)
+      if (existsSync(src)) renameSync(src, join(projectDir, d))
+    }
+    seedWorkspaceDefaults(WORKSPACE_DIR)
+    logTiming('Migrated legacy APP layout into project/ subdirectory')
+  }
+
+  // Ensure project/ dir exists (empty placeholder for when app mode is activated)
+  const projectDir = join(WORKSPACE_DIR, 'project')
+  if (!existsSync(projectDir)) {
+    mkdirSync(projectDir, { recursive: true })
+  }
 }
 
 // AI proxy is configured by the shared framework (state.aiProxy)
@@ -180,8 +207,8 @@ function verifyMcpServerPath(): boolean {
 }
 
 function writeAgentConfigFiles(): void {
-  const claudeMdPath = resolve(AGENT_DIR, 'CLAUDE.md')
-  const systemPromptContent = buildAgentSystemPrompt(AGENT_DIR)
+  const claudeMdPath = resolve(WORKSPACE_DIR, 'CLAUDE.md')
+  const systemPromptContent = buildAgentSystemPrompt(WORKSPACE_DIR)
   writeFileSync(claudeMdPath, systemPromptContent, 'utf-8')
   logTiming('Wrote CLAUDE.md')
 
@@ -197,13 +224,13 @@ function writeAgentConfigFiles(): void {
         args: ['run', MCP_SERVER_PATH],
         env: {
           PROJECT_ID: state.currentProjectId!,
-          AGENT_DIR,
+          WORKSPACE_DIR,
           MCP_CONTEXT: 'agent',
         },
       },
     },
   }
-  const mcpJsonPath = resolve(AGENT_DIR, '.mcp.json')
+  const mcpJsonPath = resolve(WORKSPACE_DIR, '.mcp.json')
   writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2), 'utf-8')
   logTiming('Wrote .mcp.json')
 }
@@ -331,7 +358,7 @@ app.patch('/agent/config', async (c) => {
     return c.json({ error: 'Request body must be a JSON object' }, 400)
   }
   try {
-    const configPath = join(AGENT_DIR, 'config.json')
+    const configPath = join(WORKSPACE_DIR, 'config.json')
     let fileConfig: Record<string, unknown> = {}
     if (existsSync(configPath)) {
       try {
@@ -370,7 +397,7 @@ app.post('/agent/channels/connect', async (c) => {
   }
 
   try {
-    const configPath = join(AGENT_DIR, 'config.json')
+    const configPath = join(WORKSPACE_DIR, 'config.json')
     let fileConfig: Record<string, any> = {}
     if (existsSync(configPath)) {
       try {
@@ -415,7 +442,7 @@ app.post('/agent/channels/disconnect', async (c) => {
   try {
     await agentGateway.disconnectChannel(type)
 
-    const configPath = join(AGENT_DIR, 'config.json')
+    const configPath = join(WORKSPACE_DIR, 'config.json')
     if (existsSync(configPath)) {
       try {
         const fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'))
@@ -638,7 +665,98 @@ app.get('/agent/chat/history', async (c) => {
     }
   }
 
-  return c.json({ messages: simplified })
+  const activeMode = agentGateway?.getActiveMode() || 'none'
+  return c.json({ messages: simplified, activeMode })
+})
+
+// Get/set the active visual mode
+app.get('/agent/mode', (c) => {
+  if (!agentGateway) return c.json({ mode: 'none' })
+  return c.json({
+    mode: agentGateway.getActiveMode(),
+    allowedModes: agentGateway.getAllowedModes(),
+  })
+})
+
+app.post('/agent/mode', async (c) => {
+  if (!agentGateway) return c.json({ error: 'Gateway not ready' }, 503)
+
+  const body = await c.req.json<{ mode: string }>().catch(() => null)
+  const mode = body?.mode
+  if (mode !== 'canvas' && mode !== 'app' && mode !== 'none') {
+    return c.json({ error: 'mode must be "canvas", "app", or "none"' }, 400)
+  }
+
+  const allowed = agentGateway.getAllowedModes()
+  if (!allowed.includes(mode)) {
+    return c.json({ error: `Mode "${mode}" not allowed. Available: ${allowed.join(', ')}` }, 403)
+  }
+
+  agentGateway.setActiveMode(mode)
+  return c.json({ mode })
+})
+
+// Stop/interrupt the current agent turn (and any active code agent task)
+app.post('/agent/stop', async (c) => {
+  if (!agentGateway) return c.json({ error: 'Gateway not ready' }, 503)
+
+  const aborted = agentGateway.abortCurrentTurn('chat')
+
+  // Also interrupt any active code agent session
+  try {
+    const { interruptCodeAgent } = require('./code-agent')
+    await interruptCodeAgent({
+      workspaceDir: WORKSPACE_DIR,
+      aiProxy: process.env.AI_PROXY_URL && process.env.AI_PROXY_TOKEN
+        ? { url: process.env.AI_PROXY_URL, token: process.env.AI_PROXY_TOKEN }
+        : null,
+      getModelTier: () => 'sonnet' as const,
+    })
+  } catch { /* code agent not active */ }
+
+  return c.json({ stopped: aborted })
+})
+
+// ---------------------------------------------------------------------------
+// Preview Manager (app mode — lazy init)
+// ---------------------------------------------------------------------------
+
+import { PreviewManager } from './preview-manager'
+
+let previewManager: PreviewManager | null = null
+
+function getPreviewManager(): PreviewManager {
+  if (!previewManager) {
+    const projectDir = join(WORKSPACE_DIR, 'project')
+    previewManager = new PreviewManager({
+      projectDir,
+      runtimePort: parseInt(process.env.PORT || '8080', 10),
+    })
+  }
+  return previewManager
+}
+
+app.get('/preview/status', (c) => {
+  const pm = getPreviewManager()
+  return c.json(pm.getStatus())
+})
+
+app.post('/preview/restart', async (c) => {
+  const pm = getPreviewManager()
+  const result = await pm.restart()
+  return c.json(result)
+})
+
+app.post('/preview/start', async (c) => {
+  const pm = getPreviewManager()
+  const result = await pm.start()
+  return c.json(result)
+})
+
+app.post('/preview/stop', (c) => {
+  const pm = getPreviewManager()
+  pm.stop()
+  return c.json({ ok: true })
 })
 
 // ---------------------------------------------------------------------------
@@ -752,6 +870,7 @@ app.post('/agent/session/reset', async (c) => {
   const sm = agentGateway.getSessionManager()
   sm.clearHistory('chat')
   agentGateway.reloadConfig()
+  agentGateway.setActiveMode('none')
   await agentGateway.getMCPClientManager().stopAll()
   return c.json({ ok: true })
 })
@@ -885,7 +1004,7 @@ app.get('/agent/files/:filename', async (c) => {
   }
 
   try {
-    const filepath = join(AGENT_DIR, filename)
+    const filepath = join(WORKSPACE_DIR, filename)
     const content = existsSync(filepath) ? readFileSync(filepath, 'utf-8') : ''
     return c.json({ filename, content })
   } catch (error: any) {
@@ -903,7 +1022,7 @@ app.put('/agent/files/:filename', async (c) => {
 
   try {
     const { content } = await c.req.json()
-    const filepath = join(AGENT_DIR, filename)
+    const filepath = join(WORKSPACE_DIR, filename)
     writeFileSync(filepath, content, 'utf-8')
     return c.json({ ok: true, filename })
   } catch (error: any) {
@@ -920,12 +1039,12 @@ import { FileIndexEngine } from './file-index-engine'
 let fileIndexEngine: FileIndexEngine | null = null
 function getFileIndexEngine(): FileIndexEngine {
   if (!fileIndexEngine) {
-    fileIndexEngine = new FileIndexEngine(AGENT_DIR)
+    fileIndexEngine = new FileIndexEngine(WORKSPACE_DIR)
   }
   return fileIndexEngine
 }
 
-const FILES_DIR = join(AGENT_DIR, 'files')
+const FILES_DIR = join(WORKSPACE_DIR, 'files')
 
 function resolveFilesPath(subPath: string): string | null {
   const resolved = resolve(FILES_DIR, subPath)
@@ -1190,7 +1309,7 @@ app.post('/agent/bundled-skills/install', async (c) => {
     return c.json({ error: `Bundled skill "${name}" not found` }, 404)
   }
 
-  const skillsDir = join(AGENT_DIR, 'skills')
+  const skillsDir = join(WORKSPACE_DIR, 'skills')
   mkdirSync(skillsDir, { recursive: true })
   const destPath = join(skillsDir, `${name}.md`)
 
@@ -1207,7 +1326,7 @@ app.get('/agent/skills/:name', (c) => {
     return c.json({ error: 'Invalid skill name' }, 400)
   }
 
-  const filePath = join(AGENT_DIR, 'skills', `${name}.md`)
+  const filePath = join(WORKSPACE_DIR, 'skills', `${name}.md`)
   if (!existsSync(filePath)) {
     return c.json({ error: `Skill "${name}" not found` }, 404)
   }
@@ -1222,7 +1341,7 @@ app.delete('/agent/skills/:name', (c) => {
     return c.json({ error: 'Invalid skill name' }, 400)
   }
 
-  const filePath = join(AGENT_DIR, 'skills', `${name}.md`)
+  const filePath = join(WORKSPACE_DIR, 'skills', `${name}.md`)
   if (!existsSync(filePath)) {
     return c.json({ error: `Skill "${name}" not found` }, 404)
   }
@@ -1254,7 +1373,7 @@ app.post('/agent/mcp-servers/toggle', async (c) => {
     return c.json({ error: `MCP server "${serverId}" is not available. Only preinstalled servers are supported: ${allowed}` }, 400)
   }
 
-  const configPath = join(AGENT_DIR, 'config.json')
+  const configPath = join(WORKSPACE_DIR, 'config.json')
   let config: Record<string, any> = {}
   if (existsSync(configPath)) {
     config = JSON.parse(readFileSync(configPath, 'utf-8'))
@@ -1461,13 +1580,13 @@ app.get('/agent/export', async (c) => {
   ]
 
   for (const filename of exportableFiles) {
-    const filepath = join(AGENT_DIR, filename)
+    const filepath = join(WORKSPACE_DIR, filename)
     if (existsSync(filepath)) {
       exportFiles[filename] = readFileSync(filepath, 'utf-8')
     }
   }
 
-  const skillsDir = join(AGENT_DIR, 'skills')
+  const skillsDir = join(WORKSPACE_DIR, 'skills')
   if (existsSync(skillsDir)) {
     const { readdirSync } = require('fs')
     const skillFiles = readdirSync(skillsDir) as string[]
@@ -1503,7 +1622,7 @@ app.post('/agent/import', async (c) => {
     if (filename.includes('..') || filename.startsWith('/')) {
       continue
     }
-    const filepath = join(AGENT_DIR, filename)
+    const filepath = join(WORKSPACE_DIR, filename)
     const dir = require('path').dirname(filepath)
     mkdirSync(dir, { recursive: true })
     writeFileSync(filepath, content, 'utf-8')
@@ -1965,7 +2084,7 @@ async function initializeEssentials(): Promise<void> {
   // (including .canvas-state.json and api-runtimes/*.db) are available on disk.
   if (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET) {
     try {
-      const result = await initializeS3Sync(AGENT_DIR)
+      const result = await initializeS3Sync(WORKSPACE_DIR)
       if (result) {
         s3SyncInstance = result.sync
         logTiming('S3 sync initialized')
@@ -1977,7 +2096,7 @@ async function initializeEssentials(): Promise<void> {
 
   // Initialize canvas state manager with disk persistence.
   // Loads surfaces + restores API runtimes from persisted model definitions.
-  const canvasStatePath = join(AGENT_DIR, '.canvas-state.json')
+  const canvasStatePath = join(WORKSPACE_DIR, '.canvas-state.json')
   initDynamicAppManager(canvasStatePath)
   logTiming('Canvas state manager initialized')
 
@@ -1995,7 +2114,7 @@ async function startGateway(): Promise<void> {
 
   gatewayReadyPromise = new Promise<void>((resolve) => { gatewayReadyResolve = resolve })
 
-  agentGateway = new AgentGateway(AGENT_DIR, state.currentProjectId!)
+  agentGateway = new AgentGateway(WORKSPACE_DIR, state.currentProjectId!)
   agentGateway.setLogCallback((line) => {
     consoleLogs.push(line)
     if (consoleLogs.length > 1000) consoleLogs.splice(0, 500)
@@ -2014,7 +2133,7 @@ async function startGateway(): Promise<void> {
     const { getTransformRegistry } = await import('./response-transforms')
     const { DEFAULT_TRANSFORMS } = await import('./default-transforms')
     const registry = getTransformRegistry()
-    const transformsDir = join(AGENT_DIR, 'transforms')
+    const transformsDir = join(WORKSPACE_DIR, 'transforms')
     registry.loadFromDisk(transformsDir)
     registry.registerDefaults(DEFAULT_TRANSFORMS)
     const count = registry.list().length

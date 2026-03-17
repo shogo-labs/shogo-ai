@@ -216,7 +216,7 @@ export default observer(function TemplatesPage() {
           currentWorkspace.id,
           template.description,
           user.id,
-          'AGENT',
+          undefined,
           template.id
         )
 

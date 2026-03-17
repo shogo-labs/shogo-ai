@@ -25,7 +25,7 @@ import * as fs from "fs"
 import { trace, SpanStatusCode } from "@opentelemetry/api"
 import { generateProxyToken } from './ai-proxy-token'
 import * as databaseService from '../services/database.service'
-import { RUNTIME_TYPES, runtimeTypeFromProjectType } from '@shogo/shared-runtime'
+import { RUNTIME_CONFIG } from '@shogo/shared-runtime'
 
 const knativeTracer = trace.getTracer('shogo-knative-manager')
 
@@ -226,7 +226,7 @@ export class KnativeProjectManager {
 
   constructor(config: KnativeProjectManagerConfig = {}) {
     this.namespace = config.namespace || NAMESPACE
-    this.image = config.image || RUNTIME_TYPES.project.image()
+    this.image = config.image || RUNTIME_CONFIG.image()
     this.idleTimeoutSeconds = config.idleTimeoutSeconds || parseInt(process.env.PROJECT_IDLE_TIMEOUT || "300", 10)
     this.memoryLimit = config.memoryLimit || "2Gi"
     this.cpuLimit = config.cpuLimit || "1000m"
@@ -873,20 +873,16 @@ export class KnativeProjectManager {
    * Includes PostgreSQL sidecar container for per-project database.
    */
   private async buildKnativeService(projectId: string): Promise<any> {
-    // Look up project type to select the correct runtime image
     const { prisma } = await import('./prisma')
     const projectRecord = await prisma.project.findUnique({
       where: { id: projectId },
-      select: { type: true, templateId: true, name: true },
+      select: { templateId: true, name: true },
     })
-    const rtType = runtimeTypeFromProjectType(projectRecord?.type ?? 'APP')
-    const rtConfig = RUNTIME_TYPES[rtType]
-    const runtimeImage = rtConfig.image()
-    const runtimeComponent = rtConfig.componentLabel
-    const workDir = rtConfig.workDir
-    const isAgentProject = rtType === 'agent'
+    const runtimeImage = RUNTIME_CONFIG.image()
+    const runtimeComponent = RUNTIME_CONFIG.componentLabel
+    const workDir = RUNTIME_CONFIG.workDir
 
-    const extraEnvEntries = Object.entries(rtConfig.extraEnv).map(([name, value]) => ({ name, value }))
+    const extraEnvEntries = Object.entries(RUNTIME_CONFIG.extraEnv).map(([name, value]) => ({ name, value }))
     const env: any[] = [
       { name: "PROJECT_ID", value: projectId },
       { name: "PROJECT_DIR", value: workDir },
@@ -1023,7 +1019,7 @@ export class KnativeProjectManager {
     // Build containers array
     const containers: any[] = [
       {
-        name: rtConfig.containerName,
+        name: RUNTIME_CONFIG.containerName,
         image: runtimeImage,
         imagePullPolicy: "Always", // Always pull to get latest staging-latest tag
         ports: [{ containerPort: 8080, name: "http1" }],
@@ -1616,19 +1612,12 @@ async function tryClaimWarmPod(
       return null
     }
 
-    // Determine runtime type
-    const { prisma } = await import('./prisma')
-    const projectRecord = await prisma.project.findUnique({
-      where: { id: projectId },
-      select: { type: true },
-    })
-    const runtimeType = runtimeTypeFromProjectType(projectRecord?.type ?? 'APP')
     const t1 = Date.now()
 
-    // Try to claim a warm pod
-    const pod = warmPool.claim(runtimeType)
+    // Try to claim a warm pod from the unified pool
+    const pod = warmPool.claim()
     if (!pod) {
-      console.log(`[KnativeProjectManager] No warm ${runtimeType} pod available for ${projectId} (available: agent=${poolStatus.available.agent}, project=${poolStatus.available.project})`)
+      console.log(`[KnativeProjectManager] No warm pod available for ${projectId} (available: ${poolStatus.available})`)
       return null
     }
     const t2 = Date.now()

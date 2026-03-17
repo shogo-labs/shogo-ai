@@ -3,7 +3,7 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'fs'
 import { join } from 'path'
-import { createAllTools, _resetPersonalitySessionCounts, type ToolContext } from '../gateway-tools'
+import { createTools, _resetPersonalitySessionCounts, type ToolContext } from '../gateway-tools'
 
 const TEST_DIR = '/tmp/test-personality-update'
 
@@ -25,7 +25,7 @@ function createCtx(overrides?: Partial<ToolContext>): ToolContext {
 }
 
 function getTool(ctx: ToolContext, name: string) {
-  const tools = createAllTools(ctx)
+  const tools = createTools(ctx)
   const tool = tools.find((t) => t.name === name)
   if (!tool) throw new Error(`Tool not found: ${name}`)
   return tool

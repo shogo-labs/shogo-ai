@@ -101,12 +101,11 @@ spec:
               value: "shogo-staging-system"
             - name: NODE_TLS_REJECT_UNAUTHORIZED
               value: "0"
-            # Project runtime configuration - namespace for project pods
-            # Note: PROJECT_RUNTIME_IMAGE uses floating 'staging-latest' tag updated by CI/CD
+            # Unified runtime configuration - namespace for project pods
             - name: PROJECT_NAMESPACE
               value: "shogo-staging-workspaces"
-            - name: PROJECT_RUNTIME_IMAGE
-              value: "097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/project-runtime:staging-latest"
+            - name: RUNTIME_IMAGE
+              value: "097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/runtime:staging-latest"
             # S3 configuration for project file persistence
             # knative-project-manager injects this into project runtime pods
             - name: S3_WORKSPACES_BUCKET
@@ -247,11 +246,9 @@ spec:
                   name: signoz-credentials
                   key: SIGNOZ_INGESTION_KEY
                   optional: true
-            # Runtime images for warm pool
-            - name: AGENT_RUNTIME_IMAGE
-              value: "097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/agent-runtime:staging-latest"
-            - name: PROJECT_RUNTIME_IMAGE
-              value: "097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/project-runtime:staging-latest"
+            # Runtime image for warm pool
+            - name: RUNTIME_IMAGE
+              value: "097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/runtime:staging-latest"
             - name: WARM_POOL_AGENTS_PER_NODE
               value: "0"
             - name: WARM_POOL_PROJECTS_PER_NODE

@@ -52,6 +52,8 @@ import { REAL_DATA_EVALS } from './test-cases-real-data'
 import { TRIP_PLANNER_EVALS } from './test-cases-trip-planner'
 import { TEMPLATE_EVALS } from './test-cases-template'
 import { RESPONSE_TRANSFORM_EVALS } from './test-cases-response-transforms'
+import { modeSwitchingEvals } from './test-cases-mode-switching'
+import { CODE_AGENT_EVALS } from './test-cases-code-agent'
 import { buildMockPayload } from './tool-mocks'
 import type { AgentEval, EvalResult, EvalSuiteResult, CategorySummary } from './types'
 
@@ -73,7 +75,6 @@ const trackArg = getArg('track', 'all')!
 const modelArg = getArg('model', 'haiku')!
 const workersArg = parseInt(getArg('workers', '1')!)
 const filterArg = getArg('filter')
-const agentArg = (getArg('agent') || 'basic') as 'basic' | 'advanced' | 'all'
 const verboseFlag = args.includes('--verbose') || args.includes('-v')
 
 const MODEL_MAP: Record<string, string> = {
@@ -108,9 +109,11 @@ function getEvals(track: string): AgentEval[] {
     case 'trip-planner': return TRIP_PLANNER_EVALS
     case 'template': return TEMPLATE_EVALS
     case 'response-transform': return RESPONSE_TRANSFORM_EVALS
-    case 'all': return [...CANVAS_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...RESPONSE_TRANSFORM_EVALS]
+    case 'mode-switching': return modeSwitchingEvals
+    case 'code-agent': return CODE_AGENT_EVALS
+    case 'all': return [...CANVAS_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...RESPONSE_TRANSFORM_EVALS, ...modeSwitchingEvals]
     default:
-      console.error(`Unknown track: ${track}. Valid: canvas, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, response-transform, all`)
+      console.error(`Unknown track: ${track}. Valid: canvas, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, response-transform, mode-switching, code-agent, all`)
       process.exit(1)
   }
 }
@@ -146,11 +149,11 @@ async function startWorker(id: number): Promise<Worker> {
     env: {
       ...process.env,
       PORT: String(port),
+      WORKSPACE_DIR: dir,
       AGENT_DIR: dir,
       PROJECT_DIR: dir,
       PROJECT_ID: `eval-worker-${id}`,
       AGENT_MODEL: modelArg,
-      ...(agentArg !== 'all' ? { AGENT_VARIANT: agentArg } : {}),
       NODE_OPTIONS: '--max-old-space-size=512',
     },
     stdout: 'ignore',
@@ -218,6 +221,16 @@ async function runEvalOnWorker(
   // Reset the gateway's conversation session so previous evals don't pollute context
   try {
     await fetch(`http://localhost:${worker.port}/agent/session/reset`, { method: 'POST' })
+  } catch {}
+
+  // Pre-set visual mode (canvas evals need canvas mode for the system prompt guide)
+  const initialMode = ev.initialMode || (ev.category === 'canvas' ? 'canvas' : 'none')
+  try {
+    await fetch(`http://localhost:${worker.port}/agent/mode`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: initialMode }),
+    })
   } catch {}
 
   // Install tool mocks for deterministic, fast tool execution
@@ -302,7 +315,6 @@ async function main() {
   console.log('='.repeat(60))
   console.log(`  Track:   ${trackArg}`)
   console.log(`  Model:   ${MODEL_MAP[modelArg] || modelArg}`)
-  console.log(`  Agent:   ${agentArg || 'all'}`)
   console.log(`  Workers: ${workersArg}`)
   console.log('')
 
@@ -310,17 +322,6 @@ async function main() {
   if (filterArg) {
     const f = filterArg.toLowerCase()
     evals = evals.filter(e => e.id.toLowerCase().includes(f) || e.name.toLowerCase().includes(f))
-  }
-  if (agentArg === 'basic') {
-    const before = evals.length
-    evals = evals.filter(e => !e.requiredAgent || e.requiredAgent === 'basic')
-    console.log(`  Filtered to basic-agent evals: ${evals.length} (skipped ${before - evals.length} advanced-only)`)
-  } else if (agentArg === 'advanced') {
-    const before = evals.length
-    evals = evals.filter(e => e.requiredAgent === 'advanced')
-    console.log(`  Filtered to advanced-agent evals: ${evals.length} (skipped ${before - evals.length} basic)`)
-  } else if (agentArg === 'all') {
-    console.log(`  Running all evals (no agent filter)`)
   }
 
   console.log(`  Evals: ${evals.length}`)
@@ -489,10 +490,9 @@ async function main() {
 
   // Save results
   const timestamp = Date.now()
-  const agentLabel = agentArg || 'all'
-  const outputPath = `/tmp/agent-eval-results-${modelArg}-${agentLabel}-${trackArg}-${timestamp}.json`
+  const outputPath = `/tmp/agent-eval-results-${modelArg}-${trackArg}-${timestamp}.json`
   const exportData: EvalSuiteResult = {
-    name: `agent-runtime-${agentLabel}-${trackArg}`,
+    name: `agent-runtime-${trackArg}`,
     timestamp: new Date().toISOString(),
     model: MODEL_MAP[modelArg] || modelArg,
     results,

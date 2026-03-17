@@ -15,7 +15,7 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:tes
 import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { FileIndexEngine } from '../file-index-engine'
-import { createAllTools } from '../gateway-tools'
+import { createTools } from '../gateway-tools'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -270,7 +270,7 @@ describe('File Management Agent Tools', () => {
       projectId: 'test',
     }
 
-    const tools = createAllTools(ctx)
+    const tools = createTools(ctx)
     const listTool = tools.find(t => t.name === 'list_files')
     expect(listTool).toBeDefined()
 
@@ -289,7 +289,7 @@ describe('File Management Agent Tools', () => {
       projectId: 'test',
     }
 
-    const tools = createAllTools(ctx)
+    const tools = createTools(ctx)
     const listTool = tools.find(t => t.name === 'list_files')!
 
     const result = await listTool.execute('test-call', { recursive: true })
@@ -309,7 +309,7 @@ describe('File Management Agent Tools', () => {
       projectId: 'test',
     }
 
-    const tools = createAllTools(ctx)
+    const tools = createTools(ctx)
     const deleteTool = tools.find(t => t.name === 'delete_file')!
 
     const result = await deleteTool.execute('test-call', { path: 'to-delete.txt' })
@@ -326,7 +326,7 @@ describe('File Management Agent Tools', () => {
       projectId: 'test',
     }
 
-    const tools = createAllTools(ctx)
+    const tools = createTools(ctx)
     const deleteTool = tools.find(t => t.name === 'delete_file')!
 
     const result = await deleteTool.execute('test-call', { path: '../../etc/passwd' })
@@ -344,7 +344,7 @@ describe('File Management Agent Tools', () => {
       projectId: 'test',
     }
 
-    const tools = createAllTools(ctx)
+    const tools = createTools(ctx)
     const searchTool = tools.find(t => t.name === 'search_files')!
 
     const result = await searchTool.execute('test-call', { query: 'sqlite vector RAG' })
@@ -362,7 +362,7 @@ describe('File Management Agent Tools', () => {
       projectId: 'test',
     }
 
-    const tools = createAllTools(ctx)
+    const tools = createTools(ctx)
     const searchTool = tools.find(t => t.name === 'search_files')!
 
     const result = await searchTool.execute('test-call', {

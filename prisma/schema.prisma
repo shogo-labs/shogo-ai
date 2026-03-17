@@ -144,7 +144,6 @@ model Project {
   publishedAt        DateTime?
   accessLevel        AccessLevel   @default(anyone)
   category           ProjectCategory?
-  type               ProjectType        @default(APP)
   siteTitle          String?
   siteDescription    String?
   thumbnailUrl       String?
@@ -217,10 +216,6 @@ enum ProjectCategory {
   game
 }
 
-enum ProjectType {
-  APP
-  AGENT
-}
 
 // =============================================================================
 // VERSION CONTROL (Checkpoints & GitHub Integration)
