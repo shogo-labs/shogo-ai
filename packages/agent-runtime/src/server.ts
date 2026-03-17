@@ -2066,6 +2066,58 @@ app.get('/console-log', (c) => {
 })
 
 // =============================================================================
+// Static File Serving (app-preview mode)
+// =============================================================================
+
+const PROJECT_DIST = join(WORKSPACE_DIR, 'project', 'dist')
+
+const STATIC_MIME: Record<string, string> = {
+  '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
+  '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml',
+  '.webp': 'image/webp', '.ico': 'image/x-icon', '.woff': 'font/woff',
+  '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.eot': 'application/vnd.ms-fontobject',
+  '.map': 'application/json', '.txt': 'text/plain', '.xml': 'application/xml',
+  '.webmanifest': 'application/manifest+json', '.mjs': 'application/javascript',
+}
+
+app.get('*', (c) => {
+  const urlPath = new URL(c.req.url).pathname
+
+  // Skip API/agent routes
+  if (urlPath.startsWith('/agent') || urlPath.startsWith('/pool') ||
+      urlPath.startsWith('/health') || urlPath.startsWith('/ready') ||
+      urlPath.startsWith('/preview') || urlPath.startsWith('/console-log')) {
+    return c.notFound()
+  }
+
+  const safePath = urlPath.replace(/\.\./g, '').replace(/\/+/g, '/')
+  const filePath = join(PROJECT_DIST, safePath === '/' ? 'index.html' : safePath)
+
+  if (!filePath.startsWith(resolve(PROJECT_DIST))) {
+    return c.notFound()
+  }
+
+  if (existsSync(filePath) && statSync(filePath).isFile()) {
+    const ext = extname(filePath).toLowerCase()
+    const mime = STATIC_MIME[ext] || 'application/octet-stream'
+    return new Response(readFileSync(filePath), {
+      headers: { 'Content-Type': mime, 'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=31536000, immutable' },
+    })
+  }
+
+  // SPA fallback: serve index.html for non-file paths
+  const indexPath = join(PROJECT_DIST, 'index.html')
+  if (existsSync(indexPath)) {
+    return new Response(readFileSync(indexPath), {
+      headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' },
+    })
+  }
+
+  return c.notFound()
+})
+
+// =============================================================================
 // Initialization
 // =============================================================================
 
