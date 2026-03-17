@@ -576,17 +576,13 @@ Root Column
 
 `
 
-const BASIC_CANVAS_TOOLS_GUIDE = `## Canvas (Dynamic UI)
+const BASIC_CANVAS_TOOLS_GUIDE = `## Canvas — Your Agent Display Panel
 
-You have canvas tools that let you build dashboards the user can see in real time.
-Use them whenever a visual display would be more helpful than plain text.
-This agent supports **display + interactive** components — you can show data AND let users toggle, select, and delete records directly.
+Canvas is your visual output surface. Use it to show the user what you've done, what you're monitoring, and what needs their attention. The user sees canvas components in real time as you build them.
 
-**IMPORTANT: Canvas is for dashboards — NOT full apps.**
-Canvas mode builds dashboards (data displays, monitoring panels, operational views, triage boards,
-analytics dashboards). If a user asks for a full application (SaaS product, multi-page app, custom
-backend, etc.), switch to **app** mode with \`switch_mode("app")\` and delegate to \`code_agent\` instead.
-Dashboards display data, provide metrics, and let users take quick actions — they are NOT full applications.
+**Canvas surfaces your agent work.** You do the work (monitor, fetch, process, automate) and canvas displays the results — status, metrics, collected data, alerts, and work output. Interactive elements let the user steer you (approve, reject, trigger more work), not do the work themselves.
+
+**When canvas components are not enough** — the user needs a richer custom interface, multi-page flows, or specialized visualizations — switch to **app** mode with \`switch_mode("app")\` and delegate to \`code_agent\`. The app connects back to you via \`@shogo-ai/sdk/agent\`.
 
 **CRITICAL: YOU do the work. Canvas shows the results.**
 When a user asks you to "create", "build", "make", "set up", or "draft" something, DO that work
@@ -2325,9 +2321,39 @@ export class AgentGateway {
     // Inject mode-specific prompt sections
     if (activeMode === 'canvas') {
       parts.push(BASIC_CANVAS_TOOLS_GUIDE + BASIC_CANVAS_EXAMPLES)
+    } else if (activeMode === 'app') {
+      parts.push(`\n## App Mode — Custom Agent Interface
+
+You are in app mode. The \`code_agent\` tool delegates to Claude Code, which builds a custom web interface for your agent capabilities.
+
+**Key principles:**
+- All code goes through \`code_agent\` — NEVER write app code directly with write_file.
+- The app connects back to you via \`@shogo-ai/sdk/agent\` — it imports useAgentStatus, useAgentChat, useCanvasStream, and other hooks to communicate with your runtime.
+- The app is your custom frontend, not a standalone product. It should surface your work, let the user control you, or provide rich interaction with your capabilities.
+- Apps run on the same pod as you, so they use relative URLs (\`/agent/status\`, \`/agent/chat\`, etc.) with zero configuration.
+
+**When to switch back:**
+- User just wants to see your output quickly → switch to **canvas** (faster, declarative)
+- User is just chatting or asking questions → switch to **none**
+- The custom UI is built and deployed → stay in app mode for further iterations
+`)
     } else if (activeMode === 'none') {
-      parts.push(`\n## Canvas Tools Available\nYou have canvas_create, canvas_update, canvas_data, and other canvas tools available. When the user asks for a visual display, dashboard, or interactive UI, switch to canvas mode with switch_mode first for detailed guidance, then use the canvas tools. You can also use canvas tools directly — they will work in any non-app mode.\n`)
-      parts.push(`\n## App Building Available\nYou have the \`code_agent\` tool available for building full applications. When the user asks for an app, website, SaaS product, or anything requiring custom code: (1) call switch_mode("app"), (2) call code_agent with a detailed task description. NEVER write application code yourself with write_file — always delegate to code_agent which handles scaffolding, templates, and implementation.\n`)
+      parts.push(`\n## Visual Modes Available
+
+You have two visual modes for surfacing your work to the user. Both exist to give visibility into and control over what you are doing.
+
+**Canvas** (switch_mode → "canvas") — Your quick display panel. Use declarative components (metrics, charts, tables, lists) to show your work output, monitoring results, and status. Best when built-in components can express the content. Start here for most visual needs.
+
+**App** (switch_mode → "app") — A custom-coded agent interface. Use when canvas components are too limiting and the user needs richer interaction, multi-page flows, or specialized visualizations. The app connects to you via \`@shogo-ai/sdk/agent\`. Delegate all code to \`code_agent\`.
+
+**Default: start with canvas.** It's faster and keeps you in control. Escalate to app only when canvas components cannot express what's needed or the user explicitly asks for a custom app/interface.
+
+Examples:
+- "Show me what you found" → canvas
+- "Build a monitoring dashboard" → canvas
+- "Build a custom control panel for my agent" → app (complex UI)
+- "I need a multi-page interface for reviewing your work" → app
+`)
     }
     // Mode context injection
     parts.push(`\n## Current Mode\nActive visual mode: **${activeMode}**. Use switch_mode to change.\n`)

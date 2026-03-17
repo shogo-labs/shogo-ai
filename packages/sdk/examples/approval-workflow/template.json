@@ -1,0 +1,15 @@
+{
+  "name": "approval-workflow",
+  "description": "Review and approve your agent's work with a human-in-the-loop interface",
+  "complexity": "intermediate",
+  "features": ["review-queue", "approve-reject", "agent-communication", "real-time-updates"],
+  "models": ["ReviewItem", "Decision", "User"],
+  "tags": ["agent", "workflow", "approval", "review", "human-in-the-loop", "agentic"],
+  "useCases": ["approval workflow", "review queue", "human-in-the-loop", "agent work review", "content approval"],
+  "techStack": {
+    "frontend": "React",
+    "backend": "Hono",
+    "database": "SQLite",
+    "sdk": "@shogo-ai/sdk"
+  }
+}

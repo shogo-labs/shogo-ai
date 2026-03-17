@@ -132,7 +132,7 @@ function createSwitchModeTool(ctx: ToolContext, modeHandler: ModeSwitchHandler):
   return {
     name: 'switch_mode',
     description:
-      'Switch the visual output mode. Use "canvas" for dashboards/widgets, "app" for full-stack apps with custom code, "none" for conversation only.',
+      'Switch the visual output mode. Both canvas and app surface your agent work. "canvas" = your quick display panel (declarative agent dashboard). "app" = custom-coded agent interface via code_agent (when canvas components are not enough). "none" = conversation only. Start with canvas; escalate to app when needed.',
     label: 'Switch Mode',
     parameters: Type.Object({
       mode: Type.Union([Type.Literal('canvas'), Type.Literal('app'), Type.Literal('none')]),
@@ -223,7 +223,7 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
 function createWriteFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'write_file',
-    description: 'Write content to a file in the agent workspace (config files, skills, markdown). Creates parent directories as needed. Do NOT use this for application code — use the code_agent tool instead.',
+    description: 'Write content to a file in the agent workspace (config files, skills, markdown). Creates parent directories as needed. Do NOT use this for app interface code — use the code_agent tool instead.',
     label: 'Write File',
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace' }),

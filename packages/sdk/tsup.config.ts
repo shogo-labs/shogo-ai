@@ -7,6 +7,7 @@ export default defineConfig({
     'src/index.ts',
     'src/db/index.ts',
     'src/react/index.ts',
+    'src/agent/index.ts',
     'src/generators/index.ts',
     'src/email/index.ts',
     'src/email/server.ts',

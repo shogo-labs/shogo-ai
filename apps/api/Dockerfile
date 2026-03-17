@@ -55,9 +55,8 @@ RUN DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholde
 WORKDIR /app/packages/sdk
 RUN bun run build
 
-# Clean per-package node_modules in packages/* to avoid bun symlink bloat
-# during COPY (each symlinked node_modules adds ~500MB of duplicates).
-# Keep apps/api/node_modules — it may contain non-hoisted deps (e.g. OTEL).
+# Clean per-package node_modules (bun symlinks that resolve via .bun/ cache).
+# These are rebuilt in the production stage via `bun install --ignore-scripts`.
 WORKDIR /app
 RUN rm -rf packages/*/node_modules
 
@@ -102,6 +101,21 @@ RUN mkdir -p node_modules/@shogo && \
     ln -sf ../../../packages/project-runtime node_modules/@shogo/project-runtime && \
     ln -sf ../../../packages/agent-runtime node_modules/@shogo/agent-runtime && \
     chown -h appuser:appgroup node_modules/@shogo node_modules/@shogo/*
+
+# Stub package.jsons for workspace members not shipped in the image
+# (required by bun install to resolve the workspace graph)
+COPY --from=builder /app/packages/domain-stores/package.json ./packages/domain-stores/
+COPY --from=builder /app/packages/shared-app/package.json ./packages/shared-app/
+COPY --from=builder /app/packages/shared-ui/package.json ./packages/shared-ui/
+COPY --from=builder /app/packages/ui-kit/package.json ./packages/ui-kit/
+COPY --from=builder /app/apps/mobile/package.json ./apps/mobile/
+
+# Rebuild per-package module resolution links. The builder stage deletes
+# packages/*/node_modules to avoid COPY bloat, but that also removes symlinks
+# for non-hoisted deps (e.g. @aws-sdk/client-s3 in shared-runtime).
+# Re-running install rebuilds them from the .bun/ cache without re-downloading.
+RUN bun install --ignore-scripts && \
+    chown -R appuser:appgroup node_modules
 
 # Copy prisma schema, config, and migrations for runtime migrations
 COPY --chown=appuser:appgroup --from=builder /app/prisma ./prisma

@@ -1,0 +1,15 @@
+{
+  "name": "data-explorer",
+  "description": "Explore and visualize data your agent has collected and processed",
+  "complexity": "intermediate",
+  "features": ["data-table", "charts", "filtering", "agent-chat", "real-time-updates"],
+  "models": ["DataRecord", "Collection", "User"],
+  "tags": ["agent", "data", "explorer", "analytics", "visualization", "agentic"],
+  "useCases": ["data pipeline UI", "agent data explorer", "collected data browser", "analytics dashboard", "data visualization"],
+  "techStack": {
+    "frontend": "React",
+    "backend": "Hono",
+    "database": "SQLite",
+    "sdk": "@shogo-ai/sdk"
+  }
+}

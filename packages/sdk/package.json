@@ -32,6 +32,11 @@
       "import": "./dist/react/index.js",
       "require": "./dist/react/index.cjs"
     },
+    "./agent": {
+      "types": "./dist/agent/index.d.ts",
+      "import": "./dist/agent/index.js",
+      "require": "./dist/agent/index.cjs"
+    },
     "./generators": {
       "types": "./dist/generators/index.d.ts",
       "import": "./dist/generators/index.js",

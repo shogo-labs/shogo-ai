@@ -1,0 +1,15 @@
+{
+  "name": "agent-dashboard",
+  "description": "All-in-one control panel for viewing and managing your AI agent",
+  "complexity": "beginner",
+  "features": ["agent-status", "chat", "canvas-viewer", "workspace-browser"],
+  "models": ["User"],
+  "tags": ["agent", "dashboard", "control-panel", "monitoring", "agentic"],
+  "useCases": ["agent dashboard", "agent control panel", "agent monitor", "agent management", "agent interface"],
+  "techStack": {
+    "frontend": "React",
+    "backend": "Hono",
+    "database": "SQLite",
+    "sdk": "@shogo-ai/sdk"
+  }
+}
