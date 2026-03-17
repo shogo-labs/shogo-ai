@@ -2123,6 +2123,36 @@ app.get('/console-log', (c) => {
 })
 
 // =============================================================================
+// Template API Proxy (forward /api/* to the template's Hono server)
+// =============================================================================
+
+app.all('/api/*', async (c) => {
+  const pm = getPreviewManager()
+  const port = pm.apiServerPort
+  if (!port) return c.notFound()
+
+  const url = new URL(c.req.url)
+  const target = `http://127.0.0.1:${port}${url.pathname}${url.search}`
+
+  try {
+    const res = await fetch(target, {
+      method: c.req.method,
+      headers: c.req.raw.headers,
+      body: c.req.method !== 'GET' && c.req.method !== 'HEAD' ? c.req.raw.body : undefined,
+      // @ts-ignore - duplex needed for streaming request bodies
+      duplex: 'half',
+    })
+    return new Response(res.body, {
+      status: res.status,
+      headers: res.headers,
+    })
+  } catch (err: any) {
+    console.error(`[api-proxy] Failed to proxy ${c.req.method} ${url.pathname}:`, err.message)
+    return c.json({ error: 'Template API server not responding' }, 502)
+  }
+})
+
+// =============================================================================
 // Static File Serving (app-preview mode)
 // =============================================================================
 
@@ -2141,10 +2171,10 @@ const STATIC_MIME: Record<string, string> = {
 app.get('*', (c) => {
   const urlPath = new URL(c.req.url).pathname
 
-  // Skip API/agent routes
   if (urlPath.startsWith('/agent') || urlPath.startsWith('/pool') ||
       urlPath.startsWith('/health') || urlPath.startsWith('/ready') ||
-      urlPath.startsWith('/preview') || urlPath.startsWith('/console-log')) {
+      urlPath.startsWith('/preview') || urlPath.startsWith('/console-log') ||
+      urlPath.startsWith('/api') || urlPath.startsWith('/templates')) {
     return c.notFound()
   }
 

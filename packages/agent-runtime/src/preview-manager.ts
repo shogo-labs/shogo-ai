@@ -29,10 +29,13 @@ export interface PreviewManagerConfig {
   runtimePort: number
 }
 
+const API_SERVER_PORT = 3001
+
 export class PreviewManager {
   private projectDir: string
   private runtimePort: number
   private buildWatchProcess: ChildProcess | null = null
+  private apiServerProcess: ChildProcess | null = null
   private started = false
 
   constructor(config: PreviewManagerConfig) {
@@ -46,6 +49,10 @@ export class PreviewManager {
 
   get isRunning(): boolean {
     return this.buildWatchProcess !== null && !this.buildWatchProcess.killed
+  }
+
+  get apiServerPort(): number | null {
+    return this.apiServerProcess && !this.apiServerProcess.killed ? API_SERVER_PORT : null
   }
 
   /**
@@ -109,15 +116,25 @@ export class PreviewManager {
 
     // Start Vite build --watch
     await this.startBuildWatch()
+
+    // Start the template's API server if server.tsx exists
+    await this.startApiServer()
+
     this.started = true
 
-    return { mode: 'vite-watch', port: PREVIEW_PORT, timings }
+    const mode = this.apiServerProcess ? 'vite-watch+api' : 'vite-watch'
+    return { mode, port: PREVIEW_PORT, timings }
   }
 
   /**
    * Stop the preview server and kill the Vite process.
    */
   stop(): void {
+    if (this.apiServerProcess) {
+      console.log(`[${LOG_PREFIX}] Stopping template API server...`)
+      this.apiServerProcess.kill('SIGTERM')
+      this.apiServerProcess = null
+    }
     if (this.buildWatchProcess) {
       console.log(`[${LOG_PREFIX}] Stopping Vite build watch...`)
       this.buildWatchProcess.kill('SIGTERM')
@@ -191,5 +208,42 @@ export class PreviewManager {
 
     // Wait briefly for initial build
     await new Promise((resolve) => setTimeout(resolve, 3000))
+  }
+
+  private async startApiServer(): Promise<void> {
+    const serverFile = join(this.projectDir, 'server.tsx')
+    if (!existsSync(serverFile)) return
+
+    const buildLogPath = join(this.projectDir, BUILD_LOG)
+    console.log(`[${LOG_PREFIX}] Starting template API server on port ${API_SERVER_PORT}...`)
+
+    const proc = spawn('bun', ['run', 'server.tsx'], {
+      cwd: this.projectDir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        PORT: String(API_SERVER_PORT),
+        DATABASE_URL: `file:${join(this.projectDir, 'prisma', 'dev.db')}`,
+      },
+    })
+
+    this.apiServerProcess = proc
+
+    proc.stdout?.on('data', (data: Buffer) => {
+      const line = data.toString().trim()
+      if (line) appendFileSync(buildLogPath, `[api-stdout] ${line}\n`)
+    })
+
+    proc.stderr?.on('data', (data: Buffer) => {
+      const line = data.toString().trim()
+      if (line) appendFileSync(buildLogPath, `[api-stderr] ${line}\n`)
+    })
+
+    proc.on('exit', (code, signal) => {
+      console.log(`[${LOG_PREFIX}] Template API server exited (code=${code}, signal=${signal})`)
+      if (this.apiServerProcess === proc) this.apiServerProcess = null
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 2000))
   }
 }
