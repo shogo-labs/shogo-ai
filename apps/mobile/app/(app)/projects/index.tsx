@@ -247,7 +247,7 @@ export default observer(function AllProjectsPage() {
   const [singleDeleteFolder, setSingleDeleteFolder] = useState<Folder | null>(null)
 
   // Determine grid columns based on screen width
-  const numColumns = viewMode === 'grid' ? (width >= 768 ? 3 : 2) : 1
+  const numColumns = viewMode === 'grid' ? 3 : 1
 
   // Find current workspace
   const workspaces = store?.workspaceCollection?.all ?? []
@@ -675,23 +675,34 @@ export default observer(function AllProjectsPage() {
     | { type: 'create' }
     | { type: 'folder'; data: Folder }
     | { type: 'project'; data: Project }
+    | { type: 'spacer' }
 
   const listData = useMemo((): ListItem[] => {
     const items: ListItem[] = [{ type: 'create' }]
     currentFolders.forEach((f) => items.push({ type: 'folder', data: f }))
     filteredProjects.forEach((p) => items.push({ type: 'project', data: p }))
+    const remainder = items.length % numColumns
+    if (remainder !== 0) {
+      for (let i = 0; i < numColumns - remainder; i++) {
+        items.push({ type: 'spacer' })
+      }
+    }
     return items
-  }, [currentFolders, filteredProjects])
+  }, [currentFolders, filteredProjects, numColumns])
 
   const renderGridItem = useCallback(
     ({ item }: { item: ListItem }) => {
+      if (item.type === 'spacer') {
+        return <View className="flex-1 m-1.5" />
+      }
+
       if (item.type === 'create') {
         return (
           <Pressable
             onPress={handleCreateProject}
             className="flex-1 m-1.5 rounded-2xl border-2 border-dashed border-border overflow-hidden"
           >
-            <View className="items-center justify-center" style={{ height: 180 }}>
+            <View className="flex-1 items-center justify-center" style={{ minHeight: 180 }}>
               <View className="w-12 h-12 rounded-full bg-muted items-center justify-center mb-2">
                 <Plus size={24} className="text-muted-foreground" />
               </View>
@@ -1406,9 +1417,11 @@ export default observer(function AllProjectsPage() {
           keyExtractor={(item, index) =>
             item.type === 'create'
               ? 'create'
-              : item.type === 'folder'
-                ? `folder-${item.data.id}`
-                : `project-${item.data.id}`
+              : item.type === 'spacer'
+                ? `spacer-${index}`
+                : item.type === 'folder'
+                  ? `folder-${item.data.id}`
+                  : `project-${item.data.id}`
           }
           renderItem={renderGridItem}
           numColumns={numColumns}
