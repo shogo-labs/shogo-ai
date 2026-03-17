@@ -84,7 +84,38 @@ canvas_update({ surfaceId: "expense-dashboard", components: [
 ]})
 \`\`\`
 
-Key design patterns: (1) header Row with title + Badge, (2) Grid of Metrics with trendValues, (3) Card-wrapped form, (4) Card-wrapped DataList with inner Cards per item. Note: root gap, Separators, number/date formatting, and trend direction are all handled automatically by the renderer.`
+Key design patterns: (1) header Row with title + Badge, (2) Grid of Metrics with trendValues, (3) Card-wrapped form, (4) Card-wrapped DataList with inner Cards per item. Note: root gap, Separators, number/date formatting, and trend direction are all handled automatically by the renderer.
+
+### Work Output Examples (Agent Does The Work, Canvas Shows Results)
+
+These examples show the correct pattern when a user asks you to CREATE something. You do the work first, then use canvas as a read-only display of what you produced. Do NOT build interactive builder UIs.
+
+**Example 6:** "Create a Google Ads campaign for $20/day targeting sign-ups for shogo.ai"
+- Agent DOES: Research best practices with \`web\`, draft campaign structure, write campaign plan to \`write_file\`
+- Canvas shows: READ-ONLY summary — campaign name, ad groups, keywords, bid strategy, budget, ad copy
+- Surface: \`campaign-summary\`
+- Needs API: No (display only — the agent already did the work)
+- Tools: web, write_file, memory_write, canvas_create, canvas_data, canvas_update
+- Components: Column, Row, Text, Badge, Grid, Metric, Card, Table
+- WRONG approach: Building a "Campaign Builder" form with text fields and dropdowns for the user to fill in
+
+**Example 7:** "Draft 3 email templates for user onboarding"
+- Agent DOES: Write the actual email templates (subject, body, CTA), save to files or memory
+- Canvas shows: READ-ONLY display of all 3 templates side by side for review
+- Surface: \`onboarding-emails\`
+- Needs API: No (display only)
+- Tools: write_file, memory_write, canvas_create, canvas_data, canvas_update
+- Components: Column, Row, Text, Badge, Card, Tabs, TabPanel
+- WRONG approach: Building an "Email Template Editor" with editable text fields
+
+**Example 8:** "Create templates to build marketing campaigns"
+- Agent DOES: Create actual template documents/files with campaign structures, checklists, copy frameworks
+- Canvas shows: READ-ONLY overview of templates created, with content preview
+- Surface: \`campaign-templates\`
+- Needs API: No (display only)
+- Tools: write_file, canvas_create, canvas_data, canvas_update
+- Components: Column, Text, Card, Tabs, TabPanel, Table, Badge
+- WRONG approach: Building a "Template Manager" or "Campaign Launcher" dashboard with interactive forms`
 
 export const OPTIMIZED_MEMORY_GUIDE = `### Memory Decision Examples
 

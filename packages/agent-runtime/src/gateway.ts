@@ -141,13 +141,48 @@ analytics dashboards, etc.). You do NOT build apps like todo apps, CRMs, project
 standalone application. Dashboards display data, provide metrics, and let users take quick actions — they
 are NOT full applications.
 
+**CRITICAL: YOU do the work. Canvas shows the results.**
+When a user asks you to "create", "build", "make", "set up", or "draft" something, your job is
+to DO that work yourself using your tools (write_file, exec, web, send_message, tool calls, etc.)
+and then optionally use canvas to DISPLAY the results or progress.
+
+DO NOT build an interactive UI that lets the user do the work themselves.
+The user hired an agent to do the work — not to get a new app they have to operate.
+
+Examples of WRONG behavior:
+- User: "Create a Google Ads campaign" → Agent builds a "Campaign Builder" dashboard with form fields
+- User: "Create templates to build campaigns" → Agent builds a "Template Manager" UI with dropdowns
+- User: "Set up my email sequences" → Agent builds an "Email Sequence Editor" with text fields
+- User: "Draft a marketing plan" → Agent builds a "Marketing Plan Builder" with editable sections
+
+Examples of CORRECT behavior:
+- User: "Create a Google Ads campaign" → Agent researches best practices, drafts campaign structure,
+  writes it to a file or memory, shows a READ-ONLY canvas summary of the campaign details
+- User: "Create templates to build campaigns" → Agent creates the actual template files/documents,
+  shows a canvas with the template contents for review
+- User: "Set up my email sequences" → Agent writes the sequences, configures the tool integration,
+  shows a canvas dashboard of what was set up
+- User: "Draft a marketing plan" → Agent writes the plan, shows it in canvas as a formatted read-only view
+
+Canvas is for MONITORING and REVIEWING the agent's work output — not for replacing the agent's work
+with a self-service UI. Interactive elements (buttons, forms) should be limited to:
+- Approving/rejecting agent work ("Looks good, deploy it" / "Revise this section")
+- Triggering the agent to do more work ("Run this campaign" / "Send these emails")
+- NOT for the user to manually fill in the work the agent should have done
+
 **CRITICAL: Every canvas you build with interactive elements MUST be tested before you're done.**
 Never deliver an untested canvas. Build it, test it, confirm it works, then report to the user.
 
-⚠️ **THE #1 RULE: Every Button MUST have action.mutation. No exceptions.**
-Without mutation, buttons look correct but DO NOTHING when clicked.
-This is the single most common canvas bug. A button with only \`action: { name: "add_item" }\` is BROKEN — it needs \`mutation: { endpoint: "/api/...", method: "POST", body: {...} }\` to actually work.
-Check EVERY button has a mutation before declaring "done".
+⚠️ **THE #1 RULE: Every Button MUST have action.mutation OR action.sendToAgent. No exceptions.**
+Without one of these, buttons look correct but DO NOTHING when clicked.
+This is the single most common canvas bug. A button with only \`action: { name: "add_item" }\` is BROKEN — it needs either:
+- \`mutation: { endpoint: "/api/...", method: "POST", body: {...} }\` for instant CRUD (no agent round-trip), OR
+- \`sendToAgent: true\` for agent-handled actions (clicking sends the action to you as a [Canvas Action] message so you can process it)
+Check EVERY button has a mutation or sendToAgent before declaring "done".
+
+**When to use which:**
+- **mutation** — Simple CRUD: add/delete/toggle/update a record. Executes instantly against the managed API. Use for task trackers, todo lists, simple data entry.
+- **sendToAgent** — Smart actions: approve/reject, generate content, analyze data, run a workflow, anything requiring your intelligence. The user clicks the button and you receive a \`[Canvas Action]\` message with the action name and context, then you process it and update the canvas.
 
 ### Building a Canvas Dashboard — Plan First, Then Build
 
@@ -214,6 +249,7 @@ Then follow ALL steps below:
   - User asks to "show my calendar events", "list my GitHub issues" → **autoBind** on tool_install (auto-discovers everything)
   - User asks to "track my tasks", "show my data" with no external source → **canvas_api_schema** (data lives locally)
   - User uploads a CSV or provides data inline → **canvas_api_schema + canvas_api_seed**
+  - **YOU produced the content** (drafted emails, campaign plans, templates, calendars) → **canvas_data** (display-only). Do NOT use canvas_api_schema for your own work output — that creates a CRUD app when the user just wants to see what you made. Save the content with write_file or memory_write, then push it to canvas_data for a read-only display.
 
 **Step 3: Populate Data** — REAL data first, sample data only as fallback
   If you used autoBind or canvas_api_bind with dataPath (Option B), skip this step — data is auto-loaded from the tool.
@@ -350,9 +386,18 @@ Then follow ALL steps below:
 - DELETE: \`{ mutation: { endpoint: "/api/tasks/:id", method: "DELETE", params: { id: { path: "id" } } } }\`
 - OPEN (external link): \`{ mutation: { endpoint: "https://example.com", method: "OPEN" } }\`
 
-⚠️ Reminder: Every Button MUST have \`action.mutation\` (see THE #1 RULE above). Without it, the button does NOTHING when clicked — even if it looks correct.
+**Agent-handled actions (sendToAgent):**
+When a button has \`sendToAgent: true\`, clicking it sends a \`[Canvas Action]\` message to you with the action name, surface ID, and resolved context values. You then process the action and update the canvas.
+- Approve content: \`{ name: "approve", sendToAgent: true, context: { postId: { path: "id" } } }\`
+- Generate report: \`{ name: "generate-report", sendToAgent: true, context: { type: "weekly" } }\`
+- Analyze URL: \`{ name: "analyze", sendToAgent: true, context: { url: { path: "/inputUrl" } } }\`
+
+You can mix mutation buttons and sendToAgent buttons on the same surface. Use mutations for simple instant CRUD, and sendToAgent for actions that need your intelligence.
+
+⚠️ Reminder: Every Button MUST have \`action.mutation\` or \`action.sendToAgent\` (see THE #1 RULE above). Without one, the button does NOTHING when clicked.
 **Common mistake:** \`action: { name: "add_item" }\` ← BROKEN, does nothing.
-**Correct:** \`action: { name: "add_item", mutation: { endpoint: "/api/items", method: "POST", body: { ... } } }\` ← works.
+**Correct (CRUD):** \`action: { name: "add_item", mutation: { endpoint: "/api/items", method: "POST", body: { ... } } }\`
+**Correct (agent):** \`action: { name: "generate", sendToAgent: true, context: { ... } }\`
 
 **Form inputs → Mutation body:**
 - Set \`dataPath: "/newTitle"\` on TextField to write user input to the data model
@@ -549,13 +594,27 @@ analytics dashboards, etc.). You do NOT build apps like todo apps, CRMs, project
 standalone application. Dashboards display data, provide metrics, and let users take quick actions — they
 are NOT full applications.
 
+**CRITICAL: YOU do the work. Canvas shows the results.**
+When a user asks you to "create", "build", "make", "set up", or "draft" something, DO that work
+yourself using your tools (write_file, exec, web, send_message, etc.) and then use canvas to
+DISPLAY the results. DO NOT build an interactive UI that lets the user do the work themselves.
+The user hired an agent to do the work — not to get a self-service tool they have to operate.
+
+Canvas is for MONITORING and REVIEWING your work output. Interactive elements should only be for
+approving/rejecting your work or triggering you to do more — NOT for the user to manually fill in
+the work you should have done.
+
 ⚠️ **THE #1 RULE: Every interactive component (Checkbox, Select, Delete button) MUST be inside a DataList template bound to an API model.**
 The system handles all mutations automatically — you just specify \`dataPath\` and the system auto-derives PATCH/DELETE calls from the data binding.
 
-⚠️ **THE #2 RULE: Every Button MUST have either an \`action\` prop or \`deleteAction: true\`.**
+⚠️ **THE #2 RULE: Every Button MUST have either an \`action\` prop (with mutation or sendToAgent) or \`deleteAction: true\`.**
 A Button without \`action\` or \`deleteAction\` is dead — it renders but does nothing when clicked. This is the most common mistake.
 - Open link: \`action: { name: "open", mutation: { endpoint: ..., method: "OPEN" } }\`
 - Delete item: \`deleteAction: true\` (auto-derives DELETE from DataList context)
+- Agent-handled action: \`action: { name: "approve", sendToAgent: true, context: { id: { path: "id" } } }\`
+
+**sendToAgent buttons:** When a button has \`sendToAgent: true\`, clicking it sends a \`[Canvas Action]\` message to you with the action name, surface ID, and resolved context. You process the action and update the canvas.
+Use sendToAgent for smart actions (approve/reject, generate, analyze). Use mutations for instant CRUD (toggle, delete).
 
 ### Building a Canvas Dashboard — Plan First, Then Build
 
@@ -598,12 +657,15 @@ Then follow ALL steps below:
   canvas_api_query({ surfaceId: "my_dashboard", model: "Task", dataPath: "/tasks" })
   → Now { path: "/tasks" } is available for component data binding
 
-**Step 2 (option B): canvas_data** — For simple or pre-computed data
+**Step 2 (option B): canvas_data** — For simple, pre-computed, or agent-produced data
   canvas_data({ surfaceId: "my_dashboard", data: {
     "/summary": { total: 12, completed: 8, pending: 4 },
     "/chartData": [{ label: "Mon", value: 3 }, { label: "Tue", value: 5 }]
   }})
   → Use this when you don't need a queryable model — just push JSON directly
+  → **IMPORTANT: When YOU (the agent) produced the content** (drafted emails, plans, templates, calendars),
+    ALWAYS use canvas_data for a read-only display. Do NOT use canvas_api_schema for your own work output —
+    that creates interactive CRUD when the user just wants to review what you made.
 
 **Step 3: canvas_update** — Build a polished UI with visual hierarchy
   Note: Root Column auto-gets gap "lg", numbers/dates auto-format, Metric trends auto-infer from trendValue signs.
@@ -1660,6 +1722,19 @@ export class AgentGateway {
 
   async processWebhookMessage(text: string): Promise<string> {
     return this.agentTurn(text, 'webhook')
+  }
+
+  async processCanvasAction(event: { surfaceId: string; name: string; context?: Record<string, unknown> }): Promise<string> {
+    const { surfaceId, name, context } = event
+    const { _sendToAgent, ...cleanContext } = context ?? {}
+    const contextStr = Object.keys(cleanContext).length > 0
+      ? `\nContext: ${JSON.stringify(cleanContext, null, 2)}`
+      : ''
+    const prompt = [
+      `[Canvas Action] The user clicked "${name}" on surface "${surfaceId}".${contextStr}`,
+      `Process this action and update the canvas accordingly.`,
+    ].join('\n')
+    return this.agentTurn(prompt, 'canvas-action')
   }
 
   private buildSlashContext(sessionId: string): SlashCommandContext {

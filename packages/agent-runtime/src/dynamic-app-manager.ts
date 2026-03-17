@@ -411,6 +411,24 @@ export class DynamicAppManager {
     mutation?: boolean
     result?: { ok: boolean; status?: number; error?: string; dataPath?: string; itemCount?: number }
   }> {
+    // sendToAgent actions skip mutation/inference — fall through to actionQueue/waiters
+    if (event.context?._sendToAgent) {
+      const idx = this.actionWaiters.findIndex((w) => {
+        if (w.surfaceId && w.surfaceId !== event.surfaceId) return false
+        if (w.actionName && w.actionName !== event.name) return false
+        return true
+      })
+      if (idx >= 0) {
+        const waiter = this.actionWaiters.splice(idx, 1)[0]
+        clearTimeout(waiter.timeout)
+        waiter.resolve(event)
+        return { handled: true, mutation: false }
+      }
+      this.actionQueue.push(event)
+      if (this.actionQueue.length > 100) this.actionQueue.shift()
+      return { handled: true, mutation: false }
+    }
+
     // Handle auto-derived delete from Checkbox/Select/Delete button system
     if (event.name === '__delete_item__') {
       const ctx = event.context as { collectionPath?: string; itemId?: string } | undefined

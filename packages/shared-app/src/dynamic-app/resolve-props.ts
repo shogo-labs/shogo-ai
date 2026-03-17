@@ -57,6 +57,10 @@ export function resolveValue(
           resolvedContext[k] = resolveValue(v, dataModel, apiDataSource, scopeData, scopePath)
         }
       }
+      if (action.sendToAgent) {
+        resolvedContext._sendToAgent = true
+        return { ...action, context: { ...resolvedContext } }
+      }
       if (action.mutation && typeof action.mutation === 'object') {
         const mut = action.mutation as Record<string, unknown>
         const resolvedMutBody = mut.body && typeof mut.body === 'object'

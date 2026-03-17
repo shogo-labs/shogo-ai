@@ -1598,6 +1598,13 @@ app.post('/agent/dynamic-app/action', async (c) => {
     timestamp: new Date().toISOString(),
   }
 
+  if (event.context?._sendToAgent && agentGateway) {
+    agentGateway.processCanvasAction(event).catch(err => {
+      console.error('[agent-runtime] Canvas action turn failed:', err)
+    })
+    return c.json({ ok: true, routed: 'agent' })
+  }
+
   manager.deliverAction(event)
   return c.json({ ok: true, event })
 })

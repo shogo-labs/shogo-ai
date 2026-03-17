@@ -205,6 +205,56 @@ function hasNonOpenButtonMutation(result: EvalResult): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// sendToAgent helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * True if any Button in canvas_update calls has sendToAgent: true.
+ */
+function hasSendToAgentButton(result: EvalResult): boolean {
+  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
+  const json = JSON.stringify(updateCalls.map(t => t.input))
+  return json.includes('"sendToAgent":true') || json.includes('"sendToAgent": true')
+}
+
+/**
+ * True if a Button whose action.name matches the pattern has sendToAgent: true.
+ * Scans all canvas_update calls for Button components.
+ */
+function buttonUsesSendToAgent(result: EvalResult, namePattern: RegExp): boolean {
+  const updateCalls = result.toolCalls.filter(t => t.name === 'canvas_update')
+  const json = JSON.stringify(updateCalls.map(t => t.input))
+  const buttonBlocks = json.split('"component"').filter(b => b.includes('"Button"'))
+  for (const block of buttonBlocks) {
+    const nameMatch = block.match(/"name"\s*:\s*"([^"]+)"/)
+    if (nameMatch && namePattern.test(nameMatch[1])) {
+      const nearbyChunk = block.substring(0, 500)
+      if (nearbyChunk.includes('"sendToAgent"') && (nearbyChunk.includes('true') || nearbyChunk.includes(':true'))) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
+/**
+ * True if both sendToAgent buttons and mutation buttons coexist.
+ */
+function hasMixedButtonTypes(result: EvalResult): boolean {
+  return hasSendToAgentButton(result) && hasNonOpenButtonMutation(result)
+}
+
+/**
+ * True if canvas_data or canvas_update was called in the final turn tool calls.
+ * Used for multi-turn evals to verify the agent updated the canvas after receiving an action.
+ */
+function canvasUpdatedAfterActionMessage(result: EvalResult): boolean {
+  return result.finalTurnToolCalls.some(t =>
+    t.name === 'canvas_data' || t.name === 'canvas_update'
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Chart-specific helpers
 // ---------------------------------------------------------------------------
 
@@ -3169,6 +3219,654 @@ export const CANVAS_EVALS: AgentEval[] = [
     antiPatterns: [
       'Agent used TextField or other form inputs in a display-only canvas',
       'Agent used POST/PATCH/DELETE mutations in basic agent mode',
+    ],
+  },
+
+  // ---- Action-Not-UI: Agent should do work, not build builder UIs ----
+  {
+    id: 'action-not-ui-campaign',
+    name: 'Action-Not-UI: Create ad campaign (agent does the work)',
+    category: 'canvas',
+    level: 2,
+    input: 'Create a Google Ads campaign for $20/day targeting sign-ups for our web app shogo.ai. We want to spend $20 a day and get sign ups.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'did-work',
+        description: 'Used tools to research or produce campaign content (web, write_file, tool_search, tool_install, memory_write)',
+        points: 25,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'web') || usedTool(r, 'write_file') || usedTool(r, 'memory_write') || usedTool(r, 'tool_search') || usedTool(r, 'tool_install'),
+      },
+      {
+        id: 'response-has-campaign-details',
+        description: 'Response includes concrete campaign details (keywords, budget, ad copy)',
+        points: 25,
+        phase: 'execution',
+        validate: (r) => {
+          const text = r.responseText.toLowerCase()
+          const hasKeywords = text.includes('keyword') || text.includes('search term')
+          const hasBudget = text.includes('$20') || text.includes('budget')
+          const hasAdCopy = text.includes('headline') || text.includes('ad copy') || text.includes('description')
+          return (hasKeywords && hasBudget) || (hasBudget && hasAdCopy)
+        },
+      },
+      {
+        id: 'no-interactive-builder',
+        description: 'Did NOT build an interactive builder UI (no CRUD schema, no form fields with Select/TextField in DataList)',
+        points: 25,
+        phase: 'execution',
+        validate: (r) => {
+          if (usedTool(r, 'canvas_api_schema')) return false
+          const updateCalls = r.toolCalls.filter(t => t.name === 'canvas_update')
+          if (updateCalls.length === 0) return true
+          const json = JSON.stringify(updateCalls.map(t => t.input))
+          const hasInteractive = (json.match(/"(TextField|Select|ChoicePicker)"/g) || []).length
+          return hasInteractive <= 1
+        },
+      },
+      {
+        id: 'no-api-schema-crud',
+        description: 'Did NOT create a CRUD API schema (agent produced content, not a builder)',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => neverUsedTool(r, 'canvas_api_schema'),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in reasonable number of tool calls',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 20,
+      },
+    ],
+    antiPatterns: [
+      'Built interactive UI instead of doing the work (canvas without work)',
+      'Built a "Campaign Builder" or "Campaign Manager" form with text fields (builder ui)',
+    ],
+  },
+  {
+    id: 'action-not-ui-email-templates',
+    name: 'Action-Not-UI: Draft email templates (agent writes them)',
+    category: 'canvas',
+    level: 2,
+    input: 'Draft 3 email templates for onboarding new users to our SaaS product.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'produced-content',
+        description: 'Used write_file or memory_write or response contains actual email content',
+        points: 25,
+        phase: 'intention',
+        validate: (r) => {
+          const wroteFile = usedTool(r, 'write_file') || usedTool(r, 'memory_write')
+          const hasEmailContent = r.responseText.toLowerCase().includes('subject') &&
+            (r.responseText.toLowerCase().includes('welcome') || r.responseText.toLowerCase().includes('onboard'))
+          return wroteFile || hasEmailContent
+        },
+      },
+      {
+        id: 'has-multiple-templates',
+        description: 'Response or tool calls reference at least 2 distinct templates',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => {
+          const text = r.responseText.toLowerCase()
+          const templateIndicators = ['template 1', 'template 2', 'template 3', 'email 1', 'email 2', 'email 3',
+            'welcome email', 'getting started', 'first email', 'second email', 'third email']
+          const matches = templateIndicators.filter(t => text.includes(t))
+          return matches.length >= 2
+        },
+      },
+      {
+        id: 'no-interactive-management-ui',
+        description: 'Did NOT build interactive management UI (no CRUD schema, no Select/TextField in DataList for editing)',
+        points: 25,
+        phase: 'execution',
+        validate: (r) => {
+          if (usedTool(r, 'canvas_api_schema')) return false
+          const updateCalls = r.toolCalls.filter(t => t.name === 'canvas_update')
+          if (updateCalls.length === 0) return true
+          const json = JSON.stringify(updateCalls.map(t => t.input))
+          const hasInteractive = (json.match(/"(TextField|Select|ChoicePicker)"/g) || []).length
+          return hasInteractive <= 1
+        },
+      },
+      {
+        id: 'no-api-schema-crud',
+        description: 'Did NOT create a CRUD API schema for templates',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => neverUsedTool(r, 'canvas_api_schema'),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in reasonable number of tool calls',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 20,
+      },
+    ],
+    antiPatterns: [
+      'Built interactive UI instead of doing the work (canvas without work)',
+      'Built an "Email Template Editor" with editable text fields (builder ui)',
+    ],
+  },
+  {
+    id: 'action-not-ui-content-calendar',
+    name: 'Action-Not-UI: Create content calendar (agent produces it)',
+    category: 'canvas',
+    level: 2,
+    input: 'Create a social media content calendar for next week. We post on Twitter and LinkedIn daily.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'produced-content',
+        description: 'Agent produced actual calendar content (days, topics, posts)',
+        points: 30,
+        phase: 'intention',
+        validate: (r) => {
+          const text = r.responseText.toLowerCase()
+          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          const combined = text + json
+          const hasDays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'].filter(d => combined.includes(d)).length >= 3
+          const hasContent = combined.includes('post') || combined.includes('tweet') || combined.includes('linkedin')
+          return hasDays && hasContent
+        },
+      },
+      {
+        id: 'canvas-is-display-only',
+        description: 'If canvas was used, it is display-only (no CRUD schema, no Select/TextField/ChoicePicker/Delete in DataList)',
+        points: 25,
+        phase: 'execution',
+        validate: (r) => {
+          if (usedTool(r, 'canvas_api_schema')) return false
+          const updateCalls = r.toolCalls.filter(t => t.name === 'canvas_update')
+          if (updateCalls.length === 0) return true
+          const json = JSON.stringify(updateCalls.map(t => t.input))
+          const interactiveCount = (json.match(/"(TextField|Select|ChoicePicker)"/g) || []).length
+          const hasDeleteButton = json.includes('"deleteAction"') || json.includes('"DELETE"')
+          return interactiveCount <= 1 && !hasDeleteButton
+        },
+      },
+      {
+        id: 'no-post-scheduler-crud',
+        description: 'Did NOT build a CRUD post scheduler with API schema',
+        points: 25,
+        phase: 'execution',
+        validate: (r) => neverUsedTool(r, 'canvas_api_schema'),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in reasonable number of tool calls',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 20,
+      },
+      {
+        id: 'response-confirms',
+        description: 'Agent confirms it created the calendar',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => responseContains(r, 'calendar') || responseContains(r, 'schedule') || responseContains(r, 'content plan'),
+      },
+    ],
+    antiPatterns: [
+      'Built interactive UI instead of doing the work (canvas without work)',
+      'Built a "Content Calendar Manager" or "Post Scheduler" with forms (builder ui)',
+    ],
+  },
+
+  // ---- sendToAgent: Agent uses sendToAgent for smart actions ----
+  {
+    id: 'sendToAgent-approval-workflow',
+    name: 'sendToAgent: Content approval dashboard',
+    category: 'canvas',
+    level: 3,
+    input: 'Build me a content approval dashboard. Show my pending blog drafts and let me approve or reject them -- the agent should handle publishing approved posts.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Added components to the canvas',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'approve-button-sends-to-agent',
+        description: 'An approve/publish button uses sendToAgent: true',
+        points: 25,
+        phase: 'execution',
+        validate: (r) => buttonUsesSendToAgent(r, /approve|publish/i),
+      },
+      {
+        id: 'reject-button-sends-to-agent',
+        description: 'A reject button uses sendToAgent: true',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => buttonUsesSendToAgent(r, /reject|decline/i),
+      },
+      {
+        id: 'no-mutation-for-approval',
+        description: 'Approve/reject buttons do NOT have CRUD mutations (POST/PATCH/DELETE)',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => {
+          const updateCalls = r.toolCalls.filter(t => t.name === 'canvas_update')
+          const json = JSON.stringify(updateCalls.map(t => t.input))
+          const blocks = json.split('"component"').filter(b => b.includes('"Button"'))
+          for (const block of blocks) {
+            const nameMatch = block.match(/"name"\s*:\s*"([^"]+)"/)
+            if (nameMatch && /approve|publish|reject|decline/i.test(nameMatch[1])) {
+              if (block.includes('"mutation"') && /"method"\s*:\s*"(POST|PATCH|DELETE)"/i.test(block)) {
+                return false
+              }
+            }
+          }
+          return true
+        },
+      },
+      {
+        id: 'has-content-display',
+        description: 'Canvas includes a DataList or Table for showing drafts',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls.filter(t => t.name === 'canvas_update').map(t => t.input))
+          return json.includes('"DataList"') || json.includes('"Table"')
+        },
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 15 tool calls',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 15,
+      },
+    ],
+    antiPatterns: [
+      'Repeated identical tool calls (loop)',
+    ],
+  },
+  {
+    id: 'sendToAgent-generative-action',
+    name: 'sendToAgent: Keyword research tool with analyze button',
+    category: 'canvas',
+    level: 3,
+    input: 'Create a keyword research tool. I want a text field where I enter a URL and a button so you can analyze it and extract the top SEO keywords for me.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Added components to the canvas',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'has-text-field',
+        description: 'Canvas includes a TextField for URL input',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => hasTextField(r),
+      },
+      {
+        id: 'analyze-button-sends-to-agent',
+        description: 'The analyze/research button uses sendToAgent: true',
+        points: 25,
+        phase: 'execution',
+        validate: (r) => buttonUsesSendToAgent(r, /analyz|research|extract|scan|keyword/i),
+      },
+      {
+        id: 'no-mutation-for-analysis',
+        description: 'The analyze button does NOT have a CRUD mutation',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => {
+          const updateCalls = r.toolCalls.filter(t => t.name === 'canvas_update')
+          const json = JSON.stringify(updateCalls.map(t => t.input))
+          const blocks = json.split('"component"').filter(b => b.includes('"Button"'))
+          for (const block of blocks) {
+            const nameMatch = block.match(/"name"\s*:\s*"([^"]+)"/)
+            if (nameMatch && /analyz|research|extract|scan|keyword/i.test(nameMatch[1])) {
+              if (block.includes('"mutation"') && /"method"\s*:\s*"(POST|PATCH|DELETE)"/i.test(block)) {
+                return false
+              }
+            }
+          }
+          return true
+        },
+      },
+      {
+        id: 'response-explains-flow',
+        description: 'Agent explains that clicking the button triggers analysis',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const text = r.responseText.toLowerCase()
+          return (text.includes('click') || text.includes('button') || text.includes('press')) &&
+            (text.includes('analyz') || text.includes('extract') || text.includes('keyword'))
+        },
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 15 tool calls',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 15,
+      },
+    ],
+    antiPatterns: [
+      'Repeated identical tool calls (loop)',
+    ],
+  },
+  {
+    id: 'sendToAgent-hybrid-coexistence',
+    name: 'sendToAgent: Task tracker with CRUD + auto-prioritize',
+    category: 'canvas',
+    level: 4,
+    requiredAgent: 'advanced' as const,
+    input: 'Build a task tracker with add, complete, and delete. Also add an \'Auto-prioritize\' button where you re-order tasks by importance.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-api-schema',
+        description: 'Used canvas_api_schema for task CRUD',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_api_schema'),
+      },
+      {
+        id: 'crud-buttons-have-mutations',
+        description: 'CRUD buttons (add/complete/delete) have mutations',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => hasNonOpenButtonMutation(r),
+      },
+      {
+        id: 'prioritize-button-sends-to-agent',
+        description: 'Auto-prioritize button uses sendToAgent: true',
+        points: 25,
+        phase: 'execution',
+        validate: (r) => buttonUsesSendToAgent(r, /priorit|reorder|sort|rank/i),
+      },
+      {
+        id: 'has-mixed-button-types',
+        description: 'Both mutation buttons and sendToAgent buttons coexist',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => hasMixedButtonTypes(r),
+      },
+      {
+        id: 'used-trigger-action',
+        description: 'Tested CRUD buttons with canvas_trigger_action',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_trigger_action'),
+      },
+      {
+        id: 'trigger-action-succeeded',
+        description: 'At least one canvas_trigger_action returned ok: true',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => triggerActionSucceeded(r),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 25 tool calls',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 25,
+      },
+    ],
+    antiPatterns: [],
+  },
+
+  // ---- Canvas Action handling: Agent processes [Canvas Action] messages ----
+  {
+    id: 'canvas-action-report-generation',
+    name: 'Canvas Action: Generate report on button click',
+    category: 'canvas',
+    level: 3,
+    conversationHistory: [
+      {
+        role: 'user',
+        content: 'Create a reporting dashboard with a \'Generate Weekly Report\' button that you\'ll use to compile the report when I click it.',
+      },
+      {
+        role: 'assistant',
+        content: 'I\'ve built a reporting dashboard with a "Generate Weekly Report" button. When you click it, I\'ll compile a weekly report with key metrics, highlights, and recommendations. The dashboard is ready on the canvas — click the button whenever you want a report generated.',
+      },
+    ],
+    input: '[Canvas Action] The user clicked "generate-report" on surface "reports".\nContext: {"reportType": "weekly"}\nProcess this action and update the canvas accordingly.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'did-work',
+        description: 'Produced report content in final turn (write_file, web, memory_write, tool_search, or canvas_data)',
+        points: 30,
+        phase: 'intention',
+        validate: (r) => {
+          return r.finalTurnToolCalls.some(t =>
+            t.name === 'write_file' || t.name === 'web' ||
+            t.name === 'memory_write' || t.name === 'tool_search' ||
+            t.name === 'canvas_data'
+          )
+        },
+      },
+      {
+        id: 'updated-canvas',
+        description: 'Called canvas_data or canvas_update in final turn',
+        points: 30,
+        phase: 'execution',
+        validate: (r) => canvasUpdatedAfterActionMessage(r),
+      },
+      {
+        id: 'used-context-data',
+        description: 'Response or tool calls reference "weekly" (used the context)',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => {
+          const combined = (r.responseText + JSON.stringify(r.finalTurnToolCalls)).toLowerCase()
+          return combined.includes('weekly')
+        },
+      },
+      {
+        id: 'no-clarifying-questions',
+        description: 'Did not ask clarifying questions — just processed the action',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const questions = ['what kind', 'which one', 'do you want', 'would you prefer', 'could you clarify', 'what type']
+          return !questions.some(q => r.responseText.toLowerCase().includes(q))
+        },
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 15 tool calls in final turn',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.finalTurnToolCalls.length <= 15,
+      },
+    ],
+    antiPatterns: [
+      'Asked unnecessary clarifying questions (unnecessary clarification)',
+      'Repeated identical tool calls (loop)',
+    ],
+  },
+  {
+    id: 'canvas-action-form-submit',
+    name: 'Canvas Action: Draft blog post from form submission',
+    category: 'canvas',
+    level: 3,
+    conversationHistory: [
+      {
+        role: 'user',
+        content: 'Create a form where I describe a blog post idea and you draft it for me.',
+      },
+      {
+        role: 'assistant',
+        content: 'I\'ve created a blog post idea form on the canvas. Fill in the title, target audience, and tone, then click "Submit" and I\'ll draft the full blog post for you. The form is ready — go ahead and fill it in!',
+      },
+    ],
+    input: '[Canvas Action] The user clicked "submit-idea" on surface "blog-writer".\nContext: {"title": "10 Tips for Remote Work", "audience": "tech professionals", "tone": "casual"}\nProcess this action and update the canvas accordingly.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'produced-content',
+        description: 'Response or write_file/memory_write contains blog content about remote work',
+        points: 30,
+        phase: 'intention',
+        validate: (r) => {
+          const combined = (r.responseText + JSON.stringify(r.finalTurnToolCalls)).toLowerCase()
+          return combined.includes('remote work') || combined.includes('remote-work')
+        },
+      },
+      {
+        id: 'updated-canvas',
+        description: 'Called canvas_data or canvas_update in final turn',
+        points: 25,
+        phase: 'execution',
+        validate: (r) => canvasUpdatedAfterActionMessage(r),
+      },
+      {
+        id: 'used-all-context-fields',
+        description: 'Used title, audience, and tone from context',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => {
+          const combined = (r.responseText + JSON.stringify(r.finalTurnToolCalls)).toLowerCase()
+          const hasTitle = combined.includes('remote work')
+          const hasAudience = combined.includes('tech') || combined.includes('professional')
+          const hasTone = combined.includes('casual') || combined.includes('conversational') || combined.includes('friendly')
+          return hasTitle && (hasAudience || hasTone)
+        },
+      },
+      {
+        id: 'no-clarifying-questions',
+        description: 'Processed without asking clarifying questions',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const questions = ['what kind', 'which one', 'do you want', 'would you prefer', 'could you clarify']
+          return !questions.some(q => r.responseText.toLowerCase().includes(q))
+        },
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in <= 15 tool calls in final turn',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => r.finalTurnToolCalls.length <= 15,
+      },
+    ],
+    antiPatterns: [
+      'Asked unnecessary clarifying questions (unnecessary clarification)',
+      'Repeated identical tool calls (loop)',
+    ],
+  },
+
+  // ---- Negative: Simple CRUD should NOT use sendToAgent ----
+  {
+    id: 'no-sendToAgent-for-simple-crud',
+    name: 'Negative: Simple CRUD todo should not use sendToAgent',
+    category: 'canvas',
+    level: 3,
+    requiredAgent: 'advanced' as const,
+    input: 'Track my todos -- adding, completing, and deleting them. Set me up with a few sample ones to start.',
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'used-canvas-create',
+        description: 'Created a canvas surface',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_create'),
+      },
+      {
+        id: 'used-canvas-update',
+        description: 'Added UI components',
+        points: 5,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_update'),
+      },
+      {
+        id: 'used-api-schema',
+        description: 'Used canvas_api_schema to define the backend',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => usedTool(r, 'canvas_api_schema'),
+      },
+      {
+        id: 'used-api-seed',
+        description: 'Used canvas_api_seed to populate initial data',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_api_seed'),
+      },
+      {
+        id: 'has-list-component',
+        description: 'Included a Table or DataList for displaying todos',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => {
+          const json = JSON.stringify(r.toolCalls)
+          return json.includes('"Table"') || json.includes('"DataList"')
+        },
+      },
+      {
+        id: 'all-buttons-have-mutations',
+        description: 'All CRUD buttons have mutations (not sendToAgent)',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => allButtonsHaveMutations(r),
+      },
+      {
+        id: 'no-sendToAgent-on-crud',
+        description: 'No button uses sendToAgent: true (simple CRUD should use mutations)',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => !hasSendToAgentButton(r),
+      },
+      {
+        id: 'used-trigger-action',
+        description: 'Used canvas_trigger_action to verify buttons work',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => usedTool(r, 'canvas_trigger_action'),
+      },
+      {
+        id: 'trigger-action-succeeded',
+        description: 'canvas_trigger_action returned ok: true',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => triggerActionSucceeded(r),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Completed in reasonable number of tool calls',
+        points: 5,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 25,
+      },
+    ],
+    antiPatterns: [
+      'Used sendToAgent for simple CRUD operations (sendToAgent for simple crud)',
     ],
   },
 ]

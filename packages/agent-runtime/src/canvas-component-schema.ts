@@ -550,9 +550,10 @@ export function lintComponents(components: Array<{ id?: string; component?: stri
         severity: 'warning',
         componentId: cid,
         message: `Button has no action or href — it will do nothing when clicked. ` +
-          `Fix: add an action prop with a mutation. ` +
+          `Fix: add an action prop with a mutation or sendToAgent: true. ` +
           `For external links: action: { name: "open", mutation: { endpoint: "https://example.com", method: "OPEN" } }. ` +
-          `For per-item URLs in a DataList: action: { name: "open", mutation: { endpoint: { path: "url" }, method: "OPEN" } }.`,
+          `For per-item URLs in a DataList: action: { name: "open", mutation: { endpoint: { path: "url" }, method: "OPEN" } }. ` +
+          `For agent-handled actions: action: { name: "do_something", sendToAgent: true }.`,
       })
     }
 
@@ -563,16 +564,16 @@ export function lintComponents(components: Array<{ id?: string; component?: stri
         messages.push({
           severity: 'error',
           componentId: cid,
-          message: `Button action is missing "name". Every action needs a name (e.g. { name: "add_item", mutation: { ... } }).`,
+          message: `Button action is missing "name". Every action needs a name (e.g. { name: "add_item", mutation: { ... } } or { name: "generate", sendToAgent: true }).`,
         })
       }
-      if (!action.mutation) {
+      if (!action.mutation && !action.sendToAgent) {
         const name = String(action.name ?? '').toLowerCase()
         const isLikelyCrud = /^(add|create|save|delete|remove|update|edit|mark|toggle|patch|cancel|book|reserve)/.test(name)
         messages.push({
           severity: isLikelyCrud ? 'error' : 'warning',
           componentId: cid,
-          message: `Button "${cid}" has action.name "${action.name}" but NO mutation. Without mutation, this button does NOTHING when clicked. Add: mutation: { endpoint: "/api/...", method: "POST|PATCH|DELETE", body?: {...} }`,
+          message: `Button "${cid}" has action.name "${action.name}" but NO mutation or sendToAgent. Without one of these, this button does NOTHING when clicked. Add: mutation: { endpoint: "/api/...", method: "POST|PATCH|DELETE", body?: {...} } for CRUD, or sendToAgent: true for agent-handled actions.`,
         })
       }
       if (action.mutation) {

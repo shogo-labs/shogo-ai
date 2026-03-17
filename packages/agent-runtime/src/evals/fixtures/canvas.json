@@ -437,6 +437,113 @@
       "optimal_tool_calls": 5,
       "optimal_iterations": 1,
       "component_count": 12
+    },
+    {
+      "id": "work-output-ad-campaign",
+      "source_test": null,
+      "user_request": "Create a Google Ads campaign for $20/day targeting sign-ups for our web app shogo.ai",
+      "needs_api_schema": false,
+      "surface_id": "campaign-summary",
+      "tool_sequence": [
+        "web",
+        "write_file",
+        "memory_write",
+        "canvas_create",
+        "canvas_data",
+        "canvas_update"
+      ],
+      "component_types": [
+        "Column",
+        "Row",
+        "Text",
+        "Badge",
+        "Grid",
+        "Metric",
+        "Card",
+        "Table"
+      ],
+      "optimal_tool_calls": 6,
+      "optimal_iterations": 2,
+      "component_count": 14,
+      "_note": "Agent does the work (research, draft campaign), canvas shows READ-ONLY summary. No TextField, no CRUD schema, no interactive builder."
+    },
+    {
+      "id": "work-output-email-templates",
+      "source_test": null,
+      "user_request": "Draft 3 email templates for onboarding new users to our SaaS product",
+      "needs_api_schema": false,
+      "surface_id": "onboarding-emails",
+      "tool_sequence": [
+        "write_file",
+        "canvas_create",
+        "canvas_data",
+        "canvas_update"
+      ],
+      "component_types": [
+        "Column",
+        "Row",
+        "Text",
+        "Badge",
+        "Card",
+        "Tabs",
+        "TabPanel"
+      ],
+      "optimal_tool_calls": 4,
+      "optimal_iterations": 1,
+      "component_count": 12,
+      "_note": "Agent writes actual email templates, canvas displays them read-only for review. No TextField, no CRUD schema."
+    },
+    {
+      "id": "work-output-campaign-templates",
+      "source_test": null,
+      "user_request": "Create templates to build marketing campaigns",
+      "needs_api_schema": false,
+      "surface_id": "campaign-templates",
+      "tool_sequence": [
+        "write_file",
+        "canvas_create",
+        "canvas_data",
+        "canvas_update"
+      ],
+      "component_types": [
+        "Column",
+        "Text",
+        "Card",
+        "Tabs",
+        "TabPanel",
+        "Table",
+        "Badge"
+      ],
+      "optimal_tool_calls": 4,
+      "optimal_iterations": 1,
+      "component_count": 14,
+      "_note": "Agent creates actual template documents/files, canvas shows read-only overview. NOT a 'Template Manager' UI with forms."
+    },
+    {
+      "id": "work-output-content-calendar",
+      "source_test": null,
+      "user_request": "Create a social media content calendar for next week with daily posts on Twitter and LinkedIn",
+      "needs_api_schema": false,
+      "surface_id": "content-calendar",
+      "tool_sequence": [
+        "write_file",
+        "canvas_create",
+        "canvas_data",
+        "canvas_update"
+      ],
+      "component_types": [
+        "Column",
+        "Row",
+        "Text",
+        "Badge",
+        "Grid",
+        "Card",
+        "Table"
+      ],
+      "optimal_tool_calls": 4,
+      "optimal_iterations": 1,
+      "component_count": 12,
+      "_note": "Agent produces the actual calendar content, canvas displays it read-only. No 'Post Scheduler' CRUD UI."
     }
   ]
 }

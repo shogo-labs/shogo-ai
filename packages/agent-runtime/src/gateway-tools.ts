@@ -1933,6 +1933,27 @@ This tool performs real verification: it finds the button, resolves its mutation
         })
       }
 
+      if (button.action.sendToAgent) {
+        const resolvedContext: Record<string, unknown> = {}
+        if (button.action.context && typeof button.action.context === 'object') {
+          for (const [k, v] of Object.entries(button.action.context as Record<string, unknown>)) {
+            resolvedContext[k] = typeof v === 'object' && v !== null && 'path' in v
+              ? (itemData as any)?.[String((v as any).path)] ?? `<unresolved: ${(v as any).path}>`
+              : v
+          }
+        }
+        return textResult({
+          ok: true,
+          sendToAgent: true,
+          surfaceId,
+          actionName,
+          resolvedFromButton: true,
+          buttonId: button.id,
+          resolvedContext,
+          message: `Button "${button.id}" uses sendToAgent — clicking it triggers a new agent turn with [Canvas Action] "${actionName}". Context that will be sent: ${JSON.stringify(resolvedContext)}. No mutation to verify; the agent handles this action.`,
+        })
+      }
+
       const mutation = button.action.mutation as Record<string, unknown> | undefined
       if (!mutation) {
         return textResult({
@@ -1941,8 +1962,8 @@ This tool performs real verification: it finds the button, resolves its mutation
           actionName,
           resolvedFromButton: true,
           buttonId: button.id,
-          error: `Button "${button.id}" has action.name "${actionName}" but NO mutation defined. This button does NOTHING when a real user clicks it. Fix the button with canvas_update({ merge: true }) to add: mutation: { endpoint: "/api/...", method: "POST|PATCH|DELETE", body?: {...} }`,
-          message: `BROKEN BUTTON: "${button.id}" is missing its mutation. The button looks correct in the UI but does absolutely nothing when clicked. This is the #1 canvas bug.`,
+          error: `Button "${button.id}" has action.name "${actionName}" but NO mutation or sendToAgent defined. This button does NOTHING when a real user clicks it. Fix the button with canvas_update({ merge: true }) to add: mutation: { endpoint: "/api/...", method: "POST|PATCH|DELETE", body?: {...} } or sendToAgent: true`,
+          message: `BROKEN BUTTON: "${button.id}" is missing its mutation or sendToAgent. The button looks correct in the UI but does absolutely nothing when clicked. This is the #1 canvas bug.`,
         })
       }
 
