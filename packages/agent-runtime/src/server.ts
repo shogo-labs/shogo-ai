@@ -760,6 +760,63 @@ app.post('/preview/stop', (c) => {
 })
 
 // ---------------------------------------------------------------------------
+// Template Copy (app mode — extract pre-built archive into project/)
+// ---------------------------------------------------------------------------
+
+import { execSync } from 'child_process'
+
+const TEMPLATES_DIR = resolve(MONOREPO_ROOT, 'packages/sdk/templates')
+
+app.post('/templates/copy', async (c) => {
+  try {
+    const body = await c.req.json() as { template: string; name: string; theme?: string }
+    if (!body.template || !body.name) {
+      return c.json({ ok: false, error: 'Missing required fields: template, name' }, 400)
+    }
+
+    const archivePath = join(TEMPLATES_DIR, `${body.template}.tar.gz`)
+    if (!existsSync(archivePath)) {
+      return c.json({ ok: false, error: `Template "${body.template}" not found` }, 404)
+    }
+
+    const projectDir = join(WORKSPACE_DIR, 'project')
+    mkdirSync(projectDir, { recursive: true })
+
+    for (const d of ['src', 'prisma', '.tanstack']) {
+      const p = join(projectDir, d)
+      if (existsSync(p)) rmSync(p, { recursive: true, force: true })
+    }
+
+    execSync(`tar -xzf "${archivePath}" --strip-components=1 -C "${projectDir}"`, {
+      stdio: 'pipe',
+      timeout: 120_000,
+    })
+    console.log(`[templates/copy] Extracted "${body.template}" to ${projectDir}`)
+
+    const pkgPath = join(projectDir, 'package.json')
+    if (existsSync(pkgPath)) {
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
+      pkg.name = body.name
+      writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n', 'utf-8')
+    }
+
+    const envPath = join(projectDir, '.env')
+    const envLines = existsSync(envPath) ? readFileSync(envPath, 'utf-8').split('\n') : []
+    const filtered = envLines.filter(l => !l.trim().startsWith('DATABASE_URL'))
+    writeFileSync(envPath, [...filtered, 'DATABASE_URL="file:./dev.db"', ''].join('\n'), 'utf-8')
+
+    const pm = getPreviewManager()
+    const result = await pm.restart()
+    console.log(`[templates/copy] Preview restart result:`, JSON.stringify(result))
+
+    return c.json({ ok: true, message: `Template "${body.template}" extracted and preview restarted` })
+  } catch (error: any) {
+    console.error(`[templates/copy] Error:`, error)
+    return c.json({ ok: false, error: error.message || 'Failed to copy template' }, 500)
+  }
+})
+
+// ---------------------------------------------------------------------------
 // Webhook Ingress Endpoints
 // ---------------------------------------------------------------------------
 
