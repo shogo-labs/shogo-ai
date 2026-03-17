@@ -17,6 +17,7 @@ import type { ToolCallData } from "../tools/types"
  */
 export type MessagePart =
   | { type: "text"; text: string; id: string }
+  | { type: "reasoning"; text: string; isStreaming: boolean; id: string }
   | { type: "tool"; tool: ToolCallData; id: string }
   | { type: "image"; url: string; mediaType: string; id: string }
   | { type: "file"; url: string; mediaType: string; id: string }

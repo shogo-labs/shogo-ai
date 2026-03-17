@@ -35,6 +35,8 @@ import {
 export type { LoopDetectorConfig, LoopDetectorResult }
 export type { ToolContext }
 
+export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+
 export interface AgentLoopOptions {
   /** API key for the primary provider */
   apiKey?: string
@@ -56,12 +58,20 @@ export interface AgentLoopOptions {
   maxIterations?: number
   /** Max tokens per LLM call (default: 4096) */
   maxTokens?: number
+  /** Thinking/reasoning level (default: 'medium') */
+  thinkingLevel?: ThinkingLevel
   /** Called when a tool is invoked */
   onToolCall?: (name: string, input: any) => void
   /** Called at each iteration */
   onIteration?: (iteration: number) => void
   /** Called with incremental text as the model streams */
   onTextDelta?: (delta: string) => void
+  /** Called when thinking/reasoning starts */
+  onThinkingStart?: () => void
+  /** Called with incremental thinking/reasoning text */
+  onThinkingDelta?: (delta: string) => void
+  /** Called when thinking/reasoning ends */
+  onThinkingEnd?: () => void
   /** Called before a tool executes (return false to skip) */
   onBeforeToolCall?: (toolName: string, args: any, toolCallId: string) => Promise<void>
   /** Called after a tool executes */
@@ -112,9 +122,13 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     tools,
     maxIterations = 10,
     maxTokens = 4096,
+    thinkingLevel = 'medium',
     onToolCall,
     onIteration,
     onTextDelta,
+    onThinkingStart,
+    onThinkingDelta,
+    onThinkingEnd,
     onBeforeToolCall,
     onAfterToolCall,
     onAgentEnd,
@@ -140,6 +154,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     initialState: {
       systemPrompt: system,
       model,
+      thinkingLevel: thinkingLevel === 'off' ? undefined : thinkingLevel,
       tools,
       messages: [...history],
     },
@@ -155,7 +170,13 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     switch (event.type) {
       case 'message_update': {
         const ame = event.assistantMessageEvent
-        if (ame.type === 'text_delta') {
+        if (ame.type === 'thinking_start') {
+          onThinkingStart?.()
+        } else if (ame.type === 'thinking_delta') {
+          onThinkingDelta?.(ame.delta)
+        } else if (ame.type === 'thinking_end') {
+          onThinkingEnd?.()
+        } else if (ame.type === 'text_delta') {
           onTextDelta?.(ame.delta)
         } else if (ame.type === 'toolcall_start') {
           const tc = ame.partial.content[ame.contentIndex]

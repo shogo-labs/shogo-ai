@@ -693,7 +693,7 @@ describe('WarmPoolController', () => {
 
       expect(env).toHaveProperty('PROJECT_ID', 'test-project-456')
       expect(env).toHaveProperty('AI_PROXY_TOKEN', 'test-proxy-token')
-      expect(env).toHaveProperty('DATABASE_URL', 'postgresql://test:test@localhost/test')
+      expect(env).not.toHaveProperty('DATABASE_URL')
       expect(env).toHaveProperty('S3_WORKSPACES_BUCKET', 'test-bucket')
       expect(env).toHaveProperty('S3_REGION', 'us-east-1')
       expect(env).toHaveProperty('S3_WATCH_ENABLED', 'true')

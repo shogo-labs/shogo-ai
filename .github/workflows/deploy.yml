@@ -101,6 +101,7 @@ jobs:
       api_changed: ${{ steps.set-matrix.outputs.api_changed }}
       web_changed: ${{ steps.set-matrix.outputs.web_changed }}
       agent_runtime_changed: ${{ steps.set-matrix.outputs.agent_runtime_changed }}
+      project_runtime_changed: ${{ steps.set-matrix.outputs.project_runtime_changed }}
       docs_changed: ${{ steps.set-matrix.outputs.docs_changed }}
     steps:
       - name: Checkout code
@@ -140,6 +141,7 @@ jobs:
           SDK=$(has_match '^packages/sdk/')
           SHARED_RUNTIME=$(has_match '^packages/shared-runtime/')
           AGENT_RUNTIME_PKG=$(has_match '^packages/agent-runtime/')
+          PROJECT_RUNTIME_PKG=$(has_match '^packages/project-runtime/')
           API_APP=$(has_match '^(apps/api/|prisma/|prisma\.config\.ts|templates/runtime-template/)')
           WEB_APP=$(has_match '^(apps/mobile/|packages/domain-stores/|packages/shared-app/|packages/shared-ui/|packages/ui-kit/)')
           DOCS_APP=$(has_match '^apps/docs/')
@@ -159,6 +161,11 @@ jobs:
             AGENT_RUNTIME_CHANGED=true
           fi
 
+          PROJECT_RUNTIME_CHANGED=false
+          if [ "$SHARED" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$PROJECT_RUNTIME_PKG" = "true" ]; then
+            PROJECT_RUNTIME_CHANGED=true
+          fi
+
           DOCS_CHANGED=false
           if [ "$DOCS_APP" = "true" ]; then
             DOCS_CHANGED=true
@@ -167,6 +174,7 @@ jobs:
           echo "api_changed=$API_CHANGED" >> $GITHUB_OUTPUT
           echo "web_changed=$WEB_CHANGED" >> $GITHUB_OUTPUT
           echo "agent_runtime_changed=$AGENT_RUNTIME_CHANGED" >> $GITHUB_OUTPUT
+          echo "project_runtime_changed=$PROJECT_RUNTIME_CHANGED" >> $GITHUB_OUTPUT
           echo "docs_changed=$DOCS_CHANGED" >> $GITHUB_OUTPUT
 
           ENTRIES=""
@@ -178,6 +186,7 @@ jobs:
           [ "$API_CHANGED" = "true" ] && add_entry '{"image":"api","dockerfile":"apps/api/Dockerfile","ecr_name":"shogo-api","build_args":"api"}'
           [ "$WEB_CHANGED" = "true" ] && add_entry '{"image":"web","dockerfile":"apps/mobile/Dockerfile","ecr_name":"shogo-web","build_args":"web"}'
           [ "$AGENT_RUNTIME_CHANGED" = "true" ] && add_entry '{"image":"agent-runtime","dockerfile":"packages/agent-runtime/Dockerfile","ecr_name":"agent-runtime","build_args":""}'
+          [ "$PROJECT_RUNTIME_CHANGED" = "true" ] && add_entry '{"image":"project-runtime","dockerfile":"packages/project-runtime/Dockerfile","ecr_name":"project-runtime","build_args":""}'
           [ "$DOCS_CHANGED" = "true" ] && add_entry '{"image":"docs","dockerfile":"apps/docs/Dockerfile","ecr_name":"shogo-docs","build_args":""}'
 
           if [ -z "$ENTRIES" ]; then
@@ -194,6 +203,7 @@ jobs:
           echo "  api: $API_CHANGED"
           echo "  web: $WEB_CHANGED"
           echo "  agent-runtime: $AGENT_RUNTIME_CHANGED"
+          echo "  project-runtime: $PROJECT_RUNTIME_CHANGED"
           echo "  docs: $DOCS_CHANGED"
 
   # ===========================================================================
@@ -245,7 +255,7 @@ jobs:
 
     steps:
       - name: Free disk space (large runtime images)
-        if: matrix.image == 'agent-runtime'
+        if: matrix.image == 'agent-runtime' || matrix.image == 'project-runtime'
         uses: jlumbroso/free-disk-space@main
         with:
           # Frees ~31GB - keeps only what's needed for Docker builds
@@ -520,7 +530,7 @@ jobs:
           kubectl wait --for=condition=ready ksvc/docs -n ${{ env.NS_SYSTEM }} --timeout=300s || true
 
       - name: Restart image prepuller
-        if: needs.detect-changes.outputs.agent_runtime_changed == 'true'
+        if: needs.detect-changes.outputs.agent_runtime_changed == 'true' || needs.detect-changes.outputs.project_runtime_changed == 'true'
         run: |
           echo "🔄 Restarting image-prepuller to pull new runtime images..."
           
@@ -588,6 +598,7 @@ jobs:
           API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
           WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
           AGENT_RUNTIME_CHANGED: ${{ needs.detect-changes.outputs.agent_runtime_changed }}
+          PROJECT_RUNTIME_CHANGED: ${{ needs.detect-changes.outputs.project_runtime_changed }}
           DOCS_CHANGED: ${{ needs.detect-changes.outputs.docs_changed }}
         run: |
           echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
@@ -603,6 +614,7 @@ jobs:
           [ "$API_CHANGED" = "true" ] && echo "| API | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| API | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
           [ "$WEB_CHANGED" = "true" ] && echo "| Web | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| Web | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
           [ "$AGENT_RUNTIME_CHANGED" = "true" ] && echo "| Agent Runtime | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| Agent Runtime | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
+          [ "$PROJECT_RUNTIME_CHANGED" = "true" ] && echo "| Project Runtime | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| Project Runtime | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
           [ "$DOCS_CHANGED" = "true" ] && echo "| Docs | 🟢 Deployed \`${{ env.IMAGE_TAG }}\` |" >> $GITHUB_STEP_SUMMARY || echo "| Docs | ⏭️ Skipped (no changes) |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Endpoints" >> $GITHUB_STEP_SUMMARY

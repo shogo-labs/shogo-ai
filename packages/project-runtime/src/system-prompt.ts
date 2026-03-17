@@ -23,6 +23,8 @@ export function buildSystemPrompt(projectDir: string, themeContext?: string, bui
 All project files are in ${projectDir}. Your current working directory is ${projectDir}.
 When running commands, you are already in the project directory - use relative paths (e.g., \`src/\`, \`prisma/schema.prisma\`).
 
+${REQUIRED_FIRST_STEP}
+
 ${TEMPLATE_SELECTION_GUIDE}
 
 ${DECISION_RULES}
@@ -53,6 +55,22 @@ ${ENVIRONMENT_AWARENESS}`
   
   return prompt
 }
+
+// =============================================================================
+// Required First Step — Template Check
+// =============================================================================
+
+export const REQUIRED_FIRST_STEP = `## REQUIRED FIRST STEP — Template Check (MANDATORY)
+
+**Before writing ANY code for a new project, you MUST check for a matching template.**
+
+1. Call \`mcp__shogo__template_list({})\` to see all available templates
+2. If a template matches the request (even partially), use \`mcp__shogo__template_copy\` to scaffold the project
+3. Only build from scratch if NO template is even remotely applicable
+
+Templates include pre-built UI, database schemas, authentication, and API routes.
+Using a template saves significant time and produces higher-quality results.
+**Skipping this step is a mistake** — templates handle setup that takes dozens of tool calls to replicate manually.`
 
 // =============================================================================
 // [DSPy-Optimized] Template Selection Guide
@@ -97,10 +115,14 @@ export const DECISION_RULES = `## Decision Rules
    - "Build something for my business" → Ask what specific functionality they need
    - "I need to track things" → Ask what they want to track
 
-4. **No Match** → Explain limitation and offer alternatives
-   - "Build a game" → Explain we don't have gaming templates
-   - "Weather app" → Explain weather data not supported
-   - "E-commerce store" → Explain full e-commerce not available`
+4. **Partial Match** → Use the closest template, then customize
+   - "Recipe manager" → Use inventory (similar data model: items, categories)
+   - "Student grades" → Use expense-tracker (similar: entries with amounts/scores)
+   - Start from the closest template and modify schema + UI afterward
+
+5. **No Match At All** → Build from scratch (rare)
+   - Only if the request has zero overlap with any template
+   - Still use \`_template\` base infrastructure for consistent project structure`
 
 // =============================================================================
 // Tool Usage (static)
@@ -643,11 +665,12 @@ export const ENVIRONMENT_AWARENESS = `## Runtime Environment
 **This project runs inside a managed Shogo runtime container.** Key facts:
 
 ### Database
-- **DATABASE_URL** is pre-configured as an environment variable pointing to a provisioned PostgreSQL database.
-- Do NOT install, run, or configure a local database (no Docker, no SQLite fallback).
-- Do NOT modify DATABASE_URL — it is managed by the platform.
-- Use \`process.env.DATABASE_URL\` in Prisma schema and application code.
-- The database is PostgreSQL 17 (CloudNativePG managed).
+- **DATABASE_URL** defaults to \`file:./prisma/dev.db\` (SQLite) for development.
+- Use \`provider = "sqlite"\` in your Prisma schema during development.
+- Use \`process.env.DATABASE_URL\` in application code — it is auto-configured.
+- Do NOT install a separate database server (no Docker, no PostgreSQL) — SQLite is the dev database.
+- The SQLite file is persisted via S3 workspace sync across pod restarts.
+- When the app is published, the database is automatically migrated to PostgreSQL.
 
 ### Runtime
 - **Node.js** and **bun** are available.

@@ -7,37 +7,30 @@
  * Platform lives at shogo.ai, published apps at shogo.one for isolation.
  * 
  * Architecture:
- *   1. Provision database on shared CloudNativePG cluster (if not exists)
- *   2. Trigger build in project-runtime pod
- *   3. Download built dist/ files from pod
- *   4. Upload to S3 bucket
- *   5. Invalidate CloudFront cache
- *   6. Serve via CloudFront CDN at {subdomain}.shogo.one
- *
- * Future: Deploy published Node server as a lightweight Knative Service
- * that connects to the provisioned database for API routes.
+ *   1. Trigger build in dev project-runtime pod
+ *   2. Download built dist/ files from pod
+ *   3. Upload to S3 bucket (persistent storage)
+ *   4. Create nginx Knative Service that syncs from S3 via init container
+ *   5. Create DomainMapping: {subdomain}.shogo.one -> published-{projectId}
+ *   6. Traffic: *.shogo.one DNS -> Kourier ALB -> Knative Service -> nginx
  */
 
 import { Hono } from "hono"
 import { resolve } from "path"
 import { S3Client, PutObjectCommand, DeleteObjectsCommand, ListObjectsV2Command } from "@aws-sdk/client-s3"
-import { CloudFrontClient, CreateInvalidationCommand } from "@aws-sdk/client-cloudfront"
 import { prisma } from "../lib/prisma"
 import * as checkpointService from "../services/checkpoint.service"
-import * as databaseService from "../services/database.service"
 
 // Workspaces directory for checkpoint creation
 const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(__dirname, '../../../../workspaces')
 
-// S3 and CloudFront configuration
+// S3 configuration (CloudFront removed -- published apps route through Kourier ALB)
 const PUBLISH_BUCKET = process.env.PUBLISH_BUCKET || "shogo-published-apps-staging"
-const PUBLISH_CLOUDFRONT_ID = process.env.PUBLISH_CLOUDFRONT_ID || ""
 const PUBLISH_DOMAIN = process.env.PUBLISH_DOMAIN || "shogo.one"
 const AWS_REGION = process.env.S3_REGION || process.env.AWS_REGION || "us-east-1"
 
 // Initialize AWS clients
 const s3Client = new S3Client({ region: AWS_REGION })
-const cloudfrontClient = PUBLISH_CLOUDFRONT_ID ? new CloudFrontClient({ region: AWS_REGION }) : null
 
 // Check if we're in Kubernetes (S3 publishing mode) or local dev
 function isKubernetes(): boolean {
@@ -222,31 +215,6 @@ async function deleteFromS3(subdomain: string): Promise<void> {
 }
 
 /**
- * Invalidate CloudFront cache for a subdomain
- */
-async function invalidateCloudFront(subdomain: string): Promise<void> {
-  if (!cloudfrontClient || !PUBLISH_CLOUDFRONT_ID) {
-    console.log(`[Publish] CloudFront not configured, skipping invalidation`)
-    return
-  }
-  
-  console.log(`[Publish] Invalidating CloudFront cache for ${subdomain}`)
-  
-  await cloudfrontClient.send(new CreateInvalidationCommand({
-    DistributionId: PUBLISH_CLOUDFRONT_ID,
-    InvalidationBatch: {
-      CallerReference: `${subdomain}-${Date.now()}`,
-      Paths: {
-        Quantity: 1,
-        Items: [`/${subdomain}/*`],
-      },
-    },
-  }))
-  
-  console.log(`[Publish] CloudFront invalidation created`)
-}
-
-/**
  * Create publish routes
  */
 export function publishRoutes() {
@@ -331,18 +299,6 @@ export function publishRoutes() {
         }
       }
 
-      // Ensure project database exists on shared CloudNativePG cluster
-      // This is idempotent - if the database already exists, it just updates credentials
-      let publishedDbUrl: string | null = null
-      try {
-        const dbInfo = await databaseService.provisionDatabase(projectId)
-        publishedDbUrl = dbInfo.connectionUrl
-        console.log(`[Publish] Database provisioned: ${dbInfo.databaseName}`)
-      } catch (err: any) {
-        console.warn("[Publish] Database provisioning failed (non-blocking):", err.message)
-        // Continue - the project might not need a database (static site)
-      }
-
       // In Kubernetes: Build, download, and upload to S3
       if (isKubernetes()) {
         // Step 1: Trigger build
@@ -380,12 +336,17 @@ export function publishRoutes() {
           }, 500)
         }
 
-        // Step 4: Invalidate CloudFront cache
+        // Step 4: Create/update published Knative service (nginx + S3 init container)
         try {
-          await invalidateCloudFront(subdomain)
+          const { getKnativeProjectManager } = await import("../lib/knative-project-manager")
+          const manager = getKnativeProjectManager()
+          const serviceUrl = await manager.createPublishedService(projectId, subdomain)
+          console.log(`[Publish] Published service created: ${serviceUrl}`)
+
+          // Step 5: Create DomainMapping {subdomain}.shogo.one -> published-{projectId}
+          await manager.createPublishedDomainMapping(subdomain, projectId)
         } catch (err: any) {
-          console.warn("[Publish] CloudFront invalidation failed:", err)
-          // Don't fail the publish for this - it will eventually expire
+          console.warn("[Publish] Published service/DomainMapping creation failed:", err.message)
         }
       } else {
         // Local development: Just log and update database
@@ -457,19 +418,24 @@ export function publishRoutes() {
         return c.json({ error: { code: "not_published", message: "Project is not published" } }, 400)
       }
 
-      // Delete files from S3
+      // Delete DomainMapping, Knative service, and S3 files
       if (isKubernetes()) {
         try {
+          const { getKnativeProjectManager } = await import("../lib/knative-project-manager")
+          const manager = getKnativeProjectManager()
+          await manager.deletePublishedDomainMapping(project.publishedSubdomain)
+          await manager.deletePublishedService(projectId)
+          console.log(`[Publish] Published service + DomainMapping deleted for ${projectId}`)
+        } catch (err: any) {
+          console.warn("[Publish] Failed to delete published service:", err.message)
+        }
+
+        try {
           await deleteFromS3(project.publishedSubdomain)
-          await invalidateCloudFront(project.publishedSubdomain)
         } catch (err) {
           console.warn("[Publish] Failed to delete from S3:", err)
         }
       }
-
-      // Note: We intentionally keep the project database on unpublish.
-      // The database is shared with the development environment and dropping
-      // it would destroy user data. Database cleanup happens on project deletion.
 
       // Clear publish info from project
       await prisma.project.update({
@@ -511,7 +477,6 @@ export function publishRoutes() {
       const subdomain = project.publishedSubdomain
 
       if (isKubernetes()) {
-        // Rebuild and republish
         const buildResult = await triggerBuild(projectId)
         if (!buildResult.success) {
           return c.json({
@@ -527,7 +492,15 @@ export function publishRoutes() {
         }
 
         await uploadToS3(subdomain, files)
-        await invalidateCloudFront(subdomain)
+
+        // Force a new Knative revision so the init container re-syncs from S3
+        try {
+          const { getKnativeProjectManager } = await import("../lib/knative-project-manager")
+          const manager = getKnativeProjectManager()
+          await manager.forcePublishedRevision(projectId)
+        } catch (err: any) {
+          console.warn("[Publish] Failed to force new revision:", err.message)
+        }
       }
 
       // Update publishedAt timestamp

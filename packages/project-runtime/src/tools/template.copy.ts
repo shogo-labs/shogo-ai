@@ -969,10 +969,10 @@ export async function executeTemplateCopy(
     ensureBaseInfrastructure(projectDir)
     timer.mark('ensureBaseInfrastructure')
 
-    if (isEvalMode()) {
-      convertToSqliteMode(projectDir)
-      timer.mark('convertToSqliteMode')
-    } else {
+    // Always convert to SQLite for development (templates ship with PostgreSQL config)
+    convertToSqliteMode(projectDir)
+    timer.mark('convertToSqliteMode')
+    if (!isEvalMode()) {
       sanitizeEnvFile(projectDir)
       timer.mark('sanitizeEnvFile')
     }

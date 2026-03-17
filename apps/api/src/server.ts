@@ -3853,6 +3853,7 @@ app.post('/api/chat', async (c) => {
         let currentToolId: string | null = null
         let currentToolName: string | null = null
         let currentToolInput = ''
+        let currentThinkingId: string | null = null
         // Track tool IDs already emitted via stream_event to avoid duplicates
         const streamedToolIds = new Set<string>()
         let resultUsage: any = null
@@ -3905,10 +3906,21 @@ app.post('/api/chat', async (c) => {
                 }
                 case 'content_block_start': {
                   const block = event.content_block
-                  if (block?.type === 'text') {
+                  if (block?.type === 'thinking') {
+                    currentThinkingId = `reasoning-${Date.now()}-${event.index}`
+                    writer.write({ type: 'reasoning-start', id: currentThinkingId })
+                  } else if (block?.type === 'text') {
+                    if (currentThinkingId) {
+                      writer.write({ type: 'reasoning-end', id: currentThinkingId })
+                      currentThinkingId = null
+                    }
                     currentTextId = `text-${Date.now()}-${event.index}`
                     writer.write({ type: 'text-start', id: currentTextId })
                   } else if (block?.type === 'tool_use') {
+                    if (currentThinkingId) {
+                      writer.write({ type: 'reasoning-end', id: currentThinkingId })
+                      currentThinkingId = null
+                    }
                     if (currentTextId) {
                       writer.write({ type: 'text-end', id: currentTextId })
                       currentTextId = null
@@ -3929,7 +3941,11 @@ app.post('/api/chat', async (c) => {
                 }
                 case 'content_block_delta': {
                   const delta = event.delta
-                  if (delta?.type === 'text_delta' && delta.text) {
+                  if (delta?.type === 'thinking_delta' && delta.thinking) {
+                    if (currentThinkingId) {
+                      writer.write({ type: 'reasoning-delta', id: currentThinkingId, delta: delta.thinking })
+                    }
+                  } else if (delta?.type === 'text_delta' && delta.text) {
                     if (!currentTextId) {
                       currentTextId = `text-${Date.now()}-${event.index}`
                       writer.write({ type: 'text-start', id: currentTextId })
@@ -3953,6 +3969,10 @@ app.post('/api/chat', async (c) => {
                   break
                 }
                 case 'content_block_stop': {
+                  if (currentThinkingId) {
+                    writer.write({ type: 'reasoning-end', id: currentThinkingId })
+                    currentThinkingId = null
+                  }
                   if (currentTextId) {
                     writer.write({ type: 'text-end', id: currentTextId })
                     currentTextId = null
@@ -3993,6 +4013,10 @@ app.post('/api/chat', async (c) => {
                   break
                 }
                 case 'message_stop': {
+                  if (currentThinkingId) {
+                    writer.write({ type: 'reasoning-end', id: currentThinkingId })
+                    currentThinkingId = null
+                  }
                   if (currentTextId) {
                     writer.write({ type: 'text-end', id: currentTextId })
                     currentTextId = null
@@ -4082,7 +4106,12 @@ app.post('/api/chat', async (c) => {
                 // No streaming — emit everything from the complete message
                 if (content && Array.isArray(content)) {
                   for (const block of content) {
-                    if (block.type === 'text' && block.text) {
+                    if (block.type === 'thinking' && block.thinking) {
+                      const thinkId = `reasoning-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+                      writer.write({ type: 'reasoning-start', id: thinkId })
+                      writer.write({ type: 'reasoning-delta', id: thinkId, delta: block.thinking })
+                      writer.write({ type: 'reasoning-end', id: thinkId })
+                    } else if (block.type === 'text' && block.text) {
                       const textId = `text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
                       writer.write({ type: 'text-start', id: textId })
                       writer.write({ type: 'text-delta', id: textId, delta: block.text })

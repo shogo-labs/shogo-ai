@@ -1,17 +1,8 @@
 # =============================================================================
-# Image Pre-Puller DaemonSet
+# Image Pre-Puller DaemonSet - Production
 # =============================================================================
-# Ensures both runtime images (agent + project) are pre-pulled on all nodes.
-# Dramatically reduces cold start times by eliminating the 60+ second
-# image pull delay when new pods are scheduled.
-#
-# How it works:
-# 1. DaemonSet runs one pod on every node
-# 2. The pod uses the runtime images but just sleeps
-# 3. This causes images to be pulled to every node
-# 4. When runtime pods start, the image is already cached locally
-#
-# Resource Usage: Minimal (just sleeping containers per node)
+# Pre-pulls agent-runtime and project-runtime images on all nodes to
+# eliminate 60+ second image pull delays during cold starts.
 # =============================================================================
 apiVersion: apps/v1
 kind: DaemonSet
@@ -22,6 +13,7 @@ metadata:
     app.kubernetes.io/name: image-prepuller
     app.kubernetes.io/part-of: shogo
     app.kubernetes.io/component: infrastructure
+    environment: production
 spec:
   selector:
     matchLabels:
@@ -29,17 +21,17 @@ spec:
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 100%  # All pods can be unavailable during update
+      maxUnavailable: 1
+      maxSurge: 0
   template:
     metadata:
       labels:
         app.kubernetes.io/name: image-prepuller
         app.kubernetes.io/part-of: shogo
+        environment: production
     spec:
-      # Run on all nodes including system nodes
       tolerations:
         - operator: Exists
-      # Low priority - don't block other workloads
       priorityClassName: ""
       containers:
         - name: project-runtime-prepull
@@ -99,5 +91,4 @@ spec:
             capabilities:
               drop:
                 - ALL
-      # Restart if container fails
       restartPolicy: Always

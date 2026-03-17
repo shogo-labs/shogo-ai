@@ -78,7 +78,7 @@ export function resolveModel(provider: string, modelId: string): Model<Api> {
       api: provider === 'anthropic' ? 'anthropic-messages' : 'openai-completions',
       provider,
       baseUrl: getDefaultBaseUrl(provider),
-      reasoning: false,
+      reasoning: true,
       input: ['text', 'image'],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 200000,

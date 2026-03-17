@@ -27,7 +27,7 @@ import {
   useDomainActions,
   useDomainHttp,
 } from '../../contexts/domain'
-import { CompactChatInput } from '../../components/chat/CompactChatInput'
+import { CompactChatInput, type ProjectType } from '../../components/chat/CompactChatInput'
 import type { FileAttachment } from '../../components/chat/ChatInput'
 import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
@@ -289,6 +289,7 @@ const HomeScreen = observer(function HomeScreen() {
   const [prompt, setPrompt] = useState('')
   const [isCreating, setIsCreating] = useState(false)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
+  const [projectType, setProjectType] = useState<ProjectType>('AGENT')
   const [homeTemplates, setHomeTemplates] = useState<AgentTemplate[]>([])
   const [activeTab, setActiveTab] = useState<'projects' | 'shared' | 'templates'>('templates')
 
@@ -402,7 +403,7 @@ const HomeScreen = observer(function HomeScreen() {
           currentWorkspace.id,
           undefined,
           user.id,
-          'AGENT',
+          projectType,
         )
       } catch (err: any) {
         const detail = err?.message || err?.details?.error?.message || String(err)
@@ -442,7 +443,7 @@ const HomeScreen = observer(function HomeScreen() {
     } finally {
       setIsCreating(false)
     }
-  }, [actions, user?.id, currentWorkspace?.id, projects, router, posthog])
+  }, [actions, user?.id, currentWorkspace?.id, projects, router, posthog, projectType])
 
   const handleTemplatePress = useCallback(async (template: AgentTemplate) => {
     if (!user?.id || !currentWorkspace?.id) {
@@ -548,6 +549,8 @@ const HomeScreen = observer(function HomeScreen() {
                 placeholder="Ask Shogo to create..."
                 value={prompt}
                 onChange={setPrompt}
+                projectType={projectType}
+                onProjectTypeChange={setProjectType}
               />
             </View>
           </View>
@@ -559,6 +562,8 @@ const HomeScreen = observer(function HomeScreen() {
           style={{
             marginTop: -24,
             paddingTop: 20,
+            marginLeft: 20,
+            marginRight: 20,
           }}
         >
           <View className="flex-row items-center justify-between px-6 mb-5">

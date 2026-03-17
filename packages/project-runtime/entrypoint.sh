@@ -434,36 +434,38 @@ if [ -f "$PROJECT_DIR/prisma/schema.prisma" ] && [ "$PROJECT_ID" != "__POOL__" ]
   echo "prisma-setup" > "$BUILD_STATUS_FILE"
   STEP_START=$(date +%s%3N)
   
-  # Wait for PostgreSQL to be ready before running Prisma commands
-  # Supports both local sidecar (localhost) and remote shared cluster (CloudNativePG)
-  # Parse host from DATABASE_URL, fallback to localhost
-  PG_HOST="localhost"
-  PG_PORT="5432"
-  if [ -n "$DATABASE_URL" ]; then
-    # Extract host and port from postgres://user:pass@host:port/db
-    PG_HOST=$(echo "$DATABASE_URL" | sed -n 's|.*@\([^:/]*\).*|\1|p')
-    PG_PORT=$(echo "$DATABASE_URL" | sed -n 's|.*@[^:]*:\([0-9]*\)/.*|\1|p')
-    PG_PORT="${PG_PORT:-5432}"
-  fi
-  bg_log "Waiting for PostgreSQL at ${PG_HOST}:${PG_PORT}..."
-  MAX_RETRIES=30
-  RETRY_COUNT=0
-  PG_READY=false
-  
-  while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    # Try TCP connection check (works for both local and remote postgres)
-    if nc -z "$PG_HOST" "$PG_PORT" 2>/dev/null || (echo > /dev/tcp/"$PG_HOST"/"$PG_PORT") 2>/dev/null; then
-      PG_READY=true
-      bg_log "PostgreSQL is ready at ${PG_HOST}:${PG_PORT} (attempt $((RETRY_COUNT + 1)))"
-      break
+  # Skip PostgreSQL wait for SQLite (DATABASE_URL starts with "file:")
+  if echo "${DATABASE_URL:-}" | grep -q '^file:'; then
+    bg_log "SQLite mode detected (DATABASE_URL=${DATABASE_URL}) — skipping PostgreSQL wait"
+  else
+    # Wait for PostgreSQL to be ready before running Prisma commands
+    # Supports both local sidecar (localhost) and remote shared cluster (CloudNativePG)
+    PG_HOST="localhost"
+    PG_PORT="5432"
+    if [ -n "$DATABASE_URL" ]; then
+      PG_HOST=$(echo "$DATABASE_URL" | sed -n 's|.*@\([^:/]*\).*|\1|p')
+      PG_PORT=$(echo "$DATABASE_URL" | sed -n 's|.*@[^:]*:\([0-9]*\)/.*|\1|p')
+      PG_PORT="${PG_PORT:-5432}"
     fi
-    RETRY_COUNT=$((RETRY_COUNT + 1))
-    sleep 0.5
-  done
-  
-  if [ "$PG_READY" = false ]; then
-    bg_log "WARNING: PostgreSQL readiness check timed out after ${MAX_RETRIES} attempts at ${PG_HOST}:${PG_PORT}"
-    bg_log "Continuing anyway - Prisma may fail"
+    bg_log "Waiting for PostgreSQL at ${PG_HOST}:${PG_PORT}..."
+    MAX_RETRIES=30
+    RETRY_COUNT=0
+    PG_READY=false
+    
+    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+      if nc -z "$PG_HOST" "$PG_PORT" 2>/dev/null || (echo > /dev/tcp/"$PG_HOST"/"$PG_PORT") 2>/dev/null; then
+        PG_READY=true
+        bg_log "PostgreSQL is ready at ${PG_HOST}:${PG_PORT} (attempt $((RETRY_COUNT + 1)))"
+        break
+      fi
+      RETRY_COUNT=$((RETRY_COUNT + 1))
+      sleep 0.5
+    done
+    
+    if [ "$PG_READY" = false ]; then
+      bg_log "WARNING: PostgreSQL readiness check timed out after ${MAX_RETRIES} attempts at ${PG_HOST}:${PG_PORT}"
+      bg_log "Continuing anyway - Prisma may fail"
+    fi
   fi
   
   # Use the LOCAL prisma binary from node_modules (not bunx which uses a global cache
@@ -525,6 +527,19 @@ if [ -f "$PROJECT_DIR/prisma/schema.prisma" ] && [ "$PROJECT_ID" != "__POOL__" ]
   
   if [ "$PUSH_SUCCESS" = false ]; then
     bg_log "Prisma db push failed after ${PUSH_RETRIES} attempts (non-fatal)"
+  fi
+  
+  # SQLite → PostgreSQL data migration for published apps
+  # Runs after prisma db push creates the PG schema, copies row data from dev.db
+  if [ "$PUBLISHED_MODE" = "true" ] && [ -f "$PROJECT_DIR/prisma/dev.db" ] && echo "${DATABASE_URL:-}" | grep -q '^postgres'; then
+    bg_log "Published mode: migrating SQLite data to PostgreSQL..."
+    MIGRATE_START=$(date +%s%3N)
+    if bun run /app/packages/project-runtime/src/sqlite-to-pg-migrate.ts 2>&1; then
+      MIGRATE_END=$(date +%s%3N)
+      bg_log "SQLite → PostgreSQL migration completed ($((MIGRATE_END - MIGRATE_START))ms)"
+    else
+      bg_log "⚠️ SQLite → PostgreSQL migration failed (non-fatal, app may have empty data)"
+    fi
   fi
 elif [ "$PROJECT_ID" = "__POOL__" ] || [ "$WARM_POOL_MODE" = "true" ]; then
   bg_log "Step 4/4: SKIPPED Prisma setup (pool mode — no DATABASE_URL until project assigned)"

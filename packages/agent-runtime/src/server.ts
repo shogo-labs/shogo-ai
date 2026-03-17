@@ -13,35 +13,6 @@
  * with an Agent Gateway that makes the configured agent "alive."
  */
 
-// =============================================================================
-// OpenTelemetry - Initialize before anything else
-// =============================================================================
-import { initInstrumentation, traceOperation, createLogger } from '@shogo/shared-runtime'
-initInstrumentation({ serviceName: 'shogo-agent-runtime' })
-
-const log = createLogger('agent-runtime', {
-  projectId: process.env.PROJECT_ID,
-  poolMode: process.env.WARM_POOL_MODE === 'true' || process.env.PROJECT_ID === '__POOL__',
-})
-
-const SERVER_START_TIME = Date.now()
-const ENTRYPOINT_START_TIME = process.env.STARTUP_TIME
-  ? parseInt(process.env.STARTUP_TIME, 10)
-  : SERVER_START_TIME
-
-function logTiming(message: string): void {
-  const now = Date.now()
-  const fromEntrypoint = ENTRYPOINT_START_TIME ? now - ENTRYPOINT_START_TIME : 0
-  const fromServer = now - SERVER_START_TIME
-  console.log(
-    `[agent-runtime] [+${fromEntrypoint}ms total, +${fromServer}ms server] ${message}`
-  )
-}
-
-logTiming('Server module loading...')
-
-import { Hono } from 'hono'
-import { cors } from 'hono/cors'
 import { createUIMessageStream, createUIMessageStreamResponse } from 'ai'
 import { resolve, dirname, join, extname } from 'path'
 import {
@@ -55,6 +26,7 @@ import {
   rmSync,
 } from 'fs'
 import {
+  createRuntimeApp, traceOperation,
   initializeS3Sync,
   initializePostgresBackup,
   configureAIProxy,
@@ -75,22 +47,12 @@ const MONOREPO_ROOT = resolve(__dirname, '../../..')
 // Configuration
 // =============================================================================
 
-logTiming('Loading configuration...')
-
-const POOL_PROJECT_ID = '__POOL__'
-let currentProjectId = process.env.PROJECT_ID
 const AGENT_DIR = process.env.AGENT_DIR || process.env.PROJECT_DIR || '/app/agent'
 const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
 const MCP_SERVER_PATH =
   process.env.MCP_SERVER_PATH ||
   resolve(MONOREPO_ROOT, 'packages/agent-runtime/src/tools/mcp-server.ts')
 const PORT = parseInt(process.env.PORT || '8080', 10)
-
-const IS_POOL_MODE = currentProjectId === POOL_PROJECT_ID || process.env.WARM_POOL_MODE === 'true'
-let poolAssigned = false
-let poolAssignedAt: number | null = null
-let lastRequestAt: number = Date.now()
-const INTERNAL_PATHS = new Set(['/health', '/ready', '/pool/activity', '/pool/assign', '/agent/heartbeat/trigger'])
 
 const SA_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token'
 
@@ -131,35 +93,54 @@ async function reportHeartbeatComplete(projectId: string): Promise<void> {
   }
 }
 
-if (!currentProjectId) {
-  console.error(
-    '[agent-runtime] ERROR: PROJECT_ID environment variable is required'
-  )
-  process.exit(1)
-}
+// =============================================================================
+// Shared Server Framework (handles OTEL, CORS, auth, health, pool/assign)
+// =============================================================================
 
-if (IS_POOL_MODE) {
-  logTiming('Starting in WARM POOL mode (awaiting project assignment)')
+let agentGateway: AgentGateway | null = null
+let s3SyncInstance: import('@shogo/shared-runtime').S3Sync | null = null
 
-  // Self-assign: if this pod was previously promoted (has ASSIGNED_PROJECT),
-  // fetch config from the API and apply it so the pod resumes serving.
-  const { checkSelfAssign } = await import('@shogo/shared-runtime')
-  const selfAssignConfig = await checkSelfAssign()
-  if (selfAssignConfig) {
-    logTiming(`[self-assign] Applying config for project ${selfAssignConfig.projectId}`)
-    currentProjectId = selfAssignConfig.projectId
-    process.env.PROJECT_ID = selfAssignConfig.projectId
-    for (const [key, value] of Object.entries(selfAssignConfig.env)) {
-      if (typeof value === 'string') process.env[key] = value
+const { app, state, logTiming } = await createRuntimeApp({
+  name: 'agent-runtime',
+  workDir: AGENT_DIR,
+  runtimeType: 'agent',
+  internalPaths: ['/agent/heartbeat/trigger'],
+  authPrefixes: ['/agent', '/pool'],
+  async onAssign(projectId, envVars) {
+    // Clean workspace to prevent cross-project file leakage
+    for (const subdir of ['files', 'memory', 'skills']) {
+      const dirPath = join(AGENT_DIR, subdir)
+      if (existsSync(dirPath)) {
+        rmSync(dirPath, { recursive: true, force: true })
+        mkdirSync(dirPath, { recursive: true })
+      }
     }
-    poolAssigned = true
-    poolAssignedAt = Date.now()
-    logTiming(`[self-assign] Self-assigned to ${selfAssignConfig.projectId}`)
-  }
-} else {
-  logTiming(`Configuration loaded for agent: ${currentProjectId}`)
-}
-console.log(`[agent-runtime] Agent directory: ${AGENT_DIR}`)
+
+    // Run essential initialization (workspace files, S3 sync, config)
+    await initializeEssentials()
+
+    // Start gateway in background — don't block the assign response
+    startGateway().catch((error) => {
+      console.error(`[agent-runtime] Background gateway start failed for ${projectId}:`, error.message)
+    })
+  },
+  getActivityStats() {
+    const sm = agentGateway?.getSessionManager()
+    const stats = sm?.getAllStats() ?? []
+    const now = Date.now()
+    const lastSessionActivity = stats.reduce(
+      (max: number, s) => Math.max(max, now - (s.idleSeconds ?? 0) * 1000),
+      state.poolAssignedAt ?? state.serverStartTime
+    )
+    return { activeSessions: stats.length, lastActivityAt: lastSessionActivity }
+  },
+  getHealthExtra: () => ({
+    gateway: agentGateway?.getStatus() ?? null,
+  }),
+})
+
+// Readiness probe
+app.get('/ready', (c) => c.json({ ready: true }))
 
 // =============================================================================
 // Agent Workspace Bootstrap
@@ -184,28 +165,7 @@ function ensureWorkspaceFiles(): void {
   logTiming('Workspace defaults seeded')
 }
 
-// =============================================================================
-// AI Proxy Configuration
-// =============================================================================
-
-// configureAIProxy() throws when AI_PROXY_URL is set but no token is available,
-// preventing silent fallback to a raw platform ANTHROPIC_API_KEY.
-// In pool mode, the token isn't available yet — it's injected via /pool/assign.
-let aiProxy: ReturnType<typeof configureAIProxy>
-if (IS_POOL_MODE) {
-  aiProxy = { useProxy: false, env: {} }
-  logTiming('Pool mode: deferring AI proxy configuration until assignment')
-} else {
-  try {
-    aiProxy = configureAIProxy({ logPrefix: 'agent-runtime' })
-  } catch (err: any) {
-    console.error(`[agent-runtime] FATAL: ${err.message}`)
-    process.exit(1)
-  }
-}
-if (aiProxy.useProxy) {
-  Object.assign(process.env, aiProxy.env)
-}
+// AI proxy is configured by the shared framework (state.aiProxy)
 
 // =============================================================================
 // Write CLAUDE.md for Claude Code to load
@@ -236,7 +196,7 @@ function writeAgentConfigFiles(): void {
         command: 'bun',
         args: ['run', MCP_SERVER_PATH],
         env: {
-          PROJECT_ID: currentProjectId!,
+          PROJECT_ID: state.currentProjectId!,
           AGENT_DIR,
           MCP_CONTEXT: 'agent',
         },
@@ -251,9 +211,6 @@ function writeAgentConfigFiles(): void {
 // =============================================================================
 // Agent Gateway Instance
 // =============================================================================
-
-let agentGateway: AgentGateway | null = null
-let s3SyncInstance: import('@shogo/shared-runtime').S3Sync | null = null
 
 let gatewayReadyResolve: (() => void) | null = null
 let gatewayReadyPromise: Promise<void> | null = null
@@ -298,68 +255,8 @@ function wrapStreamWithKeepalive(
   })
 }
 
-// =============================================================================
-// Hono Server
-// =============================================================================
-
-const app = new Hono()
-
-app.use('*', cors({
-  origin: (origin) => {
-    const allowed = process.env.ALLOWED_ORIGINS?.split(',').map(o => o.trim()) || []
-    if (!origin) return '*'
-    if (allowed.length > 0 && allowed.includes(origin)) return origin
-    if (origin.startsWith('http://localhost:') || origin.startsWith('https://localhost:')) return origin
-    return allowed[0] || origin
-  },
-  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization', 'X-Runtime-Token', 'X-Session-Id', 'X-User-Id', 'X-Billing-User-Id'],
-  credentials: true,
-}))
-
-// Track last external HTTP request for idle detection (excludes internal probes)
-app.use('*', async (c, next) => {
-  if (!INTERNAL_PATHS.has(c.req.path)) {
-    lastRequestAt = Date.now()
-  }
-  await next()
-})
-
-// Authenticate /agent/* and /pool/* endpoints with a per-project secret.
-// Tokens are derived from HMAC(projectId, signingSecret) and injected at pod creation.
-// Health/readiness probes and external channel webhooks are excluded.
-// NOTE: Read process.env dynamically — in warm-pool mode the secret is injected
-// via POST /pool/assign after the module has already loaded.
-function checkRuntimeAuth(c: any): Response | null {
-  const runtimeSecret = process.env.RUNTIME_AUTH_SECRET
-  if (!runtimeSecret) {
-    if (process.env.NODE_ENV !== 'production') return null
-    console.error('[agent-runtime] RUNTIME_AUTH_SECRET not set — rejecting request')
-    return c.json({ error: 'Unauthorized — RUNTIME_AUTH_SECRET not configured' }, 401)
-  }
-  const auth = c.req.header('authorization') || ''
-  const token = c.req.header('x-runtime-token') || ''
-  if (auth === `Bearer ${runtimeSecret}` || token === runtimeSecret) return null
-  return c.json({ error: 'Unauthorized — missing or invalid runtime token' }, 401)
-}
-
-app.use('/agent/*', async (c, next) => {
-  const denied = checkRuntimeAuth(c)
-  if (denied) return denied
-  await next()
-})
-app.use('/pool/*', async (c, next) => {
-  // Before assignment, pool endpoints must be reachable by the API server
-  // to deliver the project config (including RUNTIME_AUTH_SECRET itself).
-  // After assignment, normal auth applies.
-  if (IS_POOL_MODE && !poolAssigned) {
-    await next()
-    return
-  }
-  const denied = checkRuntimeAuth(c)
-  if (denied) return denied
-  await next()
-})
+// Hono app, CORS, auth middleware, /health, /pool/activity, /pool/assign are
+// provided by createRuntimeApp(). Agent-specific routes follow below.
 
 // Register WhatsApp webhook routes (must be before any auth middleware)
 import('./channels/whatsapp').then(({ WhatsAppAdapter }) => {
@@ -414,121 +311,7 @@ import('./channels/webchat').then(({ WebChatAdapter }) => {
   })
 }).catch(() => { /* WebChat adapter not available */ })
 
-// Health check
-app.get('/health', (c) =>
-  c.json({
-    status: 'ok',
-    projectId: currentProjectId,
-    runtimeType: 'agent',
-    poolMode: IS_POOL_MODE && !poolAssigned,
-    uptime: Math.floor((Date.now() - SERVER_START_TIME) / 1000),
-    gateway: agentGateway?.getStatus() ?? null,
-  })
-)
-
-// Readiness probe
-app.get('/ready', (c) => {
-  return c.json({ ready: true })
-})
-
-// Activity probe for promoted pod GC — uses HTTP request activity, not just chat sessions
-app.get('/pool/activity', (c) => {
-  const sm = agentGateway?.getSessionManager()
-  const stats = sm?.getAllStats() ?? []
-  const now = Date.now()
-  const lastSessionActivity = stats.reduce(
-    (max: number, s) => Math.max(max, now - (s.idleSeconds ?? 0) * 1000),
-    poolAssignedAt ?? SERVER_START_TIME
-  )
-  const lastActivity = Math.max(lastRequestAt, lastSessionActivity)
-  return c.json({
-    projectId: currentProjectId,
-    lastActivityAt: lastActivity,
-    idleSeconds: Math.floor((now - lastActivity) / 1000),
-    activeSessions: stats.length,
-    lastRequestAt,
-    lastSessionActivityAt: lastSessionActivity,
-    poolAssigned: poolAssigned,
-  })
-})
-
-// =============================================================================
-// Warm Pool Assignment Endpoint
-// =============================================================================
-
-app.post('/pool/assign', async (c) => {
-  if (!IS_POOL_MODE) {
-    return c.json({ error: 'Not in pool mode' }, 400)
-  }
-  if (poolAssigned) {
-    return c.json({ error: 'Already assigned', projectId: currentProjectId }, 400)
-  }
-
-  const startTime = Date.now()
-  const body = await c.req.json()
-  const { projectId, env: envVars } = body
-
-  if (!projectId || typeof projectId !== 'string') {
-    return c.json({ error: 'projectId (string) is required' }, 400)
-  }
-
-  logTiming(`Pool assignment starting for project ${projectId}`)
-
-  // 1. Clean workspace to prevent cross-project file leakage.
-  // emptyDir should be fresh, but wipe user-data directories defensively.
-  for (const subdir of ['files', 'memory', 'skills']) {
-    const dirPath = join(AGENT_DIR, subdir)
-    if (existsSync(dirPath)) {
-      rmSync(dirPath, { recursive: true, force: true })
-      mkdirSync(dirPath, { recursive: true })
-    }
-  }
-
-  // 2. Update project identity
-  currentProjectId = projectId
-  process.env.PROJECT_ID = projectId
-
-  // 3. Inject environment variables from the controller
-  if (envVars && typeof envVars === 'object') {
-    for (const [key, value] of Object.entries(envVars)) {
-      if (typeof value === 'string') {
-        process.env[key] = value
-      }
-    }
-  }
-
-  // 4. Reconfigure AI proxy with new env (picks up AI_PROXY_TOKEN)
-  try {
-    aiProxy = configureAIProxy({ logPrefix: 'agent-runtime' })
-  } catch (err: any) {
-    console.error(`[agent-runtime] FATAL during reconfigure: ${err.message}`)
-    process.exit(1)
-  }
-  if (aiProxy.useProxy) {
-    Object.assign(process.env, aiProxy.env)
-  }
-
-  // 5. Run essential initialization (workspace files, S3 sync, config)
-  try {
-    await initializeEssentials()
-    poolAssigned = true
-    poolAssignedAt = Date.now()
-    const duration = Date.now() - startTime
-    logTiming(`Pool assignment essentials complete for ${projectId} (${duration}ms)`)
-
-    // 6. Start gateway in background — don't block the assign response.
-    // The pod can serve health, file, and catalog endpoints immediately.
-    // Chat/heartbeat endpoints return 503 until gateway is ready.
-    startGateway().catch((error) => {
-      console.error(`[agent-runtime] Background gateway start failed for ${projectId}:`, error.message)
-    })
-
-    return c.json({ ok: true, projectId, durationMs: duration })
-  } catch (error: any) {
-    console.error(`[agent-runtime] Pool assignment failed for ${projectId}:`, error.message)
-    return c.json({ error: `Assignment failed: ${error.message}` }, 500)
-  }
-})
+// /health, /ready, /pool/activity, /pool/assign are provided by createRuntimeApp()
 
 // Agent status (detailed)
 app.get('/agent/status', (c) => {
@@ -1049,7 +832,7 @@ app.post('/agent/heartbeat/trigger', async (c) => {
   }
 
   // Fire-and-forget: run heartbeat asynchronously
-  const projectId = currentProjectId
+  const projectId = state.currentProjectId
   agentGateway.triggerHeartbeat().then(async () => {
     try {
       await reportHeartbeatComplete(projectId)
@@ -2205,7 +1988,7 @@ async function startGateway(): Promise<void> {
 
   gatewayReadyPromise = new Promise<void>((resolve) => { gatewayReadyResolve = resolve })
 
-  agentGateway = new AgentGateway(AGENT_DIR, currentProjectId!)
+  agentGateway = new AgentGateway(AGENT_DIR, state.currentProjectId!)
   agentGateway.setLogCallback((line) => {
     consoleLogs.push(line)
     if (consoleLogs.length > 1000) consoleLogs.splice(0, 500)
@@ -2286,7 +2069,7 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 // Start Server
 // =============================================================================
 
-if (IS_POOL_MODE && !poolAssigned) {
+if (state.isPoolMode && !state.poolAssigned) {
   logTiming('Pool mode: skipping project init, server ready for assignment')
 } else {
   // Runs for both normal (non-pool) startup AND self-assigned cold-start pods.

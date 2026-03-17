@@ -1876,8 +1876,9 @@ export class AgentGateway {
       )
     }
 
-    // UI stream writer: track current text block for delta streaming
+    // UI stream writer: track current text/reasoning blocks for delta streaming
     let uiTextId: string | null = null
+    let uiReasoningId: string | null = null
     let pendingToolkitError: string | null = null
 
     // Gate map: onBeforeToolCall stores a promise per toolCallId that
@@ -1905,8 +1906,26 @@ export class AgentGateway {
         maxIterations: 50,
         loopDetection: this.config.loopDetection,
         streamFn: this._streamFn,
+        thinkingLevel: 'medium',
         onToolCall: (name, input) => {
           console.log(`[AgentGateway] Tool call: ${name}`, JSON.stringify(input).substring(0, 200))
+        },
+        onThinkingStart: () => {
+          if (uiWriter) {
+            uiReasoningId = `reasoning-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+            uiWriter.write({ type: 'reasoning-start', id: uiReasoningId })
+          }
+        },
+        onThinkingDelta: (delta) => {
+          if (uiWriter && uiReasoningId) {
+            uiWriter.write({ type: 'reasoning-delta', id: uiReasoningId, delta })
+          }
+        },
+        onThinkingEnd: () => {
+          if (uiWriter && uiReasoningId) {
+            uiWriter.write({ type: 'reasoning-end', id: uiReasoningId })
+            uiReasoningId = null
+          }
         },
         onTextDelta: (delta) => {
           if (chunker) chunker.push(delta)

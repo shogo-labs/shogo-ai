@@ -13,39 +13,12 @@
  * The API server proxies chat requests here.
  */
 
-// =============================================================================
-// OpenTelemetry - Initialize before anything else
-// =============================================================================
-import { initInstrumentation, traceOperation, createLogger } from '@shogo/shared-runtime'
-initInstrumentation({ serviceName: 'shogo-project-runtime' })
-
-const log = createLogger('project-runtime', {
-  projectId: process.env.PROJECT_ID,
-  poolMode: process.env.WARM_POOL_MODE === 'true' || process.env.PROJECT_ID === '__POOL__',
-})
-
-// =============================================================================
-// Startup Timing - Track cold start performance
-// =============================================================================
-const SERVER_START_TIME = Date.now()
-const ENTRYPOINT_START_TIME = process.env.STARTUP_TIME ? parseInt(process.env.STARTUP_TIME, 10) : SERVER_START_TIME
-
-function logTiming(message: string): void {
-  const now = Date.now()
-  const fromEntrypoint = ENTRYPOINT_START_TIME ? now - ENTRYPOINT_START_TIME : 0
-  const fromServer = now - SERVER_START_TIME
-  console.log(`[project-runtime] [+${fromEntrypoint}ms total, +${fromServer}ms server] ${message}`)
-}
-
-logTiming('Server module loading...')
-
-import { Hono } from 'hono'
-import { cors } from 'hono/cors'
 import { createUIMessageStream, createUIMessageStreamResponse } from 'ai'
 import { z } from 'zod'
 import { resolve, isAbsolute, relative, dirname, join, basename } from 'path'
 import { existsSync, readdirSync, readFileSync, writeFileSync, copyFileSync, statSync, cpSync, mkdirSync, rmSync } from 'fs'
 import {
+  createRuntimeApp, traceOperation,
   initializeS3Sync, type S3Sync,
   initializePostgresBackup, type PostgresBackup,
   verifyPreviewToken, type PreviewTokenPayload,
@@ -60,61 +33,74 @@ import { fileURLToPath } from 'url'
 // Get monorepo root for template access
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
-// project-runtime/src/server.ts -> monorepo root is 3 levels up
 const MONOREPO_ROOT = resolve(__dirname, '../../..')
 
 // =============================================================================
 // Configuration
 // =============================================================================
 
-logTiming('Loading configuration...')
-
-const POOL_PROJECT_ID = '__POOL__'
-let currentProjectId = process.env.PROJECT_ID
 const PROJECT_DIR = process.env.PROJECT_DIR || '/app/project'
 const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
-// MCP server path: resolve from MONOREPO_ROOT for local dev, fallback to Docker path
 const MCP_SERVER_PATH = process.env.MCP_SERVER_PATH || resolve(MONOREPO_ROOT, 'packages/project-runtime/src/mcp-templates.ts')
 const PORT = parseInt(process.env.PORT || '8080', 10)
 
-// Fast start mode: server starts before build completes
 const FAST_START_MODE = process.env.FAST_START_MODE === 'true'
 const BUILD_STATUS_FILE = process.env.BUILD_STATUS_FILE || '/tmp/build-status'
 
-// Warm pool mode: pod starts without a real project, awaiting assignment
-const IS_POOL_MODE = currentProjectId === POOL_PROJECT_ID || process.env.WARM_POOL_MODE === 'true'
-let poolAssigned = false
+// Forward-declare s3Sync and sessions — needed by onAssign callback
+let s3Sync: S3Sync | null = null
+let postgresBackup: PostgresBackup | null = null
+let sessions: ReturnType<typeof createSessionManager>
+let claudeCodeEnv: ReturnType<typeof buildClaudeCodeEnv>
 
-// Validate required environment
-if (!currentProjectId) {
-  console.error('[project-runtime] ERROR: PROJECT_ID environment variable is required')
-  process.exit(1)
-}
+// =============================================================================
+// Shared Server Framework (handles OTEL, CORS, auth, health, pool/assign)
+// =============================================================================
 
-// Alias for backward compatibility (many references throughout this large file)
-const PROJECT_ID = currentProjectId
+const { app, state, logTiming } = await createRuntimeApp({
+  name: 'project-runtime',
+  workDir: PROJECT_DIR,
+  runtimeType: 'project',
+  internalPaths: ['/agent/heartbeat/trigger'],
+  authPrefixes: ['/agent', '/pool'],
+  async onAssign(projectId, envVars) {
+    // Rebuild Claude Code env with new proxy config
+    claudeCodeEnv = buildClaudeCodeEnv(state.aiProxy, { RUNTIME_PORT: String(PORT) })
 
-if (IS_POOL_MODE) {
-  logTiming('Starting in WARM POOL mode (awaiting project assignment)')
+    // Recreate session manager with updated config
+    sessions = createSessionManager({
+      buildSessionOptions: buildProjectSessionOptions,
+      defaultModel: (process.env.AGENT_MODEL || 'sonnet') as ModelTier,
+      logPrefix: 'project-runtime',
+    })
 
-  // Self-assign: if this pod was previously promoted (has ASSIGNED_PROJECT),
-  // fetch config from the API and apply it so the pod resumes serving.
-  const { checkSelfAssign } = await import('@shogo/shared-runtime')
-  const selfAssignConfig = await checkSelfAssign()
-  if (selfAssignConfig) {
-    logTiming(`[self-assign] Applying config for project ${selfAssignConfig.projectId}`)
-    currentProjectId = selfAssignConfig.projectId
-    process.env.PROJECT_ID = selfAssignConfig.projectId
-    for (const [key, value] of Object.entries(selfAssignConfig.env)) {
-      if (typeof value === 'string') process.env[key] = value
+    // Initialize S3 sync to download project data
+    if (process.env.S3_WORKSPACES_BUCKET) {
+      const result = await initializeS3Sync(PROJECT_DIR)
+      if (result) {
+        const { sync, downloadSucceeded } = result
+        if (downloadSucceeded) {
+          s3Sync = sync
+          writeFileSync(S3_RESTORE_MARKER, `pool-assigned:${Date.now()}`)
+        }
+      }
     }
-    poolAssigned = true
-    logTiming(`[self-assign] Self-assigned to ${selfAssignConfig.projectId}`)
-  }
-} else {
-  logTiming(`Configuration loaded for project: ${currentProjectId}`)
-}
-console.log(`[project-runtime] Project directory: ${PROJECT_DIR}`)
+
+    // Write config files now that we have a real project
+    writeAgentConfigFiles()
+  },
+  getHealthExtra: () => ({
+    projectDir: PROJECT_DIR,
+    fastStartMode: FAST_START_MODE,
+    coldStartMs: (Date.now() - state.serverStartTime) < 60000 ? (Date.now() - state.serverStartTime) : undefined,
+  }),
+})
+
+// Convenience aliases for backward compatibility with existing code
+const IS_POOL_MODE = state.isPoolMode
+const SERVER_START_TIME = state.serverStartTime
+
+
 console.log(`[project-runtime] Schemas path: ${SCHEMAS_PATH}`)
 console.log(`[project-runtime] MCP server path: ${MCP_SERVER_PATH}`)
 console.log(`[project-runtime] Template endpoints: /templates/list, /templates/copy`)
@@ -128,11 +114,6 @@ if (FAST_START_MODE) {
 
 logTiming('Setting up S3 sync (async)...')
 
-let s3Sync: S3Sync | null = null
-let postgresBackup: PostgresBackup | null = null
-
-// Initialize S3 sync in background (don't block server startup)
-// Writes marker file when complete so background init can proceed
 const S3_RESTORE_MARKER = '/tmp/s3-restore-complete'
 
 // In pool mode, skip S3 sync until a project is assigned
@@ -740,30 +721,12 @@ function createPathRestrictor(projectDir: string) {
 const pathRestrictor = createPathRestrictor(PROJECT_DIR)
 console.log(`[project-runtime] ✅ Forbidden command guardrail ACTIVE (${FORBIDDEN_COMMAND_PATTERNS.length} patterns)`)
 
-// AI Proxy Configuration
-// configureAIProxy() throws when AI_PROXY_URL is set but no token is available,
-// preventing silent fallback to a raw platform ANTHROPIC_API_KEY.
-// In pool mode, the token isn't available yet — it's injected via /pool/assign.
-logTiming('Configuring AI proxy...')
-let aiProxy: ReturnType<typeof configureAIProxy>
-if (IS_POOL_MODE) {
-  aiProxy = { useProxy: false, env: {} }
-  logTiming('Pool mode: deferring AI proxy configuration until assignment')
-} else {
-  try {
-    const aiProxyStart = Date.now()
-    aiProxy = configureAIProxy({ logPrefix: 'project-runtime' })
-    logTiming(`AI proxy configured in ${Date.now() - aiProxyStart}ms (useProxy=${aiProxy.useProxy})`)
-  } catch (err: any) {
-    console.error(`[project-runtime] FATAL: ${err.message}`)
-    process.exit(1)
-  }
-}
-const claudeCodeEnvStart = Date.now()
-let claudeCodeEnv = buildClaudeCodeEnv(aiProxy, {
+// AI proxy is configured by the shared framework (state.aiProxy)
+logTiming('Building Claude Code env...')
+claudeCodeEnv = buildClaudeCodeEnv(state.aiProxy, {
   RUNTIME_PORT: String(PORT),
 })
-logTiming(`Claude Code env built in ${Date.now() - claudeCodeEnvStart}ms`)
+logTiming('Claude Code env built')
 
 // =============================================================================
 // V2 Agent SDK Session Management
@@ -772,21 +735,15 @@ logTiming(`Claude Code env built in ${Date.now() - claudeCodeEnvStart}ms`)
 // Sessions persist across HTTP requests, keeping the CLI subprocess alive.
 // This eliminates the 7-12s cold start overhead per message.
 //
-// IMPORTANT: The V2 SDK's unstable_v2_createSession() only forwards a subset
-// of options to the CLI process (model, env, allowedTools, permissionMode,
-// settingSources, canUseTool, hooks, includePartialMessages). It does NOT
-// forward systemPrompt, mcpServers, or cwd — these are silently dropped.
-//
-// To work around this, we write file-based configuration that the CLI reads
-// via settingSources: ['project']:
-//   - CLAUDE.md in PROJECT_DIR → system prompt (loaded as project instructions)
-//   - .mcp.json in PROJECT_DIR → MCP server config (loaded as project MCP servers)
+// As of SDK v0.2.76, settingSources and mcpServers are forwarded natively.
+// We still write file-based config (CLAUDE.md, .mcp.json) because:
+//   - systemPrompt is NOT forwarded by the V2 constructor
+//   - File-based config is the canonical way the CLI loads project instructions
+//   - It ensures the CLI subprocess has access even on restart
 
 /**
  * Write CLAUDE.md and .mcp.json to the project directory so the V2 SDK CLI
- * picks them up via settingSources: ['project']. This is necessary because
- * the V2 session constructor does not forward systemPrompt or mcpServers
- * from the programmatic options.
+ * loads them as project-level configuration via settingSources: ['project'].
  */
 function writeAgentConfigFiles(): void {
   // Write CLAUDE.md with the system prompt
@@ -804,7 +761,7 @@ function writeAgentConfigFiles(): void {
         args: ['run', MCP_SERVER_PATH],
         env: {
           SCHEMAS_PATH,
-          PROJECT_ID: currentProjectId!,
+          PROJECT_ID: state.currentProjectId!,
           PROJECT_DIR,
           RUNTIME_PORT: String(PORT),
           NODE_ENV: process.env.NODE_ENV || 'production',
@@ -817,8 +774,6 @@ function writeAgentConfigFiles(): void {
   console.log(`[project-runtime] Wrote .mcp.json to ${mcpJsonPath}`)
 }
 
-// Write config files and ensure CLI will run in the project directory.
-// process.chdir() is safe here because the server uses absolute paths everywhere.
 try {
   process.chdir(PROJECT_DIR)
   logTiming(`Changed cwd to ${PROJECT_DIR}`)
@@ -846,7 +801,7 @@ function buildProjectSessionOptions(modelName: ModelTier): V2SessionOptions {
         args: ['run', MCP_SERVER_PATH],
         env: {
           SCHEMAS_PATH,
-          PROJECT_ID: currentProjectId!,
+          PROJECT_ID: state.currentProjectId!,
           PROJECT_DIR,
           RUNTIME_PORT: String(PORT),
           NODE_ENV: process.env.NODE_ENV || 'production',
@@ -868,7 +823,7 @@ function buildProjectSessionOptions(modelName: ModelTier): V2SessionOptions {
 
 logTiming('Creating session manager...')
 const sessionMgrStart = Date.now()
-let sessions = createSessionManager({
+sessions = createSessionManager({
   buildSessionOptions: buildProjectSessionOptions,
   defaultModel: (process.env.AGENT_MODEL || 'sonnet') as ModelTier,
   logPrefix: 'project-runtime',
@@ -1010,25 +965,7 @@ const ChatRequestSchema = z.object({
   body: z.any().optional(),
 })
 
-// =============================================================================
-// Hono Server
-// =============================================================================
-
-const app = new Hono()
-
-// CORS for cross-origin requests from API
-app.use('*', cors({
-  origin: (origin) => {
-    const allowed = process.env.ALLOWED_ORIGINS?.split(',').map(o => o.trim()) || []
-    if (!origin) return '*'
-    if (allowed.length > 0 && allowed.includes(origin)) return origin
-    if (origin.startsWith('http://localhost:') || origin.startsWith('https://localhost:')) return origin
-    return allowed[0] || origin
-  },
-  allowMethods: ['GET', 'POST', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization', 'X-Session-Id', 'X-Runtime-Token'],
-  credentials: true,
-}))
+// Hono app, CORS, and auth middleware are provided by createRuntimeApp()
 
 // =============================================================================
 // Build Status Helper (for fast start mode)
@@ -1081,132 +1018,9 @@ function getBuildStatus(): { status: string; ready: boolean; details?: string } 
   return { status: 'initializing', ready: false }
 }
 
-// Health check endpoint for Kubernetes probes
-// Always returns ok quickly - this is for liveness, not readiness
-app.get('/health', (c) => {
-  const uptimeMs = Date.now() - SERVER_START_TIME
-  return c.json({
-    status: 'ok',
-    projectId: currentProjectId,
-    projectDir: PROJECT_DIR,
-    uptime: process.uptime(),
-    uptimeMs,
-    poolMode: IS_POOL_MODE && !poolAssigned,
-    fastStartMode: FAST_START_MODE,
-    coldStartMs: uptimeMs < 60000 ? uptimeMs : undefined, // Only show for first minute
-  })
-})
+// /health is provided by the shared framework (with getHealthExtra for project-specific fields)
 
-// =============================================================================
-// Warm Pool Assignment Endpoint
-// =============================================================================
-
-app.post('/pool/assign', async (c) => {
-  if (!IS_POOL_MODE) {
-    return c.json({ error: 'Not in pool mode' }, 400)
-  }
-  if (poolAssigned) {
-    return c.json({ error: 'Already assigned', projectId: currentProjectId }, 400)
-  }
-
-  const startTime = Date.now()
-  const body = await c.req.json()
-  const { projectId, env: envVars } = body
-
-  if (!projectId || typeof projectId !== 'string') {
-    return c.json({ error: 'projectId (string) is required' }, 400)
-  }
-
-  logTiming(`[pool-assign] Starting for project ${projectId} (envVars: ${envVars ? Object.keys(envVars).join(',') : 'none'})`)
-
-  return traceOperation('project-runtime', 'pool.assign', {
-    'project.id': projectId,
-    'has_s3': !!process.env.S3_WORKSPACES_BUCKET,
-  }, async (assignSpan) => {
-
-  // 1. Update project identity
-  currentProjectId = projectId
-  process.env.PROJECT_ID = projectId
-  logTiming(`[pool-assign] Step 1: Project identity updated (${Date.now() - startTime}ms)`)
-
-  // 2. Inject environment variables from the controller
-  if (envVars && typeof envVars === 'object') {
-    const envKeys = Object.keys(envVars).filter(k => typeof (envVars as any)[k] === 'string')
-    for (const [key, value] of Object.entries(envVars)) {
-      if (typeof value === 'string') {
-        process.env[key] = value
-      }
-    }
-    logTiming(`[pool-assign] Step 2: Injected ${envKeys.length} env vars (${Date.now() - startTime}ms)`)
-  }
-
-  // 3. Reconfigure AI proxy with new env (picks up AI_PROXY_TOKEN)
-  const proxyStart = Date.now()
-  try {
-    aiProxy = configureAIProxy({ logPrefix: 'project-runtime' })
-    logTiming(`[pool-assign] Step 3: AI proxy reconfigured in ${Date.now() - proxyStart}ms (useProxy=${aiProxy.useProxy})`)
-  } catch (err: any) {
-    console.error(`[project-runtime] FATAL during reconfigure: ${err.message}`)
-    process.exit(1)
-  }
-  claudeCodeEnv = buildClaudeCodeEnv(aiProxy, {
-    RUNTIME_PORT: String(PORT),
-  })
-
-  // 4. Recreate session manager with updated config
-  const sessionStart = Date.now()
-  sessions = createSessionManager({
-    buildSessionOptions: buildProjectSessionOptions,
-    defaultModel: (process.env.AGENT_MODEL || 'sonnet') as ModelTier,
-    logPrefix: 'project-runtime',
-  })
-  logTiming(`[pool-assign] Step 4: Session manager recreated in ${Date.now() - sessionStart}ms`)
-
-  // 5. Run project-specific initialization
-  try {
-    // Initialize S3 sync to download project data
-    if (process.env.S3_WORKSPACES_BUCKET) {
-      const s3Start = Date.now()
-      logTiming(`[pool-assign] Step 5a: Starting S3 sync for ${PROJECT_DIR}...`)
-      const result = await initializeS3Sync(PROJECT_DIR)
-      const s3Duration = Date.now() - s3Start
-      if (result) {
-        const { sync, downloadSucceeded } = result
-        if (downloadSucceeded) {
-          s3Sync = sync
-          logTiming(`[pool-assign] Step 5a: S3 sync completed in ${s3Duration}ms (download succeeded)`)
-          writeFileSync(S3_RESTORE_MARKER, `pool-assigned:${Date.now()}`)
-        } else {
-          logTiming(`[pool-assign] Step 5a: S3 sync completed in ${s3Duration}ms (download FAILED)`)
-        }
-      } else {
-        logTiming(`[pool-assign] Step 5a: S3 sync returned null in ${s3Duration}ms`)
-      }
-    } else {
-      logTiming(`[pool-assign] Step 5a: S3 sync skipped (no S3_WORKSPACES_BUCKET)`)
-    }
-
-    // Write config files now that we have a real project
-    const configStart = Date.now()
-    writeAgentConfigFiles()
-    logTiming(`[pool-assign] Step 5b: Config files written in ${Date.now() - configStart}ms`)
-
-    poolAssigned = true
-    const duration = Date.now() - startTime
-    assignSpan.setAttribute('assign.duration_ms', duration)
-    logTiming(`[pool-assign] COMPLETE for ${projectId} — total ${duration}ms`)
-    return c.json({ ok: true, projectId, durationMs: duration })
-  } catch (error: any) {
-    const duration = Date.now() - startTime
-    assignSpan.setAttribute('assign.error', error.message)
-    console.error(`[project-runtime] [pool-assign] FAILED for ${projectId} after ${duration}ms:`, error.message)
-    throw error // let traceOperation record the error on the span
-  }
-  }) // end traceOperation
-  .catch((error: any) => {
-    return c.json({ error: `Assignment failed: ${error.message}` }, 500)
-  })
-})
+// /pool/assign is provided by the shared framework (onAssign callback above handles project-specific init)
 
 // Readiness check - returns 503 until build completes in fast start mode
 // Tracks timing to help diagnose cold start delays
@@ -1216,8 +1030,8 @@ let readyCheckCount = 0
 app.get('/ready', (c) => {
   readyCheckCount++
   const uptimeMs = Date.now() - SERVER_START_TIME
-  const podType = IS_POOL_MODE ? (poolAssigned ? 'pool-assigned' : 'pool-unassigned') : 'project'
-  const podId = currentProjectId || 'unknown'
+  const podType = IS_POOL_MODE ? (state.poolAssigned ? 'pool-assigned' : 'pool-unassigned') : 'project'
+  const podId = state.currentProjectId || 'unknown'
   const projectDirExists = existsSync(PROJECT_DIR)
   
   if (!projectDirExists) {
@@ -1264,7 +1078,7 @@ app.get('/ready', (c) => {
         s3MarkerStatus: s3MarkerContent || (s3MarkerExists ? 'empty' : 'missing'),
         reason: 'Background initialization in progress',
         podType,
-        projectId: currentProjectId,
+        projectId: state.currentProjectId,
         uptimeMs,
         checkCount: readyCheckCount,
       }, 503)
@@ -1290,7 +1104,7 @@ app.get('/ready', (c) => {
   
   return c.json({
     status: 'ready',
-    projectId: PROJECT_ID,
+    projectId: state.currentProjectId,
     projectDir: PROJECT_DIR,
     uptimeMs,
     firstReadyAfterMs: firstReadyTime,
@@ -1305,7 +1119,7 @@ app.get('/build-status', (c) => {
     devModeLastFailure && (Date.now() - devModeLastFailure < DEV_MODE_BACKOFF_MS)
   
   return c.json({
-    projectId: PROJECT_ID,
+    projectId: state.currentProjectId,
     fastStartMode: FAST_START_MODE,
     ...buildStatus,
     uptime: process.uptime(),
@@ -1535,7 +1349,7 @@ app.post('/templates/copy', async (c) => {
 
 // Stop/interrupt endpoint - called when user clicks stop or before a new message
 app.post('/agent/stop', async (c) => {
-  console.log(`[project-runtime] Received stop request for project: ${PROJECT_ID}`)
+  console.log(`[project-runtime] Received stop request for project: ${state.currentProjectId}`)
   
   try {
     const body = await c.req.json().catch(() => ({}))
@@ -1555,7 +1369,7 @@ app.post('/agent/stop', async (c) => {
 
 // Main chat endpoint - receives from API, streams response
 app.post('/agent/chat', async (c) => {
-  console.log(`[project-runtime] Received chat request for project: ${PROJECT_ID}`)
+  console.log(`[project-runtime] Received chat request for project: ${state.currentProjectId}`)
   
   try {
     const body = await c.req.json()
@@ -1591,8 +1405,6 @@ app.post('/agent/chat', async (c) => {
 
     const session = sessions.getOrCreate(modelName)
     sessions.markActive(modelName)
-
-    await sessions.ensureMcpServers(modelName)
 
     const lastUserMessage = findLastUserMessage(messages)
     if (!lastUserMessage) {
@@ -1672,7 +1484,7 @@ app.post('/agent/chat', async (c) => {
 // Info endpoint for debugging
 app.get('/info', (c) => {
   return c.json({
-    projectId: PROJECT_ID,
+    projectId: state.currentProjectId,
     projectDir: PROJECT_DIR,
     schemasPath: SCHEMAS_PATH,
     mcpServerPath: MCP_SERVER_PATH,
@@ -2886,7 +2698,7 @@ app.post('/preview/restart', async (c) => {
     lastMark = now
   }
   
-  console.log(`[project-runtime] ⏱️  Starting preview restart for project ${PROJECT_ID}...`)
+  console.log(`[project-runtime] ⏱️  Starting preview restart for project ${state.currentProjectId}...`)
   
   try {
     // 1. Kill existing servers (Hono, Vite dev, Expo if running)
@@ -3578,7 +3390,7 @@ app.post('/preview/dev', async (c) => {
     lastMark = now
   }
   
-  console.log(`[project-runtime] ⏱️  Starting dev mode for project ${PROJECT_ID}...`)
+  console.log(`[project-runtime] ⏱️  Starting dev mode for project ${state.currentProjectId}...`)
   devModeStarting = true
   
   try {
@@ -4385,8 +4197,8 @@ async function validateSubdomainAccess(token: string): Promise<PreviewTokenPaylo
   }
   
   // Verify the token is for this project
-  if (payload.projectId !== PROJECT_ID) {
-    console.log(`[project-runtime] Token project ID mismatch: expected ${PROJECT_ID}, got ${payload.projectId}`)
+  if (payload.projectId !== state.currentProjectId) {
+    console.log(`[project-runtime] Token project ID mismatch: expected ${state.currentProjectId}, got ${payload.projectId}`)
     return null
   }
   
@@ -5275,7 +5087,7 @@ app.get('/download', async (c) => {
     ]
     const excludeArgs = excludes.flatMap(dir => ['--exclude', dir])
 
-    const projectName = PROJECT_ID || 'project'
+    const projectName = state.currentProjectId || 'project'
     const result = Bun.spawnSync(
       ['tar', '-czf', '-', ...excludeArgs, '-C', PROJECT_DIR, '.'],
       { stdout: 'pipe', stderr: 'pipe' }
@@ -5290,7 +5102,7 @@ app.get('/download', async (c) => {
     }
 
     const archiveBuffer = result.stdout
-    console.log(`[project-runtime] Created download archive for project ${PROJECT_ID} (${(archiveBuffer.byteLength / 1024).toFixed(1)} KB)`)
+    console.log(`[project-runtime] Created download archive for project ${state.currentProjectId} (${(archiveBuffer.byteLength / 1024).toFixed(1)} KB)`)
 
     return new Response(archiveBuffer, {
       status: 200,
@@ -5673,7 +5485,7 @@ function findTestFiles(dir: string, baseDir: string): TestFile[] {
  * GET /tests/list - List test files and cases in the project
  */
 app.get('/tests/list', (c) => {
-  console.log(`[project-runtime] Listing tests for project ${PROJECT_ID}`)
+  console.log(`[project-runtime] Listing tests for project ${state.currentProjectId}`)
   
   // Look for test files in common locations
   const testLocations = ['tests', 'test', '__tests__', 'e2e', 'spec']
@@ -5729,7 +5541,7 @@ app.get('/tests/list', (c) => {
  * - reporter?: 'list' | 'json' | 'line' - Reporter to use
  */
 app.post('/tests/run', async (c) => {
-  console.log(`[project-runtime] Running tests for project ${PROJECT_ID}`)
+  console.log(`[project-runtime] Running tests for project ${state.currentProjectId}`)
   
   // Parse request body
   let body: { 

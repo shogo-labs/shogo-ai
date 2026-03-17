@@ -25,6 +25,7 @@ import { type ToolCallData, getToolCategory } from "../tools/types"
 import { useChatContextSafe } from "../ChatContext"
 import { MarkdownText } from "../MarkdownText"
 import { GenerateImageWidget } from "./GenerateImageWidget"
+import { ThinkingWidget } from "./ThinkingWidget"
 
 export interface AssistantContentProps {
   message: UIMessage
@@ -59,7 +60,18 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
   for (let index = 0; index < parts.length; index++) {
     const part = parts[index]
 
-    if (part.type === "text") {
+    if (part.type === "reasoning") {
+      const hasContent = part.text?.trim().length > 0
+      const isPartStreaming = "state" in part && part.state === "streaming"
+      if (hasContent || isPartStreaming) {
+        result.push({
+          type: "reasoning",
+          text: part.text || "",
+          isStreaming: isPartStreaming,
+          id: `reasoning-${index}`,
+        })
+      }
+    } else if (part.type === "text") {
       if (part.text && part.text.trim()) {
         result.push({ type: "text", text: part.text, id: `text-${index}` })
       }
@@ -268,6 +280,16 @@ export function AssistantContent({
   return (
     <View className={cn("gap-1.5", className)}>
       {groupedParts.map((part, index) => {
+        if (part.type === "reasoning") {
+          return (
+            <ThinkingWidget
+              key={part.id}
+              text={part.text}
+              isStreaming={part.isStreaming || isStreaming}
+            />
+          )
+        }
+
         if (part.type === "text") {
           return (
             <View key={part.id} className="px-3 py-1.5">

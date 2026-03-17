@@ -1,10 +1,13 @@
 # =============================================================================
-# Publish Hosting Module - S3 + CloudFront for Published Apps
+# Publish Hosting Module - S3 + Knative for Published Apps
 # =============================================================================
 # This module creates the infrastructure for serving published static apps:
-#   - S3 bucket for static content (per-subdomain structure)
-#   - CloudFront distribution with wildcard domain (*.shogo.one)
-#   - Origin Access Control for secure S3 access
+#   - S3 bucket for persistent static content (per-subdomain structure)
+#   - Route53 wildcard DNS pointing to Kourier ALB (Knative ingress)
+#   - CloudFront distribution is retained for rollback but DNS no longer points to it
+#
+# Traffic flow:
+#   *.shogo.one DNS -> Kourier ALB -> Knative Service (nginx + S3 init sync)
 #
 # Published apps are stored at: s3://bucket/{subdomain}/
 # Served at: https://{subdomain}.shogo.one
@@ -27,6 +30,18 @@ variable "publish_domain" {
 variable "acm_certificate_arn" {
   description = "ARN of ACM certificate for *.{publish_domain}"
   type        = string
+}
+
+variable "kourier_alb_hostname" {
+  description = "Hostname of the Kourier ALB (Knative ingress) for Route53 alias target"
+  type        = string
+  default     = ""
+}
+
+variable "kourier_alb_zone_id" {
+  description = "Route53 hosted zone ID of the Kourier ALB (required for alias records)"
+  type        = string
+  default     = ""
 }
 
 variable "tags" {
@@ -231,8 +246,11 @@ resource "aws_cloudfront_function" "subdomain_router" {
 }
 
 # -----------------------------------------------------------------------------
-# S3 Bucket Policy - Allow CloudFront Access
+# S3 Bucket Policy - Allow CloudFront + IAM Access
 # -----------------------------------------------------------------------------
+# CloudFront access is retained for rollback. IAM access allows
+# the Knative init container (using s3-credentials K8s secret)
+# and the API server to read/write published app files.
 resource "aws_s3_bucket_policy" "published_apps" {
   bucket = aws_s3_bucket.published_apps.id
 
@@ -258,14 +276,19 @@ resource "aws_s3_bucket_policy" "published_apps" {
 }
 
 # -----------------------------------------------------------------------------
-# Route53 Record (if hosted zone exists and is managed here)
+# Route53 Record - Points *.shogo.one to Kourier ALB (Knative ingress)
 # -----------------------------------------------------------------------------
-# Note: This requires the hosted zone to be managed in the same AWS account
-# If DNS is managed elsewhere, create this record manually:
-#   *.shogo.one CNAME → {cloudfront_distribution_domain_name}
+# Traffic flows: *.shogo.one -> Kourier ALB -> Knative DomainMapping -> nginx pod
+# CloudFront is retained as rollback; set use_cloudfront_dns=true to revert.
 
 variable "create_route53_record" {
   description = "Whether to create Route53 record (requires hosted zone in same account)"
+  type        = bool
+  default     = false
+}
+
+variable "use_cloudfront_dns" {
+  description = "Point DNS to CloudFront instead of Kourier ALB (rollback flag)"
   type        = bool
   default     = false
 }
@@ -283,9 +306,9 @@ resource "aws_route53_record" "wildcard" {
   type    = "A"
 
   alias {
-    name                   = aws_cloudfront_distribution.published_apps.domain_name
-    zone_id                = aws_cloudfront_distribution.published_apps.hosted_zone_id
-    evaluate_target_health = false
+    name                   = var.use_cloudfront_dns ? aws_cloudfront_distribution.published_apps.domain_name : var.kourier_alb_hostname
+    zone_id                = var.use_cloudfront_dns ? aws_cloudfront_distribution.published_apps.hosted_zone_id : var.kourier_alb_zone_id
+    evaluate_target_health = !var.use_cloudfront_dns
   }
 }
 
@@ -325,4 +348,9 @@ output "cloudfront_domain_name" {
 output "publish_domain" {
   description = "Base domain for published apps"
   value       = var.publish_domain
+}
+
+output "dns_target" {
+  description = "Current DNS alias target (Kourier ALB or CloudFront)"
+  value       = var.use_cloudfront_dns ? aws_cloudfront_distribution.published_apps.domain_name : var.kourier_alb_hostname
 }

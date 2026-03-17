@@ -31,6 +31,7 @@ import { trace, SpanStatusCode, metrics } from '@opentelemetry/api'
 import { generateProxyToken } from './ai-proxy-token'
 import * as databaseService from '../services/database.service'
 import { ensureCapacityForPods, getCapacitySummary } from './proactive-node-scaler'
+import { RUNTIME_TYPES, type RuntimeType as SharedRuntimeType } from '@shogo/shared-runtime'
 
 const poolTracer = trace.getTracer('shogo-warm-pool')
 const meter = metrics.getMeter('shogo-warm-pool')
@@ -56,13 +57,6 @@ const nodeScaleUpCounter = meter.createCounter('warm_pool.node_scale_ups', {
 // =============================================================================
 
 const NAMESPACE = process.env.PROJECT_NAMESPACE || 'shogo-workspaces'
-const PROJECT_RUNTIME_IMAGE =
-  process.env.PROJECT_RUNTIME_IMAGE || 'ghcr.io/shogo-ai/project-runtime:latest'
-const AGENT_RUNTIME_IMAGE =
-  process.env.AGENT_RUNTIME_IMAGE || (() => {
-    console.error('[WarmPool] AGENT_RUNTIME_IMAGE env var not set — falling back to ghcr.io default which will likely fail in EKS. Set AGENT_RUNTIME_IMAGE to your ECR image.')
-    return 'ghcr.io/shogo-ai/agent-runtime:latest'
-  })()
 const KNATIVE_GROUP = 'serving.knative.dev'
 const KNATIVE_VERSION = 'v1'
 
@@ -1307,21 +1301,9 @@ export class WarmPoolController {
     }
     console.log(`[WarmPool] buildProjectEnv: proxy token took ${Date.now() - tokenStart}ms (type=${projectType})`)
 
-    // Database URL — skip for AGENT projects (they use filesystem/S3, not a project database)
-    if (projectType !== 'AGENT') {
-      const dbStart = Date.now()
-      try {
-        const dbInfo = await databaseService.provisionDatabase(projectId)
-        if (dbInfo) {
-          env.DATABASE_URL = dbInfo.connectionUrl
-        }
-      } catch (err: any) {
-        console.error(`[WarmPool] Failed to provision database for ${projectId}:`, err.message)
-      }
-      console.log(`[WarmPool] buildProjectEnv: DB provisioning took ${Date.now() - dbStart}ms`)
-    } else {
-      console.log(`[WarmPool] buildProjectEnv: skipping DB provisioning for AGENT project`)
-    }
+    // Dev projects use SQLite (no external database provisioning needed).
+    // The project-runtime defaults DATABASE_URL to file:./prisma/dev.db.
+    console.log(`[WarmPool] buildProjectEnv: dev project uses SQLite — no DB provisioning (type=${projectType})`)
 
     // Per-project runtime auth tokens (deterministic — derived from signing secret + projectId)
     const { deriveRuntimeToken, deriveWebhookToken } = await import('./runtime-token')
@@ -1460,13 +1442,15 @@ export class WarmPoolController {
    */
   private async createWarmPod(type: RuntimeType, id: string): Promise<WarmPodInfo | null> {
     const serviceName = `warm-pool-${type}-${id}`
-    const image = type === 'agent' ? AGENT_RUNTIME_IMAGE : PROJECT_RUNTIME_IMAGE
-    const workDir = type === 'agent' ? '/app/agent' : '/app/project'
+    const rtConfig = RUNTIME_TYPES[type]
+    const image = rtConfig.image()
+    const workDir = rtConfig.workDir
 
+    const extraEnvEntries = Object.entries(rtConfig.extraEnv).map(([name, value]) => ({ name, value }))
     const env: Array<{ name: string; value?: string; valueFrom?: any }> = [
       { name: 'PROJECT_ID', value: POOL_PROJECT_ID },
       { name: 'PROJECT_DIR', value: workDir },
-      ...(type === 'agent' ? [{ name: 'AGENT_DIR', value: workDir }] : []),
+      ...extraEnvEntries,
       { name: 'SCHEMAS_PATH', value: '/app/.schemas' },
       { name: 'WARM_POOL_MODE', value: 'true' },
     ]
@@ -1530,7 +1514,7 @@ export class WarmPoolController {
           [POOL_LABEL_KEY]: 'true',
           [POOL_TYPE_LABEL_KEY]: type,
           [POOL_STATUS_LABEL_KEY]: 'available',
-          'shogo.io/component': type === 'agent' ? 'agent-runtime' : 'project-runtime',
+          'shogo.io/component': rtConfig.componentLabel,
         },
       },
       spec: {
@@ -1563,7 +1547,7 @@ export class WarmPoolController {
             },
             containers: [
               {
-                name: type === 'agent' ? 'agent-runtime' : 'project-runtime',
+                name: rtConfig.containerName,
                 image,
                 imagePullPolicy: 'Always',
                 ports: [{ containerPort: 8080, name: 'http1' }],

@@ -2,14 +2,13 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 //!/usr/bin/env bun
 /**
- * Patches the @anthropic-ai/claude-agent-sdk V2 Session constructor to fix
- * hardcoded options that prevent streaming (includePartialMessages) and
- * other session configuration from being passed through.
+ * Patches the @anthropic-ai/claude-agent-sdk V2 Session constructor.
  *
- * Bug: The V2 unstable_v2_createSession() constructor hardcodes several Transport
- * options instead of reading them from the user-provided session options (X).
- * This prevents `includePartialMessages: true` from being passed to the CLI,
- * which means the SDK never emits `stream_event` messages for incremental streaming.
+ * As of v0.2.76, `settingSources` and `mcpServers` are fixed upstream.
+ * Two patches remain until they're addressed in the SDK:
+ *
+ *   1. includePartialMessages — hardcoded to false, prevents streaming
+ *   2. allowDangerouslySkipPermissions — hardcoded to false
  *
  * Run this after `bun install` via the postinstall script in package.json.
  */
@@ -19,7 +18,6 @@ import { join, resolve } from 'path'
 
 const ROOT = resolve(import.meta.dir, '..')
 
-// Find all installed copies of the SDK
 function findSdkFiles(dir: string): string[] {
   const results: string[] = []
 
@@ -48,7 +46,6 @@ function findSdkFiles(dir: string): string[] {
     } catch {}
   }
 
-  // Search in all node_modules directories
   walk(join(dir, 'node_modules'))
   walk(join(dir, 'apps/api/node_modules'))
   walk(join(dir, 'packages/project-runtime/node_modules'))
@@ -56,17 +53,8 @@ function findSdkFiles(dir: string): string[] {
   return results
 }
 
-// The exact string to find and replace in the V2 Session constructor
-const FIND = 'includePartialMessages:!1'
-const REPLACE = 'includePartialMessages:X.includePartialMessages??!1'
-
-// Additional patches for other hardcoded options we use
 const PATCHES = [
-  // Core fix: enable streaming
   { find: 'includePartialMessages:!1', replace: 'includePartialMessages:X.includePartialMessages??!1' },
-  // Pass through settingSources (we use ['project', 'local'])
-  { find: 'settingSources:[]', replace: 'settingSources:X.settingSources??[]' },
-  // Pass through allowDangerouslySkipPermissions
   { find: 'allowDangerouslySkipPermissions:!1', replace: 'allowDangerouslySkipPermissions:X.allowDangerouslySkipPermissions??!1' },
 ]
 
@@ -84,11 +72,10 @@ for (const file of sdkFiles) {
 
   for (const patch of PATCHES) {
     if (code.includes(patch.find)) {
-      // Only patch within the V9 (Session) constructor context
-      // Verify this is the Session class context by checking surrounding code
       const idx = code.indexOf(patch.find)
-      const context = code.substring(Math.max(0, idx - 200), idx + 200)
-      if (context.includes('class V9') || context.includes('mcpServers:{}') || context.includes('canUseTool:!!X.canUseTool')) {
+      const context = code.substring(Math.max(0, idx - 300), idx + 300)
+      // Verify we're in the Session constructor context (minified class names vary by version)
+      if (context.includes('canUseTool') || context.includes('mcpServers') || context.includes('settingSources')) {
         code = code.replace(patch.find, patch.replace)
         console.log(`  ✅ Patched: ${patch.find} → ${patch.replace}`)
         modified = true

@@ -228,13 +228,16 @@ export default observer(function ProjectLayout() {
     }
   }, [])
 
-  // Dynamic app canvas (agent projects)
-  const { agentUrl } = useAgentUrl(API_URL!, projectId, {
+  // Resolve agent + preview URLs
+  const { agentUrl, previewUrl } = useAgentUrl(API_URL!, projectId, {
     credentials: Platform.OS === 'web' ? 'include' : 'omit',
     headers: nativeHeaders,
   })
+
+  // Dynamic app canvas (AGENT projects only -- APP projects use iframe preview)
+  const dynamicAppStreamUrl = isAgentProject ? agentUrl : null
   const { surfaces, activeSurfaceId, connected, dispatchAction, updateLocalData, reconnect, applyMessage } = useDynamicAppStream(
-    agentUrl,
+    dynamicAppStreamUrl,
     {
       ...(nativeHeaders ? { headers: nativeHeaders } : {}),
       withCredentials: Platform.OS === 'web',
@@ -566,19 +569,23 @@ export default observer(function ProjectLayout() {
   )
 
   const canvasPanel = canvasEnabled ? (
-    <CanvasThemeProvider projectSettings={project?.settings} onUpdateSettings={handleUpdateCanvasSettings}>
-      <EditModeProvider agentUrl={agentUrl}>
-        <CanvasPanel
-          surface={activeSurface}
-          connected={connected}
-          agentUrl={agentUrl}
-          onAction={handleCanvasAction}
-          onDataChange={updateLocalData}
-          authHeaders={nativeHeaders}
-          onRefresh={reconnect}
-        />
-      </EditModeProvider>
-    </CanvasThemeProvider>
+    isAgentProject ? (
+      <CanvasThemeProvider projectSettings={project?.settings} onUpdateSettings={handleUpdateCanvasSettings}>
+        <EditModeProvider agentUrl={agentUrl}>
+          <CanvasPanel
+            surface={activeSurface}
+            connected={connected}
+            agentUrl={agentUrl}
+            onAction={handleCanvasAction}
+            onDataChange={updateLocalData}
+            authHeaders={nativeHeaders}
+            onRefresh={reconnect}
+          />
+        </EditModeProvider>
+      </CanvasThemeProvider>
+    ) : (
+      <AppPreviewPanel previewUrl={previewUrl} />
+    )
   ) : null
 
   const hiddenTabs: string[] = []
@@ -771,17 +778,20 @@ export default observer(function ProjectLayout() {
                 style={chatHidden ? { display: 'none' } : undefined}
               >
                 {isWide && (
-                  <View className="absolute top-2 right-2 z-10 flex-row items-center gap-1">
+                  <View
+                    className="absolute top-2 z-10 items-center gap-1"
+                    style={{ right: -14 }}
+                  >
                     <Pressable
                       onPress={handleCreateNewSession}
-                      className="h-7 w-7 items-center justify-center rounded-md bg-background/80 active:bg-muted"
+                      className="h-7 w-7 items-center justify-center rounded-md bg-background/80 border border-border active:bg-muted"
                     >
                       <Plus size={14} className="text-muted-foreground" />
                     </Pressable>
                     <Pressable
                       onPress={() => setShowChatSessions((s) => !s)}
                       className={cn(
-                        'h-7 w-7 items-center justify-center rounded-md',
+                        'h-7 w-7 items-center justify-center rounded-md border border-border',
                         showChatSessions ? 'bg-accent' : 'bg-background/80 active:bg-muted'
                       )}
                     >
@@ -789,7 +799,7 @@ export default observer(function ProjectLayout() {
                     </Pressable>
                     <Pressable
                       onPress={() => setChatCollapsed(true)}
-                      className="h-7 w-7 items-center justify-center rounded-md bg-background/80 active:bg-muted"
+                      className="h-7 w-7 items-center justify-center rounded-md bg-background/80 border border-border active:bg-muted"
                     >
                       <PanelLeftClose size={14} className="text-muted-foreground" />
                     </Pressable>
@@ -937,13 +947,6 @@ function CanvasPanel({
                     ? 'Connection timed out'
                     : 'Waiting for connection...'}
               </Text>
-              <Text className="text-muted-foreground text-center text-sm">
-                {connected
-                  ? 'The canvas will appear once the agent creates a UI. Ask it to build something!'
-                  : timedOut
-                    ? 'The agent runtime could not be reached. Try refreshing or come back later.'
-                    : 'Connecting to the agent runtime...'}
-              </Text>
               {(connected || timedOut) && onRefresh && (
                 <Pressable
                   onPress={onRefresh}
@@ -988,6 +991,56 @@ function CanvasPanel({
           <InspectorPanel surfaceId={surfaceId} components={surface.components} />
         )}
       </View>
+    </View>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// App Preview Panel — iframe (web) for APP project live preview
+// ---------------------------------------------------------------------------
+
+function AppPreviewPanel({ previewUrl }: { previewUrl: string | null }) {
+  const [iframeKey, setIframeKey] = useState(0)
+
+  if (!previewUrl) {
+    return (
+      <View className="flex-1 items-center justify-center px-6">
+        <ActivityIndicator size="large" className="mb-4" />
+        <Text className="text-muted-foreground text-center">
+          Starting preview server...
+        </Text>
+        <Text className="text-muted-foreground text-xs text-center mt-2">
+          Send a message in the Chat tab to build the app
+        </Text>
+      </View>
+    )
+  }
+
+  if (Platform.OS === 'web') {
+    return (
+      <View className="flex-1 relative">
+        <Pressable
+          onPress={() => setIframeKey((k) => k + 1)}
+          className="absolute top-2 right-2 z-10 rounded-md border border-border bg-background/80 px-3 py-1.5 active:opacity-70"
+        >
+          <Text className="text-muted-foreground text-xs">Refresh</Text>
+        </Pressable>
+        <iframe
+          key={iframeKey}
+          src={previewUrl}
+          sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+          style={{ width: '100%', height: '100%', border: 'none' }}
+          {...{ 'data-thumbnail-target': '' } as any}
+        />
+      </View>
+    )
+  }
+
+  return (
+    <View className="flex-1 items-center justify-center px-6">
+      <Text className="text-muted-foreground text-center">
+        Preview is available in the web browser
+      </Text>
     </View>
   )
 }

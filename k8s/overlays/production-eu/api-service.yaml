@@ -128,24 +128,6 @@ spec:
                 secretKeyRef:
                   name: postgres-credentials
                   key: DATABASE_URL
-            - name: PROJECTS_DB_ADMIN_URL
-              valueFrom:
-                secretKeyRef:
-                  name: projects-db-admin
-                  key: PROJECTS_DB_ADMIN_URL
-                  optional: true
-            - name: PROJECTS_DB_HOST
-              valueFrom:
-                secretKeyRef:
-                  name: projects-db-admin
-                  key: PROJECTS_DB_HOST
-                  optional: true
-            - name: PROJECTS_DB_PORT
-              valueFrom:
-                secretKeyRef:
-                  name: projects-db-admin
-                  key: PROJECTS_DB_PORT
-                  optional: true
             - name: BETTER_AUTH_SECRET
               valueFrom:
                 secretKeyRef:
@@ -258,14 +240,19 @@ spec:
                   name: signoz-credentials
                   key: SIGNOZ_INGESTION_KEY
                   optional: true
+            # Runtime images for warm pool
             - name: AGENT_RUNTIME_IMAGE
               value: "097357356677.dkr.ecr.eu-west-1.amazonaws.com/shogo/agent-runtime:production-latest"
-            - name: WARM_POOL_PROJECT_SIZE
-              value: "0"
+            - name: PROJECT_RUNTIME_IMAGE
+              value: "097357356677.dkr.ecr.eu-west-1.amazonaws.com/shogo/project-runtime:production-latest"
             - name: WARM_POOL_AGENTS_PER_NODE
+              value: "0"
+            - name: WARM_POOL_PROJECTS_PER_NODE
               value: "0"
             - name: WARM_POOL_MIN_AGENTS
               value: "10"
+            - name: WARM_POOL_MIN_PROJECTS
+              value: "3"
             - name: WARM_POOL_MAX_AGE_MS
               value: "3600000"
             - name: LOAD_TEST_SECRET

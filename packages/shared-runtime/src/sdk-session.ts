@@ -6,6 +6,10 @@
  *
  * Each runtime provides its own `buildSessionOptions` (tools, cwd, mcpServers differ),
  * but session caching, interruption, and pre-warming logic is identical.
+ *
+ * Remaining workarounds (SDK v0.2.76):
+ *   - includePartialMessages / allowDangerouslySkipPermissions: patched via postinstall
+ *   - interrupt(): session.close() workaround (no upstream interrupt() API yet)
  */
 
 import {
@@ -18,14 +22,11 @@ export type ModelTier = 'haiku' | 'sonnet' | 'opus'
 
 /**
  * Extended session options — includes fields the V2 constructor reads
- * but doesn't expose in the published SDKSessionOptions types.
- * These are forwarded to the underlying CLI process despite not being typed.
+ * but the published types don't fully expose yet.
  */
 export interface V2SessionOptions extends SDKSessionOptions {
   cwd?: string
-  settingSources?: ('user' | 'project' | 'local')[]
   includePartialMessages?: boolean
-  mcpServers?: Record<string, any>
   allowDangerouslySkipPermissions?: boolean
   [key: string]: any
 }
@@ -38,8 +39,6 @@ export interface SessionManagerOptions {
 
 export interface SessionManager {
   getOrCreate(model: ModelTier): SDKSession
-  /** Ensure MCP servers are configured on the session (call before first send). */
-  ensureMcpServers(model: ModelTier): Promise<void>
   interrupt(model: string): Promise<void>
   prewarm(): Promise<void>
   isActive(model: string): boolean
@@ -60,13 +59,8 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
   const activeSessions = new Set<string>()
   const activeQueries = new Map<string, AsyncGenerator<any, void>>()
   const sessionLocks = new Map<string, Promise<void>>()
-  const mcpConfigured = new Set<string>()
   let prewarmAborted = false
 
-  /**
-   * Serialize operations on a given model's session to prevent
-   * race conditions between interrupt, getOrCreate, and prewarm.
-   */
   function withLock(model: string, fn: () => Promise<void>): Promise<void> {
     const prev = sessionLocks.get(model) ?? Promise.resolve()
     const next = prev.then(fn, fn)
@@ -83,7 +77,6 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
       console.log(`[${logPrefix}] Session for ${modelName} was closed, creating new one`)
       sessionCache.delete(modelName)
       activeSessions.delete(modelName)
-      mcpConfigured.delete(modelName)
     }
 
     const opts = buildSessionOptions(modelName)
@@ -93,37 +86,12 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
     return session
   }
 
-  async function ensureMcpServers(modelName: ModelTier): Promise<void> {
-    if (mcpConfigured.has(modelName)) return
-    const opts = buildSessionOptions(modelName)
-    const mcpServers = opts.mcpServers
-    if (!mcpServers || Object.keys(mcpServers).length === 0) return
-
-    const session = getOrCreate(modelName)
-    // The V2 SDK has a bug where SDKSession doesn't expose setMcpServers,
-    // but the internal query object (W4) does. Access it directly.
-    const query = (session as any).query
-    if (!query || typeof query.setMcpServers !== 'function') {
-      console.warn(`[${logPrefix}] Cannot configure MCP servers — query.setMcpServers not available`)
-      return
-    }
-    try {
-      console.log(`[${logPrefix}] Configuring MCP servers for ${modelName}: ${Object.keys(mcpServers).join(', ')}`)
-      const result = await query.setMcpServers(mcpServers)
-      mcpConfigured.add(modelName)
-      console.log(`[${logPrefix}] MCP servers configured for ${modelName}:`, JSON.stringify(result))
-    } catch (err: any) {
-      console.error(`[${logPrefix}] Failed to configure MCP servers for ${modelName}:`, err.message)
-    }
-  }
-
   /**
-   * Interrupt an active session for a given model.
+   * Interrupt an active session.
    *
-   * The V2 SDK session's stream() returns an AsyncGenerator. Calling
-   * generator.return() only stops JS iteration but does NOT stop the CLI
-   * from generating. The fix: close the entire session (kills the CLI process)
-   * and remove it from cache. The next getOrCreate() creates a fresh session.
+   * The V2 SDK's stream() AsyncGenerator doesn't propagate cancellation to the
+   * CLI process. Workaround: close the entire session (kills the CLI) and
+   * remove from cache. Next getOrCreate() starts fresh.
    */
   async function interrupt(modelName: string): Promise<void> {
     return withLock(modelName, async () => {
@@ -152,10 +120,8 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
   }
 
   /**
-   * Pre-warm: create a session and send a ping to initialize the CLI subprocess
-   * and load MCP servers, so the first real chat message doesn't pay cold-start cost.
-   *
-   * Aborts immediately if a real chat request activates the session.
+   * Pre-warm: create a session and send a ping so the CLI subprocess is ready
+   * when the first real chat message arrives.
    */
   async function prewarm(): Promise<void> {
     const startTime = performance.now()
@@ -198,7 +164,6 @@ export function createSessionManager(options: SessionManagerOptions): SessionMan
 
   return {
     getOrCreate,
-    ensureMcpServers,
     interrupt,
     prewarm,
     isActive: (model: string) => activeSessions.has(model),

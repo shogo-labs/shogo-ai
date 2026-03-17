@@ -14,10 +14,20 @@
 import { useState, useRef, useCallback, forwardRef, useEffect } from "react"
 import { View, Text, TextInput, Pressable, Image, ScrollView, Platform } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { Paperclip, Send, Loader2, X, File, FileText, ImageIcon } from "lucide-react-native"
+import { Paperclip, Send, Loader2, X, File, FileText, ImageIcon, Bot, AppWindow, ChevronDown } from "lucide-react-native"
+import {
+  Popover,
+  PopoverBackdrop,
+  PopoverContent,
+} from "@/components/ui/popover"
 import type { FileAttachment } from "./ChatInput"
 
 export type ProjectType = "APP" | "AGENT"
+
+const PROJECT_TYPE_OPTIONS: { id: ProjectType; label: string; description: string; Icon: React.ElementType }[] = [
+  { id: "AGENT", label: "Agent", description: "Autonomous AI agent with tools & integrations", Icon: Bot },
+  { id: "APP", label: "App", description: "Full-stack web application with live preview", Icon: AppWindow },
+]
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024
 const MAX_FILES = 10
@@ -38,6 +48,8 @@ export interface CompactChatInputProps {
   className?: string
   value?: string
   onChange?: (value: string) => void
+  projectType?: ProjectType
+  onProjectTypeChange?: (type: ProjectType) => void
 }
 
 export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
@@ -50,11 +62,17 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       className,
       value: controlledValue,
       onChange: controlledOnChange,
+      projectType: controlledProjectType,
+      onProjectTypeChange,
     },
     ref
   ) {
     const [internalValue, setInternalValue] = useState("")
     const textInputRef = useRef<TextInput>(null)
+    const [typeMenuOpen, setTypeMenuOpen] = useState(false)
+    const [internalProjectType, setInternalProjectType] = useState<ProjectType>("AGENT")
+    const projectType = controlledProjectType ?? internalProjectType
+    const currentTypeConfig = PROJECT_TYPE_OPTIONS.find((o) => o.id === projectType) ?? PROJECT_TYPE_OPTIONS[0]
 
     const [pendingFiles, setPendingFiles] = useState<AttachedFile[]>([])
     const [fileError, setFileError] = useState<string | null>(null)
@@ -282,6 +300,60 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 <Paperclip className="h-4 w-4 text-gray-400" size={16} />
                 <Text className="text-xs text-gray-400">Attach</Text>
               </Pressable>
+
+              {/* Project type selector */}
+              <Popover
+                placement="top"
+                size="xs"
+                isOpen={typeMenuOpen}
+                onOpen={() => setTypeMenuOpen(true)}
+                onClose={() => setTypeMenuOpen(false)}
+                trigger={(triggerProps) => (
+                  <Pressable
+                    {...triggerProps}
+                    disabled={disabled || isLoading}
+                    className="h-8 flex-row items-center gap-1.5 rounded-full px-3"
+                  >
+                    <currentTypeConfig.Icon className="h-3.5 w-3.5 text-muted-foreground" size={14} />
+                    <Text className="text-xs text-muted-foreground">{currentTypeConfig.label}</Text>
+                    <ChevronDown className="h-3 w-3 text-muted-foreground" size={12} />
+                  </Pressable>
+                )}
+              >
+                <PopoverBackdrop />
+                <PopoverContent className="w-[280px] p-0">
+                  <View className="py-1">
+                    {PROJECT_TYPE_OPTIONS.map((opt) => {
+                      const isSelected = opt.id === projectType
+                      return (
+                        <Pressable
+                          key={opt.id}
+                          onPress={() => {
+                            if (onProjectTypeChange) {
+                              onProjectTypeChange(opt.id)
+                            } else {
+                              setInternalProjectType(opt.id)
+                            }
+                            setTypeMenuOpen(false)
+                          }}
+                          className={cn(
+                            "flex-row items-center gap-3 p-3 rounded-lg mb-1",
+                            isSelected && "bg-accent"
+                          )}
+                        >
+                          <View className="w-8 items-center">
+                            <opt.Icon className="h-4 w-4 text-muted-foreground" size={16} />
+                          </View>
+                          <View className="flex-1">
+                            <Text className="font-medium text-sm text-foreground">{opt.label}</Text>
+                            <Text className="text-xs text-muted-foreground">{opt.description}</Text>
+                          </View>
+                        </Pressable>
+                      )
+                    })}
+                  </View>
+                </PopoverContent>
+              </Popover>
             </View>
 
             <Pressable

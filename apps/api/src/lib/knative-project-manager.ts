@@ -4,23 +4,18 @@
  * Knative Project Manager
  *
  * Manages the lifecycle of per-project Knative Services:
- * - Creates Knative Services for projects on demand
- * - Provisions per-project databases on shared CloudNativePG cluster
+ * - Creates Knative Services for development projects (runtime containers)
+ * - Creates lightweight published services (nginx + S3 init container)
+ * - Manages DomainMappings for preview and published subdomains
  * - Provides URLs for routing to project pods
  * - Handles scale-to-zero and cold starts
  *
  * Architecture:
- * Each project pod contains a single container:
- * 1. project-runtime: The main application (Claude Code, MCP, Vite)
- *
- * Database:
- * Projects use a shared CloudNativePG PostgreSQL cluster (projects-pg).
- * Each project gets its own database (project_{uuid}) provisioned on demand.
- * This replaces the previous PostgreSQL sidecar pattern for:
- * - Better resource utilization (no per-pod postgres overhead)
- * - Faster cold starts (no postgres startup wait)
- * - Centralized backups (CloudNativePG handles WAL archiving)
- * - Portable across EKS, k3s, and bare metal
+ * Development projects: Single runtime container (project-runtime or agent-runtime)
+ *   with emptyDir volume synced to/from S3.
+ * Published apps: nginx:alpine serving static files from emptyDir,
+ *   populated by an init container that syncs from S3.
+ *   DomainMapping routes {subdomain}.shogo.one -> published-{projectId}.
  *
  * Used by the API to proxy requests to project-specific runtimes.
  */
@@ -30,6 +25,7 @@ import * as fs from "fs"
 import { trace, SpanStatusCode } from "@opentelemetry/api"
 import { generateProxyToken } from './ai-proxy-token'
 import * as databaseService from '../services/database.service'
+import { RUNTIME_TYPES, runtimeTypeFromProjectType } from '@shogo/shared-runtime'
 
 const knativeTracer = trace.getTracer('shogo-knative-manager')
 
@@ -38,11 +34,6 @@ const knativeTracer = trace.getTracer('shogo-knative-manager')
 // =============================================================================
 
 const NAMESPACE = process.env.PROJECT_NAMESPACE || "shogo-workspaces"
-const PROJECT_RUNTIME_IMAGE = process.env.PROJECT_RUNTIME_IMAGE || "ghcr.io/shogo-ai/project-runtime:latest"
-const AGENT_RUNTIME_IMAGE = process.env.AGENT_RUNTIME_IMAGE || (() => {
-  console.error('[KnativeProjectManager] AGENT_RUNTIME_IMAGE env var not set — falling back to ghcr.io default which will likely fail in EKS. Set AGENT_RUNTIME_IMAGE to your ECR image.')
-  return "ghcr.io/shogo-ai/agent-runtime:latest"
-})()
 const KNATIVE_GROUP = "serving.knative.dev"
 const KNATIVE_VERSION = "v1"
 
@@ -235,7 +226,7 @@ export class KnativeProjectManager {
 
   constructor(config: KnativeProjectManagerConfig = {}) {
     this.namespace = config.namespace || NAMESPACE
-    this.image = config.image || PROJECT_RUNTIME_IMAGE
+    this.image = config.image || RUNTIME_TYPES.project.image()
     this.idleTimeoutSeconds = config.idleTimeoutSeconds || parseInt(process.env.PROJECT_IDLE_TIMEOUT || "300", 10)
     this.memoryLimit = config.memoryLimit || "2Gi"
     this.cpuLimit = config.cpuLimit || "1000m"
@@ -888,16 +879,18 @@ export class KnativeProjectManager {
       where: { id: projectId },
       select: { type: true, templateId: true, name: true },
     })
-    const isAgentProject = projectRecord?.type === 'AGENT'
-    const runtimeImage = isAgentProject ? AGENT_RUNTIME_IMAGE : this.image
-    const runtimeComponent = isAgentProject ? 'agent-runtime' : 'project-runtime'
-    const workDir = isAgentProject ? '/app/agent' : '/app/project'
+    const rtType = runtimeTypeFromProjectType(projectRecord?.type ?? 'APP')
+    const rtConfig = RUNTIME_TYPES[rtType]
+    const runtimeImage = rtConfig.image()
+    const runtimeComponent = rtConfig.componentLabel
+    const workDir = rtConfig.workDir
+    const isAgentProject = rtType === 'agent'
 
-    // Build environment variables for runtime container
+    const extraEnvEntries = Object.entries(rtConfig.extraEnv).map(([name, value]) => ({ name, value }))
     const env: any[] = [
       { name: "PROJECT_ID", value: projectId },
       { name: "PROJECT_DIR", value: workDir },
-      ...(isAgentProject ? [{ name: "AGENT_DIR", value: workDir }] : []),
+      ...extraEnvEntries,
       ...(projectRecord?.templateId ? [{ name: "TEMPLATE_ID", value: projectRecord.templateId }] : []),
       ...(projectRecord?.name ? [{ name: "AGENT_NAME", value: projectRecord.name }] : []),
       { name: "SCHEMAS_PATH", value: "/app/.schemas" },
@@ -979,54 +972,9 @@ export class KnativeProjectManager {
     // injected into pods. Agents proxy these requests through the API server
     // via TOOLS_PROXY_URL, which holds the real keys server-side.
 
-    // Add PostgreSQL DATABASE_URL for shared CloudNativePG cluster
-    // Database is provisioned per-project on the shared projects-pg cluster
-    // Credentials are stored in a K8s Secret and referenced via secretKeyRef
-    // so that password rotation doesn't require pod recreation
-    // Agent projects use filesystem/S3 storage, not a project database — skip provisioning
-    if (this.postgresEnabled && !isAgentProject) {
-      // Retry database provisioning up to 3 times (CNPG cluster may be briefly unavailable)
-      let dbInfo: Awaited<ReturnType<typeof databaseService.provisionDatabase>> | null = null
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-          dbInfo = await databaseService.provisionDatabase(projectId)
-          break
-        } catch (err: any) {
-          console.error(`[KnativeProjectManager] Database provisioning attempt ${attempt}/3 failed for ${projectId}:`, err.message)
-          if (attempt < 3) {
-            await new Promise(resolve => setTimeout(resolve, 2000 * attempt))
-          }
-        }
-      }
-
-      if (dbInfo) {
-        const credSecretName = databaseService.dbSecretName(projectId)
-        if (dbInfo.password) {
-          env.push({
-            name: "DATABASE_URL",
-            valueFrom: {
-              secretKeyRef: {
-                name: credSecretName,
-                key: "database-url",
-              },
-            },
-          })
-          console.log(`[KnativeProjectManager] Provisioned database "${dbInfo.databaseName}" for project ${projectId} (credentials in Secret "${credSecretName}")`)
-        } else {
-          env.push({
-            name: "DATABASE_URL",
-            value: dbInfo.connectionUrl,
-          })
-          console.log(`[KnativeProjectManager] Provisioned database "${dbInfo.databaseName}" for project ${projectId} (legacy: inline credentials)`)
-        }
-      } else {
-        throw new Error(`Failed to provision database for project ${projectId} after 3 attempts. Check CloudNativePG cluster health.`)
-      }
-      // Disable postgres S3 backup (CloudNativePG handles backups via Barman)
-      env.push({ name: "POSTGRES_S3_BACKUP_ENABLED", value: "false" })
-    } else if (isAgentProject) {
-      console.log(`[KnativeProjectManager] Skipping database provisioning for agent project ${projectId}`)
-    }
+    // Dev projects use SQLite (DATABASE_URL defaults to file:./prisma/dev.db in project-runtime).
+    // No external database provisioning needed. Published apps get PostgreSQL sidecars (Phase 5).
+    console.log(`[KnativeProjectManager] Dev project ${projectId} uses SQLite — no database provisioning`)
 
     // Add S3 configuration if bucket is specified
     // S3 sync is critical for emptyDir volumes - provides persistence across restarts
@@ -1075,7 +1023,7 @@ export class KnativeProjectManager {
     // Build containers array
     const containers: any[] = [
       {
-        name: runtimeComponent,
+        name: rtConfig.containerName,
         image: runtimeImage,
         imagePullPolicy: "Always", // Always pull to get latest staging-latest tag
         ports: [{ containerPort: 8080, name: "http1" }],
@@ -1127,8 +1075,6 @@ export class KnativeProjectManager {
       },
     ]
 
-    // NOTE: postgres-data volume removed. Database is on shared CloudNativePG cluster.
-
     return {
       apiVersion: `${KNATIVE_GROUP}/${KNATIVE_VERSION}`,
       kind: "Service",
@@ -1153,17 +1099,291 @@ export class KnativeProjectManager {
           },
           spec: {
             timeoutSeconds: 600,
-            // Security context - fsGroup ensures PVCs are accessible
-            // PostgreSQL needs gid 999 (postgres group), project-runtime needs 1001
-            // Using 999 allows both to work (postgres is owner, runtime can read/write)
-            securityContext: {
-              fsGroup: 999,
-            },
+            securityContext: { fsGroup: 999 },
             containers,
             volumes,
           },
         },
       },
+    }
+  }
+
+  /**
+   * Create a static-serving Knative Service for a published app.
+   * Uses nginx:alpine to serve pre-built dist files from an emptyDir volume.
+   * An init container syncs files from S3 on pod startup.
+   * No database sidecar -- published apps are static sites.
+   */
+  async createPublishedService(projectId: string, subdomain: string): Promise<string> {
+    const serviceName = `published-${projectId}`
+    const api = getCustomApi()
+    const publishBucket = process.env.PUBLISH_BUCKET || 'shogo-published-apps-staging'
+
+    const nginxConf = [
+      'server {',
+      '  listen 8080;',
+      '  root /usr/share/nginx/html;',
+      '  index index.html;',
+      '  location / {',
+      '    try_files $uri $uri/ /index.html;',
+      '  }',
+      '  location ~* \\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot|map)$ {',
+      '    expires 1y;',
+      '    add_header Cache-Control "public, immutable";',
+      '  }',
+      '}',
+    ].join('\\n')
+
+    const s3SyncEnv: any[] = [
+      { name: "AWS_DEFAULT_REGION", value: this.s3Region },
+    ]
+
+    if (this.s3Endpoint) {
+      s3SyncEnv.push({ name: "AWS_ENDPOINT_URL", value: this.s3Endpoint })
+    }
+
+    // AWS credentials from K8s secrets
+    s3SyncEnv.push({
+      name: "AWS_ACCESS_KEY_ID",
+      valueFrom: { secretKeyRef: { name: "s3-credentials", key: "access-key", optional: true } },
+    })
+    s3SyncEnv.push({
+      name: "AWS_SECRET_ACCESS_KEY",
+      valueFrom: { secretKeyRef: { name: "s3-credentials", key: "secret-key", optional: true } },
+    })
+
+    const service = {
+      apiVersion: `${KNATIVE_GROUP}/${KNATIVE_VERSION}`,
+      kind: "Service",
+      metadata: {
+        name: serviceName,
+        namespace: this.namespace,
+        labels: {
+          "app.kubernetes.io/part-of": "shogo",
+          "shogo.io/project": projectId,
+          "shogo.io/component": "published-app",
+        },
+      },
+      spec: {
+        template: {
+          metadata: {
+            annotations: {
+              "autoscaling.knative.dev/min-scale": "0",
+              "autoscaling.knative.dev/max-scale": "1",
+              "autoscaling.knative.dev/scale-to-zero-pod-retention-period": "1800s",
+              "autoscaling.knative.dev/target": "100",
+              "shogo.io/deploy-timestamp": new Date().toISOString(),
+            },
+          },
+          spec: {
+            timeoutSeconds: 120,
+            initContainers: [
+              {
+                name: "s3-sync",
+                image: "amazon/aws-cli:latest",
+                command: ["sh", "-c", `aws s3 sync s3://${publishBucket}/${subdomain}/ /data/`],
+                env: s3SyncEnv,
+                volumeMounts: [{ name: "site-data", mountPath: "/data" }],
+                resources: {
+                  requests: { memory: "64Mi", cpu: "50m" },
+                  limits: { memory: "256Mi", cpu: "250m" },
+                },
+              },
+            ],
+            containers: [
+              {
+                name: "nginx",
+                image: "nginx:alpine",
+                command: ["sh", "-c", `printf '${nginxConf}' > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'`],
+                ports: [{ containerPort: 8080, name: "http1" }],
+                resources: {
+                  requests: { memory: "32Mi", cpu: "10m" },
+                  limits: { memory: "128Mi", cpu: "100m" },
+                },
+                volumeMounts: [{ name: "site-data", mountPath: "/usr/share/nginx/html" }],
+                readinessProbe: {
+                  httpGet: { path: "/", port: 8080 },
+                  initialDelaySeconds: 1,
+                  periodSeconds: 3,
+                  timeoutSeconds: 2,
+                  failureThreshold: 10,
+                },
+                livenessProbe: {
+                  httpGet: { path: "/", port: 8080 },
+                  initialDelaySeconds: 5,
+                  periodSeconds: 15,
+                  timeoutSeconds: 2,
+                  failureThreshold: 3,
+                },
+              },
+            ],
+            volumes: [
+              { name: "site-data", emptyDir: { sizeLimit: "512Mi" } },
+            ],
+          },
+        },
+      },
+    }
+
+    try {
+      await api.createNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: KNATIVE_VERSION,
+        namespace: this.namespace,
+        plural: "services",
+        body: service,
+      })
+      console.log(`[KnativeProjectManager] Created published service ${serviceName}`)
+    } catch (err: any) {
+      const statusCode = err?.response?.statusCode || err?.statusCode || err?.body?.code
+      if (statusCode === 409 || err?.body?.reason === 'AlreadyExists') {
+        await api.replaceNamespacedCustomObject({
+          group: KNATIVE_GROUP,
+          version: KNATIVE_VERSION,
+          namespace: this.namespace,
+          plural: "services",
+          name: serviceName,
+          body: service,
+        })
+        console.log(`[KnativeProjectManager] Updated published service ${serviceName}`)
+      } else {
+        throw err
+      }
+    }
+
+    return `http://${serviceName}.${this.namespace}.svc.cluster.local`
+  }
+
+  /**
+   * Force a new Knative revision for a published service.
+   * Updates the deploy-timestamp annotation, causing the init container
+   * to re-sync from S3 with fresh content.
+   */
+  async forcePublishedRevision(projectId: string): Promise<void> {
+    const serviceName = `published-${projectId}`
+    await mergePatchKnativeService(this.namespace, serviceName, {
+      spec: {
+        template: {
+          metadata: {
+            annotations: {
+              "shogo.io/deploy-timestamp": new Date().toISOString(),
+            },
+          },
+        },
+      },
+    })
+    console.log(`[KnativeProjectManager] Forced new revision for published service ${serviceName}`)
+  }
+
+  /**
+   * Create a DomainMapping for a published app's subdomain.
+   * Maps {subdomain}.shogo.one -> published-{projectId}
+   */
+  async createPublishedDomainMapping(subdomain: string, projectId: string): Promise<void> {
+    const publishDomain = process.env.PUBLISH_DOMAIN || 'shogo.one'
+    const domainName = `${subdomain}.${publishDomain}`
+    const serviceName = `published-${projectId}`
+
+    console.log(`[KnativeProjectManager] Creating published DomainMapping: ${domainName} -> ${serviceName}`)
+
+    const api = getCustomApi()
+
+    const domainMapping = {
+      apiVersion: `${KNATIVE_GROUP}/v1beta1`,
+      kind: "DomainMapping",
+      metadata: {
+        name: domainName,
+        namespace: this.namespace,
+        labels: {
+          "app.kubernetes.io/part-of": "shogo",
+          "shogo.io/project": projectId,
+          "shogo.io/component": "published-domain",
+        },
+      },
+      spec: {
+        ref: {
+          name: serviceName,
+          kind: "Service",
+          apiVersion: `${KNATIVE_GROUP}/${KNATIVE_VERSION}`,
+        },
+      },
+    }
+
+    try {
+      await api.createNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: "v1beta1",
+        namespace: this.namespace,
+        plural: "domainmappings",
+        body: domainMapping,
+      })
+      console.log(`[KnativeProjectManager] Created published DomainMapping: ${domainName}`)
+    } catch (error: any) {
+      const statusCode = error?.response?.statusCode || error?.statusCode || error?.body?.code
+      if (statusCode === 409 || error?.message?.includes('already exists') || error?.body?.reason === 'AlreadyExists') {
+        console.log(`[KnativeProjectManager] Published DomainMapping ${domainName} already exists`)
+      } else {
+        console.error(`[KnativeProjectManager] Failed to create published DomainMapping ${domainName}:`, error)
+        throw error
+      }
+    }
+  }
+
+  /**
+   * Delete a published app's DomainMapping.
+   */
+  async deletePublishedDomainMapping(subdomain: string): Promise<void> {
+    const publishDomain = process.env.PUBLISH_DOMAIN || 'shogo.one'
+    const domainName = `${subdomain}.${publishDomain}`
+    const api = getCustomApi()
+
+    try {
+      await api.deleteNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: "v1beta1",
+        namespace: this.namespace,
+        plural: "domainmappings",
+        name: domainName,
+      })
+      console.log(`[KnativeProjectManager] Deleted published DomainMapping: ${domainName}`)
+    } catch (error: any) {
+      if (error?.code !== 404 && error?.response?.statusCode !== 404) {
+        console.error(`[KnativeProjectManager] Failed to delete published DomainMapping ${domainName}:`, error)
+        throw error
+      }
+    }
+  }
+
+  /**
+   * Delete a published service (no PVC cleanup needed -- uses emptyDir).
+   */
+  async deletePublishedService(projectId: string): Promise<void> {
+    const serviceName = `published-${projectId}`
+    const api = getCustomApi()
+
+    try {
+      await api.deleteNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: KNATIVE_VERSION,
+        namespace: this.namespace,
+        plural: "services",
+        name: serviceName,
+      })
+      console.log(`[KnativeProjectManager] Deleted published service ${serviceName}`)
+    } catch (err: any) {
+      if (err?.response?.statusCode !== 404 && err?.code !== 404) throw err
+    }
+
+    // Clean up legacy PVC from older deployments that used postgres sidecar
+    try {
+      const coreApi = getCoreApi()
+      await coreApi.deleteNamespacedPersistentVolumeClaim({
+        name: `pvc-postgres-${projectId}`,
+        namespace: this.namespace,
+      })
+      console.log(`[KnativeProjectManager] Deleted legacy PVC pvc-postgres-${projectId}`)
+    } catch (err: any) {
+      if (err?.response?.statusCode !== 404 && err?.code !== 404) throw err
     }
   }
 }
@@ -1402,7 +1622,7 @@ async function tryClaimWarmPod(
       where: { id: projectId },
       select: { type: true },
     })
-    const runtimeType = projectRecord?.type === 'AGENT' ? 'agent' as const : 'project' as const
+    const runtimeType = runtimeTypeFromProjectType(projectRecord?.type ?? 'APP')
     const t1 = Date.now()
 
     // Try to claim a warm pod

@@ -15,6 +15,7 @@ resources:
   - api-service.yaml
   - web-service.yaml
   - docs-service.yaml
+  - image-prepuller.yaml
 
 labels:
   - pairs:
@@ -32,4 +33,10 @@ images:
     newTag: production-latest
   - name: shogo-docs
     newName: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-docs
+    newTag: production-latest
+  - name: shogo-project-runtime
+    newName: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/project-runtime
+    newTag: production-latest
+  - name: shogo-agent-runtime
+    newName: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/agent-runtime
     newTag: production-latest

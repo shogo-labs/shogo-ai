@@ -3,11 +3,25 @@
 /**
  * useAgentUrl
  *
- * Resolves the agent runtime URL for a project by calling the sandbox/url endpoint.
- * Used by both the chat transport and the dynamic app SSE stream.
+ * Resolves the agent runtime URL and preview URL for a project by calling
+ * the sandbox/url endpoint. Returns both values separately:
+ *   agentUrl  – proxied agent runtime (for chat, SSE stream, capabilities)
+ *   previewUrl – Vite dev server or published app URL (for APP project iframe)
  */
 
 import { useState, useEffect, useRef } from 'react'
+
+function rewriteLocalhostUrl(url: string, apiBaseUrl: string): string {
+  try {
+    const parsed = new URL(url)
+    const apiParsed = new URL(apiBaseUrl)
+    if (parsed.hostname === 'localhost' && apiParsed.hostname !== 'localhost') {
+      parsed.hostname = apiParsed.hostname
+      return parsed.href.replace(/\/+$/, '')
+    }
+  } catch {}
+  return url
+}
 
 export function useAgentUrl(
   apiBaseUrl: string,
@@ -20,6 +34,7 @@ export function useAgentUrl(
   },
 ) {
   const [agentUrl, setAgentUrl] = useState<string | null>(options?.localAgentUrl ?? null)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
@@ -47,27 +62,20 @@ export function useAgentUrl(
         })
         if (!res.ok) throw new Error('Failed to get sandbox URL')
         const data = await res.json()
-        let resolved = data.agentUrl || data.url || null
 
-        // The server returns agent URLs relative to itself (localhost).
-        // On mobile devices localhost refers to the device, not the dev
-        // machine, so rewrite the host to match apiBaseUrl.
-        if (resolved) {
-          try {
-            const agentParsed = new URL(resolved)
-            const apiParsed = new URL(apiBaseUrl)
-            if (
-              agentParsed.hostname === 'localhost' &&
-              apiParsed.hostname !== 'localhost'
-            ) {
-              agentParsed.hostname = apiParsed.hostname
-              // Use href to preserve the full path (e.g. /api/projects/{id}/agent-proxy)
-              resolved = agentParsed.href.replace(/\/+$/, '')
-            }
-          } catch {}
+        let resolvedAgent = data.agentUrl || data.url || null
+        let resolvedPreview = data.url || null
+
+        if (resolvedAgent) {
+          resolvedAgent = rewriteLocalhostUrl(resolvedAgent, apiBaseUrl)
         }
+        if (resolvedPreview) {
+          resolvedPreview = rewriteLocalhostUrl(resolvedPreview, apiBaseUrl)
+        }
+
         if (!controller.signal.aborted) {
-          setAgentUrl(resolved)
+          setAgentUrl(resolvedAgent)
+          setPreviewUrl(resolvedPreview)
           setError(null)
         }
       } catch (err: any) {
@@ -79,5 +87,5 @@ export function useAgentUrl(
     return () => { controller.abort() }
   }, [apiBaseUrl, projectId, options?.localAgentUrl, options?.credentials])
 
-  return { agentUrl, error }
+  return { agentUrl, previewUrl, error }
 }

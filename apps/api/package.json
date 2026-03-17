@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.37",
-    "@anthropic-ai/claude-agent-sdk": "^0.2.41",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.76",
     "@aws-sdk/client-auto-scaling": "^3.995.0",
     "@aws-sdk/client-cloudfront": "^3.975.0",
     "@aws-sdk/client-s3": "^3.975.0",
@@ -20,6 +20,7 @@
     "@better-auth/expo": "^1.4.19",
     "@composio/core": "^0.6.3",
     "@kubernetes/client-node": "^1.4.0",
+    "@shogo/shared-runtime": "workspace:*",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/exporter-metrics-otlp-http": "^0.212.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.212.0",

@@ -53,8 +53,6 @@ services:
       WORKSPACES_DIR: /app/workspaces
       RUNTIME_BASE_PORT: "5200"
       RUNTIME_DOMAIN_SUFFIX: localhost
-      # Projects database (isolated from platform database)
-      PROJECTS_DATABASE_URL: postgres://project:project_dev@postgres-projects:5432/projects
     command: ["bun", "--watch", "src/server.ts"]
 
   # ---------------------------------------------------------------------------
