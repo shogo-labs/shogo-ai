@@ -933,7 +933,7 @@ async function proxyOpenAINonStream(
 // Billing
 // =============================================================================
 
-import { calculateCreditCost, proxyModelToBillingModel } from '../lib/credit-cost'
+import { calculateCreditCost, proxyModelToBillingModel, getModelTier } from '../lib/credit-cost'
 import * as billingService from '../services/billing.service'
 import { getProjectUser } from '../lib/project-user-context'
 import { accumulateUsage, hasSession } from '../lib/proxy-billing-session'
@@ -1275,6 +1275,26 @@ export function aiProxyRoutes() {
         )
       }
 
+      // Enforce model tier: free users can only use economy-tier models
+      if (modelConfig.provider !== 'local') {
+        const tier = getModelTier(request.model)
+        if (tier !== 'economy') {
+          const isPaid = await billingService.hasPaidSubscription(tokenPayload.workspaceId)
+          if (!isPaid) {
+            return c.json(
+              {
+                error: {
+                  message: `Model '${request.model}' requires a Pro subscription. Free users can use economy-tier models (e.g. claude-haiku-4-5, gpt-5-nano).`,
+                  type: 'billing_error',
+                  code: 'model_tier_restricted',
+                },
+              },
+              403
+            )
+          }
+        }
+      }
+
       // Get provider API key
       const apiKey = getProviderApiKey(modelConfig.provider)
       if (!apiKey) {
@@ -1481,6 +1501,20 @@ export function aiProxyRoutes() {
 
       const { resolvedModel, isLocal } = resolveAgentModel(requestModel)
       console.log(`[AI Proxy] Anthropic pass-through: ${tokenPayload.projectId} → ${requestModel} resolved to ${resolvedModel} (local: ${isLocal}, stream: ${isStream})`)
+
+      // Enforce model tier: free users can only use economy-tier models
+      if (!isLocal) {
+        const tier = getModelTier(resolvedModel)
+        if (tier !== 'economy') {
+          const isPaid = await billingService.hasPaidSubscription(tokenPayload.workspaceId)
+          if (!isPaid) {
+            return c.json(
+              { type: 'error', error: { type: 'billing_error', message: `Model '${resolvedModel}' requires a Pro subscription. Free users can use economy-tier models (e.g. claude-haiku-4-5, gpt-5-nano).` } },
+              403
+            )
+          }
+        }
+      }
 
       // ── Local LLM routing: convert Anthropic → OpenAI format ──
       if (isLocal) {

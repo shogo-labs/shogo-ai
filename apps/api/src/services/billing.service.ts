@@ -99,8 +99,10 @@ export async function allocateMonthlyCredits(
 /**
  * Check if workspace has an active paid subscription (pro, business, enterprise).
  * Free users have no subscription record.
+ * In local mode we treat all workspaces as paid so devs can use any model.
  */
 export async function hasPaidSubscription(workspaceId: string): Promise<boolean> {
+  if (isLocalMode) return true
   const sub = await prisma.subscription.findFirst({
     where: {
       workspaceId,
