@@ -14,7 +14,6 @@ const config: ForgeConfig = {
       windowsSign: {
         certificateFile: process.env.WINDOWS_CERT_PATH,
         certificatePassword: process.env.WINDOWS_CERT_PASSWORD,
-        timestampServer: 'http://timestamp.digicert.com'
       }
     } : {}),
     extraResource: [
