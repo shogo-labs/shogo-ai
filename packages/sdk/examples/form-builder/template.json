@@ -32,7 +32,7 @@
     "quiz builder"
   ],
   "techStack": {
-    "database": "postgresql",
+    "database": "sqlite",
     "orm": "prisma",
     "frontend": "react",
     "router": "tanstack-router",

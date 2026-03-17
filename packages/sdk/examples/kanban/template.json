@@ -27,7 +27,7 @@
     "workflow board"
   ],
   "techStack": {
-    "database": "postgresql",
+    "database": "sqlite",
     "orm": "prisma",
     "frontend": "react",
     "backend": "hono",

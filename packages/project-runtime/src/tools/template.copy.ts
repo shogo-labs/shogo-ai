@@ -663,56 +663,12 @@ function updatePackageJson(projectDir: string, projectName: string): void {
 }
 
 /**
- * Convert template to SQLite mode for eval/testing
+ * Ensure SQLite environment is set up for the copied template.
+ * Templates already ship with SQLite config; this just ensures
+ * .env has DATABASE_URL and regenerates the Prisma client.
  */
 function convertToSqliteMode(projectDir: string): void {
-  console.log(`[template.copy] Eval mode detected - converting to SQLite for fast testing`)
-  
-  const schemaPath = join(projectDir, "prisma/schema.prisma")
-  if (existsSync(schemaPath)) {
-    let schema = readFileSync(schemaPath, "utf-8")
-    schema = schema.replace(/provider\s*=\s*"postgresql"/g, 'provider = "sqlite"')
-    schema = schema.replace(/@default\(uuid\(\)\)/g, '@default(cuid())')
-    schema = schema.replace(/@default\(dbgenerated\("gen_random_uuid\(\)"\)\)/g, '@default(cuid())')
-    schema = schema.replace(/@default\(auto\(\)\)/g, '@default(autoincrement())')
-    schema = schema.replace(/@db\.\w+(\([^)]*\))?/g, '')
-    writeFileSync(schemaPath, schema, "utf-8")
-  }
-  
-  const dbPath = join(projectDir, "src/lib/db.ts")
-  if (existsSync(dbPath)) {
-    const sqliteDbCode = `import { PrismaLibSql } from '@prisma/adapter-libsql'
-import { PrismaClient } from '../generated/prisma/client'
-
-const globalForPrisma = globalThis as unknown as {
-  prisma: PrismaClient | undefined
-}
-
-const adapter = new PrismaLibSql({
-  url: process.env.DATABASE_URL || 'file:./dev.db',
-})
-
-export const prisma =
-  globalForPrisma.prisma ??
-  new PrismaClient({
-    adapter,
-    log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'],
-  })
-
-if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma
-`
-    writeFileSync(dbPath, sqliteDbCode, "utf-8")
-  }
-  
-  const pkgPath = join(projectDir, "package.json")
-  if (existsSync(pkgPath)) {
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"))
-    if (pkg.dependencies) {
-      delete pkg.dependencies['@prisma/adapter-pg']
-      pkg.dependencies['@prisma/adapter-libsql'] = '^7.3.0'
-    }
-    writeFileSync(pkgPath, JSON.stringify(pkg, null, 2), "utf-8")
-  }
+  console.log(`[template.copy] Ensuring SQLite environment for project`)
   
   const envPath = join(projectDir, ".env")
   let envContent = existsSync(envPath) ? readFileSync(envPath, "utf-8") : ''
@@ -969,7 +925,7 @@ export async function executeTemplateCopy(
     ensureBaseInfrastructure(projectDir)
     timer.mark('ensureBaseInfrastructure')
 
-    // Always convert to SQLite for development (templates ship with PostgreSQL config)
+    // Ensure SQLite .env and regenerate Prisma client (templates already ship as SQLite)
     convertToSqliteMode(projectDir)
     timer.mark('convertToSqliteMode')
     if (!isEvalMode()) {

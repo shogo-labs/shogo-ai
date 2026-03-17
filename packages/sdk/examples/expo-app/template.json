@@ -18,7 +18,7 @@
     "expo app"
   ],
   "techStack": {
-    "database": "postgresql",
+    "database": "sqlite",
     "orm": "prisma",
     "frontend": "react-native",
     "router": "expo-router",
