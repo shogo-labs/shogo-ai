@@ -102,7 +102,11 @@ spec:
             - name: PROJECT_NAMESPACE
               value: "shogo-workspaces"
             - name: RUNTIME_IMAGE
-              value: "097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/runtime:production-latest"
+              value: "097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-runtime:production-latest"
+            - name: PREVIEW_BASE_DOMAIN
+              value: "shogo.ai"
+            - name: PREVIEW_ENVIRONMENT
+              value: "production"
             - name: S3_WORKSPACES_BUCKET
               value: "shogo-workspaces-production"
             - name: S3_REGION
@@ -240,7 +244,11 @@ spec:
                   optional: true
             # Runtime image for warm pool
             - name: RUNTIME_IMAGE
-              value: "097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/runtime:production-latest"
+              value: "097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-runtime:production-latest"
+            - name: PREVIEW_BASE_DOMAIN
+              value: "shogo.ai"
+            - name: PREVIEW_ENVIRONMENT
+              value: "production"
             - name: WARM_POOL_AGENTS_PER_NODE
               value: "0"
             - name: WARM_POOL_PROJECTS_PER_NODE

@@ -35,5 +35,5 @@ images:
     newName: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-docs
     newTag: production-latest
   - name: shogo-runtime
-    newName: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/runtime
+    newName: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-runtime
     newTag: production-latest

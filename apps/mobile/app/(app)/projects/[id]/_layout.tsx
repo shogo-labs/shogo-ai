@@ -458,14 +458,16 @@ export default observer(function ProjectLayout() {
   const [previewTab, setPreviewTab] = useState('dynamic-app')
 
   useEffect(() => {
-    if (!canvasEnabled) {
+    if (activeMode === 'app') {
+      if (previewTab !== 'app-preview') setPreviewTab('app-preview')
+      if (activeTab === 'canvas') setActiveTab('chat')
+    } else if (!canvasEnabled) {
       if (previewTab === 'dynamic-app') setPreviewTab('chat-fullscreen')
       if (activeTab === 'canvas' && previewTab !== 'app-preview') setActiveTab('chat')
-    }
-    if (canvasEnabled) {
+    } else if (canvasEnabled) {
       if (previewTab === 'chat-fullscreen') setPreviewTab('dynamic-app')
     }
-  }, [canvasEnabled, previewTab, activeTab])
+  }, [canvasEnabled, activeMode, previewTab, activeTab])
 
   const handleCapabilityToggle = useCallback(async (key: string, enabled: boolean) => {
     await updateProjectSettings({ [key]: enabled })

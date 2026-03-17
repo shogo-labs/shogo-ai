@@ -38,5 +38,5 @@ images:
     newTag: staging-latest
   # Unified runtime image for pre-puller DaemonSet
   - name: shogo-runtime
-    newName: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/runtime
+    newName: 097357356677.dkr.ecr.us-east-1.amazonaws.com/shogo/shogo-runtime
     newTag: staging-latest
