@@ -36,6 +36,54 @@ export const MODEL_CREDIT_CONFIG = {
 
 export type ModelName = keyof typeof MODEL_CREDIT_CONFIG
 export type AgentMode = 'basic' | 'advanced'
+export type ModelTier = 'economy' | 'standard' | 'premium'
+
+const MODEL_TIER_MAP: Record<string, ModelTier> = {
+  'claude-opus-4-6': 'premium',
+  'claude-opus-4-5': 'premium',
+  'claude-opus-4-5-20251101': 'premium',
+  'claude-opus-4-1': 'premium',
+  'claude-opus-4-1-20250805': 'premium',
+  'claude-opus-4-0': 'premium',
+  'claude-opus-4-20250514': 'premium',
+  'claude-opus': 'premium',
+  'claude-sonnet-4-6': 'standard',
+  'claude-sonnet-4-5': 'standard',
+  'claude-sonnet-4-5-20250929': 'standard',
+  'claude-sonnet-4-0': 'standard',
+  'claude-sonnet-4-20250514': 'standard',
+  'claude-sonnet': 'standard',
+  'claude-3-7-sonnet-20250219': 'standard',
+  'claude-3-7-sonnet-latest': 'standard',
+  'claude-haiku-4-5-20251001': 'economy',
+  'claude-haiku-4-5': 'economy',
+  'claude-haiku': 'economy',
+  'claude-3-haiku-20240307': 'economy',
+  'gpt-5.4': 'premium',
+  'o3': 'premium',
+  'o1': 'premium',
+  'gpt-5-mini': 'standard',
+  'o4-mini': 'standard',
+  'gpt-4.1': 'standard',
+  'gpt-4o': 'standard',
+  'gpt-4-turbo': 'standard',
+  'gpt-5-nano': 'economy',
+  'gpt-4o-mini': 'economy',
+  'o1-mini': 'economy',
+  'o3-mini': 'economy',
+}
+
+/**
+ * Resolve the billing tier for a model. Unknown models default to 'standard'
+ * so they're blocked for free users (fail-safe).
+ */
+export function getModelTier(model: string): ModelTier {
+  if (MODEL_TIER_MAP[model]) return MODEL_TIER_MAP[model]
+  const lower = model.toLowerCase()
+  if (lower.includes('opus')) return 'premium'
+  if (lower.includes('haiku') || lower.includes('nano') || lower.includes('mini')) return 'economy'
+  return 'standard'
+}
 
 /**
  * Map agent mode to model name for credit calculation.
