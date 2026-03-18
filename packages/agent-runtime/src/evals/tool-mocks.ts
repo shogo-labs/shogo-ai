@@ -576,16 +576,27 @@ export const PR_REVIEW_MOCKS: ToolMockMap = {
 export const MCP_LIST_INSTALLED_MOCKS: ToolMockMap = {
   tool_search: {
     type: 'static',
-    description: 'Search for available tools by capability or keyword.',
+    description: 'Search for managed OAuth integrations.',
     paramKeys: ['query'],
     response: {
       query: 'integrations',
       results: [
-        { name: 'Playwright Browser', qualifiedName: '@anthropic/mcp-server-playwright', description: 'Browser automation — navigate, click, fill forms, take screenshots.', installCommand: 'npx -y @anthropic/mcp-server-playwright', source: 'catalog' },
-        { name: 'PostgreSQL', qualifiedName: '@anthropic/mcp-server-postgres', description: 'Query PostgreSQL databases.', installCommand: 'npx -y @anthropic/mcp-server-postgres', source: 'catalog' },
         { name: 'Google Calendar', qualifiedName: 'googlecalendar', description: 'List, create, update calendar events.', source: 'managed' },
       ],
-      message: 'Found 3 available integrations.',
+      message: 'Found 1 managed integration(s).',
+    },
+  },
+  mcp_search: {
+    type: 'static',
+    description: 'Search for MCP servers by capability or keyword.',
+    paramKeys: ['query'],
+    response: {
+      query: 'integrations',
+      results: [
+        { name: 'Playwright Browser', qualifiedName: '@anthropic/mcp-server-playwright', description: 'Browser automation — navigate, click, fill forms, take screenshots.', installCommand: 'mcp_install({ name: "playwright" })', source: 'catalog' },
+        { name: 'PostgreSQL', qualifiedName: '@anthropic/mcp-server-postgres', description: 'Query PostgreSQL databases.', installCommand: 'mcp_install({ name: "postgres" })', source: 'catalog' },
+      ],
+      message: 'Found 2 MCP server(s). Use mcp_install to add one.',
     },
   },
 }
@@ -596,6 +607,12 @@ export const MCP_LIST_INSTALLED_MOCKS: ToolMockMap = {
 
 export const MCP_SEARCH_BASIC_MOCKS: ToolMockMap = {
   tool_search: {
+    type: 'static',
+    description: 'Search for managed OAuth integrations.',
+    paramKeys: ['query'],
+    response: { query: 'postgres', results: [], message: 'No managed integrations found. Try mcp_search for MCP protocol servers.' },
+  },
+  mcp_search: {
     type: 'pattern',
     description: 'Search for MCP servers by capability or keyword.',
     paramKeys: ['query', 'limit'],
@@ -605,10 +622,10 @@ export const MCP_SEARCH_BASIC_MOCKS: ToolMockMap = {
         response: {
           query: 'postgres',
           results: [
-            { name: 'Postgres MCP Server', qualifiedName: '@modelcontextprotocol/server-postgres', description: 'Query PostgreSQL databases with read-only access. Supports schema inspection and parameterized queries.', installCommand: 'npx -y @modelcontextprotocol/server-postgres', source: 'catalog' },
-            { name: 'Neon Postgres', qualifiedName: '@neondatabase/mcp-server-neon', description: 'Manage Neon serverless Postgres — create databases, run SQL, manage branches.', installCommand: 'npx -y @neondatabase/mcp-server-neon', source: 'catalog' },
+            { name: 'Postgres MCP Server', qualifiedName: '@modelcontextprotocol/server-postgres', description: 'Query PostgreSQL databases with read-only access. Supports schema inspection and parameterized queries.', installCommand: 'mcp_install({ name: "postgres" })', source: 'catalog' },
+            { name: 'Neon Postgres', qualifiedName: '@neondatabase/mcp-server-neon', description: 'Manage Neon serverless Postgres — create databases, run SQL, manage branches.', installCommand: 'mcp_install({ name: "neon" })', source: 'catalog' },
           ],
-          message: 'Found 2 MCP server(s). Use tool_install to add one.',
+          message: 'Found 2 MCP server(s). Use mcp_install to add one.',
         },
       },
     ],
@@ -623,20 +640,26 @@ export const MCP_SEARCH_BASIC_MOCKS: ToolMockMap = {
 export const MCP_INSTALL_AND_USE_MOCKS: ToolMockMap = {
   tool_search: {
     type: 'static',
+    description: 'Search for managed OAuth integrations.',
+    paramKeys: ['query'],
+    response: { query: 'filesystem', results: [], message: 'No managed integrations found. Try mcp_search for MCP protocol servers.' },
+  },
+  mcp_search: {
+    type: 'static',
     description: 'Search for MCP servers by capability or keyword.',
     paramKeys: ['query', 'limit'],
     response: {
       query: 'filesystem',
       results: [
-        { name: 'Filesystem MCP Server', qualifiedName: '@modelcontextprotocol/server-filesystem', description: 'Secure file operations with configurable access controls.', installCommand: 'npx -y @modelcontextprotocol/server-filesystem /tmp', source: 'catalog' },
+        { name: 'Filesystem MCP Server', qualifiedName: '@modelcontextprotocol/server-filesystem', description: 'Secure file operations with configurable access controls.', installCommand: 'mcp_install({ name: "filesystem" })', source: 'catalog' },
       ],
-      message: 'Found 1 MCP server(s). Use tool_install to add one.',
+      message: 'Found 1 MCP server(s). Use mcp_install to add one.',
     },
   },
-  tool_install: {
+  mcp_install: {
     type: 'static',
     description: 'Install and start an MCP server, making its tools available immediately.',
-    paramKeys: ['name', 'command', 'args', 'env'],
+    paramKeys: ['name', 'env', 'url', 'headers'],
     response: {
       ok: true,
       server: 'filesystem',
@@ -647,7 +670,7 @@ export const MCP_INSTALL_AND_USE_MOCKS: ToolMockMap = {
         { name: 'mcp_filesystem_list_directory', description: 'List directory contents' },
         { name: 'mcp_filesystem_search_files', description: 'Search files by pattern' },
       ],
-      message: 'Installed "filesystem" with 4 tool(s). They are now available for use.',
+      message: 'Installed MCP server "filesystem" with 4 tool(s). They are now available for use.',
     },
   },
   mcp_filesystem_list_directory: {
@@ -663,11 +686,11 @@ export const MCP_INSTALL_AND_USE_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 export const MCP_UNINSTALL_MOCKS: ToolMockMap = {
-  tool_uninstall: {
+  mcp_uninstall: {
     type: 'static',
     description: 'Stop and remove an installed MCP server.',
     paramKeys: ['name'],
-    response: { ok: true, removed: 'slack', message: 'Removed "slack" and all its tools.' },
+    response: { ok: true, removed: 'slack', message: 'Removed MCP server "slack" and all its tools.' },
   },
 }
 
@@ -680,21 +703,27 @@ export const MCP_UNINSTALL_MOCKS: ToolMockMap = {
 export const MCP_SELF_EXTEND_FIGMA_MOCKS: ToolMockMap = {
   tool_search: {
     type: 'static',
+    description: 'Search for managed OAuth integrations.',
+    paramKeys: ['query'],
+    response: { query: 'figma', results: [], message: 'No managed integrations found. Try mcp_search for MCP protocol servers.' },
+  },
+  mcp_search: {
+    type: 'static',
     description: 'Search for MCP servers by capability or keyword.',
     paramKeys: ['query', 'limit'],
     response: {
       query: 'figma design',
       results: [
-        { name: 'Figma MCP Server', qualifiedName: '@anthropic/mcp-server-figma', description: 'Access Figma files, components, and design tokens. List files, export assets, inspect design properties.', installCommand: 'npx -y @anthropic/mcp-server-figma', source: 'catalog' },
-        { name: 'Figma Dev Mode', qualifiedName: '@figma/mcp-devmode', description: 'Read-only access to Figma dev mode — inspect components, spacing, and CSS.', installCommand: 'npx -y @figma/mcp-devmode', source: 'catalog' },
+        { name: 'Figma MCP Server', qualifiedName: '@anthropic/mcp-server-figma', description: 'Access Figma files, components, and design tokens. List files, export assets, inspect design properties.', installCommand: 'mcp_install({ name: "figma" })', source: 'catalog' },
+        { name: 'Figma Dev Mode', qualifiedName: '@figma/mcp-devmode', description: 'Read-only access to Figma dev mode — inspect components, spacing, and CSS.', installCommand: 'mcp_install({ name: "figma-devmode" })', source: 'catalog' },
       ],
-      message: 'Found 2 MCP server(s). Use tool_install to add one.',
+      message: 'Found 2 MCP server(s). Use mcp_install to add one.',
     },
   },
-  tool_install: {
+  mcp_install: {
     type: 'static',
     description: 'Install and start an MCP server, making its tools available immediately.',
-    paramKeys: ['name', 'command', 'args', 'env'],
+    paramKeys: ['name', 'env', 'url', 'headers'],
     response: {
       ok: true,
       server: 'figma',
@@ -705,7 +734,7 @@ export const MCP_SELF_EXTEND_FIGMA_MOCKS: ToolMockMap = {
         { name: 'mcp_figma_list_components', description: 'List components in a file' },
         { name: 'mcp_figma_export_asset', description: 'Export an asset from Figma' },
       ],
-      message: 'Installed "figma" with 4 tool(s). They are now available for use.',
+      message: 'Installed MCP server "figma" with 4 tool(s). They are now available for use.',
     },
   },
 }
@@ -719,20 +748,26 @@ export const MCP_SELF_EXTEND_FIGMA_MOCKS: ToolMockMap = {
 export const MCP_SELF_EXTEND_DATABASE_MOCKS: ToolMockMap = {
   tool_search: {
     type: 'static',
+    description: 'Search for managed OAuth integrations.',
+    paramKeys: ['query'],
+    response: { query: 'postgres', results: [], message: 'No managed integrations found. Try mcp_search for MCP protocol servers.' },
+  },
+  mcp_search: {
+    type: 'static',
     description: 'Search for MCP servers by capability or keyword.',
     paramKeys: ['query', 'limit'],
     response: {
       query: 'postgres database',
       results: [
-        { name: 'Postgres MCP Server', qualifiedName: '@modelcontextprotocol/server-postgres', description: 'Query PostgreSQL databases with read-only access. Supports schema inspection and parameterized queries.', installCommand: 'npx -y @modelcontextprotocol/server-postgres', source: 'catalog' },
+        { name: 'Postgres MCP Server', qualifiedName: '@modelcontextprotocol/server-postgres', description: 'Query PostgreSQL databases with read-only access. Supports schema inspection and parameterized queries.', installCommand: 'mcp_install({ name: "postgres" })', source: 'catalog' },
       ],
-      message: 'Found 1 MCP server(s). Use tool_install to add one.',
+      message: 'Found 1 MCP server(s). Use mcp_install to add one.',
     },
   },
-  tool_install: {
+  mcp_install: {
     type: 'static',
     description: 'Install and start an MCP server, making its tools available immediately.',
-    paramKeys: ['name', 'command', 'args', 'env'],
+    paramKeys: ['name', 'env', 'url', 'headers'],
     response: {
       ok: true,
       server: 'postgres',
@@ -742,7 +777,7 @@ export const MCP_SELF_EXTEND_DATABASE_MOCKS: ToolMockMap = {
         { name: 'mcp_postgres_list_tables', description: 'List all tables in the database' },
         { name: 'mcp_postgres_describe_table', description: 'Get column definitions for a table' },
       ],
-      message: 'Installed "postgres" with 3 tool(s). They are now available for use.',
+      message: 'Installed MCP server "postgres" with 3 tool(s). They are now available for use.',
     },
   },
 }
@@ -753,6 +788,12 @@ export const MCP_SELF_EXTEND_DATABASE_MOCKS: ToolMockMap = {
 
 export const MCP_MULTI_SERVER_MOCKS: ToolMockMap = {
   tool_search: {
+    type: 'static',
+    description: 'Search for managed OAuth integrations.',
+    paramKeys: ['query'],
+    response: { query: 'unknown', results: [], message: 'No managed integrations found. Try mcp_search for MCP protocol servers.' },
+  },
+  mcp_search: {
     type: 'pattern',
     description: 'Search for MCP servers by capability or keyword.',
     paramKeys: ['query', 'limit'],
@@ -762,9 +803,9 @@ export const MCP_MULTI_SERVER_MOCKS: ToolMockMap = {
         response: {
           query: 'github',
           results: [
-            { name: 'GitHub MCP Server', qualifiedName: '@modelcontextprotocol/server-github', description: 'Access GitHub repos, issues, PRs, and actions.', installCommand: 'npx -y @modelcontextprotocol/server-github', source: 'catalog' },
+            { name: 'GitHub MCP Server', qualifiedName: '@modelcontextprotocol/server-github', description: 'Access GitHub repos, issues, PRs, and actions.', installCommand: 'mcp_install({ name: "github" })', source: 'catalog' },
           ],
-          message: 'Found 1 MCP server(s). Use tool_install to add one.',
+          message: 'Found 1 MCP server(s). Use mcp_install to add one.',
         },
       },
       {
@@ -772,18 +813,18 @@ export const MCP_MULTI_SERVER_MOCKS: ToolMockMap = {
         response: {
           query: 'slack',
           results: [
-            { name: 'Slack MCP Server', qualifiedName: '@anthropic/mcp-server-slack', description: 'Send messages, read channels, manage Slack workspace.', installCommand: 'npx -y @anthropic/mcp-server-slack', source: 'catalog' },
+            { name: 'Slack MCP Server', qualifiedName: '@anthropic/mcp-server-slack', description: 'Send messages, read channels, manage Slack workspace.', installCommand: 'mcp_install({ name: "slack" })', source: 'catalog' },
           ],
-          message: 'Found 1 MCP server(s). Use tool_install to add one.',
+          message: 'Found 1 MCP server(s). Use mcp_install to add one.',
         },
       },
     ],
     default: { query: 'unknown', results: [], message: 'No MCP servers found.' },
   },
-  tool_install: {
+  mcp_install: {
     type: 'pattern',
     description: 'Install and start an MCP server, making its tools available immediately.',
-    paramKeys: ['name', 'command', 'args', 'env'],
+    paramKeys: ['name', 'env', 'url', 'headers'],
     patterns: [
       {
         match: { name: 'github' },
@@ -836,20 +877,26 @@ export const MCP_MULTI_SERVER_MOCKS: ToolMockMap = {
 export const MCP_DISCOVERY_PERSONALITY_MOCKS: ToolMockMap = {
   tool_search: {
     type: 'static',
+    description: 'Search for managed OAuth integrations.',
+    paramKeys: ['query'],
+    response: { query: 'linear', results: [], message: 'No managed integrations found. Try mcp_search for MCP protocol servers.' },
+  },
+  mcp_search: {
+    type: 'static',
     description: 'Search for MCP servers by capability or keyword.',
     paramKeys: ['query', 'limit'],
     response: {
       query: 'linear project management',
       results: [
-        { name: 'Linear MCP Server', qualifiedName: '@linear/mcp-server', description: 'Manage Linear issues, projects, and cycles. Create, update, and search issues.', installCommand: 'npx -y @linear/mcp-server', source: 'catalog' },
+        { name: 'Linear MCP Server', qualifiedName: '@linear/mcp-server', description: 'Manage Linear issues, projects, and cycles. Create, update, and search issues.', installCommand: 'mcp_install({ name: "linear" })', source: 'catalog' },
       ],
-      message: 'Found 1 MCP server(s). Use tool_install to add one.',
+      message: 'Found 1 MCP server(s). Use mcp_install to add one.',
     },
   },
-  tool_install: {
+  mcp_install: {
     type: 'static',
     description: 'Install and start an MCP server, making its tools available immediately.',
-    paramKeys: ['name', 'command', 'args', 'env'],
+    paramKeys: ['name', 'env', 'url', 'headers'],
     response: {
       ok: true,
       server: 'linear',
@@ -1403,6 +1450,12 @@ export const BUSINESS_DASHBOARD_MOCKS: ToolMockMap = {
 
 export const AIRBNB_VACATION_PLANNER_MOCKS: ToolMockMap = {
   tool_search: {
+    type: 'static',
+    description: 'Search for managed OAuth integrations.',
+    paramKeys: ['query'],
+    response: { query: 'airbnb', results: [], message: 'No managed integrations found. Try mcp_search for MCP protocol servers.' },
+  },
+  mcp_search: {
     type: 'pattern',
     description: 'Search for MCP servers by capability or keyword.',
     paramKeys: ['query', 'limit'],
@@ -1412,24 +1465,24 @@ export const AIRBNB_VACATION_PLANNER_MOCKS: ToolMockMap = {
         response: {
           query: 'airbnb',
           results: [
-            { name: 'Airbnb MCP Server', qualifiedName: '@openbnb/mcp-server-airbnb', description: 'Search Airbnb listings, get pricing, availability, and property details. Access real Airbnb data for travel planning.', installCommand: 'npx -y @openbnb/mcp-server-airbnb', source: 'catalog', category: 'travel', relevanceScore: 95 },
+            { name: 'Airbnb MCP Server', qualifiedName: '@openbnb/mcp-server-airbnb', description: 'Search Airbnb listings, get pricing, availability, and property details. Access real Airbnb data for travel planning.', installCommand: 'mcp_install({ name: "airbnb" })', source: 'catalog', category: 'travel', relevanceScore: 95 },
           ],
-          message: 'Found 1 MCP server(s). Use tool_install to add one.',
+          message: 'Found 1 MCP server(s). Use mcp_install to add one.',
         },
       },
     ],
     default: {
       query: 'travel',
       results: [
-        { name: 'Airbnb MCP Server', qualifiedName: '@openbnb/mcp-server-airbnb', description: 'Search Airbnb listings, get pricing, availability, and property details.', installCommand: 'npx -y @openbnb/mcp-server-airbnb', source: 'catalog', category: 'travel', relevanceScore: 80 },
+        { name: 'Airbnb MCP Server', qualifiedName: '@openbnb/mcp-server-airbnb', description: 'Search Airbnb listings, get pricing, availability, and property details.', installCommand: 'mcp_install({ name: "airbnb" })', source: 'catalog', category: 'travel', relevanceScore: 80 },
       ],
-      message: 'Found 1 MCP server(s). Use tool_install to add one.',
+      message: 'Found 1 MCP server(s). Use mcp_install to add one.',
     },
   },
-  tool_install: {
+  mcp_install: {
     type: 'static',
     description: 'Install and start an MCP server, making its tools available immediately.',
-    paramKeys: ['name', 'command', 'args', 'env'],
+    paramKeys: ['name', 'env', 'url', 'headers'],
     response: {
       ok: true,
       server: 'airbnb',

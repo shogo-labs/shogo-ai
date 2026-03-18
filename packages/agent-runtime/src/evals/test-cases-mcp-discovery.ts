@@ -3,8 +3,8 @@
 /**
  * Tool Discovery Eval Test Cases
  *
- * Tests the agent's ability to discover, install, use, and manage tools
- * at runtime via the unified tool_search / tool_install interface.
+ * Tests the agent's ability to discover, install, use, and manage MCP servers
+ * at runtime via mcp_search / mcp_install (or tool_search as a discovery step).
  * Prompts simulate non-technical users who don't know about tools —
  * the agent must figure out that it needs new capabilities and go through
  * the search/install/use lifecycle autonomously.
@@ -64,10 +64,10 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-list-installed',
-        description: 'Used tool_search to check available servers',
+        description: 'Used mcp_search or tool_search to check available servers',
         points: 40,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_search'),
+        validate: (r) => usedTool(r, 'mcp_search') || usedTool(r, 'tool_search'),
       },
       {
         id: 'mentions-playwright',
@@ -116,10 +116,10 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-mcp-search',
-        description: 'Used tool_search to find postgres servers',
+        description: 'Used mcp_search to find postgres servers',
         points: 35,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_search'),
+        validate: (r) => usedTool(r, 'mcp_search') || usedTool(r, 'tool_search'),
       },
       {
         id: 'search-mentions-postgres',
@@ -136,7 +136,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
         description: 'Did NOT install (user said just show options)',
         points: 20,
         phase: 'execution',
-        validate: (r) => !usedToolInFinalTurn(r, 'tool_install'),
+        validate: (r) => !usedToolInFinalTurn(r, 'mcp_install') && !usedToolInFinalTurn(r, 'tool_install'),
       },
       {
         id: 'response-lists-options',
@@ -171,17 +171,17 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-mcp-search',
-        description: 'Used tool_search to find a filesystem server',
+        description: 'Used mcp_search to find a filesystem server',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_search'),
+        validate: (r) => usedTool(r, 'mcp_search') || usedTool(r, 'tool_search'),
       },
       {
         id: 'used-mcp-install',
-        description: 'Used tool_install to install the server',
+        description: 'Used mcp_install to install the server',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_install'),
+        validate: (r) => usedTool(r, 'mcp_install'),
       },
       {
         id: 'used-filesystem-tool',
@@ -196,8 +196,8 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
         points: 15,
         phase: 'execution',
         validate: (r) => {
-          const searchIdx = r.toolCalls.findIndex(t => t.name === 'tool_search')
-          const installIdx = r.toolCalls.findIndex(t => t.name === 'tool_install')
+          const searchIdx = r.toolCalls.findIndex(t => t.name === 'mcp_search' || t.name === 'tool_search')
+          const installIdx = r.toolCalls.findIndex(t => t.name === 'mcp_install')
           const useIdx = r.toolCalls.findIndex(t => t.name === 'mcp_filesystem_list_directory')
           return searchIdx >= 0 && installIdx > searchIdx && useIdx > installIdx
         },
@@ -239,10 +239,10 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-mcp-uninstall',
-        description: 'Used tool_uninstall to remove the server',
+        description: 'Used mcp_uninstall to remove the server',
         points: 50,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_uninstall'),
+        validate: (r) => usedTool(r, 'mcp_uninstall') || usedTool(r, 'tool_uninstall'),
       },
       {
         id: 'uninstalled-slack',
@@ -291,17 +291,17 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'searched-for-capability',
-        description: 'Used tool_search to find a Figma capability',
+        description: 'Used mcp_search to find a Figma capability',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_search'),
+        validate: (r) => usedTool(r, 'mcp_search') || usedTool(r, 'tool_search'),
       },
       {
         id: 'installed-mcp-server',
-        description: 'Used tool_install to add the Figma capability',
+        description: 'Used mcp_install to add the Figma capability',
         points: 30,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_install'),
+        validate: (r) => usedTool(r, 'mcp_install'),
       },
       {
         id: 'passed-token',
@@ -338,7 +338,7 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
   // Case 6: I need to check my database
   // Level 3 | Discovery-only: no postgres tools mocked. Agent must install
   //           DB access with the connection string. Multi-turn: the history
-  //           turn may trigger tool_search, so the final turn validates
+  //           turn may trigger mcp_search, so the final turn validates
   //           install + config passing, not necessarily a fresh search.
   // =========================================================================
   {
@@ -355,17 +355,17 @@ export const MCP_DISCOVERY_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-discovery-or-install',
-        description: 'Used tool_search or tool_install (discovery flow)',
+        description: 'Used mcp_search or mcp_install (discovery flow)',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_search') || usedTool(r, 'tool_install'),
+        validate: (r) => usedTool(r, 'mcp_search') || usedTool(r, 'mcp_install') || usedTool(r, 'tool_search'),
       },
       {
         id: 'installed-mcp-server',
-        description: 'Used tool_install to add the postgres server',
+        description: 'Used mcp_install to add the postgres server',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_install'),
+        validate: (r) => usedTool(r, 'mcp_install'),
       },
       {
         id: 'passed-connection-config',

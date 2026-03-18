@@ -85,7 +85,7 @@ ENV SHELL=/bin/bash
 RUN addgroup -g 1001 -S appgroup && \
     adduser -u 1001 -S appuser -G appgroup
 
-# Pre-install popular MCP server packages
+# Pre-install popular MCP server packages (all cloud-compatible catalog entries)
 RUN mkdir -p /app/mcp-packages && \
     cd /app/mcp-packages && \
     npm init -y --silent 2>/dev/null && \
@@ -97,6 +97,16 @@ RUN mkdir -p /app/mcp-packages && \
       @playwright/mcp@latest \
       mongodb-mcp-server@latest \
       @discourse/mcp@latest \
+      @modelcontextprotocol/server-github@latest \
+      @modelcontextprotocol/server-gitlab@latest \
+      mcp-server-linear@latest \
+      mcp-server-sqlite@latest \
+      @modelcontextprotocol/server-slack@latest \
+      @notionhq/notion-mcp-server@latest \
+      mcp-server-stripe@latest \
+      @modelcontextprotocol/server-brave-search@latest \
+      exa-mcp-server@latest \
+      @sentry/mcp-server@latest \
     && rm -rf /app/mcp-packages/package.json /app/mcp-packages/package-lock.json
 
 # Template archives for app mode

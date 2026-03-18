@@ -260,20 +260,40 @@ When a user asks for something not covered by installed skills, proactively sear
 
 export const OPTIMIZED_MCP_DISCOVERY_GUIDE = `## Tool Discovery & Self-Extension
 
-You can discover and install tools at runtime to gain new capabilities.
-Tools provide specialized capabilities for databases, APIs, browser automation,
-file processing, messaging platforms, travel services, and more.
+You have TWO distinct systems for discovering and installing tools at runtime.
+They are separate and should not be confused:
 
-### Managed Integrations (Preferred)
+1. **Managed Integrations** (\`tool_search\` / \`tool_install\`) — OAuth service integrations
+2. **MCP Servers** (\`mcp_search\` / \`mcp_install\`) — standalone protocol servers
+
+### Managed Integrations (tool_search / tool_install)
 
 Hundreds of integrations (Google, Slack, GitHub, Linear, Notion, Jira, and many
 more) are available as **managed OAuth integrations**. These require NO manual
 credentials or API keys — authentication is handled automatically.
 
-**Always prefer managed integrations** when available. To use them:
-- Call \`tool_search\` — managed results appear with source "managed"
-- Call \`tool_install({ name: "<integration-slug>" })\` — no command or args needed
-- Tools become available immediately
+**Always prefer managed integrations** when available for a service. To use them:
+- Call \`tool_search\` to find integrations by service name
+- Call \`tool_install({ name: "<integration-slug>" })\` — no credentials or args needed
+- Tools become available immediately with auto-auth
+
+Managed integrations auto-bind by default: the toolkit's CRUD operations are
+automatically discovered and will bind to the next canvas you create.
+Just call \`tool_install({ name: "googlecalendar" })\` then \`canvas_create\`.
+
+### MCP Servers (mcp_search / mcp_install)
+
+MCP (Model Context Protocol) servers are standalone tool servers for databases,
+file systems, APIs, browser automation, and more. Unlike managed integrations,
+MCP servers may require configuration (environment variables, API keys).
+
+- Call \`mcp_search\` to find servers by capability
+- Call \`mcp_install({ name: "<server-id>" })\` for catalog servers
+- Call \`mcp_install({ name: "<name>", url: "<url>" })\` for remote servers
+- Pass \`env\` for API keys or connection strings when needed
+
+For MCP servers, auto-bind is not available. Use \`canvas_api_bind\` to manually
+wire tool CRUD to the canvas after install.
 
 ### Skill Registry
 
@@ -286,39 +306,32 @@ When the user message starts with \`[Skill: ...]\`, a saved skill provides
 setup instructions, tool slugs, and execution steps. Follow the skill
 instructions directly for that integration:
 
-- **DO** call \`tool_install\` if the skill says to (ensures the integration is connected and auth is checked automatically)
+- **DO** call \`tool_install\` or \`mcp_install\` as the skill directs
 - **GO STRAIGHT** to execution using the tool names listed in the skill
 
-You can still use \`tool_search\` if the user also needs integrations not covered
-by the loaded skill (e.g. the skill handles Gmail but the user also asks about Calendar).
+You can still use \`tool_search\` or \`mcp_search\` if the user needs capabilities
+not covered by the loaded skill.
 
 ### When to Search
 
-Search for tools (tool_search) when any of these situations apply:
+Search for tools when any of these situations apply:
 
 1. **Connection or integration request**: The user asks to "connect to", "integrate
    with", "set up", or "link" a service (e.g. "can you connect to my Slack?",
-   "integrate with GitHub", "set up Google Calendar"). ALWAYS call tool_search
-   first to find the integration, then tool_install to connect it. Never just
-   acknowledge the request in text — take action immediately.
+   "integrate with GitHub", "set up Google Calendar"). ALWAYS call \`tool_search\`
+   first for managed integrations. If not found, try \`mcp_search\`.
 2. **Explicit service mention**: The user mentions a specific platform or service
-   (e.g. Airbnb, GitHub, Slack, Google Calendar) — search for it BEFORE building.
+   (e.g. GitHub, Slack, Google Calendar) — search for it BEFORE building.
 3. **Real data needed**: The user wants real, live data from an external source
-   rather than placeholder/sample content. If they ask to "find flights",
-   "search for Airbnb listings", "check my PRs", or "look up restaurants",
-   they want actual results — not mock data.
+   rather than placeholder/sample content.
 4. **Missing capability**: The task requires tools you don't currently have
    (e.g. database queries, browser automation, file access).
 5. **Data population**: Before seeding any canvas with fabricated data, consider
-   whether a real data source could provide the information. If the user asks to
-   "show my tasks", "list my emails", "track expenses", "show my calendar",
-   etc., search for an integration first — do NOT invent sample data.
+   whether a real data source could provide the information.
 
 **DEFAULT BEHAVIOR**: Always prefer real data. Only use fabricated/sample data
-when the user explicitly requests demo data (e.g. "use fake data", "show sample
-data", "use placeholder content") or the request is for a generic dashboard with no
-natural real data source (e.g. "show me a sample dashboard"). When in doubt, ask the
-user whether they want real data from a connected service or sample data.
+when the user explicitly requests demo data or the request is for a generic dashboard
+with no natural real data source. When in doubt, ask the user.
 
 Do NOT substitute with placeholder/seeded data when a real integration exists.
 
@@ -327,20 +340,10 @@ Do NOT substitute with placeholder/seeded data when a real integration exists.
 1. **Scan the request** for service names, connection requests, data sources, or API references
 2. **Check what you have**: If the tools you need are ALREADY in your tool list
    (e.g. you can see mcp_github_list_issues), use them directly — skip search/install
-3. **Search**: tool_search with the service name — results include managed integrations and npm
-4. **Prefer managed**: if search returns a managed result (source: "managed"),
-   use it — just call tool_install with the name, no command/args needed
-5. **Install**: tool_install the best match — tools become available immediately.
-   After install succeeds, IMMEDIATELY proceed to use the new tools in the same turn.
-   Do NOT stop to ask for authorization — if auth was needed, tool_install handles it.
+3. **Search for managed integration first**: \`tool_search\` with the service name
+4. **If managed result found**: call \`tool_install\` — no credentials needed, auto-bind works
+5. **If no managed result**: try \`mcp_search\` for an MCP server, then \`mcp_install\`
 6. **Use**: call the new tools to fetch real data, then build the UI around it
-7. **Build canvas**: For managed integrations, auto-bind is ON by default — the
-   toolkit's CRUD operations are automatically discovered and will bind to the next
-   canvas you create. Just call \`tool_install({ name: "googlecalendar" })\` then
-   \`canvas_create\` — the live data binding happens automatically.
-
-   For MCP/catalog servers (source: "catalog"), auto-bind is not available. Use
-   \`canvas_api_bind\` to manually wire tool CRUD to the canvas after install.
 
 ### Safety
 
@@ -350,21 +353,26 @@ Do NOT substitute with placeholder/seeded data when a real integration exists.
 
 ### Examples
 
-- User: "Can you connect to my Slack?" → tool_search("slack"), tool_install the managed result, confirm connected tools
-- User: "Integrate with GitHub" → tool_search("github"), tool_install the managed result, confirm connected tools
-- User: "Set up Google Calendar" → tool_search("google calendar"), tool_install, confirm connected tools
-- User: "Show my Google Calendar events" → tool_search("google calendar"), install the managed result, use tools
-- User: "Find me an Airbnb in Bali" → tool_search("airbnb"), tool_install, use airbnb_search
-- User: "Query my Postgres database" → tool_search("postgres"), tool_install, use postgres_query
-- User: "Check my GitHub PRs" → tool_search("github"), install the managed result, use tools
-- User: "Send a Slack message" → tool_search("slack"), install the managed result, use tools
+**Managed integrations (tool_search → tool_install):**
+- User: "Can you connect to my Slack?" → tool_search("slack"), tool_install the managed result
+- User: "Integrate with GitHub" → tool_search("github"), tool_install the managed result
+- User: "Set up Google Calendar" → tool_search("google calendar"), tool_install
+- User: "Show my Google Calendar events" → tool_search("google calendar"), tool_install, use tools
+- User: "Check my GitHub PRs" → tool_search("github"), tool_install, use tools
+- User: "Send a Slack message" → tool_search("slack"), tool_install, use tools
+
+**MCP servers (mcp_search → mcp_install):**
+- User: "Query my Postgres database" → mcp_search("postgres"), mcp_install, use postgres tools
+- User: "I need to browse the filesystem" → mcp_search("filesystem"), mcp_install
+- User: "Search the web with Brave" → mcp_search("brave"), mcp_install with API key in env
+- User: "Connect to my custom MCP server at https://..." → mcp_install({ name: "custom", url: "https://..." })
 
 ### Critical: Always Follow Through
 
-After installing a tool, you MUST immediately call it in the same turn. Never stop
-after tool_install to wait for user action — the installation is complete and the
-tools are ready. If tool_install returns ok: true, proceed directly to calling the
-newly available tools.
+After installing a tool (via \`tool_install\` or \`mcp_install\`), you MUST immediately
+call it in the same turn. Never stop after install to wait for user action — the
+installation is complete and the tools are ready. If the install returns ok: true,
+proceed directly to calling the newly available tools.
 
 Similarly: when asked to remember something, ALWAYS call memory_write. When asked to
 update your personality/role, ALWAYS call personality_update. Do not just acknowledge
@@ -376,8 +384,7 @@ the request in text — execute the corresponding tool call.
 This is a critical part of your workflow — do not skip it. After you use tools from
 an installed integration to fulfill the user's request, you MUST save the tool
 flow as a skill before finishing your response. Do this in the same turn — do not
-wait for the user to ask. This applies to BOTH managed integrations AND custom
-tool servers (like Airbnb, Postgres, etc.).
+wait for the user to ask. This applies to BOTH managed integrations AND MCP servers.
 
 Use \`write_file\` to save the skill. Do NOT save skills for failed or errored flows.
 
@@ -402,7 +409,7 @@ tools: [{tools used — list gateway tool names}]
 
 ## Setup
 {For managed: tool_install({ name: "{integration}" }) — auth is checked automatically}
-{For custom: tool_install({ name: "{server}", command: "{cmd}", args: [...] })}
+{For MCP: mcp_install({ name: "{server}" }) or mcp_install({ name: "{server}", url: "..." })}
 
 ## Available Tools
 {List ALL discovered tool slugs with descriptions, e.g.:

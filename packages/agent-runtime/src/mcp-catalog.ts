@@ -8,7 +8,7 @@
  * the install command, and any required environment variables.
  */
 
-export type MCPAuthType = 'composio' | 'api_key' | 'none'
+export type MCPAuthType = 'api_key' | 'none'
 
 export interface MCPCatalogEntry {
   /** Unique slug used as the key in config.json mcpServers */
@@ -32,10 +32,8 @@ export interface MCPCatalogEntry {
   cloudCompatible: boolean
   /** Whether this package is pre-installed in the Docker image for instant startup */
   preinstalled?: boolean
-  /** Auth type: 'composio' for managed OAuth, 'api_key' for user-provided keys, 'none' for no auth */
+  /** Auth type: 'api_key' for user-provided keys, 'none' for no auth */
   authType?: MCPAuthType
-  /** Composio toolkit slug (e.g. 'google_calendar', 'gmail') — only used when authType is 'composio' */
-  composioToolkit?: string
 }
 
 export type MCPCategory =
@@ -91,22 +89,6 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     preinstalled: true,
   },
   {
-    id: 'github',
-    name: 'GitHub',
-    description: 'Full GitHub integration — manage issues, pull requests, repositories, code search, and actions.',
-    category: 'code',
-    package: '@modelcontextprotocol/server-github@latest',
-    defaultArgs: [],
-    requiredEnv: {
-      GITHUB_TOKEN: 'GitHub personal access token (Settings > Developer settings > Personal access tokens)',
-    },
-    providedTools: ['github_create_issue', 'github_list_issues', 'github_create_pr', 'github_search_code', 'github_get_file'],
-    icon: '🐙',
-    cloudCompatible: true,
-    authType: 'composio',
-    composioToolkit: 'github',
-  },
-  {
     id: 'gitlab',
     name: 'GitLab',
     description: 'GitLab project management — issues, merge requests, pipelines, and repository operations.',
@@ -120,22 +102,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['gitlab_create_issue', 'gitlab_list_mrs', 'gitlab_get_pipeline', 'gitlab_search'],
     icon: '🦊',
     cloudCompatible: true,
-  },
-  {
-    id: 'linear',
-    name: 'Linear',
-    description: 'Linear issue tracking — create and manage issues, projects, and cycles.',
-    category: 'code',
-    package: 'mcp-server-linear@latest',
-    defaultArgs: [],
-    requiredEnv: {
-      LINEAR_API_KEY: 'Linear API key (Settings > API > Personal API keys)',
-    },
-    providedTools: ['linear_create_issue', 'linear_list_issues', 'linear_update_issue', 'linear_search'],
-    icon: '📐',
-    cloudCompatible: true,
-    authType: 'composio',
-    composioToolkit: 'linear',
+    preinstalled: true,
   },
   {
     id: 'postgres',
@@ -166,6 +133,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['sqlite_query', 'sqlite_execute', 'sqlite_list_tables', 'sqlite_describe_table'],
     icon: '💾',
     cloudCompatible: true,
+    preinstalled: true,
   },
   {
     id: 'mongodb',
@@ -199,86 +167,6 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     preinstalled: true,
   },
   {
-    id: 'slack',
-    name: 'Slack',
-    description: 'Read and send Slack messages, manage channels, search conversation history.',
-    category: 'communication',
-    package: '@modelcontextprotocol/server-slack@latest',
-    defaultArgs: [],
-    requiredEnv: {
-      SLACK_BOT_TOKEN: 'Slack Bot User OAuth Token (xoxb-...)',
-    },
-    providedTools: ['slack_send_message', 'slack_list_channels', 'slack_read_messages', 'slack_search'],
-    icon: '💼',
-    cloudCompatible: true,
-    authType: 'composio',
-    composioToolkit: 'slack',
-  },
-  {
-    id: 'gmail',
-    name: 'Gmail',
-    description: 'Read, send, and search emails via Gmail API. Manage labels and drafts.',
-    category: 'communication',
-    package: 'gmail-mcp@latest',
-    defaultArgs: [],
-    requiredEnv: {
-      GMAIL_CREDENTIALS: 'Gmail OAuth credentials JSON',
-    },
-    providedTools: ['gmail_send', 'gmail_search', 'gmail_read', 'gmail_list_labels'],
-    icon: '📧',
-    cloudCompatible: true,
-    authType: 'composio',
-    composioToolkit: 'gmail',
-  },
-  {
-    id: 'google-drive',
-    name: 'Google Drive',
-    description: 'Browse, read, and search Google Drive files. Access documents, spreadsheets, and presentations.',
-    category: 'productivity',
-    package: 'google-drive-mcp@latest',
-    defaultArgs: [],
-    requiredEnv: {
-      GOOGLE_DRIVE_CREDENTIALS: 'Google OAuth credentials JSON',
-    },
-    providedTools: ['drive_list_files', 'drive_read_file', 'drive_search', 'drive_create_file'],
-    icon: '📁',
-    cloudCompatible: true,
-    authType: 'composio',
-    composioToolkit: 'googledrive',
-  },
-  {
-    id: 'google-calendar',
-    name: 'Google Calendar',
-    description: 'Manage calendar events — create, update, list, and search events across calendars.',
-    category: 'productivity',
-    package: 'google-calendar-mcp@latest',
-    defaultArgs: [],
-    requiredEnv: {
-      GOOGLE_CALENDAR_CREDENTIALS: 'Google OAuth credentials JSON',
-    },
-    providedTools: ['calendar_list_events', 'calendar_create_event', 'calendar_update_event', 'calendar_search'],
-    icon: '📅',
-    cloudCompatible: true,
-    authType: 'composio',
-    composioToolkit: 'googlecalendar',
-  },
-  {
-    id: 'notion',
-    name: 'Notion',
-    description: 'Access Notion workspace — read and create pages, query databases, search content.',
-    category: 'productivity',
-    package: '@notionhq/notion-mcp-server@latest',
-    defaultArgs: [],
-    requiredEnv: {
-      NOTION_API_KEY: 'Notion integration token (Settings > Integrations)',
-    },
-    providedTools: ['notion_search', 'notion_read_page', 'notion_create_page', 'notion_query_database'],
-    icon: '📝',
-    cloudCompatible: true,
-    authType: 'composio',
-    composioToolkit: 'notion',
-  },
-  {
     id: 'stripe',
     name: 'Stripe',
     description: 'Manage Stripe payments — customers, invoices, subscriptions, and payment intents.',
@@ -291,6 +179,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['stripe_list_customers', 'stripe_create_invoice', 'stripe_get_balance', 'stripe_list_payments'],
     icon: '💳',
     cloudCompatible: true,
+    preinstalled: true,
   },
   {
     id: 'brave-search',
@@ -305,6 +194,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['brave_web_search', 'brave_local_search'],
     icon: '🦁',
     cloudCompatible: true,
+    preinstalled: true,
   },
   {
     id: 'exa',
@@ -319,6 +209,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['exa_search', 'exa_find_similar', 'exa_get_contents'],
     icon: '🔮',
     cloudCompatible: true,
+    preinstalled: true,
   },
   {
     id: 'sentry',
@@ -334,6 +225,7 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
     providedTools: ['sentry_list_issues', 'sentry_get_issue', 'sentry_list_projects', 'sentry_search_events'],
     icon: '🔴',
     cloudCompatible: true,
+    preinstalled: true,
   },
   {
     id: 'airbnb',
@@ -383,11 +275,19 @@ export function isPreinstalledMcpId(id: string): boolean {
 
 /**
  * In local mode any MCP server is allowed (the user controls their own machine).
- * In cloud mode only preinstalled servers pass.
+ * In cloud mode all catalog entries are allowed (pre-installed ones start
+ * instantly from Docker; others are installed to .mcp-packages/ and cached
+ * via S3 for fast cold starts). Non-catalog arbitrary packages are still
+ * blocked unless the project explicitly allows them via allowedMcpPackages.
  */
 export function isMcpServerAllowed(id: string): boolean {
   if (process.env.SHOGO_LOCAL_MODE === 'true') return true
-  return isPreinstalledMcpId(id)
+  return isCatalogEntry(id)
+}
+
+/** Check if a server ID exists anywhere in the catalog (preinstalled or not) */
+export function isCatalogEntry(id: string): boolean {
+  return MCP_CATALOG.some((e) => e.id === id)
 }
 
 /** Get the preinstalled catalog entry for a server ID, or undefined if not whitelisted */

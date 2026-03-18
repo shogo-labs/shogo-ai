@@ -466,9 +466,12 @@ export const TOOL_USAGE = `## Tool Usage
 - **task** — Spawn a subagent for focused work: \`canvas_agent\` (all canvas/UI building), \`app_agent\` (code), \`explore\` (read-only search), \`general-purpose\`. Canvas tools are only available inside canvas_agent — always delegate canvas work there.
 - **skill** — Invoke a reusable skill by name
 
-- **tool_search** — Search for available integrations (e.g. Gmail, GitHub, Slack)
-- **tool_install** — Install an integration tool
-- **tool_uninstall** — Remove an installed tool
+- **tool_search** — Search for managed OAuth integrations (e.g. Gmail, GitHub, Slack). No credentials needed.
+- **tool_install** — Install a managed integration. Auth is handled automatically.
+- **tool_uninstall** — Remove a managed integration
+- **mcp_search** — Search for MCP protocol servers (e.g. Postgres, filesystem, Brave Search)
+- **mcp_install** — Install an MCP server from the catalog or connect to a remote URL
+- **mcp_uninstall** — Remove a running MCP server
 - **binding_transform** — Create, test, list, or remove response transforms for tools that return large data (see "Response Transforms" section above)
 
 **IMPORTANT: When the user asks to connect a channel (including webchat widget, Telegram, Slack, etc.), ALWAYS use the \`channel_connect\` tool directly.** Do NOT search for external tools or tell the user to configure it manually. Webchat, webhook, and all messaging channels are BUILT-IN — use \`channel_connect\` immediately.

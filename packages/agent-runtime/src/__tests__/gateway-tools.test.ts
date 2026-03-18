@@ -3,7 +3,8 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'fs'
 import { join } from 'path'
-import { createTools, createHeartbeatTools, type ToolContext } from '../gateway-tools'
+import { createTools, createHeartbeatTools, TOOL_GROUP_MAP, ALL_TOOL_NAMES, resolveToolNames, type ToolContext } from '../gateway-tools'
+import { MCPClientManager } from '../mcp-client'
 import { MockChannel } from './helpers/mock-channel'
 
 const TEST_DIR = '/tmp/test-gateway-tools'
@@ -183,7 +184,7 @@ describe('gateway-tools', () => {
 
   describe('tool sets', () => {
     test('createTools returns expected tools', () => {
-      expect(createTools(createCtx())).toHaveLength(43)
+      expect(createTools(createCtx())).toHaveLength(46)
       expect(createTools(createCtx()).find((t) => t.name === 'cron')).toBeUndefined()
       expect(createTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'browser')).toBeDefined()
@@ -209,6 +210,166 @@ describe('gateway-tools', () => {
         expect(tool.parameters).toBeDefined()
         expect(typeof tool.execute).toBe('function')
       }
+    })
+  })
+
+  // =========================================================================
+  // Tool vs MCP Discovery Split
+  // =========================================================================
+
+  describe('tool vs MCP discovery split', () => {
+    test('all 6 discovery tools exist with correct names', () => {
+      const tools = createTools(createCtx())
+      const names = tools.map(t => t.name)
+
+      expect(names).toContain('tool_search')
+      expect(names).toContain('tool_install')
+      expect(names).toContain('tool_uninstall')
+      expect(names).toContain('mcp_search')
+      expect(names).toContain('mcp_install')
+      expect(names).toContain('mcp_uninstall')
+    })
+
+    test('tool_discovery group maps to Composio tools only', () => {
+      expect(TOOL_GROUP_MAP.tool_discovery).toEqual(['tool_search', 'tool_install', 'tool_uninstall'])
+    })
+
+    test('mcp_discovery group maps to MCP tools only', () => {
+      expect(TOOL_GROUP_MAP.mcp_discovery).toEqual(['mcp_search', 'mcp_install', 'mcp_uninstall'])
+    })
+
+    test('tool_discovery and mcp_discovery groups are disjoint', () => {
+      const toolSet = new Set(TOOL_GROUP_MAP.tool_discovery)
+      const mcpSet = new Set(TOOL_GROUP_MAP.mcp_discovery)
+      for (const name of toolSet) {
+        expect(mcpSet.has(name)).toBe(false)
+      }
+    })
+
+    test('ALL_TOOL_NAMES includes all 6 discovery tools', () => {
+      const names = ALL_TOOL_NAMES as readonly string[]
+      expect(names).toContain('tool_search')
+      expect(names).toContain('tool_install')
+      expect(names).toContain('tool_uninstall')
+      expect(names).toContain('mcp_search')
+      expect(names).toContain('mcp_install')
+      expect(names).toContain('mcp_uninstall')
+    })
+
+    test('resolveToolNames("tool_discovery") returns Composio tools', () => {
+      const resolved = resolveToolNames(['tool_discovery'])
+      expect(resolved).toContain('tool_search')
+      expect(resolved).toContain('tool_install')
+      expect(resolved).toContain('tool_uninstall')
+      expect(resolved).not.toContain('mcp_search')
+      expect(resolved).not.toContain('mcp_install')
+      expect(resolved).not.toContain('mcp_uninstall')
+    })
+
+    test('resolveToolNames("mcp_discovery") returns MCP tools', () => {
+      const resolved = resolveToolNames(['mcp_discovery'])
+      expect(resolved).toContain('mcp_search')
+      expect(resolved).toContain('mcp_install')
+      expect(resolved).toContain('mcp_uninstall')
+      expect(resolved).not.toContain('tool_search')
+      expect(resolved).not.toContain('tool_install')
+      expect(resolved).not.toContain('tool_uninstall')
+    })
+
+    test('tool_search has Composio-only description', () => {
+      const tool = getTool(createCtx(), 'tool_search')
+      expect(tool.description).toContain('managed OAuth')
+      expect(tool.description).toContain('mcp_search')
+      expect(tool.description).not.toContain('MCP_CATALOG')
+    })
+
+    test('mcp_search has MCP-only description', () => {
+      const tool = getTool(createCtx(), 'mcp_search')
+      expect(tool.description).toContain('MCP')
+      expect(tool.description).toContain('protocol server')
+      expect(tool.description).toContain('tool_search')
+    })
+
+    test('tool_install has Composio-only description without env/url/headers params', () => {
+      const tool = getTool(createCtx(), 'tool_install')
+      expect(tool.description).toContain('managed OAuth')
+      expect(tool.description).toContain('mcp_install')
+      const schema = JSON.stringify(tool.parameters)
+      expect(schema).not.toContain('"url"')
+      expect(schema).not.toContain('"headers"')
+      expect(schema).not.toContain('"env"')
+      expect(schema).toContain('"autoBind"')
+      expect(schema).toContain('"bind"')
+    })
+
+    test('mcp_install has MCP-only description with env/url/headers params', () => {
+      const tool = getTool(createCtx(), 'mcp_install')
+      expect(tool.description).toContain('MCP')
+      expect(tool.description).toContain('tool_install')
+      const schema = JSON.stringify(tool.parameters)
+      expect(schema).toContain('"url"')
+      expect(schema).toContain('"headers"')
+      expect(schema).toContain('"env"')
+      expect(schema).not.toContain('"autoBind"')
+      expect(schema).not.toContain('"bind"')
+    })
+
+    test('tool_install rejects non-Composio names and suggests mcp_install', async () => {
+      const ctx = createCtx({ mcpClientManager: new MCPClientManager() })
+      const result = await exec(ctx, 'tool_install', { name: 'postgres' })
+      expect(result.error).toContain('not a managed integration')
+      expect(result.error).toContain('mcp_install')
+    })
+
+    test('mcp_install rejects non-catalog names and suggests tool_install', async () => {
+      const ctx = createCtx({ mcpClientManager: new MCPClientManager() })
+      const result = await exec(ctx, 'mcp_install', { name: 'totally-unknown-server' })
+      expect(result.error).toContain('not in the MCP catalog')
+      expect(result.error).toContain('tool_install')
+    })
+
+    test('mcp_search returns catalog results with mcp_install commands', async () => {
+      const result = await exec(createCtx(), 'mcp_search', { query: 'postgres' })
+      expect(result.results.length).toBeGreaterThan(0)
+      const first = result.results[0]
+      expect(first.source).toBe('catalog')
+      expect(first.installCommand).toContain('mcp_install')
+      expect(first.installCommand).not.toContain('tool_install')
+    })
+
+    test('tool_search without Composio returns empty and suggests mcp_search', async () => {
+      const result = await exec(createCtx(), 'tool_search', { query: 'postgres' })
+      expect(result.results).toHaveLength(0)
+      expect(result.message).toContain('mcp_search')
+    })
+
+    test('mcp_uninstall returns error for non-running server', async () => {
+      const ctx = createCtx({ mcpClientManager: new MCPClientManager() })
+      const result = await exec(ctx, 'mcp_uninstall', { name: 'postgres' })
+      expect(result.error).toContain('not running')
+    })
+
+    test('tool_uninstall returns error for non-running integration', async () => {
+      const ctx = createCtx({ mcpClientManager: new MCPClientManager() })
+      const result = await exec(ctx, 'tool_uninstall', { name: 'slack' })
+      expect(result.error).toContain('not running')
+    })
+
+    test('tool labels distinguish integrations from MCP servers', () => {
+      const tools = createTools(createCtx())
+      const toolSearch = tools.find(t => t.name === 'tool_search')!
+      const mcpSearch = tools.find(t => t.name === 'mcp_search')!
+      const toolInstall = tools.find(t => t.name === 'tool_install')!
+      const mcpInstall = tools.find(t => t.name === 'mcp_install')!
+      const toolUninstall = tools.find(t => t.name === 'tool_uninstall')!
+      const mcpUninstall = tools.find(t => t.name === 'mcp_uninstall')!
+
+      expect(toolSearch.label).toContain('Integration')
+      expect(mcpSearch.label).toContain('MCP')
+      expect(toolInstall.label).toContain('Integration')
+      expect(mcpInstall.label).toContain('MCP')
+      expect(toolUninstall.label).toContain('Integration')
+      expect(mcpUninstall.label).toContain('MCP')
     })
   })
 })

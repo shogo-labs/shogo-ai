@@ -36,7 +36,7 @@ import { SessionManager, type SessionManagerConfig } from './session-manager'
 import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { BlockChunker } from './block-chunker'
 import { CanvasStreamParser } from './canvas-stream-parser'
-import { MCPClientManager, type MCPServerConfig } from './mcp-client'
+import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import type { FilePart } from './file-attachment-utils'
 import { parseFileAttachments } from './file-attachment-utils'
@@ -111,6 +111,8 @@ export interface GatewayConfig {
   mainSessionIds?: string[]
   /** MCP servers to spawn on gateway start — tools from these become available to the agent */
   mcpServers?: Record<string, MCPServerConfig>
+  /** Remote MCP servers (HTTP/StreamableHTTP) to connect on gateway start */
+  remoteMcpServers?: Record<string, RemoteMCPServerConfig>
   /** Active visual mode: canvas, app, or none (default: 'none') */
   activeMode?: VisualMode
   /** Modes this project is allowed to use (default: all modes for paid, ['canvas','none'] for basic) */
@@ -416,12 +418,20 @@ export class AgentGateway {
       )
     }
 
-    // Start configured MCP servers
+    // Start configured MCP servers (stdio + remote)
     if (this.config.mcpServers && Object.keys(this.config.mcpServers).length > 0) {
       try {
         await this.mcpClientManager.startAll(this.config.mcpServers)
       } catch (error: any) {
         console.error('[AgentGateway] MCP server startup error:', error.message)
+      }
+    }
+
+    if (this.config.remoteMcpServers && Object.keys(this.config.remoteMcpServers).length > 0) {
+      try {
+        await this.mcpClientManager.startAllRemote(this.config.remoteMcpServers)
+      } catch (error: any) {
+        console.error('[AgentGateway] Remote MCP server startup error:', error.message)
       }
     }
 
@@ -910,14 +920,14 @@ export class AgentGateway {
   ): Promise<string> {
     if (activeSkill) {
       const skillOverride = [
-        `## MCP Server Discovery — Skill Active`,
+        `## Tool Discovery — Skill Active`,
         ``,
         `The skill "${activeSkill.name}" has been loaded for this request.`,
         `Follow the skill's instructions directly for this integration:`,
-        `- Call tool_install if the skill says to (ensures server connection + auth is checked automatically)`,
+        `- Call \`tool_install\` for managed OAuth integrations, or \`mcp_install\` for MCP servers, as the skill directs`,
         `- Proceed to execution with the tools listed in the skill`,
         ``,
-        `You can still use mcp_search if you need additional integrations beyond what the skill provides.`,
+        `You can still use \`tool_search\` (managed integrations) or \`mcp_search\` (MCP servers) if you need additional capabilities beyond what the skill provides.`,
       ].join('\n')
       this.promptOverrides.set('mcp_discovery_guide', skillOverride)
     }

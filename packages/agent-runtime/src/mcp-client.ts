@@ -11,14 +11,15 @@
  * Hot-add/remove: hotAddServer()/hotRemoveServer() for live session changes.
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
+import { execSync } from 'child_process'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { Type } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
-import { isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPackages } from './mcp-catalog'
+import { isPreinstalledMcpId, isMcpServerAllowed, isCatalogEntry, getPreinstalledPackages } from './mcp-catalog'
 import { getSanitizedEnv } from './sandbox-exec'
 
 const MAX_MCP_SERVERS = 10
@@ -31,6 +32,9 @@ const MCP_TOOL_LIST_TIMEOUT_MS = 15_000
  * going through `npx` (which takes 30-45s even with a warm npm cache).
  */
 export const MCP_PREINSTALL_DIR = process.env.MCP_PREINSTALL_DIR || '/app/mcp-packages'
+
+/** Workspace-local directory for MCP packages installed at runtime (persisted via S3) */
+export const MCP_WORKSPACE_PACKAGES_DIR = '.mcp-packages'
 
 export interface MCPServerConfig {
   command: string
@@ -177,8 +181,9 @@ export class MCPClientManager {
 
   /**
    * For npx commands, check if the target package is pre-installed in the Docker
-   * image and resolve to a direct `node` invocation instead. This drops startup
-   * from ~43s (cold npx) to ~1.6s (direct node).
+   * image OR in the workspace-local .mcp-packages/ directory and resolve to a
+   * direct `node` invocation instead. This drops startup from ~43s (cold npx) to
+   * ~1.6s (direct node). Docker pre-install dir is checked first for speed.
    */
   private resolvePreinstalled(config: MCPServerConfig): MCPServerConfig {
     if (config.command !== 'npx') return config
@@ -189,35 +194,87 @@ export class MCPClientManager {
 
     const pkgName = pkgArg.replace(/@(latest|[\d^~>=<].*)$/, '')
 
-    const pkgJsonPath = join(MCP_PREINSTALL_DIR, 'node_modules', pkgName, 'package.json')
-    try {
-      if (!existsSync(pkgJsonPath)) return config
-
-      const pkg = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'))
-      let entrypoint: string | undefined
-      if (typeof pkg.bin === 'string') {
-        entrypoint = pkg.bin
-      } else if (pkg.bin && typeof pkg.bin === 'object') {
-        entrypoint = Object.values(pkg.bin)[0] as string
-      }
-      if (!entrypoint) return config
-
-      const fullEntrypoint = join(MCP_PREINSTALL_DIR, 'node_modules', pkgName, entrypoint)
-      if (!existsSync(fullEntrypoint)) return config
-
-      const extraArgs = args.filter(a => a !== '-y' && a !== '--yes' && a !== pkgArg)
-
-      console.log(`[MCPClient] Pre-installed hit: ${pkgName} → node ${fullEntrypoint}`)
-      return { ...config, command: 'node', args: [fullEntrypoint, ...extraArgs] }
-    } catch {
-      return config
+    const searchDirs = [MCP_PREINSTALL_DIR]
+    if (this.workspaceDir) {
+      searchDirs.push(join(this.workspaceDir, MCP_WORKSPACE_PACKAGES_DIR))
     }
+
+    for (const baseDir of searchDirs) {
+      const pkgJsonPath = join(baseDir, 'node_modules', pkgName, 'package.json')
+      try {
+        if (!existsSync(pkgJsonPath)) continue
+
+        const pkg = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'))
+        let entrypoint: string | undefined
+        if (typeof pkg.bin === 'string') {
+          entrypoint = pkg.bin
+        } else if (pkg.bin && typeof pkg.bin === 'object') {
+          entrypoint = Object.values(pkg.bin)[0] as string
+        }
+        if (!entrypoint) continue
+
+        const fullEntrypoint = join(baseDir, 'node_modules', pkgName, entrypoint)
+        if (!existsSync(fullEntrypoint)) continue
+
+        const extraArgs = args.filter(a => a !== '-y' && a !== '--yes' && a !== pkgArg)
+
+        const source = baseDir === MCP_PREINSTALL_DIR ? 'Docker pre-install' : 'workspace cache'
+        console.log(`[MCPClient] ${source} hit: ${pkgName} → node ${fullEntrypoint}`)
+        return { ...config, command: 'node', args: [fullEntrypoint, ...extraArgs] }
+      } catch {
+        continue
+      }
+    }
+
+    return config
+  }
+
+  /**
+   * Install an npm package into the workspace-local .mcp-packages/ directory.
+   * This directory is persisted to S3, so packages survive pod restarts.
+   * Returns the resolved MCPServerConfig that uses the local install.
+   */
+  async installPackageLocally(packageName: string, extraArgs: string[] = [], env?: Record<string, string>): Promise<MCPServerConfig> {
+    if (!this.workspaceDir) {
+      throw new Error('Cannot install package locally: workspace directory not set')
+    }
+
+    const mcpPkgDir = join(this.workspaceDir, MCP_WORKSPACE_PACKAGES_DIR)
+    if (!existsSync(mcpPkgDir)) {
+      mkdirSync(mcpPkgDir, { recursive: true })
+    }
+
+    const pkgName = packageName.replace(/@(latest|[\d^~>=<].*)$/, '')
+
+    const alreadyInstalled = existsSync(join(mcpPkgDir, 'node_modules', pkgName, 'package.json'))
+    if (!alreadyInstalled) {
+      console.log(`[MCPClient] Installing ${packageName} to ${mcpPkgDir}...`)
+      try {
+        execSync(`npm install --prefix "${mcpPkgDir}" --omit=dev --no-audit --no-fund ${packageName}`, {
+          timeout: 120_000,
+          stdio: 'pipe',
+          env: { ...process.env, HOME: this.workspaceDir },
+        })
+        console.log(`[MCPClient] Installed ${packageName} to workspace cache`)
+      } catch (err: any) {
+        const stderr = err.stderr?.toString().trim() || err.message
+        throw new Error(`Failed to install ${packageName}: ${stderr}`)
+      }
+    } else {
+      console.log(`[MCPClient] ${pkgName} already in workspace cache`)
+    }
+
+    const npxConfig: MCPServerConfig = {
+      command: 'npx',
+      args: ['-y', packageName, ...extraArgs],
+      ...(env ? { env } : {}),
+    }
+    return this.resolvePreinstalled(npxConfig)
   }
 
   async startServer(name: string, config: MCPServerConfig): Promise<AgentTool[]> {
     if (!isMcpServerAllowed(name)) {
-      const allowed = getPreinstalledPackages().map(e => e.id).join(', ')
-      throw new Error(`MCP server "${name}" is not in the preinstalled whitelist. Allowed servers: ${allowed}`)
+      throw new Error(`MCP server "${name}" is not in the catalog. Use a catalog server ID or a remote MCP URL.`)
     }
 
     if (this.servers.has(name)) {
@@ -333,7 +390,7 @@ export class MCPClientManager {
 
     const allowed = entries.filter(([name]) => {
       if (!isMcpServerAllowed(name)) {
-        console.warn(`[MCPClient] Skipping non-whitelisted MCP server "${name}" from config.json`)
+        console.warn(`[MCPClient] Skipping non-catalog MCP server "${name}" from config.json`)
         return false
       }
       return true
@@ -607,7 +664,7 @@ export class MCPClientManager {
   }
 
   async hotAddServer(name: string, config: MCPServerConfig): Promise<AgentTool[]> {
-    if (this.servers.size >= MAX_MCP_SERVERS) {
+    if (this.servers.size + this.remoteServers.size >= MAX_MCP_SERVERS) {
       throw new Error(`Cannot add server "${name}": maximum of ${MAX_MCP_SERVERS} MCP servers reached`)
     }
     const tools = await this.startServer(name, config)
@@ -618,6 +675,20 @@ export class MCPClientManager {
   async hotRemoveServer(name: string): Promise<void> {
     await this.stopServer(name)
     this.unpersistConfig(name)
+  }
+
+  async hotAddRemoteServer(name: string, config: RemoteMCPServerConfig): Promise<AgentTool[]> {
+    if (this.servers.size + this.remoteServers.size >= MAX_MCP_SERVERS) {
+      throw new Error(`Cannot add remote server "${name}": maximum of ${MAX_MCP_SERVERS} MCP servers reached`)
+    }
+    const tools = await this.startRemoteServer(name, config)
+    this.persistRemoteConfig(name, config)
+    return tools
+  }
+
+  async hotRemoveRemoteServer(name: string): Promise<void> {
+    await this.stopRemoteServer(name)
+    this.unpersistRemoteConfig(name)
   }
 
   private persistConfig(name: string, config: MCPServerConfig): void {
@@ -642,8 +713,72 @@ export class MCPClientManager {
       if (existing.mcpServers?.[name]) {
         delete existing.mcpServers[name]
         writeFileSync(configPath, JSON.stringify(existing, null, 2), 'utf-8')
+        this.onConfigPersisted?.()
       }
     } catch { /* ignore parse errors */ }
+  }
+
+  private persistRemoteConfig(name: string, config: RemoteMCPServerConfig): void {
+    if (!this.workspaceDir) return
+    const configPath = join(this.workspaceDir, 'config.json')
+    let existing: Record<string, any> = {}
+    if (existsSync(configPath)) {
+      try { existing = JSON.parse(readFileSync(configPath, 'utf-8')) } catch { /* fresh config */ }
+    }
+    existing.remoteMcpServers = existing.remoteMcpServers || {}
+    existing.remoteMcpServers[name] = {
+      url: config.url,
+      ...(config.headers ? { headers: config.headers } : {}),
+      ...(config.excludeTools?.length ? { excludeTools: config.excludeTools } : {}),
+      ...(config.maxResultChars ? { maxResultChars: config.maxResultChars } : {}),
+    }
+    writeFileSync(configPath, JSON.stringify(existing, null, 2), 'utf-8')
+    this.onConfigPersisted?.()
+  }
+
+  private unpersistRemoteConfig(name: string): void {
+    if (!this.workspaceDir) return
+    const configPath = join(this.workspaceDir, 'config.json')
+    if (!existsSync(configPath)) return
+    try {
+      const existing = JSON.parse(readFileSync(configPath, 'utf-8'))
+      if (existing.remoteMcpServers?.[name]) {
+        delete existing.remoteMcpServers[name]
+        writeFileSync(configPath, JSON.stringify(existing, null, 2), 'utf-8')
+        this.onConfigPersisted?.()
+      }
+    } catch { /* ignore parse errors */ }
+  }
+
+  /**
+   * Start all remote MCP servers from config, typically called alongside
+   * startAll() during gateway initialization.
+   */
+  async startAllRemote(configs: Record<string, RemoteMCPServerConfig>): Promise<AgentTool[]> {
+    const allTools: AgentTool[] = []
+    const entries = Object.entries(configs)
+
+    if (entries.length === 0) return allTools
+
+    console.log(`[MCPClient] Starting ${entries.length} remote MCP server(s)...`)
+
+    const results = await Promise.allSettled(
+      entries.map(async ([name, config]) => {
+        const tools = await this.startRemoteServer(name, config)
+        return { name, tools }
+      })
+    )
+
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
+        allTools.push(...result.value.tools)
+      } else {
+        console.error(`[MCPClient] Remote server startup failed:`, result.reason?.message || result.reason)
+      }
+    }
+
+    console.log(`[MCPClient] ${allTools.length} remote MCP tools available from ${this.remoteServers.size} server(s)`)
+    return allTools
   }
 }
 

@@ -2736,12 +2736,10 @@ Rate-limited: max ${MAX_UPDATES_PER_SESSION}/session, ${MAX_UPDATES_PER_DAY}/day
 function createToolSearchTool(): AgentTool {
   return {
     name: 'tool_search',
-    description: process.env.SHOGO_LOCAL_MODE === 'true'
-      ? 'Search for available tools and integrations by capability or keyword. Searches the full MCP server catalog and managed OAuth integrations. Managed integrations are preferred when available.'
-      : 'Search for available tools and integrations by capability or keyword. Searches the built-in catalog of preinstalled MCP servers and managed OAuth integrations (hundreds of services — no credentials needed). Managed integrations are preferred when available.',
-    label: 'Search Tools',
+    description: 'Search for managed OAuth integrations (Google Calendar, Slack, GitHub, and hundreds more). These are pre-built service integrations with automatic authentication — no API keys or credentials needed. For MCP protocol servers (databases, file systems, custom tools), use mcp_search instead.',
+    label: 'Search Integrations',
     parameters: Type.Object({
-      query: Type.String({ description: 'Search query describing the capability you need (e.g. "google calendar", "slack messaging", "postgres database")' }),
+      query: Type.String({ description: 'Search query describing the integration you need (e.g. "google calendar", "slack messaging", "github")' }),
       limit: Type.Optional(Type.Number({ description: 'Max results to return (default: 5)' })),
     }),
     execute: async (_id: string, params: any) => {
@@ -2749,32 +2747,53 @@ function createToolSearchTool(): AgentTool {
       const limit = Math.min(params.limit || 5, 10)
 
       const results: Array<Record<string, any>> = []
-      const seenSlugs = new Set<string>()
 
-      // 1. Search Composio toolkit catalog (dynamic, via API)
       if (isComposioEnabled()) {
         try {
           const composioToolkits = await searchComposioToolkits(query)
           for (const tk of composioToolkits.slice(0, limit)) {
-            seenSlugs.add(tk.slug.toLowerCase().replace(/[-_\s]/g, ''))
             results.push({
               name: tk.name,
               id: tk.slug,
-              description: `${tk.name} — managed OAuth integration via Composio. No API keys or credentials needed.`,
+              description: `${tk.name} — managed OAuth integration. No API keys or credentials needed.`,
               installCommand: `tool_install({ name: "${tk.slug}" })`,
               source: 'managed',
               logo: tk.logo,
             })
           }
-        } catch { /* Composio API unavailable, continue with other sources */ }
+        } catch { /* Composio API unavailable */ }
       }
 
-      // 2. Search MCP catalog (all entries in local mode, preinstalled only in cloud)
-      const searchableCatalog = process.env.SHOGO_LOCAL_MODE === 'true' ? MCP_CATALOG : getPreinstalledPackages()
+      if (results.length === 0) {
+        return textResult({ query, results: [], message: 'No managed integrations found. Try mcp_search to find MCP protocol servers instead.' })
+      }
+
+      return textResult({
+        query,
+        results,
+        message: `Found ${results.length} managed integration(s). No credentials needed — just call tool_install with the name.`,
+      })
+    },
+  }
+}
+
+function createMcpSearchTool(): AgentTool {
+  return {
+    name: 'mcp_search',
+    description: 'Search for MCP (Model Context Protocol) servers — standalone tool servers for databases, file systems, APIs, browser automation, and more. These are protocol servers that provide tool functions and may require configuration (env vars, API keys). For managed OAuth integrations (Google Calendar, Slack, GitHub), use tool_search instead.',
+    label: 'Search MCP Servers',
+    parameters: Type.Object({
+      query: Type.String({ description: 'Search query describing the capability you need (e.g. "postgres database", "filesystem", "brave search")' }),
+      limit: Type.Optional(Type.Number({ description: 'Max results to return (default: 5)' })),
+    }),
+    execute: async (_id: string, params: any) => {
+      const query = params.query as string
+      const limit = Math.min(params.limit || 5, 10)
+
       const queryLower = query.toLowerCase()
       const queryWords = queryLower.split(/\s+/).filter(w => w.length > 2)
       const scored: Array<{ entry: typeof MCP_CATALOG[0]; score: number }> = []
-      for (const entry of searchableCatalog) {
+      for (const entry of MCP_CATALOG) {
         const haystack = `${entry.id} ${entry.name} ${entry.description} ${entry.category} ${entry.providedTools.join(' ')}`.toLowerCase()
         const idName = `${entry.id} ${entry.name}`.toLowerCase()
         let score = 0
@@ -2787,30 +2806,28 @@ function createToolSearchTool(): AgentTool {
         if (score > 0) scored.push({ entry, score })
       }
       scored.sort((a, b) => b.score - a.score)
+
+      const results: Array<Record<string, any>> = []
       for (const { entry } of scored.slice(0, limit)) {
-        const entryNorm = entry.id.toLowerCase().replace(/[-_\s]/g, '')
-        if (seenSlugs.has(entryNorm)) continue
-        seenSlugs.add(entryNorm)
         results.push({
           name: entry.name,
           id: entry.id,
           description: entry.description,
-          installCommand: `tool_install({ name: "${entry.id}" })`,
+          category: entry.category,
+          installCommand: `mcp_install({ name: "${entry.id}" })`,
           source: 'catalog',
         })
       }
 
       if (results.length === 0) {
-        return textResult({ query, results: [], message: 'No tools found. Try a different search term.' })
+        return textResult({ query, results: [], message: 'No MCP servers found. Try a different search term, or use tool_search for managed OAuth integrations.' })
       }
 
-      const managedCount = results.filter(r => r.source === 'managed').length
-      let message = `Found ${results.length} result(s). Use tool_install to add one.`
-      if (managedCount > 0) {
-        message = `Found ${results.length} result(s). ${managedCount} are managed integrations (no credentials needed) — prefer these. Just call tool_install with the name.`
-      }
-
-      return textResult({ query, results, message })
+      return textResult({
+        query,
+        results,
+        message: `Found ${results.length} MCP server(s). Use mcp_install to add one.`,
+      })
     },
   }
 }
@@ -2833,21 +2850,16 @@ function formatToolInstallMessage(
 function createToolInstallTool(ctx: ToolContext): AgentTool {
   return {
     name: 'tool_install',
-    description: process.env.SHOGO_LOCAL_MODE === 'true'
-      ? `Install and start a tool integration, making its tools available immediately. Any MCP server from the catalog can be used: ${MCP_CATALOG.map(e => e.id).join(', ')}. For managed integrations (Google Calendar, Slack, GitHub, and hundreds more), just provide the name — no command or args needed.
+    description: `Install a managed OAuth integration, making its tools available immediately. For services like Google Calendar, Slack, GitHub, Linear, Notion, and hundreds more — just provide the name. No API keys, credentials, or server configuration needed; authentication is handled automatically.
 
 Managed integrations auto-bind by default: the toolkit's CRUD operations are automatically discovered and deferred to bind to the next canvas you create. No extra parameters needed — just call tool_install({ name: "googlecalendar" }) and then canvas_create.
 
-Pass "autoBind" with surfaceId/dataPath to target a specific canvas. Pass "bind" with explicit config if you already know the tool's response shape (e.g. from a saved skill).`
-      : `Install and start a tool integration, making its tools available immediately. For managed integrations (Google Calendar, Slack, GitHub, and hundreds more), just provide the name — no command or args needed. For preinstalled MCP servers (fetch, github, postgres, slack, notion, brave-search, airbnb, filesystem), provide the server name.
+Pass "autoBind" with surfaceId/dataPath to target a specific canvas. Pass "bind" with explicit config if you already know the tool's response shape (e.g. from a saved skill).
 
-Managed integrations auto-bind by default: the toolkit's CRUD operations are automatically discovered and deferred to bind to the next canvas you create. No extra parameters needed — just call tool_install({ name: "googlecalendar" }) and then canvas_create.
-
-Pass "autoBind" with surfaceId/dataPath to target a specific canvas. Pass "bind" with explicit config if you already know the tool's response shape (e.g. from a saved skill).`,
-    label: 'Install Tool',
+For MCP protocol servers (databases, file systems, custom tool servers), use mcp_install instead.`,
+    label: 'Install Integration',
     parameters: Type.Object({
-      name: Type.String({ description: process.env.SHOGO_LOCAL_MODE === 'true' ? 'Tool or integration name (e.g. "googlecalendar", "slack", "postgres"). Any catalog MCP server or managed integration is supported.' : 'Tool or integration name (e.g. "googlecalendar", "slack", "postgres"). Only preinstalled MCP servers and managed integrations are supported.' }),
-      env: Type.Optional(Type.Any({ description: 'Environment variables for the server process' })),
+      name: Type.String({ description: 'Integration name (e.g. "googlecalendar", "slack", "github", "linear"). Use tool_search to find available integrations.' }),
       autoBind: Type.Optional(Type.Object({
         surfaceId: Type.String({ description: 'Surface ID to bind to (deferred if surface does not exist yet)' }),
         dataPath: Type.Optional(Type.String({ description: 'JSON Pointer path to auto-load list data (e.g. "/events")' })),
@@ -2881,8 +2893,8 @@ Pass "autoBind" with surfaceId/dataPath to target a specific canvas. Pass "bind"
       }, { description: 'Optional: bind installed tools to canvas CRUD API routes. Combines tool_install + canvas_api_bind in one call.' })),
     }),
     execute: async (_id: string, params: any) => {
-      const { name, env, bind, autoBind } = params as {
-        name: string; env?: Record<string, string>
+      const { name, bind, autoBind } = params as {
+        name: string
         bind?: any; autoBind?: { surfaceId: string; dataPath?: string }
       }
 
@@ -2963,11 +2975,6 @@ Pass "autoBind" with surfaceId/dataPath to target a specific canvas. Pass "bind"
         }
       }
 
-      if (ctx.mcpClientManager.isRunning(name)) {
-        const info = ctx.mcpClientManager.getServerInfo().find(s => s.name === name)
-        return textResult({ error: `Server "${name}" is already running with ${info?.toolCount || 0} tools`, tools: info?.toolNames })
-      }
-
       // Dynamically check if this matches a Composio toolkit
       if (isComposioEnabled()) {
         const composioToolkit = await findComposioToolkit(name)
@@ -2998,27 +3005,95 @@ Pass "autoBind" with surfaceId/dataPath to target a specific canvas. Pass "bind"
         }
       }
 
+      return textResult({ error: `"${name}" is not a managed integration. Use tool_search to find available integrations, or use mcp_install to install an MCP server.` })
+    },
+  }
+}
+
+function createMcpInstallTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'mcp_install',
+    description: `Install and start an MCP (Model Context Protocol) server, making its tools available immediately. MCP servers are standalone tool servers for databases, file systems, APIs, and more.
+
+For catalog servers (${MCP_CATALOG.map(e => e.id).join(', ')}), just provide the name. For remote servers, provide a name and URL.
+
+MCP servers are different from managed integrations — they may require environment variables or API keys. For managed OAuth integrations (Google Calendar, Slack, GitHub), use tool_install instead.`,
+    label: 'Install MCP Server',
+    parameters: Type.Object({
+      name: Type.String({ description: 'MCP server name from the catalog (e.g. "postgres", "filesystem", "github") or a custom name when providing a URL.' }),
+      env: Type.Optional(Type.Any({ description: 'Environment variables for the server process (e.g. API keys, connection strings)' })),
+      url: Type.Optional(Type.String({ description: 'Remote MCP server URL (for HTTP/StreamableHTTP servers). When provided, connects to the remote server instead of installing an npm package.' })),
+      headers: Type.Optional(Type.Any({ description: 'HTTP headers for remote MCP server authentication' })),
+    }),
+    execute: async (_id: string, params: any) => {
+      const { name, env, url, headers } = params as {
+        name: string; env?: Record<string, string>
+        url?: string; headers?: Record<string, string>
+      }
+
+      if (!ctx.mcpClientManager) {
+        return textResult({ error: 'MCP client manager not available' })
+      }
+
+      // Handle remote MCP server URL
+      if (url) {
+        if (ctx.mcpClientManager.isRunning(name)) {
+          const info = ctx.mcpClientManager.getServerInfo().find(s => s.name === name)
+          return textResult({ error: `Server "${name}" is already running with ${info?.toolCount || 0} tools`, tools: info?.toolNames })
+        }
+        try {
+          const tools = await ctx.mcpClientManager.hotAddRemoteServer(name, { url, headers })
+          return textResult({
+            ok: true,
+            server: name,
+            type: 'remote',
+            toolCount: tools.length,
+            tools: tools.map(t => ({ name: t.name, description: t.description })),
+            message: `Connected to remote MCP server "${name}" at ${url} with ${tools.length} tool(s).`,
+          })
+        } catch (err: any) {
+          return textResult({ error: `Failed to connect to remote MCP server "${name}" at ${url}: ${err.message}` })
+        }
+      }
+
+      if (ctx.mcpClientManager.isRunning(name)) {
+        const info = ctx.mcpClientManager.getServerInfo().find(s => s.name === name)
+        return textResult({ error: `Server "${name}" is already running with ${info?.toolCount || 0} tools`, tools: info?.toolNames })
+      }
+
       const catalogEntry = MCP_CATALOG.find(e => e.id === name)
       if (!isMcpServerAllowed(name) || !catalogEntry) {
-        const allowed = getPreinstalledPackages().map(e => e.id).join(', ')
-        return textResult({ error: `"${name}" is not available. Only preinstalled MCP servers are supported: ${allowed}` })
+        const catalogIds = MCP_CATALOG.map(e => e.id).join(', ')
+        return textResult({ error: `"${name}" is not in the MCP catalog. Available servers: ${catalogIds}. For remote servers, provide a "url" parameter. For managed OAuth integrations, use tool_install instead.` })
       }
 
       try {
-        const tools = await ctx.mcpClientManager.hotAddServer(name, {
-          command: 'npx',
-          args: [catalogEntry.package, ...catalogEntry.defaultArgs],
-          env,
-        })
-        return textResult(applyBind({
+        let config: { command: string; args?: string[]; env?: Record<string, string> }
+        if (isPreinstalledMcpId(name)) {
+          config = {
+            command: 'npx',
+            args: [catalogEntry.package, ...catalogEntry.defaultArgs],
+            env,
+          }
+        } else {
+          config = await ctx.mcpClientManager.installPackageLocally(
+            catalogEntry.package,
+            catalogEntry.defaultArgs,
+            env,
+          )
+          if (env) config.env = { ...config.env, ...env }
+        }
+
+        const tools = await ctx.mcpClientManager.hotAddServer(name, config)
+        return textResult({
           ok: true,
           server: name,
           toolCount: tools.length,
           tools: tools.map(t => ({ name: t.name, description: t.description })),
-          message: `Installed "${name}" with ${tools.length} tool(s). They are now available for use.`,
-        }))
+          message: `Installed MCP server "${name}" with ${tools.length} tool(s). They are now available for use.`,
+        })
       } catch (err: any) {
-        return textResult({ error: `Failed to install "${name}": ${err.message}` })
+        return textResult({ error: `Failed to install MCP server "${name}": ${err.message}` })
       }
     },
   }
@@ -3027,10 +3102,10 @@ Pass "autoBind" with surfaceId/dataPath to target a specific canvas. Pass "bind"
 function createToolUninstallTool(ctx: ToolContext): AgentTool {
   return {
     name: 'tool_uninstall',
-    description: 'Stop and remove an installed tool. Its tools will no longer be available.',
-    label: 'Uninstall Tool',
+    description: 'Stop and remove a managed integration. Its tools will no longer be available. For MCP servers, use mcp_uninstall instead.',
+    label: 'Uninstall Integration',
     parameters: Type.Object({
-      name: Type.String({ description: 'Tool name to remove (use tool_search to find names)' }),
+      name: Type.String({ description: 'Integration name to remove (use tool_search to find names)' }),
     }),
     execute: async (_id: string, params: any) => {
       const name = params.name as string
@@ -3040,14 +3115,48 @@ function createToolUninstallTool(ctx: ToolContext): AgentTool {
       }
 
       if (!ctx.mcpClientManager.isRunning(name)) {
-        return textResult({ error: `Server "${name}" is not running`, installed: ctx.mcpClientManager.getServerNames() })
+        return textResult({ error: `Integration "${name}" is not running`, installed: ctx.mcpClientManager.getServerNames() })
       }
 
       try {
         await ctx.mcpClientManager.hotRemoveServer(name)
-        return textResult({ ok: true, removed: name, message: `Removed "${name}" and all its tools.` })
+        return textResult({ ok: true, removed: name, message: `Removed integration "${name}" and all its tools.` })
       } catch (err: any) {
         return textResult({ error: `Failed to remove "${name}": ${err.message}` })
+      }
+    },
+  }
+}
+
+function createMcpUninstallTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'mcp_uninstall',
+    description: 'Stop and remove a running MCP server. Its tools will no longer be available. For managed integrations, use tool_uninstall instead.',
+    label: 'Uninstall MCP Server',
+    parameters: Type.Object({
+      name: Type.String({ description: 'MCP server name to remove (use mcp_search to find names)' }),
+    }),
+    execute: async (_id: string, params: any) => {
+      const name = params.name as string
+
+      if (!ctx.mcpClientManager) {
+        return textResult({ error: 'MCP client manager not available' })
+      }
+
+      if (!ctx.mcpClientManager.isRunning(name)) {
+        return textResult({ error: `MCP server "${name}" is not running`, installed: ctx.mcpClientManager.getServerNames() })
+      }
+
+      try {
+        const info = ctx.mcpClientManager.getServerInfo().find(s => s.name === name)
+        if (info?.config.command === 'remote') {
+          await ctx.mcpClientManager.hotRemoveRemoteServer(name)
+        } else {
+          await ctx.mcpClientManager.hotRemoveServer(name)
+        }
+        return textResult({ ok: true, removed: name, message: `Removed MCP server "${name}" and all its tools.` })
+      } catch (err: any) {
+        return textResult({ error: `Failed to remove MCP server "${name}": ${err.message}` })
       }
     },
   }
@@ -3401,7 +3510,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind'],
   personality: ['personality_update'],
   tool_discovery: ['tool_search', 'tool_install', 'tool_uninstall'],
-  mcp_discovery: ['tool_search', 'tool_install', 'tool_uninstall'],
+  mcp_discovery: ['mcp_search', 'mcp_install', 'mcp_uninstall'],
 }
 
 export const ALL_TOOL_NAMES = [
@@ -3414,6 +3523,7 @@ export const ALL_TOOL_NAMES = [
   'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind',
   'personality_update',
   'tool_search', 'tool_install', 'tool_uninstall',
+  'mcp_search', 'mcp_install', 'mcp_uninstall',
 ] as const
 
 /**
@@ -4049,6 +4159,9 @@ export function createTools(ctx: ToolContext, modeHandler?: ModeSwitchHandler, e
     createToolSearchTool(),
     createToolInstallTool(ctx),
     createToolUninstallTool(ctx),
+    createMcpSearchTool(),
+    createMcpInstallTool(ctx),
+    createMcpUninstallTool(ctx),
     createBindingTransformTool(ctx),
     g(createGenerateImageTool(ctx), 'network'),
   ]

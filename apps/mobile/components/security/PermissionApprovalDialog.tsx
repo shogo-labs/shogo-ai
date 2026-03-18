@@ -41,7 +41,7 @@ function extractAlwaysAllowPattern(toolName: string, category: string, params: R
     if (path.includes('.')) return `*${path.slice(path.lastIndexOf('.'))}`
     return path
   }
-  if ((toolName === 'tool_install' || category === 'mcp') && params.name) {
+  if ((toolName === 'tool_install' || toolName === 'mcp_install' || category === 'mcp') && params.name) {
     return params.name as string
   }
   return null

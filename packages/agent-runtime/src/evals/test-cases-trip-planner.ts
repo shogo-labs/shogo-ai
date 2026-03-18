@@ -93,14 +93,14 @@ export const TRIP_PLANNER_EVALS: AgentEval[] = [
       // --- Airbnb MCP discovery ---
       {
         id: 'searched-for-airbnb-mcp',
-        description: 'Used tool_search to find the Airbnb MCP server',
+        description: 'Used mcp_search to find the Airbnb MCP server',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_search'),
+        validate: (r) => usedTool(r, 'mcp_search') || usedTool(r, 'tool_search'),
       },
       {
         id: 'search-query-relevant',
-        description: 'tool_search query relates to airbnb/accommodation/travel',
+        description: 'Search query relates to airbnb/accommodation/travel',
         points: 5,
         phase: 'intention',
         validate: (r) => {
@@ -110,10 +110,10 @@ export const TRIP_PLANNER_EVALS: AgentEval[] = [
       },
       {
         id: 'installed-airbnb-mcp',
-        description: 'Used tool_install to add the Airbnb MCP server',
+        description: 'Used mcp_install to add the Airbnb MCP server',
         points: 10,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'tool_install'),
+        validate: (r) => usedTool(r, 'mcp_install'),
       },
       // --- Actually used Airbnb search ---
       {
@@ -129,8 +129,8 @@ export const TRIP_PLANNER_EVALS: AgentEval[] = [
         points: 5,
         phase: 'execution',
         validate: (r) => {
-          const searchIdx = r.toolCalls.findIndex(t => t.name === 'tool_search')
-          const installIdx = r.toolCalls.findIndex(t => t.name === 'tool_install')
+          const searchIdx = r.toolCalls.findIndex(t => t.name === 'mcp_search' || t.name === 'tool_search')
+          const installIdx = r.toolCalls.findIndex(t => t.name === 'mcp_install')
           const useIdx = r.toolCalls.findIndex(t => t.name === 'mcp_airbnb_airbnb_search')
           return searchIdx >= 0 && installIdx > searchIdx && useIdx > installIdx
         },
