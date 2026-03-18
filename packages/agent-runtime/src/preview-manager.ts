@@ -100,17 +100,21 @@ export class PreviewManager {
         console.error(`[${LOG_PREFIX}] Prisma generate failed:`, err.message)
       }
 
-      // Push schema to SQLite if dev.db doesn't exist
+      // Push schema to SQLite
       const devDb = join(projectDir, 'prisma', 'dev.db')
-      if (!existsSync(devDb)) {
-        try {
-          execSync('bunx prisma db push --skip-generate 2>&1', {
-            cwd: projectDir,
-            timeout: 30_000,
-            stdio: 'pipe',
-            env: { ...process.env, DATABASE_URL: `file:${devDb}` },
-          })
-        } catch { /* non-fatal */ }
+      const t2 = Date.now()
+      try {
+        execSync('bunx prisma db push 2>&1', {
+          cwd: projectDir,
+          timeout: 60_000,
+          stdio: 'pipe',
+          env: { ...process.env, DATABASE_URL: `file:${devDb}` },
+        })
+        timings.dbPush = Date.now() - t2
+        console.log(`[${LOG_PREFIX}] Prisma db push succeeded (${timings.dbPush}ms)`)
+      } catch (err: any) {
+        timings.dbPush = Date.now() - t2
+        console.error(`[${LOG_PREFIX}] Prisma db push failed:`, err.message?.slice(0, 200))
       }
     }
 
