@@ -267,12 +267,12 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
         {status && (
           <View className="flex-row items-center gap-1.5 ml-2">
             {status.running ? (
-              <View className="flex-row items-center gap-1">
+              <View className="flex-row items-center gap-1" accessibilityLabel="Agent is running">
                 <View className="h-2 w-2 rounded-full bg-emerald-500" />
                 <Text className="text-xs text-emerald-500">Running</Text>
               </View>
             ) : (
-              <View className="flex-row items-center gap-1">
+              <View className="flex-row items-center gap-1" accessibilityLabel="Agent is stopped">
                 <View className="h-2 w-2 rounded-full bg-muted-foreground/50" />
                 <Text className="text-xs text-muted-foreground">Stopped</Text>
               </View>
@@ -286,7 +286,12 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
               <Text className="text-[10px] text-muted-foreground">Live</Text>
             </View>
           )}
-          <Pressable onPress={loadInitial} className="p-1 rounded-md active:bg-muted">
+          <Pressable
+            onPress={loadInitial}
+            accessibilityRole="button"
+            accessibilityLabel="Refresh agent status"
+            className="p-1 rounded-md active:bg-muted"
+          >
             <RefreshCw size={14} className="text-muted-foreground" />
           </Pressable>
         </View>
@@ -513,6 +518,12 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
                     onValueChange={toggleHeartbeat}
                     disabled={hbToggling}
                     size="sm"
+                    accessibilityRole="switch"
+                    accessibilityLabel="Toggle periodic heartbeat check-ins"
+                    accessibilityState={{
+                      checked: hbConfig?.heartbeatEnabled ?? status.heartbeat.enabled,
+                      busy: hbToggling,
+                    }}
                   />
                 </View>
 
@@ -610,7 +621,10 @@ function StatCard({
   value: string
 }) {
   return (
-    <View className="flex-1 min-w-[140px] px-3 py-2.5 rounded-lg border border-border/40 bg-card gap-1.5">
+    <View
+      className="flex-1 min-w-[140px] px-3 py-2.5 rounded-lg border border-border/40 bg-card gap-1.5"
+      accessibilityLabel={`${label}: ${value}`}
+    >
       <View className="flex-row items-center gap-1.5">
         {icon}
         <Text className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">

@@ -25,7 +25,7 @@ export function MonitorPanel({ projectId, agentUrl, visible, isPaidPlan }: Monit
     <View className="absolute inset-0 flex-col" style={{ display: visible ? 'flex' : 'none' }}>
       {/* Sub-tab toggle */}
       <View className="px-4 py-2 border-b border-border flex-row items-center gap-2">
-        <View className="flex-row rounded-md border border-border">
+        <View className="flex-row rounded-md border border-border" accessibilityRole="tablist">
           {([
             { id: 'overview' as SubTab, label: 'Overview' },
             { id: 'analytics' as SubTab, label: 'Analytics' },
@@ -34,6 +34,9 @@ export function MonitorPanel({ projectId, agentUrl, visible, isPaidPlan }: Monit
             <Pressable
               key={tab.id}
               onPress={() => setSubTab(tab.id)}
+              accessibilityRole="tab"
+              accessibilityLabel={tab.label}
+              accessibilityState={{ selected: subTab === tab.id }}
               className={cn(
                 'px-3 py-1.5 rounded-md',
                 subTab === tab.id ? 'bg-primary' : 'active:bg-muted',

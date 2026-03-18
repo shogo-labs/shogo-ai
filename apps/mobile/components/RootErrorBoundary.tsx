@@ -40,9 +40,9 @@ export class RootErrorBoundary extends Component<Props, State> {
     if (!this.state.hasError) return this.props.children
 
     return (
-      <View style={styles.container}>
+      <View style={styles.container} accessibilityRole="alert">
         <View style={styles.card}>
-          <Text style={styles.title}>Something went wrong</Text>
+          <Text style={styles.title} accessibilityRole="header">Something went wrong</Text>
           <Text style={styles.message}>
             An unexpected error occurred. Please reload the page.
           </Text>
@@ -51,7 +51,12 @@ export class RootErrorBoundary extends Component<Props, State> {
               {this.state.error.message}
             </Text>
           )}
-          <Pressable style={styles.button} onPress={this.handleReload}>
+          <Pressable
+            style={styles.button}
+            onPress={this.handleReload}
+            accessibilityRole="button"
+            accessibilityLabel="Reload the application"
+          >
             <Text style={styles.buttonText}>Reload</Text>
           </Pressable>
         </View>
