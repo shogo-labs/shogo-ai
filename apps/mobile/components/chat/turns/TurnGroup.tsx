@@ -47,15 +47,15 @@ function CopyButton({ text, className }: { text: string; className?: string }) {
     <Pressable
       onPress={handleCopy}
       className={cn(
-        "items-center justify-center rounded-md p-1",
+        "items-center justify-center rounded-lg p-1",
         className
       )}
       accessibilityLabel={copied ? "Copied" : "Copy message"}
     >
       {copied ? (
-        <Check className="h-3.5 w-3.5 text-green-500" />
+        <Check className="h-4 w-4 text-green-500" />
       ) : (
-        <Copy className="h-3.5 w-3.5 text-muted-foreground" />
+        <Copy className="h-4 w-4 text-muted-foreground" />
       )}
     </Pressable>
   )
@@ -81,11 +81,12 @@ export function TurnGroup({
     >
       {/* User message */}
       {turn.userMessage && (
-        <View className="gap-0.5">
-          <MessageContent message={turn.userMessage} />
-          <View className="flex-row justify-end">
-            <CopyButton text={extractTextContent(turn.userMessage)} />
-          </View>
+        <View className="w-full flex-row items-end justify-end gap-2">
+          <CopyButton
+            text={extractTextContent(turn.userMessage)}
+            className="mb-1 h-9 w-9 shrink-0 border border-border/60 bg-muted"
+          />
+          <MessageContent message={turn.userMessage} className="ml-0" />
         </View>
       )}
 

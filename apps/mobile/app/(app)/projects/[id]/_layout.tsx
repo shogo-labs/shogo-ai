@@ -473,17 +473,40 @@ export default observer(function ProjectLayout() {
   const [showChatSessions, setShowChatSessions] = useState(false)
   const [previewTab, setPreviewTab] = useState('dynamic-app')
 
+  // Keep previewTab consistent with agent mode. Do NOT force app-preview whenever
+  // activeMode is app — that trapped users on a blank App iframe and blocked Files /
+  // Capabilities (any tab change was immediately reset to app-preview).
   useEffect(() => {
     if (activeMode === 'app') {
-      if (previewTab !== 'app-preview') setPreviewTab('app-preview')
-      if (activeTab === 'canvas') setActiveTab('chat')
+      const validForApp = new Set([
+        'app-preview',
+        'files',
+        'capabilities',
+        'channels',
+        'monitor',
+      ])
+      if (!validForApp.has(previewTab)) setPreviewTab('app-preview')
     } else if (!canvasEnabled) {
-      if (previewTab === 'dynamic-app') setPreviewTab('chat-fullscreen')
+      if (previewTab === 'dynamic-app' || previewTab === 'app-preview') {
+        setPreviewTab('chat-fullscreen')
+      }
       if (activeTab === 'canvas' && previewTab !== 'app-preview') setActiveTab('chat')
     } else if (canvasEnabled) {
       if (previewTab === 'chat-fullscreen') setPreviewTab('dynamic-app')
+      if (previewTab === 'app-preview') setPreviewTab('dynamic-app')
     }
   }, [canvasEnabled, activeMode, previewTab, activeTab])
+
+  const handlePreviewTabChange = useCallback((tabId: string) => {
+    if (Platform.OS === 'web') {
+      try {
+        ;(document.activeElement as HTMLElement)?.blur?.()
+      } catch {
+        /* ignore */
+      }
+    }
+    setPreviewTab(tabId)
+  }, [])
 
   const handleCapabilityToggle = useCallback(async (key: string, enabled: boolean) => {
     await updateProjectSettings({ [key]: enabled })
@@ -677,7 +700,7 @@ export default observer(function ProjectLayout() {
             projectId={projectId!}
             projects={allProjects}
             activeTab={previewTab}
-            onTabChange={setPreviewTab}
+            onTabChange={handlePreviewTabChange}
             hasActiveSubscription={effectiveHasActiveSubscription}
             workspaceName={workspaceName}
             planLabel={planLabel}
@@ -695,7 +718,7 @@ export default observer(function ProjectLayout() {
             canvasEnabled={canvasEnabled}
             activeMode={activeMode}
           />
-        ) : !narrowOnCanvas ? (
+        ) : (
           <ProjectTopBar
             projectName={project.name}
             projectId={projectId!}
@@ -726,11 +749,11 @@ export default observer(function ProjectLayout() {
               }
             }}
             onTabChange={(tabId) => {
-              setPreviewTab(tabId)
+              handlePreviewTabChange(tabId)
               if (tabId !== 'dynamic-app' && tabId !== 'app-preview' && tabId !== 'chat-fullscreen') setActiveTab('canvas')
             }}
           />
-        ) : null}
+        )}
 
         {/* Content — chat panel stays mounted across layout/tab changes */}
         <View className={cn('flex-1', isWide && 'flex-row')}>
@@ -757,52 +780,71 @@ export default observer(function ProjectLayout() {
           {/* Normal left chat panel (unmounted when chat-fullscreen is active to avoid duplicate ChatPanel) */}
           {!isChatFullscreen && (
             isWide && chatCollapsed ? (
-              <View className="w-10 border-r border-border items-center pt-2">
+              <View className="w-[52px] shrink-0 border-r border-border bg-background items-center pt-3 px-2">
                 <Pressable
                   onPress={() => setChatCollapsed(false)}
-                  className="h-7 w-7 items-center justify-center rounded-md active:bg-muted"
+                  className="h-8 w-8 items-center justify-center rounded-lg border border-border bg-muted active:bg-accent"
+                  accessibilityLabel="Expand chat panel"
                 >
-                  <PanelLeft size={14} className="text-muted-foreground" />
+                  <PanelLeft className="size-4 text-foreground" />
                 </Pressable>
               </View>
             ) : (
               <View
                 className={cn(
-                  'relative',
-                  isWide ? 'w-[480px] border-r border-border z-10' : 'flex-1',
+                  'flex min-h-0 flex-col',
+                  isWide ? 'w-[480px] shrink-0 border-r border-border bg-background z-10' : 'relative flex-1',
+                  chatHidden && 'hidden',
                 )}
-                style={chatHidden ? { display: 'none' } : undefined}
               >
                 {isWide && (
                   <View
-                    className="absolute top-2 items-center gap-1"
-                    style={{ right: -14, zIndex: 9999 }}
+                    className="shrink-0 flex-row items-center justify-between gap-3 border-b border-border bg-background px-3 py-2"
+                    accessibilityRole="toolbar"
                   >
-                    <Pressable
-                      onPress={() => setChatCollapsed(true)}
-                      className="h-7 w-7 items-center justify-center rounded-md bg-background/80 border border-border active:bg-muted"
+                    <Text
+                      className="text-sm font-semibold text-foreground"
+                      numberOfLines={1}
                     >
-                      <PanelLeftClose size={14} className="text-muted-foreground" />
-                    </Pressable>
-                    <Pressable
-                      onPress={() => setShowChatSessions((s) => !s)}
-                      className={cn(
-                        'h-7 w-7 items-center justify-center rounded-md border border-border',
-                        showChatSessions ? 'bg-accent' : 'bg-background/80 active:bg-muted'
-                      )}
-                    >
-                      <History size={14} className={showChatSessions ? 'text-foreground' : 'text-muted-foreground'} />
-                    </Pressable>
-                    <Pressable
-                      onPress={handleCreateNewSession}
-                      className="h-7 w-7 items-center justify-center rounded-md bg-background/80 border border-border active:bg-muted"
-                    >
-                      <Plus size={14} className="text-muted-foreground" />
-                    </Pressable>
+                      Chat
+                    </Text>
+                    <View className="flex-row items-center gap-1">
+                      <Pressable
+                        onPress={() => setChatCollapsed(true)}
+                        className="h-8 w-8 items-center justify-center rounded-lg border border-border bg-muted active:bg-accent"
+                        accessibilityLabel="Collapse chat panel"
+                      >
+                        <PanelLeftClose className="size-4 text-foreground" />
+                      </Pressable>
+                      <Pressable
+                        onPress={() => setShowChatSessions((s) => !s)}
+                        className={cn(
+                          'h-8 w-8 items-center justify-center rounded-lg border',
+                          showChatSessions
+                            ? 'border-primary bg-primary/15 active:bg-primary/25'
+                            : 'border-border bg-muted active:bg-accent'
+                        )}
+                        accessibilityLabel="Chat history"
+                      >
+                        <History
+                          className={cn(
+                            'size-4',
+                            showChatSessions ? 'text-primary' : 'text-foreground',
+                          )}
+                        />
+                      </Pressable>
+                      <Pressable
+                        onPress={handleCreateNewSession}
+                        className="h-8 w-8 items-center justify-center rounded-lg border border-border bg-muted active:bg-accent"
+                        accessibilityLabel="New chat"
+                      >
+                        <Plus className="size-4 text-foreground" />
+                      </Pressable>
+                    </View>
                   </View>
                 )}
                 {isWide && showChatSessions && (
-                  <View className="border-b border-border">
+                  <View className="shrink-0 border-b border-border bg-background">
                     <ChatSessionPicker
                       sessions={chatSessions}
                       currentSessionId={chatSessionId ?? undefined}
@@ -817,53 +859,66 @@ export default observer(function ProjectLayout() {
                     />
                   </View>
                 )}
-                {chatPanel}
+                <View className="min-h-0 flex-1">{chatPanel}</View>
               </View>
             )
           )}
 
           {/* Right panel area (canvas / files / capabilities / channels / monitor) */}
           <View
-            className="flex-1 relative"
-            style={canvasAreaHidden ? { display: 'none' } : undefined}
+            className={cn(
+              'relative flex-1 overflow-hidden',
+              canvasAreaHidden && 'hidden',
+              Platform.OS === 'web' && !canvasAreaHidden && 'min-h-0',
+            )}
           >
             {/* Floating chat button on mobile canvas — bottom right */}
             {narrowOnCanvas && (
               <View
-                className="absolute bottom-0 right-0 z-10"
-                style={{ paddingBottom: 24, paddingRight: 16 }}
+                className="absolute bottom-0 right-0 z-10 pb-6 pr-4"
                 pointerEvents="box-none"
               >
                 <Pressable
                   onPress={() => setActiveTab('chat')}
                   className="flex-row items-center gap-1.5 rounded-full bg-primary px-4 py-2.5 shadow-lg"
-                  style={Platform.OS === 'web' ? {
-                    boxShadow: '0 4px 12px rgba(0,0,0,0.15), 0 2px 4px rgba(0,0,0,0.1)',
-                  } as any : {}}
                 >
-                  <MessageSquare size={16} color="#fff" />
+                  <MessageSquare size={16} className="text-primary-foreground" />
                   <Text className="text-sm font-semibold text-primary-foreground">Chat</Text>
                 </Pressable>
               </View>
             )}
 
-            {canvasEnabled && (
-              <View
-                className="absolute inset-0"
-                style={previewTab !== 'dynamic-app' ? { display: 'none' } : undefined}
-              >
-                {canvasPanel}
-              </View>
+            {canvasEnabled && previewTab === 'dynamic-app' && (
+              <View className="absolute inset-0">{canvasPanel}</View>
             )}
             {previewTab === 'app-preview' && (
-              <View className="absolute inset-0">
+              <View
+                className={cn(
+                  'absolute inset-0 overflow-hidden',
+                  Platform.OS === 'web' && 'z-0',
+                )}
+              >
                 <AppPreviewPanel previewUrl={previewUrl ?? null} />
               </View>
             )}
-            <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
-            <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} activeMode={activeMode} onModeChange={handleManualModeChange} />
-            <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} />
-            <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
+            <View
+              className={cn(
+                'absolute inset-0',
+                ['files', 'capabilities', 'channels', 'monitor'].includes(previewTab)
+                  ? 'z-20 bg-background'
+                  : 'pointer-events-none',
+              )}
+              pointerEvents={
+                ['files', 'capabilities', 'channels', 'monitor'].includes(previewTab)
+                  ? 'auto'
+                  : 'none'
+              }
+            >
+              <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
+              <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} activeMode={activeMode} onModeChange={handleManualModeChange} />
+              <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} />
+              <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
+            </View>
           </View>
         </View>
       </View>
@@ -1008,7 +1063,7 @@ function CanvasPanel({
             {!fullBleed && <EditToolbar surfaceId={surfaceId} components={surface.components} trailing={themePicker} />}
             <ScrollView
               className="flex-1"
-              contentContainerStyle={{ padding: fullBleed ? 0 : 16 }}
+              contentContainerClassName={fullBleed ? 'p-0' : 'p-4'}
               {...(Platform.OS === 'web' ? { dataSet: { thumbnailTarget: '' } } as any : {})}
             >
               <DynamicAppRenderer
@@ -1060,7 +1115,7 @@ function AppPreviewPanel({ previewUrl }: { previewUrl: string | null }) {
           key={iframeKey}
           src={previewUrl}
           sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-          style={{ width: '100%', height: '100%', border: 'none' }}
+          className="block h-full w-full border-0"
           {...{ 'data-thumbnail-target': '' } as any}
         />
       </View>

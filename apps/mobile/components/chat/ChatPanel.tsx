@@ -1226,6 +1226,18 @@ export const ChatPanel = observer(function ChatPanel({
   }, [error, onChatError])
 
   const [emptyResponseError, setEmptyResponseError] = useState<string | null>(null)
+  const [errorBannerExpanded, setErrorBannerExpanded] = useState(false)
+  const errorBannerText = useMemo(
+    () => (error ? formatErrorMessage(error.message) : emptyResponseError) ?? '',
+    [error?.message, emptyResponseError]
+  )
+  useEffect(() => {
+    setErrorBannerExpanded(false)
+  }, [errorBannerText])
+
+  const errorBannerNeedsReadMore =
+    errorBannerText.split(/\n/).length > 4 || errorBannerText.length > 220
+
   const [pendingInitialMessage, setPendingInitialMessage] = useState<string | null>(null)
 
   // Permission approval state (local mode security)
@@ -2289,18 +2301,50 @@ export const ChatPanel = observer(function ChatPanel({
             </View>
           )}
 
-          {/* Error Alert */}
+          {/* Error Alert — cap long messages so the sidebar layout stays usable */}
           {(error || emptyResponseError) && (
             <View className="px-4 pb-2">
               <View className="flex-row items-start gap-2 rounded-lg border border-destructive/50 bg-destructive/10 p-3">
                 <AlertCircle className="h-4 w-4 text-destructive shrink-0 mt-0.5" size={16} />
-                <View className="flex-1 flex-row items-center justify-between gap-2">
-                  <Text className="text-sm text-destructive flex-1">
-                    {error ? formatErrorMessage(error.message) : emptyResponseError}
-                  </Text>
+                <View className="flex-1 min-w-0 flex-row items-start justify-between gap-2">
+                  <View className="flex-1 min-w-0 pr-1">
+                    {errorBannerExpanded ? (
+                      <ScrollView
+                        nestedScrollEnabled
+                        className="max-h-48"
+                        showsVerticalScrollIndicator
+                      >
+                        <Text className="text-sm text-destructive" selectable>
+                          {errorBannerText}
+                        </Text>
+                      </ScrollView>
+                    ) : (
+                      <Text
+                        className="text-sm text-destructive"
+                        numberOfLines={4}
+                        selectable
+                      >
+                        {errorBannerText}
+                      </Text>
+                    )}
+                    {errorBannerNeedsReadMore && (
+                      <Pressable
+                        onPress={() => setErrorBannerExpanded((e) => !e)}
+                        className="mt-1.5 self-start py-0.5"
+                        accessibilityRole="button"
+                        accessibilityLabel={
+                          errorBannerExpanded ? 'Show less error detail' : 'Read full error message'
+                        }
+                      >
+                        <Text className="text-xs font-semibold text-destructive">
+                          {errorBannerExpanded ? 'Show less' : 'Read more'}
+                        </Text>
+                      </Pressable>
+                    )}
+                  </View>
                   <Pressable
                     onPress={handleRetry}
-                    className="shrink-0 rounded-md border border-destructive/30 px-3 py-1.5"
+                    className="shrink-0 rounded-md border border-destructive/30 px-3 py-1.5 self-start"
                   >
                     <Text className="text-sm text-destructive font-medium">Retry</Text>
                   </Pressable>
