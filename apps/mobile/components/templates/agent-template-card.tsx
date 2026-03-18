@@ -1,0 +1,505 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+import type { ReactNode } from 'react'
+import { View, Text, Pressable, ActivityIndicator, Platform } from 'react-native'
+import { Zap, ChevronRight, Sparkles } from 'lucide-react-native'
+import { cn } from '@shogo/shared-ui/primitives'
+
+export const AGENT_TEMPLATE_ICON_BOX: Record<string, string> = {
+  'marketing-command-center': 'bg-violet-500/15 dark:bg-violet-400/20',
+  'devops-hub': 'bg-blue-500/15 dark:bg-blue-400/20',
+  'project-manager': 'bg-cyan-500/15 dark:bg-cyan-400/20',
+  'sales-revenue': 'bg-amber-500/15 dark:bg-amber-400/20',
+  'support-ops': 'bg-violet-500/15 dark:bg-violet-400/20',
+  'research-analyst': 'bg-blue-500/15 dark:bg-blue-400/20',
+  'hr-recruiting': 'bg-teal-500/15 dark:bg-teal-400/20',
+  'personal-assistant': 'bg-violet-500/15 dark:bg-violet-400/20',
+  'operations-monitor': 'bg-red-500/15 dark:bg-red-400/20',
+  'blank-agent': 'bg-slate-500/15 dark:bg-slate-400/20',
+}
+
+const SPINNER_COLOR: Record<string, string> = {
+  'marketing-command-center': '#a855f7',
+  'devops-hub': '#2563eb',
+  'project-manager': '#06b6d4',
+  'sales-revenue': '#ca8a04',
+  'support-ops': '#8b5cf6',
+  'research-analyst': '#3b82f6',
+  'hr-recruiting': '#14b8a6',
+  'personal-assistant': '#a855f7',
+  'operations-monitor': '#ef4444',
+  'blank-agent': '#64748b',
+}
+
+const POPULAR_IDS = new Set([
+  'marketing-command-center',
+  'devops-hub',
+  'personal-assistant',
+  'sales-revenue',
+])
+
+const CATEGORY_LABEL: Record<string, string> = {
+  personal: 'Personal',
+  development: 'Development',
+  business: 'Business',
+  research: 'Research',
+  operations: 'DevOps',
+  marketing: 'Marketing',
+  sales: 'Sales',
+}
+
+const CATEGORY_BADGE: Record<string, { box: string; text: string }> = {
+  marketing: {
+    box: 'bg-violet-500/15 dark:bg-violet-500/25',
+    text: 'text-violet-700 dark:text-violet-300',
+  },
+  development: {
+    box: 'bg-blue-500/12 dark:bg-blue-500/20',
+    text: 'text-blue-600 dark:text-blue-300',
+  },
+  business: {
+    box: 'bg-teal-500/15 dark:bg-teal-500/20',
+    text: 'text-teal-700 dark:text-teal-300',
+  },
+  research: {
+    box: 'bg-blue-500/12 dark:bg-blue-500/18',
+    text: 'text-blue-700 dark:text-blue-300',
+  },
+  operations: {
+    box: 'bg-red-500/12 dark:bg-red-500/18',
+    text: 'text-red-600 dark:text-red-300',
+  },
+  sales: {
+    box: 'bg-amber-500/16 dark:bg-amber-500/20',
+    text: 'text-amber-700 dark:text-amber-300',
+  },
+  personal: {
+    box: 'bg-violet-500/15 dark:bg-violet-500/22',
+    text: 'text-violet-700 dark:text-violet-300',
+  },
+}
+
+export interface AgentTemplateCardData {
+  id: string
+  name: string
+  description: string
+  category: string
+  icon: string
+  tags: string[]
+}
+
+function PreviewRow({
+  children,
+  className,
+}: {
+  children: ReactNode
+  className?: string
+}) {
+  return (
+    <View className={cn('rounded-lg py-1.5 px-2 mb-1', className)}>
+      {children}
+    </View>
+  )
+}
+
+function previewText(compact: boolean, bold?: boolean) {
+  return cn(
+    compact ? 'text-[9px]' : 'text-[10px]',
+    bold ? 'font-semibold text-slate-900 dark:text-white/90' : 'text-slate-900 dark:text-white/90',
+  )
+}
+
+function AgentTemplatePreview({
+  templateId,
+  compact,
+}: {
+  templateId: string
+  compact: boolean
+}) {
+  const h = cn(compact ? 'text-[10px]' : 'text-[11px]', 'font-semibold text-slate-500 dark:text-white/45 mb-1.5')
+  const muted = cn(compact ? 'text-[8px]' : 'text-[9px]', 'text-slate-500 dark:text-white/55')
+  const box = 'bg-slate-100 dark:bg-white/10'
+  const fs = previewText(compact, true)
+  const fsN = previewText(compact)
+
+  switch (templateId) {
+    case 'marketing-command-center':
+      return (
+        <View>
+          <Text className={h}>Generated Copy</Text>
+          <PreviewRow className="bg-emerald-50 dark:bg-emerald-500/10">
+            <Text className={fs}>Hero Headline</Text>
+            <Text className={cn(muted, 'mt-0.5')} numberOfLines={1}>
+              Ship faster with AI that knows your stack
+            </Text>
+          </PreviewRow>
+          <PreviewRow className="bg-blue-50 dark:bg-blue-500/10">
+            <Text className={fs}>CTA Button</Text>
+            <Text className={cn(muted, 'mt-0.5 text-blue-600 dark:text-blue-400')}>Start free →</Text>
+          </PreviewRow>
+        </View>
+      )
+    case 'devops-hub':
+      return (
+        <View>
+          <View className="flex-row items-center justify-between mb-2">
+            <Text className={cn(h, 'mb-0')}>Repository Activity</Text>
+            <View className="self-start px-1.5 py-0.5 rounded bg-green-100 dark:bg-green-500/20">
+              <Text className="text-[8px] font-semibold text-green-600 dark:text-green-400">Live</Text>
+            </View>
+          </View>
+          <PreviewRow className={box}>
+            <View className="flex-row items-center gap-2">
+              <View className="w-1.5 h-1.5 rounded-full bg-green-500" />
+              <View className="flex-1">
+                <Text className={fs} numberOfLines={1}>
+                  feat: Add user authentication
+                </Text>
+                <Text className={muted}>main • 2 min ago</Text>
+              </View>
+            </View>
+          </PreviewRow>
+          <PreviewRow className={box}>
+            <View className="flex-row items-center gap-2">
+              <View className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+              <View className="flex-1">
+                <Text className={fs} numberOfLines={1}>
+                  fix: Resolve API timeout
+                </Text>
+                <Text className={muted}>develop • 15 min ago</Text>
+              </View>
+            </View>
+          </PreviewRow>
+        </View>
+      )
+    case 'project-manager':
+      return (
+        <View>
+          <Text className={h}>Sprint Progress</Text>
+          <View className="flex-row gap-2 mb-2">
+            {[
+              ['10', 'TODO'],
+              ['3', 'DOING'],
+              ['7', 'DONE'],
+            ].map(([n, l]) => (
+              <View key={l} className={cn('flex-1 items-center py-1 rounded-md', box)}>
+                <Text
+                  className={cn(
+                    compact ? 'text-xs' : 'text-sm',
+                    'font-bold text-slate-900 dark:text-white/90',
+                  )}
+                >
+                  {n}
+                </Text>
+                <Text className={cn(compact ? 'text-[8px]' : 'text-[9px]', muted)}>{l}</Text>
+              </View>
+            ))}
+          </View>
+          <View className={cn('rounded-sm mb-1 overflow-hidden', box, compact ? 'h-1' : 'h-1.5')}>
+            <View className="h-full w-[72%] rounded-sm bg-amber-400" />
+          </View>
+          <View className={cn('rounded-sm overflow-hidden', box, compact ? 'h-1' : 'h-1.5')}>
+            <View className="h-full w-[45%] rounded-sm bg-blue-500" />
+          </View>
+        </View>
+      )
+    case 'sales-revenue':
+      return (
+        <View>
+          <Text className={cn(h, 'mb-1')}>Pipeline Value</Text>
+          <Text
+            className={cn(
+              'font-bold text-slate-900 dark:text-white/90 mb-2',
+              compact ? 'text-lg' : 'text-xl',
+            )}
+          >
+            $342K
+          </Text>
+          <View className={cn('flex-row gap-1', compact ? 'h-7' : 'h-8')}>
+            <View className="flex-1 rounded-md bg-amber-100 dark:bg-amber-500/25" />
+            <View className="flex-1 rounded-md bg-blue-100 dark:bg-blue-500/25" />
+            <View className="flex-1 rounded-md bg-green-100 dark:bg-green-500/25" />
+          </View>
+          <Text className={cn(muted, 'mt-1')}>Qualified · Proposal · Closing</Text>
+        </View>
+      )
+    case 'support-ops':
+      return (
+        <View>
+          <Text className={h}>Recent Tickets</Text>
+          <PreviewRow className="bg-amber-100 dark:bg-amber-500/15">
+            <Text className={cn(fs, 'text-amber-700 dark:text-amber-400')} numberOfLines={1}>
+              URGENT — Payment issue
+            </Text>
+            <Text className={muted}>2m ago</Text>
+          </PreviewRow>
+          <PreviewRow className={box}>
+            <Text className={fs} numberOfLines={1}>
+              NORMAL — Feature request
+            </Text>
+            <Text className={muted}>1h ago</Text>
+          </PreviewRow>
+        </View>
+      )
+    case 'research-analyst':
+      return (
+        <View>
+          <Text className={h}>Research Topics</Text>
+          <PreviewRow className="bg-emerald-50 dark:bg-emerald-500/10">
+            <Text className={fsN}>✓ Market sizing report</Text>
+          </PreviewRow>
+          <PreviewRow className="bg-blue-50 dark:bg-blue-500/10">
+            <Text className={fsN}>◷ Competitor analysis</Text>
+          </PreviewRow>
+        </View>
+      )
+    case 'hr-recruiting':
+      return (
+        <View>
+          <Text className={h}>Active Candidates</Text>
+          {[
+            {
+              init: 'SM',
+              name: 'Sarah M.',
+              role: 'Engineer',
+              status: 'Active',
+              pillBox: 'bg-blue-100 dark:bg-blue-500/20',
+              pillText: 'text-blue-700 dark:text-blue-300',
+            },
+            {
+              init: 'JD',
+              name: 'James D.',
+              role: 'PM',
+              status: 'Pending',
+              pillBox: 'bg-amber-100 dark:bg-amber-500/20',
+              pillText: 'text-amber-700 dark:text-amber-300',
+            },
+          ].map((row) => (
+            <View key={row.name} className="flex-row items-center gap-2 mb-2 py-1">
+              <View className="w-7 h-7 rounded-full items-center justify-center bg-slate-200 dark:bg-white/10">
+                <Text
+                  className={cn(
+                    compact ? 'text-[8px]' : 'text-[9px]',
+                    'font-bold text-slate-900 dark:text-white/90',
+                  )}
+                >
+                  {row.init}
+                </Text>
+              </View>
+              <View className="flex-1">
+                <Text className={fs} numberOfLines={1}>
+                  {row.name}
+                </Text>
+                <Text className={muted}>{row.role}</Text>
+              </View>
+              <View className={cn('self-start px-1.5 py-0.5 rounded', row.pillBox)}>
+                <Text className={cn('text-[8px] font-semibold', row.pillText)}>{row.status}</Text>
+              </View>
+            </View>
+          ))}
+        </View>
+      )
+    case 'personal-assistant':
+      return (
+        <View>
+          <Text className={h}>{"Today's Schedule"}</Text>
+          {[
+            {
+              time: '9:00',
+              ev: 'Team Standup',
+              box: 'bg-amber-50 dark:bg-amber-500/15',
+              timeCls: 'text-amber-600 dark:text-amber-400',
+            },
+            {
+              time: '11:00',
+              ev: 'Client Review',
+              box: 'bg-blue-50 dark:bg-blue-500/15',
+              timeCls: 'text-blue-600 dark:text-blue-400',
+            },
+            {
+              time: '2:00',
+              ev: 'Deep Work',
+              box: 'bg-emerald-50 dark:bg-emerald-500/10',
+              timeCls: 'text-emerald-600 dark:text-emerald-400',
+            },
+          ].map((row) => (
+            <PreviewRow key={row.ev} className={cn(row.box, 'mb-0.5')}>
+              <Text className={cn(compact ? 'text-[9px]' : 'text-[10px]', 'font-bold', row.timeCls)}>
+                {row.time}
+              </Text>
+              <Text className={cn(muted, 'mt-0.5 text-slate-900 dark:text-white/90')} numberOfLines={1}>
+                {row.ev}
+              </Text>
+            </PreviewRow>
+          ))}
+        </View>
+      )
+    case 'operations-monitor':
+      return (
+        <View>
+          <View className="flex-row items-center justify-between mb-2">
+            <Text className={cn(h, 'mb-0')}>API Status</Text>
+            <View className="flex-row items-center gap-1">
+              <View className="w-1.5 h-1.5 rounded-full bg-green-500" />
+              <Text className={cn(muted, 'text-green-600 dark:text-green-400 font-semibold')}>All OK</Text>
+            </View>
+          </View>
+          {[
+            ['Auth API', '99.9%', '42ms'],
+            ['Data API', '99.8%', '58ms'],
+          ].map(([n, u, l]) => (
+            <View
+              key={n as string}
+              className={cn('flex-row justify-between py-1.5 px-2 rounded-md mb-1', box)}
+            >
+              <Text className={fs}>{n as string}</Text>
+              <Text className={muted}>
+                {u as string} · {l as string}
+              </Text>
+            </View>
+          ))}
+          <PreviewRow className="bg-amber-50 dark:bg-amber-500/12">
+            <Text className={fsN} numberOfLines={1}>
+              Payment API — 342ms latency
+            </Text>
+          </PreviewRow>
+        </View>
+      )
+    case 'blank-agent':
+      return (
+        <View className={cn('items-center justify-center flex-1', compact ? 'min-h-[72px]' : 'min-h-[100px]')}>
+          <Text className={cn(h, 'mb-0 text-center')}>Blank canvas</Text>
+          <Text className={cn(muted, 'text-center mt-1.5 px-2')}>Build a custom agent from scratch</Text>
+        </View>
+      )
+    default:
+      return (
+        <View className={cn('items-center justify-center flex-1', compact ? 'min-h-[72px]' : 'min-h-[100px]')}>
+          <Text className={compact ? 'text-sm' : 'text-base'}>✨</Text>
+          <Text className={cn(muted, 'mt-1.5')}>AI-powered workspace</Text>
+        </View>
+      )
+  }
+}
+
+export function AgentTemplateGalleryCard({
+  template,
+  isLoading,
+  onPress,
+  isDark,
+  compact = false,
+}: {
+  template: AgentTemplateCardData
+  isLoading: boolean
+  onPress: () => void
+  isDark: boolean
+  compact?: boolean
+}) {
+  const cat = CATEGORY_BADGE[template.category] || CATEGORY_BADGE.development
+  const catLabel = CATEGORY_LABEL[template.category] || template.category
+  const popular = POPULAR_IDS.has(template.id)
+  const iconBox = AGENT_TEMPLATE_ICON_BOX[template.id] || 'bg-indigo-500/15 dark:bg-indigo-400/20'
+  const spinner = SPINNER_COLOR[template.id] || '#6366f1'
+
+  const displayTags = template.tags.slice(0, 3).map((t) =>
+    t
+      .split(/[-_]/)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' '),
+  )
+
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={isLoading}
+      className={cn(
+        'rounded-2xl overflow-hidden border bg-card border-slate-200/80 dark:border-slate-800',
+        Platform.OS === 'web' && 'cursor-pointer',
+        isLoading && 'opacity-50',
+        Platform.OS === 'web' &&
+          'shadow-lg shadow-slate-900/5 dark:shadow-black/40 web:transition-shadow',
+      )}
+    >
+      <View className={cn(compact ? 'p-3 pb-2.5' : 'p-4 pb-3')}>
+        <View
+          className={cn(
+            'rounded-[14px] border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/5',
+            compact ? 'min-h-[112px] p-2.5 mb-2.5' : 'min-h-[148px] p-3 mb-3.5',
+          )}
+        >
+          <AgentTemplatePreview templateId={template.id} compact={compact} />
+        </View>
+
+        <View className="flex-row items-start gap-3">
+          <View
+            className={cn(
+              'rounded-xl items-center justify-center flex-shrink-0',
+              compact ? 'w-10 h-10' : 'w-11 h-11',
+              iconBox,
+            )}
+          >
+            <Text className={compact ? 'text-xl' : 'text-2xl'}>{template.icon}</Text>
+          </View>
+          <View className="flex-1 min-w-0">
+            <View className="flex-row flex-wrap items-center gap-1.5 mb-1">
+              <Text
+                className={cn(
+                  'text-card-foreground font-semibold flex-shrink',
+                  compact ? 'text-sm leading-5' : 'text-base leading-snug',
+                )}
+                numberOfLines={2}
+              >
+                {template.name}
+              </Text>
+              {popular && (
+                <View className="flex-row items-center gap-0.5 px-2 py-0.5 rounded-md bg-orange-100 dark:bg-orange-500/20">
+                  <Sparkles size={11} color={isDark ? '#fb923c' : '#ea580c'} />
+                  <Text className="text-[10px] font-bold text-orange-700 dark:text-orange-400">Popular</Text>
+                </View>
+              )}
+              <View className={cn('px-2 py-0.5 rounded-md', cat.box)}>
+                <Text className={cn('text-[10px] font-semibold', cat.text)}>{catLabel}</Text>
+              </View>
+            </View>
+            <Text
+              className={cn(
+                'text-muted-foreground',
+                compact ? 'text-xs leading-[17px]' : 'text-[13px] leading-[19px]',
+              )}
+              numberOfLines={compact ? 2 : 3}
+            >
+              {template.description}
+            </Text>
+          </View>
+        </View>
+
+        {!compact && displayTags.length > 0 && (
+          <View className="flex-row flex-wrap gap-1.5 mt-3">
+            {displayTags.map((tag) => (
+              <View
+                key={tag}
+                className="px-2 py-1 rounded-md border border-slate-200 dark:border-white/15 bg-white dark:bg-transparent"
+              >
+                <Text className="text-[10px] font-medium text-slate-600 dark:text-white/75">{tag}</Text>
+              </View>
+            ))}
+          </View>
+        )}
+
+        <View className="flex-row items-center justify-center gap-2 mt-3 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-100 dark:bg-white/10 py-2.5">
+          <Zap size={compact ? 15 : 16} color={isDark ? '#cbd5e1' : '#475569'} />
+          <Text className={cn('font-semibold text-slate-700 dark:text-white/85', compact ? 'text-[13px]' : 'text-sm')}>
+            Use Template
+          </Text>
+          <ChevronRight size={compact ? 15 : 16} color={isDark ? '#cbd5e1' : '#475569'} />
+        </View>
+      </View>
+
+      {isLoading && (
+        <View className="absolute inset-0 items-center justify-center rounded-2xl bg-white/90 dark:bg-black/65">
+          <ActivityIndicator size="small" color={spinner} />
+        </View>
+      )}
+    </Pressable>
+  )
+}

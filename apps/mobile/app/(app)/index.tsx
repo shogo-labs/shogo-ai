@@ -34,6 +34,8 @@ import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { api, type AppTemplateSummary } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
+import { AgentTemplateGalleryCard } from '../../components/templates/agent-template-card'
+import { AppTemplateGalleryCard } from '../../components/templates/app-template-card'
 
 interface AgentTemplate {
   id: string
@@ -44,30 +46,6 @@ interface AgentTemplate {
   tags: string[]
   settings: any
   skills: string[]
-}
-
-const APP_TEMPLATE_COLORS: Record<string, string> = {
-  'todo-app': '#3b82f6',
-  'crm': '#f97316',
-  'kanban': '#8b5cf6',
-  'expense-tracker': '#10b981',
-  'booking-app': '#ec4899',
-  'inventory': '#06b6d4',
-  'ai-chat': '#ef4444',
-  'form-builder': '#f59e0b',
-  'feedback-form': '#84cc16',
-}
-
-const APP_TEMPLATE_ICONS: Record<string, string> = {
-  'todo-app': '✅',
-  'crm': '🤝',
-  'kanban': '📋',
-  'expense-tracker': '💰',
-  'booking-app': '📅',
-  'inventory': '📦',
-  'ai-chat': '🤖',
-  'form-builder': '📝',
-  'feedback-form': '💬',
 }
 
 /**
@@ -104,17 +82,6 @@ const GRADIENT_CSS = `
 }
 `
 
-
-const TEMPLATE_COLORS: Record<string, string> = {
-  'research-assistant': '#3b82f6',
-  'github-ops': '#f97316',
-  'support-desk': '#8b5cf6',
-  'meeting-prep': '#10b981',
-  'revenue-tracker': '#ec4899',
-  'project-board': '#06b6d4',
-  'incident-commander': '#ef4444',
-  'personal-assistant': '#f59e0b',
-}
 
 function generateProjectNameFromPrompt(prompt: string): string {
   const fillerWords = new Set([
@@ -219,178 +186,6 @@ function LovableGradient({ isDark }: { isDark: boolean }) {
         }}
       />
     </View>
-  )
-}
-
-function TemplateCard({
-  template,
-  isLoading,
-  onPress,
-  isDark,
-  compact,
-}: {
-  template: AgentTemplate
-  isLoading: boolean
-  onPress: () => void
-  isDark: boolean
-  compact?: boolean
-}) {
-  const color = TEMPLATE_COLORS[template.id] || '#6366f1'
-
-  return (
-    <Pressable
-      onPress={onPress}
-      disabled={isLoading}
-      className={cn(
-        'rounded-2xl overflow-hidden border border-border bg-card',
-        isLoading && 'opacity-50'
-      )}
-      style={Platform.OS === 'web' ? {
-        boxShadow: isDark
-          ? '0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2)'
-          : '0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)',
-        transition: 'box-shadow 0.2s, transform 0.2s',
-      } as any : {}}
-    >
-      <View
-        style={{
-          height: compact ? 100 : 180,
-          backgroundColor: isDark ? `${color}15` : `${color}08`,
-          borderBottomWidth: 1,
-          borderBottomColor: isDark ? 'rgba(255,255,255,0.06)' : '#f3f4f6',
-        }}
-        className="items-center justify-center"
-      >
-        <Text style={{ fontSize: compact ? 36 : 48 }}>{template.icon}</Text>
-      </View>
-
-      <View className={compact ? 'px-3 py-2.5' : 'px-4 py-3.5'}>
-        <View className="flex-row items-center justify-between gap-1">
-          <Text
-            className={cn(
-              'font-semibold text-card-foreground flex-1',
-              compact ? 'text-[13px]' : 'text-[15px]',
-            )}
-            numberOfLines={1}
-          >
-            {template.name}
-          </Text>
-          {!compact && (
-            <View className="rounded-full px-2.5 py-0.5 bg-muted flex-shrink-0">
-              <Text className="text-[11px] font-medium text-muted-foreground">
-                {template.tags[0]
-                  ? template.tags[0].charAt(0).toUpperCase() + template.tags[0].slice(1)
-                  : template.category}
-              </Text>
-            </View>
-          )}
-        </View>
-        <Text
-          className={cn(
-            'mt-1 leading-[18px] text-muted-foreground',
-            compact ? 'text-[11px]' : 'text-[13px]',
-          )}
-          numberOfLines={2}
-        >
-          {template.description}
-        </Text>
-      </View>
-
-      {isLoading && (
-        <View
-          className="absolute inset-0 items-center justify-center rounded-2xl"
-          style={{ backgroundColor: isDark ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.8)' }}
-        >
-          <ActivityIndicator size="small" color={color} />
-        </View>
-      )}
-    </Pressable>
-  )
-}
-
-function AppTemplateCard({
-  template,
-  isLoading,
-  onPress,
-  isDark,
-  compact,
-}: {
-  template: AppTemplateSummary
-  isLoading: boolean
-  onPress: () => void
-  isDark: boolean
-  compact?: boolean
-}) {
-  const color = APP_TEMPLATE_COLORS[template.name] || '#6366f1'
-  const icon = APP_TEMPLATE_ICONS[template.name] || '🧩'
-  const complexityLabel = template.complexity.charAt(0).toUpperCase() + template.complexity.slice(1)
-
-  return (
-    <Pressable
-      onPress={onPress}
-      disabled={isLoading}
-      className={cn(
-        'rounded-2xl overflow-hidden border border-border bg-card',
-        isLoading && 'opacity-50'
-      )}
-      style={Platform.OS === 'web' ? {
-        boxShadow: isDark
-          ? '0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2)'
-          : '0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)',
-        transition: 'box-shadow 0.2s, transform 0.2s',
-      } as any : {}}
-    >
-      <View
-        style={{
-          height: compact ? 100 : 180,
-          backgroundColor: isDark ? `${color}15` : `${color}08`,
-          borderBottomWidth: 1,
-          borderBottomColor: isDark ? 'rgba(255,255,255,0.06)' : '#f3f4f6',
-        }}
-        className="items-center justify-center"
-      >
-        <Text style={{ fontSize: compact ? 36 : 48 }}>{icon}</Text>
-      </View>
-
-      <View className={compact ? 'px-3 py-2.5' : 'px-4 py-3.5'}>
-        <View className="flex-row items-center justify-between gap-1">
-          <Text
-            className={cn(
-              'font-semibold text-card-foreground flex-1',
-              compact ? 'text-[13px]' : 'text-[15px]',
-            )}
-            numberOfLines={1}
-          >
-            {template.name.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}
-          </Text>
-          {!compact && (
-            <View className="rounded-full px-2.5 py-0.5 bg-muted flex-shrink-0">
-              <Text className="text-[11px] font-medium text-muted-foreground">
-                {complexityLabel}
-              </Text>
-            </View>
-          )}
-        </View>
-        <Text
-          className={cn(
-            'mt-1 leading-[18px] text-muted-foreground',
-            compact ? 'text-[11px]' : 'text-[13px]',
-          )}
-          numberOfLines={2}
-        >
-          {template.description}
-        </Text>
-      </View>
-
-      {isLoading && (
-        <View
-          className="absolute inset-0 items-center justify-center rounded-2xl"
-          style={{ backgroundColor: isDark ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.8)' }}
-        >
-          <ActivityIndicator size="small" color={color} />
-        </View>
-      )}
-    </Pressable>
   )
 }
 
@@ -871,7 +666,7 @@ const HomeScreen = observer(function HomeScreen() {
                       } as any : {}}
                     >
                       {homeTemplates.map((template) => (
-                        <TemplateCard
+                        <AgentTemplateGalleryCard
                           key={template.id}
                           template={template}
                           isLoading={loadingTemplate === template.id}
@@ -899,7 +694,7 @@ const HomeScreen = observer(function HomeScreen() {
                       } as any : {}}
                     >
                       {homeAppTemplates.map((template) => (
-                        <AppTemplateCard
+                        <AppTemplateGalleryCard
                           key={template.name}
                           template={template}
                           isLoading={loadingTemplate === template.name}

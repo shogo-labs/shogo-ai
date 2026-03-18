@@ -23,6 +23,8 @@ import { api, type AgentTemplateSummary, type AppTemplateSummary } from '../../l
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { usePostHogSafe } from '../../contexts/posthog'
+import { AgentTemplateGalleryCard } from '../../components/templates/agent-template-card'
+import { AppTemplateGalleryCard } from '../../components/templates/app-template-card'
 
 type AgentTemplate = AgentTemplateSummary
 
@@ -45,60 +47,6 @@ function useDarkMode() {
   return isDark
 }
 
-const TEMPLATE_COLORS: Record<string, string> = {
-  'research-assistant': '#3b82f6',
-  'github-ops': '#f97316',
-  'support-desk': '#8b5cf6',
-  'meeting-prep': '#10b981',
-  'revenue-tracker': '#ec4899',
-  'project-board': '#06b6d4',
-  'incident-commander': '#ef4444',
-  'personal-assistant': '#f59e0b',
-  'sales-pipeline': '#eab308',
-  'social-media-manager': '#a855f7',
-  'release-manager': '#22d3ee',
-  'hiring-pipeline': '#14b8a6',
-  'newsletter-curator': '#f472b6',
-  'competitor-intel': '#6366f1',
-  'api-health-monitor': '#e11d48',
-  'expense-manager': '#84cc16',
-  'fitness-coach': '#f97316',
-  'daily-journal': '#8b5cf6',
-  'market-watch': '#0ea5e9',
-  'code-review-assistant': '#10b981',
-  'client-onboarding': '#d946ef',
-  'travel-planner': '#06b6d4',
-  'email-slack-alert': '#e11d48',
-  'dev-activity': '#2563eb',
-  'standup-generator': '#16a34a',
-  'slack-monitor': '#7c3aed',
-  'git-insights': '#0d9488',
-}
-
-const APP_TEMPLATE_COLORS: Record<string, string> = {
-  'todo-app': '#3b82f6',
-  'crm': '#f97316',
-  'kanban': '#8b5cf6',
-  'expense-tracker': '#10b981',
-  'booking-app': '#ec4899',
-  'inventory': '#06b6d4',
-  'ai-chat': '#ef4444',
-  'form-builder': '#f59e0b',
-  'feedback-form': '#84cc16',
-}
-
-const APP_TEMPLATE_ICONS: Record<string, string> = {
-  'todo-app': '✅',
-  'crm': '🤝',
-  'kanban': '📋',
-  'expense-tracker': '💰',
-  'booking-app': '📅',
-  'inventory': '📦',
-  'ai-chat': '🤖',
-  'form-builder': '📝',
-  'feedback-form': '💬',
-}
-
 const AGENT_FILTER_TABS = [
   { key: 'all', label: 'All Templates', icon: '⊞' },
   { key: 'sales', label: 'Sales', icon: '🏆' },
@@ -116,175 +64,6 @@ const APP_FILTER_TABS = [
   { key: 'intermediate', label: 'Intermediate', icon: '⚡' },
   { key: 'advanced', label: 'Advanced', icon: '🔥' },
 ]
-
-function AgentTemplateCard({
-  template,
-  isLoading,
-  onPress,
-  isDark,
-}: {
-  template: AgentTemplate
-  isLoading: boolean
-  onPress: () => void
-  isDark: boolean
-}) {
-  const color = TEMPLATE_COLORS[template.id] || '#6366f1'
-
-  return (
-    <Pressable
-      onPress={onPress}
-      disabled={isLoading}
-      className={cn(
-        'rounded-2xl overflow-hidden border border-border bg-card',
-        isLoading && 'opacity-50',
-      )}
-      style={Platform.OS === 'web' ? {
-        boxShadow: isDark
-          ? '0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2)'
-          : '0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)',
-        transition: 'box-shadow 0.2s ease, transform 0.15s ease',
-        cursor: 'pointer',
-      } as any : {}}
-    >
-      <View
-        style={{
-          height: 240,
-          backgroundColor: isDark ? `${color}15` : `${color}06`,
-          borderBottomWidth: 1,
-          borderBottomColor: isDark ? 'rgba(255,255,255,0.06)' : '#f3f4f6',
-        }}
-        className="items-center justify-center"
-      >
-        <Text style={{ fontSize: 56 }}>{template.icon}</Text>
-        <Text
-          className="text-muted-foreground"
-          style={{
-            fontSize: 11,
-            fontWeight: '500',
-            marginTop: 12,
-            letterSpacing: 0.5,
-          }}
-        >
-          Preview coming soon
-        </Text>
-      </View>
-
-      <View className="px-5 py-4">
-        <View className="flex-row items-start justify-between gap-2">
-          <View className="flex-1">
-            <Text className="text-base font-semibold text-card-foreground" style={{ lineHeight: 22 }}>
-              {template.name}
-            </Text>
-            <Text
-              className="text-[13px] mt-1.5 leading-[19px] text-muted-foreground"
-              numberOfLines={2}
-            >
-              {template.description}
-            </Text>
-          </View>
-          <View className="rounded-full px-2.5 py-1 mt-0.5 bg-muted">
-            <Text className="text-[11px] font-medium text-muted-foreground">
-              {template.tags[0] ? template.tags[0].charAt(0).toUpperCase() + template.tags[0].slice(1) : template.category}
-            </Text>
-          </View>
-        </View>
-      </View>
-
-      {isLoading && (
-        <View
-          className="absolute inset-0 items-center justify-center rounded-2xl"
-          style={{ backgroundColor: isDark ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.85)' }}
-        >
-          <ActivityIndicator size="small" color={color} />
-        </View>
-      )}
-    </Pressable>
-  )
-}
-
-function AppTemplateCard({
-  template,
-  isLoading,
-  onPress,
-  isDark,
-}: {
-  template: AppTemplateSummary
-  isLoading: boolean
-  onPress: () => void
-  isDark: boolean
-}) {
-  const color = APP_TEMPLATE_COLORS[template.name] || '#6366f1'
-  const icon = APP_TEMPLATE_ICONS[template.name] || '🧩'
-  const complexityLabel = template.complexity.charAt(0).toUpperCase() + template.complexity.slice(1)
-  const displayName = template.name.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
-
-  return (
-    <Pressable
-      onPress={onPress}
-      disabled={isLoading}
-      className={cn(
-        'rounded-2xl overflow-hidden border border-border bg-card',
-        isLoading && 'opacity-50',
-      )}
-      style={Platform.OS === 'web' ? {
-        boxShadow: isDark
-          ? '0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2)'
-          : '0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)',
-        transition: 'box-shadow 0.2s ease, transform 0.15s ease',
-        cursor: 'pointer',
-      } as any : {}}
-    >
-      <View
-        style={{
-          height: 240,
-          backgroundColor: isDark ? `${color}15` : `${color}06`,
-          borderBottomWidth: 1,
-          borderBottomColor: isDark ? 'rgba(255,255,255,0.06)' : '#f3f4f6',
-        }}
-        className="items-center justify-center"
-      >
-        <Text style={{ fontSize: 56 }}>{icon}</Text>
-      </View>
-
-      <View className="px-5 py-4">
-        <View className="flex-row items-start justify-between gap-2">
-          <View className="flex-1">
-            <Text className="text-base font-semibold text-card-foreground" style={{ lineHeight: 22 }}>
-              {displayName}
-            </Text>
-            <Text
-              className="text-[13px] mt-1.5 leading-[19px] text-muted-foreground"
-              numberOfLines={2}
-            >
-              {template.description}
-            </Text>
-          </View>
-          <View className="rounded-full px-2.5 py-1 mt-0.5 bg-muted">
-            <Text className="text-[11px] font-medium text-muted-foreground">
-              {complexityLabel}
-            </Text>
-          </View>
-        </View>
-        <View className="flex-row flex-wrap gap-1.5 mt-3">
-          {Object.entries(template.techStack).filter(([, v]) => v).slice(0, 4).map(([key, value]) => (
-            <View key={key} className="rounded-md px-2 py-0.5 bg-muted/60">
-              <Text className="text-[10px] font-medium text-muted-foreground">{value}</Text>
-            </View>
-          ))}
-        </View>
-      </View>
-
-      {isLoading && (
-        <View
-          className="absolute inset-0 items-center justify-center rounded-2xl"
-          style={{ backgroundColor: isDark ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.85)' }}
-        >
-          <ActivityIndicator size="small" color={color} />
-        </View>
-      )}
-    </Pressable>
-  )
-}
 
 export default observer(function TemplatesPage() {
   const router = useRouter()
@@ -553,7 +332,7 @@ export default observer(function TemplatesPage() {
               }}
             >
               {filteredAgentTemplates.map((template) => (
-                <AgentTemplateCard
+                <AgentTemplateGalleryCard
                   key={template.id}
                   template={template}
                   isLoading={loadingTemplate === template.id}
@@ -576,7 +355,7 @@ export default observer(function TemplatesPage() {
               }}
             >
               {filteredAppTemplates.map((template) => (
-                <AppTemplateCard
+                <AppTemplateGalleryCard
                   key={template.name}
                   template={template}
                   isLoading={loadingTemplate === template.name}
