@@ -26,7 +26,7 @@ export const RUNTIME_CONFIG: RuntimeTypeConfig = {
     return 'ghcr.io/shogo-ai/runtime:latest'
   })(),
   workDir: '/app/workspace',
-  extraEnv: { WORKSPACE_DIR: '/app/workspace' },
+  extraEnv: {},
   componentLabel: 'runtime',
   containerName: 'runtime',
 }
@@ -39,20 +39,20 @@ export function buildRuntimeEnv(
   projectId: string,
   extra?: Record<string, string>
 ): Array<{ name: string; value: string }> {
-  const env: Array<{ name: string; value: string }> = [
-    { name: 'PROJECT_ID', value: projectId },
-    { name: 'WORKSPACE_DIR', value: RUNTIME_CONFIG.workDir },
-  ]
+  const map = new Map<string, string>([
+    ['PROJECT_ID', projectId],
+    ['WORKSPACE_DIR', RUNTIME_CONFIG.workDir],
+  ])
 
   for (const [key, value] of Object.entries(RUNTIME_CONFIG.extraEnv)) {
-    env.push({ name: key, value })
+    map.set(key, value)
   }
 
   if (extra) {
     for (const [key, value] of Object.entries(extra)) {
-      env.push({ name: key, value })
+      map.set(key, value)
     }
   }
 
-  return env
+  return Array.from(map, ([name, value]) => ({ name, value }))
 }

@@ -1435,6 +1435,11 @@ export class WarmPoolController {
       })
     }
 
+    // Deduplicate env vars (last-write-wins) — K8s rejects duplicate names
+    const deduped = new Map<string, typeof env[number]>()
+    for (const entry of env) deduped.set(entry.name, entry)
+    const dedupedEnv = Array.from(deduped.values())
+
     const service = {
       apiVersion: `${KNATIVE_GROUP}/${KNATIVE_VERSION}`,
       kind: 'Service',
@@ -1482,7 +1487,7 @@ export class WarmPoolController {
                 image,
                 imagePullPolicy: 'Always',
                 ports: [{ containerPort: 8080, name: 'http1' }],
-                env,
+                env: dedupedEnv,
                 resources: {
                   requests: { memory: '256Mi', cpu: '200m' },
                   limits: { memory: '2Gi', cpu: '1000m' },
