@@ -1349,7 +1349,6 @@ app.post('/agent/workspace/reindex', async (c) => {
 
 // Tool catalog and search — powers the "Tools" tab in the web UI
 import { MCP_CATALOG, MCP_CATEGORIES, isMcpServerAllowed, getPreinstalledPackages } from './mcp-catalog'
-import { isComposioEnabled, searchComposioToolkits, findComposioToolkit, initComposioSession, registerToolkitProxyTools } from './composio'
 
 // Agent Templates API — powers the templates gallery
 import { getTemplateSummaries, getAgentTemplateById, TEMPLATE_CATEGORIES } from './agent-templates'
@@ -1531,15 +1530,13 @@ app.get('/agent/tools/status', (c) => {
 
   const tools = serverInfo.map((s) => {
     const catalogEntry = MCP_CATALOG.find((e) => e.id === s.name)
-    const isComposioProxy = s.config.command === 'composio-proxy'
     return {
       id: s.name,
       name: catalogEntry?.name || s.name,
-      source: isComposioProxy ? 'managed' as const : (catalogEntry ? 'catalog' as const : 'custom' as const),
+      source: catalogEntry ? 'catalog' as const : 'custom' as const,
       status: 'running' as const,
       toolCount: s.toolCount,
       tools: s.toolNames,
-      composioToolkit: isComposioProxy ? s.name : catalogEntry?.composioToolkit,
     }
   })
 
@@ -1561,25 +1558,6 @@ app.get('/agent/tools/search', async (c) => {
 
   const results: Array<Record<string, any>> = []
   const seenSlugs = new Set<string>()
-
-  if (isComposioEnabled()) {
-    try {
-      const composioToolkits = await searchComposioToolkits(query)
-      for (const tk of composioToolkits.slice(0, 5)) {
-        seenSlugs.add(tk.slug.toLowerCase().replace(/[-_\s]/g, ''))
-        results.push({
-          id: tk.slug,
-          name: tk.name,
-          description: `${tk.name} — managed OAuth integration. No credentials needed.`,
-          source: 'managed',
-          installed: installedNames.has(tk.slug.toLowerCase()),
-          authType: 'oauth',
-          composioToolkit: tk.slug,
-          icon: tk.logo,
-        })
-      }
-    } catch { /* Composio unavailable */ }
-  }
 
   const queryLower = query.toLowerCase()
   const queryWords = queryLower.split(/\s+/).filter((w) => w.length > 2)
@@ -1607,9 +1585,8 @@ app.get('/agent/tools/search', async (c) => {
       description: entry.description,
       source: 'catalog',
       installed: installedNames.has(entry.id),
-      authType: entry.authType === 'composio' ? 'oauth' : (Object.keys(entry.requiredEnv).length > 0 ? 'api_key' : 'none'),
+      authType: Object.keys(entry.requiredEnv).length > 0 ? 'api_key' : 'none',
       requiredEnv: Object.keys(entry.requiredEnv).length > 0 ? entry.requiredEnv : undefined,
-      composioToolkit: entry.composioToolkit,
       icon: entry.icon,
     })
   }

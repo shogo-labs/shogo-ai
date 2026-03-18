@@ -8,7 +8,7 @@
  * the install command, and any required environment variables.
  */
 
-export type MCPAuthType = 'api_key' | 'none'
+export type MCPAuthType = 'composio' | 'api_key' | 'none'
 
 export interface MCPCatalogEntry {
   /** Unique slug used as the key in config.json mcpServers */
@@ -32,8 +32,10 @@ export interface MCPCatalogEntry {
   cloudCompatible: boolean
   /** Whether this package is pre-installed in the Docker image for instant startup */
   preinstalled?: boolean
-  /** Auth type: 'api_key' for user-provided keys, 'none' for no auth */
+  /** Auth type: 'composio' for managed OAuth, 'api_key' for user-provided keys, 'none' for no auth */
   authType?: MCPAuthType
+  /** Composio toolkit slug (e.g. 'google_calendar', 'gmail') — only used when authType is 'composio' */
+  composioToolkit?: string
 }
 
 export type MCPCategory =

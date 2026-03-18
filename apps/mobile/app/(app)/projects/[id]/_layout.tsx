@@ -64,6 +64,7 @@ import {
   MonitorPanel,
 } from '../../../../components/project/panels'
 import { RefreshCw, History, PanelLeft, PanelLeftClose, Plus, MessageSquare } from 'lucide-react-native'
+import { SurfaceTabBar } from '../../../../components/dynamic-app/SurfaceTabBar'
 
 type ActiveTab = 'chat' | 'canvas'
 
@@ -266,9 +267,24 @@ export default observer(function ProjectLayout() {
       withCredentials: Platform.OS === 'web',
     },
   )
+  const [userSelectedSurfaceId, setUserSelectedSurfaceId] = useState<string | null>(null)
+
+  const effectiveSurfaceId = userSelectedSurfaceId && surfaces.has(userSelectedSurfaceId)
+    ? userSelectedSurfaceId
+    : activeSurfaceId
+
   const activeSurface = useMemo(() => {
-    return activeSurfaceId ? surfaces.get(activeSurfaceId) || null : null
-  }, [surfaces, activeSurfaceId])
+    return effectiveSurfaceId ? surfaces.get(effectiveSurfaceId) || null : null
+  }, [surfaces, effectiveSurfaceId])
+
+  // Auto-switch to new surfaces created by the agent
+  const prevActiveSurfaceIdRef = useRef(activeSurfaceId)
+  useEffect(() => {
+    if (activeSurfaceId && activeSurfaceId !== prevActiveSurfaceIdRef.current) {
+      setUserSelectedSurfaceId(null)
+    }
+    prevActiveSurfaceIdRef.current = activeSurfaceId
+  }, [activeSurfaceId])
 
   // Canvas action handler
   const handleCanvasAction = useCallback(
@@ -624,6 +640,9 @@ export default observer(function ProjectLayout() {
       <EditModeProvider agentUrl={agentUrl}>
         <CanvasPanel
           surface={activeSurface}
+          surfaces={surfaces}
+          activeSurfaceId={effectiveSurfaceId}
+          onSurfaceChange={setUserSelectedSurfaceId}
           connected={connected}
           agentUrl={agentUrl}
           onAction={handleCanvasAction}
@@ -750,7 +769,7 @@ export default observer(function ProjectLayout() {
               <View
                 className={cn(
                   'relative',
-                  isWide ? 'w-[480px] border-r border-border' : 'flex-1',
+                  isWide ? 'w-[480px] border-r border-border z-10' : 'flex-1',
                 )}
                 style={chatHidden ? { display: 'none' } : undefined}
               >
@@ -858,6 +877,9 @@ export default observer(function ProjectLayout() {
 
 function CanvasPanel({
   surface,
+  surfaces,
+  activeSurfaceId,
+  onSurfaceChange,
   connected,
   agentUrl,
   onAction,
@@ -867,6 +889,9 @@ function CanvasPanel({
   fullBleed,
 }: {
   surface: any | null
+  surfaces: Map<string, any>
+  activeSurfaceId: string | null
+  onSurfaceChange: (surfaceId: string) => void
   connected: boolean
   agentUrl: string | null
   onAction: (surfaceId: string, name: string, context?: Record<string, unknown>) => void
@@ -969,6 +994,11 @@ function CanvasPanel({
 
   return (
     <View className="flex-1">
+      <SurfaceTabBar
+        surfaces={surfaces}
+        activeSurfaceId={activeSurfaceId}
+        onSurfaceChange={onSurfaceChange}
+      />
       <View className="flex-1 flex-row">
         {isEditMode && showTreePanel && (
           <ComponentTreePanel surfaceId={surfaceId} components={surface.components} />
@@ -1012,9 +1042,6 @@ function AppPreviewPanel({ previewUrl }: { previewUrl: string | null }) {
         <ActivityIndicator size="large" className="mb-4" />
         <Text className="text-muted-foreground text-center">
           Starting preview server...
-        </Text>
-        <Text className="text-muted-foreground text-xs text-center mt-2">
-          Send a message in the Chat tab to build the app
         </Text>
       </View>
     )

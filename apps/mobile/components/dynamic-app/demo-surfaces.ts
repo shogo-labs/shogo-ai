@@ -9,6 +9,7 @@
 
 import type { SurfaceState, ComponentDefinition } from './types'
 import mauiVacationData from './fixtures/maui-vacation.json'
+import templateCanvasData from './fixtures/template-canvas-states.json'
 
 function buildSurface(
   surfaceId: string,
@@ -21,6 +22,38 @@ function buildSurface(
   const now = new Date().toISOString()
   return { surfaceId, title, components: compMap, dataModel, createdAt: now, updatedAt: now }
 }
+
+/**
+ * Convert a serialized TemplateCanvasState (from template-canvas-states.json)
+ * into demo surface entries. Each template may contain multiple surfaces.
+ */
+function templateToDemoSurfaces(
+  data: Record<string, { surfaces: Record<string, { surfaceId: string; title?: string; components: Record<string, any>; dataModel: Record<string, unknown>; createdAt: string; updatedAt: string }> }>,
+): Record<string, { label: string; surface: SurfaceState }> {
+  const result: Record<string, { label: string; surface: SurfaceState }> = {}
+  for (const [templateId, tpl] of Object.entries(data)) {
+    for (const [surfaceId, raw] of Object.entries(tpl.surfaces)) {
+      const compMap = new Map<string, ComponentDefinition>()
+      for (const [id, comp] of Object.entries(raw.components)) {
+        compMap.set(id, comp as ComponentDefinition)
+      }
+      result[`tpl_${templateId}_${surfaceId}`] = {
+        label: `${templateId}: ${raw.title || surfaceId}`,
+        surface: {
+          surfaceId,
+          title: raw.title,
+          components: compMap,
+          dataModel: raw.dataModel,
+          createdAt: raw.createdAt,
+          updatedAt: raw.updatedAt,
+        },
+      }
+    }
+  }
+  return result
+}
+
+const TEMPLATE_DEMO_SURFACES = templateToDemoSurfaces(templateCanvasData as any)
 
 // ---------------------------------------------------------------------------
 // Flight Search
@@ -1002,6 +1035,7 @@ export const DEMO_SURFACES: Record<string, { label: string; surface: SurfaceStat
   analytics: { label: 'Sales Analytics', surface: ANALYTICS_SURFACE },
   scheduler: { label: 'Meeting Scheduler', surface: SCHEDULER_SURFACE },
   project: { label: 'Project Overview', surface: PROJECT_OVERVIEW_SURFACE },
+  ...TEMPLATE_DEMO_SURFACES,
 }
 
 export function getAllDemoSurfaces(): Map<string, SurfaceState> {

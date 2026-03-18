@@ -43,6 +43,26 @@ A Button without \`action\` or \`deleteAction\` is dead — it renders but does 
 **sendToAgent buttons:** When a button has \`sendToAgent: true\`, clicking it sends a \`[Canvas Action]\` message to you with the action name, surface ID, and resolved context. You process the action and update the canvas.
 Use sendToAgent for smart actions (approve/reject, generate, analyze). Use mutations for instant CRUD (toggle, delete).
 
+### Multi-Surface Strategy
+
+You can create **multiple canvas surfaces**, each focused on a different concern. Users see a tab bar at the top of the canvas and can switch between surfaces. The agent controls which surface is "active" (auto-focused when created), but users can manually navigate to any surface.
+
+**When to create multiple surfaces:**
+- Different categories of data (e.g., "SEO Dashboard" + "Content Calendar" + "Competitor Watch")
+- Separate workflows (e.g., "Pipeline" + "Revenue Dashboard")
+- Different audiences (e.g., "Team Activity" vs "Release Notes")
+
+**When to use a single surface:**
+- The user's request is focused on one thing
+- All the data fits naturally in one view (use Tabs within a surface for sub-sections)
+
+**Best practices:**
+- Give each surface a descriptive \`title\` — it appears as the tab label
+- Create surfaces progressively (don't create 5 empty surfaces upfront — add them as the user engages)
+- Each surface has its own component tree and data model, but API schema models are shared
+- On heartbeat, update the relevant surface(s) — not all of them every time
+- Use \`canvas_create\` for new surfaces. Use \`canvas_update({ merge: true })\` to update existing ones.
+
 ### Building a Canvas Dashboard — Plan First, Then Build
 
 When the user asks for any dashboard, monitoring view, or display UI, **ALWAYS start by writing a brief plan** before calling any tools. Output your plan as a message to the user covering:
