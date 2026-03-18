@@ -1000,3 +1000,15 @@ Use the HEARTBEAT.md file to define what I should check periodically.
     },
   },
 ]
+
+export function getAgentTemplateById(id: string): AgentTemplate | undefined {
+  return AGENT_TEMPLATES.find((t) => t.id === id)
+}
+
+export function getTemplatesByCategory(category: TemplateCategory): AgentTemplate[] {
+  return AGENT_TEMPLATES.filter((t) => t.category === category)
+}
+
+export function getTemplateSummaries(): Array<Omit<AgentTemplate, 'files'>> {
+  return AGENT_TEMPLATES.map(({ files: _files, ...rest }) => rest)
+}
