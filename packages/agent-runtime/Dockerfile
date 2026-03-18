@@ -44,6 +44,11 @@ COPY packages/shared-runtime ./packages/shared-runtime
 COPY packages/agent-runtime ./packages/agent-runtime
 COPY templates/runtime-template ./templates/runtime-template
 
+# Fetch external Claude Code skills from skill-registry.json
+RUN apk add --no-cache git && \
+    bun run scripts/fetch-external-skills.ts && \
+    apk del git
+
 RUN rm -rf packages/*/node_modules apps/*/node_modules
 
 # =============================================================================

@@ -1424,6 +1424,55 @@ app.delete('/agent/skills/:name', (c) => {
   return c.json({ ok: true, removed: name })
 })
 
+// ---------------------------------------------------------------------------
+// External Skill Registry (Claude Code format skills from external repos)
+// ---------------------------------------------------------------------------
+
+app.get('/agent/skill-registry', (c) => {
+  const { loadSkillRegistryManifest } = require('./skills')
+  const manifest = loadSkillRegistryManifest()
+  return c.json({ skills: manifest })
+})
+
+app.post('/agent/skill-registry/install', async (c) => {
+  const { name, source, dirName } = await c.req.json() as {
+    name: string
+    source: string
+    dirName: string
+  }
+
+  if (!source || !dirName) {
+    return c.json({ error: 'source and dirName are required' }, 400)
+  }
+  if (dirName.includes('/') || dirName.includes('..') || source.includes('/') || source.includes('..')) {
+    return c.json({ error: 'Invalid source or dirName' }, 400)
+  }
+
+  const { loadBundledClaudeCodeSkill } = require('./skills')
+  const skill = loadBundledClaudeCodeSkill(source, dirName)
+  if (!skill) {
+    return c.json({ error: `Skill "${dirName}" not found in source "${source}"` }, 404)
+  }
+
+  const destDir = join(WORKSPACE_DIR, '.claude', 'skills', skill.name)
+  mkdirSync(destDir, { recursive: true })
+
+  const srcDir = skill.skillDir
+  const { readdirSync: rds, readFileSync: rfs, statSync: ss, cpSync: cps } = require('fs')
+  for (const entry of rds(srcDir, { withFileTypes: true })) {
+    const srcPath = join(srcDir, entry.name)
+    const destPath = join(destDir, entry.name)
+    if (entry.isDirectory()) {
+      cps(srcPath, destPath, { recursive: true })
+    } else {
+      writeFileSync(destPath, rfs(srcPath))
+    }
+  }
+
+  agentGateway?.reloadConfig()
+  return c.json({ ok: true, installed: skill.name, source })
+})
+
 app.get('/agent/templates', (c) => {
   return c.json({ templates: getTemplateSummaries(), categories: TEMPLATE_CATEGORIES })
 })

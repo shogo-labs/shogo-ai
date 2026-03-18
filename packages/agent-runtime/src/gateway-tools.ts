@@ -3220,21 +3220,99 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
   return {
     name: 'skill',
     description:
-      'Invoke a skill by name. Skills are reusable instruction sets from .claude/skills/ or workspace/skills/. ' +
-      'Pass optional arguments that get substituted into the skill content via $ARGUMENTS.',
+      'Manage and invoke skills. Default action is "invoke" — runs a skill by name. ' +
+      'Use action "search" to find skills in the registry (CRO, SEO, copywriting, automation, dev tools, and 800+ more). ' +
+      'Use action "install" to install a registry skill into the workspace so it can be invoked.',
     label: 'Skill',
     parameters: Type.Object({
-      skill: Type.String({ description: 'Skill name to invoke' }),
-      args: Type.Optional(Type.String({ description: 'Arguments to pass to the skill' })),
+      action: Type.Optional(Type.String({ description: 'Action: "invoke" (default), "search", or "install"' })),
+      skill: Type.Optional(Type.String({ description: 'Skill name to invoke (for invoke action)' })),
+      args: Type.Optional(Type.String({ description: 'Arguments to pass to the skill (for invoke action)' })),
+      query: Type.Optional(Type.String({ description: 'Search query (for search action)' })),
+      source: Type.Optional(Type.String({ description: 'Source id (for install action, from search results)' })),
+      dir_name: Type.Optional(Type.String({ description: 'Directory name (for install action, from search results)' })),
     }),
     execute: async (_toolCallId, params, context) => {
-      const { skill: skillName, args } = params as { skill: string; args?: string }
+      const { action = 'invoke', skill: skillName, args, query, source, dir_name: dirName } = params as {
+        action?: string; skill?: string; args?: string; query?: string; source?: string; dir_name?: string
+      }
+
+      // --- Search: find skills in the registry ---
+      if (action === 'search') {
+        const { loadSkillRegistryManifest } = require('./skills') as typeof import('./skills')
+        const manifest = loadSkillRegistryManifest()
+        if (manifest.length === 0) {
+          return textResult({ results: [], message: 'No external skills available in the registry.' })
+        }
+
+        if (!query) {
+          return textResult({
+            total: manifest.length,
+            results: manifest.slice(0, 20),
+            message: `${manifest.length} skills available. Provide a query to filter.`,
+          })
+        }
+
+        const q = query.toLowerCase()
+        const matches = manifest.filter(s =>
+          s.name.toLowerCase().includes(q) ||
+          s.description.toLowerCase().includes(q) ||
+          s.source.toLowerCase().includes(q) ||
+          s.sourceDescription.toLowerCase().includes(q)
+        )
+        return textResult({
+          query,
+          total: matches.length,
+          results: matches.slice(0, 20),
+          message: matches.length > 20 ? `Showing 20 of ${matches.length} matches. Refine your query.` : undefined,
+        })
+      }
+
+      // --- Install: install a registry skill into the workspace ---
+      if (action === 'install') {
+        if (!source || !dirName) {
+          return textResult({ error: 'source and dir_name are required (from search results).' })
+        }
+
+        const { loadBundledClaudeCodeSkill } = require('./skills') as typeof import('./skills')
+        const skill = loadBundledClaudeCodeSkill(source, dirName)
+        if (!skill) {
+          return textResult({ error: `Skill "${dirName}" not found in source "${source}".` })
+        }
+
+        const destDir = join(ctx.workspaceDir, '.claude', 'skills', skill.name)
+        mkdirSync(destDir, { recursive: true })
+        const srcDir = skill.skillDir
+        for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
+          const srcPath = join(srcDir, entry.name)
+          const destPath = join(destDir, entry.name)
+          if (entry.isDirectory()) {
+            const { cpSync } = require('fs')
+            cpSync(srcPath, destPath, { recursive: true })
+          } else {
+            writeFileSync(destPath, readFileSync(srcPath))
+          }
+        }
+
+        return textResult({
+          installed: skill.name,
+          source,
+          description: skill.description,
+          message: `Skill "${skill.name}" installed. Use skill({ skill: "${skill.name}" }) to invoke it.`,
+        })
+      }
+
+      // --- Invoke (default): run a skill by name ---
+      if (!skillName) {
+        return textResult({ error: 'skill name is required for invoke action.' })
+      }
 
       const skills = getLoadedClaudeSkills()
       const found = skills.find(s => s.name === skillName)
       if (!found) {
         return textResult({
           error: `Skill not found: ${skillName}. Available: ${skills.map(s => s.name).join(', ')}`,
+          hint: 'Use skill({ action: "search", query: "..." }) to find and install new skills.',
         })
       }
 

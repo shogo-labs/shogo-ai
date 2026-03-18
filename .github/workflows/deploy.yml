@@ -164,6 +164,7 @@ jobs:
           fi
 
           # Runtime rebuilds when source changes OR when base image changes
+          # Also triggers on: scripts/fetch-external-skills.ts (SHARED), skill-registry.json (RUNTIME_PKG)
           RUNTIME_CHANGED=false
           if [ "$SHARED" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$RUNTIME_PKG" = "true" ] || [ "$RUNTIME_BASE_CHANGED" = "true" ]; then
             RUNTIME_CHANGED=true

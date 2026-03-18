@@ -1,0 +1,18 @@
+{
+  "sources": [
+    {
+      "id": "marketingskills",
+      "repo": "coreyhaines31/marketingskills",
+      "branch": "main",
+      "skillsPath": "skills",
+      "description": "Marketing skills - CRO, copywriting, SEO, analytics, growth"
+    },
+    {
+      "id": "awesome-claude-skills",
+      "repo": "ComposioHQ/awesome-claude-skills",
+      "branch": "master",
+      "skillsPath": ".",
+      "description": "Community skills - automation, dev tools, business, creative"
+    }
+  ]
+}

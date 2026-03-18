@@ -246,7 +246,17 @@ Consider the skill's description and purpose, not only trigger phrases.
 - "are there any new pull requests I should look at" → skill: \`check-github\` (confidence: 0.95)
 
 **No match:**
-- "what's the weather like today" → no skill matches (confidence: 0.05)`
+- "what's the weather like today" → no skill matches (confidence: 0.05)
+
+### Skill Registry (800+ Skills)
+
+You have access to a large registry of pre-built skills covering marketing (CRO, copywriting, SEO, analytics), automation (Slack, GitHub, email, calendar), dev tools, business, and creative tasks.
+
+**Discovering skills:** Use \`skill({ action: "search", query: "..." })\` to find relevant skills by keyword or topic.
+**Installing skills:** Use \`skill({ action: "install", source: "...", dir_name: "..." })\` with values from search results.
+**After install:** The skill becomes available for invocation via \`skill({ skill: "name" })\`.
+
+When a user asks for something not covered by installed skills, proactively search the registry before making a new skill.`
 
 export const OPTIMIZED_MCP_DISCOVERY_GUIDE = `## Tool Discovery & Self-Extension
 
@@ -264,6 +274,11 @@ credentials or API keys — authentication is handled automatically.
 - Call \`tool_search\` — managed results appear with source "managed"
 - Call \`tool_install({ name: "<integration-slug>" })\` — no command or args needed
 - Tools become available immediately
+
+### Skill Registry
+
+For knowledge-based or process-oriented tasks (marketing, copywriting, SEO, automation, dev workflows),
+check the skill registry first: \`skill({ action: "search", query: "..." })\`. See the Skill Matching section for details.
 
 ### Skill Shortcut
 

@@ -119,6 +119,71 @@ export function loadBundledSkills(existingSkillNames: Set<string>): Skill[] {
 }
 
 // ---------------------------------------------------------------------------
+// Bundled External Claude Code Skills (from skill-registry.json, fetched at build time)
+// ---------------------------------------------------------------------------
+
+export interface SkillRegistryEntry {
+  name: string
+  description: string
+  source: string
+  sourceDescription: string
+  dirName: string
+}
+
+/**
+ * Load the manifest of bundled external Claude Code skills.
+ * These are fetched at Docker build time by scripts/fetch-external-skills.ts
+ * and stored in bundled-claude-skills/manifest.json.
+ */
+export function loadSkillRegistryManifest(): SkillRegistryEntry[] {
+  const manifestPath = join(__dirname, 'bundled-claude-skills', 'manifest.json')
+  if (!existsSync(manifestPath)) return []
+  try {
+    return JSON.parse(readFileSync(manifestPath, 'utf-8'))
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Load a single bundled external Claude Code skill by source + dirName.
+ * Returns the full ClaudeCodeSkill or null if not found.
+ */
+export function loadBundledClaudeCodeSkill(source: string, dirName: string): ClaudeCodeSkill | null {
+  const skillDir = join(__dirname, 'bundled-claude-skills', source, dirName)
+  const skillMdPath = join(skillDir, 'SKILL.md')
+  if (!existsSync(skillMdPath)) return null
+
+  try {
+    const raw = readFileSync(skillMdPath, 'utf-8')
+    const { metadata, content } = parseFrontmatter(raw)
+
+    const name = metadata.name || dirName
+    const description = metadata.description || content.split('\n')[0] || ''
+
+    const allowedToolsRaw = metadata['allowed-tools']
+    const allowedTools = typeof allowedToolsRaw === 'string'
+      ? allowedToolsRaw.split(/[,\s]+/).map((t: string) => t.trim()).filter(Boolean)
+      : Array.isArray(allowedToolsRaw) ? allowedToolsRaw : undefined
+
+    return {
+      name,
+      description,
+      content,
+      skillDir,
+      disableModelInvocation: metadata['disable-model-invocation'] === 'true' || metadata['disable-model-invocation'] === true,
+      userInvocable: metadata['user-invocable'] !== 'false' && metadata['user-invocable'] !== false,
+      allowedTools,
+      context: metadata.context === 'fork' ? 'fork' : undefined,
+      agent: metadata.agent || undefined,
+      argumentHint: metadata['argument-hint'] || undefined,
+    }
+  } catch {
+    return null
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Claude Code Skill Format (.claude/skills/<name>/SKILL.md)
 // ---------------------------------------------------------------------------
 
@@ -138,9 +203,11 @@ export interface ClaudeCodeSkill {
 /**
  * Load skills in the Claude Code .claude/skills/<name>/SKILL.md format.
  * Scans the given directory for subdirectories containing SKILL.md.
+ * @param baseDir - The base directory (workspace or home)
+ * @param subPath - Subdirectory path relative to baseDir (default: '.claude/skills')
  */
-export function loadClaudeCodeSkills(baseDir: string): ClaudeCodeSkill[] {
-  const skillsDir = join(baseDir, '.claude', 'skills')
+export function loadClaudeCodeSkills(baseDir: string, subPath = '.claude/skills'): ClaudeCodeSkill[] {
+  const skillsDir = join(baseDir, ...subPath.split('/'))
   if (!existsSync(skillsDir)) return []
 
   const skills: ClaudeCodeSkill[] = []
@@ -184,26 +251,30 @@ export function loadClaudeCodeSkills(baseDir: string): ClaudeCodeSkill[] {
 }
 
 /**
- * Load Claude Code skills from all relevant locations:
- * - workspace/.claude/skills/ (project-level)
+ * Load Claude Code skills from all relevant locations (highest priority first):
+ * - workspace/.claude/skills/ (project-level, Claude Code convention)
+ * - workspace/.agents/skills/ (project-level, Agent Skills spec convention)
  * - ~/.claude/skills/ (user-level, optional)
  *
- * Project skills take precedence over user skills on name collision.
+ * Earlier sources take precedence on name collision.
  */
 export function loadAllClaudeCodeSkills(workspaceDir: string): ClaudeCodeSkill[] {
   const projectSkills = loadClaudeCodeSkills(workspaceDir)
-  const projectNames = new Set(projectSkills.map(s => s.name))
+  const knownNames = new Set(projectSkills.map(s => s.name))
+
+  const agentsSkills = loadClaudeCodeSkills(workspaceDir, '.agents/skills')
+    .filter(s => !knownNames.has(s.name))
+  for (const s of agentsSkills) knownNames.add(s.name)
 
   const homeDir = process.env.HOME || process.env.USERPROFILE || ''
   let userSkills: ClaudeCodeSkill[] = []
   if (homeDir) {
-    const homeClaudeDir = join(homeDir, '.claude', 'skills')
     if (existsSync(join(homeDir, '.claude'))) {
-      userSkills = loadClaudeCodeSkills(homeDir).filter(s => !projectNames.has(s.name))
+      userSkills = loadClaudeCodeSkills(homeDir).filter(s => !knownNames.has(s.name))
     }
   }
 
-  return [...projectSkills, ...userSkills]
+  return [...projectSkills, ...agentsSkills, ...userSkills]
 }
 
 /**
