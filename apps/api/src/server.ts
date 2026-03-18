@@ -1172,12 +1172,14 @@ app.post('/api/projects/:projectId/apply-template', async (c) => {
       }
     } else {
       // In production, proxy to the pod's /templates/copy endpoint.
-      // Retry up to 3 times with delay — warm pool pods may be evicted and
-      // re-assigned during initialization, and we need the template on the
-      // pod that ultimately serves the project.
+      // Retry up to 5 times with delay — warm pool pods may be evicted and
+      // re-assigned during initialization. After a successful proxy, we verify
+      // the template landed on the *current* pod (which may differ from the one
+      // that received the initial proxy if an eviction occurred in between).
       const { getProjectPodUrl } = await import('./lib/knative-project-manager')
       let applied = false
-      for (let attempt = 1; attempt <= 3 && !applied; attempt++) {
+      let lastAppliedUrl: string | null = null
+      for (let attempt = 1; attempt <= 5 && !applied; attempt++) {
         try {
           if (attempt > 1) await new Promise(r => setTimeout(r, 3000))
           const podUrl = await getProjectPodUrl(projectId)
@@ -1188,8 +1190,17 @@ app.post('/api/projects/:projectId/apply-template', async (c) => {
             signal: AbortSignal.timeout(30000),
           })
           if (resp.ok) {
-            applied = true
-            console.log(`[apply-template] Proxied template '${body.template}' to pod (attempt ${attempt})`)
+            lastAppliedUrl = podUrl
+            // Verify the template is on the current pod (pod may have changed due to eviction)
+            await new Promise(r => setTimeout(r, 2000))
+            const verifyUrl = await getProjectPodUrl(projectId)
+            if (verifyUrl === lastAppliedUrl) {
+              applied = true
+              console.log(`[apply-template] Proxied template '${body.template}' to pod (attempt ${attempt}, verified)`)
+            } else {
+              console.warn(`[apply-template] Pod changed after proxy (${lastAppliedUrl} → ${verifyUrl}), retrying on new pod`)
+              lastAppliedUrl = null
+            }
           } else {
             const text = await resp.text().catch(() => '')
             console.warn(`[apply-template] Pod returned ${resp.status} on attempt ${attempt}: ${text}`)
