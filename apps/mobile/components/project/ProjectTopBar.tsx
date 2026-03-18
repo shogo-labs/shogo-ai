@@ -169,17 +169,28 @@ export function ProjectTopBar({
 
   const typeLabel = 'Project'
 
+  // App mode sets canvasEnabled false — still need Files/Capabilities/etc. on narrow screens.
   const narrowMoreItems = [
-    ...(canvasEnabled ? [
-      { id: 'capabilities', label: 'Capabilities' },
-      { id: 'channels', label: 'Channels' },
-      { id: 'monitor', label: 'Monitor' },
-    ] : []),
+    ...(canvasEnabled || activeMode === 'app' || activeMode === 'none'
+      ? [
+          { id: 'files', label: 'Files' },
+          { id: 'capabilities', label: 'Capabilities' },
+          { id: 'channels', label: 'Channels' },
+          { id: 'monitor', label: 'Monitor' },
+        ]
+      : []),
     ...(!hasActiveSubscription ? [{ id: '_upgrade', label: 'Upgrade' }] : []),
   ]
 
   return (
-    <View className="h-12 bg-background/95 flex-row items-center justify-between px-3 border-b border-border">
+    <View
+      className="h-12 bg-background/95 flex-row items-center justify-between px-3 border-b border-border web:sticky web:top-0"
+      style={
+        Platform.OS === 'web'
+          ? ({ zIndex: 1000, isolation: 'isolate' as const } as const)
+          : { elevation: 12 }
+      }
+    >
       {/* Left: Back + project name */}
       <View className="flex-row items-center gap-1 flex-shrink-0">
         <Pressable

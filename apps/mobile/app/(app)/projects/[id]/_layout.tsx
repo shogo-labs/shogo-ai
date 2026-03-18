@@ -473,17 +473,40 @@ export default observer(function ProjectLayout() {
   const [showChatSessions, setShowChatSessions] = useState(false)
   const [previewTab, setPreviewTab] = useState('dynamic-app')
 
+  // Keep previewTab consistent with agent mode. Do NOT force app-preview whenever
+  // activeMode is app — that trapped users on a blank App iframe and blocked Files /
+  // Capabilities (any tab change was immediately reset to app-preview).
   useEffect(() => {
     if (activeMode === 'app') {
-      if (previewTab !== 'app-preview') setPreviewTab('app-preview')
-      if (activeTab === 'canvas') setActiveTab('chat')
+      const validForApp = new Set([
+        'app-preview',
+        'files',
+        'capabilities',
+        'channels',
+        'monitor',
+      ])
+      if (!validForApp.has(previewTab)) setPreviewTab('app-preview')
     } else if (!canvasEnabled) {
-      if (previewTab === 'dynamic-app') setPreviewTab('chat-fullscreen')
+      if (previewTab === 'dynamic-app' || previewTab === 'app-preview') {
+        setPreviewTab('chat-fullscreen')
+      }
       if (activeTab === 'canvas' && previewTab !== 'app-preview') setActiveTab('chat')
     } else if (canvasEnabled) {
       if (previewTab === 'chat-fullscreen') setPreviewTab('dynamic-app')
+      if (previewTab === 'app-preview') setPreviewTab('dynamic-app')
     }
   }, [canvasEnabled, activeMode, previewTab, activeTab])
+
+  const handlePreviewTabChange = useCallback((tabId: string) => {
+    if (Platform.OS === 'web') {
+      try {
+        ;(document.activeElement as HTMLElement)?.blur?.()
+      } catch {
+        /* ignore */
+      }
+    }
+    setPreviewTab(tabId)
+  }, [])
 
   const handleCapabilityToggle = useCallback(async (key: string, enabled: boolean) => {
     await updateProjectSettings({ [key]: enabled })
@@ -677,7 +700,7 @@ export default observer(function ProjectLayout() {
             projectId={projectId!}
             projects={allProjects}
             activeTab={previewTab}
-            onTabChange={setPreviewTab}
+            onTabChange={handlePreviewTabChange}
             hasActiveSubscription={effectiveHasActiveSubscription}
             workspaceName={workspaceName}
             planLabel={planLabel}
@@ -695,7 +718,7 @@ export default observer(function ProjectLayout() {
             canvasEnabled={canvasEnabled}
             activeMode={activeMode}
           />
-        ) : !narrowOnCanvas ? (
+        ) : (
           <ProjectTopBar
             projectName={project.name}
             projectId={projectId!}
@@ -726,11 +749,11 @@ export default observer(function ProjectLayout() {
               }
             }}
             onTabChange={(tabId) => {
-              setPreviewTab(tabId)
+              handlePreviewTabChange(tabId)
               if (tabId !== 'dynamic-app' && tabId !== 'app-preview' && tabId !== 'chat-fullscreen') setActiveTab('canvas')
             }}
           />
-        ) : null}
+        )}
 
         {/* Content — chat panel stays mounted across layout/tab changes */}
         <View className={cn('flex-1', isWide && 'flex-row')}>
@@ -824,8 +847,14 @@ export default observer(function ProjectLayout() {
 
           {/* Right panel area (canvas / files / capabilities / channels / monitor) */}
           <View
-            className="flex-1 relative"
-            style={canvasAreaHidden ? { display: 'none' } : undefined}
+            className="flex-1 relative overflow-hidden"
+            style={
+              canvasAreaHidden
+                ? { display: 'none' }
+                : Platform.OS === 'web'
+                  ? ({ minHeight: 0 } as const)
+                  : undefined
+            }
           >
             {/* Floating chat button on mobile canvas — bottom right */}
             {narrowOnCanvas && (
@@ -856,14 +885,33 @@ export default observer(function ProjectLayout() {
               </View>
             )}
             {previewTab === 'app-preview' && (
-              <View className="absolute inset-0">
+              <View
+                className="absolute inset-0 overflow-hidden"
+                style={Platform.OS === 'web' ? ({ zIndex: 0 } as const) : undefined}
+              >
                 <AppPreviewPanel previewUrl={previewUrl ?? null} />
               </View>
             )}
-            <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
-            <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} activeMode={activeMode} onModeChange={handleManualModeChange} />
-            <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} />
-            <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
+            <View
+              style={
+                ['files', 'capabilities', 'channels', 'monitor'].includes(previewTab)
+                  ? {
+                      position: 'absolute' as const,
+                      inset: 0,
+                      zIndex: 20,
+                      ...(Platform.OS === 'web'
+                        ? ({ backgroundColor: 'var(--background)' } as const)
+                        : {}),
+                    }
+                  : { position: 'absolute' as const, inset: 0, pointerEvents: 'none' as const }
+              }
+              pointerEvents={['files', 'capabilities', 'channels', 'monitor'].includes(previewTab) ? 'auto' : 'none'}
+            >
+              <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
+              <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} activeMode={activeMode} onModeChange={handleManualModeChange} />
+              <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} />
+              <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
+            </View>
           </View>
         </View>
       </View>
