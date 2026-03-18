@@ -2285,7 +2285,24 @@ async function initializeEssentials(): Promise<void> {
 
   // Write CLAUDE.md and .mcp.json
   writeAgentConfigFiles()
+  logTiming('Wrote CLAUDE.md')
+  logTiming('Wrote .mcp.json')
   logTiming('Essentials complete')
+
+  // Auto-start preview server if an app project was restored from S3.
+  // This handles the case where a warm pool pod is re-assigned after eviction
+  // and the project files are already present from S3 sync.
+  const projectDir = join(WORKSPACE_DIR, 'project')
+  if (existsSync(join(projectDir, 'package.json'))) {
+    const pm = getPreviewManager()
+    const status = pm.getStatus()
+    if (!status.running) {
+      logTiming('Detected app project restored from S3 — auto-starting preview')
+      pm.start().catch((err: any) => {
+        console.error('[agent-runtime] Auto-start preview failed:', err.message)
+      })
+    }
+  }
 }
 
 /**

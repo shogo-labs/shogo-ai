@@ -321,12 +321,14 @@ export class KnativeProjectManager {
   /**
    * Create a DomainMapping for the project's preview subdomain.
    * Maps preview--{projectId}--{env}.{domain} to the Knative Service.
+   * @param serviceName - Override the target service name (defaults to project-{id}).
+   *   Pass the warm pool service name when the project is served by a warm pod.
    */
-  async createPreviewDomainMapping(projectId: string): Promise<void> {
+  async createPreviewDomainMapping(projectId: string, serviceName?: string): Promise<void> {
     const domainName = getPreviewSubdomain(projectId)
-    const serviceName = `project-${projectId}`
+    const resolvedServiceName = serviceName || `project-${projectId}`
     
-    console.log(`[KnativeProjectManager] Creating DomainMapping: ${domainName} -> ${serviceName}`)
+    console.log(`[KnativeProjectManager] Creating DomainMapping: ${domainName} -> ${resolvedServiceName}`)
     
     const api = getCustomApi()
     
@@ -344,7 +346,7 @@ export class KnativeProjectManager {
       },
       spec: {
         ref: {
-          name: serviceName,
+          name: resolvedServiceName,
           kind: "Service",
           apiVersion: `${KNATIVE_GROUP}/${KNATIVE_VERSION}`,
         },
@@ -361,14 +363,70 @@ export class KnativeProjectManager {
       })
       console.log(`[KnativeProjectManager] Created DomainMapping: ${domainName}`)
     } catch (error: any) {
-      // Handle race condition: if DomainMapping already exists, that's fine
       const statusCode = error?.response?.statusCode || error?.statusCode || error?.body?.code
       if (statusCode === 409 || error?.message?.includes('already exists') || error?.body?.reason === 'AlreadyExists') {
-        console.log(`[KnativeProjectManager] DomainMapping ${domainName} already exists`)
+        console.log(`[KnativeProjectManager] DomainMapping ${domainName} already exists — updating target to ${resolvedServiceName}`)
+        await this.updatePreviewDomainMapping(projectId, resolvedServiceName)
       } else {
         console.error(`[KnativeProjectManager] Failed to create DomainMapping ${domainName}:`, error)
         throw error
       }
+    }
+  }
+
+  /**
+   * Update an existing preview DomainMapping to point to a different Knative Service.
+   * Used when a warm pool pod is evicted and re-assigned to a new pod.
+   * Uses raw fetch with merge-patch+json content type since the K8s client
+   * defaults to JSON Patch (RFC 6902) which doesn't work for spec.ref updates.
+   */
+  async updatePreviewDomainMapping(projectId: string, newServiceName: string): Promise<void> {
+    const domainName = getPreviewSubdomain(projectId)
+
+    const patch = {
+      spec: {
+        ref: {
+          name: newServiceName,
+          kind: "Service",
+          apiVersion: `${KNATIVE_GROUP}/${KNATIVE_VERSION}`,
+        },
+      },
+    }
+
+    const kc = getKubeConfig()
+    const cluster = kc.getCurrentCluster()
+    if (!cluster) throw new Error('No current K8s cluster configured')
+
+    const user = kc.getCurrentUser()
+    const url = `${cluster.server}/apis/${KNATIVE_GROUP}/v1beta1/namespaces/${this.namespace}/domainmappings/${domainName}`
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/merge-patch+json',
+      'Accept': 'application/json',
+    }
+    if (user?.token) {
+      headers['Authorization'] = `Bearer ${user.token}`
+    }
+
+    try {
+      const resp = await fetch(url, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify(patch),
+      })
+
+      if (resp.ok) {
+        console.log(`[KnativeProjectManager] Updated DomainMapping ${domainName} -> ${newServiceName}`)
+      } else if (resp.status === 404) {
+        console.log(`[KnativeProjectManager] DomainMapping ${domainName} not found — creating fresh`)
+        await this.createPreviewDomainMapping(projectId, newServiceName)
+      } else {
+        const body = await resp.text()
+        console.error(`[KnativeProjectManager] Failed to update DomainMapping ${domainName}: ${resp.status} ${body}`)
+      }
+    } catch (error: any) {
+      console.error(`[KnativeProjectManager] Failed to update DomainMapping ${domainName}:`, error)
+      throw error
     }
   }
 
@@ -1634,9 +1692,11 @@ async function tryClaimWarmPod(
     const t4 = Date.now()
     console.log(`[KnativeProjectManager] assign for ${projectId}: ${t4 - t3}ms (total warm pipeline: ${t4 - t0}ms)`)
 
-    // No background createProject() — the warm pod IS the project pod now.
-    // Annotations are patched by assign() for scale-to-zero support, and the
-    // runtime self-assigns on cold start via /api/internal/pod-config.
+    // Create DomainMapping for preview subdomain pointing to the warm pool service.
+    // Non-blocking — the pod is already serving the project.
+    manager.createPreviewDomainMapping(projectId, pod.serviceName).catch((err: any) => {
+      console.error(`[KnativeProjectManager] Failed to create preview DomainMapping for warm pod ${pod.serviceName}:`, err.message)
+    })
 
     return pod.url
   } catch (err: any) {
