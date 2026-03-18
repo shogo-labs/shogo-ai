@@ -1373,16 +1373,24 @@ const PeopleTab = observer(function PeopleTab() {
     }
   }, [actions, user?.id, loadPeopleData])
 
-  const handleCancelInvitation = useCallback(async (invitationId: string) => {
-    const confirmed = Platform.OS === 'web'
-      ? window.confirm('Cancel this invitation? The invite link will no longer work.')
-      : true
-    if (!confirmed) return
+  const [revokeInvitationTarget, setRevokeInvitationTarget] = useState<{
+    id: string
+    email: string
+  } | null>(null)
+  const [isRevokingInvitation, setIsRevokingInvitation] = useState(false)
+
+  const confirmRevokeInvitation = useCallback(async () => {
+    if (!revokeInvitationTarget) return
+    setIsRevokingInvitation(true)
     try {
-      await actions.cancelInvitation(invitationId)
+      await actions.cancelInvitation(revokeInvitationTarget.id)
+      setRevokeInvitationTarget(null)
       await loadPeopleData()
-    } catch {}
-  }, [actions, loadPeopleData])
+    } catch {
+    } finally {
+      setIsRevokingInvitation(false)
+    }
+  }, [actions, loadPeopleData, revokeInvitationTarget])
 
   const builderCount = workspaceMembers.length
   const currentMonth = new Date().toLocaleString('default', { month: 'short' })
@@ -1772,7 +1780,11 @@ const PeopleTab = observer(function PeopleTab() {
                       </View>
                       <View className="w-8 items-center">
                         {status === 'pending' && (
-                          <Pressable onPress={() => handleCancelInvitation(inv.id)}>
+                          <Pressable
+                            onPress={() =>
+                              setRevokeInvitationTarget({ id: inv.id, email: inv.email })
+                            }
+                          >
                             <X size={14} className="text-muted-foreground" />
                           </Pressable>
                         )}
@@ -1840,6 +1852,63 @@ const PeopleTab = observer(function PeopleTab() {
         workspaceName={resolvedWs?.name || currentWorkspace?.name || ''}
         actions={actions}
       />
+
+      <Modal
+        visible={revokeInvitationTarget !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!isRevokingInvitation) setRevokeInvitationTarget(null)
+        }}
+      >
+        <Pressable
+          className="flex-1 bg-black/50 justify-center items-center px-6"
+          onPress={() => {
+            if (!isRevokingInvitation) setRevokeInvitationTarget(null)
+          }}
+        >
+          <Pressable
+            onPress={(e) => e.stopPropagation()}
+            className="bg-background rounded-xl p-5 w-full max-w-sm gap-3"
+          >
+            <Text className="text-base font-semibold text-foreground">
+              Revoke invitation?
+            </Text>
+            <Text className="text-sm text-muted-foreground leading-5">
+              Cancel this invitation? The invite link will no longer work.
+            </Text>
+            {revokeInvitationTarget?.email ? (
+              <Text className="text-sm font-medium text-foreground">
+                {revokeInvitationTarget.email}
+              </Text>
+            ) : null}
+            <View className="flex-row gap-2 justify-end mt-2">
+              <Pressable
+                disabled={isRevokingInvitation}
+                onPress={() => setRevokeInvitationTarget(null)}
+                className={cn(
+                  'px-4 py-2.5 rounded-lg border border-border items-center justify-center',
+                  isRevokingInvitation && 'opacity-50'
+                )}
+              >
+                <Text className="text-sm font-medium text-foreground">Cancel</Text>
+              </Pressable>
+              <Pressable
+                disabled={isRevokingInvitation}
+                onPress={confirmRevokeInvitation}
+                className={cn(
+                  'px-4 py-2.5 rounded-lg bg-destructive items-center justify-center',
+                  isRevokingInvitation && 'opacity-50'
+                )}
+              >
+                <Text className="text-sm font-medium text-destructive-foreground">
+                  {isRevokingInvitation ? 'Revoking…' : 'Revoke'}
+                </Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* Member Action Modal */}
       <Modal
