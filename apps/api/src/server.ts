@@ -1170,17 +1170,35 @@ app.post('/api/projects/:projectId/apply-template', async (c) => {
         fetch(`http://localhost:${runtime.agentPort}/preview/restart`, { method: 'POST' }).catch(() => {})
       }
     } else {
-      // In production, proxy to the pod's /templates/copy endpoint
-      try {
-        const { getProjectPodUrl } = await import('./lib/knative-project-manager')
-        const podUrl = await getProjectPodUrl(projectId)
-        await fetch(`${podUrl}/templates/copy`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        })
-      } catch (err) {
-        console.warn('[apply-template] Could not proxy to pod, files copied locally:', err)
+      // In production, proxy to the pod's /templates/copy endpoint.
+      // Retry up to 3 times with delay — warm pool pods may be evicted and
+      // re-assigned during initialization, and we need the template on the
+      // pod that ultimately serves the project.
+      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
+      let applied = false
+      for (let attempt = 1; attempt <= 3 && !applied; attempt++) {
+        try {
+          if (attempt > 1) await new Promise(r => setTimeout(r, 3000))
+          const podUrl = await getProjectPodUrl(projectId)
+          const resp = await fetch(`${podUrl}/templates/copy`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(30000),
+          })
+          if (resp.ok) {
+            applied = true
+            console.log(`[apply-template] Proxied template '${body.template}' to pod (attempt ${attempt})`)
+          } else {
+            const text = await resp.text().catch(() => '')
+            console.warn(`[apply-template] Pod returned ${resp.status} on attempt ${attempt}: ${text}`)
+          }
+        } catch (err: any) {
+          console.warn(`[apply-template] Proxy attempt ${attempt} failed: ${err.message}`)
+        }
+      }
+      if (!applied) {
+        console.warn('[apply-template] All proxy attempts failed — template copied locally only')
       }
     }
 
