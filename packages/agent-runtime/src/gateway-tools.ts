@@ -3228,6 +3228,7 @@ function createTaskTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): Ag
       if (max_turns) config.maxTurns = max_turns
 
       const w = ctx.uiWriter
+      let subReasoningId: string | null = null
       const callbacks = w ? {
         onStart: (name: string, desc: string) => {
           w.write({ type: 'data-subagent-start', data: { name, description: desc } })
@@ -3239,13 +3240,19 @@ function createTaskTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): Ag
           w.write({ type: 'text-delta', delta })
         },
         onThinkingStart: () => {
-          w.write({ type: 'reasoning-start', id: `sub-reasoning-${Date.now()}` })
+          subReasoningId = `sub-reasoning-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+          w.write({ type: 'reasoning-start', id: subReasoningId })
         },
         onThinkingDelta: (delta: string) => {
-          w.write({ type: 'reasoning-delta', delta })
+          if (subReasoningId) {
+            w.write({ type: 'reasoning-delta', id: subReasoningId, delta })
+          }
         },
         onThinkingEnd: () => {
-          w.write({ type: 'reasoning-end' })
+          if (subReasoningId) {
+            w.write({ type: 'reasoning-end', id: subReasoningId })
+            subReasoningId = null
+          }
         },
         onToolCallStart: (toolName: string, toolCallId: string) => {
           w.write({ type: 'tool-input-start', toolCallId, toolName })

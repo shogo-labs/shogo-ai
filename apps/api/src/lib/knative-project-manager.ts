@@ -1530,11 +1530,13 @@ export async function getProjectPodUrl(projectId: string): Promise<string> {
       const warmPool = getWarmPoolController()
       const warmUrl = warmPool.getAssignedUrl(projectId)
       if (warmUrl) {
-        // Quick health probe to avoid returning stale URLs for dead pods
+        // Health probe to avoid returning stale URLs for dead pods.
+        // 8s timeout: warm pool pods can be slow to respond during S3 restore
+        // and preview startup — a short timeout causes unnecessary evictions.
         try {
           const probe = await fetch(`${warmUrl}/health`, {
             method: 'GET',
-            signal: AbortSignal.timeout(2000),
+            signal: AbortSignal.timeout(8000),
           })
           if (probe.ok) {
             span.setAttribute('resolve.method', 'warm_pool_assigned')

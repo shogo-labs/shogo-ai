@@ -1413,6 +1413,26 @@ export class AgentGateway {
       }
     }
 
+    // Inject app template context if this project was created from an app template
+    const appTemplatePath = join(this.workspaceDir, '.app-template')
+    if (existsSync(appTemplatePath)) {
+      const appTemplate = readFileSync(appTemplatePath, 'utf-8').trim()
+      if (appTemplate) {
+        const humanName = appTemplate.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+        parts.push([
+          '## App Template Context',
+          '',
+          `This project was created from the **${humanName}** app template (\`${appTemplate}\`).`,
+          'The app source code lives in the `project/` directory. When the user asks you to modify the app,',
+          'look at the existing source files in `project/src/` to understand the structure before making changes.',
+          'Use `edit_file` or `write_file` to modify files directly — the preview will auto-rebuild.',
+          '',
+          'You are the developer for this app. When the user says "change the color", "add a feature",',
+          '"fix this", etc., they are referring to this app. Do NOT ask what app they mean.',
+        ].join('\n'))
+      }
+    }
+
     const now = new Date()
     parts.push([
       '## Current Context',

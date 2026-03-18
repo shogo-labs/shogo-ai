@@ -783,6 +783,9 @@ app.post('/templates/copy', async (c) => {
     })
     console.log(`[templates/copy] Extracted "${body.template}" to ${projectDir}`)
 
+    // Persist app template name so the agent knows what was created
+    writeFileSync(join(WORKSPACE_DIR, '.app-template'), body.template, 'utf-8')
+
     const pkgPath = join(projectDir, 'package.json')
     if (existsSync(pkgPath)) {
       const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))

@@ -31,12 +31,22 @@ export interface PreviewManagerConfig {
 
 const API_SERVER_PORT = 3001
 
+export type PreviewPhase =
+  | 'idle'
+  | 'installing'
+  | 'generating-prisma'
+  | 'pushing-db'
+  | 'building'
+  | 'starting-api'
+  | 'ready'
+
 export class PreviewManager {
   private projectDir: string
   private runtimePort: number
   private buildWatchProcess: ChildProcess | null = null
   private apiServerProcess: ChildProcess | null = null
   private started = false
+  private _phase: PreviewPhase = 'idle'
 
   constructor(config: PreviewManagerConfig) {
     this.projectDir = config.projectDir
@@ -73,6 +83,7 @@ export class PreviewManager {
     }
 
     // Install dependencies
+    this._phase = 'installing'
     const t0 = Date.now()
     try {
       console.log(`[${LOG_PREFIX}] Installing dependencies...`)
@@ -91,6 +102,7 @@ export class PreviewManager {
     // Generate Prisma client if schema exists
     const prismaSchema = join(projectDir, 'prisma', 'schema.prisma')
     if (existsSync(prismaSchema)) {
+      this._phase = 'generating-prisma'
       const t1 = Date.now()
       try {
         execSync('bunx prisma generate 2>&1', { cwd: projectDir, timeout: 30_000, stdio: 'pipe' })
@@ -101,6 +113,7 @@ export class PreviewManager {
       }
 
       // Push schema to SQLite
+      this._phase = 'pushing-db'
       const devDb = join(projectDir, 'prisma', 'dev.db')
       const t2 = Date.now()
       try {
@@ -119,10 +132,14 @@ export class PreviewManager {
     }
 
     // Start Vite build --watch
+    this._phase = 'building'
     await this.startBuildWatch()
 
     // Start the template's API server if server.tsx exists
+    this._phase = 'starting-api'
     await this.startApiServer()
+
+    this._phase = 'ready'
 
     this.started = true
 
@@ -145,6 +162,7 @@ export class PreviewManager {
       this.buildWatchProcess = null
     }
     this.started = false
+    this._phase = 'idle'
   }
 
   /**
@@ -155,14 +173,19 @@ export class PreviewManager {
     return this.start()
   }
 
+  get phase(): PreviewPhase {
+    return this._phase
+  }
+
   /**
    * Get the current preview status.
    */
-  getStatus(): { running: boolean; port: number | null; projectDir: string } {
+  getStatus(): { running: boolean; port: number | null; projectDir: string; phase: PreviewPhase } {
     return {
       running: this.isRunning,
       port: this.isRunning ? PREVIEW_PORT : null,
       projectDir: this.projectDir,
+      phase: this._phase,
     }
   }
 

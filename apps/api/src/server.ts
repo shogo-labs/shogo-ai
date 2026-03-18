@@ -17,7 +17,7 @@ import { createAnthropic } from '@ai-sdk/anthropic'
 import { resolve, join, isAbsolute } from 'path'
 import { fileURLToPath } from 'url'
 import { readdir, stat, mkdir, appendFile } from 'fs/promises'
-import { existsSync, mkdirSync, cpSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, cpSync, rmSync, writeFileSync } from 'fs'
 import { auth } from './auth'
 import { getPriceId } from './config/stripe-prices'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
@@ -1160,6 +1160,7 @@ app.post('/api/projects/:projectId/apply-template', async (c) => {
       recursive: true,
       filter: (src) => !src.includes('.git') && !src.includes('template.json'),
     })
+    writeFileSync(resolve(projectDir, '.app-template'), body.template, 'utf-8')
     console.log(`[apply-template] Copied template '${body.template}' to ${projectDir}`)
 
     // In local dev, trigger Vite restart via the runtime manager's preview port

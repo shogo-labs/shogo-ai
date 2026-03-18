@@ -898,7 +898,7 @@ export default observer(function ProjectLayout() {
                   Platform.OS === 'web' && 'z-0',
                 )}
               >
-                <AppPreviewPanel previewUrl={previewUrl ?? null} />
+                <AppPreviewPanel previewUrl={previewUrl ?? null} agentUrl={agentUrl ?? null} />
               </View>
             )}
             <View
@@ -1088,15 +1088,67 @@ function CanvasPanel({
 // App Preview Panel — iframe (web) for APP project live preview
 // ---------------------------------------------------------------------------
 
-function AppPreviewPanel({ previewUrl }: { previewUrl: string | null }) {
+const PHASE_LABELS: Record<string, string> = {
+  idle: 'Preparing environment...',
+  installing: 'Installing dependencies...',
+  'generating-prisma': 'Setting up database...',
+  'pushing-db': 'Initializing database...',
+  building: 'Building app...',
+  'starting-api': 'Starting API server...',
+  ready: 'Ready',
+}
+
+function AppPreviewPanel({ previewUrl, agentUrl }: { previewUrl: string | null; agentUrl: string | null }) {
   const [iframeKey, setIframeKey] = useState(0)
+  const [previewReady, setPreviewReady] = useState(false)
+  const [phase, setPhase] = useState<string>('idle')
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  useEffect(() => {
+    if (!agentUrl || previewReady) return
+
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const resp = await fetch(`${agentUrl}/preview/status`, {
+          credentials: Platform.OS === 'web' ? 'include' : 'omit',
+          signal: AbortSignal.timeout(5000),
+        })
+        if (cancelled) return
+        if (resp.ok) {
+          const data = await resp.json()
+          if (data.phase) setPhase(data.phase)
+          if (data.running) {
+            setPreviewReady(true)
+            setIframeKey(k => k + 1)
+          }
+        }
+      } catch {
+        // Pod may not be reachable yet
+      }
+    }
+
+    poll()
+    pollRef.current = setInterval(poll, 3000)
+
+    return () => {
+      cancelled = true
+      if (pollRef.current) clearInterval(pollRef.current)
+    }
+  }, [agentUrl, previewReady])
+
+  // Reset ready state when previewUrl changes (new project)
+  useEffect(() => {
+    setPreviewReady(false)
+    setPhase('idle')
+  }, [previewUrl])
 
   if (!previewUrl) {
     return (
       <View className="flex-1 items-center justify-center px-6">
         <ActivityIndicator size="large" className="mb-4" />
         <Text className="text-muted-foreground text-center">
-          Starting preview server...
+          Connecting to preview server...
         </Text>
       </View>
     )
@@ -1106,14 +1158,30 @@ function AppPreviewPanel({ previewUrl }: { previewUrl: string | null }) {
     return (
       <View className="flex-1 relative">
         <Pressable
-          onPress={() => setIframeKey((k) => k + 1)}
+          onPress={() => {
+            setIframeKey((k) => k + 1)
+            if (!previewReady) setPreviewReady(false)
+          }}
           className="absolute top-2 right-2 z-10 rounded-md border border-border bg-background/80 px-3 py-1.5 active:opacity-70"
         >
           <Text className="text-muted-foreground text-xs">Refresh</Text>
         </Pressable>
+
+        {!previewReady && (
+          <View className="absolute inset-0 z-[5] items-center justify-center bg-background/90">
+            <ActivityIndicator size="large" className="mb-4" />
+            <Text className="text-foreground font-medium text-base mb-1">
+              {PHASE_LABELS[phase] || 'Preparing preview...'}
+            </Text>
+            <Text className="text-muted-foreground text-xs">
+              This usually takes 20-40 seconds
+            </Text>
+          </View>
+        )}
+
         <iframe
           key={iframeKey}
-          src={previewUrl}
+          src={previewReady ? previewUrl : 'about:blank'}
           sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
           className="block h-full w-full border-0"
           {...{ 'data-thumbnail-target': '' } as any}
