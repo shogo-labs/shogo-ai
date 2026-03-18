@@ -5,11 +5,11 @@
  *
  * Tests the agent's ability to intelligently switch between visual modes
  * (canvas, app, none) based on user intent, and to delegate appropriately
- * to the code_agent tool when in app mode.
+ * to the app_agent subagent (via the task tool) when in app mode.
  */
 
 import type { AgentEval } from './types'
-import { usedTool, neverUsedTool, usedToolSuccessfully } from './eval-helpers'
+import { usedTool, neverUsedTool, usedToolSuccessfully, toolCallArgsContain } from './eval-helpers'
 
 export const modeSwitchingEvals: AgentEval[] = [
   {
@@ -36,11 +36,11 @@ export const modeSwitchingEvals: AgentEval[] = [
         validate: (r) => usedTool(r, 'canvas_create') || usedTool(r, 'canvas_update'),
       },
       {
-        id: 'no-code-agent',
-        description: 'Agent does NOT delegate to code_agent for a dashboard',
+        id: 'no-task-app-agent',
+        description: 'Agent does NOT delegate to app_agent for a dashboard',
         points: 2,
         phase: 'intention',
-        validate: (r) => neverUsedTool(r, 'code_agent'),
+        validate: (r) => !toolCallArgsContain(r, 'task', 'app_agent'),
       },
     ],
     maxScore: 8,
@@ -63,11 +63,11 @@ export const modeSwitchingEvals: AgentEval[] = [
         ),
       },
       {
-        id: 'delegates-to-code-agent',
-        description: 'Agent delegates to code_agent',
+        id: 'delegates-to-app-agent',
+        description: 'Agent delegates to app_agent via task tool',
         points: 3,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'code_agent'),
+        validate: (r) => usedTool(r, 'task') && toolCallArgsContain(r, 'task', 'app_agent'),
       },
       {
         id: 'no-canvas-tools',
@@ -78,7 +78,7 @@ export const modeSwitchingEvals: AgentEval[] = [
       },
       {
         id: 'no-write-file',
-        description: 'Agent does NOT write application code itself — delegates to code_agent',
+        description: 'Agent does NOT write application code itself — delegates to app_agent',
         points: 2,
         phase: 'intention',
         validate: (r) => neverUsedTool(r, 'write_file'),
@@ -109,11 +109,11 @@ export const modeSwitchingEvals: AgentEval[] = [
         validate: (r) => neverUsedTool(r, 'canvas_create'),
       },
       {
-        id: 'no-code-agent',
-        description: 'Agent does NOT delegate to code_agent',
+        id: 'no-task',
+        description: 'Agent does NOT delegate to task/subagent',
         points: 2,
         phase: 'intention',
-        validate: (r) => neverUsedTool(r, 'code_agent'),
+        validate: (r) => neverUsedTool(r, 'task'),
       },
       {
         id: 'provides-answer',
@@ -148,15 +148,15 @@ export const modeSwitchingEvals: AgentEval[] = [
         ),
       },
       {
-        id: 'delegates-to-code-agent',
-        description: 'Agent delegates the custom API+WebSocket work to code_agent',
+        id: 'delegates-to-app-agent',
+        description: 'Agent delegates the custom API+WebSocket work to app_agent via task',
         points: 3,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'code_agent'),
+        validate: (r) => usedTool(r, 'task') && toolCallArgsContain(r, 'task', 'app_agent'),
       },
       {
         id: 'no-write-file',
-        description: 'Agent does NOT write application code itself — delegates to code_agent',
+        description: 'Agent does NOT write application code itself — delegates to app_agent',
         points: 2,
         phase: 'intention',
         validate: (r) => neverUsedTool(r, 'write_file'),

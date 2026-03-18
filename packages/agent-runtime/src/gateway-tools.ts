@@ -16,6 +16,13 @@ import { execSync } from 'child_process'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec } from './sandbox-exec'
+import {
+  runSubagent,
+  getBuiltinSubagentConfig,
+  loadCustomAgents,
+  type SubagentConfig,
+  type CustomAgentDef,
+} from './subagent'
 import { MemorySearchEngine } from './memory-search'
 import { FileIndexEngine } from './file-index-engine'
 import { MCP_CATALOG, isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPackages } from './mcp-catalog'
@@ -58,6 +65,8 @@ export interface ToolContext {
   aiProxyUrl?: string
   /** AI Proxy token for authenticating proxy calls */
   aiProxyToken?: string
+  /** UI message writer for streaming events to the client (set during agent turns, not heartbeats) */
+  uiWriter?: any
 }
 
 // Legacy blocked-command check kept as lightweight fallback for contexts
@@ -203,19 +212,40 @@ function createExecTool(ctx: ToolContext): AgentTool {
 function createReadFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'read_file',
-    description: 'Read a file from the agent workspace.',
+    description:
+      'Read a file from the agent workspace. Supports partial reads via offset and limit ' +
+      'to handle large files without consuming the full context window.',
     label: 'Read File',
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace' }),
+      offset: Type.Optional(Type.Number({ description: 'Line number to start reading from (1-based)' })),
+      limit: Type.Optional(Type.Number({ description: 'Number of lines to read' })),
     }),
     execute: async (_toolCallId, params) => {
-      const { path: filePath } = params as { path: string }
+      const { path: filePath, offset, limit } = params as {
+        path: string; offset?: number; limit?: number
+      }
       const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
       if (!existsSync(resolved)) {
         return textResult({ error: `File not found: ${filePath}` })
       }
-      const content = readFileSync(resolved, 'utf-8')
-      return textResult({ content, bytes: content.length })
+      const fullContent = readFileSync(resolved, 'utf-8')
+
+      if (offset !== undefined || limit !== undefined) {
+        const lines = fullContent.split('\n')
+        const startLine = Math.max(0, (offset ?? 1) - 1)
+        const endLine = limit !== undefined ? startLine + limit : lines.length
+        const sliced = lines.slice(startLine, endLine)
+        const numberedLines = sliced.map((line, i) => `${startLine + i + 1}|${line}`)
+        return textResult({
+          content: numberedLines.join('\n'),
+          totalLines: lines.length,
+          startLine: startLine + 1,
+          endLine: Math.min(endLine, lines.length),
+        })
+      }
+
+      return textResult({ content: fullContent, bytes: fullContent.length })
     },
   }
 }
@@ -247,6 +277,346 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
         writeFileSync(resolved, content, 'utf-8')
       }
       return textResult({ ok: true, path: filePath, bytes: content.length })
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Edit File Tool (search_replace)
+// ---------------------------------------------------------------------------
+
+function createEditFileTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'edit_file',
+    description:
+      'Make targeted edits to a file using search and replace. ' +
+      'The old_string must match exactly and uniquely in the file (unless replace_all is true). ' +
+      'Prefer this over write_file for modifying existing files.',
+    label: 'Edit File',
+    parameters: Type.Object({
+      path: Type.String({ description: 'File path relative to workspace' }),
+      old_string: Type.String({ description: 'Exact text to find in the file' }),
+      new_string: Type.String({ description: 'Replacement text (must differ from old_string)' }),
+      replace_all: Type.Optional(Type.Boolean({ description: 'Replace all occurrences (default: false)' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { path: filePath, old_string, new_string, replace_all = false } = params as {
+        path: string; old_string: string; new_string: string; replace_all?: boolean
+      }
+      if (old_string === new_string) {
+        return textResult({ error: 'old_string and new_string must differ' })
+      }
+      const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
+      if (!existsSync(resolved)) {
+        return textResult({ error: `File not found: ${filePath}` })
+      }
+      const content = readFileSync(resolved, 'utf-8')
+      const occurrences = content.split(old_string).length - 1
+      if (occurrences === 0) {
+        return textResult({ error: `old_string not found in ${filePath}` })
+      }
+      if (occurrences > 1 && !replace_all) {
+        return textResult({
+          error: `old_string found ${occurrences} times in ${filePath}. ` +
+            'Provide more context to make it unique, or set replace_all: true.',
+        })
+      }
+      const updated = replace_all
+        ? content.split(old_string).join(new_string)
+        : content.replace(old_string, new_string)
+      writeFileSync(resolved, updated, 'utf-8')
+      return textResult({ ok: true, path: filePath, replacements: replace_all ? occurrences : 1 })
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Glob Tool (file pattern matching)
+// ---------------------------------------------------------------------------
+
+function createGlobTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'glob',
+    description:
+      'Find files matching a glob pattern in the workspace. ' +
+      'Returns matching file paths sorted by modification time.',
+    label: 'Glob',
+    parameters: Type.Object({
+      pattern: Type.String({ description: 'Glob pattern (e.g. **/*.ts, src/**/*.py)' }),
+      path: Type.Optional(Type.String({ description: 'Directory to search (default: workspace root)' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { pattern, path: searchPath } = params as { pattern: string; path?: string }
+      const baseDir = searchPath
+        ? assertWithinWorkspace(ctx.workspaceDir, searchPath)
+        : ctx.workspaceDir
+
+      if (!existsSync(baseDir)) {
+        return textResult({ error: `Directory not found: ${searchPath || '/'}` })
+      }
+
+      try {
+        const glob = new Bun.Glob(pattern)
+        const matches: Array<{ path: string; modified: number }> = []
+        const MAX_RESULTS = 500
+        for (const match of glob.scanSync({ cwd: baseDir, absolute: false })) {
+          const absPath = join(baseDir, match)
+          if (!absPath.startsWith(resolve(ctx.workspaceDir))) continue
+          try {
+            const stat = statSync(absPath)
+            matches.push({ path: match, modified: stat.mtimeMs })
+          } catch { /* skip inaccessible */ }
+          if (matches.length >= MAX_RESULTS) break
+        }
+        matches.sort((a, b) => b.modified - a.modified)
+        return textResult({
+          pattern,
+          files: matches.map(m => m.path),
+          count: matches.length,
+          truncated: matches.length >= MAX_RESULTS,
+        })
+      } catch (err: any) {
+        return textResult({ error: `Glob error: ${err.message}` })
+      }
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Grep Tool (regex search in file contents)
+// ---------------------------------------------------------------------------
+
+function createGrepTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'grep',
+    description:
+      'Search for a regex pattern in file contents across the workspace. ' +
+      'Uses ripgrep when available, falls back to a built-in scanner.',
+    label: 'Grep',
+    parameters: Type.Object({
+      pattern: Type.String({ description: 'Regex pattern to search for' }),
+      path: Type.Optional(Type.String({ description: 'File or directory to search (default: workspace root)' })),
+      include: Type.Optional(Type.String({ description: 'Glob filter for files (e.g. *.ts, *.{js,jsx})' })),
+      context_lines: Type.Optional(Type.Number({ description: 'Lines of context around each match (default: 0)' })),
+      max_results: Type.Optional(Type.Number({ description: 'Maximum number of matches to return (default: 50)' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const {
+        pattern, path: searchPath, include, context_lines = 0, max_results = 50,
+      } = params as {
+        pattern: string; path?: string; include?: string; context_lines?: number; max_results?: number
+      }
+      const targetPath = searchPath
+        ? assertWithinWorkspace(ctx.workspaceDir, searchPath)
+        : ctx.workspaceDir
+
+      const args = ['rg', '--json', '-e', pattern, '--max-count', String(max_results)]
+      if (context_lines > 0) args.push('-C', String(context_lines))
+      if (include) args.push('--glob', include)
+      args.push('--', targetPath)
+
+      const rgResult = sandboxExec({
+        command: args.join(' '),
+        workspaceDir: ctx.workspaceDir,
+        timeout: 15000,
+        sandboxConfig: ctx.sandbox,
+      })
+
+      // rg exit code: 0=matches found, 1=no matches, 2+=error
+      if (rgResult.exitCode <= 1 && !rgResult.stderr.includes('command not found')) {
+        const matches: Array<{
+          file: string; line: number; text: string; context?: string[]
+        }> = []
+        for (const line of rgResult.stdout.split('\n').filter(Boolean)) {
+          try {
+            const msg = JSON.parse(line)
+            if (msg.type === 'match' && msg.data) {
+              const filePath = msg.data.path?.text || ''
+              const relativePath = filePath.startsWith(ctx.workspaceDir)
+                ? filePath.slice(ctx.workspaceDir.length + 1)
+                : filePath
+              matches.push({
+                file: relativePath,
+                line: msg.data.line_number,
+                text: msg.data.lines?.text?.trimEnd() || '',
+              })
+            }
+          } catch { /* skip malformed lines */ }
+        }
+        return textResult({ pattern, matches, count: matches.length })
+      } else {
+        try {
+          const regex = new RegExp(pattern, 'gm')
+          const matches: Array<{ file: string; line: number; text: string }> = []
+          const targetStat = statSync(targetPath)
+          const filesToSearch = targetStat.isDirectory()
+            ? readdirSync(targetPath, { recursive: true })
+                .map(f => String(f))
+                .filter(f => !f.includes('node_modules') && !f.startsWith('.'))
+                .slice(0, 200)
+            : ['']
+
+          for (const file of filesToSearch) {
+            const fullPath = targetStat.isDirectory() ? join(targetPath, file) : targetPath
+            try {
+              const stat = statSync(fullPath)
+              if (!stat.isFile() || stat.size > 1_000_000) continue
+              const content = readFileSync(fullPath, 'utf-8')
+              const lines = content.split('\n')
+              for (let i = 0; i < lines.length && matches.length < max_results; i++) {
+                if (regex.test(lines[i])) {
+                  matches.push({
+                    file: targetStat.isDirectory() ? file : (searchPath || fullPath.slice(ctx.workspaceDir.length + 1)),
+                    line: i + 1,
+                    text: lines[i].trimEnd(),
+                  })
+                }
+                regex.lastIndex = 0
+              }
+            } catch { /* skip unreadable files */ }
+          }
+          return textResult({ pattern, matches, count: matches.length, fallback: true })
+        } catch (err: any) {
+          return textResult({ error: `Grep failed: ${err.message}` })
+        }
+      }
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// LS Tool (workspace directory listing)
+// ---------------------------------------------------------------------------
+
+function createLsTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'ls',
+    description:
+      'List files and directories at a path within the workspace. ' +
+      'Unlike list_files (scoped to files/), this can list any workspace directory.',
+    label: 'List Directory',
+    parameters: Type.Object({
+      path: Type.Optional(Type.String({ description: 'Directory path relative to workspace (default: root)' })),
+      recursive: Type.Optional(Type.Boolean({ description: 'List recursively, max depth 3 (default: false)' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { path: dirPath = '', recursive = false } = params as { path?: string; recursive?: boolean }
+      const targetDir = dirPath
+        ? assertWithinWorkspace(ctx.workspaceDir, dirPath)
+        : ctx.workspaceDir
+
+      if (!existsSync(targetDir)) {
+        return textResult({ error: `Directory not found: ${dirPath || '/'}` })
+      }
+      try {
+        const stat = statSync(targetDir)
+        if (!stat.isDirectory()) {
+          return textResult({ error: `Not a directory: ${dirPath}` })
+        }
+      } catch (err: any) {
+        return textResult({ error: `Cannot stat: ${err.message}` })
+      }
+
+      const entries = lsDir(targetDir, ctx.workspaceDir, recursive, 0, 3)
+      return textResult({ path: dirPath || '/', entries, count: entries.length })
+    },
+  }
+}
+
+function lsDir(dir: string, rootDir: string, recursive: boolean, depth: number, maxDepth: number): any[] {
+  const results: any[] = []
+  try {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name.startsWith('.') && depth === 0 && entry.name !== '.claude') continue
+      if (entry.name === 'node_modules') continue
+      const absPath = join(dir, entry.name)
+      const relPath = absPath.slice(resolve(rootDir).length + 1)
+      try {
+        const stat = statSync(absPath)
+        if (entry.isDirectory()) {
+          results.push({ name: entry.name, path: relPath, type: 'directory', modified: stat.mtimeMs })
+          if (recursive && depth < maxDepth) {
+            results.push(...lsDir(absPath, rootDir, true, depth + 1, maxDepth))
+          }
+        } else {
+          results.push({ name: entry.name, path: relPath, type: 'file', size: stat.size, modified: stat.mtimeMs })
+        }
+      } catch { /* skip inaccessible */ }
+    }
+  } catch { /* skip unreadable dirs */ }
+  return results
+}
+
+// ---------------------------------------------------------------------------
+// TodoWrite Tool (session task checklist)
+// ---------------------------------------------------------------------------
+
+const todoStores = new Map<string, Array<{ id: string; content: string; status: string }>>()
+
+function createTodoWriteTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'todo_write',
+    description:
+      'Manage a session task checklist. Each call replaces the full todo list. ' +
+      'Use to track progress on multi-step tasks.',
+    label: 'Todo Write',
+    parameters: Type.Object({
+      todos: Type.Array(Type.Object({
+        id: Type.String({ description: 'Unique task identifier' }),
+        content: Type.String({ description: 'Task description' }),
+        status: Type.Union([
+          Type.Literal('pending'),
+          Type.Literal('in_progress'),
+          Type.Literal('completed'),
+        ], { description: 'Task status' }),
+      })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { todos } = params as {
+        todos: Array<{ id: string; content: string; status: string }>
+      }
+      const key = ctx.sessionId || ctx.projectId
+      todoStores.set(key, todos)
+      return textResult({ ok: true, todos, count: todos.length })
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// AskUser Tool (structured multiple-choice questions)
+// ---------------------------------------------------------------------------
+
+function createAskUserTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'ask_user',
+    description:
+      'Ask the user structured multiple-choice questions to gather requirements or clarify ambiguity. ' +
+      'The UI will render interactive option selectors.',
+    label: 'Ask User',
+    parameters: Type.Object({
+      questions: Type.Array(Type.Object({
+        id: Type.String({ description: 'Unique question identifier' }),
+        prompt: Type.String({ description: 'Question text' }),
+        options: Type.Array(Type.Object({
+          id: Type.String({ description: 'Option identifier' }),
+          label: Type.String({ description: 'Display text for this option' }),
+        })),
+        allow_multiple: Type.Optional(Type.Boolean({ description: 'Allow selecting multiple options (default: false)' })),
+      })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { questions } = params as {
+        questions: Array<{
+          id: string; prompt: string;
+          options: Array<{ id: string; label: string }>;
+          allow_multiple?: boolean
+        }>
+      }
+      return textResult({
+        type: 'ask_user',
+        questions,
+        message: 'Questions presented to user. Responses will be available in the next turn.',
+      })
     },
   }
 }
@@ -2684,6 +3054,246 @@ function createToolUninstallTool(ctx: ToolContext): AgentTool {
 }
 
 // ---------------------------------------------------------------------------
+// Task Tool (subagent spawning)
+// ---------------------------------------------------------------------------
+
+let cachedCustomAgents: CustomAgentDef[] | null = null
+
+function createTaskTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): AgentTool {
+  return {
+    name: 'task',
+    description:
+      'Spawn a specialized subagent to handle a focused task in an isolated context. ' +
+      'Built-in types: app_agent (app code in project/), canvas_agent (declarative UI), ' +
+      'explore (read-only codebase search, uses Haiku), general-purpose (all tools). ' +
+      'Custom agents from .claude/agents/ are also available.',
+    label: 'Task',
+    parameters: Type.Object({
+      description: Type.String({ description: 'Short 3-5 word task description' }),
+      prompt: Type.String({ description: 'Detailed task for the subagent' }),
+      subagent_type: Type.Optional(Type.String({
+        description: 'Agent type: app_agent, canvas_agent, explore, general-purpose, or custom name',
+      })),
+      model: Type.Optional(Type.String({ description: 'Model override (e.g. claude-haiku-4-5)' })),
+      max_turns: Type.Optional(Type.Number({ description: 'Max agentic turns (default: 10)' })),
+    }),
+    execute: async (_toolCallId, params, context) => {
+      const {
+        description: taskDesc,
+        prompt,
+        subagent_type: agentType = 'general-purpose',
+        model,
+        max_turns,
+      } = params as {
+        description: string; prompt: string;
+        subagent_type?: string; model?: string; max_turns?: number
+      }
+
+      let config: SubagentConfig | null = getBuiltinSubagentConfig(agentType, ctx, allToolsGetter())
+
+      if (!config) {
+        if (!cachedCustomAgents) {
+          cachedCustomAgents = loadCustomAgents(ctx.workspaceDir)
+        }
+        const custom = cachedCustomAgents.find(a => a.name === agentType)
+        if (custom) {
+          config = {
+            name: custom.name,
+            description: custom.description,
+            systemPrompt: custom.systemPrompt,
+            toolNames: custom.tools,
+            disallowedTools: [...(custom.disallowedTools || []), 'task', 'code_agent'],
+            model: custom.model,
+            maxTurns: custom.maxTurns,
+          }
+        }
+      }
+
+      if (!config) {
+        return textResult({
+          error: `Unknown subagent type: ${agentType}. Available: app_agent, canvas_agent, explore, general-purpose`,
+        })
+      }
+
+      if (model) config.model = model
+      if (max_turns) config.maxTurns = max_turns
+
+      const w = ctx.uiWriter
+      const callbacks = w ? {
+        onStart: (name: string, desc: string) => {
+          w.write({ type: 'data-subagent-start', data: { name, description: desc } })
+        },
+        onEnd: (name: string, summary: string) => {
+          w.write({ type: 'data-subagent-end', data: { name, summary: summary.substring(0, 500) } })
+        },
+        onTextDelta: (delta: string) => {
+          w.write({ type: 'text-delta', delta })
+        },
+        onThinkingStart: () => {
+          w.write({ type: 'reasoning-start', id: `sub-reasoning-${Date.now()}` })
+        },
+        onThinkingDelta: (delta: string) => {
+          w.write({ type: 'reasoning-delta', delta })
+        },
+        onThinkingEnd: () => {
+          w.write({ type: 'reasoning-end' })
+        },
+        onToolCallStart: (toolName: string, toolCallId: string) => {
+          w.write({ type: 'tool-input-start', toolCallId, toolName })
+        },
+        onToolCallDelta: (toolName: string, delta: string, toolCallId: string) => {
+          w.write({ type: 'tool-input-delta', toolCallId, delta })
+        },
+        onToolCallEnd: (toolName: string, toolCallId: string) => {
+          // Placeholder — full tool-input-available with parsed input is emitted from onBeforeToolCall
+        },
+        onBeforeToolCall: async (toolName: string, args: any, toolCallId: string) => {
+          w.write({ type: 'tool-input-available', toolCallId, toolName, input: args })
+        },
+        onAfterToolCall: async (toolName: string, args: any, result: any, isError: boolean, toolCallId: string) => {
+          w.write({
+            type: 'tool-output-available',
+            toolCallId,
+            toolName,
+            output: typeof result === 'string' ? result : JSON.stringify(result).substring(0, 1000),
+          })
+        },
+      } : undefined
+
+      const result = await runSubagent(config, prompt, ctx, allToolsGetter(), callbacks)
+
+      // Emit subagent token usage so it's tracked by the SSE consumer (eval runner, server.ts billing)
+      if (w && (result.inputTokens > 0 || result.outputTokens > 0)) {
+        w.write({
+          type: 'data-usage',
+          data: {
+            inputTokens: result.inputTokens,
+            outputTokens: result.outputTokens,
+            cacheReadTokens: result.cacheReadTokens,
+            cacheWriteTokens: result.cacheWriteTokens,
+            iterations: result.iterations,
+            toolCallCount: result.toolCalls,
+            subagent: config.name,
+          },
+        })
+      }
+
+      return textResult({
+        subagent: config.name,
+        summary: result.text,
+        toolCalls: result.toolCalls,
+        iterations: result.iterations,
+        tokens: { input: result.inputTokens, output: result.outputTokens },
+      })
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Skill Tool (Claude Code skill format)
+// ---------------------------------------------------------------------------
+
+export interface LoadedSkillEntry {
+  name: string
+  description: string
+  content: string
+  skillDir: string
+  disableModelInvocation: boolean
+  userInvocable: boolean
+  allowedTools?: string[]
+  context?: 'fork'
+  agent?: string
+  argumentHint?: string
+}
+
+let loadedClaudeSkills: LoadedSkillEntry[] | null = null
+
+export function setLoadedClaudeSkills(skills: LoadedSkillEntry[]): void {
+  loadedClaudeSkills = skills
+}
+
+export function getLoadedClaudeSkills(): LoadedSkillEntry[] {
+  return loadedClaudeSkills || []
+}
+
+function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): AgentTool {
+  return {
+    name: 'skill',
+    description:
+      'Invoke a skill by name. Skills are reusable instruction sets from .claude/skills/ or workspace/skills/. ' +
+      'Pass optional arguments that get substituted into the skill content via $ARGUMENTS.',
+    label: 'Skill',
+    parameters: Type.Object({
+      skill: Type.String({ description: 'Skill name to invoke' }),
+      args: Type.Optional(Type.String({ description: 'Arguments to pass to the skill' })),
+    }),
+    execute: async (_toolCallId, params, context) => {
+      const { skill: skillName, args } = params as { skill: string; args?: string }
+
+      const skills = getLoadedClaudeSkills()
+      const found = skills.find(s => s.name === skillName)
+      if (!found) {
+        return textResult({
+          error: `Skill not found: ${skillName}. Available: ${skills.map(s => s.name).join(', ')}`,
+        })
+      }
+
+      let content = found.content
+
+      // $ARGUMENTS substitution
+      if (args) {
+        const argParts = args.split(/\s+/)
+        content = content.replace(/\$ARGUMENTS\[(\d+)\]/g, (_, idx) => argParts[parseInt(idx)] || '')
+        content = content.replace(/\$(\d+)/g, (_, idx) => argParts[parseInt(idx)] || '')
+        content = content.replace(/\$ARGUMENTS/g, args)
+      } else {
+        content = content.replace(/\$ARGUMENTS\[\d+\]/g, '')
+        content = content.replace(/\$\d+/g, '')
+        content = content.replace(/\$ARGUMENTS/g, '')
+      }
+
+      // ${CLAUDE_SKILL_DIR} substitution
+      content = content.replace(/\$\{CLAUDE_SKILL_DIR\}/g, found.skillDir)
+
+      // If context: fork, run in a subagent
+      if (found.context === 'fork') {
+        const agentType = found.agent || 'general-purpose'
+        const subConfig: SubagentConfig = {
+          name: `skill-${skillName}`,
+          description: `Executing skill: ${found.description}`,
+          systemPrompt: content,
+          model: undefined,
+          disallowedTools: ['task', 'code_agent'],
+        }
+
+        // Try to resolve as a built-in agent type for tool scoping
+        const builtIn = getBuiltinSubagentConfig(agentType, ctx, allToolsGetter())
+        if (builtIn) {
+          subConfig.toolNames = builtIn.toolNames
+          subConfig.model = builtIn.model
+        }
+
+        const result = await runSubagent(subConfig, content, ctx, allToolsGetter())
+        return textResult({
+          skill: skillName,
+          mode: 'fork',
+          agent: agentType,
+          result: result.text,
+        })
+      }
+
+      // Inline mode: return content for the agent to use as context
+      return textResult({
+        skill: skillName,
+        mode: 'inline',
+        content,
+        instruction: 'Follow the skill instructions above to complete the task.',
+      })
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Tool Group Mapping
 // ---------------------------------------------------------------------------
 
@@ -2693,8 +3303,10 @@ function createToolUninstallTool(ctx: ToolContext): AgentTool {
  */
 export const TOOL_GROUP_MAP: Record<string, string[]> = {
   shell: ['exec'],
-  filesystem: ['read_file', 'write_file'],
-  files: ['list_files', 'delete_file', 'search_files', 'read_file', 'write_file'],
+  filesystem: ['read_file', 'write_file', 'edit_file'],
+  files: ['list_files', 'delete_file', 'search_files', 'read_file', 'write_file', 'edit_file'],
+  search: ['glob', 'grep'],
+  planning: ['todo_write', 'task'],
   web: ['web'],
   web_fetch: ['web'],
   web_search: ['web'],
@@ -2715,8 +3327,9 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
 }
 
 export const ALL_TOOL_NAMES = [
-  'exec', 'read_file', 'write_file', 'web', 'browser',
+  'exec', 'read_file', 'write_file', 'edit_file', 'glob', 'grep', 'ls', 'web', 'browser',
   'list_files', 'delete_file', 'search_files',
+  'todo_write', 'ask_user', 'skill', 'task',
   'memory_read', 'memory_write', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list', 'cron',
   'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_action_wait', 'canvas_components',
   'canvas_trigger_action', 'canvas_inspect',
@@ -3322,6 +3935,10 @@ export function createTools(ctx: ToolContext, modeHandler?: ModeSwitchHandler, e
     g(createExecTool(ctx), 'shell'),
     g(createReadFileTool(ctx), 'file_read'),
     g(createWriteFileTool(ctx), 'file_write'),
+    g(createEditFileTool(ctx), 'file_write'),
+    g(createGlobTool(ctx), 'file_read'),
+    g(createGrepTool(ctx), 'file_read'),
+    g(createLsTool(ctx), 'file_read'),
     g(createListFilesTool(ctx), 'file_read'),
     g(createDeleteFileTool(ctx), 'file_delete'),
     g(createSearchFilesTool(ctx), 'file_read'),
@@ -3330,6 +3947,8 @@ export function createTools(ctx: ToolContext, modeHandler?: ModeSwitchHandler, e
     createMemoryReadTool(ctx),
     createMemoryWriteTool(ctx),
     createMemorySearchTool(ctx),
+    createTodoWriteTool(ctx),
+    createAskUserTool(ctx),
     createSendMessageTool(ctx),
     createChannelConnectTool(ctx),
     createChannelDisconnectTool(ctx),
@@ -3356,6 +3975,11 @@ export function createTools(ctx: ToolContext, modeHandler?: ModeSwitchHandler, e
     g(createGenerateImageTool(ctx), 'network'),
   ]
 
+  // Self-referencing getter for tools that need the full tool list (task, skill)
+  const allToolsGetter = () => tools
+  tools.push(createTaskTool(ctx, allToolsGetter))
+  tools.push(createSkillTool(ctx, allToolsGetter))
+
   if (modeHandler) {
     tools.push(createSwitchModeTool(ctx, modeHandler))
   }
@@ -3366,7 +3990,7 @@ export function createTools(ctx: ToolContext, modeHandler?: ModeSwitchHandler, e
   return tools
 }
 
-/** Reduced tool set for heartbeat ticks (no exec, no send_message) */
+/** Reduced tool set for heartbeat ticks (no exec, no send_message, no planning tools) */
 export function createHeartbeatTools(ctx: ToolContext): AgentTool[] {
   const pe = ctx.permissionEngine
   const g = (tool: AgentTool, cat: import('./types').PermissionCategory) => applyPermissionGate(tool, cat, pe)
@@ -3374,6 +3998,10 @@ export function createHeartbeatTools(ctx: ToolContext): AgentTool[] {
   return [
     g(createReadFileTool(ctx), 'file_read'),
     g(createWriteFileTool(ctx), 'file_write'),
+    g(createEditFileTool(ctx), 'file_write'),
+    g(createGlobTool(ctx), 'file_read'),
+    g(createGrepTool(ctx), 'file_read'),
+    g(createLsTool(ctx), 'file_read'),
     g(createWebTool(), 'network'),
     g(createBrowserTool(ctx), 'network'),
     createMemoryReadTool(ctx),

@@ -118,6 +118,121 @@ export function loadBundledSkills(existingSkillNames: Set<string>): Skill[] {
   return all.filter((s) => !existingSkillNames.has(s.name))
 }
 
+// ---------------------------------------------------------------------------
+// Claude Code Skill Format (.claude/skills/<name>/SKILL.md)
+// ---------------------------------------------------------------------------
+
+export interface ClaudeCodeSkill {
+  name: string
+  description: string
+  content: string
+  skillDir: string
+  disableModelInvocation: boolean
+  userInvocable: boolean
+  allowedTools?: string[]
+  context?: 'fork'
+  agent?: string
+  argumentHint?: string
+}
+
+/**
+ * Load skills in the Claude Code .claude/skills/<name>/SKILL.md format.
+ * Scans the given directory for subdirectories containing SKILL.md.
+ */
+export function loadClaudeCodeSkills(baseDir: string): ClaudeCodeSkill[] {
+  const skillsDir = join(baseDir, '.claude', 'skills')
+  if (!existsSync(skillsDir)) return []
+
+  const skills: ClaudeCodeSkill[] = []
+  try {
+    for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      const skillMdPath = join(skillsDir, entry.name, 'SKILL.md')
+      if (!existsSync(skillMdPath)) continue
+
+      try {
+        const raw = readFileSync(skillMdPath, 'utf-8')
+        const { metadata, content } = parseFrontmatter(raw)
+
+        const name = metadata.name || entry.name
+        const description = metadata.description || content.split('\n')[0] || ''
+
+        const allowedToolsRaw = metadata['allowed-tools']
+        const allowedTools = typeof allowedToolsRaw === 'string'
+          ? allowedToolsRaw.split(/[,\s]+/).map(t => t.trim()).filter(Boolean)
+          : Array.isArray(allowedToolsRaw) ? allowedToolsRaw : undefined
+
+        skills.push({
+          name,
+          description,
+          content,
+          skillDir: join(skillsDir, entry.name),
+          disableModelInvocation: metadata['disable-model-invocation'] === 'true' || metadata['disable-model-invocation'] === true,
+          userInvocable: metadata['user-invocable'] !== 'false' && metadata['user-invocable'] !== false,
+          allowedTools,
+          context: metadata.context === 'fork' ? 'fork' : undefined,
+          agent: metadata.agent || undefined,
+          argumentHint: metadata['argument-hint'] || undefined,
+        })
+      } catch (err: any) {
+        console.error(`[Skills] Failed to load Claude Code skill ${entry.name}:`, err.message)
+      }
+    }
+  } catch { /* directory unreadable */ }
+
+  return skills
+}
+
+/**
+ * Load Claude Code skills from all relevant locations:
+ * - workspace/.claude/skills/ (project-level)
+ * - ~/.claude/skills/ (user-level, optional)
+ *
+ * Project skills take precedence over user skills on name collision.
+ */
+export function loadAllClaudeCodeSkills(workspaceDir: string): ClaudeCodeSkill[] {
+  const projectSkills = loadClaudeCodeSkills(workspaceDir)
+  const projectNames = new Set(projectSkills.map(s => s.name))
+
+  const homeDir = process.env.HOME || process.env.USERPROFILE || ''
+  let userSkills: ClaudeCodeSkill[] = []
+  if (homeDir) {
+    const homeClaudeDir = join(homeDir, '.claude', 'skills')
+    if (existsSync(join(homeDir, '.claude'))) {
+      userSkills = loadClaudeCodeSkills(homeDir).filter(s => !projectNames.has(s.name))
+    }
+  }
+
+  return [...projectSkills, ...userSkills]
+}
+
+/**
+ * Build a skills description block for injection into the system prompt.
+ * Only includes skills where disable-model-invocation is false.
+ * Respects a character budget (default: 16000 chars).
+ */
+export function buildSkillsPromptSection(
+  skills: ClaudeCodeSkill[],
+  charBudget?: number,
+): string {
+  const budget = charBudget || parseInt(process.env.SLASH_COMMAND_TOOL_CHAR_BUDGET || '16000', 10)
+  const invocableSkills = skills.filter(s => !s.disableModelInvocation)
+
+  if (invocableSkills.length === 0) return ''
+
+  let section = '## Available Skills\n\nUse the `skill` tool to invoke these skills when relevant:\n\n'
+  let currentSize = section.length
+
+  for (const skill of invocableSkills) {
+    const line = `- **${skill.name}**: ${skill.description}${skill.argumentHint ? ` (args: ${skill.argumentHint})` : ''}\n`
+    if (currentSize + line.length > budget) break
+    section += line
+    currentSize += line.length
+  }
+
+  return section
+}
+
 /**
  * Match a user message against loaded skills.
  * Returns the first matching skill, or null.
