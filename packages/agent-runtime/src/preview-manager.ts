@@ -15,7 +15,7 @@
  */
 
 import { spawn, type ChildProcess, execSync } from 'child_process'
-import { join, resolve } from 'path'
+import { join } from 'path'
 import { existsSync, writeFileSync, readFileSync, mkdirSync, appendFileSync } from 'fs'
 
 const LOG_PREFIX = 'preview-manager'
@@ -68,6 +68,13 @@ export class PreviewManager {
   /**
    * Start the preview server (install deps, generate Prisma, start Vite watch).
    * No-op if already started.
+   *
+   * Optimizations:
+   * - If dist/index.html already exists (pre-built in template archive), we mark
+   *   the preview as ready immediately so the frontend can render the app, then
+   *   run setup tasks (install, prisma, vite watch) in the background.
+   * - Skips `bun install` when node_modules/ already exists (pre-installed in archive).
+   * - Skips `prisma generate` when the generated client already exists.
    */
   async start(): Promise<{ mode: string; port: number | null; timings: Record<string, number> }> {
     if (this.started) {
@@ -82,7 +89,61 @@ export class PreviewManager {
       return { mode: 'no-project', port: null, timings }
     }
 
-    // Install dependencies
+    const hasPrebuiltDist = existsSync(join(projectDir, 'dist', 'index.html'))
+
+    if (hasPrebuiltDist) {
+      console.log(`[${LOG_PREFIX}] Pre-built dist/ found — serving immediately, setup continues in background`)
+      this._phase = 'ready'
+      this.started = true
+
+      this.backgroundSetup(timings).catch((err) => {
+        console.error(`[${LOG_PREFIX}] Background setup failed:`, err.message)
+      })
+
+      return { mode: 'prebuilt-dist', port: PREVIEW_PORT, timings }
+    }
+
+    await this.runSetupTasks(timings)
+    return { mode: this.apiServerProcess ? 'vite-watch+api' : 'vite-watch', port: PREVIEW_PORT, timings }
+  }
+
+  private async backgroundSetup(timings: Record<string, number>): Promise<void> {
+    await this.installDepsIfNeeded(timings)
+    await this.runPrismaIfNeeded(timings)
+
+    await this.startBuildWatch()
+    timings.buildWatch = 0
+
+    await this.startApiServer()
+    timings.apiServer = 0
+
+    console.log(`[${LOG_PREFIX}] Background setup complete:`, JSON.stringify(timings))
+  }
+
+  private async runSetupTasks(timings: Record<string, number>): Promise<void> {
+    await this.installDepsIfNeeded(timings)
+    await this.runPrismaIfNeeded(timings)
+
+    this._phase = 'building'
+    await this.startBuildWatch()
+
+    this._phase = 'starting-api'
+    await this.startApiServer()
+
+    this._phase = 'ready'
+    this.started = true
+  }
+
+  private async installDepsIfNeeded(timings: Record<string, number>): Promise<void> {
+    const projectDir = this.projectDir
+    const hasNodeModules = existsSync(join(projectDir, 'node_modules'))
+
+    if (hasNodeModules) {
+      console.log(`[${LOG_PREFIX}] node_modules/ exists — skipping bun install`)
+      timings.install = 0
+      return
+    }
+
     this._phase = 'installing'
     const t0 = Date.now()
     try {
@@ -98,10 +159,18 @@ export class PreviewManager {
       timings.install = Date.now() - t0
       console.error(`[${LOG_PREFIX}] Dependency install failed:`, err.message)
     }
+  }
 
-    // Generate Prisma client if schema exists
+  private async runPrismaIfNeeded(timings: Record<string, number>): Promise<void> {
+    const projectDir = this.projectDir
     const prismaSchema = join(projectDir, 'prisma', 'schema.prisma')
-    if (existsSync(prismaSchema)) {
+    if (!existsSync(prismaSchema)) return
+
+    const prismaClientPath = join(projectDir, 'node_modules', '.prisma', 'client')
+    if (existsSync(prismaClientPath)) {
+      console.log(`[${LOG_PREFIX}] Prisma client exists — skipping generate`)
+      timings.prisma = 0
+    } else {
       this._phase = 'generating-prisma'
       const t1 = Date.now()
       try {
@@ -111,40 +180,30 @@ export class PreviewManager {
         timings.prisma = Date.now() - t1
         console.error(`[${LOG_PREFIX}] Prisma generate failed:`, err.message)
       }
-
-      // Push schema to SQLite
-      this._phase = 'pushing-db'
-      const devDb = join(projectDir, 'prisma', 'dev.db')
-      const t2 = Date.now()
-      try {
-        execSync('bunx prisma db push 2>&1', {
-          cwd: projectDir,
-          timeout: 60_000,
-          stdio: 'pipe',
-          env: { ...process.env, DATABASE_URL: `file:${devDb}` },
-        })
-        timings.dbPush = Date.now() - t2
-        console.log(`[${LOG_PREFIX}] Prisma db push succeeded (${timings.dbPush}ms)`)
-      } catch (err: any) {
-        timings.dbPush = Date.now() - t2
-        console.error(`[${LOG_PREFIX}] Prisma db push failed:`, err.message?.slice(0, 200))
-      }
     }
 
-    // Start Vite build --watch
-    this._phase = 'building'
-    await this.startBuildWatch()
+    this._phase = 'pushing-db'
+    const devDb = join(projectDir, 'prisma', 'dev.db')
+    if (existsSync(devDb)) {
+      console.log(`[${LOG_PREFIX}] SQLite db exists — skipping db push`)
+      timings.dbPush = 0
+      return
+    }
 
-    // Start the template's API server if server.tsx exists
-    this._phase = 'starting-api'
-    await this.startApiServer()
-
-    this._phase = 'ready'
-
-    this.started = true
-
-    const mode = this.apiServerProcess ? 'vite-watch+api' : 'vite-watch'
-    return { mode, port: PREVIEW_PORT, timings }
+    const t2 = Date.now()
+    try {
+      execSync('bunx prisma db push 2>&1', {
+        cwd: projectDir,
+        timeout: 60_000,
+        stdio: 'pipe',
+        env: { ...process.env, DATABASE_URL: `file:${devDb}` },
+      })
+      timings.dbPush = Date.now() - t2
+      console.log(`[${LOG_PREFIX}] Prisma db push succeeded (${timings.dbPush}ms)`)
+    } catch (err: any) {
+      timings.dbPush = Date.now() - t2
+      console.error(`[${LOG_PREFIX}] Prisma db push failed:`, err.message?.slice(0, 200))
+    }
   }
 
   /**
@@ -179,11 +238,14 @@ export class PreviewManager {
 
   /**
    * Get the current preview status.
+   * `running` is true when the preview is serveable — either because a pre-built
+   * dist/ exists (started=true immediately) or because vite build --watch is live.
    */
   getStatus(): { running: boolean; port: number | null; projectDir: string; phase: PreviewPhase } {
+    const running = this.started && this._phase === 'ready'
     return {
-      running: this.isRunning,
-      port: this.isRunning ? PREVIEW_PORT : null,
+      running,
+      port: running ? PREVIEW_PORT : null,
       projectDir: this.projectDir,
       phase: this._phase,
     }
