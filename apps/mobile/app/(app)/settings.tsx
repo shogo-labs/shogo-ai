@@ -376,25 +376,6 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
 
       <Card>
         <CardContent className="p-0">
-          {/* Avatar */}
-          <View className="px-6 py-5 flex-row items-center justify-between">
-            <View className="flex-1 mr-4">
-              <Text className="text-base font-semibold text-foreground">
-                Avatar
-              </Text>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                Set an avatar for your workspace.
-              </Text>
-            </View>
-            <View className="h-10 w-10 rounded-lg bg-primary items-center justify-center">
-              <Text className="text-sm font-semibold text-primary-foreground">
-                {currentWorkspace?.name?.[0]?.toUpperCase() || 'W'}
-              </Text>
-            </View>
-          </View>
-
-          <Separator />
-
           {/* Name */}
           <View className="px-6 py-5 flex-row items-start justify-between">
             <View className="flex-[0.45] mr-4 pt-1">
@@ -1077,7 +1058,7 @@ const BillingTab = observer(function BillingTab() {
       </View>
 
       {/* Plan cards — 3 columns on desktop, stacked on mobile */}
-      <View className="gap-6 md:flex-row md:items-start">
+      <View className="gap-6 md:flex-row md:items-stretch">
         {/* Pro */}
         <Card className="md:flex-1 md:w-0">
           <CardContent className="p-5 gap-4">
@@ -1175,7 +1156,7 @@ const BillingTab = observer(function BillingTab() {
 
         {/* Enterprise */}
         <Card className="md:flex-1 md:w-0">
-          <CardContent className="p-5 gap-4">
+          <CardContent className="p-5 gap-4 flex-1">
             <Text className="text-lg font-semibold text-foreground">Enterprise</Text>
             <Text className="text-sm text-muted-foreground">
               Built for large orgs needing flexibility, scale, and governance.
@@ -1184,12 +1165,22 @@ const BillingTab = observer(function BillingTab() {
               <Text className="text-3xl font-bold text-foreground">Custom</Text>
               <Text className="text-sm text-muted-foreground">Flexible plans</Text>
             </View>
+            {/* Spacer to align CTA with Pro/Business Upgrade buttons (they have an Annual toggle row here) */}
+            <View className="h-6" />
             <Button
               variant="outline"
-              onPress={() => Linking.openURL('mailto:sales@shogo.ai')}
+              onPress={() => {
+                const mailto = 'mailto:sales@shogo.ai'
+                if (Platform.OS === 'web') {
+                  window.open(mailto, '_blank')
+                } else {
+                  Linking.openURL(mailto)
+                }
+              }}
             >
               Book a demo
             </Button>
+            <View className="flex-1" />
             <View className="gap-2">
               <Text className="text-sm text-muted-foreground">
                 All features in Business, plus:
@@ -2063,7 +2054,7 @@ function InviteMembersModal({
       >
         <Pressable
           onPress={(e) => e.stopPropagation()}
-          className="bg-background rounded-xl p-6 w-full max-w-md shadow-xl"
+          className="bg-background rounded-xl p-6 w-full max-w-md shadow-xl overflow-visible"
         >
           <View className="flex-row items-center justify-between mb-1">
             <Text className="text-lg font-semibold text-foreground">Invite members</Text>
@@ -2096,7 +2087,7 @@ function InviteMembersModal({
           </View>
 
           <Text className="text-sm font-medium text-foreground mb-1.5">Role</Text>
-          <View className="relative mb-6">
+          <View className="relative mb-6" style={{ zIndex: 50 }}>
             <Pressable
               onPress={() => setShowRolePicker(!showRolePicker)}
               className="flex-row items-center justify-between h-10 px-3 rounded-lg border border-border"
@@ -2105,7 +2096,7 @@ function InviteMembersModal({
               <ChevronDown size={14} className="text-muted-foreground" />
             </Pressable>
             {showRolePicker && (
-              <View className="absolute top-11 left-0 right-0 z-50 bg-background border border-border rounded-lg shadow-lg">
+              <View className="absolute top-11 left-0 right-0 z-50 bg-background border border-border rounded-lg shadow-lg overflow-hidden">
                 {INVITE_ROLES.map((r) => (
                   <Pressable
                     key={r.value}

@@ -414,10 +414,10 @@ export function AgentTemplateGalleryCard({
       disabled={isLoading}
       className={cn(
         'rounded-2xl overflow-hidden border bg-card border-slate-200/80 dark:border-slate-800',
-        Platform.OS === 'web' && 'cursor-pointer',
+        Platform.OS === 'web' && 'cursor-pointer group',
         isLoading && 'opacity-50',
         Platform.OS === 'web' &&
-          'shadow-lg shadow-slate-900/5 dark:shadow-black/40 web:transition-shadow',
+          'shadow-lg shadow-slate-900/5 dark:shadow-black/40 web:transition-all web:duration-200 web:hover:shadow-xl web:hover:border-primary/40',
       )}
     >
       <View className={cn(compact ? 'p-3 pb-2.5' : 'p-4 pb-3')}>
@@ -486,12 +486,12 @@ export function AgentTemplateGalleryCard({
           </View>
         )}
 
-        <View className="flex-row items-center justify-center gap-2 mt-3 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-100 dark:bg-white/10 py-2.5">
-          <Zap size={compact ? 15 : 16} color={isDark ? '#cbd5e1' : '#475569'} />
-          <Text className={cn('font-semibold text-slate-700 dark:text-white/85', compact ? 'text-[13px]' : 'text-sm')}>
+        <View className="flex-row items-center justify-center gap-2 mt-3 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-100 dark:bg-white/10 py-2.5 web:transition-all web:duration-200 web:group-hover:bg-primary web:group-hover:border-primary">
+          <Zap size={compact ? 15 : 16} className="text-slate-600 dark:text-slate-300 web:transition-colors web:duration-200 web:group-hover:text-primary-foreground" />
+          <Text className={cn('font-semibold text-slate-700 dark:text-white/85 web:transition-colors web:duration-200 web:group-hover:text-primary-foreground', compact ? 'text-[13px]' : 'text-sm')}>
             Use Template
           </Text>
-          <ChevronRight size={compact ? 15 : 16} color={isDark ? '#cbd5e1' : '#475569'} />
+          <ChevronRight size={compact ? 15 : 16} className="text-slate-600 dark:text-slate-300 web:transition-colors web:duration-200 web:group-hover:text-primary-foreground" />
         </View>
       </View>
 
