@@ -2044,7 +2044,7 @@ function InviteMembersModal({
       >
         <Pressable
           onPress={(e) => e.stopPropagation()}
-          className="bg-background rounded-xl p-6 w-full max-w-md shadow-xl"
+          className="bg-background rounded-xl p-6 w-full max-w-md shadow-xl overflow-visible"
         >
           <View className="flex-row items-center justify-between mb-1">
             <Text className="text-lg font-semibold text-foreground">Invite members</Text>
@@ -2077,7 +2077,7 @@ function InviteMembersModal({
           </View>
 
           <Text className="text-sm font-medium text-foreground mb-1.5">Role</Text>
-          <View className="relative mb-6">
+          <View className="relative mb-6" style={{ zIndex: 50 }}>
             <Pressable
               onPress={() => setShowRolePicker(!showRolePicker)}
               className="flex-row items-center justify-between h-10 px-3 rounded-lg border border-border"
@@ -2086,7 +2086,7 @@ function InviteMembersModal({
               <ChevronDown size={14} className="text-muted-foreground" />
             </Pressable>
             {showRolePicker && (
-              <View className="absolute top-11 left-0 right-0 z-50 bg-background border border-border rounded-lg shadow-lg">
+              <View className="absolute top-11 left-0 right-0 z-50 bg-background border border-border rounded-lg shadow-lg overflow-hidden">
                 {INVITE_ROLES.map((r) => (
                   <Pressable
                     key={r.value}
