@@ -1528,11 +1528,23 @@ export async function getProjectPodUrl(projectId: string): Promise<string> {
       // 1. Check in-memory warm pool assigned map (covers active session)
       const { getWarmPoolController } = await import('./warm-pool-controller')
       const warmPool = getWarmPoolController()
-      const warmUrl = warmPool.getAssignedUrl(projectId)
-      if (warmUrl) {
-        // Health probe to avoid returning stale URLs for dead pods.
-        // 8s timeout: warm pool pods can be slow to respond during S3 restore
-        // and preview startup — a short timeout causes unnecessary evictions.
+      const assignedPod = warmPool.getAssignedPod(projectId)
+      if (assignedPod) {
+        const warmUrl = assignedPod.url
+        const assignmentAgeMs = assignedPod.assignedAt ? Date.now() - assignedPod.assignedAt : Infinity
+        const ASSIGNMENT_GRACE_MS = 90_000
+
+        if (assignmentAgeMs < ASSIGNMENT_GRACE_MS) {
+          // Pod was recently assigned — skip health probe to avoid evicting
+          // pods that are still processing /pool/assign (S3 sync, gateway init).
+          span.setAttribute('resolve.method', 'warm_pool_assigned_grace')
+          span.setAttribute('resolve.duration_ms', Date.now() - totalStartTime)
+          span.setStatus({ code: SpanStatusCode.OK })
+          console.log(`[KnativeProjectManager] Project ${projectId} served by warm pool (grace period, assigned ${Math.round(assignmentAgeMs / 1000)}s ago, elapsed: ${Date.now() - totalStartTime}ms)`)
+          return warmUrl
+        }
+
+        // Pod assigned >90s ago — health probe to verify it's still alive.
         try {
           const probe = await fetch(`${warmUrl}/health`, {
             method: 'GET',

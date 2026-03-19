@@ -108,6 +108,7 @@ export interface WarmPodInfo {
   url: string
   createdAt: number
   ready: boolean
+  assignedAt?: number
 }
 
 export interface PromotedPodInfo {
@@ -591,6 +592,7 @@ export class WarmPoolController {
           throw new Error(`Assignment failed (${response.status}): ${body}`)
         }
 
+        pod.assignedAt = Date.now()
         this.assigned.set(projectId, pod)
         this.claimedServiceNames.delete(pod.serviceName)
         const duration = Date.now() - startTime
@@ -718,6 +720,13 @@ export class WarmPoolController {
   getAssignedUrl(projectId: string): string | null {
     const pod = this.assigned.get(projectId)
     return pod?.url ?? null
+  }
+
+  /**
+   * Get full info for an assigned warm pod, including assignedAt timestamp.
+   */
+  getAssignedPod(projectId: string): WarmPodInfo | null {
+    return this.assigned.get(projectId) ?? null
   }
 
   /**
