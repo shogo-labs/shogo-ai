@@ -190,6 +190,8 @@ export function getBuiltinSubagentConfig(
           'canvas_api_hooks', 'canvas_api_bind', 'read_file',
         ],
         disallowedTools: ['task', 'skill', 'code_agent'],
+        maxTurns: 30,
+        maxTokens: 16384,
       }
     case 'explore':
       return {
