@@ -25,7 +25,7 @@ import {
   ScrollView,
   Platform,
 } from 'react-native'
-import { useLocalSearchParams, Stack } from 'expo-router'
+import { useLocalSearchParams, useRouter, Stack } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import {
@@ -86,6 +86,7 @@ export default observer(function ProjectLayout() {
   const { user } = useAuth()
   const http = useDomainHttp()
 
+  const router = useRouter()
   const store = useSDKDomain() as IDomainStore
   const { isReady: sdkReady } = useSDKReady()
   const actions = useDomainActions()
@@ -364,6 +365,12 @@ export default observer(function ProjectLayout() {
     const MAX_RETRIES = 8
     const RETRY_DELAY_MS = 500
 
+    const isAccessDenied = (err: any) => {
+      const status = err?.status
+      const code = err?.code
+      return status === 403 || status === 404 || code === 'FORBIDDEN' || code === 'NOT_FOUND'
+    }
+
     const loadProject = async (attempt = 1): Promise<void> => {
       if (cancelled) return
       setIsLoading(true)
@@ -382,11 +389,16 @@ export default observer(function ProjectLayout() {
           await new Promise((r) => setTimeout(r, RETRY_DELAY_MS * attempt))
           return loadProject(attempt + 1)
         } else {
-          console.warn('[ProjectLayout] Project not found after retries:', projectId)
-          setIsLoading(false)
+          console.warn('[ProjectLayout] Project not found after retries, redirecting home:', projectId)
+          router.replace('/(app)')
         }
       } catch (err: any) {
         if (cancelled) return
+        if (isAccessDenied(err)) {
+          console.warn('[ProjectLayout] Access denied to project, redirecting home:', projectId)
+          router.replace('/(app)')
+          return
+        }
         const isTransient =
           err?.message?.includes('Schema') || err?.message?.includes('not found')
         if (isTransient && attempt < MAX_RETRIES) {
@@ -394,7 +406,7 @@ export default observer(function ProjectLayout() {
           return loadProject(attempt + 1)
         }
         console.error('[ProjectLayout] Failed to load project:', err)
-        setIsLoading(false)
+        router.replace('/(app)')
       }
     }
 
