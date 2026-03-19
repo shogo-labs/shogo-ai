@@ -77,6 +77,7 @@ import {
 import { TierSelector } from '../../components/billing/TierSelector'
 import { FeatureList } from '../../components/billing/FeatureList'
 import { SecuritySettingsPanel } from '../../components/security/SecuritySettingsPanel'
+import { useToast, Toast, ToastTitle, ToastDescription } from '@/components/ui/toast'
 import {
   Card,
   CardContent,
@@ -899,6 +900,7 @@ const BillingTab = observer(function BillingTab() {
   const { user } = useAuth()
   const actions = useDomainActions()
   const currentWorkspace = useActiveWorkspace()
+  const toast = useToast()
 
   const {
     subscription,
@@ -965,8 +967,20 @@ const BillingTab = observer(function BillingTab() {
           Linking.openURL(data.url)
         }
       }
-    } catch (e) {
+    } catch (e: any) {
       console.warn('Portal session failed:', e)
+      toast.show({
+        placement: 'top',
+        duration: 5000,
+        render: ({ id }) => (
+          <Toast nativeID={id} variant="outline" action="error">
+            <ToastTitle>Unable to open billing portal</ToastTitle>
+            <ToastDescription>
+              Something went wrong. Please try again or contact support.
+            </ToastDescription>
+          </Toast>
+        ),
+      })
     } finally {
       setIsPortalLoading(false)
     }
