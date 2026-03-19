@@ -77,6 +77,9 @@ export interface ChatContextValue {
 
   /** Agent URL for workspace file access (e.g. downloading generated images) */
   agentUrl?: string | null
+
+  /** Provide a tool output for a client-side tool call (e.g. ask_user responses) */
+  addToolOutput?: (params: { toolCallId: string; output: string }) => void
 }
 
 // ============================================================================

@@ -88,7 +88,7 @@ export function getGradientOpacity(index: number): number {
 export function getToolKeyArg(toolName: string, args?: Record<string, unknown>): string | null {
   if (!args) return null
 
-  if (toolName === "AskUserQuestion") {
+  if (toolName === "ask_user") {
     const questions = args.questions as AskUserQuestionItem[] | undefined
     if (questions?.[0]?.header) {
       return questions[0].header

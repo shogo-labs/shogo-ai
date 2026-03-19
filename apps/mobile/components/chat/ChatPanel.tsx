@@ -748,7 +748,7 @@ export const ChatPanel = observer(function ChatPanel({
   )
 
   // AI SDK useChat hook
-  const { messages, sendMessage, status, error, setMessages, stop } = useChat({
+  const { messages, sendMessage, addToolOutput, status, error, setMessages, stop } = useChat({
     transport: chatTransport,
     id: currentSessionId || undefined,
     onError: (err) => {
@@ -1756,35 +1756,18 @@ export const ChatPanel = observer(function ChatPanel({
     }
   }, [displayMessages.length, messages, currentSessionId])
 
-  // Detect pending AskUserQuestion in messages
+  // Detect a pending ask_user tool call in the last assistant message
   const hasPendingQuestion = useMemo(() => {
-    let lastAskUserQuestionIndex = -1
-
-    for (let i = 0; i < messages.length; i++) {
-      const message = messages[i]
-      if (message.role !== "assistant") continue
-
-      const parts = (message as any).parts as any[] | undefined
-      if (!parts) continue
-
-      for (const part of parts) {
-        const toolName = part.toolInvocation?.toolName || part.toolName
-        if (toolName === "AskUserQuestion") {
-          lastAskUserQuestionIndex = i
-          break
-        }
-      }
-    }
-
-    if (lastAskUserQuestionIndex === -1) return false
-
-    for (let i = lastAskUserQuestionIndex + 1; i < messages.length; i++) {
-      if (messages[i].role === "user") {
-        return false
-      }
-    }
-
-    return true
+    const lastMsg = messages[messages.length - 1]
+    if (!lastMsg || lastMsg.role !== "assistant") return false
+    const parts = (lastMsg as any).parts as any[] | undefined
+    if (!parts) return false
+    return parts.some(
+      (p: any) =>
+        p.type === "dynamic-tool" &&
+        p.toolName === "ask_user" &&
+        (p.state === "input-available" || p.state === "input-streaming")
+    )
   }, [messages])
 
   const extractMediaType = useCallback((dataUrl: string): string => {
@@ -2074,6 +2057,7 @@ export const ChatPanel = observer(function ChatPanel({
     isPolling,
     error: error?.message ?? null,
     agentUrl: resolvedAgentUrl,
+    addToolOutput: (params) => addToolOutput(params as any),
   }
 
   const handleCompactSubmit = useCallback(

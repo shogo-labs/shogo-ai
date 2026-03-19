@@ -1274,6 +1274,10 @@ export class AgentGateway {
           }
           if (uiWriter) {
             uiWriter.write({ type: 'tool-input-available', toolCallId, toolName, input: args, dynamic: true })
+            // ask_user is a UI-driven tool: suppress tool-output-available so the widget
+            // stays in interactive (input-available) state until the user submits their
+            // answer as the next user message.
+            if (toolName === 'ask_user') return
             uiWriter.write({
               type: 'tool-output-available',
               toolCallId,
