@@ -1058,7 +1058,7 @@ const BillingTab = observer(function BillingTab() {
       </View>
 
       {/* Plan cards — 3 columns on desktop, stacked on mobile */}
-      <View className="gap-6 md:flex-row md:items-start">
+      <View className="gap-6 md:flex-row md:items-stretch">
         {/* Pro */}
         <Card className="md:flex-1 md:w-0">
           <CardContent className="p-5 gap-4">
@@ -1156,7 +1156,7 @@ const BillingTab = observer(function BillingTab() {
 
         {/* Enterprise */}
         <Card className="md:flex-1 md:w-0">
-          <CardContent className="p-5 gap-4">
+          <CardContent className="p-5 gap-4 flex-1">
             <Text className="text-lg font-semibold text-foreground">Enterprise</Text>
             <Text className="text-sm text-muted-foreground">
               Built for large orgs needing flexibility, scale, and governance.
@@ -1165,6 +1165,8 @@ const BillingTab = observer(function BillingTab() {
               <Text className="text-3xl font-bold text-foreground">Custom</Text>
               <Text className="text-sm text-muted-foreground">Flexible plans</Text>
             </View>
+            {/* Spacer to align CTA with Pro/Business Upgrade buttons (they have an Annual toggle row here) */}
+            <View className="h-6" />
             <Button
               variant="outline"
               onPress={() => {
@@ -1178,6 +1180,7 @@ const BillingTab = observer(function BillingTab() {
             >
               Book a demo
             </Button>
+            <View className="flex-1" />
             <View className="gap-2">
               <Text className="text-sm text-muted-foreground">
                 All features in Business, plus:
