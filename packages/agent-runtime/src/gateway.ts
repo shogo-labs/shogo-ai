@@ -37,7 +37,7 @@ import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { BlockChunker } from './block-chunker'
 import { CanvasStreamParser } from './canvas-stream-parser'
 import { BASIC_CANVAS_TOOLS_GUIDE, BASIC_CANVAS_EXAMPLES } from './canvas-prompt'
-import { CODE_AGENT_CODING_GUIDE, CODE_AGENT_ENVIRONMENT_GUIDE } from './code-agent-prompt'
+import { CODE_AGENT_GENERAL_GUIDE, CODE_AGENT_APP_BUILDING_GUIDE } from './code-agent-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import type { FilePart } from './file-attachment-utils'
@@ -1537,14 +1537,16 @@ Examples:
     // Mode context injection
     parts.push(`\n## Current Mode\nActive visual mode: **${activeMode}**. Use switch_mode to change.\n`)
 
-    // Canvas and code tool guides (available directly to the main agent)
-    if (activeMode === 'canvas' || activeMode === 'none') {
+    // Mode-specific tool guides
+    if (activeMode === 'canvas') {
       parts.push(BASIC_CANVAS_TOOLS_GUIDE)
       parts.push(BASIC_CANVAS_EXAMPLES)
     }
-    if (activeMode === 'app' || activeMode === 'none') {
-      parts.push(CODE_AGENT_ENVIRONMENT_GUIDE)
-      parts.push(CODE_AGENT_CODING_GUIDE)
+    // General coding guide (edit_file, exec safety, code quality) — always included
+    parts.push(CODE_AGENT_GENERAL_GUIDE)
+    // App building guide (templates, build workflow, prisma, shadcn) — app mode only
+    if (activeMode === 'app') {
+      parts.push(CODE_AGENT_APP_BUILDING_GUIDE)
     }
 
     parts.push(PERSONALITY_EVOLUTION_GUIDE_PREFIX + personalityGuide)

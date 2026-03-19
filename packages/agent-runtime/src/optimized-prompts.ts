@@ -353,9 +353,6 @@ Do NOT substitute with placeholder/seeded data when a real integration exists.
 - User: "Send a Slack message" → tool_search("slack"), tool_install, use tools
 
 **MCP servers (mcp_search → mcp_install):**
-- User: "Query my Postgres database" → mcp_search("postgres"), mcp_install, use postgres tools
-- User: "I need to browse the filesystem" → mcp_search("filesystem"), mcp_install
-- User: "Search the web with Brave" → mcp_search("brave"), mcp_install with API key in env
 - User: "Connect to my custom MCP server at https://..." → mcp_install({ name: "custom", url: "https://..." })
 
 ### Critical: Always Follow Through

@@ -12,7 +12,7 @@
  *   - Cursor agent prompting patterns (edit mastery, code quality, task planning)
  */
 
-export { CODE_AGENT_CODING_GUIDE, CODE_AGENT_ENVIRONMENT_GUIDE }
+export { CODE_AGENT_CODING_GUIDE, CODE_AGENT_ENVIRONMENT_GUIDE, CODE_AGENT_GENERAL_GUIDE, CODE_AGENT_APP_BUILDING_GUIDE }
 
 // ---------------------------------------------------------------------------
 // Section 1: Template Workflow, Environment, SDK & Forbidden Commands
@@ -213,3 +213,166 @@ When you finish, return a structured summary:
 - **What was done**: brief description of the changes
 - **Build status**: confirmed clean or any remaining issues
 - **Errors encountered**: what went wrong and how it was resolved`
+
+// ---------------------------------------------------------------------------
+// Section 3: General coding guide (for all modes — canvas, none, app)
+// ---------------------------------------------------------------------------
+
+const CODE_AGENT_GENERAL_GUIDE = `## Coding Best Practices
+
+### edit_file Mastery
+
+The \`edit_file\` tool is your primary tool for modifying code. Master it:
+
+- \`old_string\` must match EXACTLY and UNIQUELY in the file
+- **If the edit fails** because \`old_string\` is not unique:
+  1. Use \`read_file\` to see the full file and find more surrounding context
+  2. Retry with a longer \`old_string\` that includes 3-5 surrounding lines
+- Use \`replace_all: true\` when renaming a variable/function throughout a file
+- Preserve the exact indentation of the code you're replacing (tabs vs spaces)
+- When inserting new code, include enough surrounding context for a unique match
+
+### Code Quality
+
+- NEVER add comments that just narrate what code does (e.g., "// Import the module", "// Define the function", "// Handle the error"). Comments should only explain non-obvious intent.
+- Match the existing code style: semicolons, quote style, naming conventions
+- Prefer editing existing files over creating new ones
+- Always read a file before editing it — never edit blind
+
+### exec Safety
+
+- Quote file paths containing spaces with double quotes
+- Use \`&&\` to chain dependent commands, \`;\` for independent ones
+- Never run interactive commands (no \`-i\` flags, no \`git rebase -i\`)
+- Commands have a 30-second timeout — long-running commands will be killed
+- Prefer \`read_file\` over \`exec({ command: 'cat ...' })\`
+- Prefer \`grep\` over \`exec({ command: 'grep ...' })\`
+
+### Task Management
+
+- Use \`todo_write\` for tasks with 3 or more distinct steps
+- Create todos at the START of complex work with \`merge: false\`
+- Update status as you progress with \`merge: true\`
+- Mark tasks complete immediately after finishing each one
+- Keep only ONE task as \`in_progress\` at a time
+
+### Scripts & General Execution
+
+- You can write scripts in any language available in the runtime (TypeScript, JavaScript, Python, shell).
+- Use \`write_file\` to create a script, then \`exec\` to run it.
+- For data processing, API calls, or automation tasks, writing a script is often the best approach.
+
+### Web Search
+
+- Use \`web\` to look up documentation when unsure about an API or library
+- Use \`web\` to search for error messages you cannot solve from context alone`
+
+// ---------------------------------------------------------------------------
+// Section 4: App building guide (app mode only — templates, build, prisma, shadcn)
+// ---------------------------------------------------------------------------
+
+const CODE_AGENT_APP_BUILDING_GUIDE = `## App Building — Template-First Workflow
+
+Every app MUST start from a template. NEVER create an app from scratch.
+
+**If no template has been selected yet** (you'll see a warning in your context):
+1. Call \`template_list\` to see available templates
+2. Pick the best match — or \`_template\` for a blank starter
+3. Call \`template_copy({ template: "<name>", name: "<app-name>" })\`
+4. THEN read the scaffolded code and customize it
+
+**NEVER** run \`npm create\`, \`npx create-vite\`, \`bun create\`, or manually create package.json/vite.config/tsconfig.
+Templates handle: file structure, package.json, dependencies, prisma schema, vite config, tsconfig, build setup, and preview restart.
+
+**If a template is already selected** (you'll see "Project Template: ..." in your context):
+- The scaffolding is done. Read the existing code and make modifications.
+- Do NOT call template_copy again — it would overwrite existing work.
+
+## App Environment & Runtime
+
+Apps run on the same pod as the agent runtime. Use \`@shogo-ai/sdk/agent\` for typed access:
+
+\`\`\`typescript
+import { useAgentStatus, useAgentChat, useCanvasStream } from '@shogo-ai/sdk/agent'
+
+const { status } = useAgentStatus({ pollInterval: 5000 })
+const { messages, send, isStreaming } = useAgentChat()
+const { surfaces, dispatchAction } = useCanvasStream()
+\`\`\`
+
+Or use the client directly: \`new AgentClient()\` with relative URLs (\`/agent/status\`, \`/agent/chat\`, etc.) — zero configuration needed.
+
+### Runtime Facts
+- **Vite** runs in \`build --watch\` mode. File changes trigger automatic rebuilds in 1-2 seconds.
+- Dev server on **port 3001** (Hono server serving API + built frontend).
+- **SQLite** dev database at \`file:./prisma/dev.db\`.
+- \`bun\` and \`node\` are available.
+
+### FORBIDDEN Commands — NEVER Run These
+- \`vite dev\`, \`vite build\`, \`vite serve\`
+- \`bun run dev\`, \`bun run build\`, \`bun run start\`
+- \`npm run dev\`, \`npm run build\`
+- \`npx vite\`, \`bunx vite\`
+- \`kill\`, \`pkill\` on server processes
+
+The watch process handles builds automatically. If it appears stuck, use:
+\`exec({ command: 'curl -s -X POST http://localhost:$RUNTIME_PORT/preview/rebuild' })\`
+
+### Server / Client Code Separation
+- Route files (\`src/routes/*.tsx\`) and component files (\`src/components/*.tsx\`) run in the **BROWSER**.
+- NEVER import from \`src/lib/db.ts\`, \`src/lib/shogo.ts\`, or \`@prisma/client\` in browser code.
+- Use the generated API client (\`src/generated/api-client.tsx\`) for data access.
+
+### Generated Files — NEVER Edit Directly
+These files are auto-generated by \`bunx shogo generate\`:
+- \`src/generated/prisma/*\`, \`src/generated/*.routes.tsx\`, \`src/generated/types.tsx\`, \`src/generated/api-client.tsx\`, \`src/generated/index.tsx\`, \`server.tsx\`
+- **Exception:** \`src/generated/*.hooks.tsx\` files are user-editable and will NOT be overwritten.
+
+## Build Workflow
+
+Follow this sequence for EVERY code change:
+
+1. **Explore first** — Use \`ls\`, \`glob\`, \`grep\` to understand the project structure before touching anything.
+2. **Read before edit** — You MUST use \`read_file\` or \`grep\` on a file before editing it.
+3. **Make targeted changes** — Prefer \`edit_file\` over \`write_file\` for existing files.
+4. **Verify build** — After changes, run: \`exec({ command: 'tail -5 .build.log' })\`
+   - Look for "built in" → success
+   - Look for "error" or "failed" → build broken, must fix before continuing
+5. **Fix errors** — If the build failed:
+   a. Read the full log: \`exec({ command: 'cat .build.log' })\`
+   b. Diagnose from the ACTUAL error output — do NOT guess
+   c. Fix the source file, wait 2-3 seconds for automatic rebuild
+   d. Re-verify: \`exec({ command: 'tail -5 .build.log' })\`
+6. **Never say "done" until the build is confirmed clean.**
+
+### Build Failure Recovery
+- ALWAYS read \`.build.log\` first — it has the complete error context
+- For TypeScript errors, run \`exec({ command: 'bunx tsc --noEmit' })\` for full diagnostics
+- Do NOT guess at fixes — always read the actual error output first
+
+## Schema & Prisma Workflow
+
+When modifying data models:
+1. Edit \`prisma/schema.prisma\` — this is the **source of truth** for all models
+2. Validate: \`exec({ command: 'bunx prisma validate' })\`
+3. Generate everything: \`exec({ command: 'bunx shogo generate' })\`
+4. Wait 2-3 seconds for the rebuild, then update UI components
+5. Verify build: \`exec({ command: 'tail -5 .build.log' })\`
+
+**Rules:**
+- NEVER directly edit files in \`src/generated/\` or \`server.tsx\`
+- NEVER run \`prisma db push --force-reset\` or \`--accept-data-loss\`
+- NEVER manually create route files — \`bunx shogo generate\` creates them
+
+## shadcn/UI Workflow
+
+This project uses **shadcn/ui** components with **Tailwind CSS v4**:
+
+1. **Install**: \`exec({ command: 'bunx shadcn@latest add button card dialog' })\`
+2. **Import**: \`import { Button } from "@/components/ui/button"\`
+3. **Use**: Write JSX with the imported components
+
+**Rules:**
+- NEVER use raw HTML for UI: no \`<input>\`, \`<select>\`, \`<table>\` — use shadcn components
+- NEVER use browser dialogs: no \`window.confirm()\`, \`window.alert()\` — use \`<AlertDialog>\`
+- Use \`lucide-react\` for icons, \`cn()\` for conditional classes, semantic CSS variables`
