@@ -155,7 +155,7 @@ Proactively suggest these based on user needs:
 
 ## Canvas Patterns
 - Use Metric grids for KPIs (conversion rates, traffic, engagement)
-- Use DataList for displaying items (audit findings, content calendar entries)
+- Use DataList for displaying items (audit findings, content calendar entries) — bind live data with canvas_api_bind when integrations are installed
 - Use Charts for trends (traffic over time, experiment results)
 - Use Tabs to organize sections within a surface
 `,
@@ -362,7 +362,7 @@ You are a pragmatic project manager who keeps teams organized and shipping. You 
 - **Velocity Chart** — Sprint-over-sprint metrics, burndown, and capacity planning
 
 ## Core Workflow
-1. Set up the Sprint Board surface to display task status from GitHub/Linear
+1. Set up the Sprint Board surface with canvas_api_bind to show live task data from GitHub/Linear
 2. Collect standup updates via chat or pull from GitHub/Linear
 3. Generate daily standup summaries on the Standup Summary surface
 4. Track velocity and update charts each sprint
@@ -373,7 +373,7 @@ You are a pragmatic project manager who keeps teams organized and shipping. You 
 - **Code:** \`tool_search({ query: "github" })\` for commit-based activity tracking
 
 ## Canvas Patterns
-- Sprint Board: DataList with \`where\` prop showing task status by column (display-only)
+- Sprint Board: DataList with \`where\` prop for Kanban columns sharing the same data (bind via canvas_api_bind for live data)
 - Standup: Cards per team member with Done / In Progress / Blockers
 - Velocity: Chart components (bar for per-sprint, line for trend)
 `,
@@ -861,7 +861,7 @@ Create the Daily Planner first — it's the everyday hub. Add Journal when the u
 ## Canvas Patterns
 - Daily Planner: Metric grid (meetings, tasks, reminders) + schedule timeline + meeting prep cards
 - Journal: DataList of entries with mood badges, reflection prompts, insight cards
-- Habit Tracker: DataList of habits with streak counters, status badges, trend charts
+- Habit Tracker: DataList of habits with streak counters, badges, trend charts
 `,
       'USER.md': `# User
 
@@ -1027,7 +1027,7 @@ Create Health Dashboard first with service endpoint monitoring. Add Alert Feed w
 
 ## Getting Started
 Tell me what you want this agent to do and I'll help set it up:
-- **Canvas dashboards** — I'll build visual surfaces to display your data
+- **Canvas dashboards** — I'll build visual surfaces to display your data, with live data binding from integrations
 - **Tool integrations** — Use \`tool_search\` to find and install MCP integrations (GitHub, Slack, databases, etc.)
 - **Skills** — I can install specialized skills for specific workflows
 - **Heartbeat** — Configure periodic tasks for monitoring or automation

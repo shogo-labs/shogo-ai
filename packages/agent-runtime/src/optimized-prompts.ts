@@ -12,7 +12,7 @@
 
 export const OPTIMIZED_CANVAS_EXAMPLES = `### Optimized Planning Examples
 
-These examples show the optimal tool sequence for common canvas requests. Canvas is view-only — no interactive components.
+These examples show the optimal tool sequence for common canvas requests. Canvas is view-only (no interactive components) but supports live data binding from integrations via canvas_api_bind.
 
 **Example 1:** "Show me the current weather forecast"
 - Surface: \`weather-forecast\`
@@ -36,8 +36,45 @@ These examples show the optimal tool sequence for common canvas requests. Canvas
 **Example 4:** "Show me an expense dashboard with total spent, budget remaining, and a breakdown of expenses"
 - Surface: \`expense-dashboard\`
 - Needs API: Yes (structured data with multiple records)
-- Tools: canvas_create, canvas_api_schema, canvas_api_seed, canvas_api_query, canvas_update, canvas_inspect
+- Tools: canvas_create, canvas_api_schema, canvas_api_seed, canvas_api_query, canvas_api_hooks, canvas_update, canvas_inspect
+- Hooks pattern: Register recompute hooks (afterCreate + afterDelete) so Metric values auto-update when expenses change.
 - Components: Column, Row, Grid, Card, Metric, DataList, Text, Badge
+
+**Example 5:** "Connect my Gmail and show my latest emails"
+- Surface: \`email-dashboard\`
+- Needs API: Yes (live integration data via canvas_api_bind)
+- Tools: tool_install, canvas_create, canvas_api_bind, canvas_update
+- Pattern: tool_install({ name: "gmail" }) → canvas_api_bind({ model: "Email", ..., dataPath: "/emails" }) → canvas_update with DataList bound to /emails
+- Components: Column, Row, Grid, Metric, Card, DataList, Text, Badge
+
+### Reference Component Tree — Integration Data Dashboard
+
+This shows a FULL component tree for a dashboard displaying live integration data via canvas_api_bind. The DataList binds to data loaded by canvas_api_bind's dataPath, and per-item bindings (NO leading /) read fields from each item.
+
+\`\`\`json
+canvas_update({ surfaceId: "expense-dashboard", components: [
+  { "id": "root", "component": "Column", "children": ["header_row", "metrics", "expenses_card"] },
+  { "id": "header_row", "component": "Row", "children": ["title", "period_badge"], "align": "center", "justify": "between" },
+  { "id": "title", "component": "Text", "text": "Expense Dashboard", "variant": "h2" },
+  { "id": "period_badge", "component": "Badge", "text": "February 2026", "variant": "outline" },
+  { "id": "metrics", "component": "Grid", "columns": 3, "children": ["m_total", "m_budget", "m_remaining"] },
+  { "id": "m_total", "component": "Metric", "label": "Total Spent", "value": { "path": "/summary/totalSpent" }, "unit": "$", "trendValue": "+$48 this week" },
+  { "id": "m_budget", "component": "Metric", "label": "Budget", "value": 1000, "unit": "$", "description": "Monthly limit" },
+  { "id": "m_remaining", "component": "Metric", "label": "Remaining", "value": { "path": "/summary/remaining" }, "unit": "$", "trendValue": "-4.8%" },
+  { "id": "expenses_card", "component": "Card", "title": "Recent Expenses", "description": "Your spending history", "child": "expense_list" },
+  { "id": "expense_list", "component": "DataList", "children": { "path": "/expenses", "templateId": "expense_item" }, "emptyText": "No expenses yet" },
+  { "id": "expense_item", "component": "Card", "child": "expense_row" },
+  { "id": "expense_row", "component": "Row", "children": ["expense_info", "expense_amount"], "align": "center", "justify": "between" },
+  { "id": "expense_info", "component": "Column", "children": ["expense_desc", "expense_meta"], "gap": "xs" },
+  { "id": "expense_desc", "component": "Text", "text": { "path": "description" }, "weight": "medium" },
+  { "id": "expense_meta", "component": "Row", "children": ["expense_cat", "expense_date"], "gap": "sm" },
+  { "id": "expense_cat", "component": "Badge", "text": { "path": "category" }, "variant": "secondary" },
+  { "id": "expense_date", "component": "Text", "text": { "path": "date" }, "variant": "caption" },
+  { "id": "expense_amount", "component": "Text", "text": { "path": "amount" }, "variant": "large" }
+]})
+\`\`\`
+
+Key data binding patterns: (1) root-level \`{ "path": "/summary/totalSpent" }\` for Metrics, (2) DataList \`{ "path": "/expenses", "templateId": "expense_item" }\` iterates the array, (3) per-item \`{ "path": "description" }\` (NO leading /) reads from the current item. This same pattern works for canvas_api_bind (live data) and canvas_api_query (local data).
 
 ### Work Output Examples (Agent Does The Work, Canvas Shows Results)
 
@@ -112,7 +149,8 @@ Always check \`list_files\` first when users mention uploaded files, then use \`
 - "Find revenue numbers in my data" → \`search_files\` (~1 iteration)
 - "Summarize the CSV I uploaded" → \`list_files, read_file\` (~1 iteration)
 - "Notify the Discord channel that v2.4.0 has been deployed" → \`send_message\` (~1 iteration) (batchable)
-- "Show me a dashboard of my project tasks with status and priority" → \`canvas_create, canvas_data, canvas_update, canvas_inspect\` (~1 iteration)`
+- "Show me a dashboard of my project tasks with status and priority" → \`canvas_create, canvas_data, canvas_update, canvas_inspect\` (~1 iteration)
+- "Connect my Gmail and show recent emails" → \`tool_install, canvas_create, canvas_api_bind, canvas_update\` (~1 iteration)`
 
 export const OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE = `## Constraint Awareness
 
@@ -230,8 +268,9 @@ credentials or API keys — authentication is handled automatically.
 - Call \`tool_install({ name: "<integration-slug>" })\` — no credentials or args needed
 - Tools become available immediately with auto-auth
 
-Managed integrations provide tools you can use to fetch real data for display on canvas.
-Just call \`tool_install({ name: "googlecalendar" })\` and use the tools to fetch data.
+Managed integrations auto-bind by default: the toolkit's read operations are
+automatically discovered and bound to the canvas for live data display.
+Just call \`tool_install({ name: "googlecalendar" })\` then use \`canvas_api_bind\` to wire the data to your surface.
 
 ### MCP Servers (mcp_search / mcp_install)
 
@@ -244,8 +283,8 @@ MCP servers may require configuration (environment variables, API keys).
 - Call \`mcp_install({ name: "<name>", url: "<url>" })\` for remote servers
 - Pass \`env\` for API keys or connection strings when needed
 
-For MCP servers, use the installed tools to fetch data, then display results
-on canvas with \`canvas_data\` or \`canvas_api_seed\`.
+For MCP servers, use \`canvas_api_bind\` to manually wire tool CRUD operations
+to the canvas after install, or use the tools to fetch data and push via \`canvas_data\`.
 
 ### Skill Registry
 

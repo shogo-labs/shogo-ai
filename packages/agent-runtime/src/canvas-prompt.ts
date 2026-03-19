@@ -15,16 +15,16 @@ export { BASIC_CANVAS_TOOLS_GUIDE, BASIC_CANVAS_EXAMPLES }
 
 const BASIC_CANVAS_TOOLS_GUIDE = `## Canvas — Your Agent Display Panel
 
-Canvas is your view-only visual output surface. Use it to show the user what you've done, what you're monitoring, and what needs their attention. The user sees canvas components in real time as you build them.
+Canvas is your visual output surface for displaying live data, metrics, and agent work output. The user sees canvas components in real time as you build them. Canvas is view-only (no interactive components like buttons or forms) but supports **live data binding** from integrations via \`canvas_api_bind\`.
 
-**Canvas surfaces your agent work.** You do the work (monitor, fetch, process, automate) and canvas displays the results — status, metrics, collected data, alerts, and work output. Canvas is strictly read-only: no buttons, no forms, no interactive elements.
+**Canvas surfaces your agent work.** You do the work (monitor, fetch, process, automate) and canvas displays the results — status, metrics, collected data, alerts, and work output. Use \`canvas_api_bind\` to connect installed integrations (Gmail, GitHub, Calendar, etc.) so the canvas shows live data from those services.
 
-**When canvas components are not enough** — the user needs interactive elements, multi-page flows, or specialized visualizations — switch to **app** mode with \`switch_mode("app")\` and delegate to the code_agent via \`task({ subagent_type: 'code_agent', prompt: '...' })\`. The app connects back to you via \`@shogo-ai/sdk/agent\`.
+**When canvas components are not enough** — the user needs interactive elements (buttons, forms), multi-page flows, or specialized visualizations — switch to **app** mode with \`switch_mode("app")\` and delegate to the code_agent via \`task({ subagent_type: 'code_agent', prompt: '...' })\`. The app connects back to you via \`@shogo-ai/sdk/agent\`.
 
 **CRITICAL: YOU do the work. Canvas shows the results.**
 When a user asks you to "create", "build", "make", "set up", or "draft" something, DO that work
 yourself using your tools (write_file, exec, web, send_message, etc.) and then use canvas to
-DISPLAY the results. Canvas is for MONITORING and REVIEWING your work output — it is view-only.
+DISPLAY the results. Canvas is for MONITORING and REVIEWING your work output.
 
 ### Multi-Surface Strategy
 
@@ -158,7 +158,7 @@ ALWAYS prefer this for categorized/status-based views over creating separate fil
 **Display:** Text, Badge, Image, Icon, Separator, Progress, Skeleton, Alert
 **Data:** Table, Metric, Chart (bar/line/area/pie/donut), DataList (repeating template)
 
-Canvas is view-only. No interactive components (Button, TextField, Select, Checkbox, ChoicePicker) are available.
+Canvas is view-only — no interactive components (Button, TextField, Select, Checkbox, ChoicePicker). However, you CAN bind live data from integrations using \`canvas_api_bind\` and auto-refresh metrics with \`canvas_api_hooks\`.
 
 Use \`canvas_components({ action: "detail", type: "Card" })\` to look up props for any component.
 
@@ -194,6 +194,8 @@ Tabs require EITHER explicit tab definitions OR TabPanel children with \`title\`
 
 ### Other Tools
 - **canvas_data** — Manually push data: \`canvas_data({ surfaceId: "dashboard", path: "/key", value: data })\`
+- **canvas_api_bind** — Bind installed integration tools (Gmail, GitHub, Calendar, etc.) to canvas CRUD routes for live data display. Use after \`tool_install\` to connect real data sources.
+- **canvas_api_hooks** — Register recompute/validate hooks on models so metrics auto-update when data changes.
 - **canvas_inspect** — Read the current surface state. Use mode: "summary", "data", or "components" to check different aspects.
 - **canvas_delete** — Remove a surface (AVOID using this — prefer canvas_update to fix issues)
 - **canvas_components** — Discover components and their props
@@ -255,7 +257,8 @@ Root Column
 
 ### Rules
 - **ALWAYS plan before building.** Write a brief plan (data sources, layout) before calling any canvas tools. This prevents costly mistakes and rebuilds.
-- Canvas is VIEW-ONLY. No interactive components are available. If the user needs interactivity, switch to app mode.
+- Canvas is VIEW-ONLY for user interaction (no buttons, forms, text inputs). Use \`canvas_api_bind\` for live integration data and \`canvas_api_hooks\` for auto-refreshing metrics. If the user needs interactive elements, switch to app mode.
+- **Prefer live data over sample data.** When an integration is installed (tool_install), use \`canvas_api_bind\` to show real data instead of seeding fake records.
 - When canvas tools return status: "rendered" or "data_updated", the UI is already live.
 - **NEVER delete and recreate a surface to fix issues.** Use \`canvas_update({ merge: true })\` to patch individual components. Deleting loses all data bindings and causes UI flicker.
 - **Simple state (counters, single values):** Use canvas_data. Do NOT use canvas_api_schema/canvas_api_seed/canvas_api_query unless you need a queryable model with multiple records.
@@ -293,9 +296,16 @@ These examples show the optimal tool sequence for common canvas requests:
 - Schema: Task model with \`title: String\`, \`status: String\`, \`priority: String\`
 - Components: Column, Row, Grid, Metric, Card, DataList, Text, Badge
 
-### Reference Component Tree — Well-Designed Sales Dashboard
+**Example 5:** "Connect my Google Calendar and show upcoming events"
+- Surface: \`calendar-dashboard\`
+- Needs API: Yes (live integration data)
+- Tools: tool_install, canvas_create, canvas_api_bind, canvas_update
+- Pattern: tool_install({ name: "googlecalendar" }) → canvas_create → canvas_api_bind({ model: "CalendarEvent", ... dataPath: "/events" }) → canvas_update with DataList bound to { path: "/events" }
+- Components: Column, Row, Grid, Metric, Card, DataList, Text, Badge
 
-This is the FULL component tree for a polished display-only dashboard. The renderer auto-applies: root gap "lg", Separator injection, date/number formatting, and Metric trend inference from trendValue signs.
+### Reference Component Tree — Dashboard with Charts & Table
+
+This is a FULL component tree for a polished dashboard. The renderer auto-applies: root gap "lg", Separator injection, date/number formatting, and Metric trend inference from trendValue signs.
 
 \`\`\`json
 canvas_update({ surfaceId: "sales-dashboard", components: [
@@ -321,4 +331,37 @@ canvas_update({ surfaceId: "sales-dashboard", components: [
 ]})
 \`\`\`
 
-Key design patterns: (1) header Row with title + Badge, (2) Grid of Metrics with trendValues, (3) Grid of Card-wrapped Charts, (4) Card-wrapped Table for details. Note: root gap, Separators, number/date formatting, and trend direction are all handled automatically by the renderer.`
+Key design patterns: (1) header Row with title + Badge, (2) Grid of Metrics with trendValues, (3) Grid of Card-wrapped Charts, (4) Card-wrapped Table for details. Note: root gap, Separators, number/date formatting, and trend direction are all handled automatically by the renderer.
+
+### Reference Component Tree — DataList with Per-Item Data Bindings
+
+This is the FULL component tree for a data dashboard using DataList with per-item data binding. Use this pattern when displaying lists of items from canvas_api_bind (live integration data) or canvas_api_query (local data).
+
+\`\`\`json
+canvas_update({ surfaceId: "expense-dashboard", components: [
+  { "id": "root", "component": "Column", "children": ["header_row", "metrics", "expenses_card"] },
+  { "id": "header_row", "component": "Row", "children": ["title", "period_badge"], "align": "center", "justify": "between" },
+  { "id": "title", "component": "Text", "text": "Expense Dashboard", "variant": "h2" },
+  { "id": "period_badge", "component": "Badge", "text": "February 2026", "variant": "outline" },
+  { "id": "metrics", "component": "Grid", "columns": 3, "children": ["m_total", "m_budget", "m_remaining"] },
+  { "id": "m_total", "component": "Metric", "label": "Total Spent", "value": { "path": "/summary/totalSpent" }, "unit": "$", "trendValue": "+$48 this week" },
+  { "id": "m_budget", "component": "Metric", "label": "Budget", "value": 1000, "unit": "$", "description": "Monthly limit" },
+  { "id": "m_remaining", "component": "Metric", "label": "Remaining", "value": { "path": "/summary/remaining" }, "unit": "$", "trendValue": "-4.8%" },
+  { "id": "expenses_card", "component": "Card", "title": "Recent Expenses", "description": "Your spending history", "child": "expense_list" },
+  { "id": "expense_list", "component": "DataList", "children": { "path": "/expenses", "templateId": "expense_item" }, "emptyText": "No expenses yet" },
+  { "id": "expense_item", "component": "Card", "child": "expense_row" },
+  { "id": "expense_row", "component": "Row", "children": ["expense_info", "expense_amount"], "align": "center", "justify": "between" },
+  { "id": "expense_info", "component": "Column", "children": ["expense_desc", "expense_meta"], "gap": "xs" },
+  { "id": "expense_desc", "component": "Text", "text": { "path": "description" }, "weight": "medium" },
+  { "id": "expense_meta", "component": "Row", "children": ["expense_cat", "expense_date"], "gap": "sm" },
+  { "id": "expense_cat", "component": "Badge", "text": { "path": "category" }, "variant": "secondary" },
+  { "id": "expense_date", "component": "Text", "text": { "path": "date" }, "variant": "caption" },
+  { "id": "expense_amount", "component": "Text", "text": { "path": "amount" }, "variant": "large" }
+]})
+\`\`\`
+
+Key data binding patterns:
+- **Root-level binding** (leading /): \`{ "path": "/summary/totalSpent" }\` — reads from the surface's root data model
+- **DataList binding**: \`"children": { "path": "/expenses", "templateId": "expense_item" }\` — iterates over the array at /expenses
+- **Per-item binding** (NO leading /): \`{ "path": "description" }\`, \`{ "path": "category" }\` — reads from the current item inside the DataList template
+- The same per-item binding pattern works for data from canvas_api_bind (live integration data) and canvas_api_query (local SQLite data)`

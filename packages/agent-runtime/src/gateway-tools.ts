@@ -1460,7 +1460,7 @@ function createCanvasCreateTool(): AgentTool {
   return {
     name: 'canvas_create',
     description:
-      'Create a new view-only display surface on the canvas. A surface is a container for layout, display, and data components visible to the user. You must create a surface before adding components to it.',
+      'Create a new display surface on the canvas. A surface is a container for layout, display, and data components visible to the user. Supports live data binding from integrations via canvas_api_bind. You must create a surface before adding components to it.',
     label: 'Create Canvas Surface',
     parameters: Type.Object({
       surfaceId: Type.String({ description: 'Unique ID for the surface (e.g. "flight_results", "email_dashboard")' }),
@@ -3574,7 +3574,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   messaging: ['send_message', 'channel_connect', 'channel_disconnect', 'channel_list'],
   cron: ['cron'],
   canvas: ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_components', 'canvas_inspect'],
-  api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query'],
+  api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind'],
   personality: ['personality_update'],
   tool_discovery: ['tool_search', 'tool_install', 'tool_uninstall'],
   mcp_discovery: ['mcp_search', 'mcp_install', 'mcp_uninstall'],
@@ -3587,7 +3587,7 @@ export const ALL_TOOL_NAMES = [
   'memory_read', 'memory_write', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list', 'cron',
   'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_components',
   'canvas_inspect',
-  'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query',
+  'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind',
   'personality_update',
   'tool_search', 'tool_install', 'tool_uninstall',
   'mcp_search', 'mcp_install', 'mcp_uninstall',
