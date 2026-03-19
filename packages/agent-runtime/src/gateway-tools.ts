@@ -599,10 +599,10 @@ const APP_TEMPLATE_METADATA: Array<{
   { name: 'inventory', description: 'Inventory management with products, categories, and stock tracking', complexity: 'intermediate', models: ['User', 'Category', 'Product', 'StockMovement'] },
   { name: 'feedback-form', description: 'Feedback and survey collection system', complexity: 'intermediate', models: ['User', 'Form', 'Question', 'Response', 'Answer'] },
   { name: 'form-builder', description: 'Dynamic form builder with drag-and-drop', complexity: 'advanced', models: ['User', 'Form', 'Field', 'Submission', 'FieldValue'] },
-  { name: 'ai-chat', description: 'AI chat interface connected to the agent', complexity: 'intermediate', models: ['User', 'Conversation', 'Message'] },
-  { name: 'agent-dashboard', description: 'Agent monitoring dashboard with status, chat, and canvas', complexity: 'intermediate', models: ['User'] },
-  { name: 'approval-workflow', description: 'Approval request workflow with multi-step review', complexity: 'advanced', models: ['User', 'Request', 'ApprovalStep', 'Comment'] },
-  { name: 'data-explorer', description: 'Data exploration tool with query builder and visualizations', complexity: 'advanced', models: ['User', 'Dataset', 'Query', 'Visualization'] },
+  { name: 'ai-chat', description: 'Full-featured AI chat interface with conversations, artifacts, and documents', complexity: 'advanced', models: ['User', 'Chat', 'Message', 'Vote', 'Document'] },
+  { name: 'agent-dashboard', description: 'Agent monitoring dashboard with status, chat, canvas, and file browser', complexity: 'beginner', models: ['User'] },
+  { name: 'approval-workflow', description: 'Human-in-the-loop approval workflow with review queue and agent chat', complexity: 'intermediate', models: ['User', 'ApprovalRequest', 'ApprovalStep', 'Comment'] },
+  { name: 'data-explorer', description: 'Data exploration tool with tables, metrics, and agent-driven data collection', complexity: 'intermediate', models: ['User', 'Dataset', 'SavedQuery'] },
 ]
 
 function createTemplateListTool(): AgentTool {

@@ -1,10 +1,17 @@
 import { useState, useRef, useEffect } from 'react'
+import { observer } from 'mobx-react-lite'
 import {
   useAgentStatus,
   useAgentChat,
   useCanvasStream,
   type Surface,
 } from '@shogo-ai/sdk/agent'
+import { useStores } from './stores'
+import { AuthGate } from './components/AuthGate'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { LogOut, Send, Check, X, Clock, CheckCircle, XCircle } from 'lucide-react'
 
 interface ReviewItem {
   id: string
@@ -77,41 +84,42 @@ function ReviewQueue() {
           Pending Review <span className="text-muted-foreground font-normal">({pending.length})</span>
         </h2>
         {pending.length === 0 ? (
-          <div className="rounded-lg border border-dashed p-8 text-center text-muted-foreground">
-            <p className="text-lg mb-1">No items pending review</p>
-            <p className="text-sm">Your agent will push items here when it has work for you to approve.</p>
-          </div>
+          <Card>
+            <CardContent className="py-8 text-center">
+              <Clock className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
+              <p className="text-muted-foreground">No items pending review</p>
+              <p className="text-sm text-muted-foreground mt-1">Your agent will push items here when it has work for you to approve.</p>
+            </CardContent>
+          </Card>
         ) : (
           <div className="space-y-3">
             {pending.map((item) => (
-              <div key={item.id} className="rounded-lg border p-4 space-y-3">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <h3 className="font-medium">{item.title}</h3>
-                    {item.category && (
-                      <span className="text-xs bg-muted px-2 py-0.5 rounded-full">{item.category}</span>
-                    )}
+              <Card key={item.id}>
+                <CardContent className="py-4 space-y-3">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <h3 className="font-medium">{item.title}</h3>
+                      {item.category && (
+                        <span className="text-xs bg-muted px-2 py-0.5 rounded-full">{item.category}</span>
+                      )}
+                    </div>
+                    <span className="text-xs text-muted-foreground">
+                      {new Date(item.createdAt).toLocaleString()}
+                    </span>
                   </div>
-                  <span className="text-xs text-muted-foreground">
-                    {new Date(item.createdAt).toLocaleString()}
-                  </span>
-                </div>
-                <p className="text-sm text-muted-foreground">{item.description}</p>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => approve(item)}
-                    className="px-4 py-1.5 rounded-md text-sm font-medium bg-green-600 text-white hover:bg-green-700"
-                  >
-                    Approve
-                  </button>
-                  <button
-                    onClick={() => reject(item)}
-                    className="px-4 py-1.5 rounded-md text-sm font-medium bg-red-600 text-white hover:bg-red-700"
-                  >
-                    Reject
-                  </button>
-                </div>
-              </div>
+                  <p className="text-sm text-muted-foreground">{item.description}</p>
+                  <div className="flex gap-2">
+                    <Button size="sm" onClick={() => approve(item)} className="bg-green-600 hover:bg-green-700">
+                      <Check className="h-4 w-4" />
+                      Approve
+                    </Button>
+                    <Button size="sm" variant="destructive" onClick={() => reject(item)}>
+                      <X className="h-4 w-4" />
+                      Reject
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
             ))}
           </div>
         )}
@@ -124,19 +132,24 @@ function ReviewQueue() {
           </h2>
           <div className="space-y-2">
             {decided.map((item) => (
-              <div key={item.id} className="rounded-lg border p-3 flex items-center justify-between opacity-75">
-                <div>
-                  <span className="font-medium text-sm">{item.title}</span>
-                  {item.category && (
-                    <span className="text-xs bg-muted px-2 py-0.5 rounded-full ml-2">{item.category}</span>
-                  )}
-                </div>
-                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                  item.status === 'approved' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                }`}>
-                  {item.status}
-                </span>
-              </div>
+              <Card key={item.id} className="opacity-75">
+                <CardContent className="py-3 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    {item.status === 'approved'
+                      ? <CheckCircle className="h-4 w-4 text-green-600" />
+                      : <XCircle className="h-4 w-4 text-destructive" />}
+                    <span className="font-medium text-sm">{item.title}</span>
+                    {item.category && (
+                      <span className="text-xs bg-muted px-2 py-0.5 rounded-full">{item.category}</span>
+                    )}
+                  </div>
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                    item.status === 'approved' ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400' : 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400'
+                  }`}>
+                    {item.status}
+                  </span>
+                </CardContent>
+              </Card>
             ))}
           </div>
         </div>
@@ -161,15 +174,15 @@ function ChatSidebar() {
   }
 
   return (
-    <div className="rounded-lg border flex flex-col h-full">
-      <div className="px-4 py-3 border-b">
-        <h2 className="font-semibold">Discuss with Agent</h2>
-      </div>
-      <div className="flex-1 overflow-y-auto p-3 space-y-2 min-h-0">
+    <Card className="flex flex-col h-full">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base">Discuss with Agent</CardTitle>
+      </CardHeader>
+      <CardContent className="flex-1 overflow-y-auto space-y-2 min-h-0">
         {messages.length === 0 && (
           <p className="text-xs text-muted-foreground text-center mt-4">Ask questions about review items</p>
         )}
-        {messages.map((msg, i) => (
+        {messages.map((msg: any, i: number) => (
           <div key={i} className={`text-sm ${msg.role === 'user' ? 'text-right' : ''}`}>
             <div className={`inline-block max-w-[90%] rounded-lg px-3 py-1.5 ${
               msg.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'
@@ -180,38 +193,42 @@ function ChatSidebar() {
         ))}
         {isStreaming && <div className="text-xs text-muted-foreground animate-pulse">Thinking...</div>}
         <div ref={bottomRef} />
-      </div>
-      <div className="p-2 border-t flex gap-2">
-        <input
-          type="text"
+      </CardContent>
+      <div className="p-3 border-t flex gap-2">
+        <Input
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleSend()}
           placeholder="Ask about an item..."
-          className="flex-1 rounded-md border px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
           disabled={isStreaming}
         />
-        <button
-          onClick={handleSend}
-          disabled={isStreaming || !input.trim()}
-          className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
-        >
-          Send
-        </button>
+        <Button onClick={handleSend} disabled={isStreaming || !input.trim()} size="icon">
+          <Send className="h-4 w-4" />
+        </Button>
       </div>
-    </div>
+    </Card>
   )
 }
 
-export default function App() {
+const WorkflowContent = observer(function WorkflowContent() {
+  const { auth } = useStores()
+
   return (
     <div className="min-h-screen bg-background text-foreground">
-      <header className="border-b px-6 py-4 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Approval Workflow</h1>
-          <p className="text-sm text-muted-foreground">Review and approve your agent's work output</p>
+      <header className="border-b px-6 py-4">
+        <div className="max-w-7xl mx-auto flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold">Approval Workflow</h1>
+            <CardDescription>Review and approve your agent's work output</CardDescription>
+          </div>
+          <div className="flex items-center gap-4">
+            <StatusBar />
+            <Button variant="ghost" size="sm" onClick={() => auth.signOut()}>
+              <LogOut className="h-4 w-4" />
+              Sign Out
+            </Button>
+          </div>
         </div>
-        <StatusBar />
       </header>
       <main className="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2">
@@ -222,5 +239,13 @@ export default function App() {
         </div>
       </main>
     </div>
+  )
+})
+
+export default function App() {
+  return (
+    <AuthGate>
+      <WorkflowContent />
+    </AuthGate>
   )
 }

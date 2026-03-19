@@ -2,14 +2,15 @@
   "name": "agent-dashboard",
   "description": "All-in-one control panel for viewing and managing your AI agent",
   "complexity": "beginner",
-  "features": ["agent-status", "chat", "canvas-viewer", "workspace-browser"],
+  "features": ["prisma", "user-auth", "agent-status", "chat", "canvas-viewer", "workspace-browser"],
   "models": ["User"],
   "tags": ["agent", "dashboard", "control-panel", "monitoring", "agentic"],
   "useCases": ["agent dashboard", "agent control panel", "agent monitor", "agent management", "agent interface"],
   "techStack": {
-    "frontend": "React",
-    "backend": "Hono",
-    "database": "SQLite",
+    "database": "sqlite",
+    "orm": "prisma",
+    "frontend": "react",
+    "backend": "hono",
     "sdk": "@shogo-ai/sdk"
   }
 }

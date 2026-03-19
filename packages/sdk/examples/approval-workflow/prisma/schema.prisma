@@ -1,0 +1,67 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  requests ApprovalRequest[]
+  steps    ApprovalStep[]
+  comments Comment[]
+
+  @@map("users")
+}
+
+model ApprovalRequest {
+  id          String   @id @default(cuid())
+  title       String
+  description String
+  category    String?
+  status      String   @default("pending")
+  userId      String   @map("user_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user  User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  steps ApprovalStep[]
+  comments Comment[]
+
+  @@map("approval_requests")
+}
+
+model ApprovalStep {
+  id         String   @id @default(cuid())
+  requestId  String   @map("request_id")
+  reviewerId String   @map("reviewer_id")
+  decision   String   @default("pending")
+  note       String?
+  decidedAt  DateTime? @map("decided_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  request  ApprovalRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  reviewer User            @relation(fields: [reviewerId], references: [id], onDelete: Cascade)
+
+  @@map("approval_steps")
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  content   String
+  requestId String   @map("request_id")
+  userId    String   @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  request ApprovalRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("comments")
+}

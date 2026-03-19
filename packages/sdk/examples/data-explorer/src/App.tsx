@@ -1,10 +1,17 @@
 import { useState, useMemo, useRef, useEffect } from 'react'
+import { observer } from 'mobx-react-lite'
 import {
   useAgentStatus,
   useAgentChat,
   useCanvasStream,
   type Surface,
 } from '@shogo-ai/sdk/agent'
+import { useStores } from './stores'
+import { AuthGate } from './components/AuthGate'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { LogOut, Send, ArrowUp, ArrowDown, Search } from 'lucide-react'
 
 type DataRecord = Record<string, unknown>
 
@@ -17,7 +24,7 @@ function useAgentData() {
   useEffect(() => {
     for (const surface of surfaces.values()) {
       const data = surface.data
-      for (const [key, value] of Object.entries(data)) {
+      for (const [, value] of Object.entries(data)) {
         if (Array.isArray(value) && value.length > 0) {
           setRecords(value)
           const cols = Object.keys(value[0] as object).filter((k) => k !== 'id')
@@ -60,11 +67,13 @@ function MetricsBar({ records, columns }: { records: DataRecord[]; columns: stri
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
       {metrics.map((m) => (
-        <div key={m.label} className="rounded-lg border p-3">
-          <div className="text-xs text-muted-foreground capitalize">{m.label}</div>
-          <div className="text-xl font-bold mt-1">{m.total.toLocaleString()}</div>
-          <div className="text-xs text-muted-foreground">avg: {m.avg.toFixed(1)}</div>
-        </div>
+        <Card key={m.label}>
+          <CardContent className="py-3">
+            <div className="text-xs text-muted-foreground capitalize">{m.label}</div>
+            <div className="text-xl font-bold mt-1">{m.total.toLocaleString()}</div>
+            <div className="text-xs text-muted-foreground">avg: {m.avg.toFixed(1)}</div>
+          </CardContent>
+        </Card>
       ))}
     </div>
   )
@@ -111,7 +120,7 @@ function DataTable({
   }
 
   return (
-    <div className="rounded-lg border overflow-hidden">
+    <Card>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -122,8 +131,10 @@ function DataTable({
                   onClick={() => handleSort(col)}
                   className="px-4 py-2 text-left font-medium cursor-pointer hover:bg-muted capitalize"
                 >
-                  {col}
-                  {sortCol === col && (sortDir === 'asc' ? ' ↑' : ' ↓')}
+                  <span className="inline-flex items-center gap-1">
+                    {col}
+                    {sortCol === col && (sortDir === 'asc' ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />)}
+                  </span>
                 </th>
               ))}
             </tr>
@@ -152,12 +163,12 @@ function DataTable({
       <div className="px-4 py-2 border-t text-xs text-muted-foreground">
         {filtered.length} of {records.length} records
       </div>
-    </div>
+    </Card>
   )
 }
 
 function formatValue(val: unknown): string {
-  if (val === null || val === undefined) return '—'
+  if (val === null || val === undefined) return '\u2014'
   if (typeof val === 'boolean') return val ? 'Yes' : 'No'
   if (typeof val === 'number') return val.toLocaleString()
   if (typeof val === 'object') return JSON.stringify(val)
@@ -180,17 +191,17 @@ function ChatSidebar() {
   }
 
   return (
-    <div className="rounded-lg border flex flex-col h-full">
-      <div className="px-4 py-3 border-b">
-        <h2 className="font-semibold">Ask About Data</h2>
-      </div>
-      <div className="flex-1 overflow-y-auto p-3 space-y-2 min-h-0">
+    <Card className="flex flex-col h-full">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base">Ask About Data</CardTitle>
+      </CardHeader>
+      <CardContent className="flex-1 overflow-y-auto space-y-2 min-h-0">
         {messages.length === 0 && (
           <p className="text-xs text-muted-foreground text-center mt-4">
             Ask your agent questions about the collected data
           </p>
         )}
-        {messages.map((msg, i) => (
+        {messages.map((msg: any, i: number) => (
           <div key={i} className={`text-sm ${msg.role === 'user' ? 'text-right' : ''}`}>
             <div className={`inline-block max-w-[90%] rounded-lg px-3 py-1.5 ${
               msg.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'
@@ -201,57 +212,62 @@ function ChatSidebar() {
         ))}
         {isStreaming && <div className="text-xs text-muted-foreground animate-pulse">Thinking...</div>}
         <div ref={bottomRef} />
-      </div>
-      <div className="p-2 border-t flex gap-2">
-        <input
-          type="text"
+      </CardContent>
+      <div className="p-3 border-t flex gap-2">
+        <Input
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleSend()}
           placeholder="Ask about the data..."
-          className="flex-1 rounded-md border px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
           disabled={isStreaming}
         />
-        <button
-          onClick={handleSend}
-          disabled={isStreaming || !input.trim()}
-          className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
-        >
-          Send
-        </button>
+        <Button onClick={handleSend} disabled={isStreaming || !input.trim()} size="icon">
+          <Send className="h-4 w-4" />
+        </Button>
       </div>
-    </div>
+    </Card>
   )
 }
 
-export default function App() {
+const ExplorerContent = observer(function ExplorerContent() {
+  const { auth } = useStores()
   const { records, columns, title, connected } = useAgentData()
   const [searchTerm, setSearchTerm] = useState('')
 
   return (
     <div className="min-h-screen bg-background text-foreground">
-      <header className="border-b px-6 py-4 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">{title}</h1>
-          <p className="text-sm text-muted-foreground">
-            Explore data collected by your agent
-            <span className={`ml-2 inline-block w-2 h-2 rounded-full ${connected ? 'bg-green-500' : 'bg-yellow-500'}`} />
-          </p>
+      <header className="border-b px-6 py-4">
+        <div className="max-w-7xl mx-auto flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold">{title}</h1>
+            <CardDescription>
+              Explore data collected by your agent
+              <span className={`ml-2 inline-block w-2 h-2 rounded-full align-middle ${connected ? 'bg-green-500' : 'bg-yellow-500'}`} />
+            </CardDescription>
+          </div>
+          <div className="flex items-center gap-4">
+            <StatusBar />
+            <Button variant="ghost" size="sm" onClick={() => auth.signOut()}>
+              <LogOut className="h-4 w-4" />
+              Sign Out
+            </Button>
+          </div>
         </div>
-        <StatusBar />
       </header>
       <main className="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-4 gap-6">
         <div className="lg:col-span-3 space-y-6">
           <MetricsBar records={records} columns={columns} />
           <div className="flex items-center gap-3">
-            <input
-              type="text"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search records..."
-              className="flex-1 rounded-md border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-            <span className="text-sm text-muted-foreground">{records.length} records</span>
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="Search records..."
+                className="pl-9"
+              />
+            </div>
+            <span className="text-sm text-muted-foreground whitespace-nowrap">{records.length} records</span>
           </div>
           <DataTable records={records} columns={columns} searchTerm={searchTerm} />
         </div>
@@ -260,5 +276,13 @@ export default function App() {
         </div>
       </main>
     </div>
+  )
+})
+
+export default function App() {
+  return (
+    <AuthGate>
+      <ExplorerContent />
+    </AuthGate>
   )
 }
