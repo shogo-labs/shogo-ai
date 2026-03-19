@@ -439,23 +439,6 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
               )}
             </View>
           </View>
-
-          <Separator />
-
-          {/* Username */}
-          <View className="px-6 py-5 flex-row items-center justify-between">
-            <View className="flex-1 mr-4">
-              <Text className="text-base font-semibold text-foreground">
-                Username
-              </Text>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                Set a username for the workspace profile page.
-              </Text>
-            </View>
-            <Button variant="outline" size="sm">
-              Set username
-            </Button>
-          </View>
         </CardContent>
       </Card>
 
