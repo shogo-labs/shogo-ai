@@ -77,6 +77,7 @@ import {
 import { TierSelector } from '../../components/billing/TierSelector'
 import { FeatureList } from '../../components/billing/FeatureList'
 import { SecuritySettingsPanel } from '../../components/security/SecuritySettingsPanel'
+import { useToast, Toast, ToastTitle, ToastDescription } from '@/components/ui/toast'
 import {
   Card,
   CardContent,
@@ -419,23 +420,6 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
                 </Text>
               )}
             </View>
-          </View>
-
-          <Separator />
-
-          {/* Username */}
-          <View className="px-6 py-5 flex-row items-center justify-between">
-            <View className="flex-1 mr-4">
-              <Text className="text-base font-semibold text-foreground">
-                Username
-              </Text>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                Set a username for the workspace profile page.
-              </Text>
-            </View>
-            <Button variant="outline" size="sm">
-              Set username
-            </Button>
           </View>
         </CardContent>
       </Card>
@@ -897,6 +881,7 @@ const BillingTab = observer(function BillingTab() {
   const { user } = useAuth()
   const actions = useDomainActions()
   const currentWorkspace = useActiveWorkspace()
+  const toast = useToast()
 
   const {
     subscription,
@@ -963,8 +948,20 @@ const BillingTab = observer(function BillingTab() {
           Linking.openURL(data.url)
         }
       }
-    } catch (e) {
+    } catch (e: any) {
       console.warn('Portal session failed:', e)
+      toast.show({
+        placement: 'top',
+        duration: 5000,
+        render: ({ id }) => (
+          <Toast nativeID={id} variant="outline" action="error">
+            <ToastTitle>Unable to open billing portal</ToastTitle>
+            <ToastDescription>
+              Something went wrong. Please try again or contact support.
+            </ToastDescription>
+          </Toast>
+        ),
+      })
     } finally {
       setIsPortalLoading(false)
     }
@@ -1468,10 +1465,6 @@ const PeopleTab = observer(function PeopleTab() {
                 {roleFilter === 'all' ? 'All roles' : ROLE_DISPLAY[roleFilter] || roleFilter}
               </Text>
               <ChevronDown size={14} className="text-muted-foreground" />
-            </Pressable>
-
-            <Pressable className="h-9 px-3 border border-border rounded-lg items-center justify-center">
-              <Text className="text-sm text-foreground">Export</Text>
             </Pressable>
           </>
         )}
