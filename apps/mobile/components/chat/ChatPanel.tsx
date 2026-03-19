@@ -2119,7 +2119,7 @@ export const ChatPanel = observer(function ChatPanel({
           {/* Messages with Turn Grouping */}
           <ScrollView
             ref={scrollViewRef}
-            className="flex-1 p-4"
+            className="flex-1 p-2"
             keyboardShouldPersistTaps="handled"
             onScroll={(e) => {
               const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent
