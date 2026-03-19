@@ -376,25 +376,6 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
 
       <Card>
         <CardContent className="p-0">
-          {/* Avatar */}
-          <View className="px-6 py-5 flex-row items-center justify-between">
-            <View className="flex-1 mr-4">
-              <Text className="text-base font-semibold text-foreground">
-                Avatar
-              </Text>
-              <Text className="text-sm text-muted-foreground mt-0.5">
-                Set an avatar for your workspace.
-              </Text>
-            </View>
-            <View className="h-10 w-10 rounded-lg bg-primary items-center justify-center">
-              <Text className="text-sm font-semibold text-primary-foreground">
-                {currentWorkspace?.name?.[0]?.toUpperCase() || 'W'}
-              </Text>
-            </View>
-          </View>
-
-          <Separator />
-
           {/* Name */}
           <View className="px-6 py-5 flex-row items-start justify-between">
             <View className="flex-[0.45] mr-4 pt-1">
