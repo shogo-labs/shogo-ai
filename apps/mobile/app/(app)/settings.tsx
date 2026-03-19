@@ -1758,9 +1758,7 @@ const PeopleTab = observer(function PeopleTab() {
                         </Text>
                       </View>
                       <View className="w-24">
-                        <Badge variant={badgeVariant}>
-                          <Text className="text-[10px]">{badgeLabel}</Text>
-                        </Badge>
+                        <Badge variant={badgeVariant}>{badgeLabel}</Badge>
                       </View>
                       <View className="w-8 items-center">
                         {status === 'pending' && (

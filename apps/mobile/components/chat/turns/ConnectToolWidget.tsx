@@ -40,7 +40,8 @@ export interface ConnectToolWidgetProps {
 type ConnectStatus = "idle" | "connecting" | "connected" | "error"
 
 const POLL_INTERVAL_MS = 2500
-const POLL_TIMEOUT_MS = 90000
+/** Max time to wait for connection before showing "Connection failed". Reduced from 90s so cancelled OAuth is detected sooner when popup-close isn't available (e.g. COOP). */
+const POLL_TIMEOUT_MS = 30_000
 const INITIAL_POLL_DELAY_MS = 5000
 
 // Tracks toolkits with an OAuth flow in progress. Module-level so it survives
@@ -137,7 +138,7 @@ export function ConnectToolWidget({
       }
 
       if (!cancelled) {
-        setStatus("idle")
+        setStatus("error")
       }
     }
 
@@ -161,38 +162,52 @@ export function ConnectToolWidget({
     const isNative = Platform.OS !== "web"
     if (isNative) pendingOAuthToolkits.add(toolkitName)
 
-    // Create a fresh connection via the API so the callback redirect uses the
-    // correct scheme for the current environment (exp:// in Expo Go,
-    // shogo:// in standalone builds) instead of the hardcoded agent URL.
-    if (projectId && http) {
-      try {
-        const redirect = isNative
-          ? ExpoLinking.createURL(
-              `integrations-callback?projectId=${encodeURIComponent(projectId)}`
-            )
-          : undefined
-        const callbackUrl = redirect
-          ? `${API_URL}/api/integrations/callback?redirect=${encodeURIComponent(redirect)}`
-          : `${API_URL}/api/integrations/callback`
-        const data = await api.connectIntegration(
-          http,
-          toolkitName,
-          projectId,
-          callbackUrl
-        )
-        const redirectUrl = data.data?.redirectUrl
-        if (redirectUrl) {
-          await openAuthFlow(redirectUrl)
-          await checkAndConfirm()
-          return
+    try {
+      // Create a fresh connection via the API so the callback redirect uses the
+      // correct scheme for the current environment (exp:// in Expo Go,
+      // shogo:// in standalone builds) instead of the hardcoded agent URL.
+      if (projectId && http) {
+        try {
+          const redirect = isNative
+            ? ExpoLinking.createURL(
+                `integrations-callback?projectId=${encodeURIComponent(projectId)}`
+              )
+            : undefined
+          const callbackUrl = redirect
+            ? `${API_URL}/api/integrations/callback?redirect=${encodeURIComponent(redirect)}`
+            : `${API_URL}/api/integrations/callback`
+          const data = await api.connectIntegration(
+            http,
+            toolkitName,
+            projectId,
+            callbackUrl
+          )
+          const redirectUrl = data.data?.redirectUrl
+          if (redirectUrl) {
+            const result = await openAuthFlow(redirectUrl)
+            await checkAndConfirm()
+            // On web, popup close means user closed/cancelled; if still not connected, show error immediately instead of waiting for 90s timeout
+            if (Platform.OS === "web" && result?.type === "success") {
+              const connected = await checkConnection()
+              if (!connected) setStatus("error")
+            }
+            return
+          }
+        } catch {
+          // Fall back to agent-provided authUrl
         }
-      } catch {
-        // Fall back to agent-provided authUrl
       }
-    }
 
-    await openAuthFlow(authUrl)
-    await checkAndConfirm()
+      const result = await openAuthFlow(authUrl)
+      await checkAndConfirm()
+      if (Platform.OS === "web" && result?.type === "success") {
+        const connected = await checkConnection()
+        if (!connected) setStatus("error")
+      }
+    } catch {
+      setStatus("error")
+      if (isNative) pendingOAuthToolkits.delete(toolkitName)
+    }
   }, [authUrl, http, toolkitName, projectId, checkAndConfirm])
 
   const displayName =
