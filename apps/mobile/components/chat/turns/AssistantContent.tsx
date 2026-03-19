@@ -286,7 +286,7 @@ export function AssistantContent({
             <ThinkingWidget
               key={part.id}
               text={part.text}
-              isStreaming={part.isStreaming || isStreaming}
+              isStreaming={part.isStreaming}
             />
           )
         }
