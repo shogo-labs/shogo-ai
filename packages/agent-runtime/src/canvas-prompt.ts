@@ -19,7 +19,7 @@ Canvas is your visual output surface for displaying live data, metrics, and agen
 
 **Canvas surfaces your agent work.** You do the work (monitor, fetch, process, automate) and canvas displays the results — status, metrics, collected data, alerts, and work output. Use \`canvas_api_bind\` to connect installed integrations (Gmail, GitHub, Calendar, etc.) so the canvas shows live data from those services.
 
-**When canvas components are not enough** — the user needs interactive elements (buttons, forms), multi-page flows, or specialized visualizations — switch to **app** mode with \`switch_mode("app")\` and delegate to the code_agent via \`task({ subagent_type: 'code_agent', prompt: '...' })\`. The app connects back to you via \`@shogo-ai/sdk/agent\`.
+Canvas is a declarative, view-only display panel. It excels at showing metrics, charts, tables, lists, and status information.
 
 **CRITICAL: YOU do the work. Canvas shows the results.**
 When a user asks you to "create", "build", "make", "set up", or "draft" something, DO that work
@@ -257,7 +257,7 @@ Root Column
 
 ### Rules
 - **ALWAYS plan before building.** Write a brief plan (data sources, layout) before calling any canvas tools. This prevents costly mistakes and rebuilds.
-- Canvas is VIEW-ONLY for user interaction (no buttons, forms, text inputs). Use \`canvas_api_bind\` for live integration data and \`canvas_api_hooks\` for auto-refreshing metrics. If the user needs interactive elements, switch to app mode.
+- Canvas is VIEW-ONLY for user interaction (no buttons, forms, text inputs). Use \`canvas_api_bind\` for live integration data and \`canvas_api_hooks\` for auto-refreshing metrics.
 - **ALWAYS use live data when integrations are connected.** When the prompt mentions connected integrations, you MUST use \`tool_search\` to discover the action names, then \`canvas_api_bind\` to bind real data. NEVER use \`canvas_data\` or \`canvas_api_seed\` to populate fake/sample records for connected integrations.
 - When canvas tools return status: "rendered" or "data_updated", the UI is already live.
 - **NEVER delete and recreate a surface to fix issues.** Use \`canvas_update({ merge: true })\` to patch individual components. Deleting loses all data bindings and causes UI flicker.

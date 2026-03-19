@@ -1112,118 +1112,19 @@ async function loadTemplates(): Promise<TemplateMetadata[]> {
 
 /**
  * GET /api/templates - List all available SDK templates
- * Returns template metadata for display on the home page
+ * APP_MODE_DISABLED: Returns empty array while app mode is disabled.
  */
 app.get('/api/templates', async (c) => {
-  try {
-    const allTemplates = await loadTemplates()
-    // [EXPO DISABLED] Filter out expo-app template
-    const templates = allTemplates.filter(t => t.name !== 'expo-app')
-    return c.json({ templates }, 200)
-  } catch (error: any) {
-    console.error('[Templates] Error loading templates:', error)
-    return c.json({ error: { code: 'template_error', message: error.message } }, 500)
-  }
+  return c.json({ templates: [] }, 200)
 })
 
 /**
  * POST /api/projects/:projectId/apply-template
- * Copies an SDK app template into the project workspace directory.
- * Works in both local dev (where agent-runtime doesn't have /templates/copy)
- * and production (Knative pods).
+ * APP_MODE_DISABLED: App template application is disabled.
+ * See APP_MODE_DISABLED.md for the original implementation.
  */
 app.post('/api/projects/:projectId/apply-template', async (c) => {
-  const projectId = c.req.param('projectId')
-  const userId = await getAuthUserId(c)
-  if (!userId) return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
-  const workspaceId = await verifyProjectAccess(userId, projectId)
-  if (!workspaceId) return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
-
-  try {
-    const body = await c.req.json() as { template: string; name: string }
-    if (!body.template || !body.name) {
-      return c.json({ ok: false, error: 'Missing required fields: template, name' }, 400)
-    }
-
-    const workspaceDir = resolve(WORKSPACES_DIR, projectId)
-    const projectSubDir = resolve(workspaceDir, 'project')
-    mkdirSync(projectSubDir, { recursive: true })
-
-    const templatesDir = resolve(PROJECT_ROOT, 'packages/sdk/examples')
-    const templatePath = resolve(templatesDir, body.template)
-
-    if (!existsSync(templatePath)) {
-      return c.json({ ok: false, error: `Template '${body.template}' not found` }, 404)
-    }
-
-    for (const d of ['src', 'prisma', '.tanstack']) {
-      const p = resolve(projectSubDir, d)
-      if (existsSync(p)) rmSync(p, { recursive: true, force: true })
-    }
-
-    cpSync(templatePath, projectSubDir, {
-      recursive: true,
-      filter: (src) => !src.includes('node_modules') && !src.includes('.git') && !src.includes('template.json'),
-    })
-    writeFileSync(resolve(workspaceDir, '.app-template'), body.template, 'utf-8')
-    console.log(`[apply-template] Copied template '${body.template}' to ${projectSubDir}`)
-
-    // In local dev, trigger Vite restart via the runtime manager's preview port
-    if (!isKubernetes()) {
-      const manager = getRuntimeManager()
-      const runtime = manager.status(projectId)
-      if (runtime?.agentPort) {
-        fetch(`http://localhost:${runtime.agentPort}/preview/restart`, { method: 'POST' }).catch(() => {})
-      }
-    } else {
-      // In production, proxy to the pod's /templates/copy endpoint.
-      // Retry up to 5 times with delay — warm pool pods may be evicted and
-      // re-assigned during initialization. After a successful proxy, we verify
-      // the template landed on the *current* pod (which may differ from the one
-      // that received the initial proxy if an eviction occurred in between).
-      const { getProjectPodUrl } = await import('./lib/knative-project-manager')
-      let applied = false
-      let lastAppliedUrl: string | null = null
-      for (let attempt = 1; attempt <= 5 && !applied; attempt++) {
-        try {
-          if (attempt > 1) await new Promise(r => setTimeout(r, 3000))
-          const podUrl = await getProjectPodUrl(projectId)
-          const resp = await fetch(`${podUrl}/templates/copy`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-            signal: AbortSignal.timeout(30000),
-          })
-          if (resp.ok) {
-            lastAppliedUrl = podUrl
-            // Verify the template is on the current pod (pod may have changed due to eviction)
-            await new Promise(r => setTimeout(r, 2000))
-            const verifyUrl = await getProjectPodUrl(projectId)
-            if (verifyUrl === lastAppliedUrl) {
-              applied = true
-              console.log(`[apply-template] Proxied template '${body.template}' to pod (attempt ${attempt}, verified)`)
-            } else {
-              console.warn(`[apply-template] Pod changed after proxy (${lastAppliedUrl} → ${verifyUrl}), retrying on new pod`)
-              lastAppliedUrl = null
-            }
-          } else {
-            const text = await resp.text().catch(() => '')
-            console.warn(`[apply-template] Pod returned ${resp.status} on attempt ${attempt}: ${text}`)
-          }
-        } catch (err: any) {
-          console.warn(`[apply-template] Proxy attempt ${attempt} failed: ${err.message}`)
-        }
-      }
-      if (!applied) {
-        console.warn('[apply-template] All proxy attempts failed — template copied locally only')
-      }
-    }
-
-    return c.json({ ok: true, message: `Template '${body.template}' applied successfully` })
-  } catch (error: any) {
-    console.error('[apply-template] Error:', error)
-    return c.json({ ok: false, error: error.message || 'Failed to apply template' }, 500)
-  }
+  return c.json({ ok: false, error: 'App mode is currently disabled' }, 404)
 })
 
 // =============================================================================

@@ -32,10 +32,10 @@ import { CompactChatInput } from '../../components/chat/CompactChatInput'
 import type { FileAttachment } from '../../components/chat/ChatInput'
 import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
-import { api, type AgentTemplateSummary, type AppTemplateSummary } from '../../lib/api'
+import { api, type AgentTemplateSummary } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { AgentTemplateGalleryCard } from '../../components/templates/agent-template-card'
-import { AppTemplateGalleryCard } from '../../components/templates/app-template-card'
+// APP_MODE_DISABLED: import { AppTemplateGalleryCard } from '../../components/templates/app-template-card'
 
 type AgentTemplate = AgentTemplateSummary
 
@@ -198,9 +198,8 @@ const HomeScreen = observer(function HomeScreen() {
   const [isCreating, setIsCreating] = useState(false)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
   const [homeTemplates, setHomeTemplates] = useState<AgentTemplate[]>([])
-  const [homeAppTemplates, setHomeAppTemplates] = useState<AppTemplateSummary[]>([])
+  // APP_MODE_DISABLED: homeAppTemplates state removed
   const [activeTab, setActiveTab] = useState<'projects' | 'shared' | 'templates'>('templates')
-  const [templateMode, setTemplateMode] = useState<'agents' | 'apps'>('agents')
 
   const [workspaceError, setWorkspaceError] = useState(false)
 
@@ -218,12 +217,9 @@ const HomeScreen = observer(function HomeScreen() {
 
     async function fetchTemplates() {
       try {
-        const [agentData, appData] = await Promise.all([
-          api.getAgentTemplates(http),
-          api.getAppTemplates(http),
-        ])
+        const agentData = await api.getAgentTemplates(http)
         setHomeTemplates(agentData.slice(0, 6))
-        setHomeAppTemplates(appData.slice(0, 6))
+        // APP_MODE_DISABLED: app template fetch removed
       } catch (err) {
         console.error('[Home] Failed to fetch templates:', err)
       }
@@ -261,32 +257,7 @@ const HomeScreen = observer(function HomeScreen() {
     handleTemplatePress(template)
   }, [homeTemplates, currentWorkspace?.id, user?.id])
 
-  // Deep-link: auto-create project from pending app template
-  useEffect(() => {
-    if (Platform.OS !== 'web' || typeof localStorage === 'undefined') return
-    const pendingApp = localStorage.getItem('pending_app_template')
-    if (!pendingApp || !currentWorkspace?.id || !user?.id) return
-    if (homeAppTemplates.length === 0) return
-
-    const template = homeAppTemplates.find(t => t.name === pendingApp)
-    if (!template) {
-      api.getAppTemplates(http).then((all) => {
-        const found = all.find((t: AppTemplateSummary) => t.name === pendingApp)
-        if (found) {
-          localStorage.removeItem('pending_app_template')
-          handleAppTemplatePress(found)
-        } else {
-          localStorage.removeItem('pending_app_template')
-        }
-      }).catch(() => {
-        localStorage.removeItem('pending_app_template')
-      })
-      return
-    }
-
-    localStorage.removeItem('pending_app_template')
-    handleAppTemplatePress(template)
-  }, [homeAppTemplates, currentWorkspace?.id, user?.id])
+  // APP_MODE_DISABLED: pending_app_template deep-link removed
 
   const myProjects = useMemo(() => {
     try {
@@ -430,47 +401,7 @@ const HomeScreen = observer(function HomeScreen() {
     }
   }, [actions, user?.id, currentWorkspace?.id, projects, router, posthog])
 
-  const handleAppTemplatePress = useCallback(async (template: AppTemplateSummary) => {
-    if (!user?.id || !currentWorkspace?.id) {
-      Alert.alert('Not ready', 'Still loading your workspace. Please try again in a moment.')
-      return
-    }
-    setLoadingTemplate(template.name)
-    try {
-      const displayName = template.name.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
-      const newProject = await actions.createProject(
-        displayName,
-        currentWorkspace.id,
-        template.description,
-        user.id,
-        'APP',
-      )
-      const chatSession = await actions.createChatSession({
-        inferredName: `Chat - ${displayName}`,
-        contextType: 'project',
-        contextId: newProject.id,
-      })
-      trackEvent(posthog, EVENTS.PROJECT_CREATED, {
-        source: 'app_template',
-        template_name: template.name,
-      })
-
-      projects.loadAll()
-      router.push({
-        pathname: '/(app)/projects/[id]',
-        params: {
-          id: newProject.id,
-          chatSessionId: chatSession.id,
-          appTemplateName: template.name,
-        },
-      } as any)
-    } catch (error) {
-      console.error('[Home] Failed to create project from app template:', error)
-      Alert.alert('Error', 'Failed to create project from template')
-    } finally {
-      setLoadingTemplate(null)
-    }
-  }, [actions, user?.id, currentWorkspace?.id, projects, router, posthog])
+  // APP_MODE_DISABLED: handleAppTemplatePress removed
 
   if (!isAuthenticated) {
     return (
@@ -618,92 +549,33 @@ const HomeScreen = observer(function HomeScreen() {
 
           <View style={{ paddingHorizontal: isMobile ? 12 : 24, paddingBottom: 40 }}>
             {activeTab === 'templates' && (
-              <>
-                <View className="flex-row items-center gap-1 mb-4 rounded-lg bg-muted p-1" style={{ alignSelf: 'flex-start' }}>
-                  {(['agents', 'apps'] as const).map((mode) => (
-                    <Pressable
-                      key={mode}
-                      onPress={() => setTemplateMode(mode)}
-                      className={cn(
-                        'px-3 py-1.5 rounded-md',
-                        templateMode === mode && 'bg-background',
-                      )}
-                      style={templateMode === mode && Platform.OS === 'web' ? {
-                        boxShadow: '0 1px 2px rgba(0,0,0,0.06)',
-                      } as any : {}}
-                    >
-                      <Text
-                        className={cn(
-                          'text-[13px]',
-                          templateMode === mode
-                            ? 'text-foreground font-semibold'
-                            : 'text-muted-foreground',
-                        )}
-                      >
-                        {mode === 'agents' ? 'Agents' : 'Apps'}
-                      </Text>
-                    </Pressable>
+              homeTemplates.length > 0 ? (
+                <View
+                  className="gap-3"
+                  style={Platform.OS === 'web' ? {
+                    display: 'grid' as any,
+                    gridTemplateColumns: `repeat(${gridColumns}, 1fr)`,
+                    gap: isMobile ? 10 : 16,
+                    maxWidth: 1100,
+                    marginHorizontal: 'auto',
+                  } as any : {}}
+                >
+                  {homeTemplates.map((template) => (
+                    <AgentTemplateGalleryCard
+                      key={template.id}
+                      template={template}
+                      isLoading={loadingTemplate === template.id}
+                      onPress={() => handleTemplatePress(template)}
+                      isDark={isDark}
+                      compact={isMobile}
+                    />
                   ))}
                 </View>
-
-                {templateMode === 'agents' ? (
-                  homeTemplates.length > 0 ? (
-                    <View
-                      className="gap-3"
-                      style={Platform.OS === 'web' ? {
-                        display: 'grid' as any,
-                        gridTemplateColumns: `repeat(${gridColumns}, 1fr)`,
-                        gap: isMobile ? 10 : 16,
-                        maxWidth: 1100,
-                        marginHorizontal: 'auto',
-                      } as any : {}}
-                    >
-                      {homeTemplates.map((template) => (
-                        <AgentTemplateGalleryCard
-                          key={template.id}
-                          template={template}
-                          isLoading={loadingTemplate === template.id}
-                          onPress={() => handleTemplatePress(template)}
-                          isDark={isDark}
-                          compact={isMobile}
-                        />
-                      ))}
-                    </View>
-                  ) : (
-                    <View className="items-center py-12">
-                      <ActivityIndicator size="small" className="text-muted-foreground" />
-                    </View>
-                  )
-                ) : (
-                  homeAppTemplates.length > 0 ? (
-                    <View
-                      className="gap-3"
-                      style={Platform.OS === 'web' ? {
-                        display: 'grid' as any,
-                        gridTemplateColumns: `repeat(${gridColumns}, 1fr)`,
-                        gap: isMobile ? 10 : 16,
-                        maxWidth: 1100,
-                        marginHorizontal: 'auto',
-                      } as any : {}}
-                    >
-                      {homeAppTemplates.map((template) => (
-                        <AppTemplateGalleryCard
-                          key={template.name}
-                          template={template}
-                          isLoading={loadingTemplate === template.name}
-                          onPress={() => handleAppTemplatePress(template)}
-                          isDark={isDark}
-                          compact={isMobile}
-                        />
-                      ))}
-                    </View>
-                  ) : (
-                    <View className="items-center py-12">
-                      <ActivityIndicator size="small" className="text-muted-foreground" />
-                    </View>
-                  )
-                )}
-              </>
+              ) : (
+                <View className="items-center py-12">
+                  <ActivityIndicator size="small" className="text-muted-foreground" />
+                </View>
+              )
             )}
 
             {activeTab === 'projects' && (

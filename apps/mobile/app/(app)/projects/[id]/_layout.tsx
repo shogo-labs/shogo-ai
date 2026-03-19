@@ -93,10 +93,10 @@ export default observer(function ProjectLayout() {
   const actions = useDomainActions()
   const projects = useProjectCollection()
 
-  // Capture initialMessage, files, and appTemplateName once so they don't re-fire on re-renders
+  // Capture initialMessage and files once so they don't re-fire on re-renders
   const [capturedInitialMessage] = useState(() => params.initialMessage ?? undefined)
   const [capturedInitialFiles] = useState(() => consumePendingFiles())
-  const [capturedAppTemplateName] = useState(() => params.appTemplateName ?? undefined)
+  // APP_MODE_DISABLED: capturedAppTemplateName removed
   const [capturedShowIntegrations] = useState(() => params.showIntegrations === '1')
 
   // Tab state for narrow screens
@@ -235,35 +235,7 @@ export default observer(function ProjectLayout() {
     headers: nativeHeaders,
   })
 
-  // Programmatic app template copy: call the API server's apply-template endpoint
-  // directly (not the agent-proxy, which may not support the /templates/copy path
-  // in all environments).
-  const templateCopyTriggered = useRef(false)
-  useEffect(() => {
-    if (!capturedAppTemplateName || !project?.name || templateCopyTriggered.current) return
-    templateCopyTriggered.current = true
-
-    const hdrs: Record<string, string> = { 'Content-Type': 'application/json' }
-    if (nativeHeaders) Object.assign(hdrs, nativeHeaders())
-
-    fetch(`${API_URL}/api/projects/${projectId}/apply-template`, {
-      method: 'POST',
-      headers: hdrs,
-      credentials: Platform.OS === 'web' ? 'include' : 'omit',
-      body: JSON.stringify({ template: capturedAppTemplateName, name: project.name }),
-    })
-      .then(res => res.json())
-      .then(data => {
-        if (!data.ok) {
-          console.error('[ProjectLayout] Failed to apply template:', data.error)
-        } else {
-          console.log('[ProjectLayout] Template applied successfully:', data.message)
-        }
-      })
-      .catch(err => {
-        console.error('[ProjectLayout] Error applying template:', err)
-      })
-  }, [capturedAppTemplateName, project?.name, nativeHeaders, projectId])
+  // APP_MODE_DISABLED: app template copy effect removed
 
   // Dynamic app canvas — all unified projects use the agent URL for canvas streaming
   const dynamicAppStreamUrl = agentUrl

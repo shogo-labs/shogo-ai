@@ -37,7 +37,7 @@ import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { BlockChunker } from './block-chunker'
 import { CanvasStreamParser } from './canvas-stream-parser'
 import { BASIC_CANVAS_TOOLS_GUIDE, BASIC_CANVAS_EXAMPLES } from './canvas-prompt'
-import { CODE_AGENT_GENERAL_GUIDE, CODE_AGENT_APP_BUILDING_GUIDE } from './code-agent-prompt'
+import { CODE_AGENT_GENERAL_GUIDE } from './code-agent-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import type { FilePart } from './file-attachment-utils'
@@ -342,7 +342,7 @@ export class AgentGateway {
       model: { provider: 'anthropic', name: 'claude-sonnet-4-6' },
       maxSessionMessages: 30,
       activeMode: 'none',
-      allowedModes: ['canvas', 'app', 'none'],
+      allowedModes: ['canvas', 'none'],
       mainSessionIds: ['chat'],
     }
     const configPath = join(this.workspaceDir, 'config.json')
@@ -1412,29 +1412,11 @@ export class AgentGateway {
       }
     }
 
-    // Inject app template context if this project was created from an app template
-    const appTemplatePath = join(this.workspaceDir, '.app-template')
-    if (existsSync(appTemplatePath)) {
-      const appTemplate = readFileSync(appTemplatePath, 'utf-8').trim()
-      if (appTemplate) {
-        const humanName = appTemplate.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
-        parts.push([
-          '## App Template Context',
-          '',
-          `This project was created from the **${humanName}** app template (\`${appTemplate}\`).`,
-          'The app source code lives in the `project/` directory. When the user asks you to modify the app,',
-          'look at the existing source files in `project/src/` to understand the structure before making changes.',
-          'Use `edit_file` or `write_file` to modify files directly — the preview will auto-rebuild.',
-          '',
-          'You are the developer for this app. When the user says "change the color", "add a feature",',
-          '"fix this", etc., they are referring to this app. Do NOT ask what app they mean.',
-        ].join('\n'))
-      }
-    }
+    // APP_MODE_DISABLED: app template context injection removed (was reading .app-template)
 
     // Inject agent template context if this project was created from an agent template
     const agentTemplatePath = join(this.workspaceDir, '.template')
-    if (existsSync(agentTemplatePath) && !existsSync(appTemplatePath)) {
+    if (existsSync(agentTemplatePath)) {
       const agentTemplate = readFileSync(agentTemplatePath, 'utf-8').trim()
       if (agentTemplate) {
         const humanName = agentTemplate.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
@@ -1446,7 +1428,7 @@ export class AgentGateway {
           'set up with template-specific instructions. Follow the instructions in AGENTS.md.',
           '',
           'Canvas surfaces have been pre-built for this template. Use canvas tools directly (canvas_create, canvas_update, etc.)',
-          'to update or add surfaces as needed. You work through canvas mode — not app mode.',
+          'to update or add surfaces as needed.',
           '',
         ].join('\n'))
       }
@@ -1495,43 +1477,21 @@ You are in canvas mode. You have all canvas tools available directly — use the
 **Live data from integrations:**
 When integrations are connected, use \`tool_search\` to discover available actions, then \`canvas_api_bind\` to bind live data directly to canvas components.
 
-**Canvas is view-only** — no buttons, forms, or interactive elements. For interactive needs, switch to app mode.
+**Canvas is view-only** — declarative components for displaying your work output.
 
 **IMPORTANT:** Do NOT switch modes unless the user explicitly asks you to. Stay in canvas mode for all visual work.
 `)
-    } else if (activeMode === 'app') {
-      parts.push(`\n## App Mode — Custom Agent Interface
-
-You are in app mode. You have all coding tools available directly — use \`edit_file\`, \`write_file\`, \`exec\`, \`template_list\`, \`template_copy\`, and other file/shell tools to build apps in the \`project/\` directory.
-
-**Key principles:**
-- **Every app MUST start from a template.** Use \`template_list\` to see available templates and \`template_copy\` to scaffold. If no template has been selected yet (no \`.app-template\` file), scaffold from a template first. Never create files from scratch or run \`npm create\`, \`npx create-vite\`, etc.
-- The app connects back to you via \`@shogo-ai/sdk/agent\` — it imports useAgentStatus, useAgentChat, useCanvasStream, and other hooks to communicate with your runtime.
-- The app is your custom frontend, not a standalone product. It should surface your work, let the user control you, or provide rich interaction with your capabilities.
-- Apps run on the same pod as you, so they use relative URLs (\`/agent/status\`, \`/agent/chat\`, etc.) with zero configuration.
-- You also have canvas tools available — use them directly for any canvas work without switching modes.
-
-**When to switch back:**
-- User just wants to see your output quickly → switch to **canvas** (faster, declarative)
-- User is just chatting or asking questions → switch to **none**
-- The custom UI is built and deployed → stay in app mode for further iterations
-`)
     } else if (activeMode === 'none') {
-      parts.push(`\n## Visual Modes Available
+      parts.push(`\n## Visual Mode Available
 
-You have two visual modes for surfacing your work to the user. Both exist to give visibility into and control over what you are doing. You have ALL tools available in every mode — canvas tools, code tools, file tools, etc.
+You have a visual mode for surfacing your work to the user. You have ALL tools available in every mode — canvas tools, code tools, file tools, etc.
 
-**Canvas** (switch_mode → "canvas") — Your visual display panel with live data binding. Declarative components (metrics, charts, tables, lists) show your work output, monitoring results, and status. Canvas is view-only (no buttons, forms, or interactive elements) but supports live data from integrations via \`canvas_api_bind\`. Use canvas tools directly. Start here for most visual needs.
-
-**App** (switch_mode → "app") — A custom-coded agent interface. Use when the user needs interactive elements (forms, buttons), multi-page flows, or specialized visualizations. The app connects to you via \`@shogo-ai/sdk/agent\`. Use code/file tools directly in \`project/\`.
-
-**Default: start with canvas.** It's faster and keeps you in control. Escalate to app when the user needs interactivity or explicitly asks for a custom app/interface.
+**Canvas** (switch_mode → "canvas") — Your visual display panel with live data binding. Declarative components (metrics, charts, tables, lists) show your work output, monitoring results, and status. Canvas supports live data from integrations via \`canvas_api_bind\`. Use canvas tools directly.
 
 Examples:
 - "Show me what you found" → canvas
 - "Build a monitoring dashboard" → canvas
-- "Build a custom control panel for my agent" → app (complex UI)
-- "I need a multi-page interface for reviewing your work" → app
+- "Display the daily digest" → canvas
 `)
     }
     // Mode context injection
@@ -1544,10 +1504,7 @@ Examples:
     }
     // General coding guide (edit_file, exec safety, code quality) — always included
     parts.push(CODE_AGENT_GENERAL_GUIDE)
-    // App building guide (templates, build workflow, prisma, shadcn) — app mode only
-    if (activeMode === 'app') {
-      parts.push(CODE_AGENT_APP_BUILDING_GUIDE)
-    }
+    // APP_MODE_DISABLED: CODE_AGENT_APP_BUILDING_GUIDE no longer injected
 
     parts.push(PERSONALITY_EVOLUTION_GUIDE_PREFIX + personalityGuide)
     parts.push(toolPlanningGuide)
@@ -1903,7 +1860,7 @@ Examples:
   }
 
   getAllowedModes(): VisualMode[] {
-    return this.config.allowedModes || ['canvas', 'app', 'none']
+    return this.config.allowedModes || ['canvas', 'none']
   }
 
   /** Map of sessionId -> AbortController for cancelling in-progress agent turns */

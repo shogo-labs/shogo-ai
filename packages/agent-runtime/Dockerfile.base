@@ -2,78 +2,17 @@
 # =============================================================================
 # Base Runtime Image
 # =============================================================================
-# Slow-changing layer: system packages, Claude Code CLI, pre-built template
-# archives, and MCP server packages. Rebuilt only when these change.
+# Slow-changing layer: system packages, Claude Code CLI, and MCP server
+# packages. Rebuilt only when these change.
 #
 # Build: DOCKER_BUILDKIT=1 docker build -t runtime-base -f packages/agent-runtime/Dockerfile.base .
 # =============================================================================
 
-# =============================================================================
-# Stage 1: template-deps — pre-install and pre-build app templates
-# =============================================================================
-# Dynamically discovers all templates in packages/sdk/examples/ that have a
-# package.json. Skip directories listed in SKIP_TEMPLATES (e.g. expo-app which
-# is an internal template not exposed via template_list).
-# =============================================================================
-FROM oven/bun:1.3-alpine AS template-deps
-
-RUN apk add --no-cache pigz
-
-WORKDIR /templates
-
-ENV SKIP_TEMPLATES="expo-app"
-
-COPY packages/sdk/examples ./examples
-
-# Install dependencies for all discovered templates
-RUN --mount=type=cache,target=/root/.bun/install/cache \
-    for dir in /templates/examples/*/; do \
-      template="$(basename "$dir")" ; \
-      case " $SKIP_TEMPLATES " in *" $template "*) echo "=== Skipping: $template ===" ; continue ;; esac ; \
-      [ -f "$dir/package.json" ] || continue ; \
-      echo "=== Installing deps: $template ===" && \
-      cd "$dir" && \
-      if [ -f "bun.lock" ]; then \
-        bun install --frozen-lockfile; \
-      else \
-        echo "    (no bun.lock — running bun install)" && bun install; \
-      fi && \
-      cd /templates; \
-    done
-
-# Build all templates (prisma generate + vite build where applicable)
-RUN for dir in /templates/examples/*/; do \
-      template="$(basename "$dir")" ; \
-      case " $SKIP_TEMPLATES " in *" $template "*) continue ;; esac ; \
-      [ -f "$dir/package.json" ] || continue ; \
-      echo "=== Building: $template ===" && \
-      cd "$dir" && \
-      if [ -f "prisma/schema.prisma" ]; then \
-        bunx --bun prisma generate 2>&1 || true; \
-      fi && \
-      if grep -q '"build"' package.json 2>/dev/null; then \
-        bun run build 2>&1 || echo "Build skipped for $template"; \
-      fi && \
-      cd /templates; \
-    done
-
-# Archive each template into a .tar.gz (parallel compression with pigz)
-RUN mkdir -p /templates/archives && \
-    cd /templates/examples && \
-    for dir in */; do \
-      template="${dir%/}" ; \
-      case " $SKIP_TEMPLATES " in *" $template "*) continue ;; esac ; \
-      [ -f "$template/package.json" ] || continue ; \
-      ( \
-        tar cf - "$template" | pigz > /templates/archives/${template}.tar.gz && \
-        echo "=== $template archived ($(du -h /templates/archives/${template}.tar.gz | cut -f1)) ===" \
-      ) & \
-    done && \
-    wait && \
-    rm -rf /templates/examples
+# APP_MODE_DISABLED: Stage 1 (template-deps) removed — app template building
+# and archiving no longer needed. See APP_MODE_DISABLED.md for restoration.
 
 # =============================================================================
-# Stage 2: base — system packages, CLI tools, templates, MCP servers
+# Base — system packages, CLI tools, MCP servers
 # =============================================================================
 FROM oven/bun:1.3-alpine
 
@@ -120,8 +59,7 @@ RUN mkdir -p /app/mcp-packages && \
       @sentry/mcp-server@latest \
     && rm -rf /app/mcp-packages/package.json /app/mcp-packages/package-lock.json
 
-# Template archives for app mode
-COPY --chown=appuser:appgroup --from=template-deps /templates/archives ./packages/sdk/templates
+# APP_MODE_DISABLED: template archive COPY removed
 
 RUN mkdir -p /app/workspace /app/workspace/project /app/.schemas /app/.claude && \
     chown -R appuser:appgroup /app /usr/local/lib/node_modules

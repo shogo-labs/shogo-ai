@@ -153,14 +153,14 @@ function createSwitchModeTool(ctx: ToolContext, modeHandler: ModeSwitchHandler):
   return {
     name: 'switch_mode',
     description:
-      'Switch the visual output mode. Both canvas and app surface your agent work. "canvas" = your quick display panel (declarative agent dashboard). "app" = custom-coded agent interface via code_agent subagent (when canvas components are not enough). "none" = conversation only. Start with canvas; escalate to app when needed.',
+      'Switch the visual output mode. "canvas" = your quick display panel (declarative agent dashboard). "none" = conversation only. Start with canvas for visual needs.',
     label: 'Switch Mode',
     parameters: Type.Object({
-      mode: Type.Union([Type.Literal('canvas'), Type.Literal('app'), Type.Literal('none')]),
+      mode: Type.Union([Type.Literal('canvas'), Type.Literal('none')]),
       reason: Type.String({ description: 'Brief explanation of why this mode fits the request' }),
     }),
     execute: async (_id, params) => {
-      const { mode, reason } = params as { mode: 'canvas' | 'app' | 'none'; reason: string }
+      const { mode, reason } = params as { mode: 'canvas' | 'none'; reason: string }
 
       const allowed = modeHandler.getAllowedModes()
       if (!allowed.includes(mode)) {
@@ -581,8 +581,11 @@ function lsDir(dir: string, rootDir: string, recursive: boolean, depth: number, 
 }
 
 // ---------------------------------------------------------------------------
-// App Template Tools (template_list, template_copy)
+// App Template Tools (template_list, template_copy) — DISABLED (app mode removed)
+// See APP_MODE_DISABLED.md for re-enablement instructions.
 // ---------------------------------------------------------------------------
+
+/* APP_MODE_DISABLED: template tools commented out
 
 const APP_TEMPLATE_METADATA: Array<{
   name: string
@@ -668,6 +671,8 @@ function createTemplateCopyTool(ctx: ToolContext): AgentTool {
     },
   }
 }
+
+END APP_MODE_DISABLED */
 
 // ---------------------------------------------------------------------------
 // TodoWrite Tool (session task checklist)
@@ -4262,8 +4267,7 @@ export function createTools(ctx: ToolContext, modeHandler?: ModeSwitchHandler, e
     createCanvasApiBindTool(ctx),
     createCanvasTriggerActionTool(),
     createCanvasInspectTool(),
-    createTemplateListTool(),
-    createTemplateCopyTool(ctx),
+    // APP_MODE_DISABLED: createTemplateListTool(), createTemplateCopyTool(ctx),
     createPersonalityUpdateTool(ctx),
     createToolSearchTool(),
     createToolInstallTool(ctx),

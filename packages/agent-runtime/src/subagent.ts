@@ -90,17 +90,15 @@ export interface SubagentStreamCallbacks {
 // Built-in Subagent Definitions
 // ---------------------------------------------------------------------------
 
-import { CODE_AGENT_CODING_GUIDE, CODE_AGENT_ENVIRONMENT_GUIDE } from './code-agent-prompt'
+import { CODE_AGENT_CODING_GUIDE } from './code-agent-prompt'
 
-export const CODE_AGENT_SYSTEM_PROMPT = `You are code_agent — a coding subagent that builds applications, writes scripts, and executes commands.
+export const CODE_AGENT_SYSTEM_PROMPT = `You are code_agent — a coding subagent that writes scripts and executes commands.
 
 ## Your Scope
-You work within the project/ directory for app code. You can also write and run scripts, install packages, and execute commands. All file operations are relative to the project directory.
+You work within the project/ directory. You can write and run scripts, install packages, and execute commands. All file operations are relative to the project directory.
 
 ## Available Tools
-You have: edit_file, glob, grep, ls, read_file, write_file, exec, todo_write, web, search_files, template_list, template_copy.
-
-${CODE_AGENT_ENVIRONMENT_GUIDE}
+You have: edit_file, glob, grep, ls, read_file, write_file, exec, todo_write, web, search_files.
 
 ${CODE_AGENT_CODING_GUIDE}`
 
@@ -153,7 +151,7 @@ ${BASIC_CANVAS_EXAMPLES}
 - Return a summary of what you built and what data sources are bound.
 - Canvas is view-only for user interaction, but supports live data binding from integrations via canvas_api_bind.
 - **NEVER use canvas_data or canvas_api_seed with fake data when the prompt mentions connected integrations. Use canvas_api_bind to show real data.**
-- If the user needs interactive elements (forms, buttons), suggest switching to app mode.`
+- Canvas is declarative and view-only. For interactive needs, explain the current limitations to the user.`
 
 export const EXPLORE_SYSTEM_PROMPT = `You are an exploration subagent. Search and analyze the codebase efficiently.
 
@@ -188,24 +186,7 @@ export function getBuiltinSubagentConfig(
   switch (name) {
     case 'code_agent': {
       let dynamicContext = ''
-      const templatePath = join(ctx.workspaceDir, '.app-template')
-      const hasTemplate = existsSync(templatePath)
-      if (hasTemplate) {
-        const template = readFileSync(templatePath, 'utf-8').trim()
-        const humanName = template.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
-        dynamicContext += `\n\n## Project Template: ${humanName}\nThis project was scaffolded from the \`${template}\` template. Check existing files in \`src/\` before creating new ones.\n`
-      } else {
-        dynamicContext += `\n\n## ⚠️ NO TEMPLATE SELECTED — MANDATORY FIRST STEP
-
-**No app template has been set up yet.** You MUST scaffold from a template before writing ANY code.
-
-1. Call \`template_list\` to see available templates
-2. Pick the best match for the task (or \`_template\` for a blank starter)
-3. Call \`template_copy({ template: "<name>", name: "<app-name>" })\`
-4. THEN read the scaffolded files and make customizations
-
-**NEVER create files from scratch.** NEVER run \`npm create\`, \`npx create-vite\`, \`bun create\`, or manually scaffold a project. A template handles everything: file structure, dependencies, prisma setup, build config, and preview server restart.\n`
-      }
+      // APP_MODE_DISABLED: template context injection removed
       const projectDir = join(ctx.workspaceDir, 'project')
       if (existsSync(projectDir)) {
         try {
@@ -217,12 +198,12 @@ export function getBuiltinSubagentConfig(
       }
       return {
         name: 'code_agent',
-        description: 'Coding subagent that builds apps, writes scripts, and executes commands in project/',
+        description: 'Coding subagent that writes scripts and executes commands in project/',
         systemPrompt: CODE_AGENT_SYSTEM_PROMPT + dynamicContext,
         toolNames: [
           'edit_file', 'glob', 'grep', 'ls', 'read_file', 'write_file', 'exec',
           'todo_write', 'web', 'search_files',
-          'template_list', 'template_copy',
+          // APP_MODE_DISABLED: 'template_list', 'template_copy',
         ],
         disallowedTools: ['task', 'skill', 'code_agent'],
         workingDir: projectDir,

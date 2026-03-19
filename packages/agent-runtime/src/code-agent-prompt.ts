@@ -12,7 +12,8 @@
  *   - Cursor agent prompting patterns (edit mastery, code quality, task planning)
  */
 
-export { CODE_AGENT_CODING_GUIDE, CODE_AGENT_ENVIRONMENT_GUIDE, CODE_AGENT_GENERAL_GUIDE, CODE_AGENT_APP_BUILDING_GUIDE }
+export { CODE_AGENT_CODING_GUIDE, CODE_AGENT_GENERAL_GUIDE }
+// APP_MODE_DISABLED: CODE_AGENT_ENVIRONMENT_GUIDE and CODE_AGENT_APP_BUILDING_GUIDE no longer exported
 
 // ---------------------------------------------------------------------------
 // Section 1: Template Workflow, Environment, SDK & Forbidden Commands

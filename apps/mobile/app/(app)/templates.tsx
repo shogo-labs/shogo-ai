@@ -19,12 +19,12 @@ import {
   useDomainActions,
   useDomainHttp,
 } from '../../contexts/domain'
-import { api, type AgentTemplateSummary, type AppTemplateSummary } from '../../lib/api'
+import { api, type AgentTemplateSummary } from '../../lib/api'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { usePostHogSafe } from '../../contexts/posthog'
 import { AgentTemplateGalleryCard } from '../../components/templates/agent-template-card'
-import { AppTemplateGalleryCard } from '../../components/templates/app-template-card'
+// APP_MODE_DISABLED: import { AppTemplateGalleryCard } from '../../components/templates/app-template-card'
 
 type AgentTemplate = AgentTemplateSummary
 
@@ -58,12 +58,7 @@ const AGENT_FILTER_TABS = [
   { key: 'personal', label: 'Personal', icon: '⚡' },
 ]
 
-const APP_FILTER_TABS = [
-  { key: 'all', label: 'All Apps', icon: '⊞' },
-  { key: 'beginner', label: 'Beginner', icon: '🌱' },
-  { key: 'intermediate', label: 'Intermediate', icon: '⚡' },
-  { key: 'advanced', label: 'Advanced', icon: '🔥' },
-]
+// APP_MODE_DISABLED: APP_FILTER_TABS removed
 
 export default observer(function TemplatesPage() {
   const router = useRouter()
@@ -74,23 +69,19 @@ export default observer(function TemplatesPage() {
   const posthog = usePostHogSafe()
   const isDark = useDarkMode()
   const [agentTemplates, setAgentTemplates] = useState<AgentTemplate[]>([])
-  const [appTemplates, setAppTemplates] = useState<AppTemplateSummary[]>([])
+  // APP_MODE_DISABLED: appTemplates state removed
   const [loading, setLoading] = useState(true)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
   const [activeFilter, setActiveFilter] = useState('all')
-  const [templateMode, setTemplateMode] = useState<'agents' | 'apps'>('agents')
 
   const currentWorkspace = useActiveWorkspace()
 
   useEffect(() => {
     async function fetchTemplates() {
       try {
-        const [agents, apps] = await Promise.all([
-          api.getAgentTemplates(http),
-          api.getAppTemplates(http),
-        ])
+        const agents = await api.getAgentTemplates(http)
         setAgentTemplates(agents)
-        setAppTemplates(apps)
+        // APP_MODE_DISABLED: app template fetch removed
       } catch (err) {
         console.error('[TemplatesPage] Failed to fetch templates:', err)
       } finally {
@@ -99,10 +90,6 @@ export default observer(function TemplatesPage() {
     }
     fetchTemplates()
   }, [http])
-
-  useEffect(() => {
-    setActiveFilter('all')
-  }, [templateMode])
 
   const handleAgentTemplatePress = useCallback(
     async (template: AgentTemplate) => {
@@ -151,48 +138,7 @@ export default observer(function TemplatesPage() {
     [user?.id, currentWorkspace?.id, actions, projects, router, posthog]
   )
 
-  const handleAppTemplatePress = useCallback(
-    async (template: AppTemplateSummary) => {
-      if (!user?.id || !currentWorkspace?.id) {
-        Alert.alert('Error', 'No user session or workspace available')
-        return
-      }
-
-      setLoadingTemplate(template.name)
-
-      try {
-        const displayName = template.name.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
-        const project = await actions.createProject(
-          displayName,
-          currentWorkspace.id,
-          template.description,
-          user.id,
-          'APP',
-        )
-
-        if (project?.id) {
-          projects.loadAll()
-          trackEvent(posthog, EVENTS.PROJECT_CREATED, {
-            source: 'app_template',
-            template_name: template.name,
-          })
-          router.push({
-            pathname: '/(app)/projects/[id]',
-            params: {
-              id: project.id,
-              appTemplateName: template.name,
-            },
-          })
-        }
-      } catch (error) {
-        console.error('[TemplatesPage] Failed to create project from app template:', error)
-        Alert.alert('Error', 'Failed to create project from template')
-      } finally {
-        setLoadingTemplate(null)
-      }
-    },
-    [user?.id, currentWorkspace?.id, actions, projects, router, posthog]
-  )
+  // APP_MODE_DISABLED: handleAppTemplatePress removed
 
   // Deduplicate agent templates (API may return duplicates, causing React key collisions)
   const uniqueAgentTemplates = useMemo(() => {
@@ -209,13 +155,8 @@ export default observer(function TemplatesPage() {
       ? uniqueAgentTemplates
       : uniqueAgentTemplates.filter((t) => t.category === activeFilter)
 
-  const filteredAppTemplates =
-    activeFilter === 'all'
-      ? appTemplates
-      : appTemplates.filter((t) => t.complexity === activeFilter)
-
-  const filterTabs = templateMode === 'agents' ? AGENT_FILTER_TABS : APP_FILTER_TABS
-  const currentTemplates = templateMode === 'agents' ? filteredAgentTemplates : filteredAppTemplates
+  const filterTabs = AGENT_FILTER_TABS
+  const currentTemplates = filteredAgentTemplates
 
   if (loading) {
     return (
@@ -237,46 +178,14 @@ export default observer(function TemplatesPage() {
             className="text-center font-bold text-foreground"
             style={{ fontSize: 32, lineHeight: 40, letterSpacing: -0.3 }}
           >
-            {templateMode === 'agents' ? 'Agent Templates' : 'App Templates'}{'\n'}Built With AI
+            Agent Templates{'\n'}Built With AI
           </Text>
           <Text
             className="text-center mt-3 text-muted-foreground"
             style={{ fontSize: 15, lineHeight: 22 }}
           >
-            {templateMode === 'agents'
-              ? 'Production-ready agents from the Shogo team'
-              : 'Full-stack app starters with database, auth, and UI'}
+            Production-ready agents from the Shogo team
           </Text>
-        </View>
-
-        {/* Mode toggle */}
-        <View className="px-6 mb-4 items-center">
-          <View className="flex-row items-center gap-1 rounded-lg bg-muted p-1">
-            {(['agents', 'apps'] as const).map((mode) => (
-              <Pressable
-                key={mode}
-                onPress={() => setTemplateMode(mode)}
-                className={cn(
-                  'px-4 py-2 rounded-md',
-                  templateMode === mode && 'bg-background',
-                )}
-                style={templateMode === mode && Platform.OS === 'web' ? {
-                  boxShadow: '0 1px 2px rgba(0,0,0,0.06)',
-                } as any : {}}
-              >
-                <Text
-                  className={cn(
-                    'text-[13px]',
-                    templateMode === mode
-                      ? 'text-foreground font-semibold'
-                      : 'text-muted-foreground',
-                  )}
-                >
-                  {mode === 'agents' ? 'Agents' : 'Apps'}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
         </View>
 
         {/* Filter tabs */}
@@ -324,7 +233,7 @@ export default observer(function TemplatesPage() {
 
         {/* Template grid */}
         <View className="px-6">
-          {templateMode === 'agents' && filteredAgentTemplates.length > 0 && (
+          {filteredAgentTemplates.length > 0 && (
             <View
               style={Platform.OS === 'web' ? {
                 display: 'grid' as any,
@@ -342,29 +251,6 @@ export default observer(function TemplatesPage() {
                   template={template}
                   isLoading={loadingTemplate === template.id}
                   onPress={() => handleAgentTemplatePress(template)}
-                  isDark={isDark}
-                />
-              ))}
-            </View>
-          )}
-          {templateMode === 'apps' && filteredAppTemplates.length > 0 && (
-            <View
-              style={Platform.OS === 'web' ? {
-                display: 'grid' as any,
-                gridTemplateColumns: 'repeat(3, 1fr)',
-                gap: 20,
-                maxWidth: 1100,
-                marginHorizontal: 'auto',
-              } as any : {
-                gap: 16,
-              }}
-            >
-              {filteredAppTemplates.map((template) => (
-                <AppTemplateGalleryCard
-                  key={template.name}
-                  template={template}
-                  isLoading={loadingTemplate === template.name}
-                  onPress={() => handleAppTemplatePress(template)}
                   isDark={isDark}
                 />
               ))}
