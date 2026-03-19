@@ -36,6 +36,8 @@ import { SessionManager, type SessionManagerConfig } from './session-manager'
 import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { BlockChunker } from './block-chunker'
 import { CanvasStreamParser } from './canvas-stream-parser'
+import { BASIC_CANVAS_TOOLS_GUIDE, BASIC_CANVAS_EXAMPLES } from './canvas-prompt'
+import { CODE_AGENT_CODING_GUIDE, CODE_AGENT_ENVIRONMENT_GUIDE } from './code-agent-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import type { FilePart } from './file-attachment-utils'
@@ -216,8 +218,6 @@ export class AgentGateway {
       console.log(`[AgentGateway] Permission engine initialized: mode=${pref.mode}`)
     }
 
-    // Legacy code_agent tool removed — code_agent subagent (via task tool) replaces it.
-    // The task tool is registered in createTools() and doesn't need gateway-level init.
   }
 
   /** Inject a custom streamFn (used in tests to mock the LLM) */
@@ -997,15 +997,10 @@ export class AgentGateway {
     const mcpTools = this.mcpClientManager.getTools()
     let assembledTools = mcpTools.length > 0 ? [...baseTools, ...mcpTools] : baseTools
 
-    // Canvas tools are NEVER available to the main agent — all canvas work is
-    // delegated to canvas_agent via the task tool. The canvas_agent subagent
-    // receives canvas tools from allToolsGetter() inside createTaskTool.
-    const activeMode = this.config.activeMode || 'none'
-    assembledTools = assembledTools.filter(t => !t.name.startsWith('canvas_'))
-    // Strip task/skill and preview tools from heartbeat runs
+    // Strip skill and preview tools from heartbeat runs
     if (isHeartbeat) {
       assembledTools = assembledTools.filter(t =>
-        t.name !== 'task' && t.name !== 'skill' &&
+        t.name !== 'skill' &&
         t.name !== 'preview_status' && t.name !== 'preview_restart'
       )
     }
@@ -1450,7 +1445,7 @@ export class AgentGateway {
           'Your configuration files (AGENTS.md, SOUL.md, IDENTITY.md, HEARTBEAT.md, skills/) are already',
           'set up with template-specific instructions. Follow the instructions in AGENTS.md.',
           '',
-          'Canvas surfaces have been pre-built for this template. Use `task({ subagent_type: "canvas_agent", ... })`',
+          'Canvas surfaces have been pre-built for this template. Use canvas tools directly (canvas_create, canvas_update, etc.)',
           'to update or add surfaces as needed. You work through canvas mode — not app mode.',
           '',
         ].join('\n'))
@@ -1487,57 +1482,34 @@ export class AgentGateway {
     if (activeMode === 'canvas') {
       parts.push(`\n## Canvas Mode — Declarative Agent Display
 
-You are in canvas mode. You do NOT have canvas tools — **ALL canvas work is done by the canvas_agent subagent**. Call \`task({ subagent_type: 'canvas_agent', prompt: '...' })\` for every canvas operation.
+You are in canvas mode. You have all canvas tools available directly — use them to build and update canvas surfaces.
 
-**Your role in canvas mode:**
+**Your workflow in canvas mode:**
 1. Understand what the user wants to display or build
-2. Do any prerequisite work yourself (fetch data, run commands, search the web, read files, etc.)
-3. Write a DETAILED prompt for the canvas_agent that includes:
-   - Exactly what to build (dashboard type, components needed, layout)
-   - All data to display (inline the actual data values, don't just describe them)
-   - Chart types and their data points (e.g. "line chart with data: [{label:'Jan', value:42000}, ...]")
-   - **Which integrations are connected** — tell the canvas_agent to use live data from the connected integrations.
-   - Any specific component requirements (DataList vs Table, Metric with trends, etc.)
-   - Note: canvas is view-only (no buttons/forms). For interactive needs, switch to app mode.
-4. Call \`task({ subagent_type: 'canvas_agent', prompt: '<your detailed prompt>' })\`
-5. Relay the canvas_agent's results to the user
+2. Do any prerequisite work (fetch data, run commands, search the web, read files, etc.)
+3. Use \`canvas_create\` to create surfaces, \`canvas_update\` to build component trees, \`canvas_data\` / \`canvas_data_patch\` to populate data
+4. Use \`canvas_api_bind\` to connect live integration data (Gmail, GitHub, Calendar, etc.)
+5. Use \`canvas_api_hooks\` for auto-refresh and \`canvas_api_schema\` / \`canvas_api_seed\` for structured data models
+6. Use \`canvas_components\` to discover available components and \`canvas_inspect\` to debug existing surfaces
 
-**Example delegation with integrations:**
-\`\`\`
-task({
-  subagent_type: 'canvas_agent',
-  description: 'Build operations dashboard with live integration data',
-  prompt: 'Build an operations dashboard with surfaceId "ops-dashboard". I have the following integrations connected: Gmail, Google Calendar, GitHub. Bind real data from these integrations to build the dashboard.'
-})
-\`\`\`
+**Live data from integrations:**
+When integrations are connected, use \`tool_search\` to discover available actions, then \`canvas_api_bind\` to bind live data directly to canvas components.
 
-**IMPORTANT:** Do NOT switch modes unless the user explicitly asks you to. Stay in canvas mode and use canvas_agent for all visual work.
+**Canvas is view-only** — no buttons, forms, or interactive elements. For interactive needs, switch to app mode.
+
+**IMPORTANT:** Do NOT switch modes unless the user explicitly asks you to. Stay in canvas mode for all visual work.
 `)
     } else if (activeMode === 'app') {
       parts.push(`\n## App Mode — Custom Agent Interface
 
-You are in app mode. Use \`task({ subagent_type: 'code_agent', prompt: '...' })\` to delegate coding tasks. The code_agent subagent builds apps, writes scripts, and executes commands in the project/ directory.
+You are in app mode. You have all coding tools available directly — use \`edit_file\`, \`write_file\`, \`exec\`, \`template_list\`, \`template_copy\`, and other file/shell tools to build apps in the \`project/\` directory.
 
 **Key principles:**
-- All code changes go through the **code_agent** subagent via the \`task\` tool — NEVER write app code directly with write_file or edit_file.
-- **Every app MUST start from a template.** The code_agent has \`template_list\` and \`template_copy\` tools. If no template has been selected yet (no \`.app-template\` file), the code_agent will scaffold from a template first. Never ask it to create files from scratch.
+- **Every app MUST start from a template.** Use \`template_list\` to see available templates and \`template_copy\` to scaffold. If no template has been selected yet (no \`.app-template\` file), scaffold from a template first. Never create files from scratch or run \`npm create\`, \`npx create-vite\`, etc.
 - The app connects back to you via \`@shogo-ai/sdk/agent\` — it imports useAgentStatus, useAgentChat, useCanvasStream, and other hooks to communicate with your runtime.
 - The app is your custom frontend, not a standalone product. It should surface your work, let the user control you, or provide rich interaction with your capabilities.
 - Apps run on the same pod as you, so they use relative URLs (\`/agent/status\`, \`/agent/chat\`, etc.) with zero configuration.
-- For complex canvas work, use \`task({ subagent_type: 'canvas_agent', prompt: '...' })\`.
-
-**How to delegate effectively to code_agent:**
-When calling \`task({ subagent_type: 'code_agent', prompt: '...' })\`, the more context you include, the fewer exploration steps the code_agent needs — saving time and tokens.
-
-Include in your prompt:
-- **Files to modify** (if known): "Modify src/App.tsx and src/components/Header.tsx"
-- **Current state**: "The app currently shows a dashboard with 3 cards and a sidebar"
-- **Expected outcome**: "Add a dark mode toggle in the header that persists to localStorage"
-- **Error context** (for bug fixes): "The build fails with: TypeError: Cannot read property 'map' of undefined in TaskList.tsx:42"
-- **Framework context**: "This is a React + Tailwind app scaffolded from the todo-app template"
-
-Bad prompt: "fix the build"
-Good prompt: "The build is failing. Error from .build.log: 'Cannot find module @/components/ui/badge'. The file src/App.tsx imports Badge but it hasn't been installed yet. Install the shadcn badge component and verify the build passes."
+- You also have canvas tools available — use them directly for any canvas work without switching modes.
 
 **When to switch back:**
 - User just wants to see your output quickly → switch to **canvas** (faster, declarative)
@@ -1547,11 +1519,11 @@ Good prompt: "The build is failing. Error from .build.log: 'Cannot find module @
     } else if (activeMode === 'none') {
       parts.push(`\n## Visual Modes Available
 
-You have two visual modes for surfacing your work to the user. Both exist to give visibility into and control over what you are doing.
+You have two visual modes for surfacing your work to the user. Both exist to give visibility into and control over what you are doing. You have ALL tools available in every mode — canvas tools, code tools, file tools, etc.
 
-**Canvas** (switch_mode → "canvas") — Your visual display panel with live data binding. Declarative components (metrics, charts, tables, lists) show your work output, monitoring results, and status. Canvas is view-only (no buttons, forms, or interactive elements) but supports live data from integrations via \`canvas_api_bind\`. Delegate canvas building to \`task({ subagent_type: 'canvas_agent', prompt: '...' })\`. Start here for most visual needs.
+**Canvas** (switch_mode → "canvas") — Your visual display panel with live data binding. Declarative components (metrics, charts, tables, lists) show your work output, monitoring results, and status. Canvas is view-only (no buttons, forms, or interactive elements) but supports live data from integrations via \`canvas_api_bind\`. Use canvas tools directly. Start here for most visual needs.
 
-**App** (switch_mode → "app") — A custom-coded agent interface. Use when the user needs interactive elements (forms, buttons), multi-page flows, or specialized visualizations. The app connects to you via \`@shogo-ai/sdk/agent\`. Delegate coding to \`task({ subagent_type: 'code_agent', prompt: '...' })\`.
+**App** (switch_mode → "app") — A custom-coded agent interface. Use when the user needs interactive elements (forms, buttons), multi-page flows, or specialized visualizations. The app connects to you via \`@shogo-ai/sdk/agent\`. Use code/file tools directly in \`project/\`.
 
 **Default: start with canvas.** It's faster and keeps you in control. Escalate to app when the user needs interactivity or explicitly asks for a custom app/interface.
 
@@ -1564,6 +1536,17 @@ Examples:
     }
     // Mode context injection
     parts.push(`\n## Current Mode\nActive visual mode: **${activeMode}**. Use switch_mode to change.\n`)
+
+    // Canvas and code tool guides (available directly to the main agent)
+    if (activeMode === 'canvas' || activeMode === 'none') {
+      parts.push(BASIC_CANVAS_TOOLS_GUIDE)
+      parts.push(BASIC_CANVAS_EXAMPLES)
+    }
+    if (activeMode === 'app' || activeMode === 'none') {
+      parts.push(CODE_AGENT_ENVIRONMENT_GUIDE)
+      parts.push(CODE_AGENT_CODING_GUIDE)
+    }
+
     parts.push(PERSONALITY_EVOLUTION_GUIDE_PREFIX + personalityGuide)
     parts.push(toolPlanningGuide)
     parts.push(this.promptOverrides.get('constraint_awareness_guide') ?? OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE)

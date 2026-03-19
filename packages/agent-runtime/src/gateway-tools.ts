@@ -3217,16 +3217,17 @@ function createTaskTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): Ag
   return {
     name: 'task',
     description:
-      'Spawn a specialized subagent to handle a focused task in an isolated context. ' +
-      'Built-in types: code_agent (app code, scripts, and commands in project/), canvas_agent (declarative UI), ' +
-      'explore (read-only codebase search, uses Haiku), general-purpose (all tools). ' +
-      'Custom agents from .claude/agents/ are also available.',
+      'Spawn a subagent for parallel or focused work in an isolated context. ' +
+      'Built-in types: explore (fast read-only codebase search, uses Haiku), general-purpose (all tools). ' +
+      'Also available: code_agent (scoped to project/), canvas_agent (canvas tools + integrations). ' +
+      'Custom agents from .claude/agents/ are also available. ' +
+      'Note: the main agent has all tools directly — subagents are optional for parallelism or isolation.',
     label: 'Task',
     parameters: Type.Object({
       description: Type.String({ description: 'Short 3-5 word task description' }),
       prompt: Type.String({ description: 'Detailed task for the subagent' }),
       subagent_type: Type.Optional(Type.String({
-        description: 'Agent type: code_agent, canvas_agent, explore, general-purpose, or custom name',
+        description: 'Agent type: explore, general-purpose, code_agent, canvas_agent, or custom name',
       })),
       model: Type.Optional(Type.String({ description: 'Model override (e.g. claude-haiku-4-5)' })),
       max_turns: Type.Optional(Type.Number({ description: 'Max agentic turns (default: 10)' })),
@@ -3599,7 +3600,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   filesystem: ['read_file', 'write_file', 'edit_file'],
   files: ['list_files', 'delete_file', 'search_files', 'read_file', 'write_file', 'edit_file'],
   search: ['glob', 'grep'],
-  planning: ['todo_write', 'task'],
+  planning: ['todo_write'],
   web: ['web'],
   web_fetch: ['web'],
   web_search: ['web'],
@@ -3622,7 +3623,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
 export const ALL_TOOL_NAMES = [
   'exec', 'read_file', 'write_file', 'edit_file', 'glob', 'grep', 'ls', 'web', 'browser',
   'list_files', 'delete_file', 'search_files',
-  'todo_write', 'ask_user', 'skill', 'task',
+  'todo_write', 'ask_user', 'skill',
   'memory_read', 'memory_write', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list', 'cron',
   'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_components',
   'canvas_inspect',
@@ -4274,9 +4275,8 @@ export function createTools(ctx: ToolContext, modeHandler?: ModeSwitchHandler, e
     g(createGenerateImageTool(ctx), 'network'),
   ]
 
-  // Self-referencing getter for tools that need the full tool list (task, skill)
+  // Self-referencing getter for tools that need the full tool list (skill)
   const allToolsGetter = () => tools
-  tools.push(createTaskTool(ctx, allToolsGetter))
   tools.push(createSkillTool(ctx, allToolsGetter))
 
   if (modeHandler) {
