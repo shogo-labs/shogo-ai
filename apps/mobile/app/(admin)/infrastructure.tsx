@@ -167,10 +167,8 @@ async function evictPod(projectId: string): Promise<boolean> {
 }
 
 interface InfraSettings {
-  warmPoolMinAgents: number
-  warmPoolMinProjects: number
-  warmPoolAgentsPerNode: number
-  warmPoolProjectsPerNode: number
+  warmPoolMinPods: number
+  warmPoolPodsPerNode: number
   reconcileIntervalMs: number
   maxPodAgeMs: number
   promotedPodIdleTimeoutMs: number
@@ -586,10 +584,8 @@ function InfraSettingsPanel({
   onSaved: (config: InfraSettings) => void
 }) {
   const [form, setForm] = useState({
-    warmPoolMinAgents: String(settings.warmPoolMinAgents),
-    warmPoolMinProjects: String(settings.warmPoolMinProjects),
-    warmPoolAgentsPerNode: String(settings.warmPoolAgentsPerNode),
-    warmPoolProjectsPerNode: String(settings.warmPoolProjectsPerNode),
+    warmPoolMinPods: String(settings.warmPoolMinPods),
+    warmPoolPodsPerNode: String(settings.warmPoolPodsPerNode),
     reconcileIntervalMs: String(settings.reconcileIntervalMs / 1000),
     maxPodAgeMs: String(settings.maxPodAgeMs / 60000),
     promotedPodIdleTimeoutMs: String(settings.promotedPodIdleTimeoutMs / 60000),
@@ -600,10 +596,8 @@ function InfraSettingsPanel({
 
   useEffect(() => {
     setForm({
-      warmPoolMinAgents: String(settings.warmPoolMinAgents),
-      warmPoolMinProjects: String(settings.warmPoolMinProjects),
-      warmPoolAgentsPerNode: String(settings.warmPoolAgentsPerNode),
-      warmPoolProjectsPerNode: String(settings.warmPoolProjectsPerNode),
+      warmPoolMinPods: String(settings.warmPoolMinPods),
+      warmPoolPodsPerNode: String(settings.warmPoolPodsPerNode),
       reconcileIntervalMs: String(settings.reconcileIntervalMs / 1000),
       maxPodAgeMs: String(settings.maxPodAgeMs / 60000),
       promotedPodIdleTimeoutMs: String(settings.promotedPodIdleTimeoutMs / 60000),
@@ -615,10 +609,8 @@ function InfraSettingsPanel({
     setSaving(true)
     setMessage(null)
     const patch: Partial<InfraSettings> = {
-      warmPoolMinAgents: parseInt(form.warmPoolMinAgents, 10),
-      warmPoolMinProjects: parseInt(form.warmPoolMinProjects, 10),
-      warmPoolAgentsPerNode: parseInt(form.warmPoolAgentsPerNode, 10),
-      warmPoolProjectsPerNode: parseInt(form.warmPoolProjectsPerNode, 10),
+      warmPoolMinPods: parseInt(form.warmPoolMinPods, 10),
+      warmPoolPodsPerNode: parseInt(form.warmPoolPodsPerNode, 10),
       reconcileIntervalMs: Math.round(parseFloat(form.reconcileIntervalMs) * 1000),
       maxPodAgeMs: Math.round(parseFloat(form.maxPodAgeMs) * 60000),
       promotedPodIdleTimeoutMs: Math.round(parseFloat(form.promotedPodIdleTimeoutMs) * 60000),
@@ -647,22 +639,16 @@ function InfraSettingsPanel({
         <View className="flex-1 min-w-[200px]">
           <Text className="text-xs font-medium text-muted-foreground mb-2 uppercase tracking-wider">Warm Pool</Text>
           <SettingsField
-            label="Min Agent Pods"
-            hint="Minimum warm agent pods regardless of node count"
-            value={form.warmPoolMinAgents}
-            onChange={(v) => setForm((f) => ({ ...f, warmPoolMinAgents: v }))}
+            label="Min Pods"
+            hint="Minimum warm pods regardless of node count"
+            value={form.warmPoolMinPods}
+            onChange={(v) => setForm((f) => ({ ...f, warmPoolMinPods: v }))}
           />
           <SettingsField
-            label="Min Project Pods"
-            hint="Minimum warm project pods (0 = disabled)"
-            value={form.warmPoolMinProjects}
-            onChange={(v) => setForm((f) => ({ ...f, warmPoolMinProjects: v }))}
-          />
-          <SettingsField
-            label="Agents Per Node"
-            hint="Additional warm agents added per managed node"
-            value={form.warmPoolAgentsPerNode}
-            onChange={(v) => setForm((f) => ({ ...f, warmPoolAgentsPerNode: v }))}
+            label="Pods Per Node"
+            hint="Additional warm pods added per managed node"
+            value={form.warmPoolPodsPerNode}
+            onChange={(v) => setForm((f) => ({ ...f, warmPoolPodsPerNode: v }))}
           />
           <SettingsField
             label="Max Pod Age"
