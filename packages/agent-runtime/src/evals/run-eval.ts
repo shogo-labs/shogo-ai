@@ -75,6 +75,7 @@ const trackArg = getArg('track', 'all')!
 const modelArg = getArg('model', 'haiku')!
 const workersArg = parseInt(getArg('workers', '1')!)
 const filterArg = getArg('filter')
+const tagsArg = getArg('tags')
 const verboseFlag = args.includes('--verbose') || args.includes('-v')
 
 const MODEL_MAP: Record<string, string> = {
@@ -322,6 +323,10 @@ async function main() {
   if (filterArg) {
     const f = filterArg.toLowerCase()
     evals = evals.filter(e => e.id.toLowerCase().includes(f) || e.name.toLowerCase().includes(f))
+  }
+  if (tagsArg) {
+    const requiredTags = tagsArg.split(',').map(t => t.trim().toLowerCase())
+    evals = evals.filter(e => e.tags?.some(t => requiredTags.includes(t.toLowerCase())))
   }
 
   console.log(`  Evals: ${evals.length}`)

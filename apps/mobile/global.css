@@ -2,6 +2,13 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Streamdown code-block action buttons (copy / download) */
+[data-streamdown="code-block-actions"] {
+  background: rgb(var(--color-muted) / 0.9) !important;
+  border-color: rgb(var(--color-border)) !important;
+  backdrop-filter: blur(8px);
+}
+
 :root {
   --color-background: 255 255 255;
   --color-foreground: 10 10 10;
@@ -22,6 +29,9 @@
   --color-border: 228 228 231;
   --color-input: 228 228 231;
   --color-ring: 37 99 235;
+
+  --color-sidebar: 244 244 245;
+  --color-sidebar-foreground: 24 24 27;
 
   /* M3 surface container progression — each depth gets progressively darker */
   --color-surface-0: 255 255 255;
@@ -50,6 +60,9 @@
   --color-border: 51 51 51;
   --color-input: 51 51 51;
   --color-ring: 33 150 243;
+
+  --color-sidebar: 42 42 42;
+  --color-sidebar-foreground: 222 222 222;
 
   /* M3 surface container progression — each depth gets progressively lighter */
   --color-surface-0: 30 30 30;

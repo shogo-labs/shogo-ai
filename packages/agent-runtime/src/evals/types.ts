@@ -52,6 +52,8 @@ export interface AgentEval {
   workspaceFiles?: Record<string, string>
   /** Visual mode to activate before running the eval (e.g. 'canvas'). Defaults to 'none'. */
   initialMode?: 'canvas' | 'app' | 'none'
+  /** Arbitrary tags for filtering (e.g. 'view-only', 'interactive') */
+  tags?: string[]
 }
 
 export interface ConversationTurn {

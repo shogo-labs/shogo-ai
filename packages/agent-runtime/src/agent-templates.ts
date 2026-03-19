@@ -8,6 +8,8 @@
  * recommended integrations, and comprehensive workspace files.
  */
 
+import type { TemplateIntegrationRef } from './integration-catalog'
+
 export interface AgentTemplate {
   id: string
   name: string
@@ -31,6 +33,9 @@ export interface AgentTemplate {
 
   /** Workspace files seeded on first boot */
   files: Record<string, string>
+
+  /** Composio integration categories the template recommends connecting */
+  integrations?: TemplateIntegrationRef[]
 }
 
 export type TemplateCategory =
@@ -190,6 +195,12 @@ Proactively suggest these based on user needs:
         quietHours: { start: '22:00', end: '07:00', timezone: 'UTC' },
       }),
     },
+    integrations: [
+      { categoryId: 'crm', description: 'Track leads, deals, and customer data' },
+      { categoryId: 'communication', description: 'Share reports and campaign alerts' },
+      { categoryId: 'notes', description: 'Store research, content drafts, and strategies' },
+      { categoryId: 'email', description: 'Monitor outreach and email campaigns' },
+    ],
   },
 
   // ── DevOps Hub ──────────────────────────────────────────────────────
@@ -299,6 +310,12 @@ Create surfaces progressively as the user connects repos and configures the agen
         quietHours: { start: '22:00', end: '07:00', timezone: 'UTC' },
       }),
     },
+    integrations: [
+      { categoryId: 'code-repository', description: 'Track PRs, commits, and code reviews', required: true },
+      { categoryId: 'communication', description: 'Deliver standups and team notifications' },
+      { categoryId: 'monitoring', description: 'Correlate errors with deployments' },
+      { categoryId: 'project-management', description: 'Sync issues and track sprint progress' },
+    ],
   },
 
   // ── Project Manager ─────────────────────────────────────────────────
@@ -386,6 +403,11 @@ You are a pragmatic project manager who keeps teams organized and shipping. You 
 `,
       'config.json': configJson({ heartbeatInterval: 1800 }),
     },
+    integrations: [
+      { categoryId: 'project-management', description: 'Track tasks, sprints, and backlog', required: true },
+      { categoryId: 'communication', description: 'Deliver standups and team notifications' },
+      { categoryId: 'code-repository', description: 'Track commits and pull request activity' },
+    ],
   },
 
   // ── Sales & Revenue ─────────────────────────────────────────────────
@@ -478,6 +500,12 @@ Create the Pipeline surface first — it's the highest-value view. Add Revenue D
 `,
       'config.json': configJson({ heartbeatInterval: 1800 }),
     },
+    integrations: [
+      { categoryId: 'payments', description: 'Track revenue, invoices, and payment status', required: true },
+      { categoryId: 'crm', description: 'Manage deals, contacts, and pipeline' },
+      { categoryId: 'email', description: 'Send outreach and track conversations' },
+      { categoryId: 'communication', description: 'Post deal alerts and team updates' },
+    ],
   },
 
   // ── Support Operations ──────────────────────────────────────────────
@@ -574,6 +602,12 @@ Create Ticket Queue first. Add Incident Tracker when monitoring is set up. Add A
 `,
       'config.json': configJson({ heartbeatInterval: 300 }),
     },
+    integrations: [
+      { categoryId: 'ticketing', description: 'Triage and manage support tickets', required: true },
+      { categoryId: 'monitoring', description: 'Track errors and correlate with incidents' },
+      { categoryId: 'communication', description: 'Route alerts and escalations' },
+      { categoryId: 'email', description: 'Monitor support email and forward alerts' },
+    ],
   },
 
   // ── Research Analyst ────────────────────────────────────────────────
@@ -671,6 +705,10 @@ Create Research Dashboard first (it handles ad-hoc research). Add Topic Tracker 
         quietHours: { start: '22:00', end: '07:00', timezone: 'UTC' },
       }),
     },
+    integrations: [
+      { categoryId: 'communication', description: 'Deliver briefings and research alerts' },
+      { categoryId: 'notes', description: 'Archive research findings and reports' },
+    ],
   },
 
   // ── HR & Recruiting ─────────────────────────────────────────────────
@@ -754,6 +792,11 @@ Create the Hiring Pipeline surface first with a Candidate model (name, role, sta
 `,
       'config.json': configJson({ heartbeatInterval: 3600 }),
     },
+    integrations: [
+      { categoryId: 'calendar', description: 'Schedule interviews and track availability' },
+      { categoryId: 'email', description: 'Communicate with candidates' },
+      { categoryId: 'communication', description: 'Coordinate with hiring teams' },
+    ],
   },
 
   // ── Personal Assistant ──────────────────────────────────────────────
@@ -851,6 +894,12 @@ Create the Daily Planner first — it's the everyday hub. Add Journal when the u
         quietHours: { start: '22:00', end: '07:00', timezone: 'UTC' },
       }),
     },
+    integrations: [
+      { categoryId: 'calendar', description: 'Sync your schedule and manage meetings' },
+      { categoryId: 'email', description: 'Summarize emails and draft replies' },
+      { categoryId: 'notes', description: 'Store notes, lists, and knowledge' },
+      { categoryId: 'travel', description: 'Search and plan trips' },
+    ],
   },
 
   // ── Operations Monitor ──────────────────────────────────────────────
@@ -942,6 +991,10 @@ Create Health Dashboard first with service endpoint monitoring. Add Alert Feed w
 `,
       'config.json': configJson({ heartbeatInterval: 300 }),
     },
+    integrations: [
+      { categoryId: 'monitoring', description: 'Track errors and service health' },
+      { categoryId: 'communication', description: 'Deliver alerts and watch for mentions' },
+    ],
   },
 
   // ── Blank Agent ─────────────────────────────────────────────────────

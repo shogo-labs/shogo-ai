@@ -32,21 +32,12 @@ import { CompactChatInput } from '../../components/chat/CompactChatInput'
 import type { FileAttachment } from '../../components/chat/ChatInput'
 import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
-import { api, type AppTemplateSummary } from '../../lib/api'
+import { api, type AgentTemplateSummary, type AppTemplateSummary } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { AgentTemplateGalleryCard } from '../../components/templates/agent-template-card'
 import { AppTemplateGalleryCard } from '../../components/templates/app-template-card'
 
-interface AgentTemplate {
-  id: string
-  name: string
-  description: string
-  category: string
-  icon: string
-  tags: string[]
-  settings: any
-  skills: string[]
-}
+type AgentTemplate = AgentTemplateSummary
 
 /**
  * Reads the dark class directly from the DOM and observes mutations.
@@ -420,6 +411,7 @@ const HomeScreen = observer(function HomeScreen() {
       })
 
       const onboardingMessage = `The "${template.name}" template has been installed. Can you describe what's been set up and walk me through how to customize it or connect my own tools?`
+      const hasIntegrations = template.integrations && template.integrations.length > 0
       projects.loadAll()
       router.push({
         pathname: '/(app)/projects/[id]',
@@ -427,6 +419,7 @@ const HomeScreen = observer(function HomeScreen() {
           id: newProject.id,
           chatSessionId: chatSession.id,
           initialMessage: onboardingMessage,
+          ...(hasIntegrations ? { showIntegrations: '1' } : {}),
         },
       } as any)
     } catch (error) {

@@ -43,6 +43,7 @@ export const ProjectModel = types
     siteTitle: types.optional(types.string, ""),
     siteDescription: types.optional(types.string, ""),
     thumbnailUrl: types.optional(types.string, ""),
+    templateId: types.optional(types.string, ""),
     settings: types.frozen<Record<string, unknown> | null>(null),
     workspace: types.safeReference(types.late(() => require("./workspace.model").WorkspaceModel)),
     folder: types.safeReference(types.late(() => FolderModel)),

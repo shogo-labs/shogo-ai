@@ -163,6 +163,29 @@ export const api = {
     await http.delete(`/api/integrations/connections/${connectionId}`)
   },
 
+  async getIntegrationStatuses(
+    http: HttpClient,
+    toolkits: string[],
+    projectId: string,
+  ): Promise<Record<string, { connected: boolean; connectionId?: string }>> {
+    const results = await Promise.allSettled(
+      toolkits.map((tk) => this.getIntegrationStatus(http, tk, projectId)),
+    )
+    return Object.fromEntries(
+      toolkits.map((tk, i) => {
+        const r = results[i]
+        if (r.status === 'fulfilled') {
+          const data = (r.value as any)?.data
+          const connected =
+            data?.connected === true ||
+            data?.status === 'ACTIVE'
+          return [tk, { connected, connectionId: data?.connectionId }]
+        }
+        return [tk, { connected: false }]
+      }),
+    )
+  },
+
   // ─── Thumbnails ──────────────────────────────────────────
 
   // Uses fetch directly because the SDK HttpClient JSON-serializes all bodies;
@@ -313,6 +336,11 @@ export interface AgentTemplateSummary {
     modelName: string
   }
   skills: string[]
+  integrations?: Array<{
+    categoryId: string
+    description: string
+    required?: boolean
+  }>
 }
 
 export interface AppTemplateSummary {

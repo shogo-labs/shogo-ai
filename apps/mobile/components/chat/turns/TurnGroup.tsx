@@ -82,10 +82,6 @@ export function TurnGroup({
       {/* User message */}
       {turn.userMessage && (
         <View className="w-full flex-row items-end justify-end gap-2">
-          <CopyButton
-            text={extractTextContent(turn.userMessage)}
-            className="mb-1 h-9 w-9 shrink-0 border border-border/60 bg-muted"
-          />
           <MessageContent message={turn.userMessage} className="ml-0" />
         </View>
       )}

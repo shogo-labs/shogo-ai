@@ -1,19 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * ProjectTopBar - Full-width navigation bar for the project detail view.
+ * ProjectTopBar - Unified navigation bar for the project detail view.
  *
- * Lovable-style top bar with a two-panel dropdown:
- *   Panel 1 (Menu): Workspace info, credits, action items (settings, rename, star, etc.)
- *   Panel 2 (Switcher): Search + project list for quick project switching
- *
- * Layout:
- *  - Left: Back button, project name + subtitle dropdown, chat history toggle, chat collapse toggle
- *  - Center: Tab buttons (Canvas, Status, Workspace, Skills, Tools, Channels, Analytics, Logs)
- *  - Right: GitHub icon (app only), Upgrade button, Publish button (app only)
+ * Single compact top bar with icon-only navigation, context-dependent controls,
+ * and chat panel controls. Consolidates the previous multi-bar setup (ProjectTopBar
+ * + chat toolbar + EditToolbar) into one.
  */
 
-import { useCallback, useState } from 'react'
+import React, { useCallback, useState } from 'react'
 import {
   View,
   Text,
@@ -53,6 +48,16 @@ import {
   SunMoon,
   MoreHorizontal,
   X,
+  MessageSquare,
+  LayoutDashboard,
+  FolderOpen,
+  Sliders,
+  Radio,
+  Activity,
+  Eye,
+  ListTree,
+  Plus,
+  Trash2,
 } from 'lucide-react-native'
 import { cn, Badge, Progress } from '@shogo/shared-ui/primitives'
 import { useTheme, type ThemePreference } from '../../contexts/theme'
@@ -60,14 +65,14 @@ import { formatCredits } from '../../lib/billing-config'
 import { PublishDropdown } from './PublishDropdown'
 import { usePlatformConfig } from '../../lib/platform-config'
 
-const AGENT_TABS = [
-  { id: 'chat-fullscreen', label: 'Chat' },
-  { id: 'dynamic-app', label: 'Canvas' },
-  { id: 'app-preview', label: 'App' },
-  { id: 'files', label: 'Files' },
-  { id: 'capabilities', label: 'Capabilities' },
-  { id: 'channels', label: 'Channels' },
-  { id: 'monitor', label: 'Monitor' },
+const AGENT_TABS: { id: string; label: string; icon: React.ElementType }[] = [
+  { id: 'chat-fullscreen', label: 'Chat', icon: MessageSquare },
+  { id: 'dynamic-app', label: 'Canvas', icon: LayoutDashboard },
+  { id: 'app-preview', label: 'App', icon: AppWindow },
+  { id: 'files', label: 'Files', icon: FolderOpen },
+  { id: 'capabilities', label: 'Capabilities', icon: Sliders },
+  { id: 'channels', label: 'Channels', icon: Radio },
+  { id: 'monitor', label: 'Monitor', icon: Activity },
 ]
 
 export interface ProjectSwitcherItem {
@@ -79,10 +84,6 @@ export interface ProjectTopBarProps {
   projectName: string
   projectId: string
   projects?: ProjectSwitcherItem[]
-  showChatSessions?: boolean
-  isChatCollapsed?: boolean
-  onChatSessionsToggle?: () => void
-  onChatCollapseToggle?: () => void
   activeTab?: string
   onTabChange?: (tabId: string) => void
   onProjectSwitch?: (projectId: string) => void
@@ -99,28 +100,69 @@ export interface ProjectTopBarProps {
   onToggleStar?: () => void
   onMoveToFolder?: (folderId: string | null) => void
   folders?: { id: string; name: string }[]
-  /** Tab IDs to hide from the tab bar (e.g. ['dynamic-app'] to hide Canvas) */
   hiddenTabs?: string[]
-  /** When false, replaces the Canvas tab with a full-screen Chat tab */
   canvasEnabled?: boolean
-  /** Active agent mode — controls which visual tabs are shown */
   activeMode?: 'none' | 'canvas' | 'app'
-  /** Narrow-screen: which main panel is visible (chat or canvas) */
   narrowActiveTab?: 'chat' | 'canvas'
-  /** Narrow-screen: callback when main panel changes */
   onNarrowTabChange?: (tab: 'chat' | 'canvas') => void
-  /** Narrow-screen: which sub-panel is showing in the canvas area */
   narrowPreviewTab?: string
+  // Canvas edit controls
+  isEditMode?: boolean
+  onToggleEditMode?: () => void
+  showTreePanel?: boolean
+  onToggleTreePanel?: () => void
+  selectedComponentId?: string | null
+  onDeleteComponent?: () => void
+  onAddComponent?: () => void
+  // Surface switching
+  surfaceEntries?: { id: string; title: string }[]
+  activeSurfaceId?: string | null
+  onSurfaceChange?: (surfaceId: string) => void
+  // Chat controls
+  showChatSessions?: boolean
+  isChatCollapsed?: boolean
+  onChatSessionsToggle?: () => void
+  onChatCollapseToggle?: () => void
+  onCreateNewSession?: () => void
+  // Slot for canvas theme picker
+  canvasThemePicker?: React.ReactNode
+}
+
+function BarIconButton({
+  icon: Icon,
+  onPress,
+  active,
+  title,
+  size = 14,
+}: {
+  icon: React.ElementType
+  onPress: () => void
+  active?: boolean
+  title?: string
+  size?: number
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      className={cn(
+        'h-7 w-7 items-center justify-center rounded-md',
+        active ? 'bg-primary' : 'active:bg-muted',
+      )}
+      accessibilityLabel={title}
+      {...(Platform.OS === 'web' && title ? { title } as any : {})}
+    >
+      <Icon
+        size={size}
+        className={cn(active ? 'text-primary-foreground' : 'text-muted-foreground')}
+      />
+    </Pressable>
+  )
 }
 
 export function ProjectTopBar({
   projectName,
   projectId,
   projects = [],
-  showChatSessions = false,
-  isChatCollapsed = false,
-  onChatSessionsToggle,
-  onChatCollapseToggle,
   activeTab = 'dynamic-app',
   onTabChange,
   onProjectSwitch,
@@ -143,6 +185,22 @@ export function ProjectTopBar({
   narrowActiveTab,
   onNarrowTabChange,
   narrowPreviewTab,
+  isEditMode,
+  onToggleEditMode,
+  showTreePanel,
+  onToggleTreePanel,
+  selectedComponentId,
+  onDeleteComponent,
+  onAddComponent,
+  surfaceEntries,
+  activeSurfaceId,
+  onSurfaceChange,
+  showChatSessions = false,
+  isChatCollapsed = false,
+  onChatSessionsToggle,
+  onChatCollapseToggle,
+  onCreateNewSession,
+  canvasThemePicker,
 }: ProjectTopBarProps) {
   const router = useRouter()
   const { width } = useWindowDimensions()
@@ -150,8 +208,7 @@ export function ProjectTopBar({
   const [showDropdown, setShowDropdown] = useState(false)
   const [dropdownKey, setDropdownKey] = useState(0)
   const [showNarrowMore, setShowNarrowMore] = useState(false)
-
-  const isChatFullscreen = !canvasEnabled && activeTab === 'chat-fullscreen'
+  const [showSurfaceDropdown, setShowSurfaceDropdown] = useState(false)
 
   const handleBack = useCallback(() => {
     router.push('/(app)' as any)
@@ -167,171 +224,120 @@ export function ProjectTopBar({
     }
   }, [projectId, onProjectSwitch, router])
 
-  const typeLabel = 'Project'
+  const isCanvasActive = activeTab === 'dynamic-app'
+  const showSurfacePicker = (surfaceEntries?.length ?? 0) > 1
+  const activeSurfaceEntry = surfaceEntries?.find(s => s.id === activeSurfaceId)
 
-  // App mode sets canvasEnabled false — still need Files/Capabilities/etc. on narrow screens.
+  const visibleTabs = AGENT_TABS.filter(tab => !hiddenTabs.includes(tab.id))
+  const narrowPrimaryIds = new Set(['chat-fullscreen', 'dynamic-app', 'app-preview'])
+  const narrowPrimaryTabs = visibleTabs.filter(t => narrowPrimaryIds.has(t.id))
+  const narrowOverflowTabs = visibleTabs.filter(t => !narrowPrimaryIds.has(t.id))
   const narrowMoreItems = [
-    ...(canvasEnabled || activeMode === 'app' || activeMode === 'none'
-      ? [
-          { id: 'files', label: 'Files' },
-          { id: 'capabilities', label: 'Capabilities' },
-          { id: 'channels', label: 'Channels' },
-          { id: 'monitor', label: 'Monitor' },
-        ]
-      : []),
+    ...narrowOverflowTabs.map(t => ({ id: t.id, label: t.label })),
     ...(!hasActiveSubscription ? [{ id: '_upgrade', label: 'Upgrade' }] : []),
   ]
 
-  return (
-    <View
-      className="h-12 bg-background/95 flex-row items-center justify-between px-3 border-b border-border web:sticky web:top-0"
-      style={
-        Platform.OS === 'web'
-          ? ({ zIndex: 1000, isolation: 'isolate' as const } as const)
-          : { elevation: 12 }
+  const handleTabPress = useCallback((tabId: string) => {
+    if (onNarrowTabChange) {
+      if (tabId === 'chat-fullscreen') {
+        onNarrowTabChange('chat')
+      } else {
+        onNarrowTabChange('canvas')
+        onTabChange?.(tabId)
       }
-    >
-      {/* Left: Back + project name */}
-      <View className="flex-row items-center gap-1 flex-shrink-0">
-        <Pressable
-          onPress={handleBack}
-          className="h-7 w-7 items-center justify-center rounded-md active:bg-muted"
-        >
-          <ArrowLeft size={14} className="text-muted-foreground" />
-        </Pressable>
+    } else {
+      onTabChange?.(tabId)
+    }
+  }, [onNarrowTabChange, onTabChange])
 
-        <Popover
-          placement="bottom"
-          size="md"
-          isOpen={showDropdown}
-          onOpen={() => { setShowDropdown(true); setDropdownKey((k) => k + 1) }}
-          onClose={() => setShowDropdown(false)}
-          trigger={(triggerProps) => (
-            <Pressable
-              {...triggerProps}
-              className={cn(
-                'flex-row items-center gap-1.5 px-1.5 py-1 rounded-md active:bg-muted',
-                isWide ? 'max-w-[200px]' : 'max-w-[140px]',
-              )}
-            >
-              <View className="flex-shrink min-w-0">
-                <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
+  const getTabActive = useCallback((tabId: string) => {
+    if (onNarrowTabChange) {
+      if (tabId === 'chat-fullscreen') return narrowActiveTab === 'chat'
+      return narrowActiveTab === 'canvas' && narrowPreviewTab === tabId
+    }
+    return activeTab === tabId
+  }, [onNarrowTabChange, narrowActiveTab, narrowPreviewTab, activeTab])
+
+  // Wide layout: two-zone top bar aligned with the chat (480px) and canvas (flex-1) panels below.
+  // Narrow layout: single flat bar with icon tabs and overflow menu.
+  const chatPanelWidth = 480
+
+  if (!isWide) {
+    return (
+      <View
+        className="h-10 bg-background/95 flex-row items-center px-2 border-b border-border web:sticky web:top-0"
+        style={
+          Platform.OS === 'web'
+            ? ({ zIndex: 1000, isolation: 'isolate' as const } as const)
+            : { elevation: 12 }
+        }
+      >
+        <View className="flex-row items-center gap-0.5 flex-shrink-0">
+          <BarIconButton icon={ArrowLeft} onPress={handleBack} title="Back to dashboard" />
+          <Popover
+            placement="bottom"
+            size="md"
+            isOpen={showDropdown}
+            onOpen={() => { setShowDropdown(true); setDropdownKey((k) => k + 1) }}
+            onClose={() => setShowDropdown(false)}
+            trigger={(triggerProps) => (
+              <Pressable
+                {...triggerProps}
+                className="flex-row items-center gap-1 px-1.5 py-0.5 rounded-md active:bg-muted max-w-[120px]"
+              >
+                <Text className="text-xs font-semibold text-foreground" numberOfLines={1}>
                   {projectName}
                 </Text>
-                {isWide && (
-                  <Text className="text-[10px] text-muted-foreground">{typeLabel}</Text>
-                )}
-              </View>
-              <ChevronDown size={12} className="text-muted-foreground flex-shrink-0" />
-            </Pressable>
-          )}
-        >
-          <PopoverBackdrop />
-          <PopoverContent className="max-w-[340px] w-[320px] p-0">
-            <PopoverBody>
-              <ProjectDropdownContent
-                key={dropdownKey}
-                projects={projects}
-                currentProjectId={projectId}
-                projectName={projectName}
-                onSelect={handleProjectSelect}
-                onGoToDashboard={handleBack}
-                onClose={() => setShowDropdown(false)}
-                workspaceName={workspaceName}
-                planLabel={planLabel}
-                creditsRemaining={creditsRemaining}
-                creditsTotal={creditsTotal}
-                ownerName={ownerName}
-                projectCreatedAt={projectCreatedAt}
-                projectModifiedAt={projectModifiedAt}
-                isStarred={isStarred}
-                onRenameProject={onRenameProject}
-                onToggleStar={onToggleStar}
-                onMoveToFolder={onMoveToFolder}
-                folders={folders}
-              />
-            </PopoverBody>
-          </PopoverContent>
-        </Popover>
-      </View>
-
-      {/* Center: Narrow segmented control OR wide tab buttons */}
-      {!isWide && onNarrowTabChange ? (
-        <View className="flex-row items-center bg-muted rounded-lg p-0.5 mx-2">
-          {(activeMode === 'none'
-            ? [{ key: 'chat', label: 'Chat', tabId: undefined }] as const
-            : activeMode === 'app'
-              ? [{ key: 'chat', label: 'Chat', tabId: undefined }, { key: 'canvas', label: 'App', tabId: 'app-preview' }] as const
-              : [{ key: 'chat', label: 'Chat', tabId: undefined }, { key: 'canvas', label: 'Canvas', tabId: 'dynamic-app' }] as const
-          ).map((tab) => {
-            const isActive = narrowActiveTab === tab.key
-            return (
-              <Pressable
-                key={tab.key}
-                onPress={() => {
-                  onNarrowTabChange(tab.key as 'chat' | 'canvas')
-                  if (tab.tabId) onTabChange?.(tab.tabId)
-                }}
-                className={cn(
-                  'px-3 py-1 rounded-md',
-                  isActive && 'bg-background shadow-sm',
-                )}
-              >
-                <Text
-                  className={cn(
-                    'text-xs font-medium',
-                    isActive ? 'text-foreground' : 'text-muted-foreground',
-                  )}
-                >
-                  {tab.label}
-                </Text>
+                <ChevronDown size={10} className="text-muted-foreground flex-shrink-0" />
               </Pressable>
-            )
-          })}
+            )}
+          >
+            <PopoverBackdrop />
+            <PopoverContent className="max-w-[340px] w-[320px] p-0">
+              <PopoverBody>
+                <ProjectDropdownContent
+                  key={dropdownKey}
+                  projects={projects}
+                  currentProjectId={projectId}
+                  projectName={projectName}
+                  onSelect={handleProjectSelect}
+                  onGoToDashboard={handleBack}
+                  onClose={() => setShowDropdown(false)}
+                  workspaceName={workspaceName}
+                  planLabel={planLabel}
+                  creditsRemaining={creditsRemaining}
+                  creditsTotal={creditsTotal}
+                  ownerName={ownerName}
+                  projectCreatedAt={projectCreatedAt}
+                  projectModifiedAt={projectModifiedAt}
+                  isStarred={isStarred}
+                  onRenameProject={onRenameProject}
+                  onToggleStar={onToggleStar}
+                  onMoveToFolder={onMoveToFolder}
+                  folders={folders}
+                />
+              </PopoverBody>
+            </PopoverContent>
+          </Popover>
         </View>
-      ) : isWide ? (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerClassName="flex-row items-center gap-0.5"
-          className="flex-shrink mx-2"
-          accessibilityRole="tablist"
-        >
-          {AGENT_TABS
-            .filter((tab) => !hiddenTabs.includes(tab.id))
-            .map((tab) => (
-            <Pressable
-              key={tab.id}
-              onPress={() => onTabChange?.(tab.id)}
-              accessibilityRole="tab"
-              accessibilityState={{ selected: activeTab === tab.id }}
-              aria-selected={activeTab === tab.id}
-              className={cn(
-                'px-2.5 py-1 rounded-md',
-                activeTab === tab.id
-                  ? 'bg-primary'
-                  : 'active:bg-muted'
-              )}
-            >
-              <Text
-                className={cn(
-                  'text-xs font-medium',
-                  activeTab === tab.id
-                    ? 'text-primary-foreground'
-                    : 'text-muted-foreground'
-                )}
-              >
-                {tab.label}
-              </Text>
-            </Pressable>
-          ))}
-        </ScrollView>
-      ) : null}
 
-      {/* Right actions */}
-      <View className="flex-row items-center gap-1.5 flex-shrink-0">
-        {/* Narrow: overflow menu for secondary panels + upgrade */}
-        {!isWide && narrowMoreItems.length > 0 && (
+        <View className="w-px h-5 bg-border mx-1" />
+
+        <View className="flex-row items-center gap-0.5" accessibilityRole="tablist">
+          {narrowPrimaryTabs.map((tab) => (
+            <BarIconButton
+              key={tab.id}
+              icon={tab.icon}
+              onPress={() => handleTabPress(tab.id)}
+              active={getTabActive(tab.id)}
+              title={tab.label}
+            />
+          ))}
+        </View>
+
+        <View className="flex-1" />
+
+        {narrowMoreItems.length > 0 && (
           <Popover
             placement="bottom right"
             isOpen={showNarrowMore}
@@ -341,11 +347,11 @@ export function ProjectTopBar({
               <Pressable
                 {...triggerProps}
                 className={cn(
-                  'h-8 w-8 items-center justify-center rounded-md',
+                  'h-7 w-7 items-center justify-center rounded-md',
                   showNarrowMore ? 'bg-muted' : 'active:bg-muted',
                 )}
               >
-                <MoreHorizontal size={16} className="text-muted-foreground" />
+                <MoreHorizontal size={14} className="text-muted-foreground" />
               </Pressable>
             )}
           >
@@ -388,28 +394,208 @@ export function ProjectTopBar({
             </PopoverContent>
           </Popover>
         )}
+      </View>
+    )
+  }
 
-        {/* Wide: show full buttons */}
-        {isWide && (
-          <>
-            <Pressable
-              onPress={() => router.push({ pathname: '/(app)/settings', params: { tab: 'github' } } as any)}
-              className="h-8 w-8 items-center justify-center rounded-md active:bg-muted"
-            >
-              <Github size={16} className="text-muted-foreground" />
-            </Pressable>
+  // ── Wide layout: two-zone bar ──────────────────────────────────────────
+  return (
+    <View
+      className="h-10 bg-background/95 flex-row items-center border-b border-border web:sticky web:top-0"
+      style={
+        Platform.OS === 'web'
+          ? ({ zIndex: 1000, isolation: 'isolate' as const } as const)
+          : { elevation: 12 }
+      }
+    >
+      {/* ── Left zone: aligned with chat panel (480px) ── */}
+      <View
+        className="h-full flex-row items-center px-2 shrink-0 border-r border-border"
+        style={{ width: isChatCollapsed ? undefined : chatPanelWidth }}
+      >
+        <View className="flex-row items-center gap-0.5 flex-shrink-0">
+          <BarIconButton icon={ArrowLeft} onPress={handleBack} title="Back to dashboard" />
 
-            {!hasActiveSubscription && (
+          <Popover
+            placement="bottom"
+            size="md"
+            isOpen={showDropdown}
+            onOpen={() => { setShowDropdown(true); setDropdownKey((k) => k + 1) }}
+            onClose={() => setShowDropdown(false)}
+            trigger={(triggerProps) => (
               <Pressable
-                onPress={() => router.push('/(app)/billing' as any)}
-                className="h-8 flex-row items-center gap-1.5 px-2.5 rounded-md border border-border active:bg-muted"
+                {...triggerProps}
+                className="flex-row items-center gap-1 px-1.5 py-0.5 rounded-md active:bg-muted max-w-[180px]"
               >
-                <Zap size={14} className="text-muted-foreground" />
-                <Text className="text-xs font-medium text-foreground">Upgrade</Text>
+                <Text className="text-xs font-semibold text-foreground" numberOfLines={1}>
+                  {projectName}
+                </Text>
+                <ChevronDown size={10} className="text-muted-foreground flex-shrink-0" />
               </Pressable>
             )}
+          >
+            <PopoverBackdrop />
+            <PopoverContent className="max-w-[340px] w-[320px] p-0">
+              <PopoverBody>
+                <ProjectDropdownContent
+                  key={dropdownKey}
+                  projects={projects}
+                  currentProjectId={projectId}
+                  projectName={projectName}
+                  onSelect={handleProjectSelect}
+                  onGoToDashboard={handleBack}
+                  onClose={() => setShowDropdown(false)}
+                  workspaceName={workspaceName}
+                  planLabel={planLabel}
+                  creditsRemaining={creditsRemaining}
+                  creditsTotal={creditsTotal}
+                  ownerName={ownerName}
+                  projectCreatedAt={projectCreatedAt}
+                  projectModifiedAt={projectModifiedAt}
+                  isStarred={isStarred}
+                  onRenameProject={onRenameProject}
+                  onToggleStar={onToggleStar}
+                  onMoveToFolder={onMoveToFolder}
+                  folders={folders}
+                />
+              </PopoverBody>
+            </PopoverContent>
+          </Popover>
+        </View>
+
+        <View className="flex-1" />
+
+        {/* Chat controls — right-aligned within the chat zone */}
+        {onChatCollapseToggle && (
+          <View className="flex-row items-center gap-0.5">
+            {!isChatCollapsed ? (
+              <>
+                <BarIconButton icon={PanelLeftClose} onPress={onChatCollapseToggle} title="Collapse chat" />
+                {onChatSessionsToggle && (
+                  <BarIconButton icon={History} onPress={onChatSessionsToggle} active={showChatSessions} title="Chat history" />
+                )}
+                {onCreateNewSession && (
+                  <BarIconButton icon={Plus} onPress={onCreateNewSession} title="New chat" />
+                )}
+              </>
+            ) : (
+              <BarIconButton icon={PanelLeft} onPress={onChatCollapseToggle} title="Expand chat" />
+            )}
+          </View>
+        )}
+      </View>
+
+      {/* ── Right zone: aligned with canvas panel (flex-1) ── */}
+      <View className="flex-1 h-full flex-row items-center px-2">
+        {/* Panel navigation icons */}
+        <View className="flex-row items-center gap-0.5" accessibilityRole="tablist">
+          {visibleTabs.map((tab) => (
+            <BarIconButton
+              key={tab.id}
+              icon={tab.icon}
+              onPress={() => handleTabPress(tab.id)}
+              active={getTabActive(tab.id)}
+              title={tab.label}
+            />
+          ))}
+        </View>
+
+        {/* Context zone: canvas edit controls (web only) */}
+        {Platform.OS === 'web' && isCanvasActive && onToggleEditMode && (
+          <>
+            <View className="w-px h-5 bg-border mx-1" />
+            <View className="flex-row items-center gap-0.5">
+              {showSurfacePicker && (
+                <Popover
+                  placement="bottom left"
+                  isOpen={showSurfaceDropdown}
+                  onOpen={() => setShowSurfaceDropdown(true)}
+                  onClose={() => setShowSurfaceDropdown(false)}
+                  trigger={(triggerProps) => (
+                    <Pressable
+                      {...triggerProps}
+                      className="h-7 flex-row items-center gap-1 px-2 rounded-md active:bg-muted"
+                      {...(Platform.OS === 'web' ? { title: 'Switch canvas' } as any : {})}
+                    >
+                      <Text className="text-[10px] font-medium text-muted-foreground max-w-[100px]" numberOfLines={1}>
+                        {activeSurfaceEntry?.title || 'Canvas'}
+                      </Text>
+                      <ChevronDown size={10} className="text-muted-foreground" />
+                    </Pressable>
+                  )}
+                >
+                  <PopoverBackdrop />
+                  <PopoverContent className="min-w-[160px] p-0">
+                    <PopoverBody>
+                      {surfaceEntries?.map((s) => (
+                        <Pressable
+                          key={s.id}
+                          onPress={() => {
+                            onSurfaceChange?.(s.id)
+                            setShowSurfaceDropdown(false)
+                          }}
+                          className={cn(
+                            'px-3 py-2 active:bg-muted',
+                            s.id === activeSurfaceId && 'bg-accent',
+                          )}
+                        >
+                          <Text
+                            className={cn(
+                              'text-xs',
+                              s.id === activeSurfaceId ? 'font-semibold text-foreground' : 'text-muted-foreground',
+                            )}
+                            numberOfLines={1}
+                          >
+                            {s.title || s.id}
+                          </Text>
+                        </Pressable>
+                      ))}
+                    </PopoverBody>
+                  </PopoverContent>
+                </Popover>
+              )}
+              <BarIconButton
+                icon={isEditMode ? Eye : Pencil}
+                onPress={onToggleEditMode}
+                active={isEditMode}
+                title={isEditMode ? 'Preview' : 'Edit'}
+              />
+              {isEditMode && onToggleTreePanel && (
+                <BarIconButton icon={ListTree} onPress={onToggleTreePanel} active={showTreePanel} title="Component tree" />
+              )}
+              {isEditMode && onAddComponent && (
+                <BarIconButton icon={Plus} onPress={onAddComponent} title="Add component" />
+              )}
+              {isEditMode && selectedComponentId && selectedComponentId !== 'root' && onDeleteComponent && (
+                <BarIconButton icon={Trash2} onPress={onDeleteComponent} title="Delete component" />
+              )}
+            </View>
           </>
         )}
+
+        <View className="flex-1" />
+
+        {/* Canvas theme picker */}
+        {isCanvasActive && canvasThemePicker}
+
+        {/* Right actions */}
+        <View className="flex-row items-center gap-0.5">
+          <BarIconButton
+            icon={Github}
+            onPress={() => router.push({ pathname: '/(app)/settings', params: { tab: 'github' } } as any)}
+            title="GitHub settings"
+          />
+          {!hasActiveSubscription && (
+            <Pressable
+              onPress={() => router.push('/(app)/billing' as any)}
+              className="h-7 flex-row items-center gap-1 px-2 rounded-md border border-border active:bg-muted"
+              {...(Platform.OS === 'web' ? { title: 'Upgrade plan' } as any : {})}
+            >
+              <Zap size={12} className="text-muted-foreground" />
+              <Text className="text-[10px] font-medium text-foreground">Upgrade</Text>
+            </Pressable>
+          )}
+        </View>
       </View>
     </View>
   )

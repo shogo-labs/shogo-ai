@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
+/**
+ * EditToolbar — standalone edit-mode toolbar used by DynamicAppDevPreview.
+ * The main project layout now uses ProjectTopBar for all edit controls.
+ */
 import React, { useState, useCallback } from 'react'
 import { View, Pressable, Platform } from 'react-native'
 import { Text } from '@/components/ui/text'
@@ -18,7 +22,7 @@ export function EditToolbar({ surfaceId, components, trailing }: EditToolbarProp
   if (Platform.OS !== 'web') return null
 
   const {
-    isEditMode, toggleEditMode, selectedComponentId, selectComponent,
+    isEditMode, toggleEditMode, selectedComponentId,
     showTreePanel, toggleTreePanel, deleteComponent,
   } = useEditMode()
   const [showAddDialog, setShowAddDialog] = useState(false)
@@ -34,7 +38,6 @@ export function EditToolbar({ surfaceId, components, trailing }: EditToolbarProp
     }
   }, [surfaceId, selectedComponentId, deleteComponent])
 
-  const rootComponent = components?.get('root')
   const addParentId = selectedComponentId || 'root'
 
   return (

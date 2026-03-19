@@ -131,9 +131,14 @@ export default observer(function TemplatesPage() {
             template_name: template.name,
           })
           const onboardingMessage = `The "${template.name}" template has been installed. Can you describe what's been set up and walk me through how to customize it or connect my own tools?`
+          const hasIntegrations = template.integrations && template.integrations.length > 0
           router.push({
             pathname: '/(app)/projects/[id]',
-            params: { id: project.id, initialMessage: onboardingMessage },
+            params: {
+              id: project.id,
+              initialMessage: onboardingMessage,
+              ...(hasIntegrations ? { showIntegrations: '1' } : {}),
+            },
           })
         }
       } catch (error) {

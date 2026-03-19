@@ -15,7 +15,7 @@
  * - AsyncStorage for chat session persistence instead of localStorage
  */
 
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   View,
   Text,
@@ -43,6 +43,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { getTotalCreditsForPlan } from '../../../../lib/billing-config'
 import { useAuth } from '../../../../contexts/auth'
+import { useDomainHttp } from '../../../../contexts/domain'
 import { authClient } from '../../../../lib/auth-client'
 import { API_URL, api } from '../../../../lib/api'
 import { usePlatformConfig } from '../../../../lib/platform-config'
@@ -51,7 +52,7 @@ import { ChatPanel } from '../../../../components/chat/ChatPanel'
 import { ChatSessionPicker, ChatSessionSidebar, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
 import { DynamicAppRenderer } from '../../../../components/dynamic-app/DynamicAppRenderer'
 import { EditModeProvider, useEditModeOptional } from '../../../../components/dynamic-app/edit/EditModeContext'
-import { EditToolbar } from '../../../../components/dynamic-app/edit/EditToolbar'
+import { AddComponentDialog } from '../../../../components/dynamic-app/edit/AddComponentDialog'
 import { InspectorPanel } from '../../../../components/dynamic-app/edit/InspectorPanel'
 import { ComponentTreePanel } from '../../../../components/dynamic-app/edit/ComponentTreePanel'
 import { CanvasThemeProvider, CanvasThemedContainer } from '../../../../components/dynamic-app/CanvasThemeContext'
@@ -63,8 +64,8 @@ import {
   CapabilitiesPanel,
   MonitorPanel,
 } from '../../../../components/project/panels'
-import { RefreshCw, History, PanelLeft, PanelLeftClose, Plus, MessageSquare } from 'lucide-react-native'
-import { SurfaceTabBar } from '../../../../components/dynamic-app/SurfaceTabBar'
+import { RefreshCw, MessageSquare } from 'lucide-react-native'
+import { IntegrationsCard, type TemplateIntegrationRef } from '../../../../components/project/IntegrationsCard'
 
 type ActiveTab = 'chat' | 'canvas'
 
@@ -76,11 +77,13 @@ export default observer(function ProjectLayout() {
     chatSessionId?: string
     initialMessage?: string
     appTemplateName?: string
+    showIntegrations?: string
   }>()
   const projectId = params.id
   const { width } = useWindowDimensions()
   const isWide = width >= WIDE_BREAKPOINT
   const { user } = useAuth()
+  const http = useDomainHttp()
 
   const store = useSDKDomain() as IDomainStore
   const { isReady: sdkReady } = useSDKReady()
@@ -91,6 +94,7 @@ export default observer(function ProjectLayout() {
   const [capturedInitialMessage] = useState(() => params.initialMessage ?? undefined)
   const [capturedInitialFiles] = useState(() => consumePendingFiles())
   const [capturedAppTemplateName] = useState(() => params.appTemplateName ?? undefined)
+  const [capturedShowIntegrations] = useState(() => params.showIntegrations === '1')
 
   // Tab state for narrow screens
   const [activeTab, setActiveTab] = useState<ActiveTab>('chat')
@@ -276,6 +280,13 @@ export default observer(function ProjectLayout() {
   const activeSurface = useMemo(() => {
     return effectiveSurfaceId ? surfaces.get(effectiveSurfaceId) || null : null
   }, [surfaces, effectiveSurfaceId])
+
+  const surfaceEntries = useMemo(() =>
+    Array.from(surfaces.values())
+      .sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? ''))
+      .map(s => ({ id: s.surfaceId, title: s.title || s.surfaceId })),
+    [surfaces],
+  )
 
   // Auto-switch to new surfaces created by the agent
   const prevActiveSurfaceIdRef = useRef(activeSurfaceId)
@@ -625,6 +636,44 @@ export default observer(function ProjectLayout() {
     }
   }, [actions, projectId])
 
+  // ─── Integrations card state ───────────────────────────────
+  const [integrationsCardData, setIntegrationsCardData] = useState<{
+    integrations: TemplateIntegrationRef[]
+    templateName: string
+  } | null>(null)
+  const [integrationsCardDismissed, setIntegrationsCardDismissed] = useState(false)
+
+  useEffect(() => {
+    console.log('[ProjectLayout] integrations check:', { capturedShowIntegrations, templateId: project?.templateId, projectKeys: project ? Object.keys(project) : null })
+    if (!capturedShowIntegrations || !project?.templateId) return
+    let cancelled = false
+
+    async function lookupIntegrations() {
+      try {
+        const templates = await api.getAgentTemplates(http)
+        if (cancelled) return
+        console.log('[ProjectLayout] templates fetched:', templates.length, 'looking for:', project.templateId)
+        const match = templates.find((t: any) => t.id === project.templateId)
+        if (match?.integrations?.length) {
+          setIntegrationsCardData({
+            integrations: match.integrations,
+            templateName: match.name,
+          })
+        }
+      } catch (err) {
+        console.warn('[ProjectLayout] Failed to look up template integrations:', err)
+      }
+    }
+
+    lookupIntegrations()
+    return () => { cancelled = true }
+  }, [capturedShowIntegrations, project?.templateId])
+
+  const showIntegrationsCard =
+    capturedShowIntegrations &&
+    !integrationsCardDismissed &&
+    integrationsCardData != null
+
   // Loading state
   if (isLoading || !project) {
     return (
@@ -659,23 +708,19 @@ export default observer(function ProjectLayout() {
   )
 
   const canvasPanel = canvasEnabled ? (
-    <CanvasThemeProvider projectSettings={project?.settings} onUpdateSettings={handleUpdateCanvasSettings}>
-      <EditModeProvider agentUrl={agentUrl}>
-        <CanvasPanel
-          surface={activeSurface}
-          surfaces={surfaces}
-          activeSurfaceId={effectiveSurfaceId}
-          onSurfaceChange={setUserSelectedSurfaceId}
-          connected={connected}
-          agentUrl={agentUrl}
-          onAction={handleCanvasAction}
-          onDataChange={updateLocalData}
-          authHeaders={nativeHeaders}
-          onRefresh={reconnect}
-          fullBleed={!isWide}
-        />
-      </EditModeProvider>
-    </CanvasThemeProvider>
+    <CanvasPanel
+      surface={activeSurface}
+      surfaces={surfaces}
+      activeSurfaceId={effectiveSurfaceId}
+      onSurfaceChange={setUserSelectedSurfaceId}
+      connected={connected}
+      agentUrl={agentUrl}
+      onAction={handleCanvasAction}
+      onDataChange={updateLocalData}
+      authHeaders={nativeHeaders}
+      onRefresh={reconnect}
+      fullBleed={!isWide}
+    />
   ) : null
 
   const hiddenTabs: string[] = []
@@ -685,184 +730,123 @@ export default observer(function ProjectLayout() {
 
   const isChatFullscreen = isWide && activeMode === 'none' && previewTab === 'chat-fullscreen'
 
-  const chatHidden = isWide ? isChatFullscreen : activeTab !== 'chat'
+  const chatHidden = isWide ? (isChatFullscreen || chatCollapsed) : activeTab !== 'chat'
   const canvasAreaHidden = (!isWide && activeTab === 'chat') || isChatFullscreen
   const narrowOnCanvas = !isWide && activeTab === 'canvas'
+
+  const topBarSharedProps = {
+    projectName: project.name,
+    projectId: projectId!,
+    projects: allProjects,
+    activeTab: previewTab,
+    hasActiveSubscription: effectiveHasActiveSubscription,
+    workspaceName,
+    planLabel,
+    creditsRemaining,
+    creditsTotal,
+    ownerName: user?.name || '',
+    projectCreatedAt: project.createdAt,
+    projectModifiedAt: project.updatedAt,
+    isStarred,
+    onRenameProject: handleRenameProject,
+    onToggleStar: handleToggleStar,
+    onMoveToFolder: handleMoveToFolder,
+    folders,
+    hiddenTabs,
+    canvasEnabled,
+    activeMode,
+    surfaceEntries,
+    activeSurfaceId: effectiveSurfaceId,
+    onSurfaceChange: setUserSelectedSurfaceId,
+    showChatSessions,
+    isChatCollapsed: chatCollapsed,
+    onChatSessionsToggle: () => setShowChatSessions((s: boolean) => !s),
+    onChatCollapseToggle: () => setChatCollapsed((c: boolean) => !c),
+    onCreateNewSession: handleCreateNewSession,
+    canvasActive: canvasEnabled && previewTab === 'dynamic-app',
+    effectiveSurfaceId,
+  }
 
   return (
     <>
       <Stack.Screen options={{ headerShown: false }} />
 
-      <View className="flex-1 bg-background">
-        {isWide ? (
-          <ProjectTopBar
-            projectName={project.name}
-            projectId={projectId!}
-            projects={allProjects}
-            activeTab={previewTab}
-            onTabChange={handlePreviewTabChange}
-            hasActiveSubscription={effectiveHasActiveSubscription}
-            workspaceName={workspaceName}
-            planLabel={planLabel}
-            creditsRemaining={creditsRemaining}
-            creditsTotal={creditsTotal}
-            ownerName={user?.name || ''}
-            projectCreatedAt={project.createdAt}
-            projectModifiedAt={project.updatedAt}
-            isStarred={isStarred}
-            onRenameProject={handleRenameProject}
-            onToggleStar={handleToggleStar}
-            onMoveToFolder={handleMoveToFolder}
-            folders={folders}
-            hiddenTabs={hiddenTabs}
-            canvasEnabled={canvasEnabled}
-            activeMode={activeMode}
-          />
-        ) : (
-          <ProjectTopBar
-            projectName={project.name}
-            projectId={projectId!}
-            projects={allProjects}
-            activeTab={previewTab}
-            hasActiveSubscription={effectiveHasActiveSubscription}
-            workspaceName={workspaceName}
-            planLabel={planLabel}
-            creditsRemaining={creditsRemaining}
-            creditsTotal={creditsTotal}
-            ownerName={user?.name || ''}
-            projectCreatedAt={project.createdAt}
-            projectModifiedAt={project.updatedAt}
-            isStarred={isStarred}
-            onRenameProject={handleRenameProject}
-            onToggleStar={handleToggleStar}
-            onMoveToFolder={handleMoveToFolder}
-            folders={folders}
-            hiddenTabs={hiddenTabs}
-            canvasEnabled={canvasEnabled}
-            activeMode={activeMode}
-            narrowActiveTab={activeTab}
-            narrowPreviewTab={previewTab}
-            onNarrowTabChange={(tab) => {
-              setActiveTab(tab)
-              if (tab === 'canvas') {
-                setPreviewTab(activeMode === 'app' ? 'app-preview' : 'dynamic-app')
-              }
-            }}
-            onTabChange={(tabId) => {
-              handlePreviewTabChange(tabId)
-              if (tabId !== 'dynamic-app' && tabId !== 'app-preview' && tabId !== 'chat-fullscreen') setActiveTab('canvas')
-            }}
-          />
-        )}
-
-        {/* Content — chat panel stays mounted across layout/tab changes */}
-        <View className={cn('flex-1', isWide && 'flex-row')}>
-          {/* Full-screen chat with history sidebar (canvas disabled, Chat tab active) */}
-          {isChatFullscreen && (
-            <View className="flex-1 flex-row">
-              <View className="w-[280px] border-r border-border bg-background">
-                <ChatSessionSidebar
-                  sessions={chatSessions}
-                  currentSessionId={chatSessionId ?? undefined}
-                  onSelect={(sessionId) => setChatSessionId(sessionId)}
-                  onCreate={handleCreateNewSession}
-                  onLoadMore={handleLoadMoreSessions}
-                  hasMore={store?.chatSessionCollection?.hasMore ?? false}
-                  isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
-                />
-              </View>
-              <View className="flex-1">
-                {chatPanel}
-              </View>
-            </View>
-          )}
-
-          {/* Normal left chat panel (unmounted when chat-fullscreen is active to avoid duplicate ChatPanel) */}
-          {!isChatFullscreen && (
-            isWide && chatCollapsed ? (
-              <View className="w-[52px] shrink-0 border-r border-border bg-background items-center pt-3 px-2">
-                <Pressable
-                  onPress={() => setChatCollapsed(false)}
-                  className="h-8 w-8 items-center justify-center rounded-lg border border-border bg-muted active:bg-accent"
-                  accessibilityLabel="Expand chat panel"
-                >
-                  <PanelLeft className="size-4 text-foreground" />
-                </Pressable>
-              </View>
+      <CanvasThemeProvider projectSettings={project?.settings} onUpdateSettings={handleUpdateCanvasSettings}>
+        <EditModeProvider agentUrl={agentUrl}>
+          <View className="flex-1 bg-background">
+            {isWide ? (
+              <TopBarBridge
+                {...topBarSharedProps}
+                onTabChange={handlePreviewTabChange}
+              />
             ) : (
-              <View
-                className={cn(
-                  'flex min-h-0 flex-col',
-                  isWide ? 'w-[480px] shrink-0 border-r border-border bg-background z-10' : 'relative flex-1',
-                  chatHidden && 'hidden',
-                )}
-              >
-                {isWide && (
-                  <View
-                    className="shrink-0 flex-row items-center justify-between gap-3 border-b border-border bg-background px-3 py-2"
-                    accessibilityRole="toolbar"
-                  >
-                    <Text
-                      className="text-sm font-semibold text-foreground"
-                      numberOfLines={1}
-                    >
-                      Chat
-                    </Text>
-                    <View className="flex-row items-center gap-1">
-                      <Pressable
-                        onPress={() => setChatCollapsed(true)}
-                        className="h-8 w-8 items-center justify-center rounded-lg border border-border bg-muted active:bg-accent"
-                        accessibilityLabel="Collapse chat panel"
-                      >
-                        <PanelLeftClose className="size-4 text-foreground" />
-                      </Pressable>
-                      <Pressable
-                        onPress={() => setShowChatSessions((s) => !s)}
-                        className={cn(
-                          'h-8 w-8 items-center justify-center rounded-lg border',
-                          showChatSessions
-                            ? 'border-primary bg-primary/15 active:bg-primary/25'
-                            : 'border-border bg-muted active:bg-accent'
-                        )}
-                        accessibilityLabel="Chat history"
-                      >
-                        <History
-                          className={cn(
-                            'size-4',
-                            showChatSessions ? 'text-primary' : 'text-foreground',
-                          )}
-                        />
-                      </Pressable>
-                      <Pressable
-                        onPress={handleCreateNewSession}
-                        className="h-8 w-8 items-center justify-center rounded-lg border border-border bg-muted active:bg-accent"
-                        accessibilityLabel="New chat"
-                      >
-                        <Plus className="size-4 text-foreground" />
-                      </Pressable>
-                    </View>
-                  </View>
-                )}
-                {isWide && showChatSessions && (
-                  <View className="shrink-0 border-b border-border bg-background">
-                    <ChatSessionPicker
+              <TopBarBridge
+                {...topBarSharedProps}
+                narrowActiveTab={activeTab}
+                narrowPreviewTab={previewTab}
+                onNarrowTabChange={(tab: 'chat' | 'canvas') => {
+                  setActiveTab(tab)
+                  if (tab === 'canvas') {
+                    setPreviewTab(activeMode === 'app' ? 'app-preview' : 'dynamic-app')
+                  }
+                }}
+                onTabChange={(tabId: string) => {
+                  handlePreviewTabChange(tabId)
+                  if (tabId !== 'dynamic-app' && tabId !== 'app-preview' && tabId !== 'chat-fullscreen') setActiveTab('canvas')
+                }}
+              />
+            )}
+
+            {/* Content — chat panel stays mounted across layout/tab changes */}
+            <View className={cn('flex-1', isWide && 'flex-row')}>
+              {/* Full-screen chat with history sidebar (canvas disabled, Chat tab active) */}
+              {isChatFullscreen && (
+                <View className="flex-1 flex-row">
+                  <View className="w-[280px] border-r border-border bg-background">
+                    <ChatSessionSidebar
                       sessions={chatSessions}
                       currentSessionId={chatSessionId ?? undefined}
-                      onSelect={(sessionId) => {
-                        setChatSessionId(sessionId)
-                        setShowChatSessions(false)
-                      }}
+                      onSelect={(sessionId) => setChatSessionId(sessionId)}
                       onCreate={handleCreateNewSession}
                       onLoadMore={handleLoadMoreSessions}
                       hasMore={store?.chatSessionCollection?.hasMore ?? false}
                       isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
                     />
                   </View>
-                )}
-                <View className="min-h-0 flex-1">{chatPanel}</View>
-              </View>
-            )
-          )}
+                  <View className="flex-1">
+                    {chatPanel}
+                  </View>
+                </View>
+              )}
+
+              {/* Left chat panel */}
+              {!isChatFullscreen && (
+                <View
+                  className={cn(
+                    'flex min-h-0 flex-col',
+                    isWide ? 'w-[480px] shrink-0 border-r border-border bg-background z-10' : 'relative flex-1',
+                    chatHidden && 'hidden',
+                  )}
+                >
+                  {isWide && showChatSessions && (
+                    <View className="shrink-0 border-b border-border bg-background">
+                      <ChatSessionPicker
+                        sessions={chatSessions}
+                        currentSessionId={chatSessionId ?? undefined}
+                        onSelect={(sessionId) => {
+                          setChatSessionId(sessionId)
+                          setShowChatSessions(false)
+                        }}
+                        onCreate={handleCreateNewSession}
+                        onLoadMore={handleLoadMoreSessions}
+                        hasMore={store?.chatSessionCollection?.hasMore ?? false}
+                        isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
+                      />
+                    </View>
+                  )}
+                  <View className="min-h-0 flex-1">{chatPanel}</View>
+                </View>
+              )}
 
           {/* Right panel area (canvas / files / capabilities / channels / monitor) */}
           <View
@@ -920,11 +904,80 @@ export default observer(function ProjectLayout() {
               <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
             </View>
           </View>
+
+          {/* Floating integrations card */}
+          {showIntegrationsCard && integrationsCardData && (
+            <View
+              className="absolute bottom-4 right-4 z-30"
+              pointerEvents="box-none"
+            >
+              <IntegrationsCard
+                projectId={projectId!}
+                integrations={integrationsCardData.integrations}
+                templateName={integrationsCardData.templateName}
+                onDismiss={() => setIntegrationsCardDismissed(true)}
+              />
+            </View>
+          )}
+          </View>
         </View>
-      </View>
+      </EditModeProvider>
+    </CanvasThemeProvider>
     </>
   )
 })
+
+// ---------------------------------------------------------------------------
+// TopBarBridge — reads EditModeContext and passes values to ProjectTopBar
+// ---------------------------------------------------------------------------
+
+function TopBarBridge({
+  canvasActive,
+  effectiveSurfaceId,
+  ...props
+}: React.ComponentProps<typeof ProjectTopBar> & {
+  canvasActive: boolean
+  effectiveSurfaceId: string | null
+}) {
+  const editMode = useEditModeOptional()
+  const [showAddDialog, setShowAddDialog] = useState(false)
+
+  const handleDelete = useCallback(() => {
+    if (effectiveSurfaceId && editMode?.selectedComponentId) {
+      editMode.deleteComponent(effectiveSurfaceId, editMode.selectedComponentId)
+    }
+  }, [effectiveSurfaceId, editMode])
+
+  const isEditActive = canvasActive && editMode?.isEditMode
+
+  return (
+    <>
+      <ProjectTopBar
+        {...props}
+        isEditMode={canvasActive ? editMode?.isEditMode : undefined}
+        onToggleEditMode={canvasActive ? editMode?.toggleEditMode : undefined}
+        showTreePanel={canvasActive ? editMode?.showTreePanel : undefined}
+        onToggleTreePanel={canvasActive ? editMode?.toggleTreePanel : undefined}
+        selectedComponentId={canvasActive ? editMode?.selectedComponentId : undefined}
+        onDeleteComponent={
+          isEditActive && editMode?.selectedComponentId && editMode.selectedComponentId !== 'root'
+            ? handleDelete
+            : undefined
+        }
+        onAddComponent={isEditActive ? () => setShowAddDialog(true) : undefined}
+        canvasThemePicker={canvasActive ? <CanvasThemePicker /> : undefined}
+      />
+      {showAddDialog && effectiveSurfaceId && (
+        <AddComponentDialog
+          visible={showAddDialog}
+          onClose={() => setShowAddDialog(false)}
+          surfaceId={effectiveSurfaceId}
+          parentId={editMode?.selectedComponentId || 'root'}
+        />
+      )}
+    </>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Canvas Panel — renders dynamic app surfaces or runtime preview placeholder
@@ -1009,14 +1062,11 @@ function CanvasPanel({
     )
   }
 
-  const themePicker = <CanvasThemePicker />
-
   if (!surface) {
     return (
       <View className="flex-1">
-        <View className={cn('flex-1', !fullBleed && 'p-3')}>
+        <View className={cn('flex-1', !fullBleed && 'p-2')}>
           <CanvasThemedContainer noBorder={fullBleed}>
-            {!fullBleed && <EditToolbar surfaceId={null} trailing={themePicker} />}
             <View className="flex-1 items-center justify-center px-6">
               <View
                 className={cn(
@@ -1049,18 +1099,12 @@ function CanvasPanel({
 
   return (
     <View className="flex-1">
-      <SurfaceTabBar
-        surfaces={surfaces}
-        activeSurfaceId={activeSurfaceId}
-        onSurfaceChange={onSurfaceChange}
-      />
       <View className="flex-1 flex-row">
         {isEditMode && showTreePanel && (
           <ComponentTreePanel surfaceId={surfaceId} components={surface.components} />
         )}
-        <View className={cn('flex-1', !fullBleed && 'p-3')}>
+        <View className={cn('flex-1', !fullBleed && 'p-2')}>
           <CanvasThemedContainer noBorder={fullBleed}>
-            {!fullBleed && <EditToolbar surfaceId={surfaceId} components={surface.components} trailing={themePicker} />}
             <ScrollView
               className="flex-1"
               contentContainerClassName={fullBleed ? 'p-0' : 'p-4'}
