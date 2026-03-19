@@ -10,7 +10,7 @@
 import { useState, useEffect, useRef, useCallback } from "react"
 import { View, Text, Pressable, ScrollView } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { Brain, ChevronDown } from "lucide-react-native"
+import { ChevronDown } from "lucide-react-native"
 
 export interface ThinkingWidgetProps {
   text: string
@@ -69,7 +69,6 @@ export function ThinkingWidget({
         accessibilityRole="button"
         accessibilityLabel={label}
       >
-        <Brain size={12} className="text-muted-foreground" />
         <Text className="text-[11px] text-muted-foreground">{label}</Text>
         <ChevronDown
           size={10}
