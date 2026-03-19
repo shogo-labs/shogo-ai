@@ -143,10 +143,11 @@ function ComponentNode({ definition, components, dataModel, onAction, onDataChan
     }
   }
 
-  const suppressActions = editMode?.isEditMode
   const noopAction = useCallback(() => {}, [])
-  const effectiveOnAction = suppressActions ? noopAction : onAction
-  const effectiveOnDataChange = suppressActions ? undefined : onDataChange
+  // Canvas is view-only: all action/data-change handlers are no-ops.
+  // Interactive component code remains in interactive.tsx but is unhooked.
+  const effectiveOnAction = noopAction
+  const effectiveOnDataChange = undefined
 
   // Scope-aware onDataChange that joins scopePath for DataList items
   const scopedOnDataChange = useCallback(

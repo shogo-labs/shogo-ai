@@ -1339,7 +1339,7 @@ function createCanvasCreateTool(): AgentTool {
   return {
     name: 'canvas_create',
     description:
-      'Create a new UI surface on the dynamic app canvas. A surface is a container for interactive UI components visible to the user. You must create a surface before adding components to it.',
+      'Create a new view-only display surface on the canvas. A surface is a container for layout, display, and data components visible to the user. You must create a surface before adding components to it.',
     label: 'Create Canvas Surface',
     parameters: Type.Object({
       surfaceId: Type.String({ description: 'Unique ID for the surface (e.g. "flight_results", "email_dashboard")' }),
@@ -1356,37 +1356,21 @@ function createCanvasCreateTool(): AgentTool {
 function createCanvasUpdateTool(): AgentTool {
   return {
     name: 'canvas_update',
-    description: `Add or update UI components on a surface. Components form a tree via ID references.
-One component must have id "root" as the tree root. Available component types:
+    description: `Add or update view-only UI components on a surface. Components form a tree via ID references.
+One component must have id "root" as the tree root. Canvas is VIEW-ONLY — no interactive components.
 
 Layout: Row, Column, Grid, Card, ScrollArea, Tabs, TabPanel, Accordion, AccordionItem
 Display: Text, Badge, Image, Icon, Separator, Progress, Skeleton, Alert
-Data: Table (read-only display), Metric, Chart, DataList (repeating template with actions)
-Interactive: Button, TextField, Select, Checkbox, ChoicePicker
+Data: Table, Metric, Chart, DataList (repeating template)
 
 Each component has: id, component (type), and type-specific props.
 Use "children" (array of IDs) or "child" (single ID) for nesting.
 Use { "path": "/some/pointer" } (with leading /) for data binding to the root data model.
 
-BUTTON — All button behavior uses the "action" prop with a mutation:
-  External link (opens in new tab):
-    { id: "link", component: "Button", label: "View on Airbnb", variant: "outline",
-      action: { name: "open_listing", mutation: { endpoint: "https://airbnb.com/rooms/123", method: "OPEN" } } }
-  DataList template with per-item URL (data-bound):
-    { id: "link", component: "Button", label: "View Listing", variant: "outline",
-      action: { name: "open_listing", mutation: { endpoint: { path: "url" }, method: "OPEN" } } }
-  CRUD mutation:
-    { id: "add", component: "Button", label: "Add",
-      action: { name: "add_item", mutation: { endpoint: "/api/items", method: "POST", body: { title: "New" } } } }
-  Supported methods: POST, PATCH, DELETE (CRUD), OPEN (external URL in new tab).
-
-IMPORTANT — For lists with per-row buttons (edit/delete), use DataList NOT Table:
-- Table is for read-only data display only (no buttons in rows).
-- DataList renders a template for each item and supports per-item mutation buttons.
+DATALIST — Repeating template for lists:
 - Set DataList children to: { "path": "/items", "templateId": "item_template" }
 - Inside the template, { "path": "fieldName" } (NO leading /) binds to the current item.
-
-See canvas_api_schema tool description for a complete working DataList + mutation example.
+- Use "where" prop for filtered subsets (e.g. Kanban columns).
 
 TABS — Use TabPanel children with a "title" prop (tab labels auto-derive from title):
   { id: "tabs", component: "Tabs", children: ["tab1", "tab2"] }
@@ -1412,27 +1396,7 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop �
       const { components: normalizedComponents, corrections } = normalizeComponents(rawComponents)
       const components = normalizedComponents as typeof rawComponents
 
-      // Auto-inject mutations for buttons that have action.name but no mutation
-      const autoMutationWarnings: string[] = []
       const manager = getDynamicAppManager()
-      for (const comp of components) {
-        if (comp.component !== 'Button' || !comp.action) continue
-        const action = comp.action as Record<string, unknown>
-        if (!action.name || action.mutation) continue
-
-        const inferred = manager.inferMutationForButton(surfaceId, String(action.name))
-        if (inferred) {
-          const needsParams = inferred.endpoint.includes(':id')
-          action.mutation = {
-            endpoint: inferred.endpoint,
-            method: inferred.method,
-            ...(needsParams ? { params: { id: { path: 'id' } } } : {}),
-          }
-          autoMutationWarnings.push(
-            `[${comp.id}] Auto-injected mutation { endpoint: "${inferred.endpoint}", method: "${inferred.method}" } from action name "${action.name}". Verify this is correct and add explicit mutation props (body, params) if needed.`
-          )
-        }
-      }
 
       // When merging, lint against the full merged component set
       let lintTarget = components
@@ -1467,35 +1431,12 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop �
           error: 'Component validation failed. Fix the errors below and retry.',
           errors: errors.map((e) => `[${e.componentId}] ${e.message}`),
           warnings: warnings.map((w) => `[${w.componentId}] ${w.message}`),
-          hint: 'Use canvas_components with action "detail" to look up valid props for any component type.',
+          hint: 'Use canvas_components with action "detail" to look up valid props for any component type. Canvas is view-only — no interactive components (Button, TextField, Select, Checkbox, ChoicePicker).',
         })
       }
 
       // Render with auto-corrected components
       const result = manager.updateComponents(surfaceId, components)
-
-      // Build test checklist for buttons with mutations (helps agent know exactly what to test)
-      const allComponents = merge
-        ? [...(manager.getSurface(surfaceId)?.components.values() ?? [])]
-        : components
-      const buttonChecklist = allComponents
-        .filter((c: any) => c.component === 'Button' && c.action?.mutation)
-        .map((c: any) => {
-          const mut = c.action.mutation as Record<string, unknown>
-          return {
-            actionName: c.action.name,
-            buttonId: c.id,
-            endpoint: mut.endpoint,
-            method: mut.method,
-            hasParams: !!mut.params,
-          }
-        })
-      const testChecklistFields = buttonChecklist.length > 0
-        ? {
-            testChecklist: buttonChecklist,
-            testHint: `Test each button with canvas_trigger_action({ surfaceId: "${surfaceId}", actionName: "..." }). For PATCH/DELETE buttons inside DataList templates, also pass itemData with a real item's data (e.g. { id: "..." }).`,
-          }
-        : {}
 
       // Non-fatal errors still present after auto-correction
       if (errors.length > 0) {
@@ -1506,7 +1447,6 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop �
           errors: errors.map((e) => `[${e.componentId}] ${e.message}`),
           warnings: warnings.length > 0 ? warnings.map((w) => `[${w.componentId}] ${w.message}`) : undefined,
           corrections: corrections.length > 0 ? corrections : undefined,
-          ...testChecklistFields,
           hint: 'Use canvas_components with action "detail" to look up valid props and enum values for any component type.',
         })
       }
@@ -1518,23 +1458,18 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop �
           error: `Components rendered with ${warnings.length} warning(s) that should be fixed. Call canvas_update again with corrected components.`,
           warnings: warnings.map((w) => `[${w.componentId}] ${w.message}`),
           corrections: corrections.length > 0 ? corrections : undefined,
-          ...testChecklistFields,
           hint: 'Use canvas_components with action "detail" to look up valid props for any component type.',
         })
       }
 
-      if (corrections.length > 0 || autoMutationWarnings.length > 0) {
+      if (corrections.length > 0) {
         return textResult({
           ...result,
-          corrections: corrections.length > 0 ? corrections : undefined,
-          autoMutations: autoMutationWarnings.length > 0 ? autoMutationWarnings : undefined,
-          ...testChecklistFields,
-          note: autoMutationWarnings.length > 0
-            ? 'Some buttons had missing mutations that were auto-inferred from action names. Always define explicit mutations in future updates — auto-inference may be incorrect.'
-            : 'Some prop values were auto-corrected. Use these corrected values in future updates.',
+          corrections,
+          note: 'Some prop values were auto-corrected. Use these corrected values in future updates.',
         })
       }
-      return textResult({ ...result, ...testChecklistFields })
+      return textResult(result)
     },
   }
 }
@@ -2491,15 +2426,13 @@ function createCanvasInspectTool(): AgentTool {
   return {
     name: 'canvas_inspect',
     description:
-      `Read the current state of a canvas surface. Use this after canvas_trigger_action to verify that actions and mutations worked correctly. This is the verification step in the trigger → inspect → report pattern.
+      `Read the current state of a canvas surface. Use this after canvas_update to verify that components rendered correctly.
 
 Modes:
 - "summary" (default): Component count, data keys, API models — quick health check
-- "data": Full data model or a specific path — use to verify a mutation changed the data
+- "data": Full data model or a specific path — verify data bindings resolved
 - "components": Full component tree — verify UI structure
-- "full": Everything — components, data, and API info
-
-Tip: After a trigger_action mutation, use mode "data" with a dataPath to check the specific collection that should have changed.`,
+- "full": Everything — components, data, and API info`,
     label: 'Inspect Canvas Surface',
     parameters: Type.Object({
       surfaceId: Type.String({ description: 'Surface ID to inspect' }),
@@ -3503,8 +3436,8 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   memory: ['memory_read', 'memory_write', 'memory_search'],
   messaging: ['send_message', 'channel_connect', 'channel_disconnect', 'channel_list'],
   cron: ['cron'],
-  canvas: ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_action_wait', 'canvas_components', 'canvas_trigger_action', 'canvas_inspect'],
-  api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind'],
+  canvas: ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_components', 'canvas_inspect'],
+  api: ['canvas_api_schema', 'canvas_api_seed', 'canvas_api_query'],
   personality: ['personality_update'],
   tool_discovery: ['tool_search', 'tool_install', 'tool_uninstall'],
   mcp_discovery: ['mcp_search', 'mcp_install', 'mcp_uninstall'],
@@ -3515,9 +3448,9 @@ export const ALL_TOOL_NAMES = [
   'list_files', 'delete_file', 'search_files',
   'todo_write', 'ask_user', 'skill', 'task',
   'memory_read', 'memory_write', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list', 'cron',
-  'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_action_wait', 'canvas_components',
-  'canvas_trigger_action', 'canvas_inspect',
-  'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind',
+  'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_components',
+  'canvas_inspect',
+  'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query',
   'personality_update',
   'tool_search', 'tool_install', 'tool_uninstall',
   'mcp_search', 'mcp_install', 'mcp_uninstall',

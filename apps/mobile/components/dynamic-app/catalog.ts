@@ -50,7 +50,7 @@ export interface CatalogEntry {
   hasChildren?: boolean
 }
 
-export const COMPONENT_CATALOG: Record<ComponentType, CatalogEntry> = {
+export const COMPONENT_CATALOG: Partial<Record<ComponentType, CatalogEntry>> = {
   // Layout
   Row: { component: DynRow, hasChildren: true },
   Column: { component: DynColumn, hasChildren: true },
@@ -78,10 +78,10 @@ export const COMPONENT_CATALOG: Record<ComponentType, CatalogEntry> = {
   Chart: { component: DynChart },
   DataList: { component: DynDataList, hasChildren: true },
 
-  // Interactive
-  Button: { component: DynButton },
-  TextField: { component: DynTextField },
-  Select: { component: DynSelect },
-  Checkbox: { component: DynCheckbox },
-  ChoicePicker: { component: DynChoicePicker },
+  // Interactive — unhooked: canvas is view-only. Components remain in interactive.tsx.
+  // Button: { component: DynButton },
+  // TextField: { component: DynTextField },
+  // Select: { component: DynSelect },
+  // Checkbox: { component: DynCheckbox },
+  // ChoicePicker: { component: DynChoicePicker },
 }

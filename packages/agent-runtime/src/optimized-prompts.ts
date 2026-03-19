@@ -12,7 +12,7 @@
 
 export const OPTIMIZED_CANVAS_EXAMPLES = `### Optimized Planning Examples
 
-These examples show the optimal tool sequence for common canvas requests:
+These examples show the optimal tool sequence for common canvas requests. Canvas is view-only — no interactive components.
 
 **Example 1:** "Show me the current weather forecast"
 - Surface: \`weather-forecast\`
@@ -20,71 +20,24 @@ These examples show the optimal tool sequence for common canvas requests:
 - Tools: canvas_create, canvas_update, canvas_data
 - Components: Column, Grid, Card, Metric, Text, Icon, Badge, Alert
 
-**Example 2:** "Find flights from SFO to JFK and let me pick one"
-- Surface: \`flight-search\`
-- Needs API: Yes (data management dashboard)
-- Tools: canvas_create, canvas_api_schema, canvas_api_query, canvas_update
-- Components: Column, Row, TextField, Button, Card, Table, Badge, Text, Select
-
-**Example 3:** "Build an email dashboard with metrics, tabs, and email tables"
+**Example 2:** "Build an email dashboard with metrics, tabs, and email tables"
 - Surface: \`email-dashboard\`
 - Needs API: No (display only)
 - Tools: canvas_create, canvas_update, canvas_data
 - Components: Column, Row, Grid, Card, Metric, Tabs, TabPanel, Table, Text, Badge
 - Tabs pattern: Use TabPanel children with title prop (e.g. { component: "TabPanel", title: "Important", children: [...] })
 
-**Example 4:** "Create a sales analytics dashboard with revenue chart and top products"
+**Example 3:** "Create a sales analytics dashboard with revenue chart and top products"
 - Surface: \`sales-analytics\`
 - Needs API: No (display only)
 - Tools: canvas_create, canvas_update, canvas_data
 - Components: Column, Grid, Metric, Card, Chart, Table, Text, Badge
 
-**Example 5:** "Show me an expense dashboard with total spent, budget remaining, and a breakdown of expenses"
+**Example 4:** "Show me an expense dashboard with total spent, budget remaining, and a breakdown of expenses"
 - Surface: \`expense-dashboard\`
-- Needs API: Yes (data dashboard with auto-updating metrics)
-- Tools: canvas_create, canvas_api_schema, canvas_api_seed, canvas_api_query, canvas_api_hooks, canvas_update, canvas_trigger_action, canvas_inspect
-- Components: Column, Row, Grid, Card, Metric, DataList, Button, TextField
-- Hooks pattern: Register recompute hooks (afterCreate + afterDelete) so Metric values auto-update when expenses are added/removed. Use validate hooks (beforeCreate) for data integrity.
-
-### Reference Component Tree — Well-Designed Expense Dashboard
-
-This is the FULL component tree for a polished expense dashboard canvas. The renderer auto-applies: root gap "lg", Separator injection, date/number formatting, and Metric trend inference from trendValue signs.
-
-\`\`\`json
-canvas_update({ surfaceId: "expense-dashboard", components: [
-  { "id": "root", "component": "Column", "children": ["header_row", "metrics", "add_card", "expenses_card"] },
-  { "id": "header_row", "component": "Row", "children": ["title", "period_badge"], "align": "center", "justify": "between" },
-  { "id": "title", "component": "Text", "text": "Expense Dashboard", "variant": "h2" },
-  { "id": "period_badge", "component": "Badge", "text": "February 2026", "variant": "outline" },
-  { "id": "metrics", "component": "Grid", "columns": 3, "children": ["m_total", "m_budget", "m_remaining"] },
-  { "id": "m_total", "component": "Metric", "label": "Total Spent", "value": { "path": "/summary/totalSpent" }, "unit": "$", "trendValue": "+$48 this week" },
-  { "id": "m_budget", "component": "Metric", "label": "Budget", "value": 1000, "unit": "$", "description": "Monthly limit" },
-  { "id": "m_remaining", "component": "Metric", "label": "Remaining", "value": { "path": "/summary/remaining" }, "unit": "$", "trendValue": "-4.8%" },
-  { "id": "add_card", "component": "Card", "title": "Add Expense", "description": "Record a new expense", "child": "add_form" },
-  { "id": "add_form", "component": "Row", "children": ["desc_input", "amt_input", "cat_select", "add_btn"], "gap": "sm", "align": "end" },
-  { "id": "desc_input", "component": "TextField", "label": "Description", "placeholder": "Coffee, groceries...", "dataPath": "/newDesc" },
-  { "id": "amt_input", "component": "TextField", "label": "Amount", "placeholder": "0.00", "type": "number", "dataPath": "/newAmount" },
-  { "id": "cat_select", "component": "Select", "label": "Category", "placeholder": "Select...", "options": [
-    { "label": "Food", "value": "food" }, { "label": "Transport", "value": "transport" },
-    { "label": "Entertainment", "value": "entertainment" }, { "label": "Utilities", "value": "utilities" }
-  ], "dataPath": "/newCategory" },
-  { "id": "add_btn", "component": "Button", "label": "Add", "action": { "name": "add_expense", "mutation": { "endpoint": "/api/expenses", "method": "POST", "body": { "description": { "path": "/newDesc" }, "amount": { "path": "/newAmount" }, "category": { "path": "/newCategory" } } } } },
-  { "id": "expenses_card", "component": "Card", "title": "Recent Expenses", "description": "Your spending history", "child": "expense_list" },
-  { "id": "expense_list", "component": "DataList", "children": { "path": "/expenses", "templateId": "expense_item" }, "emptyText": "No expenses yet" },
-  { "id": "expense_item", "component": "Card", "child": "expense_row" },
-  { "id": "expense_row", "component": "Row", "children": ["expense_info", "expense_right"], "align": "center", "justify": "between" },
-  { "id": "expense_info", "component": "Column", "children": ["expense_desc", "expense_meta"], "gap": "xs" },
-  { "id": "expense_desc", "component": "Text", "text": { "path": "description" }, "weight": "medium" },
-  { "id": "expense_meta", "component": "Row", "children": ["expense_cat", "expense_date"], "gap": "sm" },
-  { "id": "expense_cat", "component": "Badge", "text": { "path": "category" }, "variant": "secondary" },
-  { "id": "expense_date", "component": "Text", "text": { "path": "date" }, "variant": "caption" },
-  { "id": "expense_right", "component": "Row", "children": ["expense_amount", "del_btn"], "gap": "sm", "align": "center" },
-  { "id": "expense_amount", "component": "Text", "text": { "path": "amount" }, "variant": "large" },
-  { "id": "del_btn", "component": "Button", "label": "Delete", "variant": "destructive", "size": "sm", "action": { "name": "delete_expense", "mutation": { "endpoint": "/api/expenses/:id", "method": "DELETE", "params": { "id": { "path": "id" } } } } }
-]})
-\`\`\`
-
-Key design patterns: (1) header Row with title + Badge, (2) Grid of Metrics with trendValues, (3) Card-wrapped form, (4) Card-wrapped DataList with inner Cards per item. Note: root gap, Separators, number/date formatting, and trend direction are all handled automatically by the renderer.
+- Needs API: Yes (structured data with multiple records)
+- Tools: canvas_create, canvas_api_schema, canvas_api_seed, canvas_api_query, canvas_update, canvas_inspect
+- Components: Column, Row, Grid, Card, Metric, DataList, Text, Badge
 
 ### Work Output Examples (Agent Does The Work, Canvas Shows Results)
 
@@ -159,7 +112,7 @@ Always check \`list_files\` first when users mention uploaded files, then use \`
 - "Find revenue numbers in my data" → \`search_files\` (~1 iteration)
 - "Summarize the CSV I uploaded" → \`list_files, read_file\` (~1 iteration)
 - "Notify the Discord channel that v2.4.0 has been deployed" → \`send_message\` (~1 iteration) (batchable)
-- "Show me a dashboard of my project tasks with status and priority" → \`canvas_create, canvas_data, canvas_components, canvas_trigger_action\` (~1 iteration)`
+- "Show me a dashboard of my project tasks with status and priority" → \`canvas_create, canvas_data, canvas_update, canvas_inspect\` (~1 iteration)`
 
 export const OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE = `## Constraint Awareness
 
@@ -277,9 +230,8 @@ credentials or API keys — authentication is handled automatically.
 - Call \`tool_install({ name: "<integration-slug>" })\` — no credentials or args needed
 - Tools become available immediately with auto-auth
 
-Managed integrations auto-bind by default: the toolkit's CRUD operations are
-automatically discovered and will bind to the next canvas you create.
-Just call \`tool_install({ name: "googlecalendar" })\` then \`canvas_create\`.
+Managed integrations provide tools you can use to fetch real data for display on canvas.
+Just call \`tool_install({ name: "googlecalendar" })\` and use the tools to fetch data.
 
 ### MCP Servers (mcp_search / mcp_install)
 
@@ -292,8 +244,8 @@ MCP servers may require configuration (environment variables, API keys).
 - Call \`mcp_install({ name: "<name>", url: "<url>" })\` for remote servers
 - Pass \`env\` for API keys or connection strings when needed
 
-For MCP servers, auto-bind is not available. Use \`canvas_api_bind\` to manually
-wire tool CRUD to the canvas after install.
+For MCP servers, use the installed tools to fetch data, then display results
+on canvas with \`canvas_data\` or \`canvas_api_seed\`.
 
 ### Skill Registry
 

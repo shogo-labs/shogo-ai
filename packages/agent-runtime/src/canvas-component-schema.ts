@@ -242,7 +242,7 @@ export const CANVAS_COMPONENT_SCHEMA: ComponentSchema[] = [
     hasChildren: false,
     props: {
       label: str('Metric label', { required: true }),
-      value: str('Metric value (string or number), or use { path: "/summary/total" } to bind to data model. Use canvas_api_hooks with recompute action to auto-update bound values after mutations.'),
+      value: str('Metric value (string or number), or use { path: "/summary/total" } to bind to data model.'),
       unit: str('Unit suffix (e.g. "USD", "%")'),
       trend: str('Trend direction', { enum: ['up', 'down', 'neutral'] }),
       trendValue: str('Trend amount (e.g. "+12%")'),
@@ -313,16 +313,9 @@ This resolves "title" from each item, NOT from the root data model.
 
 Full example:
   { "id": "list", "component": "DataList", "children": { "path": "/tasks", "templateId": "task_row" } }
-  { "id": "task_row", "component": "Row", "children": ["task_title", "delete_btn"], "align": "center" }
+  { "id": "task_row", "component": "Row", "children": ["task_title", "task_status"], "align": "center" }
   { "id": "task_title", "component": "Text", "text": { "path": "title" } }
-  { "id": "delete_btn", "component": "Button", "label": "Delete", "variant": "destructive", "size": "sm",
-    "action": { "name": "delete", "mutation": { "endpoint": "/api/tasks/:id", "method": "DELETE", "params": { "id": { "path": "id" } } } } }
-
-Search & filter: set filterPath to a JSON Pointer where a TextField writes its value, and filterFields to the item fields to search.
-The DataList will client-side filter items in real time (case-insensitive substring match).
-  { "id": "search", "component": "TextField", "placeholder": "Search...", "dataPath": "/searchTerm" }
-  { "id": "list", "component": "DataList", "children": { "path": "/tasks", "templateId": "row" },
-    "filterPath": "/searchTerm", "filterFields": ["title", "description"] }
+  { "id": "task_status", "component": "Badge", "text": { "path": "status" }, "variant": "secondary" }
 
 Exact-value filtering with "where": show only items where fields match specific values. Ideal for Kanban boards and pipeline columns where multiple DataLists share the same data path but display different subsets.
   { "id": "new_col", "component": "DataList", "children": { "path": "/leads", "templateId": "lead_card" },
@@ -339,100 +332,9 @@ Exact-value filtering with "where": show only items where fields match specific 
     },
   },
 
-  // ---- Interactive ----
-  {
-    type: 'Button',
-    category: 'interactive',
-    description: `Clickable button. All behavior is driven through the "action" prop with a mutation:
-  - CRUD: { name: "add", mutation: { endpoint: "/api/items", method: "POST", body: { ... } } }
-  - Open external URL: { name: "view", mutation: { endpoint: "https://example.com", method: "OPEN" } }
-    In a DataList template, bind the URL: mutation: { endpoint: { path: "url" }, method: "OPEN" }
-    method "OPEN" opens the URL in a new browser tab — use it for Airbnb links, Google Maps, etc.`,
-    hasChildren: false,
-    props: {
-      label: str('Button text', { required: true }),
-      text: str('Alias for label'),
-      variant: str('Visual style', { enum: ['default', 'secondary', 'destructive', 'outline', 'ghost', 'link'], default: 'default' }),
-      size: str('Button size', { enum: ['default', 'sm', 'lg', 'icon'], default: 'default' }),
-      disabled: bool('Disable the button'),
-      action: ACTION_PROP,
-      className: CLASS_PROP,
-    },
-  },
-  {
-    type: 'TextField',
-    category: 'interactive',
-    description: `Text input with optional label. Dispatches action on Enter.
-Set "dataPath" to write user input to the data model as they type. Then reference
-that path in a Button mutation body: { title: { path: "/newTitle" } }.
-Example: { id: "input", component: "TextField", placeholder: "Title...", dataPath: "/newTitle" }`,
-    hasChildren: false,
-    props: {
-      label: str('Field label'),
-      placeholder: str('Placeholder text'),
-      value: str('Initial value'),
-      type: str('Input type', { enum: ['text', 'email', 'password', 'number', 'url', 'tel'], default: 'text' }),
-      disabled: bool('Disable the field'),
-      action: ACTION_PROP,
-      dataPath: str('JSON Pointer path — writes user input to the data model in real-time (e.g. "/newTitle")'),
-      debounceMs: num('Debounce delay in ms before writing to data model (useful for search inputs, e.g. 300)'),
-      className: CLASS_PROP,
-    },
-  },
-  {
-    type: 'Select',
-    category: 'interactive',
-    description: `Dropdown select. Dispatches action on change.
-Set "dataPath" to write the selected value to the data model. Then reference
-that path in a Button mutation body: { priority: { path: "/newPriority" } }.`,
-    hasChildren: false,
-    props: {
-      label: str('Field label'),
-      options: arr('Options: [{ label, value }]', {
-        label: str('Display text', { required: true }),
-        value: str('Option value', { required: true }),
-      }),
-      value: str('Initially selected value'),
-      placeholder: str('Placeholder option text'),
-      disabled: bool('Disable the select'),
-      action: ACTION_PROP,
-      dataPath: str('JSON Pointer path — writes selected value to the data model (e.g. "/newPriority")'),
-      className: CLASS_PROP,
-    },
-  },
-  {
-    type: 'Checkbox',
-    category: 'interactive',
-    description: 'Toggle checkbox with label. Dispatches action on change.',
-    hasChildren: false,
-    props: {
-      label: str('Checkbox label'),
-      checked: bool('Initial checked state'),
-      disabled: bool('Disable the checkbox'),
-      action: ACTION_PROP,
-      dataPath: str('JSON Pointer for two-way data binding'),
-      className: CLASS_PROP,
-    },
-  },
-  {
-    type: 'ChoicePicker',
-    category: 'interactive',
-    description: 'Chip/radio button group for single or multi-select.',
-    hasChildren: false,
-    props: {
-      label: str('Group label'),
-      options: arr('Options: [{ label, value }]', {
-        label: str('Display text', { required: true }),
-        value: str('Option value', { required: true }),
-      }),
-      value: str('Initially selected value(s)'),
-      multiple: bool('Allow multiple selections'),
-      variant: str('Visual style', { enum: ['radio', 'chip'], default: 'chip' }),
-      action: ACTION_PROP,
-      dataPath: str('JSON Pointer for two-way data binding'),
-      className: CLASS_PROP,
-    },
-  },
+  // ---- Interactive — unhooked: canvas is view-only ----
+  // Components remain defined in interactive.tsx but are not registered here,
+  // so canvas_components won't list them and lintComponents rejects them.
 ]
 
 // ---------------------------------------------------------------------------

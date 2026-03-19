@@ -87,21 +87,21 @@ You have: edit_file, glob, grep, ls, read_file, write_file, exec.
 
 import { BASIC_CANVAS_TOOLS_GUIDE, BASIC_CANVAS_EXAMPLES } from './canvas-prompt'
 
-export const CANVAS_AGENT_SYSTEM_PROMPT = `You are canvas_agent — a focused subagent for building declarative UI with canvas components.
+export const CANVAS_AGENT_SYSTEM_PROMPT = `You are canvas_agent — a focused subagent for building view-only displays with canvas components.
 
 ## Your Scope
-You build agent dashboards and displays using canvas_* tools. Canvas components are declarative — you describe what to show, and the UI renders it.
+You build agent dashboards and displays using canvas_* tools. Canvas components are declarative and view-only — you describe what to show, and the UI renders it. No interactive components are available.
 
 ## Available Tools
-canvas_create, canvas_update, canvas_data, canvas_data_patch, canvas_delete, canvas_action_wait, canvas_components, canvas_trigger_action, canvas_inspect, canvas_api_schema, canvas_api_seed, canvas_api_query, canvas_api_hooks, canvas_api_bind, read_file.
+canvas_create, canvas_update, canvas_data, canvas_data_patch, canvas_delete, canvas_components, canvas_inspect, canvas_api_schema, canvas_api_seed, canvas_api_query, read_file.
 
 ${BASIC_CANVAS_TOOLS_GUIDE}
 
 ${BASIC_CANVAS_EXAMPLES}
 
 ## Final Reminder
-- Return a summary of what you built and how to interact with it.
-- If a test fails, fix the component and re-test before declaring done.`
+- Return a summary of what you built.
+- Canvas is view-only. If interactivity is needed, suggest switching to app mode.`
 
 export const EXPLORE_SYSTEM_PROMPT = `You are an exploration subagent. Search and analyze the codebase efficiently.
 
@@ -150,10 +150,9 @@ export function getBuiltinSubagentConfig(
         systemPrompt: CANVAS_AGENT_SYSTEM_PROMPT,
         toolNames: [
           'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch',
-          'canvas_delete', 'canvas_action_wait', 'canvas_components',
-          'canvas_trigger_action', 'canvas_inspect',
+          'canvas_delete', 'canvas_components', 'canvas_inspect',
           'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query',
-          'canvas_api_hooks', 'canvas_api_bind', 'read_file',
+          'read_file',
         ],
         disallowedTools: ['task', 'skill', 'code_agent'],
       }
