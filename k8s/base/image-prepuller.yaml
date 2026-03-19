@@ -1,9 +1,8 @@
 # =============================================================================
 # Image Pre-Puller DaemonSet
 # =============================================================================
-# Ensures both runtime images (agent + project) are pre-pulled on all nodes.
-# Dramatically reduces cold start times by eliminating the 60+ second
-# image pull delay when new pods are scheduled.
+# Ensures the runtime image is pre-pulled on all nodes to eliminate 60+ second
+# image pull delays during cold starts.
 #
 # How it works:
 # 1. DaemonSet runs one pod on every node

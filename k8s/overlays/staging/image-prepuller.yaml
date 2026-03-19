@@ -1,17 +1,16 @@
 # =============================================================================
 # Image Pre-Puller DaemonSet - Staging
 # =============================================================================
-# This DaemonSet ensures the project-runtime image is pre-pulled on all nodes.
-# It dramatically reduces cold start times by eliminating the 60+ second
-# image pull delay when a new project pod is scheduled.
+# Ensures the runtime image is pre-pulled on all nodes to eliminate 60+ second
+# image pull delays during cold starts.
 #
 # How it works:
 # 1. DaemonSet runs one pod on every node
-# 2. The pod uses the project-runtime image but just sleeps
+# 2. The pod uses the runtime image but just sleeps
 # 3. This causes the image to be pulled to every node
-# 4. When project pods start, the image is already cached locally
+# 4. When runtime pods start, the image is already cached locally
 #
-# Resource Usage: Minimal (just a sleeping container per node)
+# Resource Usage: Minimal (just sleeping containers per node)
 # =============================================================================
 apiVersion: apps/v1
 kind: DaemonSet
@@ -30,8 +29,8 @@ spec:
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 1  # Only one pod unavailable at a time to maintain cache coverage
-      maxSurge: 0  # Don't create extra pods (DaemonSet constraint)
+      maxUnavailable: 1
+      maxSurge: 0
   template:
     metadata:
       labels:
@@ -39,40 +38,12 @@ spec:
         app.kubernetes.io/part-of: shogo
         environment: staging
     spec:
-      # Run on all nodes including system nodes
       tolerations:
         - operator: Exists
-      # Low priority - don't block other workloads
       priorityClassName: ""
       containers:
-        # Pre-pull the project-runtime image
-        - name: project-runtime-prepull
-          # This image is replaced by kustomize overlay with the actual ECR image
-          image: shogo-project-runtime
-          # Note: Changed from Always to IfNotPresent to avoid unnecessary pulls
-          # This requires using digest-based image refs (TODO: update CI/CD)
-          imagePullPolicy: Always  # TODO: Change to IfNotPresent once using digests
-          # Just sleep - we only need this container to pull the image
-          command: ["sleep", "infinity"]
-          resources:
-            requests:
-              memory: "1Mi"
-              cpu: "1m"
-            limits:
-              memory: "8Mi"
-              cpu: "10m"
-          # Security context - minimal permissions
-          securityContext:
-            readOnlyRootFilesystem: true
-            runAsNonRoot: true
-            runAsUser: 1000
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop:
-                - ALL
-        # Pre-pull the agent-runtime image
-        - name: agent-runtime-prepull
-          image: shogo-agent-runtime
+        - name: runtime-prepull
+          image: shogo-runtime
           imagePullPolicy: Always
           command: ["sleep", "infinity"]
           resources:
@@ -90,7 +61,6 @@ spec:
             capabilities:
               drop:
                 - ALL
-        # Pre-pull the postgres image (used as sidecar in project pods)
         - name: postgres-prepull
           image: postgres:16-alpine
           imagePullPolicy: IfNotPresent
@@ -110,5 +80,4 @@ spec:
             capabilities:
               drop:
                 - ALL
-      # Restart if container fails
       restartPolicy: Always
