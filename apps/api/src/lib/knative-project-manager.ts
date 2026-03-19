@@ -1669,12 +1669,15 @@ export async function getProjectPodUrl(projectId: string): Promise<string> {
  * If successful, assigns the project to the warm pod and kicks off
  * background creation of the real Knative Service.
  * Returns the warm pod URL on success, null on failure/unavailability.
+ * Retries with different pods from the pool if the first claim fails.
  */
 async function tryClaimWarmPod(
   projectId: string,
   manager: KnativeProjectManager
 ): Promise<string | null> {
   const t0 = Date.now()
+  const MAX_ATTEMPTS = 3
+
   try {
     const { getWarmPoolController } = await import('./warm-pool-controller')
     const warmPool = getWarmPoolController()
@@ -1684,35 +1687,37 @@ async function tryClaimWarmPod(
       return null
     }
 
-    const t1 = Date.now()
-
-    // Try to claim a warm pod from the unified pool
-    const pod = warmPool.claim()
-    if (!pod) {
-      console.log(`[KnativeProjectManager] No warm pod available for ${projectId} (available: ${poolStatus.available})`)
-      return null
-    }
-    const t2 = Date.now()
-
-    console.log(`[KnativeProjectManager] Claimed warm pod ${pod.serviceName} for ${projectId} (lookup=${t1 - t0}ms, claim=${t2 - t1}ms)`)
-
-    // Build project-specific env vars
     const envVars = await warmPool.buildProjectEnv(projectId)
-    const t3 = Date.now()
-    console.log(`[KnativeProjectManager] buildProjectEnv for ${projectId}: ${t3 - t2}ms`)
+    const envTime = Date.now()
+    console.log(`[KnativeProjectManager] buildProjectEnv for ${projectId}: ${envTime - t0}ms`)
 
-    // Assign the project to the warm pod (sends /pool/assign)
-    await warmPool.assign(pod, projectId, envVars)
-    const t4 = Date.now()
-    console.log(`[KnativeProjectManager] assign for ${projectId}: ${t4 - t3}ms (total warm pipeline: ${t4 - t0}ms)`)
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      const pod = warmPool.claim()
+      if (!pod) {
+        console.log(`[KnativeProjectManager] No warm pod available for ${projectId} (attempt ${attempt}/${MAX_ATTEMPTS})`)
+        break
+      }
 
-    // Create DomainMapping for preview subdomain pointing to the warm pool service.
-    // Non-blocking — the pod is already serving the project.
-    manager.createPreviewDomainMapping(projectId, pod.serviceName).catch((err: any) => {
-      console.error(`[KnativeProjectManager] Failed to create preview DomainMapping for warm pod ${pod.serviceName}:`, err.message)
-    })
+      console.log(`[KnativeProjectManager] Claimed warm pod ${pod.serviceName} for ${projectId} (attempt ${attempt}/${MAX_ATTEMPTS})`)
 
-    return pod.url
+      try {
+        const assignStart = Date.now()
+        await warmPool.assign(pod, projectId, envVars)
+        const assignEnd = Date.now()
+        console.log(`[KnativeProjectManager] assign for ${projectId}: ${assignEnd - assignStart}ms (total warm pipeline: ${assignEnd - t0}ms)`)
+
+        manager.createPreviewDomainMapping(projectId, pod.serviceName).catch((err: any) => {
+          console.error(`[KnativeProjectManager] Failed to create preview DomainMapping for warm pod ${pod.serviceName}:`, err.message)
+        })
+
+        return pod.url
+      } catch (assignErr: any) {
+        console.warn(`[KnativeProjectManager] Warm pod ${pod.serviceName} unreachable for ${projectId} (attempt ${attempt}/${MAX_ATTEMPTS}): ${assignErr.message}`)
+      }
+    }
+
+    console.log(`[KnativeProjectManager] All warm pool attempts exhausted for ${projectId} after ${Date.now() - t0}ms — falling back to cold start`)
+    return null
   } catch (err: any) {
     const elapsed = Date.now() - t0
     console.error(`[KnativeProjectManager] Warm pool claim failed for ${projectId} after ${elapsed}ms:`, err.message)
