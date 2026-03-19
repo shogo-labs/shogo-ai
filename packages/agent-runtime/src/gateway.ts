@@ -1496,20 +1496,20 @@ You are in canvas mode. You do NOT have canvas tools — **ALL canvas work is do
    - Exactly what to build (dashboard type, components needed, layout)
    - All data to display (inline the actual data values, don't just describe them)
    - Chart types and their data points (e.g. "line chart with data: [{label:'Jan', value:42000}, ...]")
-   - Which integrations are installed and should be bound with canvas_api_bind for live data
+   - **Which integrations are connected** — tell the canvas_agent to use \`canvas_api_bind\` for live data. Explicitly say "use canvas_api_bind with tool_search to discover the exact action names for Gmail, Slack, GitHub, etc."
    - Any specific component requirements (DataList vs Table, Metric with trends, etc.)
    - Note: canvas is view-only (no buttons/forms). For interactive needs, switch to app mode.
 4. Call \`task({ subagent_type: 'canvas_agent', prompt: '<your detailed prompt>' })\`
 5. Relay the canvas_agent's results to the user
 
-**The more detail you include in the prompt, the better the canvas_agent will build.** Don't just say "build a dashboard" — specify the components, data, and layout.
+**CRITICAL: When integrations are connected, you MUST tell the canvas_agent to use canvas_api_bind for live data. Never let it use fake/sample data for connected integrations.**
 
-**Example delegation:**
+**Example delegation with integrations:**
 \`\`\`
 task({
   subagent_type: 'canvas_agent',
-  description: 'Build revenue dashboard',
-  prompt: 'Build a revenue dashboard with surfaceId "revenue". Include: 1) A line chart showing monthly revenue: Jan $42K, Feb $38K, Mar $45K, Apr $51K, May $48K, Jun $55K. 2) Three metrics: Total Revenue ($279K), Average ($46.5K), Growth (+16.7%). 3) Title "Revenue Trend".'
+  description: 'Build operations dashboard with live integration data',
+  prompt: 'Build an operations dashboard with surfaceId "ops-dashboard". The following integrations are CONNECTED and you MUST use canvas_api_bind (with tool_search to discover exact action names) to show REAL live data: Gmail, Google Calendar, GitHub. Include: 1) Email inbox section showing latest emails from Gmail, 2) Calendar events section, 3) GitHub PRs section. Use canvas_api_bind for each integration to bind real data — do NOT use canvas_data or canvas_api_seed with fake data.'
 })
 \`\`\`
 

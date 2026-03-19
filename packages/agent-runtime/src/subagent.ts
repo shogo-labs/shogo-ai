@@ -91,7 +91,35 @@ export const CANVAS_AGENT_SYSTEM_PROMPT = `You are canvas_agent — a focused su
 You build agent dashboards and displays using canvas_* tools. Canvas components are declarative and view-only — you describe what to show, and the UI renders it. No interactive components (Button, TextField, Select, Checkbox) are available, but you CAN bind live data from integrations using canvas_api_bind and auto-refresh metrics with canvas_api_hooks.
 
 ## Available Tools
-canvas_create, canvas_update, canvas_data, canvas_data_patch, canvas_delete, canvas_components, canvas_inspect, canvas_api_schema, canvas_api_seed, canvas_api_query, canvas_api_hooks, canvas_api_bind, read_file.
+canvas_create, canvas_update, canvas_data, canvas_data_patch, canvas_delete, canvas_components, canvas_inspect, canvas_api_schema, canvas_api_seed, canvas_api_query, canvas_api_hooks, canvas_api_bind, read_file, tool_search.
+
+## CRITICAL: Live Data Binding with Integrations
+
+When the delegation prompt mentions connected integrations (Gmail, GitHub, Slack, Calendar, Jira, etc.), you MUST use \`canvas_api_bind\` to show REAL live data from those services. NEVER use \`canvas_data\` or \`canvas_api_seed\` to populate fake/sample data for integrations that are already connected.
+
+**Mandatory workflow when integrations are mentioned:**
+1. Call \`tool_search({ query: "<integration name>" })\` for each mentioned integration to discover the exact Composio action names (e.g., GMAIL_FETCH_EMAILS, GITHUB_LIST_PULL_REQUESTS, GOOGLECALENDAR_LIST_EVENTS)
+2. Call \`canvas_create\` to create the surface
+3. Call \`canvas_api_bind\` for EACH integration, mapping the discovered tool names to CRUD bindings with \`dataPath\` to auto-load data
+4. Call \`canvas_update\` to build the component tree with data bindings pointing to the dataPath locations
+
+**Example canvas_api_bind call:**
+\`\`\`
+canvas_api_bind({
+  surfaceId: "dashboard",
+  model: "Email",
+  fields: [
+    { name: "id", type: "String" },
+    { name: "subject", type: "String" },
+    { name: "from", type: "String" },
+    { name: "date", type: "String" }
+  ],
+  bindings: { list: { tool: "GMAIL_FETCH_EMAILS", params: { max_results: 10 } } },
+  dataPath: "/emails"
+})
+\`\`\`
+
+Then in canvas_update, bind components to \`{ "path": "/emails" }\` for DataList or \`{ "path": "/emails" }\` for Table rows.
 
 ${BASIC_CANVAS_TOOLS_GUIDE}
 
@@ -100,6 +128,7 @@ ${BASIC_CANVAS_EXAMPLES}
 ## Final Reminder
 - Return a summary of what you built and what data sources are bound.
 - Canvas is view-only for user interaction, but supports live data binding from integrations via canvas_api_bind.
+- **NEVER use canvas_data or canvas_api_seed with fake data when the prompt mentions connected integrations. Use canvas_api_bind to show real data.**
 - If the user needs interactive elements (forms, buttons), suggest switching to app mode.`
 
 export const EXPLORE_SYSTEM_PROMPT = `You are an exploration subagent. Search and analyze the codebase efficiently.
@@ -173,7 +202,7 @@ export function getBuiltinSubagentConfig(
         ],
         disallowedTools: ['task', 'skill', 'code_agent'],
         workingDir: projectDir,
-        maxTurns: 30,
+        maxTurns: 50,
         maxTokens: 16384,
         loopDetection: { maxIdenticalCalls: 5 },
       }
@@ -188,9 +217,10 @@ export function getBuiltinSubagentConfig(
           'canvas_delete', 'canvas_components', 'canvas_inspect',
           'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query',
           'canvas_api_hooks', 'canvas_api_bind', 'read_file',
+          'tool_search',
         ],
         disallowedTools: ['task', 'skill', 'code_agent'],
-        maxTurns: 30,
+        maxTurns: 50,
         maxTokens: 16384,
       }
     case 'explore':

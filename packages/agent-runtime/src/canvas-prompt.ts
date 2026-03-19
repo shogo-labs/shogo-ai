@@ -258,7 +258,7 @@ Root Column
 ### Rules
 - **ALWAYS plan before building.** Write a brief plan (data sources, layout) before calling any canvas tools. This prevents costly mistakes and rebuilds.
 - Canvas is VIEW-ONLY for user interaction (no buttons, forms, text inputs). Use \`canvas_api_bind\` for live integration data and \`canvas_api_hooks\` for auto-refreshing metrics. If the user needs interactive elements, switch to app mode.
-- **Prefer live data over sample data.** When an integration is installed (tool_install), use \`canvas_api_bind\` to show real data instead of seeding fake records.
+- **ALWAYS use live data when integrations are connected.** When the prompt mentions connected integrations, you MUST use \`tool_search\` to discover the action names, then \`canvas_api_bind\` to bind real data. NEVER use \`canvas_data\` or \`canvas_api_seed\` to populate fake/sample records for connected integrations.
 - When canvas tools return status: "rendered" or "data_updated", the UI is already live.
 - **NEVER delete and recreate a surface to fix issues.** Use \`canvas_update({ merge: true })\` to patch individual components. Deleting loses all data bindings and causes UI flicker.
 - **Simple state (counters, single values):** Use canvas_data. Do NOT use canvas_api_schema/canvas_api_seed/canvas_api_query unless you need a queryable model with multiple records.
@@ -296,12 +296,13 @@ These examples show the optimal tool sequence for common canvas requests:
 - Schema: Task model with \`title: String\`, \`status: String\`, \`priority: String\`
 - Components: Column, Row, Grid, Metric, Card, DataList, Text, Badge
 
-**Example 5:** "Connect my Google Calendar and show upcoming events"
+**Example 5:** "Show my Google Calendar events on a dashboard" (integration already connected)
 - Surface: \`calendar-dashboard\`
-- Needs API: Yes (live integration data)
-- Tools: tool_install, canvas_create, canvas_api_bind, canvas_update
-- Pattern: tool_install({ name: "googlecalendar" }) → canvas_create → canvas_api_bind({ model: "CalendarEvent", ... dataPath: "/events" }) → canvas_update with DataList bound to { path: "/events" }
+- Needs API: Yes (live integration data via canvas_api_bind)
+- Tools: tool_search, canvas_create, canvas_api_bind, canvas_update
+- Pattern: tool_search({ query: "google calendar" }) → find action name (e.g. GOOGLECALENDAR_LIST_EVENTS) → canvas_create → canvas_api_bind({ model: "CalendarEvent", fields: [...], bindings: { list: { tool: "GOOGLECALENDAR_LIST_EVENTS" } }, dataPath: "/events" }) → canvas_update with DataList bound to { path: "/events" }
 - Components: Column, Row, Grid, Metric, Card, DataList, Text, Badge
+- **IMPORTANT**: NEVER use canvas_data or canvas_api_seed with fake data when an integration is connected. Always use canvas_api_bind to show real live data.
 
 ### Reference Component Tree — Dashboard with Charts & Table
 
