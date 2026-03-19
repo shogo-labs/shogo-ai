@@ -28,9 +28,9 @@ COPY packages/sdk/examples ./examples
 # Install dependencies for all discovered templates
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     for dir in /templates/examples/*/; do \
-      template="$(basename "$dir")" && \
-      case " $SKIP_TEMPLATES " in *" $template "*) echo "=== Skipping: $template ===" && continue ;; esac && \
-      [ ! -f "$dir/package.json" ] && continue && \
+      template="$(basename "$dir")" ; \
+      case " $SKIP_TEMPLATES " in *" $template "*) echo "=== Skipping: $template ===" ; continue ;; esac ; \
+      [ -f "$dir/package.json" ] || continue ; \
       echo "=== Installing deps: $template ===" && \
       cd "$dir" && \
       if [ -f "bun.lock" ]; then \
@@ -43,9 +43,9 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 
 # Build all templates (prisma generate + vite build where applicable)
 RUN for dir in /templates/examples/*/; do \
-      template="$(basename "$dir")" && \
-      case " $SKIP_TEMPLATES " in *" $template "*) continue ;; esac && \
-      [ ! -f "$dir/package.json" ] && continue && \
+      template="$(basename "$dir")" ; \
+      case " $SKIP_TEMPLATES " in *" $template "*) continue ;; esac ; \
+      [ -f "$dir/package.json" ] || continue ; \
       echo "=== Building: $template ===" && \
       cd "$dir" && \
       if [ -f "prisma/schema.prisma" ]; then \
@@ -61,9 +61,9 @@ RUN for dir in /templates/examples/*/; do \
 RUN mkdir -p /templates/archives && \
     cd /templates/examples && \
     for dir in */; do \
-      template="${dir%/}" && \
-      case " $SKIP_TEMPLATES " in *" $template "*) continue ;; esac && \
-      [ ! -f "$template/package.json" ] && continue && \
+      template="${dir%/}" ; \
+      case " $SKIP_TEMPLATES " in *" $template "*) continue ;; esac ; \
+      [ -f "$template/package.json" ] || continue ; \
       ( \
         tar cf - "$template" | pigz > /templates/archives/${template}.tar.gz && \
         echo "=== $template archived ($(du -h /templates/archives/${template}.tar.gz | cut -f1)) ===" \
