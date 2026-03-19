@@ -3273,17 +3273,32 @@ function createTaskTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): Ag
 
       const w = ctx.uiWriter
       let subReasoningId: string | null = null
+      let subTextId: string | null = null
+
+      function closeSubText() {
+        if (subTextId) {
+          w!.write({ type: 'text-end', id: subTextId })
+          subTextId = null
+        }
+      }
+
       const callbacks = w ? {
         onStart: (name: string, desc: string) => {
           w.write({ type: 'data-subagent-start', data: { name, description: desc } })
         },
         onEnd: (name: string, summary: string) => {
+          closeSubText()
           w.write({ type: 'data-subagent-end', data: { name, summary: summary.substring(0, 500) } })
         },
         onTextDelta: (delta: string) => {
-          w.write({ type: 'text-delta', delta })
+          if (!subTextId) {
+            subTextId = `sub-text-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+            w.write({ type: 'text-start', id: subTextId })
+          }
+          w.write({ type: 'text-delta', id: subTextId, delta })
         },
         onThinkingStart: () => {
+          closeSubText()
           subReasoningId = `sub-reasoning-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
           w.write({ type: 'reasoning-start', id: subReasoningId })
         },
@@ -3299,10 +3314,11 @@ function createTaskTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): Ag
           }
         },
         onToolCallStart: (toolName: string, toolCallId: string) => {
+          closeSubText()
           w.write({ type: 'tool-input-start', toolCallId, toolName })
         },
         onToolCallDelta: (toolName: string, delta: string, toolCallId: string) => {
-          w.write({ type: 'tool-input-delta', toolCallId, delta })
+          w.write({ type: 'tool-input-delta', toolCallId, inputTextDelta: delta })
         },
         onToolCallEnd: (toolName: string, toolCallId: string) => {
           // Placeholder — full tool-input-available with parsed input is emitted from onBeforeToolCall
