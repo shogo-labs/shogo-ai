@@ -18,7 +18,7 @@
     "@aws-sdk/client-ses": "^3.700.0",
     "@aws-sdk/s3-request-presigner": "^3.700.0",
     "@better-auth/expo": "^1.4.19",
-    "@composio/core": "^0.6.3",
+    "@composio/core": "^0.6.5",
     "@kubernetes/client-node": "^1.4.0",
     "@shogo/shared-runtime": "workspace:*",
     "@opentelemetry/api": "^1.9.0",

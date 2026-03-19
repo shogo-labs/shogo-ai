@@ -211,7 +211,7 @@ export function ConnectToolWidget({
           {displayName} connected
         </Text>
         <Text className="text-[10px] text-muted-foreground ml-auto">
-          {toolCount} tools available
+          Ready to use
         </Text>
       </View>
     )
