@@ -960,12 +960,25 @@ const BillingTab = observer(function BillingTab() {
     try {
       const returnUrl = Platform.OS === 'web' ? window.location.href : undefined
       const data = await actions.createPortalSession(currentWorkspace.id, returnUrl)
-      if (data.url) {
+      if (data?.url) {
         if (Platform.OS === 'web') {
           window.location.href = data.url
         } else {
           Linking.openURL(data.url)
         }
+      } else {
+        const msg = data?.error?.message || 'No portal URL returned. Please try again.'
+        console.warn('Portal session returned no URL:', data)
+        toast.show({
+          placement: 'top',
+          duration: 5000,
+          render: ({ id }: { id: string }) => (
+            <Toast nativeID={id} variant="outline" action="error">
+              <ToastTitle>Unable to open billing portal</ToastTitle>
+              <ToastDescription>{msg}</ToastDescription>
+            </Toast>
+          ),
+        })
       }
     } catch (e: any) {
       console.warn('Portal session failed:', e)

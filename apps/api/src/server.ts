@@ -4698,23 +4698,20 @@ app.post('/api/billing/portal', async (c) => {
       // Body parsing failed, use default return URL
     }
 
-    // Look up customer ID from workspace metadata
-    const customers = await stripe.customers.search({
-      query: `metadata['workspaceId']:'${workspaceId}'`,
-    })
-
-    if (customers.data.length === 0) {
+    // Look up Stripe customer ID from the subscription record in our database
+    const subscription = await billingService.getSubscription(workspaceId)
+    if (!subscription?.stripeCustomerId) {
       return c.json({ 
         error: { 
           code: 'customer_not_found', 
-          message: `No Stripe customer found for workspace ${workspaceId}` 
+          message: 'No billing subscription found for this workspace. Please subscribe first.' 
         } 
       }, 404)
     }
 
     // Create Stripe billing portal session
     const session = await stripe.billingPortal.sessions.create({
-      customer: customers.data[0].id,
+      customer: subscription.stripeCustomerId,
       return_url: returnUrl,
     })
 
