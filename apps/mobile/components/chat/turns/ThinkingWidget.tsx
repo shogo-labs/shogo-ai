@@ -23,8 +23,8 @@ export function ThinkingWidget({
   isStreaming = false,
   className,
 }: ThinkingWidgetProps) {
-  const [isOpen, setIsOpen] = useState(true)
-  const [hasAutoClosed, setHasAutoClosed] = useState(false)
+  const [isOpen, setIsOpen] = useState(isStreaming)
+  const userClosedRef = useRef(false)
   const startTimeRef = useRef<number | null>(null)
   const [duration, setDuration] = useState<number | undefined>(undefined)
 
@@ -33,24 +33,27 @@ export function ThinkingWidget({
       if (startTimeRef.current === null) {
         startTimeRef.current = Date.now()
       }
-      setIsOpen(true)
-    } else if (startTimeRef.current !== null) {
-      setDuration(Math.ceil((Date.now() - startTimeRef.current) / 1000))
-      startTimeRef.current = null
+      if (!userClosedRef.current) {
+        setIsOpen(true)
+      }
+    } else {
+      if (startTimeRef.current !== null) {
+        setDuration(Math.ceil((Date.now() - startTimeRef.current) / 1000))
+        startTimeRef.current = null
+      }
+      setIsOpen(false)
+      userClosedRef.current = false
     }
   }, [isStreaming])
 
-  useEffect(() => {
-    if (!isStreaming && isOpen && !hasAutoClosed && text.length > 0) {
-      const timer = setTimeout(() => {
-        setIsOpen(false)
-        setHasAutoClosed(true)
-      }, 500)
-      return () => clearTimeout(timer)
-    }
-  }, [isStreaming, isOpen, hasAutoClosed, text])
-
-  const toggleOpen = useCallback(() => setIsOpen((o) => !o), [])
+  const toggleOpen = useCallback(() => {
+    setIsOpen((prev) => {
+      if (isStreaming && prev) {
+        userClosedRef.current = true
+      }
+      return !prev
+    })
+  }, [isStreaming])
 
   const label = isStreaming
     ? "Thinking…"
@@ -79,7 +82,7 @@ export function ThinkingWidget({
 
       {isOpen && text.length > 0 && (
         <ScrollView
-          className="mt-1 max-h-48 rounded-md border border-border/50 bg-muted/30 p-2.5"
+          className="mt-1 max-h-[200px] rounded-md border border-border/50 bg-muted/30 p-2.5"
           nestedScrollEnabled
         >
           <Text className="text-[11px] leading-relaxed text-muted-foreground">
