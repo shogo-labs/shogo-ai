@@ -18,6 +18,25 @@ import { runAgentLoop, type AgentLoopResult, type LoopDetectorConfig } from './a
 import type { ToolContext } from './gateway-tools'
 
 // ---------------------------------------------------------------------------
+// Core gateway tool names — anything NOT in this set is a dynamic/installed
+// tool (Composio action, MCP tool) that should pass through when
+// includeInstalledTools is true.
+// ---------------------------------------------------------------------------
+
+const CORE_GATEWAY_TOOLS = new Set([
+  'exec', 'read_file', 'write_file', 'edit_file', 'glob', 'grep', 'ls', 'web', 'browser',
+  'list_files', 'delete_file', 'search_files',
+  'todo_write', 'ask_user', 'skill', 'task',
+  'memory_read', 'memory_write', 'memory_search',
+  'send_message', 'channel_connect', 'channel_disconnect', 'channel_list', 'cron',
+  'canvas_create', 'canvas_update', 'canvas_data', 'canvas_data_patch', 'canvas_delete', 'canvas_components',
+  'canvas_inspect', 'canvas_api_schema', 'canvas_api_seed', 'canvas_api_query', 'canvas_api_hooks', 'canvas_api_bind',
+  'personality_update', 'switch_mode',
+  'tool_search', 'tool_install', 'tool_uninstall',
+  'mcp_search', 'mcp_install', 'mcp_uninstall',
+])
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -29,6 +48,8 @@ export interface SubagentConfig {
   toolNames?: string[]
   /** Tool names to explicitly exclude. */
   disallowedTools?: string[]
+  /** When true, also include dynamically installed tools (Composio actions, MCP tools) from the parent agent. */
+  includeInstalledTools?: boolean
   model?: string
   provider?: string
   maxTurns?: number
@@ -93,15 +114,18 @@ You build agent dashboards and displays using canvas_* tools. Canvas components 
 ## Available Tools
 canvas_create, canvas_update, canvas_data, canvas_data_patch, canvas_delete, canvas_components, canvas_inspect, canvas_api_schema, canvas_api_seed, canvas_api_query, canvas_api_hooks, canvas_api_bind, read_file, tool_search.
 
+You also have direct access to all installed integration tools (e.g., GMAIL_FETCH_EMAILS, GITHUB_LIST_PULL_REQUESTS, GOOGLECALENDAR_LIST_EVENTS, SLACK_LIST_MESSAGES). You can call these tools directly to preview data and understand its shape before building the canvas.
+
 ## CRITICAL: Live Data Binding with Integrations
 
 When the delegation prompt mentions connected integrations (Gmail, GitHub, Slack, Calendar, Jira, etc.), you MUST use \`canvas_api_bind\` to show REAL live data from those services. NEVER use \`canvas_data\` or \`canvas_api_seed\` to populate fake/sample data for integrations that are already connected.
 
 **Mandatory workflow when integrations are mentioned:**
-1. Call \`tool_search({ query: "<integration name>" })\` for each mentioned integration to discover the exact Composio action names (e.g., GMAIL_FETCH_EMAILS, GITHUB_LIST_PULL_REQUESTS, GOOGLECALENDAR_LIST_EVENTS)
-2. Call \`canvas_create\` to create the surface
-3. Call \`canvas_api_bind\` for EACH integration, mapping the discovered tool names to CRUD bindings with \`dataPath\` to auto-load data
-4. Call \`canvas_update\` to build the component tree with data bindings pointing to the dataPath locations
+1. Call \`tool_search({ query: "<integration name>" })\` to discover available Composio action names (e.g., GMAIL_FETCH_EMAILS, GITHUB_LIST_PULL_REQUESTS)
+2. Optionally call the integration tool directly (e.g., \`GMAIL_FETCH_EMAILS({ max_results: 5 })\`) to preview the data shape and understand available fields
+3. Call \`canvas_create\` to create the surface
+4. Call \`canvas_api_bind\` for EACH integration, mapping the discovered tool names to CRUD bindings with \`dataPath\` to auto-load data
+5. Call \`canvas_update\` to build the component tree with data bindings pointing to the dataPath locations
 
 **Example canvas_api_bind call:**
 \`\`\`
@@ -219,6 +243,7 @@ export function getBuiltinSubagentConfig(
           'canvas_api_hooks', 'canvas_api_bind', 'read_file',
           'tool_search',
         ],
+        includeInstalledTools: true,
         disallowedTools: ['task', 'skill', 'code_agent'],
         maxTurns: 50,
         maxTokens: 16384,
@@ -346,6 +371,14 @@ export async function runSubagent(
   if (config.toolNames && config.toolNames.length > 0) {
     const allowSet = new Set(config.toolNames)
     tools = allParentTools.filter(t => allowSet.has(t.name))
+
+    if (config.includeInstalledTools) {
+      const alreadyIncluded = new Set(tools.map(t => t.name))
+      const dynamicTools = allParentTools.filter(t =>
+        !alreadyIncluded.has(t.name) && !CORE_GATEWAY_TOOLS.has(t.name),
+      )
+      tools.push(...dynamicTools)
+    }
   } else {
     tools = [...allParentTools]
   }
