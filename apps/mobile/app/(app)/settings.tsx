@@ -1167,7 +1167,14 @@ const BillingTab = observer(function BillingTab() {
             </View>
             <Button
               variant="outline"
-              onPress={() => Linking.openURL('mailto:sales@shogo.ai')}
+              onPress={() => {
+                const mailto = 'mailto:sales@shogo.ai'
+                if (Platform.OS === 'web') {
+                  window.open(mailto, '_blank')
+                } else {
+                  Linking.openURL(mailto)
+                }
+              }}
             >
               Book a demo
             </Button>
