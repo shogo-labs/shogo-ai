@@ -61,6 +61,7 @@ import {
   Terminal,
 } from 'lucide-react-native'
 import { cn, Badge, Progress } from '@shogo/shared-ui/primitives'
+import { Tooltip, TooltipContent, TooltipText } from '@/components/ui/tooltip'
 import { useTheme, type ThemePreference } from '../../contexts/theme'
 import { formatCredits } from '../../lib/billing-config'
 import { PublishDropdown } from './PublishDropdown'
@@ -143,21 +144,34 @@ function BarIconButton({
   title?: string
   size?: number
 }) {
-  return (
+  const button = (triggerProps?: Record<string, unknown>) => (
     <Pressable
+      {...triggerProps}
       onPress={onPress}
       className={cn(
         'h-7 w-7 items-center justify-center rounded-md',
         active ? 'bg-primary' : 'active:bg-muted',
       )}
       accessibilityLabel={title}
-      {...(Platform.OS === 'web' && title ? { title } as any : {})}
     >
       <Icon
         size={size}
         className={cn(active ? 'text-primary-foreground' : 'text-muted-foreground')}
       />
     </Pressable>
+  )
+
+  if (!title) return button()
+
+  return (
+    <Tooltip
+      placement="bottom"
+      trigger={(triggerProps) => button(triggerProps)}
+    >
+      <TooltipContent>
+        <TooltipText>{title}</TooltipText>
+      </TooltipContent>
+    </Tooltip>
   )
 }
 
