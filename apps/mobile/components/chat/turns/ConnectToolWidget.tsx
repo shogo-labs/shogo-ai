@@ -40,8 +40,8 @@ export interface ConnectToolWidgetProps {
 type ConnectStatus = "idle" | "connecting" | "connected" | "error"
 
 const POLL_INTERVAL_MS = 2500
-/** Max time to wait for connection before showing "Connection failed". Reduced from 90s so cancelled OAuth is detected sooner when popup-close isn't available (e.g. COOP). */
-const POLL_TIMEOUT_MS = 30_000
+/** Max time to wait for connection before showing "Connection failed". */
+const POLL_MAX_WAIT_MS = 300_000
 const INITIAL_POLL_DELAY_MS = 5000
 
 // Tracks toolkits with an OAuth flow in progress. Module-level so it survives
@@ -126,7 +126,7 @@ export function ConnectToolWidget({
       await new Promise((r) => setTimeout(r, INITIAL_POLL_DELAY_MS))
       const startTime = Date.now()
 
-      while (!cancelled && Date.now() - startTime < POLL_TIMEOUT_MS) {
+      while (!cancelled && Date.now() - startTime < POLL_MAX_WAIT_MS) {
         const connected = await checkConnection()
         if (cancelled) return
         if (connected) {
