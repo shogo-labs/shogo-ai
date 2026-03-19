@@ -1437,6 +1437,26 @@ export class AgentGateway {
       }
     }
 
+    // Inject agent template context if this project was created from an agent template
+    const agentTemplatePath = join(this.workspaceDir, '.template')
+    if (existsSync(agentTemplatePath) && !existsSync(appTemplatePath)) {
+      const agentTemplate = readFileSync(agentTemplatePath, 'utf-8').trim()
+      if (agentTemplate) {
+        const humanName = agentTemplate.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+        parts.push([
+          '## Agent Template Context',
+          '',
+          `This agent was created from the **${humanName}** template (\`${agentTemplate}\`).`,
+          'Your configuration files (AGENTS.md, SOUL.md, IDENTITY.md, HEARTBEAT.md, skills/) are already',
+          'set up with template-specific instructions. Follow the instructions in AGENTS.md.',
+          '',
+          'Canvas surfaces have been pre-built for this template. Use `task({ subagent_type: "canvas_agent", ... })`',
+          'to update or add surfaces as needed. You work through canvas mode — not app mode.',
+          '',
+        ].join('\n'))
+      }
+    }
+
     const now = new Date()
     parts.push([
       '## Current Context',

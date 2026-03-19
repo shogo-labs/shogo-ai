@@ -64,6 +64,7 @@ function configJson(overrides: Record<string, any> = {}): string {
     quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
     channels: [],
     model: { provider: 'anthropic', name: 'claude-sonnet-4-6' },
+    activeMode: 'canvas',
     ...overrides,
   }, null, 2)
 }
