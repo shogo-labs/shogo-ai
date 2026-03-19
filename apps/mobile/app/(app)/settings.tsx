@@ -1461,10 +1461,6 @@ const PeopleTab = observer(function PeopleTab() {
               </Text>
               <ChevronDown size={14} className="text-muted-foreground" />
             </Pressable>
-
-            <Pressable className="h-9 px-3 border border-border rounded-lg items-center justify-center">
-              <Text className="text-sm text-foreground">Export</Text>
-            </Pressable>
           </>
         )}
 
