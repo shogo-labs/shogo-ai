@@ -35,11 +35,17 @@ export const ERROR_CODE_MESSAGES: Record<string, string> = {
   insufficient_credits: "You've run out of credits. Please upgrade your plan to continue.",
   session_expired: 'Your session has expired. Please refresh the page.',
   internal_error: 'Something went wrong on our end. Please try again.',
+  shutting_down: 'A server update is in progress. Please retry in a few seconds.',
 }
 
 /**
  * Parse potentially JSON error messages into user-friendly text.
  */
+const CONNECTION_ERROR_PATTERNS = [
+  /network/i, /fetch failed/i, /econnreset/i, /econnrefused/i,
+  /terminated/i, /aborted/i, /socket hang up/i,
+]
+
 export function formatErrorMessage(rawMessage: string): string {
   try {
     const parsed = JSON.parse(rawMessage)
@@ -54,6 +60,9 @@ export function formatErrorMessage(rawMessage: string): string {
     }
   } catch {
     // Not JSON
+  }
+  if (CONNECTION_ERROR_PATTERNS.some((p) => p.test(rawMessage))) {
+    return 'Connection interrupted. Please tap Retry to continue.'
   }
   return rawMessage
 }

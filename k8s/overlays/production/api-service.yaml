@@ -265,6 +265,10 @@ spec:
                   name: api-secrets
                   key: LOAD_TEST_SECRET
                   optional: true
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "15"]
           resources:
             requests:
               memory: "512Mi"
@@ -272,3 +276,4 @@ spec:
             limits:
               memory: "2Gi"
               cpu: "1"
+      terminationGracePeriodSeconds: 630

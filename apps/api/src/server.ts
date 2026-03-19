@@ -68,6 +68,10 @@ const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 // Namespace for project runtime pods (configurable for staging/production)
 const PROJECT_NAMESPACE = process.env.PROJECT_NAMESPACE || 'shogo-workspaces'
 
+// Active proxy connection tracking for graceful shutdown draining
+let activeProxyConnections = 0
+let isShuttingDown = false
+
 
 /**
  * Extract the authenticated user from the request via Better Auth session.
@@ -1804,6 +1808,10 @@ app.all('/api/projects/:projectId/preview', async (c) => {
 // Agent proxy - forwards requests directly to agent-runtime pod without /preview prefix
 // Includes retry logic for cold-start scenarios where the pod may be scaling up.
 app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
+  if (isShuttingDown) {
+    return c.json({ error: { code: 'shutting_down', message: 'Server is shutting down, please retry' } }, 503)
+  }
+
   const projectId = c.req.param('projectId')
 
   const userId = await getAuthUserId(c)
@@ -1896,6 +1904,17 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
 
       if (attempt > 1) {
         console.log(`[AgentProxy] ${c.req.method} ${path} succeeded after ${attempt} attempts`)
+      }
+
+      const isStreaming = responseContentType.includes('text/event-stream') ||
+        (response.body && responseContentType.includes('text/plain'))
+      if (isStreaming && response.body) {
+        activeProxyConnections++
+        const trackedBody = response.body.pipeThrough(new TransformStream({
+          flush() { activeProxyConnections-- },
+        }))
+        c.req.raw.signal.addEventListener('abort', () => { activeProxyConnections = Math.max(0, activeProxyConnections - 1) })
+        return new Response(trackedBody, { status: response.status, headers: responseHeaders })
       }
 
       return new Response(response.body, { status: response.status, headers: responseHeaders })
@@ -3313,9 +3332,14 @@ app.patch('/api/projects/:projectId/heartbeat', async (c) => {
 
 // POST /api/projects/:projectId/chat - Proxy chat to project pod
 app.post('/api/projects/:projectId/chat', async (c) => {
+  if (isShuttingDown) {
+    return c.json({ error: { code: 'shutting_down', message: 'Server is shutting down, please retry' } }, 503)
+  }
+
   const authResult = await requireProjectAuth(c)
   if ('error' in authResult) return authResult.error
 
+  activeProxyConnections++
   const manager = getRuntimeManager()
   const router = projectChatRoutes({ runtimeManager: manager })
   const url = new URL(c.req.url)
@@ -3325,7 +3349,21 @@ app.post('/api/projects/:projectId/chat', async (c) => {
     headers: c.req.raw.headers,
     body: c.req.raw.body,
   })
-  return router.fetch(newReq)
+  try {
+    const resp = await router.fetch(newReq)
+    if (resp.body) {
+      const trackedBody = resp.body.pipeThrough(new TransformStream({
+        flush() { activeProxyConnections-- },
+      }))
+      c.req.raw.signal.addEventListener('abort', () => { activeProxyConnections = Math.max(0, activeProxyConnections - 1) })
+      return new Response(trackedBody, { status: resp.status, headers: resp.headers })
+    }
+    activeProxyConnections--
+    return resp
+  } catch (err) {
+    activeProxyConnections--
+    throw err
+  }
 })
 
 // GET /api/projects/:projectId/chat/status - Check project runtime status
@@ -5286,27 +5324,52 @@ app.route('/api', generatedRoutes)
 // Graceful shutdown handling
 // =============================================================================
 
-// Stop all runtimes on server shutdown
+const DRAIN_TIMEOUT_MS = 600_000
+const DRAIN_POLL_MS = 1_000
+
 async function gracefulShutdown(signal: string) {
+  if (isShuttingDown) return
+  isShuttingDown = true
   console.log(`[Server] Received ${signal}, starting graceful shutdown...`)
 
-  // Stop all project runtimes
-  if (runtimeManager) {
-    console.log('[Server] Stopping all project runtimes...')
+  // Stop warm pool reconciliation so GC doesn't delete services during drain
+  if (isKubernetes()) {
+    try {
+      const { getWarmPoolController } = await import('./lib/warm-pool-controller')
+      const controller = getWarmPoolController()
+      await controller.stop()
+      console.log('[Server] Warm pool controller stopped')
+    } catch (_) { /* may not be initialized */ }
+  }
+
+  // In local dev mode, stop child-process runtimes. In K8s mode the
+  // project runtimes are independent Knative services and must NOT be killed.
+  if (!isKubernetes() && runtimeManager) {
+    console.log('[Server] Stopping local project runtimes...')
     try {
       await runtimeManager.stopAll()
-      console.log('[Server] All runtimes stopped')
+      console.log('[Server] All local runtimes stopped')
     } catch (err: any) {
       console.error('[Server] Error stopping runtimes:', err.message)
     }
   }
 
-  // Stop all Prisma Studio instances
-  console.log('[Server] Stopping all Prisma Studio instances...')
-  stopAllPrismaStudios()
-  console.log('[Server] All Prisma Studios stopped')
+  // Drain active proxy connections (SSE streams, chat)
+  if (activeProxyConnections > 0) {
+    console.log(`[Server] Draining ${activeProxyConnections} active proxy connection(s)...`)
+    const deadline = Date.now() + DRAIN_TIMEOUT_MS
+    while (activeProxyConnections > 0 && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, DRAIN_POLL_MS))
+    }
+    if (activeProxyConnections > 0) {
+      console.log(`[Server] Drain timeout reached with ${activeProxyConnections} connection(s) remaining`)
+    } else {
+      console.log('[Server] All proxy connections drained')
+    }
+  }
 
-  // Flush pending OTEL spans before exit
+  stopAllPrismaStudios()
+
   try {
     const { shutdownTracing } = await import('./instrumentation')
     await shutdownTracing()

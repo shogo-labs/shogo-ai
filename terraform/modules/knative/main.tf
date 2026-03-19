@@ -188,6 +188,7 @@ resource "null_resource" "knative_config" {
     scale_to_zero_grace_period = var.scale_to_zero_grace_period
     ecr_registry               = var.ecr_registry
     enable_pvc_support         = var.enable_pvc_support
+    drain_timeout              = "30s"
   }
 
   provisioner "local-exec" {
@@ -195,11 +196,11 @@ resource "null_resource" "knative_config" {
       # Wait for ConfigMaps to exist
       sleep 30
       
-      # Configure Kourier as ingress
+      # Configure Kourier as ingress + drain timeout for graceful deploys
       kubectl patch configmap/config-network \
         --namespace knative-serving \
         --type merge \
-        --patch '{"data":{"ingress-class":"kourier.ingress.networking.knative.dev"}}'
+        --patch '{"data":{"ingress-class":"kourier.ingress.networking.knative.dev","drain-timeout":"30s"}}'
       
       # Configure scale-to-zero
       kubectl patch configmap/config-autoscaler \
