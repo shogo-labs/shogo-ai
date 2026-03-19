@@ -54,6 +54,7 @@ import { TEMPLATE_EVALS } from './test-cases-template'
 import { RESPONSE_TRANSFORM_EVALS } from './test-cases-response-transforms'
 import { modeSwitchingEvals } from './test-cases-mode-switching'
 import { CODE_AGENT_EVALS } from './test-cases-code-agent'
+import { CODE_AGENT_V2_EVALS } from './test-cases-code-agent-v2'
 import { buildMockPayload } from './tool-mocks'
 import type { AgentEval, EvalResult, EvalSuiteResult, CategorySummary } from './types'
 
@@ -112,9 +113,10 @@ function getEvals(track: string): AgentEval[] {
     case 'response-transform': return RESPONSE_TRANSFORM_EVALS
     case 'mode-switching': return modeSwitchingEvals
     case 'code-agent': return CODE_AGENT_EVALS
+    case 'code-agent-v2': return CODE_AGENT_V2_EVALS
     case 'all': return [...CANVAS_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...RESPONSE_TRANSFORM_EVALS, ...modeSwitchingEvals]
     default:
-      console.error(`Unknown track: ${track}. Valid: canvas, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, response-transform, mode-switching, code-agent, all`)
+      console.error(`Unknown track: ${track}. Valid: canvas, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, response-transform, mode-switching, code-agent, code-agent-v2, all`)
       process.exit(1)
   }
 }

@@ -63,6 +63,7 @@ import {
   FilesBrowserPanel,
   CapabilitiesPanel,
   MonitorPanel,
+  TerminalPanel,
 } from '../../../../components/project/panels'
 import { RefreshCw, MessageSquare } from 'lucide-react-native'
 import { IntegrationsCard, type TemplateIntegrationRef } from '../../../../components/project/IntegrationsCard'
@@ -483,6 +484,7 @@ export default observer(function ProjectLayout() {
   const [chatCollapsed, setChatCollapsed] = useState(false)
   const [showChatSessions, setShowChatSessions] = useState(false)
   const [previewTab, setPreviewTab] = useState('dynamic-app')
+  const [chatMessages, setChatMessages] = useState<any[]>([])
 
   // Keep previewTab consistent with agent mode. Do NOT force app-preview whenever
   // activeMode is app — that trapped users on a blank App iframe and blocked Files /
@@ -492,6 +494,7 @@ export default observer(function ProjectLayout() {
       const validForApp = new Set([
         'app-preview',
         'files',
+        'terminal',
         'capabilities',
         'channels',
         'monitor',
@@ -703,6 +706,7 @@ export default observer(function ProjectLayout() {
       billingData={features.billing ? billingData : { hasActiveSubscription: true, refetchCreditLedger: () => {} }}
       onCanvasPreview={handleCanvasPreview}
       onModeSwitch={handleModeSwitch}
+      onMessagesChange={setChatMessages}
       className="flex-1"
     />
   )
@@ -888,17 +892,18 @@ export default observer(function ProjectLayout() {
             <View
               className={cn(
                 'absolute inset-0',
-                ['files', 'capabilities', 'channels', 'monitor'].includes(previewTab)
+                ['files', 'terminal', 'capabilities', 'channels', 'monitor'].includes(previewTab)
                   ? 'z-20 bg-background'
                   : 'pointer-events-none',
               )}
               pointerEvents={
-                ['files', 'capabilities', 'channels', 'monitor'].includes(previewTab)
+                ['files', 'terminal', 'capabilities', 'channels', 'monitor'].includes(previewTab)
                   ? 'auto'
                   : 'none'
               }
             >
               <FilesBrowserPanel visible={previewTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
+              <TerminalPanel visible={previewTab === 'terminal'} messages={chatMessages} />
               <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} activeMode={activeMode} onModeChange={handleManualModeChange} />
               <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} />
               <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />

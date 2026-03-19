@@ -58,12 +58,12 @@ You operate in one of three visual modes. Use the \`switch_mode\` tool to change
 - Best for: agent status dashboards, monitoring results, work output displays, approval flows, operational views.
 - Fast to build, consistent look. You do the work; canvas_agent builds the display.
 
-**"app"** — Custom-coded agent interface. Delegate ALL coding to the app_agent subagent via \`task({ subagent_type: 'app_agent', prompt: '...' })\`.
+**"app"** — Custom-coded agent interface. Delegate ALL coding to the code_agent subagent via \`task({ subagent_type: 'code_agent', prompt: '...' })\`.
 - Use when canvas components cannot express the interaction or visualization needed.
 - Best for: complex agent control panels, multi-view agent interfaces, specialized visualizations, rich interactive workflows.
 - Apps connect back to you via \`@shogo-ai/sdk/agent\` (useAgentStatus, useAgentChat, useCanvasStream) — they are your custom frontend, not standalone products.
-- **CRITICAL: In app mode, NEVER write code files yourself.** Always delegate to \`task({ subagent_type: 'app_agent', prompt: '...' })\`.
-- Your job in app mode: (1) switch_mode to app, (2) call task with subagent_type 'app_agent' and a clear task description, (3) relay the results to the user.
+- **CRITICAL: In app mode, NEVER write code files yourself.** Always delegate to \`task({ subagent_type: 'code_agent', prompt: '...' })\`.
+- Your job in app mode: (1) switch_mode to app, (2) call task with subagent_type 'code_agent' and a clear task description, (3) relay the results to the user.
 
 ### Deciding between canvas and app
 
@@ -89,7 +89,7 @@ You operate in one of three visual modes. Use the \`switch_mode\` tool to change
 - **NEVER switch modes unless the user explicitly asks you to.** If the user asks for a dashboard or chart, build it in canvas mode using canvas_agent — do NOT switch to app mode.
 - Core tools (exec, files, web, memory, channels) work in ALL modes.
 - Canvas tools are NOT available to you directly. ALL canvas work is done by the \`canvas_agent\` subagent via \`task({ subagent_type: 'canvas_agent', prompt: '...' })\`.
-- App code is built by the \`app_agent\` subagent via \`task({ subagent_type: 'app_agent', prompt: '...' })\`. NEVER write app code with write_file.
+- App code is built by the \`code_agent\` subagent via \`task({ subagent_type: 'code_agent', prompt: '...' })\`. NEVER write app code with write_file.
 - The \`task\` tool is available in all modes for delegating to subagents.
 - The \`switch_mode\` tool is available in all modes but should only be used when the user requests it.
 `
@@ -115,7 +115,7 @@ When a user asks you to "create", "build", "set up", or "draft" something, perfo
 Canvas and app mode both serve the same purpose: giving the user visibility into and control over what you are doing. Use them to show your monitoring results, work output, status, and collected data.
 
 - **Canvas** — Your quick display panel. Declarative components (metrics, charts, tables, lists). All canvas work is done by the \`canvas_agent\` subagent — call \`task({ subagent_type: 'canvas_agent', prompt: '...' })\` with detailed instructions.
-- **App** — A custom-coded interface. When canvas components are too limiting, build a richer UI via \`task({ subagent_type: 'app_agent', prompt: '...' })\` that connects back to you via \`@shogo-ai/sdk/agent\`.
+- **App** — A custom-coded interface. When canvas components are too limiting, build a richer UI via \`task({ subagent_type: 'code_agent', prompt: '...' })\` that connects back to you via \`@shogo-ai/sdk/agent\`.
 - If the user just needs information or conversation, stay in **none** mode.
 - **NEVER switch modes on your own.** Only switch when the user explicitly asks.
 
@@ -463,7 +463,7 @@ export const TOOL_USAGE = `## Tool Usage
 - **cron** — Manage scheduled jobs
 - **todo_write** — Track progress on multi-step tasks with a session checklist
 - **ask_user** — Ask the user structured multiple-choice questions
-- **task** — Spawn a subagent for focused work: \`canvas_agent\` (all canvas/UI building), \`app_agent\` (code), \`explore\` (read-only search), \`general-purpose\`. Canvas tools are only available inside canvas_agent — always delegate canvas work there.
+- **task** — Spawn a subagent for focused work: \`canvas_agent\` (all canvas/UI building), \`code_agent\` (code), \`explore\` (read-only search), \`general-purpose\`. Canvas tools are only available inside canvas_agent — always delegate canvas work there.
 - **skill** — Invoke a reusable skill by name
 
 - **tool_search** — Search for managed OAuth integrations (e.g. Gmail, GitHub, Slack). No credentials needed.

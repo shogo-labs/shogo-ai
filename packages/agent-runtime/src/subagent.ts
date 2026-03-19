@@ -7,14 +7,14 @@
  * its own context window, restricted tools, and optional model override.
  * Subagents cannot spawn further subagents (no infinite nesting).
  *
- * Built-in types: app_agent, canvas_agent, explore, general-purpose.
+ * Built-in types: code_agent, canvas_agent, explore, general-purpose.
  * Custom types loaded from .claude/agents/<name>.md at startup.
  */
 
 import { existsSync, readdirSync, readFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import type { AgentTool } from '@mariozechner/pi-agent-core'
-import { runAgentLoop, type AgentLoopResult } from './agent-loop'
+import { runAgentLoop, type AgentLoopResult, type LoopDetectorConfig } from './agent-loop'
 import type { ToolContext } from './gateway-tools'
 
 // ---------------------------------------------------------------------------
@@ -34,6 +34,10 @@ export interface SubagentConfig {
   maxTurns?: number
   /** Override working directory for file tools (scoping). */
   workingDir?: string
+  /** Max output tokens per LLM call (default: 4096 from agent-loop). */
+  maxTokens?: number
+  /** Override loop detector config. Pass false to disable. */
+  loopDetection?: Partial<LoopDetectorConfig> | false
 }
 
 export interface SubagentResult {
@@ -65,25 +69,19 @@ export interface SubagentStreamCallbacks {
 // Built-in Subagent Definitions
 // ---------------------------------------------------------------------------
 
-export const APP_AGENT_SYSTEM_PROMPT = `You are app_agent — a focused coding subagent for building and modifying application code.
+import { CODE_AGENT_CODING_GUIDE, CODE_AGENT_ENVIRONMENT_GUIDE } from './code-agent-prompt'
+
+export const CODE_AGENT_SYSTEM_PROMPT = `You are code_agent — a coding subagent that builds applications, writes scripts, and executes commands.
 
 ## Your Scope
-You work exclusively within the project/ directory. All file operations are relative to this directory.
+You work within the project/ directory for app code. You can also write and run scripts, install packages, and execute commands. All file operations are relative to the project directory.
 
 ## Available Tools
-You have: edit_file, glob, grep, ls, read_file, write_file, exec.
-- Use edit_file for targeted changes (search_replace) — prefer over write_file for modifications.
-- Use glob and grep to explore and understand the codebase before making changes.
-- Use ls to understand project structure.
-- Use exec to run commands (npm install, build, test, etc.).
+You have: edit_file, glob, grep, ls, read_file, write_file, exec, todo_write, web, search_files, template_list, template_copy.
 
-## Guidelines
-- Read existing code before modifying it. Understand the patterns in use.
-- Make targeted edits rather than rewriting entire files.
-- Maintain consistent code style with the existing codebase.
-- Run tests or builds after changes when possible.
-- When creating new files, follow the project's directory structure conventions.
-- Return a clear summary of all changes made.`
+${CODE_AGENT_ENVIRONMENT_GUIDE}
+
+${CODE_AGENT_CODING_GUIDE}`
 
 import { BASIC_CANVAS_TOOLS_GUIDE, BASIC_CANVAS_EXAMPLES } from './canvas-prompt'
 
@@ -134,15 +132,51 @@ export function getBuiltinSubagentConfig(
   allTools: AgentTool[],
 ): SubagentConfig | null {
   switch (name) {
-    case 'app_agent':
-      return {
-        name: 'app_agent',
-        description: 'Coding subagent for building and modifying application code in project/',
-        systemPrompt: APP_AGENT_SYSTEM_PROMPT,
-        toolNames: ['edit_file', 'glob', 'grep', 'ls', 'read_file', 'write_file', 'exec'],
-        disallowedTools: ['task', 'skill', 'code_agent'],
-        workingDir: join(ctx.workspaceDir, 'project'),
+    case 'code_agent': {
+      let dynamicContext = ''
+      const templatePath = join(ctx.workspaceDir, '.app-template')
+      const hasTemplate = existsSync(templatePath)
+      if (hasTemplate) {
+        const template = readFileSync(templatePath, 'utf-8').trim()
+        const humanName = template.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+        dynamicContext += `\n\n## Project Template: ${humanName}\nThis project was scaffolded from the \`${template}\` template. Check existing files in \`src/\` before creating new ones.\n`
+      } else {
+        dynamicContext += `\n\n## ⚠️ NO TEMPLATE SELECTED — MANDATORY FIRST STEP
+
+**No app template has been set up yet.** You MUST scaffold from a template before writing ANY code.
+
+1. Call \`template_list\` to see available templates
+2. Pick the best match for the task (or \`_template\` for a blank starter)
+3. Call \`template_copy({ template: "<name>", name: "<app-name>" })\`
+4. THEN read the scaffolded files and make customizations
+
+**NEVER create files from scratch.** NEVER run \`npm create\`, \`npx create-vite\`, \`bun create\`, or manually scaffold a project. A template handles everything: file structure, dependencies, prisma setup, build config, and preview server restart.\n`
       }
+      const projectDir = join(ctx.workspaceDir, 'project')
+      if (existsSync(projectDir)) {
+        try {
+          const entries = readdirSync(projectDir).filter(e => !e.startsWith('.') && e !== 'node_modules').slice(0, 25)
+          if (entries.length > 0) {
+            dynamicContext += `\n## Project Structure (top-level)\n\`\`\`\n${entries.join('\n')}\n\`\`\`\n`
+          }
+        } catch { /* non-fatal */ }
+      }
+      return {
+        name: 'code_agent',
+        description: 'Coding subagent that builds apps, writes scripts, and executes commands in project/',
+        systemPrompt: CODE_AGENT_SYSTEM_PROMPT + dynamicContext,
+        toolNames: [
+          'edit_file', 'glob', 'grep', 'ls', 'read_file', 'write_file', 'exec',
+          'todo_write', 'web', 'search_files',
+          'template_list', 'template_copy',
+        ],
+        disallowedTools: ['task', 'skill', 'code_agent'],
+        workingDir: projectDir,
+        maxTurns: 30,
+        maxTokens: 16384,
+        loopDetection: { maxIdenticalCalls: 5 },
+      }
+    }
     case 'canvas_agent':
       return {
         name: 'canvas_agent',
@@ -303,7 +337,9 @@ export async function runSubagent(
       prompt,
       tools,
       maxIterations,
+      maxTokens: config.maxTokens,
       thinkingLevel: 'medium',
+      loopDetection: config.loopDetection,
       onToolCall: callbacks?.onToolCall,
       onTextDelta: callbacks?.onTextDelta,
       onThinkingStart: callbacks?.onThinkingStart,

@@ -58,6 +58,7 @@ import {
   ListTree,
   Plus,
   Trash2,
+  Terminal,
 } from 'lucide-react-native'
 import { cn, Badge, Progress } from '@shogo/shared-ui/primitives'
 import { useTheme, type ThemePreference } from '../../contexts/theme'
@@ -70,6 +71,7 @@ const AGENT_TABS: { id: string; label: string; icon: React.ElementType }[] = [
   { id: 'dynamic-app', label: 'Canvas', icon: LayoutDashboard },
   { id: 'app-preview', label: 'App', icon: AppWindow },
   { id: 'files', label: 'Files', icon: FolderOpen },
+  { id: 'terminal', label: 'Terminal', icon: Terminal },
   { id: 'capabilities', label: 'Capabilities', icon: Sliders },
   { id: 'channels', label: 'Channels', icon: Radio },
   { id: 'monitor', label: 'Monitor', icon: Activity },

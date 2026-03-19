@@ -201,6 +201,8 @@ export interface ChatPanelProps {
     hasActiveSubscription: boolean
     refetchCreditLedger: () => void
   }
+  /** Called whenever the streaming messages array changes (for TerminalPanel etc.) */
+  onMessagesChange?: (messages: any[]) => void
 }
 
 // ============================================================
@@ -523,6 +525,7 @@ export const ChatPanel = observer(function ChatPanel({
   onModeSwitch,
   legacyDomains,
   billingData,
+  onMessagesChange,
 }: ChatPanelProps) {
   const { studioChat } = useSDKDomains()
   const actions = useDomainActions()
@@ -1220,6 +1223,10 @@ export const ChatPanel = observer(function ChatPanel({
 
   const isStreaming = status === "streaming" || status === "submitted"
   const filesChangedFiredRef = useRef(false)
+
+  useEffect(() => {
+    onMessagesChange?.(messages)
+  }, [messages, onMessagesChange])
 
   useEffect(() => {
     onChatError?.(error ?? null)

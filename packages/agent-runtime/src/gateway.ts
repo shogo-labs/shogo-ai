@@ -216,7 +216,7 @@ export class AgentGateway {
       console.log(`[AgentGateway] Permission engine initialized: mode=${pref.mode}`)
     }
 
-    // code_agent removed — app_agent subagent (via task tool) replaces it.
+    // Legacy code_agent tool removed — code_agent subagent (via task tool) replaces it.
     // The task tool is registered in createTools() and doesn't need gateway-level init.
   }
 
@@ -1497,14 +1497,28 @@ task({
     } else if (activeMode === 'app') {
       parts.push(`\n## App Mode — Custom Agent Interface
 
-You are in app mode. Use \`task({ subagent_type: 'app_agent', prompt: '...' })\` to delegate application coding tasks. The app_agent subagent builds and modifies code in the project/ directory.
+You are in app mode. Use \`task({ subagent_type: 'code_agent', prompt: '...' })\` to delegate coding tasks. The code_agent subagent builds apps, writes scripts, and executes commands in the project/ directory.
 
 **Key principles:**
-- All app code changes go through the **app_agent** subagent via the \`task\` tool — NEVER write app code directly with write_file or edit_file.
+- All code changes go through the **code_agent** subagent via the \`task\` tool — NEVER write app code directly with write_file or edit_file.
+- **Every app MUST start from a template.** The code_agent has \`template_list\` and \`template_copy\` tools. If no template has been selected yet (no \`.app-template\` file), the code_agent will scaffold from a template first. Never ask it to create files from scratch.
 - The app connects back to you via \`@shogo-ai/sdk/agent\` — it imports useAgentStatus, useAgentChat, useCanvasStream, and other hooks to communicate with your runtime.
 - The app is your custom frontend, not a standalone product. It should surface your work, let the user control you, or provide rich interaction with your capabilities.
 - Apps run on the same pod as you, so they use relative URLs (\`/agent/status\`, \`/agent/chat\`, etc.) with zero configuration.
 - For complex canvas work, use \`task({ subagent_type: 'canvas_agent', prompt: '...' })\`.
+
+**How to delegate effectively to code_agent:**
+When calling \`task({ subagent_type: 'code_agent', prompt: '...' })\`, the more context you include, the fewer exploration steps the code_agent needs — saving time and tokens.
+
+Include in your prompt:
+- **Files to modify** (if known): "Modify src/App.tsx and src/components/Header.tsx"
+- **Current state**: "The app currently shows a dashboard with 3 cards and a sidebar"
+- **Expected outcome**: "Add a dark mode toggle in the header that persists to localStorage"
+- **Error context** (for bug fixes): "The build fails with: TypeError: Cannot read property 'map' of undefined in TaskList.tsx:42"
+- **Framework context**: "This is a React + Tailwind app scaffolded from the todo-app template"
+
+Bad prompt: "fix the build"
+Good prompt: "The build is failing. Error from .build.log: 'Cannot find module @/components/ui/badge'. The file src/App.tsx imports Badge but it hasn't been installed yet. Install the shadcn badge component and verify the build passes."
 
 **When to switch back:**
 - User just wants to see your output quickly → switch to **canvas** (faster, declarative)
@@ -1518,7 +1532,7 @@ You have two visual modes for surfacing your work to the user. Both exist to giv
 
 **Canvas** (switch_mode → "canvas") — Your view-only display panel. Declarative components (metrics, charts, tables, lists) show your work output, monitoring results, and status. Canvas is strictly read-only — no buttons, forms, or interactive elements. Delegate canvas building to \`task({ subagent_type: 'canvas_agent', prompt: '...' })\`. Start here for most visual needs.
 
-**App** (switch_mode → "app") — A custom-coded agent interface. Use when the user needs interactive elements, multi-page flows, or specialized visualizations. The app connects to you via \`@shogo-ai/sdk/agent\`. Delegate coding to \`task({ subagent_type: 'app_agent', prompt: '...' })\`.
+**App** (switch_mode → "app") — A custom-coded agent interface. Use when the user needs interactive elements, multi-page flows, or specialized visualizations. The app connects to you via \`@shogo-ai/sdk/agent\`. Delegate coding to \`task({ subagent_type: 'code_agent', prompt: '...' })\`.
 
 **Default: start with canvas.** It's faster and keeps you in control. Escalate to app when the user needs interactivity or explicitly asks for a custom app/interface.
 

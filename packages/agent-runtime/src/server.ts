@@ -25,6 +25,7 @@ import {
   statSync,
   rmSync,
   renameSync,
+  cpSync,
 } from 'fs'
 import {
   createRuntimeApp, traceOperation,
@@ -756,17 +757,13 @@ app.post('/preview/stop', (c) => {
 import { execSync } from 'child_process'
 
 const TEMPLATES_DIR = resolve(MONOREPO_ROOT, 'packages/sdk/templates')
+const EXAMPLES_DIR = resolve(MONOREPO_ROOT, 'packages/sdk/examples')
 
 app.post('/templates/copy', async (c) => {
   try {
     const body = await c.req.json() as { template: string; name: string; theme?: string }
     if (!body.template || !body.name) {
       return c.json({ ok: false, error: 'Missing required fields: template, name' }, 400)
-    }
-
-    const archivePath = join(TEMPLATES_DIR, `${body.template}.tar.gz`)
-    if (!existsSync(archivePath)) {
-      return c.json({ ok: false, error: `Template "${body.template}" not found` }, 404)
     }
 
     const projectDir = join(WORKSPACE_DIR, 'project')
@@ -777,11 +774,24 @@ app.post('/templates/copy', async (c) => {
       if (existsSync(p)) rmSync(p, { recursive: true, force: true })
     }
 
-    execSync(`tar -xzf "${archivePath}" --strip-components=1 -C "${projectDir}"`, {
-      stdio: 'pipe',
-      timeout: 120_000,
-    })
-    console.log(`[templates/copy] Extracted "${body.template}" to ${projectDir}`)
+    const archivePath = join(TEMPLATES_DIR, `${body.template}.tar.gz`)
+    const examplesPath = join(EXAMPLES_DIR, body.template)
+
+    if (existsSync(archivePath)) {
+      execSync(`tar -xzf "${archivePath}" --strip-components=1 -C "${projectDir}"`, {
+        stdio: 'pipe',
+        timeout: 120_000,
+      })
+      console.log(`[templates/copy] Extracted "${body.template}" from archive to ${projectDir}`)
+    } else if (existsSync(examplesPath)) {
+      cpSync(examplesPath, projectDir, {
+        recursive: true,
+        filter: (src) => !src.includes('node_modules') && !src.includes('.git') && !src.includes('template.json'),
+      })
+      console.log(`[templates/copy] Copied "${body.template}" from examples to ${projectDir}`)
+    } else {
+      return c.json({ ok: false, error: `Template "${body.template}" not found in archives or examples` }, 404)
+    }
 
     // Persist app template name so the agent knows what was created
     writeFileSync(join(WORKSPACE_DIR, '.app-template'), body.template, 'utf-8')
@@ -2168,6 +2178,7 @@ app.post('/console-log/append', async (c) => {
 app.get('/console-log', (c) => {
   return c.json({ logs: consoleLogs })
 })
+
 
 // =============================================================================
 // Template API Proxy (forward /api/* to the template's Hono server)

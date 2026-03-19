@@ -579,12 +579,12 @@ Instructions for ${name}.
   // -----------------------------------------------------------------------
 
   describe('subagent configs', () => {
-    test('app_agent is scoped to project/ directory', () => {
+    test('code_agent is scoped to project/ directory', () => {
       const ctx = createCtx()
       const tools = createTools(ctx)
-      const config = getBuiltinSubagentConfig('app_agent', ctx, tools)
+      const config = getBuiltinSubagentConfig('code_agent', ctx, tools)
       expect(config).not.toBeNull()
-      expect(config!.name).toBe('app_agent')
+      expect(config!.name).toBe('code_agent')
       expect(config!.workingDir).toBe(join(TEST_DIR, 'project'))
       expect(config!.toolNames).toContain('edit_file')
       expect(config!.toolNames).toContain('exec')

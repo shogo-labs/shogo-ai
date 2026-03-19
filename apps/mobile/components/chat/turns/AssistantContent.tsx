@@ -13,6 +13,7 @@ import { cn } from "@shogo/shared-ui/primitives"
 import { FileText } from "lucide-react-native"
 import type { UIMessage } from "@ai-sdk/react"
 import { InlineToolWidget } from "./InlineToolWidget"
+import { ExecWidget } from "./ExecWidget"
 import {
   ConnectToolWidget,
   parseToolInstallResult,
@@ -135,7 +136,7 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
   return result
 }
 
-const UNGROUPABLE_TOOLS = new Set(["ask_user", "TodoWrite", "tool_install", "mcp_install", "generate_image"])
+const UNGROUPABLE_TOOLS = new Set(["ask_user", "TodoWrite", "tool_install", "mcp_install", "generate_image", "exec", "Bash"])
 const MIN_GROUP_SIZE = 2
 
 function groupConsecutiveParts(parts: MessagePart[]): GroupedMessagePart[] {
@@ -365,6 +366,17 @@ export function AssistantContent({
           if (part.tool.toolName === "generate_image") {
             return (
               <GenerateImageWidget key={part.id} tool={part.tool} />
+            )
+          }
+
+          if (part.tool.toolName === "exec" || part.tool.toolName === "Bash") {
+            return (
+              <ExecWidget
+                key={part.id}
+                tool={part.tool}
+                isExpanded={expandedTools.has(part.id)}
+                onToggle={() => toggleTool(part.id)}
+              />
             )
           }
 

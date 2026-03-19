@@ -127,6 +127,17 @@ export function textResult(data: any): AgentToolResult<any> {
   }
 }
 
+const MAX_EXEC_OUTPUT_CHARS = 8000
+
+function truncateExecOutput(text: string): string {
+  if (!text || text.length <= MAX_EXEC_OUTPUT_CHARS) return text
+  const headSize = Math.floor(MAX_EXEC_OUTPUT_CHARS * 0.75)
+  const tailSize = MAX_EXEC_OUTPUT_CHARS - headSize
+  const head = text.substring(0, headSize)
+  const tail = text.substring(text.length - tailSize)
+  return `${head}\n\n... [${text.length - MAX_EXEC_OUTPUT_CHARS} chars truncated] ...\n\n${tail}`
+}
+
 // ---------------------------------------------------------------------------
 // Mode Switching Tool
 // ---------------------------------------------------------------------------
@@ -141,7 +152,7 @@ function createSwitchModeTool(ctx: ToolContext, modeHandler: ModeSwitchHandler):
   return {
     name: 'switch_mode',
     description:
-      'Switch the visual output mode. Both canvas and app surface your agent work. "canvas" = your quick display panel (declarative agent dashboard). "app" = custom-coded agent interface via code_agent (when canvas components are not enough). "none" = conversation only. Start with canvas; escalate to app when needed.',
+      'Switch the visual output mode. Both canvas and app surface your agent work. "canvas" = your quick display panel (declarative agent dashboard). "app" = custom-coded agent interface via code_agent subagent (when canvas components are not enough). "none" = conversation only. Start with canvas; escalate to app when needed.',
     label: 'Switch Mode',
     parameters: Type.Object({
       mode: Type.Union([Type.Literal('canvas'), Type.Literal('app'), Type.Literal('none')]),
@@ -177,19 +188,22 @@ function createExecTool(ctx: ToolContext): AgentTool {
   return {
     name: 'exec',
     description:
-      'Run a shell command in the agent workspace. Commands are executed synchronously with a 30s timeout. Destructive commands are blocked.',
+      'Run a shell command in the agent workspace. Commands are executed synchronously with a 30s timeout. Destructive commands are blocked. ' +
+      'Quote file paths containing spaces. Use && to chain dependent commands, ; for independent ones. ' +
+      'Never use interactive flags (-i). Prefer read_file over cat/head/tail, and grep tool over exec("grep ...").',
     label: 'Execute Command',
     parameters: Type.Object({
       command: Type.String({ description: 'Shell command to execute' }),
       timeout: Type.Optional(Type.Number({ description: 'Timeout in milliseconds (default: 30000)' })),
     }),
-    execute: async (_toolCallId, params) => {
+    execute: async (toolCallId, params) => {
       const { command, timeout = 30000 } = params as { command: string; timeout?: number }
 
       if (isBlockedCommand(command)) {
         return textResult({ error: `Blocked command: ${command}` })
       }
 
+      const startTime = Date.now()
       const result = sandboxExec({
         command,
         workspaceDir: ctx.workspaceDir,
@@ -198,11 +212,13 @@ function createExecTool(ctx: ToolContext): AgentTool {
         sessionId: ctx.sessionId,
         mainSessionIds: ctx.mainSessionIds,
       })
+      const durationMs = Date.now() - startTime
 
       return textResult({
-        stdout: result.stdout,
-        stderr: result.stderr || undefined,
+        stdout: truncateExecOutput(result.stdout),
+        stderr: result.stderr ? truncateExecOutput(result.stderr) : undefined,
         exitCode: result.exitCode,
+        durationMs,
         sandboxed: result.sandboxed || undefined,
       })
     },
@@ -214,7 +230,9 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
     name: 'read_file',
     description:
       'Read a file from the agent workspace. Supports partial reads via offset and limit ' +
-      'to handle large files without consuming the full context window.',
+      'to handle large files without consuming the full context window. ' +
+      'When using offset/limit, output includes line numbers in N|content format. ' +
+      'For large files (500+ lines), prefer offset/limit or use grep to find specific sections.',
     label: 'Read File',
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace' }),
@@ -245,7 +263,13 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
         })
       }
 
-      return textResult({ content: fullContent, bytes: fullContent.length })
+      const lineCount = fullContent.split('\n').length
+      const result: Record<string, any> = { content: fullContent, bytes: fullContent.length }
+      if (lineCount > 500) {
+        result.totalLines = lineCount
+        result.note = `Large file (${lineCount} lines). Consider using offset/limit for partial reads to conserve context.`
+      }
+      return textResult(result)
     },
   }
 }
@@ -253,7 +277,8 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
 function createWriteFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'write_file',
-    description: 'Write content to a file in the agent workspace (config files, skills, markdown). Creates parent directories as needed. Do NOT use this for app interface code — use the code_agent tool instead.',
+    description: 'Write content to a file in the agent workspace. Creates parent directories as needed. ' +
+      'Prefer edit_file for modifying existing files — only use write_file for creating new files or when the entire file content needs replacing.',
     label: 'Write File',
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace' }),
@@ -291,7 +316,10 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
     description:
       'Make targeted edits to a file using search and replace. ' +
       'The old_string must match exactly and uniquely in the file (unless replace_all is true). ' +
-      'Prefer this over write_file for modifying existing files.',
+      'Prefer this over write_file for modifying existing files. ' +
+      'The edit WILL FAIL if old_string is not unique — include 3-5 surrounding lines for uniqueness. ' +
+      'If it fails, read the file first to get more context, then retry with a longer old_string. ' +
+      'Use replace_all: true for renaming a variable or string throughout a file.',
     label: 'Edit File',
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace' }),
@@ -339,7 +367,8 @@ function createGlobTool(ctx: ToolContext): AgentTool {
     name: 'glob',
     description:
       'Find files matching a glob pattern in the workspace. ' +
-      'Returns matching file paths sorted by modification time.',
+      'Returns matching file paths sorted by modification time (newest first). Max 500 results. ' +
+      'Example patterns: "**/*.tsx", "src/components/**", "*.test.ts".',
     label: 'Glob',
     parameters: Type.Object({
       pattern: Type.String({ description: 'Glob pattern (e.g. **/*.ts, src/**/*.py)' }),
@@ -391,7 +420,9 @@ function createGrepTool(ctx: ToolContext): AgentTool {
     name: 'grep',
     description:
       'Search for a regex pattern in file contents across the workspace. ' +
-      'Uses ripgrep when available, falls back to a built-in scanner.',
+      'Uses ripgrep when available, falls back to a built-in scanner. ' +
+      'Returns matches with file path, line number, and matched text. Max 50 results by default. ' +
+      'Use the include param to filter by file type (e.g., "*.tsx"). Prefer this over exec("grep ...").',
     label: 'Grep',
     parameters: Type.Object({
       pattern: Type.String({ description: 'Regex pattern to search for' }),
@@ -493,7 +524,8 @@ function createLsTool(ctx: ToolContext): AgentTool {
     name: 'ls',
     description:
       'List files and directories at a path within the workspace. ' +
-      'Unlike list_files (scoped to files/), this can list any workspace directory.',
+      'Unlike list_files (scoped to files/), this can list any workspace directory. ' +
+      'Recursive mode has max depth 3. Skips node_modules and dotfiles at root level.',
     label: 'List Directory',
     parameters: Type.Object({
       path: Type.Optional(Type.String({ description: 'Directory path relative to workspace (default: root)' })),
@@ -545,6 +577,95 @@ function lsDir(dir: string, rootDir: string, recursive: boolean, depth: number, 
     }
   } catch { /* skip unreadable dirs */ }
   return results
+}
+
+// ---------------------------------------------------------------------------
+// App Template Tools (template_list, template_copy)
+// ---------------------------------------------------------------------------
+
+const APP_TEMPLATE_METADATA: Array<{
+  name: string
+  description: string
+  complexity: 'beginner' | 'intermediate' | 'advanced'
+  models: string[]
+}> = [
+  { name: '_template', description: 'Blank starter — minimal scaffolding with no pre-built models. Use when no other template matches.', complexity: 'beginner', models: ['User'] },
+  { name: 'todo-app', description: 'Simple task management with user auth', complexity: 'beginner', models: ['User', 'Todo'] },
+  { name: 'kanban', description: 'Kanban board with drag-and-drop task management', complexity: 'intermediate', models: ['User', 'Board', 'Column', 'Card'] },
+  { name: 'expense-tracker', description: 'Personal expense tracker with categories and budgets', complexity: 'intermediate', models: ['User', 'Category', 'Expense', 'Budget'] },
+  { name: 'booking-app', description: 'Booking and reservation system with time slots', complexity: 'intermediate', models: ['User', 'Service', 'TimeSlot', 'Booking'] },
+  { name: 'crm', description: 'CRM with contacts, companies, deals, tags, and notes', complexity: 'advanced', models: ['User', 'Contact', 'Company', 'Tag', 'ContactTag', 'Note', 'Deal'] },
+  { name: 'inventory', description: 'Inventory management with products, categories, and stock tracking', complexity: 'intermediate', models: ['User', 'Category', 'Product', 'StockMovement'] },
+  { name: 'feedback-form', description: 'Feedback and survey collection system', complexity: 'intermediate', models: ['User', 'Form', 'Question', 'Response', 'Answer'] },
+  { name: 'form-builder', description: 'Dynamic form builder with drag-and-drop', complexity: 'advanced', models: ['User', 'Form', 'Field', 'Submission', 'FieldValue'] },
+  { name: 'ai-chat', description: 'AI chat interface connected to the agent', complexity: 'intermediate', models: ['User', 'Conversation', 'Message'] },
+  { name: 'agent-dashboard', description: 'Agent monitoring dashboard with status, chat, and canvas', complexity: 'intermediate', models: ['User'] },
+  { name: 'approval-workflow', description: 'Approval request workflow with multi-step review', complexity: 'advanced', models: ['User', 'Request', 'ApprovalStep', 'Comment'] },
+  { name: 'data-explorer', description: 'Data exploration tool with query builder and visualizations', complexity: 'advanced', models: ['User', 'Dataset', 'Query', 'Visualization'] },
+]
+
+function createTemplateListTool(): AgentTool {
+  return {
+    name: 'template_list',
+    description:
+      'List available app starter templates. Every new app MUST start from a template. ' +
+      'Choose the closest match, or use "_template" (blank) if nothing fits. ' +
+      'Call this BEFORE writing any code if no template has been selected yet.',
+    label: 'List App Templates',
+    parameters: Type.Object({}),
+    execute: async () => {
+      return textResult({
+        templates: APP_TEMPLATE_METADATA,
+        instructions: 'Pick the best match and call template_copy. Use "_template" for blank. NEVER scaffold from scratch.',
+      })
+    },
+  }
+}
+
+function createTemplateCopyTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'template_copy',
+    description:
+      'Scaffold a project from a starter template. Extracts the template into project/, ' +
+      'sets up the database, installs dependencies, and restarts the preview server. ' +
+      'After this, customize the scaffolded code — do NOT create files from scratch.',
+    label: 'Copy App Template',
+    parameters: Type.Object({
+      template: Type.String({ description: 'Template name from template_list (e.g. "todo-app", "_template" for blank)' }),
+      name: Type.Optional(Type.String({ description: 'App name (default: "my-app")' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { template, name = 'my-app' } = params as { template: string; name?: string }
+      const port = process.env.PORT || '8080'
+      try {
+        const res = await fetch(`http://localhost:${port}/templates/copy`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ template, name }),
+        })
+        const data = await res.json() as Record<string, any>
+        if (!res.ok) {
+          const errMsg = data.error || `Template copy failed (${res.status})`
+          return textResult({
+            error: errMsg,
+            hint: 'Call template_list to see available templates. Use "_template" for a blank starter.',
+          })
+        }
+        return textResult({
+          ok: true,
+          template,
+          name,
+          message: data.message || 'Template extracted and preview restarted.',
+          nextSteps: 'Read project/src/ to understand the scaffolded code, then make customizations.',
+        })
+      } catch (err: any) {
+        return textResult({
+          error: `template_copy failed: ${err.message}`,
+          hint: 'Call template_list to see available templates. Use "_template" for a blank starter.',
+        })
+      }
+    },
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3096,7 +3217,7 @@ function createTaskTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): Ag
     name: 'task',
     description:
       'Spawn a specialized subagent to handle a focused task in an isolated context. ' +
-      'Built-in types: app_agent (app code in project/), canvas_agent (declarative UI), ' +
+      'Built-in types: code_agent (app code, scripts, and commands in project/), canvas_agent (declarative UI), ' +
       'explore (read-only codebase search, uses Haiku), general-purpose (all tools). ' +
       'Custom agents from .claude/agents/ are also available.',
     label: 'Task',
@@ -3104,7 +3225,7 @@ function createTaskTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): Ag
       description: Type.String({ description: 'Short 3-5 word task description' }),
       prompt: Type.String({ description: 'Detailed task for the subagent' }),
       subagent_type: Type.Optional(Type.String({
-        description: 'Agent type: app_agent, canvas_agent, explore, general-purpose, or custom name',
+        description: 'Agent type: code_agent, canvas_agent, explore, general-purpose, or custom name',
       })),
       model: Type.Optional(Type.String({ description: 'Model override (e.g. claude-haiku-4-5)' })),
       max_turns: Type.Optional(Type.Number({ description: 'Max agentic turns (default: 10)' })),
@@ -3143,7 +3264,7 @@ function createTaskTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): Ag
 
       if (!config) {
         return textResult({
-          error: `Unknown subagent type: ${agentType}. Available: app_agent, canvas_agent, explore, general-purpose`,
+          error: `Unknown subagent type: ${agentType}. Available: code_agent, canvas_agent, explore, general-purpose`,
         })
       }
 
@@ -4085,6 +4206,8 @@ export function createTools(ctx: ToolContext, modeHandler?: ModeSwitchHandler, e
     createCanvasApiBindTool(ctx),
     createCanvasTriggerActionTool(),
     createCanvasInspectTool(),
+    createTemplateListTool(),
+    createTemplateCopyTool(ctx),
     createPersonalityUpdateTool(ctx),
     createToolSearchTool(),
     createToolInstallTool(ctx),

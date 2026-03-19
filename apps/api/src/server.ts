@@ -1141,10 +1141,9 @@ app.post('/api/projects/:projectId/apply-template', async (c) => {
       return c.json({ ok: false, error: 'Missing required fields: template, name' }, 400)
     }
 
-    const projectDir = resolve(WORKSPACES_DIR, projectId)
-    if (!existsSync(projectDir)) {
-      mkdirSync(projectDir, { recursive: true })
-    }
+    const workspaceDir = resolve(WORKSPACES_DIR, projectId)
+    const projectSubDir = resolve(workspaceDir, 'project')
+    mkdirSync(projectSubDir, { recursive: true })
 
     const templatesDir = resolve(PROJECT_ROOT, 'packages/sdk/examples')
     const templatePath = resolve(templatesDir, body.template)
@@ -1153,15 +1152,17 @@ app.post('/api/projects/:projectId/apply-template', async (c) => {
       return c.json({ ok: false, error: `Template '${body.template}' not found` }, 404)
     }
 
-    const srcDir = resolve(projectDir, 'src')
-    if (existsSync(srcDir)) rmSync(srcDir, { recursive: true, force: true })
+    for (const d of ['src', 'prisma', '.tanstack']) {
+      const p = resolve(projectSubDir, d)
+      if (existsSync(p)) rmSync(p, { recursive: true, force: true })
+    }
 
-    cpSync(templatePath, projectDir, {
+    cpSync(templatePath, projectSubDir, {
       recursive: true,
-      filter: (src) => !src.includes('.git') && !src.includes('template.json'),
+      filter: (src) => !src.includes('node_modules') && !src.includes('.git') && !src.includes('template.json'),
     })
-    writeFileSync(resolve(projectDir, '.app-template'), body.template, 'utf-8')
-    console.log(`[apply-template] Copied template '${body.template}' to ${projectDir}`)
+    writeFileSync(resolve(workspaceDir, '.app-template'), body.template, 'utf-8')
+    console.log(`[apply-template] Copied template '${body.template}' to ${projectSubDir}`)
 
     // In local dev, trigger Vite restart via the runtime manager's preview port
     if (!isKubernetes()) {

@@ -54,9 +54,9 @@ export interface ToolCallData {
 
 export function getToolCategory(name: string): ToolCategory {
   if (name.startsWith("mcp__")) return "mcp"
-  if (["Read", "Write", "Edit", "Glob", "Grep"].includes(name)) return "file"
-  if (["Skill", "Task"].includes(name)) return "skill"
-  if (["Bash"].includes(name)) return "bash"
+  if (["Read", "Write", "Edit", "Glob", "Grep", "read_file", "write_file", "edit_file", "glob", "grep", "search_files"].includes(name)) return "file"
+  if (["Skill", "Task", "task", "skill"].includes(name)) return "skill"
+  if (["Bash", "exec"].includes(name)) return "bash"
   return "other"
 }
 
@@ -95,22 +95,23 @@ export function getToolKeyArg(toolName: string, args?: Record<string, unknown>):
     }
   }
 
-  if (toolName === "Read" || toolName === "Write" || toolName === "Edit") {
-    const path = args.file_path as string | undefined
+  if (toolName === "Read" || toolName === "Write" || toolName === "Edit" ||
+      toolName === "read_file" || toolName === "write_file" || toolName === "edit_file") {
+    const path = (args.file_path ?? args.path) as string | undefined
     if (path) {
       const segments = path.split("/")
       return segments[segments.length - 1] || path
     }
   }
 
-  if (toolName === "Grep" || toolName === "Glob") {
+  if (toolName === "Grep" || toolName === "Glob" || toolName === "grep" || toolName === "glob" || toolName === "search_files") {
     const pattern = args.pattern as string | undefined
     if (pattern) {
       return pattern.length > 30 ? pattern.slice(0, 27) + "..." : pattern
     }
   }
 
-  if (toolName === "Bash") {
+  if (toolName === "Bash" || toolName === "exec") {
     const command = args.command as string | undefined
     if (command) {
       const firstLine = command.split("\n")[0]
