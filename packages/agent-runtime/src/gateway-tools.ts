@@ -3327,11 +3327,13 @@ function createTaskTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): Ag
           w.write({ type: 'tool-input-available', toolCallId, toolName, input: args })
         },
         onAfterToolCall: async (toolName: string, args: any, result: any, isError: boolean, toolCallId: string) => {
+          const parsed = typeof result === 'string' ? (() => { try { return JSON.parse(result) } catch { return result } })() : result
           w.write({
             type: 'tool-output-available',
             toolCallId,
-            toolName,
-            output: typeof result === 'string' ? result : JSON.stringify(result).substring(0, 1000),
+            output: isError
+              ? { error: typeof parsed === 'string' ? parsed : JSON.stringify(parsed) }
+              : (parsed ?? { success: true }),
           })
         },
       } : undefined
