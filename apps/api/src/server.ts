@@ -1802,6 +1802,7 @@ app.all('/api/projects/:projectId/preview', async (c) => {
 })
 
 // Agent proxy - forwards requests directly to agent-runtime pod without /preview prefix
+// Includes retry logic for cold-start scenarios where the pod may be scaling up.
 app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   const projectId = c.req.param('projectId')
 
@@ -1837,44 +1838,100 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   }
 
   const targetUrl = `${podUrl}${path}${qs}`
-  console.log(`[AgentProxy] Proxying ${c.req.method} ${path} to ${targetUrl}`)
 
-  try {
-    const headers = new Headers()
-    const contentType = c.req.header('content-type')
-    if (contentType) headers.set('content-type', contentType)
-    const accept = c.req.header('accept')
-    if (accept) headers.set('accept', accept)
-    const { deriveRuntimeToken } = await import('./lib/runtime-token')
-    headers.set('x-runtime-token', deriveRuntimeToken(projectId))
-    const requestInit: RequestInit = { method: c.req.method, headers }
-    if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
-      requestInit.body = await c.req.arrayBuffer()
-    }
+  const headers = new Headers()
+  const contentType = c.req.header('content-type')
+  if (contentType) headers.set('content-type', contentType)
+  const accept = c.req.header('accept')
+  if (accept) headers.set('accept', accept)
+  const { deriveRuntimeToken } = await import('./lib/runtime-token')
+  headers.set('x-runtime-token', deriveRuntimeToken(projectId))
 
-    const response = await fetch(targetUrl, requestInit)
-
-    const responseHeaders = new Headers()
-    response.headers.forEach((value, key) => {
-      if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
-        responseHeaders.set(key, value)
-      }
-    })
-    responseHeaders.set('access-control-allow-origin', '*')
-    responseHeaders.set('access-control-allow-methods', 'GET, POST, PUT, DELETE, OPTIONS')
-    responseHeaders.set('access-control-allow-headers', '*')
-
-    const responseContentType = response.headers.get('content-type') || ''
-    if (responseContentType.includes('text/event-stream') || responseContentType.includes('text/plain')) {
-      responseHeaders.set('X-Accel-Buffering', 'no')
-      responseHeaders.set('Cache-Control', 'no-cache, no-transform')
-    }
-
-    return new Response(response.body, { status: response.status, headers: responseHeaders })
-  } catch (error: any) {
-    console.error('[AgentProxy] Error:', error)
-    return c.json({ error: { code: 'proxy_error', message: error.message || 'Failed to proxy request' } }, 502)
+  let requestBody: ArrayBuffer | undefined
+  if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+    requestBody = await c.req.arrayBuffer()
   }
+
+  // Retry with exponential backoff for cold-start transient errors.
+  // Knative pods can take 60-90s to cold start (S3 restore + deps install).
+  const MAX_RETRIES = 24
+  const BASE_DELAY_MS = 500
+  const MAX_DELAY_MS = 5000
+  const FETCH_TIMEOUT_MS = 120_000
+  let lastError: Error | null = null
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const response = await fetch(targetUrl, {
+        method: c.req.method,
+        headers,
+        body: requestBody,
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      })
+
+      if (!response.ok && response.status >= 500 && attempt < MAX_RETRIES) {
+        const delay = Math.min(BASE_DELAY_MS * Math.pow(2, attempt - 1), MAX_DELAY_MS)
+        if (attempt === 1) {
+          console.log(`[AgentProxy] ${c.req.method} ${path} → ${response.status}, retrying (cold start?)...`)
+        }
+        await new Promise(resolve => setTimeout(resolve, delay))
+        continue
+      }
+
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!['transfer-encoding', 'connection'].includes(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+      responseHeaders.set('access-control-allow-origin', '*')
+      responseHeaders.set('access-control-allow-methods', 'GET, POST, PUT, DELETE, OPTIONS')
+      responseHeaders.set('access-control-allow-headers', '*')
+
+      const responseContentType = response.headers.get('content-type') || ''
+      if (responseContentType.includes('text/event-stream') || responseContentType.includes('text/plain')) {
+        responseHeaders.set('X-Accel-Buffering', 'no')
+        responseHeaders.set('Cache-Control', 'no-cache, no-transform')
+      }
+
+      if (attempt > 1) {
+        console.log(`[AgentProxy] ${c.req.method} ${path} succeeded after ${attempt} attempts`)
+      }
+
+      return new Response(response.body, { status: response.status, headers: responseHeaders })
+    } catch (fetchError: any) {
+      lastError = fetchError
+
+      const isTransient =
+        fetchError.code === 'ECONNREFUSED' ||
+        fetchError.code === 'ECONNRESET' ||
+        fetchError.code === 'ETIMEDOUT' ||
+        fetchError.cause?.code === 'ECONNREFUSED' ||
+        fetchError.cause?.code === 'ECONNRESET' ||
+        fetchError.cause?.code === 'ETIMEDOUT' ||
+        fetchError.message?.includes('ECONNREFUSED') ||
+        fetchError.message?.includes('connection refused')
+
+      const isTimeout = fetchError.name === 'TimeoutError' || fetchError.name === 'AbortError'
+
+      if ((isTransient || isTimeout) && attempt < MAX_RETRIES) {
+        const delay = Math.min(BASE_DELAY_MS * Math.pow(2, attempt - 1), MAX_DELAY_MS)
+        if (attempt === 1) {
+          console.log(`[AgentProxy] ${c.req.method} ${path} connection failed, retrying (cold start?)...`)
+        }
+        await new Promise(resolve => setTimeout(resolve, delay))
+        continue
+      }
+
+      break
+    }
+  }
+
+  console.error(`[AgentProxy] ${c.req.method} ${path} failed after ${MAX_RETRIES} attempts:`, lastError?.message)
+  return c.json(
+    { error: { code: 'proxy_error', message: lastError?.message || 'Agent runtime unavailable after retries', retryable: true } },
+    502,
+  )
 })
 
 // =============================================================================

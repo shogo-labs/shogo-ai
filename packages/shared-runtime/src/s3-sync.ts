@@ -120,12 +120,14 @@ export class S3Sync {
       forcePathStyle: config.forcePathStyle ?? (process.env.S3_FORCE_PATH_STYLE === 'true'),
       // Exclude patterns - these won't be included in archives
       exclude: config.exclude || [
-        '.DS_Store',          // macOS metadata
-        '*.log',              // Log files
-        'playwright-report',  // Test artifacts
-        'test-results',       // Test artifacts
-        'project/node_modules', // App dependencies (cached separately via deps archive)
-        '.bun',               // Bun cache (can be regenerated)
+        '.DS_Store',
+        '*.log',
+        'playwright-report',
+        'test-results',
+        'project/node_modules',
+        '.bun',
+        '.npm',
+        '.cache',
       ],
       syncInterval: config.syncInterval ?? 30000, // 30 seconds default
       watchEnabled: config.watchEnabled ?? true,
@@ -931,8 +933,9 @@ export class S3Sync {
 
         if (this.shouldExclude(relativePath)) continue
 
-        // Skip additional excluded directories
-        if (excludeDirs && excludeDirs.some(d => relativePath === d || relativePath.startsWith(d + '/'))) {
+        // Skip excluded directories by name at any depth (e.g. 'node_modules' matches
+        // both top-level and nested like 'project/node_modules' or '.npm/_npx/.../node_modules')
+        if (excludeDirs && entry.isDirectory() && excludeDirs.includes(entry.name)) {
           continue
         }
 
