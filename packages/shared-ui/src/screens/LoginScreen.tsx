@@ -16,6 +16,8 @@ import { Alert, AlertDescription } from '../primitives/Alert'
 import { Separator } from '../primitives/Separator'
 import { cn } from '../primitives/cn'
 
+const LOGIN_HERO_BREAKPOINT = 768
+
 type Tab = 'signin' | 'signup'
 
 export interface LoginScreenProps {
@@ -25,6 +27,7 @@ export interface LoginScreenProps {
   isLoading?: boolean
   error?: string | null
   onClearError?: () => void
+  colorScheme?: 'light' | 'dark'
 }
 
 function isValidEmail(email: string): boolean {
@@ -274,7 +277,7 @@ function SignUpForm({ onSignUp, isLoading, error, onClearError, onScrollToBottom
   )
 }
 
-export function LoginScreen({ onSignIn, onSignUp, onGoogleSignIn, isLoading, error }: LoginScreenProps) {
+function MobileLoginPanel({ onSignIn, onSignUp, onGoogleSignIn, isLoading, error, onClearError }: LoginScreenProps) {
   const [activeTab, setActiveTab] = useState<Tab>('signin')
   const [dismissed, setDismissed] = useState(false)
   const { height: windowHeight } = useWindowDimensions()
@@ -367,5 +370,157 @@ export function LoginScreen({ onSignIn, onSignUp, onGoogleSignIn, isLoading, err
         </Card>
       </ScrollView>
     </KeyboardAvoidingView>
+  )
+}
+
+const logoLight = require('../../../../apps/mobile/assets/shogo-logo-words.svg')
+const logoDark = require('../../../../apps/mobile/assets/shogo-logo-words-white.svg')
+
+function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, isLoading, error, onClearError, colorScheme }: LoginScreenProps) {
+  const [activeTab, setActiveTab] = useState<Tab>('signin')
+  const [dismissed, setDismissed] = useState(false)
+  const scrollRef = useRef<ScrollView>(null)
+
+  useEffect(() => { if (error) setDismissed(false) }, [error])
+
+  const displayError = dismissed ? null : error
+  const dismissError = () => setDismissed(true)
+  const switchTab = (tab: Tab) => { setActiveTab(tab); setDismissed(true) }
+  const scrollToBottom = () => {
+    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 150)
+  }
+
+  return (
+    <View className="flex-1 bg-background">
+      <View style={{ paddingTop: 32, paddingHorizontal: 48 }}>
+        <Image
+          source={colorScheme === 'dark' ? logoDark : logoLight}
+          style={{ width: 140, height: 48 }}
+          resizeMode="contain"
+        />
+      </View>
+
+      <ScrollView
+        ref={scrollRef}
+        contentContainerStyle={{
+          flexGrow: 1,
+          justifyContent: 'center',
+          alignItems: 'center',
+          paddingHorizontal: 48,
+          paddingVertical: 32,
+        }}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={{ maxWidth: 400, width: '100%' }}>
+          <Text className="text-2xl font-bold text-foreground" style={{ marginBottom: 4 }}>
+            {activeTab === 'signin' ? 'Sign in to your account' : 'Create your account'}
+          </Text>
+          <Text className="text-sm text-muted-foreground" style={{ marginBottom: 28 }}>
+            {activeTab === 'signin'
+              ? 'Welcome back to Shogo AI Studio'
+              : 'Get started with Shogo AI Studio'}
+          </Text>
+
+          <View className="flex-row bg-secondary rounded-lg p-1 mb-5" accessibilityRole="tablist">
+            {(['signin', 'signup'] as Tab[]).map((tab) => (
+              <Pressable
+                key={tab}
+                onPress={() => switchTab(tab)}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: activeTab === tab }}
+                accessibilityLabel={tab === 'signin' ? 'Sign In' : 'Sign Up'}
+                className={cn(
+                  'flex-1 py-2 rounded-md items-center',
+                  activeTab === tab ? 'bg-card' : '',
+                )}
+                style={activeTab === tab ? {
+                  shadowColor: '#000',
+                  shadowOffset: { width: 0, height: 1 },
+                  shadowOpacity: 0.05,
+                  shadowRadius: 2,
+                  elevation: 1,
+                } : undefined}
+              >
+                <Text className={cn(
+                  'text-sm font-medium',
+                  activeTab === tab ? 'text-foreground' : 'text-muted-foreground',
+                )}>
+                  {tab === 'signin' ? 'Sign In' : 'Sign Up'}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+
+          {activeTab === 'signin'
+            ? <SignInForm onSignIn={onSignIn} isLoading={isLoading} error={displayError} onClearError={dismissError} onScrollToBottom={scrollToBottom} />
+            : <SignUpForm onSignUp={onSignUp} isLoading={isLoading} error={displayError} onClearError={dismissError} onScrollToBottom={scrollToBottom} />
+          }
+
+          {onGoogleSignIn ? (
+            <>
+              <View className="flex-row items-center my-5">
+                <View className="flex-1"><Separator /></View>
+                <Text className="px-3 text-xs text-muted-foreground uppercase">or</Text>
+                <View className="flex-1"><Separator /></View>
+              </View>
+              <Button variant="outline" className="w-full" onPress={onGoogleSignIn}>
+                <Text className="text-foreground">G  Continue with Google</Text>
+              </Button>
+            </>
+          ) : null}
+        </View>
+      </ScrollView>
+    </View>
+  )
+}
+
+export function LoginScreen(props: LoginScreenProps) {
+  const { width } = useWindowDimensions()
+  const isDesktopWeb = Platform.OS === 'web' && width >= LOGIN_HERO_BREAKPOINT
+
+  if (!isDesktopWeb) {
+    return <MobileLoginPanel {...props} />
+  }
+
+  return (
+    <View className="flex-1 flex-row bg-background">
+      <View style={{ width: '50%' }}>
+        <DesktopFormPanel {...props} />
+      </View>
+      <View style={{ width: '50%', position: 'relative', overflow: 'hidden' }}>
+        <Image
+          source={require('../../../../apps/mobile/assets/login-hero.png')}
+          style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%' }}
+          resizeMode="cover"
+        />
+        <View
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            justifyContent: 'center',
+            alignItems: 'center',
+          }}
+        >
+          <Text
+            style={{
+              color: '#fff',
+              fontSize: 32,
+              fontWeight: '200',
+              letterSpacing: 0.5,
+              textAlign: 'center',
+              paddingHorizontal: 40,
+              textShadowColor: 'rgba(0,0,0,0.5)',
+              textShadowOffset: { width: 0, height: 1 },
+              textShadowRadius: 8,
+            }}
+          >
+            Visual AI for life
+          </Text>
+        </View>
+      </View>
+    </View>
   )
 }

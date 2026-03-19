@@ -18,6 +18,7 @@ import { prisma } from '../lib/prisma'
 export interface AnalyticsScope {
   workspaceId?: string
   projectId?: string
+  userId?: string
 }
 
 export type AnalyticsPeriod = '7d' | '30d' | '90d' | '1y'
@@ -53,6 +54,7 @@ function scopeWhere(scope: AnalyticsScope) {
   return {
     ...(scope.workspaceId ? { workspaceId: scope.workspaceId } : {}),
     ...(scope.projectId ? { projectId: scope.projectId } : {}),
+    ...(scope.userId ? { memberId: scope.userId } : {}),
   }
 }
 
@@ -106,8 +108,35 @@ function mergeTimeSeries(
  * - No scope: total users, workspaces, projects, chat sessions
  * - Workspace scope: members, projects, chat sessions in that workspace
  * - Project scope: chat sessions, usage events for that project
+ * - User scope: usage events, messages, sessions for that user across all workspaces
  */
 export async function getOverviewStats(scope: AnalyticsScope = {}) {
+  if (scope.userId && !scope.workspaceId && !scope.projectId) {
+    const [usageEvents, totalCreditsResult, chatSessions] = await Promise.all([
+      prisma.usageEvent.count({
+        where: { memberId: scope.userId },
+      }),
+      prisma.usageEvent.aggregate({
+        where: { memberId: scope.userId },
+        _sum: { creditCost: true },
+      }),
+      prisma.chatSession.count({
+        where: {
+          project: {
+            workspace: {
+              members: { some: { userId: scope.userId } },
+            },
+          },
+        },
+      }),
+    ])
+    return {
+      usageEvents,
+      totalCreditsConsumed: totalCreditsResult._sum.creditCost ?? 0,
+      chatSessions,
+    }
+  }
+
   if (scope.projectId) {
     // Project-level overview
     const [chatSessions, usageEvents, messages] = await Promise.all([
@@ -434,8 +463,8 @@ export async function getUsageLog(
   }
   if (scope.workspaceId) where.workspaceId = scope.workspaceId
   if (scope.projectId) where.projectId = scope.projectId
+  if (scope.userId) where.memberId = scope.userId
   if (options.userId) where.memberId = options.userId
-  // Model filter: search inside JSON actionMetadata
   if (options.model) {
     where.actionMetadata = { path: ['model'], string_contains: options.model }
   }
@@ -498,6 +527,7 @@ export async function getUsageSummary(
   }
   if (scope.workspaceId) where.workspaceId = scope.workspaceId
   if (scope.projectId) where.projectId = scope.projectId
+  if (scope.userId) where.memberId = scope.userId
 
   // Fetch all matching events (for in-memory aggregation)
   const events = await prisma.usageEvent.findMany({

@@ -6,6 +6,7 @@
  * User profile page showing account info, workspace memberships, and billing/credits.
  */
 
+import { useState, useEffect, useCallback } from 'react'
 import { View, Text, ScrollView, Pressable, ActivityIndicator } from 'react-native'
 import { useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
@@ -19,16 +20,29 @@ import {
   Zap,
   TrendingUp,
   Settings,
+  BarChart3,
+  MessageSquare,
+  Clock,
 } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
 import {
   useDomain,
   useWorkspaceCollection,
   useMemberCollection,
+  useDomainHttp,
   type IDomainStore,
 } from '../../contexts/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { usePlatformConfig } from '../../lib/platform-config'
+import { api } from '../../lib/api'
+import {
+  type AnalyticsPeriod,
+  type UsageLogData,
+  type UsageSummaryData,
+  PeriodSelector,
+  StatCard,
+  UsageTableSection,
+} from '../../components/analytics/SharedAnalytics'
 import {
   Card,
   CardContent,
@@ -185,9 +199,91 @@ export default observer(function ProfilePage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Usage & Credits */}
+      <UserUsageSection />
     </ScrollView>
   )
 })
+
+interface UserOverviewData {
+  usageEvents: number
+  totalCreditsConsumed: number
+  chatSessions: number
+}
+
+function UserUsageSection() {
+  const http = useDomainHttp()
+  const { features } = usePlatformConfig()
+
+  const [period, setPeriod] = useState<AnalyticsPeriod>('30d')
+  const [logPage, setLogPage] = useState(1)
+
+  const [overview, setOverview] = useState<{ data: UserOverviewData | null; loading: boolean }>({ data: null, loading: true })
+  const [usageSummary, setUsageSummary] = useState<{ data: UsageSummaryData | null; loading: boolean }>({ data: null, loading: true })
+  const [usageLog, setUsageLog] = useState<{ data: UsageLogData | null; loading: boolean }>({ data: null, loading: true })
+
+  const loadAll = useCallback(async () => {
+    const p = { period }
+
+    setOverview(s => ({ ...s, loading: true }))
+    setUsageSummary(s => ({ ...s, loading: true }))
+    setUsageLog(s => ({ ...s, loading: true }))
+
+    const [ov, uSum, uLog] = await Promise.all([
+      api.getMyAnalytics<UserOverviewData>(http, 'overview', p).catch(() => null),
+      api.getMyAnalytics<UsageSummaryData>(http, 'usage-summary', p).catch(() => null),
+      api.getMyAnalytics<UsageLogData>(http, 'usage-log', { ...p, page: String(logPage), limit: '50' }).catch(() => null),
+    ])
+
+    setOverview({ data: ov, loading: false })
+    setUsageSummary({ data: uSum, loading: false })
+    setUsageLog({ data: uLog, loading: false })
+  }, [http, period, logPage])
+
+  useEffect(() => {
+    if (features.billing) loadAll()
+  }, [features.billing, loadAll])
+
+  if (!features.billing) return null
+
+  return (
+    <Card className="mb-6">
+      <CardHeader>
+        <View className="flex-row items-center gap-2">
+          <BarChart3 size={20} className="text-card-foreground" />
+          <CardTitle className="text-lg">Usage & Credits</CardTitle>
+        </View>
+        <CardDescription>Your usage across all workspaces</CardDescription>
+      </CardHeader>
+      <CardContent className="gap-4">
+        <PeriodSelector value={period} onChange={setPeriod} />
+
+        {/* Overview stats */}
+        <View className="flex-row flex-wrap gap-2">
+          <StatCard label="Sessions" value={overview.data?.chatSessions} icon={MessageSquare} />
+          <StatCard label="Usage Events" value={overview.data?.usageEvents} icon={Zap} />
+          <StatCard
+            label="Credits Used"
+            value={overview.data?.totalCreditsConsumed !== undefined ? Math.round(overview.data.totalCreditsConsumed * 10) / 10 : undefined}
+            icon={CreditCard}
+          />
+        </View>
+
+        {/* Usage summary + event log */}
+        <UsageTableSection
+          summaryData={usageSummary.data}
+          logData={usageLog.data}
+          summaryLoading={usageSummary.loading}
+          logLoading={usageLog.loading}
+          onLogPageChange={setLogPage}
+          logPage={logPage}
+          title="Your AI Usage"
+        />
+      </CardContent>
+    </Card>
+  )
+}
 
 const WorkspaceCard = observer(function WorkspaceCard({
   workspace,

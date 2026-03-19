@@ -47,6 +47,9 @@ import {
   Search,
   UserPlus,
   Mail,
+  BarChart3,
+  MessageSquare,
+  Zap,
 } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
 import {
@@ -77,6 +80,18 @@ import {
 import { TierSelector } from '../../components/billing/TierSelector'
 import { FeatureList } from '../../components/billing/FeatureList'
 import { SecuritySettingsPanel } from '../../components/security/SecuritySettingsPanel'
+import {
+  type AnalyticsPeriod,
+  type UsageSummaryData,
+  type UsageLogData,
+  type ChatAnalyticsData,
+  type UsageBreakdownData,
+  PeriodSelector,
+  StatCard,
+  UsageTableSection,
+  ChatAnalyticsSection,
+  UsageBreakdownSection,
+} from '../../components/analytics/SharedAnalytics'
 import { useToast, Toast, ToastTitle, ToastDescription } from '@/components/ui/toast'
 import {
   Card,
@@ -93,9 +108,9 @@ import {
 
 const DOCS_URL = 'https://docs.shogo.ai'
 
-type TabId = 'workspace' | 'people' | 'account' | 'billing' | 'security'
+type TabId = 'workspace' | 'people' | 'account' | 'billing' | 'security' | 'analytics'
 
-const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'billing', 'security']
+const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'account', 'billing', 'security', 'analytics']
 
 interface NavItem {
   id: TabId
@@ -108,6 +123,7 @@ const MOBILE_NAV_ITEMS: NavItem[] = [
   { id: 'people', label: 'People', icon: Users },
   { id: 'account', label: 'Account', icon: User },
   { id: 'billing', label: 'Billing', icon: CreditCard },
+  { id: 'analytics', label: 'Analytics', icon: BarChart3 },
 ]
 
 const LOCAL_NAV_ITEMS: NavItem[] = [
@@ -201,6 +217,9 @@ function SettingsSidebar({
     ...(!(localMode || !showBilling) ? [{ id: 'people' as TabId, label: 'People' }] : []),
     ...(showBilling
       ? [{ id: 'billing' as TabId, label: 'Billing' }]
+      : []),
+    ...(showBilling
+      ? [{ id: 'analytics' as TabId, label: 'Analytics' }]
       : []),
   ]
 
@@ -2135,6 +2154,98 @@ function InviteMembersModal({
 }
 
 // ============================================================================
+// WORKSPACE ANALYTICS TAB
+// ============================================================================
+
+function WorkspaceAnalyticsTab() {
+  const http = useDomainHttp()
+  const workspace = useActiveWorkspace()
+  const workspaceId = workspace?.id
+
+  const [period, setPeriod] = useState<AnalyticsPeriod>('30d')
+  const [logPage, setLogPage] = useState(1)
+
+  const [overview, setOverview] = useState<{ data: any; loading: boolean }>({ data: null, loading: true })
+  const [usage, setUsage] = useState<{ data: UsageBreakdownData | null; loading: boolean }>({ data: null, loading: true })
+  const [usageSummary, setUsageSummary] = useState<{ data: UsageSummaryData | null; loading: boolean }>({ data: null, loading: true })
+  const [usageLog, setUsageLog] = useState<{ data: UsageLogData | null; loading: boolean }>({ data: null, loading: true })
+  const [chatStats, setChatStats] = useState<{ data: ChatAnalyticsData | null; loading: boolean }>({ data: null, loading: true })
+
+  const loadAll = useCallback(async () => {
+    if (!workspaceId) return
+    const p = { period }
+
+    setOverview(s => ({ ...s, loading: true }))
+    setUsage(s => ({ ...s, loading: true }))
+    setUsageSummary(s => ({ ...s, loading: true }))
+    setUsageLog(s => ({ ...s, loading: true }))
+    setChatStats(s => ({ ...s, loading: true }))
+
+    const [ov, us, uSum, uLog, ch] = await Promise.all([
+      api.getWorkspaceAnalytics<any>(http, workspaceId, 'overview', p).catch(() => null),
+      api.getWorkspaceAnalytics<UsageBreakdownData>(http, workspaceId, 'usage', p).catch(() => null),
+      api.getWorkspaceAnalytics<UsageSummaryData>(http, workspaceId, 'usage-summary', p).catch(() => null),
+      api.getWorkspaceAnalytics<UsageLogData>(http, workspaceId, 'usage-log', { ...p, page: String(logPage), limit: '50' }).catch(() => null),
+      api.getWorkspaceAnalytics<ChatAnalyticsData>(http, workspaceId, 'chat', p).catch(() => null),
+    ])
+
+    setOverview({ data: ov, loading: false })
+    setUsage({ data: us, loading: false })
+    setUsageSummary({ data: uSum, loading: false })
+    setUsageLog({ data: uLog, loading: false })
+    setChatStats({ data: ch, loading: false })
+  }, [http, workspaceId, period, logPage])
+
+  useEffect(() => {
+    loadAll()
+  }, [loadAll])
+
+  if (!workspaceId) {
+    return (
+      <View className="py-12 items-center">
+        <Text className="text-sm text-muted-foreground">No workspace selected</Text>
+      </View>
+    )
+  }
+
+  return (
+    <View className="gap-4">
+      <View>
+        <Text className="text-lg font-bold text-foreground mb-1">Workspace Analytics</Text>
+        <Text className="text-xs text-muted-foreground mb-3">
+          Usage metrics and credit consumption for this workspace
+        </Text>
+        <PeriodSelector value={period} onChange={setPeriod} />
+      </View>
+
+      {/* Overview cards */}
+      <View className="flex-row flex-wrap gap-2">
+        <StatCard label="Members" value={overview.data?.members} icon={Users} />
+        <StatCard label="Projects" value={overview.data?.projects} icon={Building2} />
+        <StatCard label="Sessions" value={overview.data?.chatSessions} icon={MessageSquare} />
+        <StatCard label="Usage Events" value={overview.data?.usageEvents} icon={Zap} />
+      </View>
+
+      {/* Usage table (summary + event log) */}
+      <UsageTableSection
+        summaryData={usageSummary.data}
+        logData={usageLog.data}
+        summaryLoading={usageSummary.loading}
+        logLoading={usageLog.loading}
+        onLogPageChange={setLogPage}
+        logPage={logPage}
+      />
+
+      {/* Chat analytics */}
+      <ChatAnalyticsSection data={chatStats.data} loading={chatStats.loading} />
+
+      {/* Usage breakdown */}
+      <UsageBreakdownSection data={usage.data} loading={usage.loading} />
+    </View>
+  )
+}
+
+// ============================================================================
 // MAIN SETTINGS PAGE
 // ============================================================================
 
@@ -2153,6 +2264,7 @@ const SettingsContent = observer(function SettingsContent({
       {activeTab === 'account' && <AccountTab />}
       {activeTab === 'billing' && !isLocal && <BillingTab />}
       {activeTab === 'security' && <SecuritySettingsPanel />}
+      {activeTab === 'analytics' && !isLocal && <WorkspaceAnalyticsTab />}
     </>
   )
 })
@@ -2177,6 +2289,7 @@ export default observer(function SettingsPage() {
     const isLocal = localMode || !features.billing
     if (activeTab === 'billing' && !features.billing) setActiveTab('workspace')
     if (activeTab === 'people' && isLocal) setActiveTab('workspace')
+    if (activeTab === 'analytics' && isLocal) setActiveTab('workspace')
   }, [activeTab, features.billing, localMode])
 
   const workspaceName = currentWorkspace?.name || ''

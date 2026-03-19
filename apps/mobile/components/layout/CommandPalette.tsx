@@ -32,6 +32,7 @@ import {
   User,
   ArrowRight,
   X,
+  BarChart3,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useProjectCollection } from '../../contexts/domain'
@@ -146,6 +147,15 @@ export const CommandPalette = observer(function CommandPalette({
         href: '/(app)/settings',
         category: 'settings',
         keywords: ['members', 'team', 'invite'],
+      },
+      !localMode && {
+        id: 'settings-analytics',
+        label: 'Workspace Analytics',
+        description: 'View usage metrics and credit consumption',
+        icon: BarChart3,
+        href: '/(app)/settings?tab=analytics',
+        category: 'settings',
+        keywords: ['analytics', 'usage', 'credits', 'metrics', 'stats'],
       },
     ].filter(Boolean) as CommandItem[]
 

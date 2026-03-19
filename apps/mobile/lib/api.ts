@@ -105,6 +105,31 @@ export const api = {
     return (res.data as any).data ?? res.data
   },
 
+  async getWorkspaceAnalytics<T>(
+    http: HttpClient,
+    workspaceId: string,
+    endpoint: string,
+    params?: Record<string, string>,
+  ): Promise<T> {
+    const res = await http.get<{ data: T }>(
+      `/api/workspaces/${workspaceId}/analytics/${endpoint}`,
+      params,
+    )
+    return (res.data as any).data ?? res.data
+  },
+
+  async getMyAnalytics<T>(
+    http: HttpClient,
+    endpoint: string,
+    params?: Record<string, string>,
+  ): Promise<T> {
+    const res = await http.get<{ data: T }>(
+      `/api/me/analytics/${endpoint}`,
+      params,
+    )
+    return (res.data as any).data ?? res.data
+  },
+
   // ─── Publish ─────────────────────────────────────────────
 
   async getPublishState(http: HttpClient, projectId: string) {

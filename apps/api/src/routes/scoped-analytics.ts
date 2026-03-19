@@ -263,5 +263,47 @@ export function scopedAnalyticsRoutes(): Hono {
     }
   })
 
+  // --------------------------------------------------------------------------
+  // User (Me) Analytics
+  // --------------------------------------------------------------------------
+
+  router.get('/me/analytics/overview', async (c) => {
+    try {
+      const auth = c.get('auth')
+      const data = await analytics.getOverviewStats({ userId: auth.userId! })
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  router.get('/me/analytics/usage-log', async (c) => {
+    try {
+      const auth = c.get('auth')
+      const url = new URL(c.req.url)
+      const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
+      const page = parseInt(url.searchParams.get('page') || '1', 10)
+      const limit = parseInt(url.searchParams.get('limit') || '50', 10)
+      const model = url.searchParams.get('model') || undefined
+
+      const data = await analytics.getUsageLog({ userId: auth.userId! }, period, { page, limit, model })
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  router.get('/me/analytics/usage-summary', async (c) => {
+    try {
+      const auth = c.get('auth')
+      const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
+
+      const data = await analytics.getUsageSummary({ userId: auth.userId! }, period)
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
   return router
 }

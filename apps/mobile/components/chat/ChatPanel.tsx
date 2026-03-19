@@ -2273,7 +2273,7 @@ export const ChatPanel = observer(function ChatPanel({
                       }}
                       disabled={reconnecting}
                       className={cn(
-                        "self-start flex-row items-center gap-1.5 rounded-md border border-orange-400/50 bg-orange-100 dark:bg-orange-800/30 px-3 py-1.5 active:opacity-70",
+                        "self-start flex-row items-center gap-1.5 rounded-md border border-orange-400/50 bg-orange-100 dark:bg-orange-800/30 px-1 py-1.5 active:opacity-70",
                         reconnecting && "opacity-50",
                       )}
                     >
@@ -2335,7 +2335,7 @@ export const ChatPanel = observer(function ChatPanel({
                   </View>
                   <Pressable
                     onPress={handleRetry}
-                    className="shrink-0 rounded-md border border-destructive/30 px-3 py-1.5 self-start"
+                    className="shrink-0 rounded-md border border-destructive/30 px-1 py-1.5 self-start"
                   >
                     <Text className="text-sm text-destructive font-medium">Retry</Text>
                   </Pressable>
