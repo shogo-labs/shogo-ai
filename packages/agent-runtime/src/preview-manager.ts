@@ -108,6 +108,7 @@ export class PreviewManager {
   }
 
   private async backgroundSetup(timings: Record<string, number>): Promise<void> {
+    const savedPhase = this._phase
     await this.installDepsIfNeeded(timings)
     await this.runPrismaIfNeeded(timings)
 
@@ -116,6 +117,8 @@ export class PreviewManager {
 
     await this.startApiServer()
     timings.apiServer = 0
+
+    this._phase = savedPhase
 
     console.log(`[${LOG_PREFIX}] Background setup complete:`, JSON.stringify(timings))
   }
