@@ -28,16 +28,16 @@ export const PRO_TIERS: PriceTier[] = [
 ]
 
 export const BUSINESS_TIERS: PriceTier[] = [
-  { credits: 100, monthly: 50, annual: 500 },
-  { credits: 200, monthly: 100, annual: 1000 },
-  { credits: 400, monthly: 195, annual: 1950 },
-  { credits: 800, monthly: 380, annual: 3800 },
-  { credits: 1200, monthly: 560, annual: 5600 },
-  { credits: 2000, monthly: 920, annual: 9200 },
-  { credits: 3000, monthly: 1350, annual: 13500 },
-  { credits: 5000, monthly: 2200, annual: 22000 },
-  { credits: 7500, monthly: 3200, annual: 32000 },
-  { credits: 10000, monthly: 4200, annual: 42000 },
+  { credits: 100, monthly: 40, annual: 400 },
+  { credits: 200, monthly: 65, annual: 650 },
+  { credits: 400, monthly: 130, annual: 1300 },
+  { credits: 800, monthly: 250, annual: 2500 },
+  { credits: 1200, monthly: 365, annual: 3650 },
+  { credits: 2000, monthly: 600, annual: 6000 },
+  { credits: 3000, monthly: 885, annual: 8850 },
+  { credits: 5000, monthly: 1430, annual: 14300 },
+  { credits: 7500, monthly: 2145, annual: 21450 },
+  { credits: 10000, monthly: 2860, annual: 28600 },
 ]
 
 export const PRO_FEATURES = [
@@ -52,10 +52,12 @@ export const PRO_FEATURES = [
 
 export const BUSINESS_FEATURES = [
   'Everything in Pro, plus:',
+  'Team analytics & usage reporting',
   'SSO authentication',
-  'Personal Projects',
+  'Audit logs',
+  'Personal & restricted projects',
   'Opt out of data training',
-  'Design templates',
+  'Per-member spending limits',
   'Priority support',
 ]
 

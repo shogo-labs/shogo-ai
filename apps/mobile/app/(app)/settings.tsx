@@ -2159,8 +2159,13 @@ function InviteMembersModal({
 
 function WorkspaceAnalyticsTab() {
   const http = useDomainHttp()
+  const router = useRouter()
   const workspace = useActiveWorkspace()
   const workspaceId = workspace?.id
+  const { subscription } = useBillingData(workspaceId)
+
+  const planId = subscription?.planId?.toLowerCase() ?? ''
+  const isBusinessOrHigher = planId.startsWith('business') || planId.startsWith('enterprise')
 
   const [period, setPeriod] = useState<AnalyticsPeriod>('30d')
   const [logPage, setLogPage] = useState(1)
@@ -2204,6 +2209,29 @@ function WorkspaceAnalyticsTab() {
     return (
       <View className="py-12 items-center">
         <Text className="text-sm text-muted-foreground">No workspace selected</Text>
+      </View>
+    )
+  }
+
+  if (!isBusinessOrHigher) {
+    return (
+      <View className="py-8 px-4 items-center gap-4">
+        <View className="w-12 h-12 rounded-full bg-primary/10 items-center justify-center">
+          <BarChart3 size={24} className="text-primary" />
+        </View>
+        <Text className="text-lg font-bold text-foreground text-center">
+          Team Analytics
+        </Text>
+        <Text className="text-sm text-muted-foreground text-center max-w-[340px]">
+          Workspace analytics — usage dashboards, per-member credit consumption, and growth charts — are available on Business plans and above.
+        </Text>
+        <Button
+          variant="default"
+          onPress={() => router.push('/(app)/billing')}
+          className="mt-2"
+        >
+          <Text className="text-primary-foreground font-medium">Upgrade to Business</Text>
+        </Button>
       </View>
     )
   }

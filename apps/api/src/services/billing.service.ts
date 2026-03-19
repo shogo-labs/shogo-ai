@@ -113,6 +113,25 @@ export async function hasPaidSubscription(workspaceId: string): Promise<boolean>
 }
 
 /**
+ * Check if workspace has a Business or Enterprise plan (active/trialing).
+ * Returns false for Pro, free, or no subscription.
+ * In local mode returns true so all features are accessible during development.
+ */
+export async function isBusinessOrHigherPlan(workspaceId: string): Promise<boolean> {
+  if (isLocalMode) return true
+  const sub = await prisma.subscription.findFirst({
+    where: {
+      workspaceId,
+      status: { in: ['active', 'trialing'] },
+    },
+    select: { planId: true },
+  });
+  if (!sub) return false
+  const plan = sub.planId.toLowerCase()
+  return plan.startsWith('business') || plan.startsWith('enterprise')
+}
+
+/**
  * Check if workspace has sufficient credits (without deducting).
  * Uses lazy daily reset logic for accurate balance.
  */

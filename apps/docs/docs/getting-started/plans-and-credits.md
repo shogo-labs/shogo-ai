@@ -36,26 +36,34 @@ Designed for individuals and creators who build regularly.
 | Tier | Credits per month | Price (monthly) |
 |------|------------------|-----------------|
 | Pro 100 | 100 | $25/month |
-| Pro 500 | 500 | $50/month |
-| Pro 1,000 | 1,000 | $100/month |
-| Pro 2,500 | 2,500 | $200/month |
-| Pro 5,000 | 5,000 | $500/month |
+| Pro 200 | 200 | $50/month |
+| Pro 400 | 400 | $98/month |
+| Pro 800 | 800 | $190/month |
+| Pro 1,200 | 1,200 | $280/month |
+| Pro 2,000 | 2,000 | $460/month |
+| Pro 3,000 | 3,000 | $680/month |
+| Pro 5,000 | 5,000 | $1,100/month |
+| Pro 7,500 | 7,500 | $1,650/month |
 | Pro 10,000 | 10,000 | $2,200/month |
 
 ### Business
 
-Designed for teams and organizations with higher usage needs.
+Designed for teams and organizations with higher usage needs. Includes everything in Pro plus team analytics, SSO, audit logs, and priority support.
 
 | Tier | Credits per month | Price (monthly) |
 |------|------------------|-----------------|
-| Business 100 | 100 | $50/month |
-| Business 500 | 500 | $100/month |
-| Business 1,000 | 1,000 | $200/month |
-| Business 2,500 | 2,500 | $400/month |
-| Business 5,000 | 5,000 | $1,000/month |
-| Business 10,000 | 10,000 | $4,200/month |
+| Business 100 | 100 | $40/month |
+| Business 200 | 200 | $65/month |
+| Business 400 | 400 | $130/month |
+| Business 800 | 800 | $250/month |
+| Business 1,200 | 1,200 | $365/month |
+| Business 2,000 | 2,000 | $600/month |
+| Business 3,000 | 3,000 | $885/month |
+| Business 5,000 | 5,000 | $1,430/month |
+| Business 7,500 | 7,500 | $2,145/month |
+| Business 10,000 | 10,000 | $2,860/month |
 
-Business plans include workspace management features like member roles and team collaboration tools.
+Business-exclusive features include team analytics and usage reporting, SSO authentication, audit logs, personal and restricted projects, data training opt-out, per-member spending limits, and priority support.
 
 :::info Annual billing
 Annual billing is available for all paid plans. Contact us for annual pricing details.

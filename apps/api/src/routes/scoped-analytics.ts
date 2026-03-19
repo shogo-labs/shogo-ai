@@ -13,6 +13,7 @@
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
 import { authMiddleware, requireAuth } from '../middleware/auth'
+import { isBusinessOrHigherPlan } from '../services/billing.service'
 import * as analytics from '../services/analytics.service'
 import type { AnalyticsPeriod } from '../services/analytics.service'
 
@@ -58,8 +59,21 @@ export function scopedAnalyticsRoutes(): Hono {
   router.use('*', requireAuth)
 
   // --------------------------------------------------------------------------
-  // Workspace Analytics
+  // Workspace Analytics (Business plan or higher required)
   // --------------------------------------------------------------------------
+
+  router.use('/workspaces/:workspaceId/analytics/*', async (c, next) => {
+    const workspaceId = c.req.param('workspaceId')
+    if (!await isBusinessOrHigherPlan(workspaceId)) {
+      return c.json({
+        error: {
+          code: 'plan_required',
+          message: 'Workspace analytics require a Business plan or higher. Please upgrade to access team analytics.',
+        },
+      }, 403)
+    }
+    await next()
+  })
 
   router.get('/workspaces/:workspaceId/analytics/overview', async (c) => {
     try {

@@ -65,44 +65,44 @@ export const STRIPE_PRICES_STAGING: StripePriceConfig = {
   },
   business: {
     "100": {
-      monthly: "price_1SpirsAp5PDuxitpcmZZJmdp",
-      annual: "price_1SpirsAp5PDuxitpmXAXZSU5",
+      monthly: "price_1TCofXAp5PDuxitpVKyf2Qvk",
+      annual: "price_1TCofXAp5PDuxitpRBUjXMYy",
     },
     "200": {
-      monthly: "price_1SpjCeAp5PDuxitp7f1ScwEA",
-      annual: "price_1SpjCeAp5PDuxitpVAzpHrDj",
+      monthly: "price_1TCofYAp5PDuxitpcEhmEpHm",
+      annual: "price_1TCofYAp5PDuxitpbexSUYcJ",
     },
     "400": {
-      monthly: "price_1SpjCgAp5PDuxitpBTZgHXih",
-      annual: "price_1SpjCgAp5PDuxitpZxmkTVyh",
+      monthly: "price_1TCofZAp5PDuxitptGIni7hO",
+      annual: "price_1TCofZAp5PDuxitpOLGJFlBn",
     },
     "800": {
-      monthly: "price_1SpjChAp5PDuxitp212JaviA",
-      annual: "price_1SpjChAp5PDuxitp1iFQ409N",
+      monthly: "price_1TCofZAp5PDuxitpjItkTGBO",
+      annual: "price_1TCofaAp5PDuxitpU7WA0tNk",
     },
     "1200": {
-      monthly: "price_1SpjCjAp5PDuxitp565DeqqQ",
-      annual: "price_1SpjCjAp5PDuxitpsLSXl5BR",
+      monthly: "price_1TCofaAp5PDuxitpWoRGmm1o",
+      annual: "price_1TCofbAp5PDuxitpy0HFmr47",
     },
     "2000": {
-      monthly: "price_1SpjClAp5PDuxitpjjuiMQOv",
-      annual: "price_1SpjClAp5PDuxitpqzWeh49P",
+      monthly: "price_1TCofbAp5PDuxitpFoQFkbTs",
+      annual: "price_1TCofbAp5PDuxitpxRGSOwmw",
     },
     "3000": {
-      monthly: "price_1SpjCmAp5PDuxitpKcHLb3PL",
-      annual: "price_1SpjCnAp5PDuxitpZFCVPjl5",
+      monthly: "price_1TCofcAp5PDuxitpkXKesyL3",
+      annual: "price_1TCofcAp5PDuxitpmK6XRxbx",
     },
     "5000": {
-      monthly: "price_1SpjCoAp5PDuxitpYZFxNt4N",
-      annual: "price_1SpjCoAp5PDuxitpAb5n998P",
+      monthly: "price_1TCofdAp5PDuxitp6Gh50Qgd",
+      annual: "price_1TCofdAp5PDuxitpLxYeFckf",
     },
     "7500": {
-      monthly: "price_1SpjCpAp5PDuxitpfVLwYXH0",
-      annual: "price_1SpjCqAp5PDuxitp8oij0uEc",
+      monthly: "price_1TCofdAp5PDuxitplXKUEZI1",
+      annual: "price_1TCofeAp5PDuxitp9vl4UfEw",
     },
     "10000": {
-      monthly: "price_1SpjCrAp5PDuxitp6howYVqp",
-      annual: "price_1SpjCrAp5PDuxitpHoGfWj3y",
+      monthly: "price_1TCofeAp5PDuxitpeCSHtymi",
+      annual: "price_1TCoffAp5PDuxitpcjd8mHoD",
     },
   },
 }
@@ -155,44 +155,44 @@ export const STRIPE_PRICES_PRODUCTION: StripePriceConfig = {
   },
   business: {
     "100": {
-      monthly: "price_1T6Ht8ADDMNd95GgxYjA5in7",
-      annual: "price_1T6Ht8ADDMNd95Gg2TpR4RID",
+      monthly: "price_1TCofuADDMNd95GgosY40lHU",
+      annual: "price_1TCofvADDMNd95Ggh5i7SgBy",
     },
     "200": {
-      monthly: "price_1T6Ht8ADDMNd95GgV75HO6V4",
-      annual: "price_1T6Ht9ADDMNd95Ggs6W4yvLe",
+      monthly: "price_1TCog3ADDMNd95GgrUYEU72G",
+      annual: "price_1TCogFADDMNd95GgDVZvomnm",
     },
     "400": {
-      monthly: "price_1T6Ht9ADDMNd95GgmG6mar5e",
-      annual: "price_1T6Ht9ADDMNd95GgEW6xKleZ",
+      monthly: "price_1TCogGADDMNd95Gg2KoA6wil",
+      annual: "price_1TCogGADDMNd95GgwMjldSDl",
     },
     "800": {
-      monthly: "price_1T6Ht9ADDMNd95GgXvnlLAs0",
-      annual: "price_1T6HtAADDMNd95GgD20TQf5x",
+      monthly: "price_1TCogGADDMNd95GgeCFnZBYO",
+      annual: "price_1TCogHADDMNd95Gg72XoAZRM",
     },
     "1200": {
-      monthly: "price_1T6HtAADDMNd95GgNhp3uNmx",
-      annual: "price_1T6HtAADDMNd95Ggqpz1rpdB",
+      monthly: "price_1TCogHADDMNd95Gg2VbK3x4d",
+      annual: "price_1TCogIADDMNd95GgI5kL3q1g",
     },
     "2000": {
-      monthly: "price_1T6HtBADDMNd95GgK8nYezfe",
-      annual: "price_1T6HtBADDMNd95Ggf0oiGJTA",
+      monthly: "price_1TCogIADDMNd95GgJCgBrgjy",
+      annual: "price_1TCogJADDMNd95GgnsQoFn1l",
     },
     "3000": {
-      monthly: "price_1T6HtBADDMNd95GgzvcDk3WM",
-      annual: "price_1T6HtCADDMNd95GgeZi4Ewde",
+      monthly: "price_1TCogJADDMNd95Ggolf50xp0",
+      annual: "price_1TCogJADDMNd95Gg50S8Wdmg",
     },
     "5000": {
-      monthly: "price_1T6HtCADDMNd95Ggv46uIYEL",
-      annual: "price_1T6HtCADDMNd95Gg6GbPIRLf",
+      monthly: "price_1TCogKADDMNd95GglPrqIWK8",
+      annual: "price_1TCogKADDMNd95Gg0CT9w254",
     },
     "7500": {
-      monthly: "price_1T6HtDADDMNd95Gg0wF7h4nz",
-      annual: "price_1T6HtDADDMNd95GgM0w7xFrn",
+      monthly: "price_1TCogKADDMNd95GgJvizgfeg",
+      annual: "price_1TCogLADDMNd95GgnNeCD3dj",
     },
     "10000": {
-      monthly: "price_1T6HtDADDMNd95GgzvaI59KW",
-      annual: "price_1T6HtDADDMNd95GgBRY5GWKk",
+      monthly: "price_1TCogLADDMNd95Gg8VpiOyTU",
+      annual: "price_1TCogMADDMNd95GgdpAx0QoG",
     },
   },
 }
