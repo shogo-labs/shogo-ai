@@ -29,6 +29,7 @@ import { MCP_CATALOG, isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPa
 import { initComposioSession, isComposioEnabled, isComposioInitialized, searchComposioToolkits, findComposioToolkit, registerToolkitProxyTools, checkComposioAuth } from './composio'
 import { autoBindPrimaryEntity } from './composio-auto-bind'
 import { getDynamicAppManager, getByPointer } from './dynamic-app-manager'
+import { CanvasStreamParser } from './canvas-stream-parser'
 import { withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, type PermissionEngine } from './permission-engine'
 import {
   CANVAS_COMPONENT_SCHEMA,
@@ -3274,6 +3275,9 @@ function createTaskTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): Ag
       const w = ctx.uiWriter
       let subReasoningId: string | null = null
       let subTextId: string | null = null
+      const subFlushGates = new Map<string, Promise<void>>()
+      const subCanvasParsers = new Map<string, CanvasStreamParser>()
+      const subStreamedToolCalls = new Set<string>()
 
       function closeSubText() {
         if (subTextId) {
@@ -3315,18 +3319,51 @@ function createTaskTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): Ag
         },
         onToolCallStart: (toolName: string, toolCallId: string) => {
           closeSubText()
-          w.write({ type: 'tool-input-start', toolCallId, toolName })
+          w.write({ type: 'tool-input-start', toolCallId, toolName, dynamic: true })
+          subStreamedToolCalls.add(toolCallId)
+          if (toolName === 'canvas_update') {
+            const manager = getDynamicAppManager()
+            const parser = new CanvasStreamParser({
+              onSurfaceId: () => {},
+              onComponents: (components) => {
+                const sid = parser.getSurfaceId()
+                if (sid) {
+                  manager.streamPreviewComponents(sid, components as any)
+                  w.write({
+                    type: 'data-canvas-preview',
+                    data: { surfaceId: sid, components },
+                  } as any)
+                }
+              },
+            })
+            subCanvasParsers.set(toolCallId, parser)
+          }
         },
         onToolCallDelta: (toolName: string, delta: string, toolCallId: string) => {
           w.write({ type: 'tool-input-delta', toolCallId, inputTextDelta: delta })
+          const parser = subCanvasParsers.get(toolCallId)
+          if (parser) {
+            parser.feed(delta)
+          }
         },
-        onToolCallEnd: (toolName: string, toolCallId: string) => {
-          // Placeholder — full tool-input-available with parsed input is emitted from onBeforeToolCall
+        onToolCallEnd: (_toolName: string, toolCallId: string) => {
+          subCanvasParsers.delete(toolCallId)
         },
         onBeforeToolCall: async (toolName: string, args: any, toolCallId: string) => {
-          w.write({ type: 'tool-input-available', toolCallId, toolName, input: args })
+          if (!subStreamedToolCalls.has(toolCallId)) {
+            w.write({ type: 'tool-input-start', toolCallId, toolName, dynamic: true })
+            w.write({ type: 'tool-input-delta', toolCallId, inputTextDelta: JSON.stringify(args) })
+          }
+          subStreamedToolCalls.delete(toolCallId)
+          w.write({ type: 'tool-input-available', toolCallId, toolName, input: args, dynamic: true })
+          subFlushGates.set(toolCallId, new Promise(resolve => setTimeout(resolve, 30)))
         },
         onAfterToolCall: async (toolName: string, args: any, result: any, isError: boolean, toolCallId: string) => {
+          const gate = subFlushGates.get(toolCallId)
+          if (gate) {
+            await gate
+            subFlushGates.delete(toolCallId)
+          }
           const parsed = typeof result === 'string' ? (() => { try { return JSON.parse(result) } catch { return result } })() : result
           w.write({
             type: 'tool-output-available',
