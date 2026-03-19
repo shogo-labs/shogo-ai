@@ -586,38 +586,28 @@ function createTodoWriteTool(ctx: ToolContext): AgentTool {
 // AskUser Tool (structured multiple-choice questions)
 // ---------------------------------------------------------------------------
 
-function createAskUserTool(ctx: ToolContext): AgentTool {
+function createAskUserTool(_ctx: ToolContext): AgentTool {
   return {
     name: 'ask_user',
     description:
       'Ask the user structured multiple-choice questions to gather requirements or clarify ambiguity. ' +
-      'The UI will render interactive option selectors.',
+      'The UI will render interactive option selectors. Do not call any other tools after this — wait for the user\'s response.',
     label: 'Ask User',
     parameters: Type.Object({
       questions: Type.Array(Type.Object({
-        id: Type.String({ description: 'Unique question identifier' }),
-        prompt: Type.String({ description: 'Question text' }),
+        header: Type.String({ description: 'Short label/title for the question (e.g. "Deployment Region")' }),
+        question: Type.String({ description: 'The full question text to display to the user' }),
         options: Type.Array(Type.Object({
-          id: Type.String({ description: 'Option identifier' }),
           label: Type.String({ description: 'Display text for this option' }),
+          description: Type.String({ description: 'Brief explanation of what this option means' }),
         })),
-        allow_multiple: Type.Optional(Type.Boolean({ description: 'Allow selecting multiple options (default: false)' })),
+        multiSelect: Type.Optional(Type.Boolean({ description: 'Allow selecting multiple options (default: false)' })),
       })),
     }),
-    execute: async (_toolCallId, params) => {
-      const { questions } = params as {
-        questions: Array<{
-          id: string; prompt: string;
-          options: Array<{ id: string; label: string }>;
-          allow_multiple?: boolean
-        }>
-      }
-      return textResult({
-        type: 'ask_user',
-        questions,
-        message: 'Questions presented to user. Responses will be available in the next turn.',
-      })
-    },
+    // execute returns a minimal acknowledgment. The gateway suppresses tool-output-available
+    // for ask_user so the UI keeps the widget in interactive (input-available) state until
+    // the user submits their answer as a new user message.
+    execute: async () => textResult({ acknowledged: true }),
   }
 }
 
@@ -2902,6 +2892,7 @@ For MCP protocol servers (databases, file systems, custom tool servers), use mcp
         return textResult({ error: 'MCP client manager not available' })
       }
 
+      try {
       const applyBind = (installResult: Record<string, unknown>) => {
         if (!bind || !ctx.mcpClientManager) return installResult
         const manager = getDynamicAppManager()
@@ -2979,33 +2970,33 @@ For MCP protocol servers (databases, file systems, custom tool servers), use mcp
       if (isComposioEnabled()) {
         const composioToolkit = await findComposioToolkit(name)
         if (composioToolkit) {
-          try {
-            const userId = ctx.userId || process.env.USER_ID || 'default'
-            const initialized = await initComposioSession(userId, ctx.projectId)
-            if (initialized) {
-              const proxy = await registerToolkitProxyTools(ctx.mcpClientManager, composioToolkit.slug)
-              const auth = await checkComposioAuth(composioToolkit.slug)
-              let result = applyBind({
-                ok: true,
-                server: 'composio',
-                integration: composioToolkit.slug,
-                toolCount: proxy.toolCount,
-                tools: proxy.toolNames,
-                authStatus: auth.status,
-                ...(auth.authUrl ? { authUrl: auth.authUrl } : {}),
-                message: formatToolInstallMessage(composioToolkit.name, proxy.toolCount, auth),
-              })
-              result = await applyAutoBind(result, composioToolkit.slug, true)
-              return textResult(result)
-            }
-            return textResult({ error: `Failed to connect "${composioToolkit.name}" via Composio. The integration may not be available.` })
-          } catch (err: any) {
-            return textResult({ error: `Composio connection failed for "${name}": ${err.message}` })
+          const userId = ctx.userId || process.env.USER_ID || 'default'
+          const initialized = await initComposioSession(userId, ctx.projectId)
+          if (initialized) {
+            const proxy = await registerToolkitProxyTools(ctx.mcpClientManager, composioToolkit.slug)
+            const auth = await checkComposioAuth(composioToolkit.slug)
+            let result = applyBind({
+              ok: true,
+              server: 'composio',
+              integration: composioToolkit.slug,
+              toolCount: proxy.toolCount,
+              tools: proxy.toolNames,
+              authStatus: auth.status,
+              ...(auth.authUrl ? { authUrl: auth.authUrl } : {}),
+              message: formatToolInstallMessage(composioToolkit.name, proxy.toolCount, auth),
+            })
+            result = await applyAutoBind(result, composioToolkit.slug, true)
+            return textResult(result)
           }
+          return textResult({ error: `Failed to connect "${composioToolkit.name}" via Composio. The integration may not be available.` })
         }
       }
 
       return textResult({ error: `"${name}" is not a managed integration. Use tool_search to find available integrations, or use mcp_install to install an MCP server.` })
+      } catch (err: any) {
+        console.error(`[tool_install] Unhandled error installing "${params?.name}":`, err)
+        return textResult({ error: `Failed to install integration "${params?.name}": ${err.message}` })
+      }
     },
   }
 }
@@ -3035,25 +3026,22 @@ MCP servers are different from managed integrations — they may require environ
         return textResult({ error: 'MCP client manager not available' })
       }
 
+      try {
       // Handle remote MCP server URL
       if (url) {
         if (ctx.mcpClientManager.isRunning(name)) {
           const info = ctx.mcpClientManager.getServerInfo().find(s => s.name === name)
           return textResult({ error: `Server "${name}" is already running with ${info?.toolCount || 0} tools`, tools: info?.toolNames })
         }
-        try {
-          const tools = await ctx.mcpClientManager.hotAddRemoteServer(name, { url, headers })
-          return textResult({
-            ok: true,
-            server: name,
-            type: 'remote',
-            toolCount: tools.length,
-            tools: tools.map(t => ({ name: t.name, description: t.description })),
-            message: `Connected to remote MCP server "${name}" at ${url} with ${tools.length} tool(s).`,
-          })
-        } catch (err: any) {
-          return textResult({ error: `Failed to connect to remote MCP server "${name}" at ${url}: ${err.message}` })
-        }
+        const tools = await ctx.mcpClientManager.hotAddRemoteServer(name, { url, headers })
+        return textResult({
+          ok: true,
+          server: name,
+          type: 'remote',
+          toolCount: tools.length,
+          tools: tools.map(t => ({ name: t.name, description: t.description })),
+          message: `Connected to remote MCP server "${name}" at ${url} with ${tools.length} tool(s).`,
+        })
       }
 
       if (ctx.mcpClientManager.isRunning(name)) {
@@ -3067,32 +3055,32 @@ MCP servers are different from managed integrations — they may require environ
         return textResult({ error: `"${name}" is not in the MCP catalog. Available servers: ${catalogIds}. For remote servers, provide a "url" parameter. For managed OAuth integrations, use tool_install instead.` })
       }
 
-      try {
-        let config: { command: string; args?: string[]; env?: Record<string, string> }
-        if (isPreinstalledMcpId(name)) {
-          config = {
-            command: 'npx',
-            args: [catalogEntry.package, ...catalogEntry.defaultArgs],
-            env,
-          }
-        } else {
-          config = await ctx.mcpClientManager.installPackageLocally(
-            catalogEntry.package,
-            catalogEntry.defaultArgs,
-            env,
-          )
-          if (env) config.env = { ...config.env, ...env }
+      let config: { command: string; args?: string[]; env?: Record<string, string> }
+      if (isPreinstalledMcpId(name)) {
+        config = {
+          command: 'npx',
+          args: [catalogEntry.package, ...catalogEntry.defaultArgs],
+          env,
         }
+      } else {
+        config = await ctx.mcpClientManager.installPackageLocally(
+          catalogEntry.package,
+          catalogEntry.defaultArgs,
+          env,
+        )
+        if (env) config.env = { ...config.env, ...env }
+      }
 
-        const tools = await ctx.mcpClientManager.hotAddServer(name, config)
-        return textResult({
-          ok: true,
-          server: name,
-          toolCount: tools.length,
-          tools: tools.map(t => ({ name: t.name, description: t.description })),
-          message: `Installed MCP server "${name}" with ${tools.length} tool(s). They are now available for use.`,
-        })
+      const tools = await ctx.mcpClientManager.hotAddServer(name, config)
+      return textResult({
+        ok: true,
+        server: name,
+        toolCount: tools.length,
+        tools: tools.map(t => ({ name: t.name, description: t.description })),
+        message: `Installed MCP server "${name}" with ${tools.length} tool(s). They are now available for use.`,
+      })
       } catch (err: any) {
+        console.error(`[mcp_install] Unhandled error installing "${name}":`, err)
         return textResult({ error: `Failed to install MCP server "${name}": ${err.message}` })
       }
     },
@@ -3114,14 +3102,15 @@ function createToolUninstallTool(ctx: ToolContext): AgentTool {
         return textResult({ error: 'MCP client manager not available' })
       }
 
-      if (!ctx.mcpClientManager.isRunning(name)) {
-        return textResult({ error: `Integration "${name}" is not running`, installed: ctx.mcpClientManager.getServerNames() })
-      }
-
       try {
+        if (!ctx.mcpClientManager.isRunning(name)) {
+          return textResult({ error: `Integration "${name}" is not running`, installed: ctx.mcpClientManager.getServerNames() })
+        }
+
         await ctx.mcpClientManager.hotRemoveServer(name)
         return textResult({ ok: true, removed: name, message: `Removed integration "${name}" and all its tools.` })
       } catch (err: any) {
+        console.error(`[tool_uninstall] Unhandled error removing "${name}":`, err)
         return textResult({ error: `Failed to remove "${name}": ${err.message}` })
       }
     },
@@ -3143,11 +3132,11 @@ function createMcpUninstallTool(ctx: ToolContext): AgentTool {
         return textResult({ error: 'MCP client manager not available' })
       }
 
-      if (!ctx.mcpClientManager.isRunning(name)) {
-        return textResult({ error: `MCP server "${name}" is not running`, installed: ctx.mcpClientManager.getServerNames() })
-      }
-
       try {
+        if (!ctx.mcpClientManager.isRunning(name)) {
+          return textResult({ error: `MCP server "${name}" is not running`, installed: ctx.mcpClientManager.getServerNames() })
+        }
+
         const info = ctx.mcpClientManager.getServerInfo().find(s => s.name === name)
         if (info?.config.command === 'remote') {
           await ctx.mcpClientManager.hotRemoveRemoteServer(name)
@@ -3156,6 +3145,7 @@ function createMcpUninstallTool(ctx: ToolContext): AgentTool {
         }
         return textResult({ ok: true, removed: name, message: `Removed MCP server "${name}" and all its tools.` })
       } catch (err: any) {
+        console.error(`[mcp_uninstall] Unhandled error removing "${name}":`, err)
         return textResult({ error: `Failed to remove MCP server "${name}": ${err.message}` })
       }
     },
