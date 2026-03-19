@@ -14,11 +14,13 @@ const linkSafetyOff = { enabled: false as const }
 
 export const MarkdownText = memo(
   function MarkdownText({ children, className, isStreaming }: MarkdownTextProps) {
+    const cls = className ? `chat-md ${className}` : "chat-md"
     return (
       <Streamdown
-        className={className}
+        className={cls}
         isAnimating={isStreaming}
         linkSafety={linkSafetyOff}
+        controls={{ code: true }}
       >
         {children || ""}
       </Streamdown>

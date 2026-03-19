@@ -2,11 +2,126 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Streamdown code-block action buttons (copy / download) */
-[data-streamdown="code-block-actions"] {
-  background: rgb(var(--color-muted) / 0.9) !important;
-  border-color: rgb(var(--color-border)) !important;
-  backdrop-filter: blur(8px);
+/* ── Streamdown overrides for chat markdown ── */
+
+
+/* Code block container — flat, minimal chrome */
+.chat-md [data-streamdown="code-block"] {
+  margin-top: 0 !important;
+  margin-bottom: 0.375rem !important;
+  padding: 0 !important;
+  gap: 0 !important;
+  border: none !important;
+  background: transparent !important;
+  border-radius: 8px !important;
+}
+
+/* Hide language label header */
+.chat-md [data-streamdown="code-block-header"] {
+  display: none !important;
+}
+
+/* Code block actions — hidden by default, visible on hover */
+.chat-md [data-streamdown="code-block"] > div:has([data-streamdown="code-block-actions"]) {
+  opacity: 0 !important;
+  transition: opacity 150ms ease !important;
+  pointer-events: none !important;
+  margin-top: 0 !important;
+  height: 0 !important;
+  position: absolute !important;
+  top: 6px !important;
+  right: 6px !important;
+  z-index: 10 !important;
+}
+.chat-md [data-streamdown="code-block"]:hover > div:has([data-streamdown="code-block-actions"]) {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  height: auto !important;
+}
+
+/* Make code-block relative so the absolute actions button positions correctly */
+.chat-md [data-streamdown="code-block"] {
+  position: relative !important;
+}
+
+/* Hide download button, keep only copy */
+.chat-md [data-streamdown="code-block-actions"] button:first-child {
+  display: none !important;
+}
+
+/* Minimal copy button style */
+.chat-md [data-streamdown="code-block-actions"] {
+  background: rgb(var(--color-muted) / 0.8) !important;
+  border: none !important;
+  border-radius: 6px !important;
+  padding: 2px !important;
+  gap: 0 !important;
+  backdrop-filter: blur(8px) !important;
+}
+.chat-md [data-streamdown="code-block-actions"] button {
+  padding: 4px !important;
+  font-size: 0 !important;
+}
+.chat-md [data-streamdown="code-block-actions"] button svg {
+  width: 14px !important;
+  height: 14px !important;
+}
+
+/* Code block body — compact, scrollable */
+.chat-md [data-streamdown="code-block-body"] {
+  font-size: 12px !important;
+  line-height: 1.55 !important;
+  padding: 12px 14px !important;
+  max-height: 400px !important;
+  overflow-y: auto !important;
+  overflow-x: auto !important;
+  border-radius: 8px !important;
+  border: 1px solid rgb(var(--color-border)) !important;
+}
+
+.chat-md [data-streamdown="code-block-body"] pre,
+.chat-md [data-streamdown="code-block-body"] code {
+  font-size: 12px !important;
+  line-height: 1.55 !important;
+}
+
+/* Headings — scale down for chat context */
+.chat-md [data-streamdown="heading-1"] {
+  font-size: 1rem !important;
+  margin-top: 0.75rem !important;
+  margin-bottom: 0.25rem !important;
+}
+.chat-md [data-streamdown="heading-2"] {
+  font-size: 0.8125rem !important;
+  margin-top: 0.625rem !important;
+  margin-bottom: 0.125rem !important;
+}
+.chat-md [data-streamdown="heading-3"] {
+  font-size: 0.75rem !important;
+  margin-top: 0.5rem !important;
+  margin-bottom: 0.125rem !important;
+}
+
+/* Body text — compact */
+.chat-md p {
+  font-size: 0.8125rem !important;
+  line-height: 1.45 !important;
+  margin-top: 0.25rem !important;
+  margin-bottom: 0.25rem !important;
+}
+
+/* Lists — compact */
+.chat-md [data-streamdown="list-item"] {
+  padding-top: 1px !important;
+  padding-bottom: 1px !important;
+  font-size: 0.8125rem !important;
+  line-height: 1.45 !important;
+}
+
+/* Inline code — smaller */
+.chat-md [data-streamdown="inline-code"] {
+  font-size: 0.6875rem !important;
+  padding: 1px 4px !important;
 }
 
 :root {
