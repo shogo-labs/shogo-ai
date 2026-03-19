@@ -54,6 +54,11 @@ export interface TemplateIntegrationRef {
   required?: boolean
 }
 
+export interface PendingToolkit {
+  toolkit: string
+  displayName: string
+}
+
 const INTEGRATION_CATALOG: Record<string, IntegrationCategory> = {
   'project-management': {
     id: 'project-management',
@@ -165,8 +170,9 @@ interface ResolvedCategory extends IntegrationCategory {
 
 interface IntegrationsCardProps {
   projectId: string
-  integrations: TemplateIntegrationRef[]
-  templateName: string
+  integrations?: TemplateIntegrationRef[]
+  templateName?: string
+  pendingToolkits?: PendingToolkit[]
   onDismiss: () => void
 }
 
@@ -176,13 +182,14 @@ export function IntegrationsCard({
   projectId,
   integrations,
   templateName,
+  pendingToolkits,
   onDismiss,
 }: IntegrationsCardProps) {
   const http = useDomainHttp()
   const [expanded, setExpanded] = useState(true)
 
   const [categories] = useState<ResolvedCategory[]>(() =>
-    integrations
+    (integrations ?? [])
       .map((ref) => {
         const cat = INTEGRATION_CATALOG[ref.categoryId]
         if (!cat) return null
@@ -193,7 +200,7 @@ export function IntegrationsCard({
 
   const [selectedToolkits, setSelectedToolkits] = useState<Record<string, string>>(() => {
     const initial: Record<string, string> = {}
-    for (const cat of integrations) {
+    for (const cat of (integrations ?? [])) {
       const category = INTEGRATION_CATALOG[cat.categoryId]
       if (category?.options[0]) {
         initial[cat.categoryId] = category.options[0].toolkit
@@ -206,7 +213,12 @@ export function IntegrationsCard({
   const [loadingStatuses, setLoadingStatuses] = useState(true)
   const pollingRef = useRef<Record<string, boolean>>({})
 
-  const allToolkits = categories.flatMap((c) => c.options.map((o) => o.toolkit))
+  const directToolkits = pendingToolkits ?? []
+  const categoryToolkits = categories.flatMap((c) => c.options.map((o) => o.toolkit))
+  const directToolkitNames = directToolkits
+    .map((dt) => dt.toolkit)
+    .filter((tk) => !categoryToolkits.includes(tk))
+  const allToolkits = [...categoryToolkits, ...directToolkitNames]
 
   useEffect(() => {
     if (!projectId) return
@@ -265,6 +277,30 @@ export function IntegrationsCard({
     }
   }, [])
 
+  // Periodically re-check statuses so the card stays in sync when the user
+  // connects via the inline ConnectToolWidget in chat.
+  const BACKGROUND_POLL_MS = 10000
+  const allToolkitsKey = allToolkits.join(',')
+  useEffect(() => {
+    if (!projectId || allToolkits.length === 0) return
+
+    const interval = setInterval(async () => {
+      try {
+        const result = await api.getIntegrationStatuses(http, allToolkits, projectId)
+        setStatuses((prev) => {
+          const next = { ...prev }
+          for (const [tk, val] of Object.entries(result)) {
+            if (prev[tk] === 'connecting') continue
+            next[tk] = val.connected ? 'connected' : 'idle'
+          }
+          return next
+        })
+      } catch { /* ignore */ }
+    }, BACKGROUND_POLL_MS)
+
+    return () => clearInterval(interval)
+  }, [projectId, allToolkitsKey, http])
+
   const handleConnect = useCallback(
     async (toolkit: string) => {
       setStatuses((prev) => ({ ...prev, [toolkit]: 'connecting' }))
@@ -296,7 +332,7 @@ export function IntegrationsCard({
   )
 
   const connectedCount = Object.values(statuses).filter((s) => s === 'connected').length
-  const totalCategories = categories.length
+  const totalItems = categories.length + directToolkitNames.length
 
   // Collapsed view: compact pill
   if (!expanded) {
@@ -315,7 +351,7 @@ export function IntegrationsCard({
         {connectedCount > 0 && (
           <View className="px-1.5 py-0.5 rounded-full bg-green-500/15">
             <Text className="text-[10px] font-semibold text-green-600 dark:text-green-400">
-              {connectedCount}/{totalCategories}
+              {connectedCount}/{totalItems}
             </Text>
           </View>
         )}
@@ -323,6 +359,10 @@ export function IntegrationsCard({
       </Pressable>
     )
   }
+
+  const subtitle = templateName
+    ? `${templateName} works best with these services`
+    : 'Your agent needs access to these services'
 
   return (
     <View
@@ -345,7 +385,7 @@ export function IntegrationsCard({
           {connectedCount > 0 && (
             <View className="px-1.5 py-0.5 rounded-full bg-green-500/15">
               <Text className="text-[10px] font-semibold text-green-600 dark:text-green-400">
-                {connectedCount}/{totalCategories}
+                {connectedCount}/{totalItems}
               </Text>
             </View>
           )}
@@ -369,7 +409,7 @@ export function IntegrationsCard({
       </View>
 
       <Text className="text-[11px] text-muted-foreground px-3.5 mb-2" numberOfLines={1}>
-        {templateName} works best with these services
+        {subtitle}
       </Text>
 
       {/* Body */}
@@ -396,6 +436,17 @@ export function IntegrationsCard({
                 onConnect={handleConnect}
               />
             ))}
+            {directToolkits
+              .filter((dt) => !categoryToolkits.includes(dt.toolkit))
+              .map((dt) => (
+                <DirectToolkitRow
+                  key={dt.toolkit}
+                  toolkit={dt.toolkit}
+                  displayName={dt.displayName}
+                  status={statuses[dt.toolkit] ?? 'idle'}
+                  onConnect={handleConnect}
+                />
+              ))}
           </View>
         )}
       </ScrollView>
@@ -502,6 +553,67 @@ function CompactCategoryRow({
           {selectedStatus === 'connecting'
             ? 'Waiting...'
             : `Connect ${selectedName}`}
+        </Text>
+      </Pressable>
+    </View>
+  )
+}
+
+function DirectToolkitRow({
+  toolkit,
+  displayName,
+  status,
+  onConnect,
+}: {
+  toolkit: string
+  displayName: string
+  status: ToolkitStatus
+  onConnect: (toolkit: string) => void
+}) {
+  if (status === 'connected') {
+    return (
+      <View className="flex-row items-center gap-2.5 rounded-lg border border-green-500/20 bg-green-500/5 px-3 py-2.5">
+        <Link2 size={15} className="text-green-600 dark:text-green-400" />
+        <Text className="text-xs font-medium text-foreground flex-1" numberOfLines={1}>
+          {displayName}
+        </Text>
+        <View className="flex-row items-center gap-1">
+          <CheckCircle2 size={12} className="text-green-500" />
+          <Text className="text-[11px] text-green-600 dark:text-green-400">
+            Connected
+          </Text>
+        </View>
+      </View>
+    )
+  }
+
+  return (
+    <View className="rounded-lg border border-border bg-background p-2.5">
+      <View className="flex-row items-center gap-2.5 mb-2">
+        <Link2 size={15} className="text-muted-foreground" />
+        <Text className="text-xs font-medium text-foreground flex-1" numberOfLines={1}>
+          {displayName}
+        </Text>
+      </View>
+      <Pressable
+        onPress={() => onConnect(toolkit)}
+        disabled={status === 'connecting'}
+        className={cn(
+          'flex-row items-center justify-center gap-1.5 py-2 rounded-md',
+          status === 'connecting'
+            ? 'bg-primary/80'
+            : 'bg-primary active:opacity-80',
+        )}
+      >
+        {status === 'connecting' ? (
+          <Loader2 size={12} className="text-primary-foreground" />
+        ) : (
+          <ExternalLink size={12} className="text-primary-foreground" />
+        )}
+        <Text className="text-[11px] font-semibold text-primary-foreground">
+          {status === 'connecting'
+            ? 'Waiting...'
+            : `Connect ${displayName}`}
         </Text>
       </Pressable>
     </View>

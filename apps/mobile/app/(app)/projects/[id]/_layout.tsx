@@ -67,6 +67,7 @@ import {
 } from '../../../../components/project/panels'
 import { RefreshCw, MessageSquare } from 'lucide-react-native'
 import { IntegrationsCard, type TemplateIntegrationRef } from '../../../../components/project/IntegrationsCard'
+import { parseToolInstallResult } from '../../../../components/chat/turns/ConnectToolWidget'
 
 type ActiveTab = 'chat' | 'canvas'
 
@@ -672,10 +673,38 @@ export default observer(function ProjectLayout() {
     return () => { cancelled = true }
   }, [capturedShowIntegrations, project?.templateId])
 
+  const pendingToolInstalls = useMemo(() => {
+    const pending: { toolkit: string; displayName: string }[] = []
+    const seen = new Set<string>()
+    for (const msg of chatMessages) {
+      const parts = (msg as any).parts as any[] | undefined
+      if (!parts) continue
+      for (const part of parts) {
+        if (part.type !== 'tool-invocation' && part.type !== 'dynamic-tool') continue
+        const toolName = part.toolInvocation?.toolName ?? part.toolName
+        if (toolName !== 'tool_install') continue
+        const state = part.toolInvocation?.state ?? part.state
+        if (state !== 'result' && state !== 'output-available') continue
+        const result = parseToolInstallResult(
+          part.toolInvocation?.result ?? part.output
+        )
+        if (result?.authStatus === 'needs_auth' && result?.integration && !seen.has(result.integration)) {
+          seen.add(result.integration)
+          pending.push({
+            toolkit: result.integration,
+            displayName: result.integration.charAt(0).toUpperCase() + result.integration.slice(1),
+          })
+        }
+      }
+    }
+    return pending
+  }, [chatMessages])
+
   const showIntegrationsCard =
-    capturedShowIntegrations &&
-    !integrationsCardDismissed &&
-    integrationsCardData != null
+    !integrationsCardDismissed && (
+      (capturedShowIntegrations && integrationsCardData != null) ||
+      pendingToolInstalls.length > 0
+    )
 
   // Loading state
   if (isLoading || !project) {
@@ -911,15 +940,16 @@ export default observer(function ProjectLayout() {
           </View>
 
           {/* Floating integrations card */}
-          {showIntegrationsCard && integrationsCardData && (
+          {showIntegrationsCard && (
             <View
               className="absolute bottom-4 right-4 z-30"
               pointerEvents="box-none"
             >
               <IntegrationsCard
                 projectId={projectId!}
-                integrations={integrationsCardData.integrations}
-                templateName={integrationsCardData.templateName}
+                integrations={integrationsCardData?.integrations}
+                templateName={integrationsCardData?.templateName}
+                pendingToolkits={pendingToolInstalls}
                 onDismiss={() => setIntegrationsCardDismissed(true)}
               />
             </View>
