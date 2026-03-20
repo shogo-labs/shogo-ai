@@ -16,6 +16,8 @@ import { Alert, AlertDescription } from '../primitives/Alert'
 import { Separator } from '../primitives/Separator'
 import { cn } from '../primitives/cn'
 
+const googleLogo = require('../../../../apps/mobile/assets/google-logo.png')
+
 const LOGIN_HERO_BREAKPOINT = 768
 
 type Tab = 'signin' | 'signup'
@@ -361,8 +363,9 @@ function MobileLoginPanel({ onSignIn, onSignUp, onGoogleSignIn, isLoading, error
                   <Text className="px-3 text-xs text-muted-foreground uppercase">or</Text>
                   <View className="flex-1"><Separator /></View>
                 </View>
-                <Button variant="outline" className="w-full" onPress={onGoogleSignIn}>
-                  <Text className="text-foreground">G  Continue with Google</Text>
+                <Button variant="outline" className="w-full gap-2" onPress={onGoogleSignIn}>
+                  <Image source={googleLogo} style={{ width: 18, height: 18 }} />
+                  <Text className="text-foreground text-sm font-medium">Continue with Google</Text>
                 </Button>
               </>
             ) : null}
@@ -463,8 +466,9 @@ function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, isLoading, error
                 <Text className="px-3 text-xs text-muted-foreground uppercase">or</Text>
                 <View className="flex-1"><Separator /></View>
               </View>
-              <Button variant="outline" className="w-full" onPress={onGoogleSignIn}>
-                <Text className="text-foreground">G  Continue with Google</Text>
+              <Button variant="outline" className="w-full gap-2" onPress={onGoogleSignIn}>
+                <Image source={googleLogo} style={{ width: 18, height: 18 }} />
+                <Text className="text-foreground text-sm font-medium">Continue with Google</Text>
               </Button>
             </>
           ) : null}
