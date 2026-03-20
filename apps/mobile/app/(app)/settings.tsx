@@ -644,6 +644,7 @@ function AccountTab() {
   const http = useDomainHttp()
   const router = useRouter()
   const { localMode } = usePlatformConfig()
+  const toast = useToast()
 
   const [name, setName] = useState(user?.name || '')
   const [isSaving, setIsSaving] = useState(false)
