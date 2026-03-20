@@ -977,7 +977,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const http = useDomainHttp()
 
   const [pendingInvites, setPendingInvites] = useState<any[]>([])
-  const [processingInviteId, setProcessingInviteId] = useState<string | null>(null)
+  const [processingInvite, setProcessingInvite] = useState<{ id: string; action: 'accept' | 'decline' } | null>(null)
   const [inboxOpen, setInboxOpen] = useState(false)
 
   const [isSuperAdmin, setIsSuperAdmin] = useState(false)
@@ -1460,9 +1460,9 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
                       <Text className="text-xs text-muted-foreground mb-2.5">Invited to join this workspace</Text>
                       <View className="flex-row gap-2">
                         <Pressable
-                          disabled={processingInviteId === inv.id}
+                          disabled={processingInvite?.id === inv.id}
                           onPress={async () => {
-                            setProcessingInviteId(inv.id)
+                            setProcessingInvite({ id: inv.id, action: 'accept' })
                             try {
                               await actions.acceptInvitation(inv.id, user?.id || '', {
                                 workspaceId: inv.workspaceId,
@@ -1473,30 +1473,30 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
                             } catch {}
                             loadInvites()
                             workspaces.loadAll().catch((e) => console.error('[AppSidebar] Failed to reload workspaces:', e))
-                            setProcessingInviteId(null)
+                            setProcessingInvite(null)
                           }}
-                          className={cn('flex-1 h-8 bg-primary rounded-md items-center justify-center', processingInviteId === inv.id && 'opacity-50')}
+                          className={cn('flex-1 h-8 bg-primary rounded-md items-center justify-center', processingInvite?.id === inv.id && 'opacity-50')}
                         >
-                          {processingInviteId === inv.id ? (
+                          {processingInvite?.id === inv.id && processingInvite.action === 'accept' ? (
                             <ActivityIndicator size="small" color="white" />
                           ) : (
                             <Text className="text-xs font-medium text-primary-foreground">Accept</Text>
                           )}
                         </Pressable>
                         <Pressable
-                          disabled={processingInviteId === inv.id}
+                          disabled={processingInvite?.id === inv.id}
                           onPress={async () => {
-                            setProcessingInviteId(inv.id)
+                            setProcessingInvite({ id: inv.id, action: 'decline' })
                             try {
                               await actions.declineInvitation(inv.id)
                               setPendingInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
                             } catch {}
                             loadInvites()
-                            setProcessingInviteId(null)
+                            setProcessingInvite(null)
                           }}
-                          className={cn('flex-1 h-8 border border-border rounded-md items-center justify-center', processingInviteId === inv.id && 'opacity-50')}
+                          className={cn('flex-1 h-8 border border-border rounded-md items-center justify-center', processingInvite?.id === inv.id && 'opacity-50')}
                         >
-                          {processingInviteId === inv.id ? (
+                          {processingInvite?.id === inv.id && processingInvite.action === 'decline' ? (
                             <ActivityIndicator size="small" />
                           ) : (
                             <Text className="text-xs font-medium text-card-foreground">Decline</Text>
