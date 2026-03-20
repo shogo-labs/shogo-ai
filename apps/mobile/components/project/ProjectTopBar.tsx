@@ -300,6 +300,7 @@ export function ProjectTopBar({
               <Pressable
                 {...triggerProps}
                 className="flex-row items-center gap-1 px-1.5 py-0.5 rounded-md active:bg-muted max-w-[120px]"
+                accessibilityLabel="Switch project"
               >
                 <Text className="text-xs font-semibold text-foreground" numberOfLines={1}>
                   {projectName}
@@ -366,6 +367,7 @@ export function ProjectTopBar({
                   'h-7 w-7 items-center justify-center rounded-md',
                   showNarrowMore ? 'bg-muted' : 'active:bg-muted',
                 )}
+                accessibilityLabel="More options"
               >
                 <MoreHorizontal size={14} className="text-muted-foreground" />
               </Pressable>
@@ -442,6 +444,7 @@ export function ProjectTopBar({
               <Pressable
                 {...triggerProps}
                 className="flex-row items-center gap-1 px-1.5 py-0.5 rounded-md active:bg-muted max-w-[180px]"
+                accessibilityLabel="Switch project"
               >
                 <Text className="text-xs font-semibold text-foreground" numberOfLines={1}>
                   {projectName}
@@ -531,7 +534,7 @@ export function ProjectTopBar({
                     <Pressable
                       {...triggerProps}
                       className="h-7 flex-row items-center gap-1 px-2 rounded-md active:bg-muted"
-                      {...(Platform.OS === 'web' ? { title: 'Switch canvas' } as any : {})}
+                      accessibilityLabel="Switch canvas"
                     >
                       <Text className="text-[10px] font-medium text-muted-foreground max-w-[100px]" numberOfLines={1}>
                         {activeSurfaceEntry?.title || 'Canvas'}
@@ -605,7 +608,7 @@ export function ProjectTopBar({
             <Pressable
               onPress={() => router.push('/(app)/billing' as any)}
               className="h-7 flex-row items-center gap-1 px-2 rounded-md border border-border active:bg-muted"
-              {...(Platform.OS === 'web' ? { title: 'Upgrade plan' } as any : {})}
+              accessibilityLabel="Upgrade plan"
             >
               <Zap size={12} className="text-muted-foreground" />
               <Text className="text-[10px] font-medium text-foreground">Upgrade</Text>
