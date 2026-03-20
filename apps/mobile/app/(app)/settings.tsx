@@ -19,7 +19,6 @@ import {
   TextInput,
   Modal,
   ActivityIndicator,
-  Alert as RNAlert,
   Linking,
   Platform,
   useWindowDimensions,
@@ -692,11 +691,16 @@ function AccountTab() {
       router.replace('/(auth)/sign-in')
     } catch (error) {
       console.error('Failed to delete account:', error)
-      if (Platform.OS === 'web') {
-        window.alert('Failed to delete account. Please try again.')
-      } else {
-        RNAlert.alert('Error', 'Failed to delete account. Please try again.')
-      }
+      toast.show({
+        placement: 'top',
+        duration: 5000,
+        render: ({ id }: { id: string }) => (
+          <Toast nativeID={id} variant="outline" action="error">
+            <ToastTitle>Failed to delete account</ToastTitle>
+            <ToastDescription>Please try again or contact support.</ToastDescription>
+          </Toast>
+        ),
+      })
     } finally {
       setIsDeleting(false)
       setIsDeleteDialogOpen(false)
@@ -1266,6 +1270,7 @@ const PeopleTab = observer(function PeopleTab() {
   const actions = useDomainActions()
   const http = useDomainHttp()
   const currentWorkspace = useActiveWorkspace()
+  const toast = useToast()
 
   const [subTab, setSubTab] = useState<PeopleSubTab>('all')
   const [search, setSearch] = useState('')
@@ -1399,11 +1404,18 @@ const PeopleTab = observer(function PeopleTab() {
       await actions.removeMember(memberId, user?.id || '')
       await loadPeopleData()
     } catch {
-      if (Platform.OS === 'web') {
-        window.alert('Failed to remove member. You may not have permission.')
-      }
+      toast.show({
+        placement: 'top',
+        duration: 5000,
+        render: ({ id }: { id: string }) => (
+          <Toast nativeID={id} variant="outline" action="error">
+            <ToastTitle>Failed to remove member</ToastTitle>
+            <ToastDescription>You may not have permission. Please try again.</ToastDescription>
+          </Toast>
+        ),
+      })
     }
-  }, [actions, user?.id, loadPeopleData])
+  }, [actions, user?.id, loadPeopleData, toast])
 
   const [revokeInvitationTarget, setRevokeInvitationTarget] = useState<{
     id: string
