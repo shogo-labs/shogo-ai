@@ -50,12 +50,12 @@ interface CapabilityDef {
   warning?: string
 }
 
-type AgentMode = 'none' | 'canvas' | 'app'
+type AgentMode = 'none' | 'canvas'
 
 const AGENT_TYPES: { mode: AgentMode; label: string; description: string; icon: typeof MessageSquare }[] = [
-  { mode: 'none', label: 'Normal', description: 'Chat-only agent', icon: MessageSquare },
+  { mode: 'none', label: 'Chat', description: 'Chat-only agent', icon: MessageSquare },
   { mode: 'canvas', label: 'Canvas', description: 'Visual dashboards', icon: LayoutDashboard },
-  { mode: 'app', label: 'App', description: 'Full-stack apps', icon: Code },
+  // APP_MODE_DISABLED: { mode: 'app', label: 'App', description: 'Full-stack apps', icon: Code },
 ]
 
 const CAPABILITIES: CapabilityDef[] = [

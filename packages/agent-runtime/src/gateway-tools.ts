@@ -153,7 +153,7 @@ function createSwitchModeTool(ctx: ToolContext, modeHandler: ModeSwitchHandler):
   return {
     name: 'switch_mode',
     description:
-      'Switch the visual output mode. "canvas" = your quick display panel (declarative agent dashboard). "none" = conversation only. Start with canvas for visual needs.',
+      'Switch the visual output mode. "canvas" = your quick display panel (declarative agent dashboard). "none" = chat only, no visual output. Start with canvas for visual needs.',
     label: 'Switch Mode',
     parameters: Type.Object({
       mode: Type.Union([Type.Literal('canvas'), Type.Literal('none')]),

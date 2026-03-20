@@ -70,7 +70,7 @@ import { usePlatformConfig } from '../../lib/platform-config'
 const AGENT_TABS: { id: string; label: string; icon: React.ElementType }[] = [
   { id: 'chat-fullscreen', label: 'Chat', icon: MessageSquare },
   { id: 'dynamic-app', label: 'Canvas', icon: LayoutDashboard },
-  { id: 'app-preview', label: 'App', icon: AppWindow },
+  // APP_MODE_DISABLED: { id: 'app-preview', label: 'App', icon: AppWindow },
   { id: 'files', label: 'Files', icon: FolderOpen },
   { id: 'terminal', label: 'Terminal', icon: Terminal },
   { id: 'capabilities', label: 'Capabilities', icon: Sliders },

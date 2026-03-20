@@ -185,7 +185,9 @@ export default observer(function ProjectLayout() {
   }, [project?.settings])
 
   const canvasEnabled = projectSettings.canvasEnabled !== false
-  const activeMode = (projectSettings.activeMode as 'canvas' | 'app' | 'none') || (canvasEnabled ? 'canvas' : 'none')
+  // APP_MODE_DISABLED: treat 'app' as 'none' for existing projects
+  const rawMode = (projectSettings.activeMode as 'canvas' | 'app' | 'none') || (canvasEnabled ? 'canvas' : 'none')
+  const activeMode = rawMode === 'app' ? 'none' : rawMode
 
   const capabilitySettings = useMemo(() => ({
     canvasEnabled: projectSettings.canvasEnabled !== false,
@@ -471,21 +473,9 @@ export default observer(function ProjectLayout() {
   const [previewTab, setPreviewTab] = useState('dynamic-app')
   const [chatMessages, setChatMessages] = useState<any[]>([])
 
-  // Keep previewTab consistent with agent mode. Do NOT force app-preview whenever
-  // activeMode is app — that trapped users on a blank App iframe and blocked Files /
-  // Capabilities (any tab change was immediately reset to app-preview).
+  // Keep previewTab consistent with agent mode.
   useEffect(() => {
-    if (activeMode === 'app') {
-      const validForApp = new Set([
-        'app-preview',
-        'files',
-        'terminal',
-        'capabilities',
-        'channels',
-        'monitor',
-      ])
-      if (!validForApp.has(previewTab)) setPreviewTab('app-preview')
-    } else if (!canvasEnabled) {
+    if (!canvasEnabled) {
       if (previewTab === 'dynamic-app' || previewTab === 'app-preview') {
         setPreviewTab('chat-fullscreen')
       }
@@ -529,6 +519,8 @@ export default observer(function ProjectLayout() {
   }, [updateProjectSettings, agentUrl, nativeHeaders, previewTab])
 
   const handleModeSwitch = useCallback(async (mode: 'canvas' | 'app' | 'none', _reason: string) => {
+    // APP_MODE_DISABLED: ignore 'app' mode switches
+    if (mode === 'app') return
     const enableCanvas = mode === 'canvas'
 
     await updateProjectSettings({ activeMode: mode, canvasEnabled: enableCanvas })
@@ -549,7 +541,7 @@ export default observer(function ProjectLayout() {
     }
   }, [isWide, updateProjectSettings, agentUrl, nativeHeaders])
 
-  const handleManualModeChange = useCallback((mode: 'canvas' | 'app' | 'none') => {
+  const handleManualModeChange = useCallback((mode: 'canvas' | 'none') => {
     handleModeSwitch(mode, 'User selected agent type')
   }, [handleModeSwitch])
 
@@ -740,10 +732,9 @@ export default observer(function ProjectLayout() {
     />
   ) : null
 
-  const hiddenTabs: string[] = []
+  const hiddenTabs: string[] = ['app-preview'] // APP_MODE_DISABLED: always hide app-preview
   if (activeMode !== 'none') hiddenTabs.push('chat-fullscreen')
   if (activeMode !== 'canvas') hiddenTabs.push('dynamic-app')
-  if (activeMode !== 'app') hiddenTabs.push('app-preview')
 
   const isChatFullscreen = isWide && activeMode === 'none' && previewTab === 'chat-fullscreen'
 
@@ -804,7 +795,7 @@ export default observer(function ProjectLayout() {
                 onNarrowTabChange={(tab: 'chat' | 'canvas') => {
                   setActiveTab(tab)
                   if (tab === 'canvas') {
-                    setPreviewTab(activeMode === 'app' ? 'app-preview' : 'dynamic-app')
+                    setPreviewTab('dynamic-app')
                   }
                 }}
                 onTabChange={(tabId: string) => {

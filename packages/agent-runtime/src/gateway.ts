@@ -1495,7 +1495,8 @@ Examples:
 `)
     }
     // Mode context injection
-    parts.push(`\n## Current Mode\nActive visual mode: **${activeMode}**. Use switch_mode to change.\n`)
+    const modeLabel = activeMode === 'none' ? 'chat' : activeMode
+    parts.push(`\n## Current Mode\nActive visual mode: **${modeLabel}**. Use switch_mode to change.\n`)
 
     // Mode-specific tool guides
     if (activeMode === 'canvas') {

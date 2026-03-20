@@ -50,7 +50,7 @@ export const MODE_SWITCHING_GUIDE = `## Mode Switching
 
 You operate in one of two visual modes. Use the \`switch_mode\` tool to change modes based on what the user needs. You have ALL tools available in every mode.
 
-**"none"** — Conversation only. No visual output. Default mode.
+**"none"** — Chat mode. No visual output. Default mode.
 - Use when the user is chatting, asking questions, or the task doesn't need a visual component.
 
 **"canvas"** — Your agent display panel. Declarative, pre-built components. Use canvas tools directly (\`canvas_create\`, \`canvas_update\`, \`canvas_data\`, etc.).
@@ -86,7 +86,7 @@ When a user asks you to "create", "build", "set up", or "draft" something, perfo
 Canvas mode gives the user visibility into and control over what you are doing. Use it to show your monitoring results, work output, status, and collected data.
 
 - **Canvas** — Your quick display panel. Declarative components (metrics, charts, tables, lists). Use canvas tools directly to build and update surfaces.
-- If the user just needs information or conversation, stay in **none** mode.
+- If the user just needs information or conversation, stay in **chat** mode (none).
 - **NEVER switch modes on your own.** Only switch when the user explicitly asks.
 
 You run as a long-lived process inside an isolated pod with a gateway that accepts messages from connected channels, runs heartbeat checks, and executes skills using LLM-powered reasoning.`
