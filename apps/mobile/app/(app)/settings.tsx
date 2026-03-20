@@ -1284,6 +1284,7 @@ const PeopleTab = observer(function PeopleTab() {
   const [menuState, setMenuState] = useState<{ memberId: string; view: 'actions' | 'roles' } | null>(null)
   const [userMap, setUserMap] = useState<Record<string, { name: string; email: string }>>({})
   const [receivedInvites, setReceivedInvites] = useState<any[]>([])
+  const [processingInviteId, setProcessingInviteId] = useState<string | null>(null)
 
   const [resolvedWs, setResolvedWs] = useState<{ id: string; name: string } | null>(null)
 
@@ -1708,7 +1709,9 @@ const PeopleTab = observer(function PeopleTab() {
                       <Text className="text-sm text-muted-foreground mb-3">You've been invited to join this workspace</Text>
                       <View className="flex-row gap-2">
                         <Pressable
+                          disabled={processingInviteId === inv.id}
                           onPress={async () => {
+                            setProcessingInviteId(inv.id)
                             try {
                               await actions.acceptInvitation(inv.id, user?.id || '', {
                                 workspaceId: inv.workspaceId,
@@ -1718,22 +1721,34 @@ const PeopleTab = observer(function PeopleTab() {
                               setReceivedInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
                             } catch {}
                             loadPeopleData()
+                            setProcessingInviteId(null)
                           }}
-                          className="flex-1 h-10 bg-primary rounded-lg items-center justify-center"
+                          className={cn('flex-1 h-10 bg-primary rounded-lg items-center justify-center', processingInviteId === inv.id && 'opacity-50')}
                         >
-                          <Text className="text-sm font-medium text-primary-foreground">Accept</Text>
+                          {processingInviteId === inv.id ? (
+                            <ActivityIndicator size="small" color="white" />
+                          ) : (
+                            <Text className="text-sm font-medium text-primary-foreground">Accept</Text>
+                          )}
                         </Pressable>
                         <Pressable
+                          disabled={processingInviteId === inv.id}
                           onPress={async () => {
+                            setProcessingInviteId(inv.id)
                             try {
                               await actions.declineInvitation(inv.id)
                               setReceivedInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
                             } catch {}
                             loadPeopleData()
+                            setProcessingInviteId(null)
                           }}
-                          className="flex-1 h-10 border border-border rounded-lg items-center justify-center"
+                          className={cn('flex-1 h-10 border border-border rounded-lg items-center justify-center', processingInviteId === inv.id && 'opacity-50')}
                         >
-                          <Text className="text-sm font-medium text-foreground">Decline</Text>
+                          {processingInviteId === inv.id ? (
+                            <ActivityIndicator size="small" />
+                          ) : (
+                            <Text className="text-sm font-medium text-foreground">Decline</Text>
+                          )}
                         </Pressable>
                       </View>
                     </View>

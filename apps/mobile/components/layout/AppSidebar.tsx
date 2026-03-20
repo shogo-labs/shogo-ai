@@ -28,6 +28,7 @@ import {
   useWindowDimensions,
   Platform,
   Image,
+  ActivityIndicator,
 } from 'react-native'
 import { usePostHogSafe } from '../../contexts/posthog'
 import { useTheme } from '../../contexts/theme'
@@ -976,6 +977,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
   const http = useDomainHttp()
 
   const [pendingInvites, setPendingInvites] = useState<any[]>([])
+  const [processingInviteId, setProcessingInviteId] = useState<string | null>(null)
   const [inboxOpen, setInboxOpen] = useState(false)
 
   const [isSuperAdmin, setIsSuperAdmin] = useState(false)
@@ -1458,7 +1460,9 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
                       <Text className="text-xs text-muted-foreground mb-2.5">Invited to join this workspace</Text>
                       <View className="flex-row gap-2">
                         <Pressable
+                          disabled={processingInviteId === inv.id}
                           onPress={async () => {
+                            setProcessingInviteId(inv.id)
                             try {
                               await actions.acceptInvitation(inv.id, user?.id || '', {
                                 workspaceId: inv.workspaceId,
@@ -1469,22 +1473,34 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
                             } catch {}
                             loadInvites()
                             workspaces.loadAll().catch((e) => console.error('[AppSidebar] Failed to reload workspaces:', e))
+                            setProcessingInviteId(null)
                           }}
-                          className="flex-1 h-8 bg-primary rounded-md items-center justify-center"
+                          className={cn('flex-1 h-8 bg-primary rounded-md items-center justify-center', processingInviteId === inv.id && 'opacity-50')}
                         >
-                          <Text className="text-xs font-medium text-primary-foreground">Accept</Text>
+                          {processingInviteId === inv.id ? (
+                            <ActivityIndicator size="small" color="white" />
+                          ) : (
+                            <Text className="text-xs font-medium text-primary-foreground">Accept</Text>
+                          )}
                         </Pressable>
                         <Pressable
+                          disabled={processingInviteId === inv.id}
                           onPress={async () => {
+                            setProcessingInviteId(inv.id)
                             try {
                               await actions.declineInvitation(inv.id)
                               setPendingInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
                             } catch {}
                             loadInvites()
+                            setProcessingInviteId(null)
                           }}
-                          className="flex-1 h-8 border border-border rounded-md items-center justify-center"
+                          className={cn('flex-1 h-8 border border-border rounded-md items-center justify-center', processingInviteId === inv.id && 'opacity-50')}
                         >
-                          <Text className="text-xs font-medium text-card-foreground">Decline</Text>
+                          {processingInviteId === inv.id ? (
+                            <ActivityIndicator size="small" />
+                          ) : (
+                            <Text className="text-xs font-medium text-card-foreground">Decline</Text>
+                          )}
                         </Pressable>
                       </View>
                     </View>
