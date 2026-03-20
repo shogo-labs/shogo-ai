@@ -947,6 +947,18 @@ const BillingTab = observer(function BillingTab() {
         }
       } catch (e) {
         console.warn('Checkout failed:', e)
+        toast.show({
+          placement: 'top',
+          duration: 5000,
+          render: ({ id }: { id: string }) => (
+            <Toast nativeID={id} variant="outline" action="error">
+              <ToastTitle>Checkout failed</ToastTitle>
+              <ToastDescription>
+                Something went wrong. Please try again or contact support.
+              </ToastDescription>
+            </Toast>
+          ),
+        })
       } finally {
         setIsCheckoutLoading(null)
       }
