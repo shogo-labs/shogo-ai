@@ -72,7 +72,7 @@ export default observer(function BillingPage() {
 
   useEffect(() => {
     if (user?.id && workspaces) {
-      workspaces.loadAll({ userId: user.id }).catch(() => {})
+      workspaces.loadAll({ userId: user.id }).catch((e) => console.error('[Billing] Failed to load workspaces:', e))
     }
   }, [user?.id, workspaces])
 

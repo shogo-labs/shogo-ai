@@ -206,13 +206,13 @@ const HomeScreen = observer(function HomeScreen() {
   useEffect(() => {
     if (!isAuthenticated) return
     setWorkspaceError(false)
-    projects.loadAll().catch(() => {})
+    projects.loadAll().catch((e: any) => console.error('[Home] Failed to load projects:', e))
     workspaces.loadAll().catch((err: any) => {
       console.error('[Home] Failed to load workspaces:', err)
       setWorkspaceError(true)
     })
     if (user?.id) {
-      membersColl.loadAll({ userId: user.id }).catch(() => {})
+      membersColl.loadAll({ userId: user.id }).catch((e: any) => console.error('[Home] Failed to load memberships:', e))
     }
 
     async function fetchTemplates() {

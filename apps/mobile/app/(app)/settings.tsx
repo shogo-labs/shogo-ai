@@ -348,7 +348,7 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
 
   useEffect(() => {
     if (currentWorkspace?.id) {
-      members.loadAll({ workspaceId: currentWorkspace.id }).catch(() => {})
+      members.loadAll({ workspaceId: currentWorkspace.id }).catch((e) => console.error('[Settings] Failed to load members:', e))
     }
   }, [currentWorkspace?.id])
 

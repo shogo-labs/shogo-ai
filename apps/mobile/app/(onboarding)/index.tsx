@@ -188,7 +188,7 @@ export default function OnboardingPage() {
             }
           }
         })
-        .catch(() => {})
+        .catch((e) => console.error('[Onboarding] Failed to load templates:', e))
         .finally(() => setTemplatesLoading(false))
     }
   }, [currentStep])
@@ -234,7 +234,7 @@ export default function OnboardingPage() {
       // Non-critical — defaults to balanced if save fails
     }
 
-    await api.completeOnboarding(http).catch(() => {})
+    await api.completeOnboarding(http).catch((e) => console.error('[Onboarding] Failed to complete onboarding:', e))
 
     setIsSavingSecurity(false)
     router.replace('/(admin)')

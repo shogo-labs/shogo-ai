@@ -989,20 +989,20 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
           setIsSuperAdmin(true)
         }
       })
-      .catch(() => {})
+      .catch((e) => console.error('[AppSidebar] Failed to fetch user role:', e))
     return () => { cancelled = true }
   }, [user?.id, http])
 
   useEffect(() => {
-    workspaces.loadAll().catch(() => {})
-    projects.loadAll().catch(() => {})
+    workspaces.loadAll().catch((e) => console.error('[AppSidebar] Failed to load workspaces:', e))
+    projects.loadAll().catch((e) => console.error('[AppSidebar] Failed to load projects:', e))
   }, [])
 
   const loadInvites = useCallback(() => {
     if (!http || !user?.email) return
     api.getReceivedInvitations(http, user.email)
       .then(setPendingInvites)
-      .catch(() => {})
+      .catch((e) => console.error('[AppSidebar] Failed to load invitations:', e))
   }, [http, user?.email])
 
   useEffect(() => { loadInvites() }, [loadInvites])
@@ -1025,7 +1025,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
       workspaces.loadAll().then(() => {
         setSelectedWorkspaceId(targetWs)
         setActiveWorkspaceId(targetWs)
-        projects.loadAll({ workspaceId: targetWs }).catch(() => {})
+        projects.loadAll({ workspaceId: targetWs }).catch((e) => console.error('[AppSidebar] Failed to load projects for workspace:', e))
       })
       window.history.replaceState({}, '', '/')
     }
@@ -1078,7 +1078,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
     const ids = allWorkspaces.map((w: any) => w.id)
     api.getWorkspacePlans(http, ids)
       .then((plans) => { if (!cancelled) setAllPlans(plans) })
-      .catch(() => {})
+      .catch((e) => console.error('[AppSidebar] Failed to load workspace plans:', e))
     return () => { cancelled = true }
   }, [features.billing, allWorkspaces.length, http])
 
@@ -1105,7 +1105,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
       trackEvent(posthog, EVENTS.WORKSPACE_SWITCHED)
       setSelectedWorkspaceId(workspaceId)
       setActiveWorkspaceId(workspaceId)
-      projects.loadAll({ workspaceId }).catch(() => {})
+      projects.loadAll({ workspaceId }).catch((e) => console.error('[AppSidebar] Failed to load projects after workspace switch:', e))
     },
     [projects, posthog]
   )
@@ -1468,7 +1468,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
                               setPendingInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
                             } catch {}
                             loadInvites()
-                            workspaces.loadAll().catch(() => {})
+                            workspaces.loadAll().catch((e) => console.error('[AppSidebar] Failed to reload workspaces:', e))
                           }}
                           className="flex-1 h-8 bg-primary rounded-md items-center justify-center"
                         >

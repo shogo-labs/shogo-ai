@@ -287,7 +287,7 @@ export default observer(function AllProjectsPage() {
         )
         setStarredIds(ids)
       })
-      .catch(() => {})
+      .catch((e) => console.error('[Projects] Failed to load starred projects:', e))
   }, [currentWorkspace?.id, user?.id, store])
 
   const allProjects = (store?.projectCollection?.all ?? []) as Project[]
@@ -416,7 +416,7 @@ export default observer(function AllProjectsPage() {
       await actions.updateProject(projectId, { name: newName })
       store?.projectCollection
         ?.loadAll({ workspaceId: currentWorkspace?.id })
-        .catch(() => {})
+        .catch((e) => console.error('[Projects] Failed to refresh after rename:', e))
     } catch (err) {
       console.error('[AllProjectsPage] Rename failed:', err)
     }
@@ -504,7 +504,7 @@ export default observer(function AllProjectsPage() {
     if (!name || !currentWorkspace?.id) return
     try {
       await actions.createFolder(name, currentWorkspace.id, currentFolderId)
-      store?.folderCollection?.loadAll({ workspaceId: currentWorkspace.id }).catch(() => {})
+      store?.folderCollection?.loadAll({ workspaceId: currentWorkspace.id }).catch((e) => console.error('[Projects] Failed to refresh folders:', e))
     } catch (err) {
       console.error('[AllProjectsPage] Failed to create folder:', err)
     }

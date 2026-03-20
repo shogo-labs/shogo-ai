@@ -72,7 +72,7 @@ function useAdminCheck() {
           setRole(data.data.role as UserRole)
         }
       })
-      .catch(() => {})
+      .catch((e) => console.error('[AdminLayout] Failed to verify admin role:', e))
       .finally(() => {
         if (!cancelled) setChecking(false)
       })

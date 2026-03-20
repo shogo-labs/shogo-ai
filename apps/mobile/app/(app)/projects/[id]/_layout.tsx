@@ -352,7 +352,7 @@ export default observer(function ProjectLayout() {
 
       try {
         await store.workspaceCollection.loadAll({ userId: user!.id })
-        store.projectCollection.loadAll().catch(() => {})
+        store.projectCollection.loadAll().catch((e) => console.error('[ProjectLayout] Failed to preload projects:', e))
         const proj = await store.projectCollection.loadById(projectId)
 
         if (cancelled) return
@@ -394,7 +394,7 @@ export default observer(function ProjectLayout() {
   // Persist last chat session to AsyncStorage
   useEffect(() => {
     if (projectId && chatSessionId) {
-      AsyncStorage.setItem(`shogo:lastChatSession:${projectId}`, chatSessionId).catch(() => {})
+      AsyncStorage.setItem(`shogo:lastChatSession:${projectId}`, chatSessionId).catch((e) => console.error('[ProjectLayout] Failed to persist chat session:', e))
     }
   }, [projectId, chatSessionId])
 

@@ -18,7 +18,7 @@ export default function SignOutScreen() {
 
   useEffect(() => {
     signOut()
-      .catch(() => {})
+      .catch((e) => console.error('[SignOut] Failed to sign out:', e))
       .finally(() => {
         router.replace('/sign-in' as any)
       })

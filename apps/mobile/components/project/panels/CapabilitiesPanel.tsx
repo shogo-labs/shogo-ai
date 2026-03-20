@@ -174,7 +174,7 @@ export function CapabilitiesPanel({
       .then(data => {
         if (data?.model) setCurrentModel(data.model)
       })
-      .catch(() => {})
+      .catch((e) => console.error('[CapabilitiesPanel] Failed to fetch model:', e))
   }, [visible, agentUrl])
 
   const handleModelChange = useCallback(async (model: ModelOption) => {
