@@ -1,6 +1,8 @@
 # =============================================================================
 # PostgreSQL - Shared Control Plane Database
 # =============================================================================
+# WARNING: Replace all CHANGE_ME values before applying.
+# See docs/SELF_HOSTING.md for required secret configuration.
 # This is the shared database for:
 #   - studio-core (organizations, teams, projects)
 #   - better-auth (users, sessions)
@@ -30,9 +32,9 @@ metadata:
 type: Opaque
 stringData:
   POSTGRES_USER: shogo
-  POSTGRES_PASSWORD: shogo_k8s_dev
+  POSTGRES_PASSWORD: CHANGE_ME
   POSTGRES_DB: shogo
-  DATABASE_URL: postgres://shogo:shogo_k8s_dev@postgres:5432/shogo
+  DATABASE_URL: postgres://shogo:CHANGE_ME@postgres:5432/shogo
 ---
 apiVersion: apps/v1
 kind: Deployment

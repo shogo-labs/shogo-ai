@@ -101,11 +101,12 @@ data "oci_identity_availability_domains" "ads" {
 module "vcn" {
   source = "../../modules/vcn"
 
-  name              = local.cluster_name
-  compartment_id    = var.compartment_id
-  cidr              = "10.0.0.0/16"
-  single_nat_gateway = true
-  tags              = local.tags
+  name                  = local.cluster_name
+  compartment_id        = var.compartment_id
+  cidr                  = "10.0.0.0/16"
+  single_nat_gateway    = true
+  oke_api_allowed_cidrs = var.oke_api_allowed_cidrs
+  tags                  = local.tags
 }
 
 # =============================================================================
@@ -172,6 +173,7 @@ module "file_storage" {
   availability_domain = data.oci_identity_availability_domains.ads.availability_domains[0].name
   subnet_id           = module.vcn.private_workers_subnet_id
   nsg_ids             = [module.vcn.oke_workers_nsg_id]
+  nfs_allowed_cidr    = var.nfs_allowed_cidr
   tags                = local.tags
 }
 

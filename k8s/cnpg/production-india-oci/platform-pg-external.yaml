@@ -8,6 +8,10 @@ metadata:
   labels:
     app.kubernetes.io/part-of: shogo
     cnpg.io/cluster: platform-pg
+  annotations:
+    oci.oraclecloud.com/load-balancer-type: "nlb"
+    oci-network-load-balancer.oraclecloud.com/is-preserve-source: "false"
+    oci-network-load-balancer.oraclecloud.com/internal: "true"
 spec:
   type: LoadBalancer
   ports:

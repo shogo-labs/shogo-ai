@@ -104,6 +104,20 @@ async function getAuthUserId(c: any): Promise<string | null> {
 }
 
 /**
+ * Verify that the authenticated user is a member of the given workspace.
+ * Returns the userId on success, or null if not a member / not authenticated.
+ */
+async function verifyWorkspaceMembership(c: any, workspaceId: string): Promise<string | null> {
+  const auth = c.get('auth') as any
+  const userId = auth?.userId
+  if (!userId) return null
+  const member = await prisma.member.findFirst({
+    where: { userId, workspaceId },
+  })
+  return member ? userId : null
+}
+
+/**
  * Verify that a user has access to a project via workspace membership.
  * Returns the project's workspaceId if access is granted, null otherwise.
  */
@@ -743,6 +757,29 @@ app.use('/api/*', csrf({
 app.use('/api/auth/*', rateLimiter('auth', { max: Number(process.env.RATE_LIMIT_AUTH_MAX) || 60, windowMs: Number(process.env.RATE_LIMIT_AUTH_WINDOW_MS) || 60_000 }))
 app.use('/api/webhooks/*', rateLimiter('webhooks', { max: Number(process.env.RATE_LIMIT_WEBHOOKS_MAX) || 90, windowMs: Number(process.env.RATE_LIMIT_WEBHOOKS_WINDOW_MS) || 60_000 }))
 app.use('/api/*', rateLimiter('global', { max: Number(process.env.RATE_LIMIT_GLOBAL_MAX) || 600, windowMs: Number(process.env.RATE_LIMIT_GLOBAL_WINDOW_MS) || 60_000 }))
+
+// Auth middleware — extract session for ALL /api/* routes so c.get('auth') is
+// always populated, then require authentication except for known public paths.
+app.use('/api/*', authMiddleware)
+app.use(
+  '/api/*',
+  async (c, next) => {
+    const path = new URL(c.req.url).pathname
+    const publicPrefixes = [
+      '/api/auth/',
+      '/api/health',
+      '/api/config',
+      '/api/webhooks/',
+      '/api/integrations/callback',
+      '/api/invite-links/',
+      '/api/internal/',
+      '/api/local/',
+    ]
+    if (publicPrefixes.some((p) => path.startsWith(p))) return next()
+    return requireAuth(c, next)
+  }
+)
+app.use('/api/projects/:projectId/*', requireProjectAccess)
 
 // Better Auth handler - mounted BEFORE other /api/* routes
 // Handles all authentication endpoints: sign-up, sign-in, sign-out, session, OAuth callbacks, etc.
@@ -3760,10 +3797,23 @@ function fallbackGenerateProjectName(prompt: string): string {
 
 app.post('/api/generate-project-name', async (c) => {
   try {
-    const { prompt, workspaceId, userId, projectId } = await c.req.json()
+    const authCtx = c.get('auth') as any
+    const authUserId = authCtx?.userId
+    const { prompt, workspaceId, projectId } = await c.req.json()
 
     if (!prompt || typeof prompt !== 'string') {
       return c.json({ error: 'Prompt is required' }, 400)
+    }
+
+    if (projectId && authUserId) {
+      const access = await verifyProjectAccess(authUserId, projectId)
+      if (!access) {
+        return c.json({ error: { code: 'forbidden', message: 'Access denied to this project' } }, 403)
+      }
+    }
+
+    if (workspaceId && !await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
     }
 
     // Check if ANTHROPIC_API_KEY is available
@@ -3820,7 +3870,7 @@ Examples:
       const totalTokens = (usage?.inputTokens || usage?.promptTokens || 0) + (usage?.outputTokens || usage?.completionTokens || 0)
       if (totalTokens > 0) {
         const creditCost = calculateCreditCost(totalTokens, 'haiku')
-        billingService.consumeCredits(workspaceId, null, userId || 'system', 'project_name_generation', creditCost, { totalTokens }).catch(() => {})
+        billingService.consumeCredits(workspaceId, null, authUserId || 'system', 'project_name_generation', creditCost, { totalTokens }).catch(() => {})
       }
     }
 
@@ -3866,7 +3916,18 @@ Examples:
  */
 app.post('/api/chat', async (c) => {
   try {
-    let { messages, ccSessionId, chatSessionId, workspaceId, userId, projectId, agentMode } = await c.req.json()
+    const authCtx = c.get('auth') as any
+    const userId = authCtx?.userId
+    let { messages, ccSessionId, chatSessionId, workspaceId, projectId, agentMode } = await c.req.json()
+
+    // Derive workspaceId from the project if not provided, and verify access
+    if (projectId && userId) {
+      const verifiedWsId = await verifyProjectAccess(userId, projectId)
+      if (!verifiedWsId) {
+        return c.json({ error: { code: 'forbidden', message: 'Access denied to this project' } }, 403)
+      }
+      if (!workspaceId) workspaceId = verifiedWsId
+    }
 
     // Enforce basic agent mode for free-plan workspaces (server-side guard)
     if (workspaceId && agentMode && agentMode !== 'basic') {
@@ -4488,6 +4549,10 @@ app.post('/api/billing/checkout', async (c) => {
       return c.json({ error: { code: 'invalid_request', message: 'Missing required fields' } }, 400)
     }
 
+    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
+    }
+
     // Get price ID from config (supports tiered pricing: pro, pro_200, business_1200, etc.)
     const priceId = getPriceId(planId, billingInterval as 'monthly' | 'annual')
 
@@ -4530,14 +4595,21 @@ app.post('/api/billing/checkout', async (c) => {
 
 app.get('/api/billing/workspace-plan', async (c) => {
   try {
+    const auth = c.get('auth') as any
+    const userId = auth?.userId
     const url = new URL(c.req.url)
     const workspaceId = url.searchParams.get('workspaceId')
     const workspaceIds = url.searchParams.get('workspaceIds')
 
     if (workspaceIds) {
       const ids = workspaceIds.split(',').filter(Boolean)
+      // Filter to only workspaces the user is a member of
+      const memberships = userId
+        ? await prisma.member.findMany({ where: { userId, workspaceId: { in: ids } }, select: { workspaceId: true } })
+        : []
+      const allowedIds = new Set(memberships.map((m: any) => m.workspaceId))
       const plans: Record<string, { planId: string; status: string | null }> = {}
-      await Promise.all(ids.map(async (id) => {
+      await Promise.all(ids.filter(id => allowedIds.has(id)).map(async (id) => {
         const sub = await billingService.getSubscription(id)
         plans[id] = { planId: sub?.planId ?? 'free', status: sub?.status ?? null }
       }))
@@ -4545,6 +4617,10 @@ app.get('/api/billing/workspace-plan', async (c) => {
     }
 
     if (!workspaceId) return c.json({ error: 'missing workspaceId or workspaceIds' }, 400)
+
+    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
+    }
     const sub = await billingService.getSubscription(workspaceId)
     const ledger = await billingService.getCreditLedger(workspaceId)
     return c.json({
@@ -4566,11 +4642,17 @@ app.post('/api/billing/workspace-checkout', async (c) => {
       return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
     }
 
-    const body = await c.req.json()
-    const { workspaceName, planId, billingInterval, userEmail, userId, referralId, successUrl: clientSuccessUrl, cancelUrl: clientCancelUrl } = body
+    const authCtx = c.get('auth') as any
+    const userId = authCtx?.userId
+    if (!userId) {
+      return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+    }
 
-    if (!workspaceName || !planId || !billingInterval || !userId) {
-      return c.json({ error: { code: 'invalid_request', message: 'Missing required fields: workspaceName, planId, billingInterval, userId' } }, 400)
+    const body = await c.req.json()
+    const { workspaceName, planId, billingInterval, userEmail, referralId, successUrl: clientSuccessUrl, cancelUrl: clientCancelUrl } = body
+
+    if (!workspaceName || !planId || !billingInterval) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing required fields: workspaceName, planId, billingInterval' } }, 400)
     }
 
     const priceId = getPriceId(planId, billingInterval as 'monthly' | 'annual')
@@ -4642,6 +4724,10 @@ app.post('/api/billing/verify-checkout', async (c) => {
       return c.json({ error: { code: 'invalid_session', message: 'Missing metadata in session' } }, 400)
     }
 
+    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
+    }
+
     const existing = await billingService.getSubscription(workspaceId)
     if (existing) {
       return c.json({ ok: true, workspaceId, planId, alreadyProvisioned: true }, 200)
@@ -4695,6 +4781,10 @@ app.post('/api/billing/portal', async (c) => {
 
     if (!workspaceId) {
       return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
+    }
+
+    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
     }
 
     // Get return URL from request body if provided
@@ -5090,16 +5180,6 @@ app.get('/api/me/activity', authMiddleware, requireAuth, async (c) => {
 // =============================================================================
 // Generated API Routes - Auto-generated from Prisma schema with hooks
 // =============================================================================
-
-// Apply auth middleware to extract session for all routes
-// This makes ctx.userId available in route hooks for authorization
-app.use('/api/*', authMiddleware)
-
-app.use('/api/*', requireAuth)
-
-// Require project membership for all project-scoped routes
-// Prevents authenticated users from accessing projects they don't belong to
-app.use('/api/projects/:projectId/*', requireProjectAccess)
 
 // =============================================================================
 // Leave Workspace - Removes the current user's membership from a workspace

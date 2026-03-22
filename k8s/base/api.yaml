@@ -99,9 +99,8 @@ spec:
               value: "8002"
             - name: NODE_ENV
               value: "production"
-            # TODO: Fix proper TLS verification for Kubernetes API
-            - name: NODE_TLS_REJECT_UNAUTHORIZED
-              value: "0"
+            - name: NODE_EXTRA_CA_CERTS
+              value: "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
             - name: VITE_PORT
               value: "80"
             - name: BETTER_AUTH_URL

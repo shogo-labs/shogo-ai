@@ -1,6 +1,8 @@
 # =============================================================================
 # Shogo Platform Configuration
 # =============================================================================
+# WARNING: Replace all CHANGE_ME values before applying.
+# See docs/SELF_HOSTING.md for required secret configuration.
 # Shared ConfigMaps and Secrets for all Shogo services.
 #
 # For production, these values are injected by Terraform.
@@ -38,10 +40,10 @@ metadata:
 type: Opaque
 stringData:
   # Database URL (internal cluster DNS)
-  database-url: "postgres://shogo:shogo_k8s_dev@postgres.shogo-system.svc.cluster.local:5432/shogo"
+  database-url: "postgres://shogo:CHANGE_ME@postgres.shogo-system.svc.cluster.local:5432/shogo"
   # MinIO credentials (matches minio-credentials secret)
-  s3-access-key: "minioadmin"
-  s3-secret-key: "minioadmin"
+  s3-access-key: "CHANGE_ME"
+  s3-secret-key: "CHANGE_ME"
 
 ---
 # Secret for API-specific credentials
@@ -56,7 +58,7 @@ metadata:
 type: Opaque
 stringData:
   # BetterAuth secret (generate with: openssl rand -base64 32)
-  BETTER_AUTH_SECRET: "local-dev-secret-change-in-production"
+  BETTER_AUTH_SECRET: "CHANGE_ME_generate_with_openssl_rand_base64_32"
   # Anthropic API key - MUST be set separately for security
   # kubectl -n shogo-system patch secret api-secrets -p '{"stringData":{"ANTHROPIC_API_KEY":"sk-ant-..."}}'
-  ANTHROPIC_API_KEY: "placeholder-set-via-kubectl"
+  ANTHROPIC_API_KEY: "CHANGE_ME"

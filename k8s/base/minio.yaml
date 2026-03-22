@@ -1,6 +1,8 @@
 # =============================================================================
 # MinIO - S3-Compatible Object Storage for Local/Staging
 # =============================================================================
+# WARNING: Replace all CHANGE_ME values before applying.
+# See docs/SELF_HOSTING.md for required secret configuration.
 # Provides S3-compatible storage for:
 #   - Schema files (JSON schemas)
 #   - Workspace files (project assets)
@@ -28,8 +30,8 @@ metadata:
   namespace: shogo-system
 type: Opaque
 stringData:
-  MINIO_ROOT_USER: minioadmin
-  MINIO_ROOT_PASSWORD: minioadmin
+  MINIO_ROOT_USER: CHANGE_ME
+  MINIO_ROOT_PASSWORD: CHANGE_ME
 ---
 apiVersion: apps/v1
 kind: Deployment

@@ -78,3 +78,13 @@ variable "signoz_ingestion_key" {
   default     = ""
   sensitive   = true
 }
+
+variable "oke_api_allowed_cidrs" {
+  description = "CIDRs allowed to reach the OKE API endpoint (port 6443). Restrict to VPN/bastion ranges."
+  type        = list(string)
+}
+
+variable "nfs_allowed_cidr" {
+  description = "CIDR block allowed to mount NFS (typically worker node subnet)"
+  type        = string
+}
