@@ -12,9 +12,9 @@ When targeting a direct region IP, use --host-header to set the Host header
 so Knative routes the request correctly.
 
 Usage:
-  python scripts/cleanup_loadtest.py --host https://studio.shogo.ai
+  python scripts/cleanup_loadtest.py
   python scripts/cleanup_loadtest.py --host https://152.70.192.220 --host-header studio.shogo.ai
-  python scripts/cleanup_loadtest.py --host https://studio.shogo.ai --prefix loadtest-user --dry-run
+  python scripts/cleanup_loadtest.py --prefix loadtest-user --dry-run
 """
 import argparse
 import os
@@ -33,8 +33,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Clean up load test users and projects")
     parser.add_argument(
         "--host",
-        default=os.getenv("CLEANUP_HOST", "https://studio.shogo.ai"),
-        help="API host (default: https://studio.shogo.ai)",
+        default=os.getenv("CLEANUP_HOST", "http://localhost:8002"),
+        help="API host (default: $CLEANUP_HOST or http://localhost:8002)",
     )
     parser.add_argument(
         "--host-header",

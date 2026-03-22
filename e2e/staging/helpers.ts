@@ -163,5 +163,5 @@ export async function signUpAndUpgradeToPro(page: Page, user: TestUser): Promise
   if (await saveCheckbox.isChecked()) await saveCheckbox.click()
 
   await page.getByTestId("hosted-payment-submit-button").click()
-  await page.waitForURL("**/studio-staging.shogo.ai/**", { timeout: 30_000 })
+  await page.waitForURL((url) => !url.toString().includes("stripe.com"), { timeout: 30_000 })
 }

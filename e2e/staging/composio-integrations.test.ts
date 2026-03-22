@@ -23,7 +23,7 @@ import { makeTestUser, signUpAndOnboard } from "./helpers"
  * Run: npx playwright test --config e2e/playwright.config.ts composio-integrations
  */
 
-const STAGING_API_URL = process.env.STAGING_API_URL || "https://studio-staging.shogo.ai"
+const STAGING_API_URL = process.env.STAGING_API_URL || process.env.STAGING_URL || "http://localhost:8081"
 
 const TEST_USER = makeTestUser("Composio")
 

@@ -8,13 +8,12 @@ load_dotenv()
 class Config:
     """Load test configuration.
     
-    Uses api-staging.shogo.ai for direct API access (bypasses studio proxy).
-    The app frontend may use a shared host with same-origin /api/* calls,
-    but load tests hit the API DomainMapping directly for accurate latency measurement.
+    Uses the API host directly for accurate latency measurement (bypasses studio proxy).
+    Set API_BASE_URL env var to target a specific environment.
     """
     
     # Target URLs
-    API_BASE_URL = os.getenv("API_BASE_URL", "https://api-staging.shogo.ai")
+    API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8002")
     WEB_BASE_URL = os.getenv("WEB_BASE_URL", "https://app.example.com")
     
     # Test settings

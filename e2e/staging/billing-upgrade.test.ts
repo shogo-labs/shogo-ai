@@ -9,7 +9,7 @@ import { makeTestUser, signUpAndOnboard, STRIPE_CARDS } from "./helpers"
  * Tests the complete lifecycle: sign-up → free plan → failed payment →
  * successful upgrade → Pro feature verification → credit tracking.
  *
- * Targets the deployed staging environment (studio-staging.shogo.ai).
+ * Targets the deployed staging environment (set STAGING_URL env var).
  * Uses Stripe test cards (4000000000000002 for decline, 4242424242424242 for success).
  *
  * Run: npx playwright test --config e2e/playwright.config.ts
@@ -139,7 +139,7 @@ test.describe("Billing & Upgrade Flow", () => {
     await page.getByTestId("hosted-payment-submit-button").click()
 
     // Wait for redirect back to app
-    await page.waitForURL("**/studio-staging.shogo.ai/**", { timeout: 30_000 })
+    await page.waitForURL((url) => !url.toString().includes("stripe.com"), { timeout: 30_000 })
     await page.waitForLoadState("domcontentloaded")
   })
 

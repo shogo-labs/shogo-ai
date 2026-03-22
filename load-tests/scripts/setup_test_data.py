@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Uses the API DomainMapping directly (not the studio proxy) for external tooling
-API_BASE_URL = os.getenv("API_BASE_URL", "https://api-staging.shogo.ai")
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8002")
 
 
 class TestDataSeeder:
@@ -181,18 +181,14 @@ class TestDataSeeder:
 
 async def main():
     parser = argparse.ArgumentParser(description="Setup Shogo AI load test data")
-    parser.add_argument("--env", default="staging", choices=["staging", "local"])
     parser.add_argument("--users", type=int, default=100, help="Number of users to create")
     parser.add_argument("--workspaces", type=int, default=10, help="Number of workspaces")
     parser.add_argument("--projects", type=int, default=5, help="Projects per workspace")
     
     args = parser.parse_args()
     
-    if args.env == "staging":
-        api_url = "https://api-staging.shogo.ai"
-    else:
-        api_url = "http://localhost:8002"
-    
+    api_url = os.getenv("API_BASE_URL", "http://localhost:8002")
+
     seeder = TestDataSeeder(api_url)
     await seeder.setup(args.users, args.workspaces, args.projects)
 

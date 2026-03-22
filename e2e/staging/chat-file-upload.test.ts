@@ -13,7 +13,7 @@ import * as os from "os"
  *   1. Files uploaded via the chat input are saved to the agent's filesystem
  *   2. The LLM can see/describe uploaded images (vision works)
  *
- * Run: STAGING_URL=https://studio-staging.shogo.ai npx playwright test --config e2e/playwright.config.ts chat-file-upload
+ * Run: STAGING_URL=https://your-staging-host npx playwright test --config e2e/playwright.config.ts chat-file-upload
  */
 
 const TEST_USER = makeTestUser("FileUpload")
