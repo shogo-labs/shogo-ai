@@ -366,6 +366,7 @@ jobs:
             ${{ matrix.build_args == 'api' && format('ALLOWED_ORIGINS={0}', vars.ALLOWED_ORIGINS) || '' }}
             ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_API_URL={0}', vars.EXPO_PUBLIC_API_URL) || '' }}
             ${{ matrix.build_args == 'web' && needs.resolve-config.outputs.environment == 'production' && format('VITE_GTM_ID={0}', secrets.VITE_GTM_ID) || '' }}
+            ${{ matrix.build_args == 'web' && needs.resolve-config.outputs.environment == 'production' && format('FB_PIXEL_ID={0}', secrets.FB_PIXEL_ID) || '' }}
             ${{ matrix.build_args == 'runtime' && format('BASE_IMAGE={0}/shogo/shogo-runtime-base:latest', needs.resolve-config.outputs.ocir_registry) || '' }}
           cache-from: type=gha,scope=${{ matrix.image }}-oci
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}-oci

@@ -64,6 +64,7 @@ import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { setActiveWorkspaceId } from '../../lib/workspace-store'
 import { api, API_URL } from '../../lib/api'
 import { getRewardfulReferral } from '../../lib/rewardful'
+import { trackInitiateCheckout } from '../../lib/fbpixel'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { usePlatformConfig } from '../../lib/platform-config'
 import {
@@ -936,6 +937,7 @@ const BillingTab = observer(function BillingTab() {
       setIsCheckoutLoading(planType)
       try {
         const planId = credits === BASE_TIER_CREDITS ? planType : `${planType}_${credits}`
+        trackInitiateCheckout({ planId, billingInterval: annual ? 'annual' : 'monthly', workspaceId: currentWorkspace?.id })
         const data = await actions.createCheckoutSession({
           workspaceId: currentWorkspace.id,
           planId,

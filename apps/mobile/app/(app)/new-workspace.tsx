@@ -31,6 +31,7 @@ import { useAuth } from '../../contexts/auth'
 import { useDomainHttp } from '../../contexts/domain'
 import { api } from '../../lib/api'
 import { getRewardfulReferral } from '../../lib/rewardful'
+import { trackInitiateCheckout, trackPurchase } from '../../lib/fbpixel'
 import {
   PRO_TIERS,
   BUSINESS_TIERS,
@@ -75,6 +76,7 @@ export default function NewWorkspacePage() {
         ? ExpoLinking.createURL('checkout-return')
         : (typeof window !== 'undefined' ? window.location.origin : undefined)
       console.log('[NewWorkspace] checkout start', { planId, billingInterval, isNative, redirectBase })
+      trackInitiateCheckout({ planId, billingInterval, workspaceId: 'new' })
 
       const data = await api.createWorkspaceCheckout(http, {
         workspaceName: workspaceName.trim(),
@@ -113,6 +115,7 @@ export default function NewWorkspacePage() {
                 try {
                   const verifyResult = await api.verifyCheckout(http, sessionId)
                   console.log('[NewWorkspace] verify result:', verifyResult)
+                  trackPurchase({ planId: verifyResult.planId, workspaceId: verifyResult.workspaceId ?? wsId ?? undefined })
                 } catch (verifyErr) {
                   console.warn('[NewWorkspace] verify failed (webhook will handle):', verifyErr)
                 }
