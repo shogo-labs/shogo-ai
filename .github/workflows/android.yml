@@ -2,12 +2,10 @@
 # Android Build & Update Pipeline
 # =============================================================================
 # Environments:
-#   staging    — push to `staging` branch or manual dispatch with environment=staging
-#   production — push to `main` branch or manual dispatch with environment=production
+#   staging    — push to main branch (auto OTA to staging channel)
+#   production — push android-v* tag or manual dispatch with environment=production
 #
-# Automatic (push):
-#   staging branch  → environment=staging  (channel=staging,  OTA branch=staging)
-#   main branch     → environment=production (channel=production, OTA branch=production)
+# Automatic (push to main):
 #   - Resolves native fingerprint to detect if native deps changed
 #   - If fingerprint matches the last successful build → OTA update (eas update)
 #   - If fingerprint changed → full native build (expo prebuild + Gradle)
@@ -35,8 +33,9 @@ name: Android Build & Update
 on:
   push:
     branches:
-      - staging
       - main
+    tags:
+      - 'android-v*'
     paths:
       - 'apps/mobile/**'
       - 'packages/domain-stores/**'
@@ -86,8 +85,10 @@ jobs:
         run: |
           if [ -n "${{ github.event.inputs.environment }}" ]; then
             ENV="${{ github.event.inputs.environment }}"
-          elif [ "${{ github.ref_name }}" = "main" ]; then
+          elif [[ "${{ github.ref }}" == refs/tags/android-v* ]]; then
             ENV="production"
+          elif [ "${{ github.ref_name }}" = "main" ]; then
+            ENV="staging"
           else
             ENV="staging"
           fi

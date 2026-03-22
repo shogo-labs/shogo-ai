@@ -2,11 +2,12 @@
 # Shogo AI - Build, Test, and Deploy Pipeline (OCI / OKE)
 # =============================================================================
 # Multi-region deployment to Oracle Cloud Infrastructure:
-#   - production branch → production (US → EU → India)
-#   - staging / oracle-migration → staging
+#   - push to main     → staging (auto-deploy)
+#   - push tag v*      → production (US → EU → India)
+#   - workflow_dispatch → manual deploy to staging or production
 #
 # Pipeline stages:
-#   1. Setup - Determine environment from branch
+#   1. Setup - Determine environment from trigger
 #   2. Detect Changes - Skip image builds when code hasn't changed
 #   3. Build Runtime Base - Rebuild base image when templates/deps change
 #   4. Build & Push - Build Docker images and push to US OCIR
@@ -15,15 +16,14 @@
 #   7. Deploy EU + India - Secondary regions (parallel, skip migrations)
 # =============================================================================
 
-name: Build, Test, and Deploy (OCI)
+name: Build, Test, and Deploy
 
 on:
   push:
     branches:
       - main
-      - production
-      - staging
-      - oracle-migration
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       environment:
@@ -58,12 +58,12 @@ jobs:
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             ENV="${{ github.event.inputs.environment }}"
-          elif [[ "${{ github.ref }}" == "refs/heads/main" ]] || [[ "${{ github.ref }}" == "refs/heads/production" ]]; then
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             ENV="production"
-          elif [[ "${{ github.ref }}" == "refs/heads/staging" ]] || [[ "${{ github.ref }}" == "refs/heads/oracle-migration" ]]; then
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
             ENV="staging"
           else
-            echo "Unknown branch, defaulting to staging"
+            echo "Unknown ref, defaulting to staging"
             ENV="staging"
           fi
 
