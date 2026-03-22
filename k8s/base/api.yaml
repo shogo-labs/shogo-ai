@@ -1,0 +1,165 @@
+# =============================================================================
+# Shogo API Server - Control Plane
+# =============================================================================
+# The API server is a shared service that handles:
+#   - BetterAuth authentication
+#   - AI chat requests (proxied to Claude Code)
+#   - Workspace routing to MCP services
+#   - Publishing projects (creates Knative DomainMappings)
+#
+# This runs as a regular Deployment (not Knative) since it should always be up.
+# =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: shogo-api
+  namespace: shogo-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: shogo-api-domainmapping-manager
+rules:
+  - apiGroups: ["serving.knative.dev"]
+    resources: ["domainmappings"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: shogo-api-domainmapping-manager
+subjects:
+  - kind: ServiceAccount
+    name: shogo-api
+    namespace: shogo-system
+roleRef:
+  kind: ClusterRole
+  name: shogo-api-domainmapping-manager
+  apiGroup: rbac.authorization.k8s.io
+---
+# Role for managing database credential Secrets in the workspaces namespace.
+# The API creates/reads/updates/deletes Secrets named "project-{id}-db-creds"
+# to persistently store per-project database credentials.
+# NOTE: Staging/production overlays define their own Role+RoleBinding with
+# environment-specific namespaces. This base definition uses shogo-workspaces.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: shogo-api-db-secret-manager
+  namespace: shogo-workspaces
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: shogo-api-db-secret-manager
+  namespace: shogo-workspaces
+subjects:
+  - kind: ServiceAccount
+    name: shogo-api
+    namespace: shogo-system
+roleRef:
+  kind: Role
+  name: shogo-api-db-secret-manager
+  apiGroup: rbac.authorization.k8s.io
+---
+# API secrets are managed by:
+# - Terraform (for initial creation with BETTER_AUTH_SECRET)
+# - GitHub Actions workflow (for ANTHROPIC_API_KEY and updates)
+# This secret is NOT committed to the repo - see .gitignore
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shogo-api
+  namespace: shogo-system
+  labels:
+    app: shogo-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: shogo-api
+  template:
+    metadata:
+      labels:
+        app: shogo-api
+    spec:
+      serviceAccountName: shogo-api
+      containers:
+        - name: api
+          image: k3d-shogo-registry:5000/shogo-api:latest
+          ports:
+            - containerPort: 8002
+          env:
+            - name: API_PORT
+              value: "8002"
+            - name: NODE_ENV
+              value: "production"
+            # TODO: Fix proper TLS verification for Kubernetes API
+            - name: NODE_TLS_REJECT_UNAUTHORIZED
+              value: "0"
+            - name: VITE_PORT
+              value: "80"
+            - name: BETTER_AUTH_URL
+              value: "http://localhost:8080"
+            - name: REDIS_URL
+              value: "redis://redis.shogo-system.svc.cluster.local:6379"
+            # CORS configuration - comma-separated list of allowed origins
+            # For local dev with port-forward, use http://localhost:3000
+            # For production, set to actual domain
+            - name: ALLOWED_ORIGINS
+              value: "http://localhost:3000,http://localhost:80,http://localhost"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: DATABASE_URL
+            - name: BETTER_AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: BETTER_AUTH_SECRET
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: ANTHROPIC_API_KEY
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8002
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 8002
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shogo-api
+  namespace: shogo-system
+  labels:
+    app: shogo-api
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8002
+      targetPort: 8002
+  selector:
+    app: shogo-api
+

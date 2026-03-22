@@ -1,0 +1,63 @@
+# =============================================================================
+# Shogo AI - Development Override (Hot Reloading)
+# =============================================================================
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# Quick start:
+#   bun run docker:dev        # Start with HMR support
+#   bun run docker:dev:build  # Rebuild and start
+#   bun run docker:dev:logs   # Follow all logs
+#   bun run docker:dev:down   # Stop all services
+#
+# Port Reference:
+#   - Web UI:    http://localhost:5173 (with HMR)
+#   - API:       http://localhost:8002
+#   - Postgres:  localhost:5432
+#   - MinIO:     localhost:9000 (console: 9001)
+#   - Redis:     localhost:6379
+#
+# E2E Tests:
+#   cd apps/web && bun run test:e2e
+#
+# This override:
+#   - Mounts source code for live editing
+#   - Uses watch mode for api (auto-restart on file changes)
+#   - Uses Vite dev server for web (HMR with WebSocket)
+#   - Project preview works via RuntimeManager (no separate container needed)
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # API Server - Development with hot reloading
+  # ---------------------------------------------------------------------------
+  # The API also runs RuntimeManager for project previews, spawning Vite
+  # processes inside this container. No separate runtime container needed.
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile.dev
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/packages/project-runtime/node_modules
+      - /app/apps/api/node_modules
+      # Persist workspaces for project files
+      - ./workspaces:/app/workspaces
+    environment:
+      NODE_ENV: development
+      # CORS: Allow all development origins
+      ALLOWED_ORIGINS: http://localhost:3000,http://localhost:5173,http://127.0.0.1:5173,http://host.docker.internal:5173
+      # RuntimeManager config for project previews
+      WORKSPACES_DIR: /app/workspaces
+      RUNTIME_BASE_PORT: "5200"
+      RUNTIME_DOMAIN_SUFFIX: localhost
+    command: ["bun", "--watch", "src/server.ts"]
+
+  # ---------------------------------------------------------------------------
+  # Web Frontend (Expo) - Development
+  # ---------------------------------------------------------------------------
+  # For dev, run Expo directly: bun run web:dev
+  # The Docker web service is production-only (static export + nginx).
+  # ---------------------------------------------------------------------------

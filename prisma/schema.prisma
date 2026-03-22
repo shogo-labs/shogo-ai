@@ -1,0 +1,1147 @@
+// Shogo AI - Prisma Schema
+// Migrated from Enhanced JSON Schema (.schemas/*.json)
+//
+// This schema consolidates all domains:
+// - studio-core: Workspace, Project, Member, etc.
+// - platform-features: FeatureSession, Requirements, Tasks, etc.
+// - billing: Subscription, Credits, Usage
+// - studio-chat: ChatSession, ChatMessage, ToolCallLog
+// - component-builder: ComponentDefinition, Registry, Bindings
+// - better-auth: User, Session, Account, Verification
+
+generator client {
+  provider = "prisma-client"
+  output   = "../apps/api/src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// =============================================================================
+// BETTER-AUTH (Authentication)
+// =============================================================================
+
+enum UserRole {
+  user
+  super_admin
+}
+
+model User {
+  id                  String    @id @default(cuid())
+  name                String?
+  email               String    @unique
+  emailVerified       Boolean   @default(false)
+  image               String?
+  role                UserRole  @default(user)
+  onboardingCompleted Boolean   @default(false)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  // Relations
+  sessions      Session[]
+  accounts      Account[]
+  members       Member[]
+  notifications Notification[]
+  starredProjects StarredProject[]
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model Account {
+  id                    String    @id @default(cuid())
+  userId                String
+  accountId             String
+  providerId            String
+  accessToken           String?
+  refreshToken          String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  idToken               String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, accountId])
+  @@index([userId])
+  @@map("accounts")
+}
+
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verifications")
+}
+
+// =============================================================================
+// STUDIO-CORE (Multi-tenancy & Project Management)
+// =============================================================================
+
+model Workspace {
+  id          String   @id @default(uuid())
+  name        String
+  slug        String   @unique
+  description String?
+  ssoSettings Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  projects        Project[]
+  members         Member[]
+  billingAccounts BillingAccount[]
+  invitations     Invitation[]
+  inviteLinks     InviteLink[]
+  folders         Folder[]
+  subscriptions   Subscription[]
+  creditLedgers   CreditLedger[]
+  usageEvents     UsageEvent[]
+  starredProjects StarredProject[]
+
+  @@map("workspaces")
+}
+
+model Project {
+  id                 String        @id @default(uuid())
+  name               String
+  description        String?
+  workspaceId        String
+  tier               ProjectTier   @default(starter)
+  status             ProjectStatus @default(draft)
+  schemas            String[]      @default([])
+  createdBy          String?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+  folderId           String?
+  publishedSubdomain String?       @unique
+  publishedAt        DateTime?
+  accessLevel        AccessLevel   @default(anyone)
+  category           ProjectCategory?
+  siteTitle          String?
+  siteDescription    String?
+  thumbnailUrl       String?
+  templateId         String?
+  knativeServiceName String?
+  settings           Json?
+
+  // Relations
+  workspace        Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  folder           Folder?            @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  members          Member[]
+  inviteLinks      InviteLink[]
+  featureSessions  FeatureSession[]
+  chatSessions     ChatSession[]
+  usageEvents      UsageEvent[]
+  checkpoints      ProjectCheckpoint[]
+  githubConnection GitHubConnection?
+  starredBy        StarredProject[]
+  agentConfig      AgentConfig?
+
+  @@index([workspaceId])
+  @@index([folderId])
+  @@map("projects")
+}
+
+model AgentConfig {
+  id                 String    @id @default(uuid())
+  projectId          String    @unique
+  heartbeatInterval  Int       @default(1800)
+  heartbeatEnabled   Boolean   @default(false)
+  nextHeartbeatAt    DateTime?
+  lastHeartbeatAt    DateTime?
+  quietHoursStart    String?
+  quietHoursEnd      String?
+  quietHoursTimezone String?
+  channels           Json      @default("[]")
+  modelProvider      String    @default("anthropic")
+  modelName          String    @default("claude-sonnet-4-6")
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("agent_configs")
+}
+
+enum ProjectTier {
+  starter
+  pro
+  enterprise
+  internal
+}
+
+enum ProjectStatus {
+  draft
+  active
+  archived
+}
+
+enum AccessLevel {
+  anyone
+  authenticated
+  private
+}
+
+enum ProjectCategory {
+  app
+  website
+  tool
+  game
+}
+
+
+// =============================================================================
+// VERSION CONTROL (Checkpoints & GitHub Integration)
+// =============================================================================
+
+model ProjectCheckpoint {
+  id            String          @id @default(uuid())
+  projectId     String
+  name          String?         // User-provided name like "Before auth changes"
+  description   String?
+  commitSha     String          // Git commit SHA
+  commitMessage String
+  branch        String          @default("main")
+  includesDb    Boolean         @default(false)
+  filesChanged  Int             @default(0)
+  additions     Int             @default(0)
+  deletions     Int             @default(0)
+  isAutomatic   Boolean         @default(false) // Auto-checkpoint from AI operations
+  createdBy     String?
+  createdAt     DateTime        @default(now())
+
+  // Relations
+  project       Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt(sort: Desc)])
+  @@index([commitSha])
+  @@map("project_checkpoints")
+}
+
+model GitHubConnection {
+  id              String    @id @default(uuid())
+  projectId       String    @unique
+  repoOwner       String
+  repoName        String
+  repoFullName    String    // owner/repo for convenience
+  defaultBranch   String    @default("main")
+  installationId  Int?      // GitHub App installation ID
+  repoId          Int?      // GitHub repository ID
+  isPrivate       Boolean   @default(true)
+  syncEnabled     Boolean   @default(true)
+  lastPushAt      DateTime?
+  lastPullAt      DateTime?
+  lastSyncError   String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([installationId])
+  @@index([repoFullName])
+  @@map("github_connections")
+}
+
+model StarredProject {
+  id          String   @id @default(uuid())
+  userId      String
+  projectId   String
+  workspaceId String
+  createdAt   DateTime @default(now())
+
+  // Relations
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, projectId])
+  @@index([workspaceId])
+  @@index([projectId])
+  @@index([userId])
+  @@map("starred_projects")
+}
+
+model Member {
+  id             String     @id @default(uuid())
+  userId         String
+  role           MemberRole @default(member)
+  workspaceId    String?
+  projectId      String?
+  isBillingAdmin Boolean    @default(false)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  // Relations
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([workspaceId])
+  @@index([projectId])
+  @@map("members")
+}
+
+enum MemberRole {
+  owner
+  admin
+  member
+  viewer
+}
+
+model BillingAccount {
+  id               String   @id @default(uuid())
+  workspaceId      String
+  stripeCustomerId String?
+  taxId            String?
+  creditsBalance   Float    @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // Relations
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId])
+  @@map("billing_accounts")
+}
+
+model Invitation {
+  id          String           @id @default(uuid())
+  email       String
+  role        MemberRole       @default(member)
+  workspaceId String?
+  projectId   String?
+  status      InvitationStatus @default(pending)
+  emailStatus EmailStatus      @default(not_sent)
+  emailSentAt DateTime?
+  emailError  String?
+  invitedBy   String?
+  expiresAt   DateTime
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  // Relations
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([email])
+  @@index([workspaceId])
+  @@map("invitations")
+}
+
+enum InvitationStatus {
+  pending
+  accepted
+  declined
+  expired
+  cancelled
+}
+
+enum EmailStatus {
+  not_sent
+  sent
+  failed
+}
+
+model InviteLink {
+  id          String     @id @default(uuid())
+  token       String     @unique @default(uuid())
+  projectId   String?
+  workspaceId String?
+  role        MemberRole @default(member)
+  createdBy   String
+  enabled     Boolean    @default(true)
+  expiresAt   DateTime?
+  useCount    Int        @default(0)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  project   Project?   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([projectId])
+  @@map("invite_links")
+}
+
+model Folder {
+  id          String   @id @default(uuid())
+  name        String
+  workspaceId String
+  parentId    String?
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  parent    Folder?   @relation("FolderHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children  Folder[]  @relation("FolderHierarchy")
+  projects  Project[]
+
+  @@index([workspaceId])
+  @@index([parentId])
+  @@map("folders")
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  type      NotificationType
+  title     String
+  message   String
+  metadata  Json?
+  actionUrl String?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, readAt])
+  @@map("notifications")
+}
+
+enum NotificationType {
+  invitation_pending
+  invitation_accepted
+  member_joined
+  member_left
+  workspace_updated
+}
+
+// =============================================================================
+// BILLING (Subscriptions & Credits)
+// =============================================================================
+
+model Subscription {
+  id                  String             @id @default(uuid())
+  workspaceId         String
+  stripeSubscriptionId String            @unique
+  stripeCustomerId    String
+  planId              PlanId
+  status              SubscriptionStatus
+  billingInterval     BillingInterval
+  currentPeriodStart  DateTime
+  currentPeriodEnd    DateTime
+  cancelAtPeriodEnd   Boolean            @default(false)
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  // Relations
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("subscriptions")
+}
+
+enum PlanId {
+  pro
+  business
+  enterprise
+}
+
+enum SubscriptionStatus {
+  active
+  past_due
+  canceled
+  trialing
+  paused
+}
+
+enum BillingInterval {
+  monthly
+  annual
+}
+
+model CreditLedger {
+  id               String   @id @default(uuid())
+  workspaceId      String   @unique
+  monthlyCredits   Float    @default(0)
+  dailyCredits     Float    @default(0)
+  rolloverCredits  Float    @default(0)
+  anniversaryDay   Int
+  lastDailyReset   DateTime
+  lastMonthlyReset DateTime
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // Relations
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("credit_ledgers")
+}
+
+model UsageEvent {
+  id            String       @id @default(uuid())
+  workspaceId   String
+  projectId     String?
+  memberId      String
+  actionType    String
+  actionMetadata Json?
+  creditCost    Float
+  creditSource  CreditSource
+  balanceBefore Float
+  balanceAfter  Float
+  createdAt     DateTime     @default(now())
+
+  // Relations
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId])
+  @@index([projectId])
+  @@index([memberId])
+  @@index([createdAt])
+  @@map("usage_events")
+}
+
+enum CreditSource {
+  daily
+  monthly
+}
+
+// =============================================================================
+// STUDIO-CHAT (Chat Sessions & Messages)
+// =============================================================================
+
+model ChatSession {
+  id                   String      @id @default(uuid())
+  name                 String?
+  inferredName         String
+  contextType          ContextType
+  contextId            String?
+  phase                String?
+  claudeCodeSessionId  String?
+  cachedMessageCount   Int         @default(0)
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @default(now()) @updatedAt
+  lastActiveAt         DateTime    @default(now())
+
+  // Relations - contextId can reference FeatureSession or Project
+  project         Project?       @relation(fields: [contextId], references: [id], onDelete: Cascade)
+  messages        ChatMessage[]
+  toolCallLogs    ToolCallLog[]
+
+  @@index([contextType, contextId])
+  @@map("chat_sessions")
+}
+
+enum ContextType {
+  feature
+  project
+  general
+}
+
+model ChatMessage {
+  id        String   @id @default(uuid())
+  sessionId String
+  role      ChatRole
+  content   String
+  imageData String?  @db.Text
+  parts     String?  @db.Text
+  createdAt DateTime @default(now())
+
+  // Relations
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([sessionId, createdAt])
+  @@map("chat_messages")
+}
+
+enum ChatRole {
+  user
+  assistant
+}
+
+model ToolCallLog {
+  id            String         @id @default(uuid())
+  chatSessionId String
+  messageId     String
+  toolName      String
+  status        ToolCallStatus
+  args          Json?
+  result        Json?
+  duration      Int?
+  createdAt     DateTime       @default(now())
+
+  // Relations
+  chatSession ChatSession @relation(fields: [chatSessionId], references: [id], onDelete: Cascade)
+
+  @@index([chatSessionId])
+  @@index([messageId])
+  @@map("tool_call_logs")
+}
+
+enum ToolCallStatus {
+  streaming
+  executing
+  complete
+  error
+}
+
+// =============================================================================
+// PLATFORM-FEATURES (Feature Development Pipeline)
+// =============================================================================
+
+model FeatureSession {
+  id                 String              @id @default(cuid())
+  name               String
+  intent             String
+  status             FeatureStatus       @default(discovery)
+  affectedPackages   String[]            @default([])
+  schemaName         String?
+  initialAssessment  Json?
+  featureArchetype   FeatureArchetype?
+  applicablePatterns String[]            @default([])
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  projectId          String?
+
+  // Relations
+  project                 Project?               @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  requirements            Requirement[]
+  designDecisions         DesignDecision[]
+  classificationDecisions ClassificationDecision[]
+  analysisFindings        AnalysisFinding[]
+  integrationPoints       IntegrationPoint[]
+  testCases               TestCase[]
+  implementationTasks     ImplementationTask[]
+  implementationRuns      ImplementationRun[]
+
+  @@index([projectId])
+  @@index([status])
+  @@map("feature_sessions")
+}
+
+enum FeatureStatus {
+  discovery
+  analysis
+  classification
+  design
+  spec
+  implementation
+  testing
+  complete
+}
+
+enum FeatureArchetype {
+  service
+  domain
+  infrastructure
+  hybrid
+}
+
+model Requirement {
+  id           String              @id @default(cuid())
+  sessionId    String
+  name         String
+  description  String
+  priority     RequirementPriority
+  status       RequirementStatus   @default(proposed)
+  auditVerdict AuditVerdict?
+  auditNotes   String?
+  createdAt    DateTime            @default(now())
+
+  // Relations
+  session             FeatureSession       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  testCases           TestCase[]
+  implementationTasks ImplementationTask[]
+  testSpecifications  TestSpecification[]
+
+  @@index([sessionId])
+  @@map("requirements")
+}
+
+enum RequirementPriority {
+  must
+  should
+  could
+  wont
+}
+
+enum RequirementStatus {
+  proposed
+  accepted
+  implemented
+}
+
+enum AuditVerdict {
+  OK
+  REVISE
+  DROP
+  MERGE
+  DEFER
+}
+
+model DesignDecision {
+  id        String   @id @default(cuid())
+  sessionId String
+  name      String
+  question  String
+  decision  String
+  rationale String
+  createdAt DateTime @default(now())
+
+  // Relations
+  session FeatureSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@map("design_decisions")
+}
+
+model ClassificationDecision {
+  id                String            @id @default(cuid())
+  sessionId         String
+  initialAssessment FeatureArchetype?
+  validatedArchetype FeatureArchetype
+  evidenceChecklist Json?
+  rationale         String
+  correction        String?
+  createdAt         DateTime          @default(now())
+
+  // Relations
+  session FeatureSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@map("classification_decisions")
+}
+
+model AnalysisFinding {
+  id             String      @id @default(cuid())
+  sessionId      String
+  name           String
+  type           FindingType
+  description    String
+  location       String
+  relevantCode   String?     @db.Text
+  recommendation String?
+  createdAt      DateTime    @default(now())
+
+  // Relations
+  session           FeatureSession     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  integrationPoints IntegrationPoint[]
+
+  @@index([sessionId])
+  @@index([type])
+  @@map("analysis_findings")
+}
+
+enum FindingType {
+  pattern
+  integration_point
+  risk
+  gap
+  existing_test
+  verification
+  classification_evidence
+}
+
+model IntegrationPoint {
+  id             String     @id @default(cuid())
+  sessionId      String
+  name           String
+  filePath       String
+  package        String?
+  targetFunction String?
+  changeType     ChangeType?
+  description    String
+  rationale      String?
+  findingId      String?
+  isGenerated    Boolean    @default(false)
+  createdAt      DateTime   @default(now())
+
+  // Relations
+  session             FeatureSession       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  finding             AnalysisFinding?     @relation(fields: [findingId], references: [id], onDelete: SetNull)
+  implementationTasks ImplementationTask[]
+
+  @@index([sessionId])
+  @@index([findingId])
+  @@map("integration_points")
+}
+
+enum ChangeType {
+  add
+  modify
+  extend
+  remove
+}
+
+model TestCase {
+  id            String         @id @default(cuid())
+  sessionId     String
+  requirementId String?
+  name          String
+  description   String
+  given         String
+  when          String
+  then          String
+  status        TestCaseStatus @default(specified)
+  createdAt     DateTime       @default(now())
+
+  // Relations
+  session     FeatureSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  requirement Requirement?   @relation(fields: [requirementId], references: [id], onDelete: SetNull)
+
+  @@index([sessionId])
+  @@index([requirementId])
+  @@map("test_cases")
+}
+
+enum TestCaseStatus {
+  specified
+  implemented
+  passing
+}
+
+model ImplementationTask {
+  id                 String     @id @default(cuid())
+  sessionId          String
+  name               String
+  integrationPointId String?
+  requirementId      String?
+  description        String
+  acceptanceCriteria String[]   @default([])
+  status             TaskStatus @default(planned)
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  // Relations
+  session            FeatureSession      @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  integrationPoint   IntegrationPoint?   @relation(fields: [integrationPointId], references: [id], onDelete: SetNull)
+  requirement        Requirement?        @relation(fields: [requirementId], references: [id], onDelete: SetNull)
+  dependencies       TaskDependency[]    @relation("DependentTask")
+  dependents         TaskDependency[]    @relation("BlockingTask")
+  testSpecifications TestSpecification[]
+  taskExecutions     TaskExecution[]
+
+  @@index([sessionId])
+  @@index([integrationPointId])
+  @@index([requirementId])
+  @@map("implementation_tasks")
+}
+
+// Junction table for task dependencies (many-to-many self-reference)
+model TaskDependency {
+  id              String @id @default(cuid())
+  dependentTaskId String
+  blockingTaskId  String
+
+  dependentTask ImplementationTask @relation("DependentTask", fields: [dependentTaskId], references: [id], onDelete: Cascade)
+  blockingTask  ImplementationTask @relation("BlockingTask", fields: [blockingTaskId], references: [id], onDelete: Cascade)
+
+  @@unique([dependentTaskId, blockingTaskId])
+  @@map("task_dependencies")
+}
+
+enum TaskStatus {
+  planned
+  in_progress
+  complete
+  blocked
+}
+
+model TestSpecification {
+  id            String   @id @default(cuid())
+  taskId        String
+  requirementId String?
+  scenario      String
+  given         String[] @default([])
+  when          String
+  then          String[] @default([])
+  testType      TestType
+  targetFile    String?
+  createdAt     DateTime @default(now())
+
+  // Relations
+  task        ImplementationTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  requirement Requirement?       @relation(fields: [requirementId], references: [id], onDelete: SetNull)
+
+  @@index([taskId])
+  @@index([requirementId])
+  @@map("test_specifications")
+}
+
+enum TestType {
+  unit
+  integration
+  acceptance
+}
+
+model ImplementationRun {
+  id             String    @id @default(cuid())
+  sessionId      String
+  status         RunStatus @default(in_progress)
+  currentTaskId  String?
+  completedTasks String[]  @default([])
+  failedTasks    String[]  @default([])
+  startedAt      DateTime  @default(now())
+  completedAt    DateTime?
+  lastError      String?
+
+  // Relations
+  session        FeatureSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  taskExecutions TaskExecution[]
+
+  @@index([sessionId])
+  @@map("implementation_runs")
+}
+
+enum RunStatus {
+  in_progress
+  blocked
+  complete
+  failed
+}
+
+model TaskExecution {
+  id                     String          @id @default(cuid())
+  runId                  String
+  taskId                 String
+  status                 ExecutionStatus @default(pending)
+  testFilePath           String?
+  implementationFilePath String?
+  testOutput             String?         @db.Text
+  retryCount             Int             @default(0)
+  errorMessage           String?
+  startedAt              DateTime        @default(now())
+  completedAt            DateTime?
+
+  // Relations
+  run  ImplementationRun  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  task ImplementationTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+  @@index([taskId])
+  @@map("task_executions")
+}
+
+enum ExecutionStatus {
+  pending
+  test_written
+  test_failing
+  implementing
+  test_passing
+  failed
+}
+
+// =============================================================================
+// COMPONENT-BUILDER (Dynamic UI System)
+// =============================================================================
+
+model ComponentDefinition {
+  id                String            @id @default(cuid())
+  name              String
+  category          ComponentCategory
+  description       String?
+  propsSchema       Json?
+  implementationRef String
+  previewRef        String?
+  tags              String[]          @default([])
+  supportedConfig   String[]          @default([])
+  aiGuidance        String?           @db.Text
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  // Relations
+  bindings       RendererBinding[]
+  fallbackFor    Registry[]         @relation("FallbackComponent")
+  componentSpecs ComponentSpec[]
+
+  @@unique([implementationRef])
+  @@map("component_definitions")
+}
+
+enum ComponentCategory {
+  display
+  input
+  layout
+  visualization
+  section
+}
+
+model Registry {
+  id                  String   @id @default(cuid())
+  name                String   @unique
+  description         String?
+  extendsId           String?
+  fallbackComponentId String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  // Relations
+  extends           Registry?           @relation("RegistryExtends", fields: [extendsId], references: [id], onDelete: SetNull)
+  extendedBy        Registry[]          @relation("RegistryExtends")
+  fallbackComponent ComponentDefinition? @relation("FallbackComponent", fields: [fallbackComponentId], references: [id], onDelete: SetNull)
+  bindings          RendererBinding[]
+
+  @@index([extendsId])
+  @@map("registries")
+}
+
+model RendererBinding {
+  id              String              @id @default(cuid())
+  name            String
+  registryId      String
+  componentId     String
+  matchExpression Json
+  priority        Int                 @default(0)
+  defaultConfig   Json?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  // Relations
+  registry  Registry            @relation(fields: [registryId], references: [id], onDelete: Cascade)
+  component ComponentDefinition @relation(fields: [componentId], references: [id], onDelete: Cascade)
+
+  @@index([registryId])
+  @@index([componentId])
+  @@index([registryId, priority])
+  @@map("renderer_bindings")
+}
+
+model LayoutTemplate {
+  id              String   @id @default(cuid())
+  name            String   @unique
+  description     String?
+  slots           Json     @default("[]")
+  defaultBindings Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  compositions Composition[]
+
+  @@map("layout_templates")
+}
+
+model Composition {
+  id              String   @id @default(cuid())
+  name            String
+  description     String?
+  layoutId        String
+  slotContent     Json     @default("[]")
+  dataContext     Json?
+  providerWrapper String?
+  providerConfig  Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  layout LayoutTemplate @relation(fields: [layoutId], references: [id], onDelete: Cascade)
+
+  @@index([layoutId])
+  @@map("compositions")
+}
+
+model ComponentSpec {
+  id                  String              @id @default(cuid())
+  name                String
+  intent              String
+  componentType       ComponentSpecType
+  schemas             String[]            @default([])
+  status              ComponentSpecStatus @default(draft)
+  requirements        Json?
+  layoutDecisions     Json?
+  dataBindings        Json?
+  interactionPatterns Json?
+  reuseOpportunities  Json?
+  implementedAsId     String?
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+
+  // Relations
+  implementedAs ComponentDefinition? @relation(fields: [implementedAsId], references: [id], onDelete: SetNull)
+
+  @@index([implementedAsId])
+  @@map("component_specs")
+}
+
+enum ComponentSpecType {
+  section
+  renderer
+  composition
+}
+
+enum ComponentSpecStatus {
+  draft
+  approved
+  implemented
+}
+
+// ============================================================================
+// Platform Settings (runtime-configurable by super admins)
+// ============================================================================
+
+model PlatformSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+
+  @@map("platform_settings")
+}
+
+// ============================================================================
+// Infrastructure Metrics
+// ============================================================================
+
+model InfraSnapshot {
+  id             String   @id @default(uuid())
+  timestamp      DateTime @default(now())
+
+  totalNodes     Int
+  asgDesired     Int
+  asgMax         Int
+  totalPodSlots  Int
+  usedPodSlots   Int
+  totalCpuMillis Int
+  usedCpuMillis  Int
+  limitCpuMillis Int      @default(0)
+
+  warmAvailable  Int
+  warmTarget     Int
+  warmAssigned   Int
+  coldStarts     Int @default(0)
+
+  totalProjects  Int
+  readyProjects  Int
+  runningProjects Int
+  scaledToZero   Int
+
+  orphansDeleted Int @default(0)
+  idleEvictions  Int @default(0)
+
+  @@index([timestamp])
+  @@map("infra_snapshots")
+}

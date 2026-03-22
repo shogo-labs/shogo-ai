@@ -1,0 +1,75 @@
+# =============================================================================
+# Image Pre-Puller DaemonSet - Production
+# =============================================================================
+# Ensures the runtime image is pre-pulled on all nodes to eliminate 60+ second
+# image pull delays during cold starts.
+# =============================================================================
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: image-prepuller
+  namespace: shogo-system
+  labels:
+    app.kubernetes.io/name: image-prepuller
+    app.kubernetes.io/part-of: shogo
+    app.kubernetes.io/component: infrastructure
+    environment: production
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: image-prepuller
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: image-prepuller
+        app.kubernetes.io/part-of: shogo
+        environment: production
+    spec:
+      tolerations:
+        - operator: Exists
+      priorityClassName: ""
+      containers:
+        - name: runtime-prepull
+          image: shogo-runtime
+          imagePullPolicy: Always
+          command: ["sleep", "infinity"]
+          resources:
+            requests:
+              memory: "1Mi"
+              cpu: "1m"
+            limits:
+              memory: "8Mi"
+              cpu: "10m"
+          securityContext:
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+        - name: postgres-prepull
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["sleep", "infinity"]
+          resources:
+            requests:
+              memory: "1Mi"
+              cpu: "1m"
+            limits:
+              memory: "8Mi"
+              cpu: "10m"
+          securityContext:
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+      restartPolicy: Always

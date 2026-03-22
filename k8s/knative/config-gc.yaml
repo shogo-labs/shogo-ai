@@ -1,0 +1,44 @@
+# =============================================================================
+# Knative Serving Garbage Collection Configuration
+# =============================================================================
+# This ConfigMap controls how Knative cleans up old revisions.
+# 
+# Problem: Without proper GC, old revisions accumulate and can cause:
+# - ImagePullBackOff when revisions reference deleted images
+# - Resource quota issues
+# - Confusing pod lists with many evicted/pending pods
+#
+# This config ensures aggressive cleanup of old revisions.
+#
+# APPLY THIS MANUALLY (goes to knative-serving namespace):
+#   kubectl apply -f k8s/knative/config-gc.yaml
+#
+# =============================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config-gc
+  namespace: knative-serving
+  labels:
+    app.kubernetes.io/part-of: shogo
+    serving.knative.dev/release: "v1.12.0"
+data:
+  # Maximum number of non-active revisions to retain per Service.
+  # Non-active = not receiving traffic and not the latest ready revision.
+  # Default is 20, we lower this significantly for faster cleanup.
+  max-non-active-revisions: "2"
+  
+  # Minimum age of a revision before it can be deleted (even if over max-non-active).
+  # This prevents deletion of very recently created revisions.
+  # Default is 48h. We keep this for stability.
+  retain-since-create-time: "48h"
+  
+  # Minimum age since a revision was last active before it can be deleted.
+  # Default is 15h. We reduce this for faster cleanup after scale-to-zero.
+  retain-since-last-active-time: "30m"
+  
+  # Minimum number of generations to retain (regardless of activity).
+  # This ensures we always keep at least this many recent revisions.
+  # Default is 1.
+  min-non-active-revisions: "1"

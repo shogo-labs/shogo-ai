@@ -1,0 +1,138 @@
+// Prisma schema for Form Builder
+// Demonstrates dynamic field schemas, position ordering, JSON storage, and public sharing
+// This is a tool for BUILDING forms - users design their own form structures
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  importFileExtension = ""
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ============================================================================
+// User model
+// ============================================================================
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  forms Form[]
+
+  @@map("users")
+}
+
+// ============================================================================
+// Form Builder Models
+// ============================================================================
+
+// A form template created by a user
+model Form {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  slug        String   @unique // For public URL: /f/:slug
+  
+  // Form settings
+  isPublished          Boolean @default(false) @map("is_published")
+  isAcceptingResponses Boolean @default(true) @map("is_accepting_responses")
+  
+  // Appearance
+  primaryColor    String  @default("#3B82F6") @map("primary_color")
+  
+  // Messages
+  submitButtonText  String @default("Submit") @map("submit_button_text")
+  successMessage    String @default("Thank you for your submission!") @map("success_message")
+  
+  // Owner
+  userId    String   @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fields      Field[]
+  submissions Submission[]
+
+  @@index([userId])
+  @@index([slug])
+  @@map("forms")
+}
+
+// A field within a form (dynamic schema)
+model Field {
+  id       String @id @default(cuid())
+  formId   String @map("form_id")
+  
+  // Field definition
+  type        String // text, textarea, email, number, date, select, checkbox, radio, rating
+  label       String
+  placeholder String?
+  helpText    String? @map("help_text")
+  
+  // Ordering
+  position Int @default(0)
+  
+  // Validation
+  isRequired   Boolean @default(false) @map("is_required")
+  
+  // Options for select/radio/checkbox fields (stored as JSON string)
+  // Format: [{"value": "opt1", "label": "Option 1"}, ...]
+  options      String? // JSON array
+  
+  // Metadata
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  form      Form       @relation(fields: [formId], references: [id], onDelete: Cascade)
+  responses Response[]
+
+  @@index([formId, position])
+  @@map("fields")
+}
+
+// A submission (one completed form)
+model Submission {
+  id        String   @id @default(cuid())
+  formId    String   @map("form_id")
+  
+  // Respondent info (optional)
+  respondentEmail String? @map("respondent_email")
+  
+  // Management
+  isRead    Boolean  @default(false) @map("is_read")
+  
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  form      Form       @relation(fields: [formId], references: [id], onDelete: Cascade)
+  responses Response[]
+
+  @@index([formId, createdAt])
+  @@index([formId, isRead])
+  @@map("submissions")
+}
+
+// Individual field responses within a submission
+model Response {
+  id           String @id @default(cuid())
+  submissionId String @map("submission_id")
+  fieldId      String @map("field_id")
+  
+  // The actual response value (stored as string, parsed based on field type)
+  value        String
+  
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  field      Field      @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+
+  @@unique([submissionId, fieldId])
+  @@index([fieldId])
+  @@map("responses")
+}

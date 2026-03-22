@@ -1,0 +1,36 @@
+{
+  "name": "kanban",
+  "description": "Project board with columns, cards, labels, and drag-and-drop ordering",
+  "complexity": "intermediate",
+  "features": [
+    "prisma",
+    "user-auth",
+    "crud",
+    "one-to-many",
+    "many-to-many",
+    "junction-tables",
+    "position-ordering",
+    "drag-and-drop",
+    "nested-includes"
+  ],
+  "models": ["User", "Board", "Column", "Card", "Label", "CardLabel"],
+  "tags": ["kanban", "project", "tasks", "board", "trello", "columns", "cards", "agile", "scrum"],
+  "useCases": [
+    "kanban board",
+    "project board",
+    "task board",
+    "trello clone",
+    "project management",
+    "task management",
+    "agile board",
+    "scrum board",
+    "workflow board"
+  ],
+  "techStack": {
+    "database": "sqlite",
+    "orm": "prisma",
+    "frontend": "react",
+    "backend": "hono",
+    "sdk": "@shogo-ai/sdk"
+  }
+}

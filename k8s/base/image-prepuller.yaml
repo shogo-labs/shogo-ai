@@ -1,0 +1,83 @@
+# =============================================================================
+# Image Pre-Puller DaemonSet
+# =============================================================================
+# Ensures the runtime image is pre-pulled on all nodes to eliminate 60+ second
+# image pull delays during cold starts.
+#
+# How it works:
+# 1. DaemonSet runs one pod on every node
+# 2. The pod uses the runtime images but just sleeps
+# 3. This causes images to be pulled to every node
+# 4. When runtime pods start, the image is already cached locally
+#
+# Resource Usage: Minimal (just sleeping containers per node)
+# =============================================================================
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: image-prepuller
+  namespace: shogo-staging-system
+  labels:
+    app.kubernetes.io/name: image-prepuller
+    app.kubernetes.io/part-of: shogo
+    app.kubernetes.io/component: infrastructure
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: image-prepuller
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 100%  # All pods can be unavailable during update
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: image-prepuller
+        app.kubernetes.io/part-of: shogo
+    spec:
+      # Run on all nodes including system nodes
+      tolerations:
+        - operator: Exists
+      # Low priority - don't block other workloads
+      priorityClassName: ""
+      containers:
+        - name: runtime-prepull
+          image: RUNTIME_IMAGE_PLACEHOLDER
+          imagePullPolicy: Always
+          command: ["sleep", "infinity"]
+          resources:
+            requests:
+              memory: "16Mi"
+              cpu: "1m"
+            limits:
+              memory: "32Mi"
+              cpu: "10m"
+          securityContext:
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+        - name: postgres-prepull
+          image: docker.io/library/postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["sleep", "infinity"]
+          resources:
+            requests:
+              memory: "16Mi"
+              cpu: "1m"
+            limits:
+              memory: "32Mi"
+              cpu: "10m"
+          securityContext:
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+      # Restart if container fails
+      restartPolicy: Always

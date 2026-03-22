@@ -1,0 +1,38 @@
+{
+  "name": "booking-app",
+  "description": "A service booking and appointment scheduling application. Manage services with pricing, define available time slots, and let customers book appointments. Features booking status management (pending, confirmed, cancelled, completed), customer information collection, and a public booking page. Use this template for appointment scheduling, service reservations, consultations, or any time-based booking system.",
+  "complexity": "intermediate",
+  "features": [
+    "prisma",
+    "user-auth",
+    "crud",
+    "one-to-many",
+    "enums",
+    "date-time-handling",
+    "status-management",
+    "public-booking",
+    "aggregations",
+    "filtering"
+  ],
+  "models": ["User", "Service", "TimeSlot", "Booking"],
+  "tags": ["booking", "appointments", "scheduling", "calendar", "reservations", "services", "availability", "calendly", "intermediate"],
+  "useCases": [
+    "appointment booking",
+    "service scheduling",
+    "consultation booking",
+    "salon appointments",
+    "doctor appointments",
+    "meeting scheduler",
+    "class booking",
+    "resource reservation",
+    "calendly clone",
+    "appointment scheduler"
+  ],
+  "techStack": {
+    "database": "sqlite",
+    "orm": "prisma",
+    "frontend": "react",
+    "router": "tanstack-router",
+    "sdk": "@shogo-ai/sdk"
+  }
+}

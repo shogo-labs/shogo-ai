@@ -1,0 +1,8 @@
+[
+  { "id": "pm-cash", "name": "Cash", "type": "cash" },
+  { "id": "pm-credit", "name": "Credit Card", "type": "credit" },
+  { "id": "pm-debit", "name": "Debit Card", "type": "debit" },
+  { "id": "pm-bank", "name": "Bank Transfer", "type": "bank_transfer" },
+  { "id": "pm-venmo", "name": "Venmo", "type": "other" },
+  { "id": "pm-paypal", "name": "PayPal", "type": "other" }
+]

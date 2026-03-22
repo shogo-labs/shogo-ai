@@ -1,0 +1,32 @@
+# =============================================================================
+# Kustomize Overlay - Production EU Environment (eu-west-1)
+# =============================================================================
+# Usage: kubectl apply -k k8s/overlays/production-eu/
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - api-service.yaml
+  - web-service.yaml
+  - image-prepuller.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: shogo
+      app.kubernetes.io/managed-by: kustomize
+      environment: production
+      region: eu-west-1
+    includeSelectors: false
+
+images:
+  - name: shogo-api
+    newName: 097357356677.dkr.ecr.eu-west-1.amazonaws.com/shogo/shogo-api
+    newTag: production-latest
+  - name: shogo-web
+    newName: 097357356677.dkr.ecr.eu-west-1.amazonaws.com/shogo/shogo-web
+    newTag: production-latest
+  - name: shogo-runtime
+    newName: 097357356677.dkr.ecr.eu-west-1.amazonaws.com/shogo/shogo-runtime
+    newTag: production-latest

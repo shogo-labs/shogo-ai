@@ -1,0 +1,177 @@
+{
+  "_meta": {
+    "track": "skill",
+    "generated": true,
+    "generated_at": "2026-02-22T03:21:56.376Z",
+    "description": "Skill matching + skill creation examples — derived from skills.ts",
+    "sources": [
+      "packages/agent-runtime/src/skills.ts"
+    ],
+    "all_tool_names": [
+      "exec",
+      "read_file",
+      "write_file",
+      "web",
+      "browser",
+      "memory_read",
+      "memory_write",
+      "memory_search",
+      "send_message",
+      "cron",
+      "canvas_create",
+      "canvas_update",
+      "canvas_data",
+      "canvas_delete",
+      "canvas_action_wait",
+      "canvas_components",
+      "canvas_trigger_action",
+      "canvas_inspect",
+      "canvas_api_schema",
+      "canvas_api_seed",
+      "canvas_api_query",
+      "personality_update"
+    ]
+  },
+  "constants": {
+    "available_skills": [
+      {
+        "name": "git-summary",
+        "description": "Summarize recent git activity",
+        "trigger": "git summary|repo summary|commit log"
+      },
+      {
+        "name": "daily-digest",
+        "description": "Compile a daily activity digest",
+        "trigger": "daily digest|morning brief|daily summary"
+      },
+      {
+        "name": "check-github",
+        "description": "Check GitHub for new issues and PRs",
+        "trigger": "check github|github status|new issues|new prs"
+      },
+      {
+        "name": "deploy-status",
+        "description": "Check deployment status",
+        "trigger": "deploy status|deployment|deploy check|is it deployed"
+      },
+      {
+        "name": "web-research",
+        "description": "Research a topic on the web",
+        "trigger": "research|look up|find info|web search"
+      }
+    ]
+  },
+  "examples": [
+    {
+      "id": "exact-git-summary",
+      "type": "match",
+      "user_message": "git summary",
+      "expected_skill": "git-summary",
+      "expected_confidence_min": 0.9,
+      "optimal_tool_calls": 0,
+      "optimal_iterations": 0
+    },
+    {
+      "id": "semantic-repo-changes",
+      "type": "match",
+      "user_message": "what changed in the repo this week",
+      "expected_skill": "git-summary",
+      "expected_confidence_min": 0.7,
+      "optimal_tool_calls": 0,
+      "optimal_iterations": 0
+    },
+    {
+      "id": "semantic-prs",
+      "type": "match",
+      "user_message": "are there any new pull requests I should look at",
+      "expected_skill": "check-github",
+      "expected_confidence_min": 0.7,
+      "optimal_tool_calls": 0,
+      "optimal_iterations": 0
+    },
+    {
+      "id": "no-match-weather",
+      "type": "match",
+      "user_message": "what's the weather like today",
+      "expected_skill": "none",
+      "expected_confidence_min": 0,
+      "optimal_tool_calls": 0,
+      "optimal_iterations": 0
+    },
+    {
+      "id": "ambiguous-summarize",
+      "type": "match",
+      "user_message": "summarize things for me",
+      "expected_skill": "daily-digest",
+      "expected_confidence_min": 0.5,
+      "optimal_tool_calls": 0,
+      "optimal_iterations": 0
+    },
+    {
+      "id": "semantic-build-deploy",
+      "type": "match",
+      "user_message": "is the build green? did the latest deploy work?",
+      "expected_skill": "deploy-status",
+      "expected_confidence_min": 0.7,
+      "optimal_tool_calls": 0,
+      "optimal_iterations": 0
+    },
+    {
+      "id": "exact-research",
+      "type": "match",
+      "user_message": "research the latest AI model benchmarks",
+      "expected_skill": "web-research",
+      "expected_confidence_min": 0.8,
+      "optimal_tool_calls": 0,
+      "optimal_iterations": 0
+    },
+    {
+      "id": "semantic-morning-brief",
+      "type": "match",
+      "user_message": "give me a morning briefing",
+      "expected_skill": "daily-digest",
+      "expected_confidence_min": 0.8,
+      "optimal_tool_calls": 0,
+      "optimal_iterations": 0
+    },
+    {
+      "id": "create-github-pr-check",
+      "type": "create",
+      "user_description": "Create a skill that checks my GitHub PRs and summarizes review status",
+      "expected_skill_name": "github-pr-check",
+      "expected_trigger_phrases_min": 3,
+      "expected_tools": [
+        "web",
+        "memory_write"
+      ],
+      "optimal_tool_calls": 1,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "create-daily-standup",
+      "type": "create",
+      "user_description": "Make a skill for daily standup notes that reads yesterday's work and helps plan today",
+      "expected_skill_name": "daily-standup",
+      "expected_trigger_phrases_min": 3,
+      "expected_tools": [
+        "memory_read",
+        "memory_write"
+      ],
+      "optimal_tool_calls": 1,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "create-server-health",
+      "type": "create",
+      "user_description": "Build a skill that monitors server health by checking CPU, memory, and disk usage",
+      "expected_skill_name": "server-health",
+      "expected_trigger_phrases_min": 3,
+      "expected_tools": [
+        "exec",
+        "memory_write"
+      ],
+      "optimal_tool_calls": 1,
+      "optimal_iterations": 1
+    }
+  ]
+}

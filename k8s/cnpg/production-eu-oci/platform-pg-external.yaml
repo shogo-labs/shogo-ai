@@ -1,0 +1,19 @@
+# LoadBalancer Service to expose EU PostgreSQL externally for cross-region
+# logical replication subscriptions from US and India.
+apiVersion: v1
+kind: Service
+metadata:
+  name: platform-pg-external
+  namespace: shogo-production-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    cnpg.io/cluster: platform-pg
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+  selector:
+    cnpg.io/cluster: platform-pg
+    role: primary

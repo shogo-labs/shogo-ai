@@ -1,0 +1,111 @@
+// Prisma schema for Inventory Management
+// Demonstrates relations, aggregations, and stock tracking
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  importFileExtension = ""
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ============================================================================
+// User model
+// ============================================================================
+
+model User {
+  id           String          @id @default(cuid())
+  email        String          @unique
+  name         String?
+  createdAt    DateTime        @default(now()) @map("created_at")
+  updatedAt    DateTime        @updatedAt @map("updated_at")
+
+  products     Product[]
+  categories   Category[]
+  suppliers    Supplier[]
+  movements    StockMovement[]
+
+  @@map("users")
+}
+
+// ============================================================================
+// Inventory models
+// ============================================================================
+
+model Category {
+  id        String    @id @default(cuid())
+  name      String
+  icon      String    @default("📦")
+  color     String    @default("#6B7280")
+  userId    String    @map("user_id")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  products Product[]
+
+  @@unique([userId, name])
+  @@map("categories")
+}
+
+model Supplier {
+  id        String    @id @default(cuid())
+  name      String
+  email     String?
+  phone     String?
+  address   String?
+  userId    String    @map("user_id")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  products Product[]
+
+  @@unique([userId, name])
+  @@map("suppliers")
+}
+
+model Product {
+  id           String          @id @default(cuid())
+  name         String
+  sku          String
+  description  String?
+  price        Float           @default(0)
+  cost         Float           @default(0)
+  quantity     Int             @default(0)
+  minQuantity  Int             @default(10) @map("min_quantity")
+  categoryId   String          @map("category_id")
+  supplierId   String?         @map("supplier_id")
+  userId       String          @map("user_id")
+  createdAt    DateTime        @default(now()) @map("created_at")
+  updatedAt    DateTime        @updatedAt @map("updated_at")
+
+  category  Category        @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  supplier  Supplier?       @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  movements StockMovement[]
+
+  @@unique([userId, sku])
+  @@index([categoryId])
+  @@index([supplierId])
+  @@map("products")
+}
+
+model StockMovement {
+  id        String   @id @default(cuid())
+  type      String   // "in" | "out" | "adjustment"
+  quantity  Int
+  reason    String?
+  productId String   @map("product_id")
+  userId    String   @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([productId, createdAt])
+  @@index([userId, createdAt])
+  @@map("stock_movements")
+}

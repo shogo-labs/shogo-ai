@@ -1,0 +1,261 @@
+# =============================================================================
+# API Service - Staging Environment (OCI / OKE)
+# =============================================================================
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: api-service-account
+  namespace: shogo-staging-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: shogo-staging-api-domainmapping-manager
+rules:
+  - apiGroups: ["serving.knative.dev"]
+    resources: ["domainmappings"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: ["serving.knative.dev"]
+    resources: ["services"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: shogo-staging-api-domainmapping-manager
+subjects:
+  - kind: ServiceAccount
+    name: api-service-account
+    namespace: shogo-staging-system
+roleRef:
+  kind: ClusterRole
+  name: shogo-staging-api-domainmapping-manager
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: shogo-api-db-secret-manager
+  namespace: shogo-staging-workspaces
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: shogo-api-db-secret-manager
+  namespace: shogo-staging-workspaces
+subjects:
+  - kind: ServiceAccount
+    name: api-service-account
+    namespace: shogo-staging-system
+roleRef:
+  kind: Role
+  name: shogo-api-db-secret-manager
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: api
+  namespace: shogo-staging-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    environment: staging
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/min-scale: "1"
+        autoscaling.knative.dev/max-scale: "5"
+    spec:
+      serviceAccountName: api-service-account
+      containers:
+        - name: api
+          image: us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-api:staging-oci-latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8002
+          env:
+            - name: API_PORT
+              value: "8002"
+            - name: NODE_ENV
+              value: "staging"
+            - name: SYSTEM_NAMESPACE
+              value: "shogo-staging-system"
+            - name: NODE_TLS_REJECT_UNAUTHORIZED
+              value: "0"
+            - name: PROJECT_NAMESPACE
+              value: "shogo-staging-workspaces"
+            - name: RUNTIME_IMAGE
+              value: "us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-runtime:staging-oci-latest"
+            - name: PREVIEW_BASE_DOMAIN
+              value: "shogo.ai"
+            - name: PREVIEW_ENVIRONMENT
+              value: "staging"
+            - name: S3_WORKSPACES_BUCKET
+              value: "shogo-workspaces-staging"
+            - name: S3_REGION
+              value: "us-ashburn-1"
+            - name: S3_ENDPOINT
+              value: "https://idin4oltblww.compat.objectstorage.us-ashburn-1.oraclecloud.com"
+            - name: PUBLISH_NAMESPACE
+              value: "shogo-staging-system"
+            - name: PUBLISH_DOMAIN
+              value: "shogo.one"
+            - name: BETTER_AUTH_URL
+              value: "https://staging.studio.shogo.ai"
+            - name: ALLOWED_ORIGINS
+              value: "https://staging.studio.shogo.ai"
+            - name: REDIS_URL
+              value: "redis://redis-master.shogo-staging-system:6379"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: DATABASE_URL
+            - name: BETTER_AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: BETTER_AUTH_SECRET
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: ANTHROPIC_API_KEY
+            - name: STRIPE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: STRIPE_SECRET_KEY
+                  optional: true
+            - name: STRIPE_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: STRIPE_WEBHOOK_SECRET
+                  optional: true
+            - name: GH_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GH_APP_ID
+                  optional: true
+            - name: GH_APP_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GH_APP_CLIENT_ID
+                  optional: true
+            - name: GH_APP_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GH_APP_CLIENT_SECRET
+                  optional: true
+            - name: GH_APP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GH_APP_PRIVATE_KEY
+                  optional: true
+            - name: GH_APP_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GH_APP_WEBHOOK_SECRET
+                  optional: true
+            - name: GH_APP_SLUG
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GH_APP_SLUG
+                  optional: true
+            - name: GOOGLE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GOOGLE_CLIENT_ID
+                  optional: true
+            - name: GOOGLE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GOOGLE_CLIENT_SECRET
+                  optional: true
+            - name: COMPOSIO_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: COMPOSIO_API_KEY
+                  optional: true
+            - name: COMPOSIO_PROJECT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: COMPOSIO_PROJECT_ID
+                  optional: true
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: OPENAI_API_KEY
+                  optional: true
+            - name: GOOGLE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: GOOGLE_API_KEY
+                  optional: true
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "https://ingest.us.signoz.cloud:443"
+            - name: OTEL_SERVICE_NAME
+              value: "shogo-api-staging-oci"
+            - name: OTEL_LOG_LEVEL
+              value: "info"
+            - name: SIGNOZ_INGESTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: signoz-credentials
+                  key: SIGNOZ_INGESTION_KEY
+                  optional: true
+            - name: WARM_POOL_MIN_PODS
+              value: "10"
+            - name: REGION_ID
+              value: "staging-oci"
+            - name: REGION_LABEL
+              value: "Staging (OCI)"
+            - name: WARM_POOL_MAX_AGE_MS
+              value: "3600000"
+            - name: PROMOTED_POD_GC_ENABLED
+              value: "true"
+            - name: PROMOTED_POD_IDLE_TIMEOUT_MS
+              value: "600000"
+            - name: LOAD_TEST_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: LOAD_TEST_SECRET
+                  optional: true
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "15"]
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "2Gi"
+              cpu: "1"
+      terminationGracePeriodSeconds: 630

@@ -1,0 +1,54 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  datasets   Dataset[]
+  savedQueries SavedQuery[]
+
+  @@map("users")
+}
+
+model Dataset {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  source      String?
+  rowCount    Int      @default(0) @map("row_count")
+  columns     String   @default("[]")
+  userId      String   @map("user_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  savedQueries SavedQuery[]
+
+  @@map("datasets")
+}
+
+model SavedQuery {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  query       String
+  datasetId   String   @map("dataset_id")
+  userId      String   @map("user_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  dataset Dataset @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("saved_queries")
+}

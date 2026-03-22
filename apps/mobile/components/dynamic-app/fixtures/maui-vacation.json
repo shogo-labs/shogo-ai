@@ -1,0 +1,1284 @@
+{
+  "components": [
+    {
+      "id": "root",
+      "component": "Column",
+      "children": [
+        "header_row",
+        "budget_section",
+        "main_tabs"
+      ]
+    },
+    {
+      "id": "header_row",
+      "component": "Row",
+      "children": [
+        "title",
+        "status_badge"
+      ],
+      "align": "center",
+      "justify": "between"
+    },
+    {
+      "id": "title",
+      "component": "Text",
+      "text": "Maui Luxury Vacation Dashboard",
+      "variant": "h2"
+    },
+    {
+      "id": "status_badge",
+      "component": "Badge",
+      "text": "$10,000 Budget",
+      "variant": "default"
+    },
+    {
+      "id": "budget_section",
+      "component": "Card",
+      "title": "Budget Allocation",
+      "child": "budget_grid"
+    },
+    {
+      "id": "budget_grid",
+      "component": "Grid",
+      "columns": 4,
+      "children": [
+        "m_accommodation",
+        "m_activities",
+        "m_dining",
+        "m_misc"
+      ]
+    },
+    {
+      "id": "m_accommodation",
+      "component": "Metric",
+      "label": "Accommodation",
+      "value": {
+        "path": "/budget/accommodation"
+      },
+      "unit": "$"
+    },
+    {
+      "id": "m_activities",
+      "component": "Metric",
+      "label": "Activities",
+      "value": {
+        "path": "/budget/activities"
+      },
+      "unit": "$"
+    },
+    {
+      "id": "m_dining",
+      "component": "Metric",
+      "label": "Dining",
+      "value": {
+        "path": "/budget/dining"
+      },
+      "unit": "$"
+    },
+    {
+      "id": "m_misc",
+      "component": "Metric",
+      "label": "Transport & Misc",
+      "value": {
+        "path": "/budget/misc"
+      },
+      "unit": "$"
+    },
+    {
+      "id": "airbnb_section",
+      "component": "Card",
+      "title": "Highly Rated Airbnb Accommodations",
+      "child": "airbnb_list"
+    },
+    {
+      "id": "airbnb_list",
+      "component": "DataList",
+      "children": {
+        "path": "/airbnbs",
+        "templateId": "airbnb_card"
+      },
+      "emptyText": "No listings available"
+    },
+    {
+      "id": "airbnb_card",
+      "component": "Card",
+      "child": "airbnb_content"
+    },
+    {
+      "id": "airbnb_content",
+      "component": "Column",
+      "children": [
+        "airbnb_header",
+        "airbnb_details",
+        "airbnb_footer"
+      ],
+      "gap": "sm"
+    },
+    {
+      "id": "airbnb_header",
+      "component": "Row",
+      "children": [
+        "airbnb_name",
+        "airbnb_badge"
+      ],
+      "align": "center",
+      "justify": "between"
+    },
+    {
+      "id": "airbnb_name",
+      "component": "Text",
+      "text": {
+        "path": "name"
+      },
+      "variant": "h4",
+      "weight": "semibold"
+    },
+    {
+      "id": "airbnb_badge",
+      "component": "Badge",
+      "text": {
+        "path": "badge"
+      },
+      "variant": "outline"
+    },
+    {
+      "id": "airbnb_details",
+      "component": "Row",
+      "children": [
+        "airbnb_rating_col",
+        "airbnb_price_col",
+        "airbnb_beds_col"
+      ],
+      "gap": "lg"
+    },
+    {
+      "id": "airbnb_rating_col",
+      "component": "Column",
+      "children": [
+        "airbnb_rating_label",
+        "airbnb_rating_value"
+      ],
+      "gap": "xs"
+    },
+    {
+      "id": "airbnb_rating_label",
+      "component": "Text",
+      "text": "Rating",
+      "variant": "caption",
+      "color": "muted"
+    },
+    {
+      "id": "airbnb_rating_value",
+      "component": "Row",
+      "children": [
+        "airbnb_rating",
+        "airbnb_reviews"
+      ],
+      "gap": "xs",
+      "align": "center"
+    },
+    {
+      "id": "airbnb_rating",
+      "component": "Text",
+      "text": {
+        "path": "rating"
+      },
+      "weight": "medium"
+    },
+    {
+      "id": "airbnb_reviews",
+      "component": "Text",
+      "text": {
+        "path": "reviews"
+      },
+      "variant": "caption",
+      "color": "muted"
+    },
+    {
+      "id": "airbnb_price_col",
+      "component": "Column",
+      "children": [
+        "airbnb_price_label",
+        "airbnb_price_value"
+      ],
+      "gap": "xs"
+    },
+    {
+      "id": "airbnb_price_label",
+      "component": "Text",
+      "text": "Price",
+      "variant": "caption",
+      "color": "muted"
+    },
+    {
+      "id": "airbnb_price_value",
+      "component": "Column",
+      "children": [
+        "airbnb_price_amount",
+        "airbnb_price_per_night"
+      ],
+      "gap": "none"
+    },
+    {
+      "id": "airbnb_beds_col",
+      "component": "Column",
+      "children": [
+        "airbnb_beds_label",
+        "airbnb_beds_value"
+      ],
+      "gap": "xs"
+    },
+    {
+      "id": "airbnb_beds_label",
+      "component": "Text",
+      "text": "Beds",
+      "variant": "caption",
+      "color": "muted"
+    },
+    {
+      "id": "airbnb_beds_value",
+      "component": "Text",
+      "text": {
+        "path": "beds"
+      },
+      "variant": "body"
+    },
+    {
+      "id": "airbnb_footer",
+      "component": "Row",
+      "children": [
+        "airbnb_total",
+        "airbnb_button"
+      ],
+      "align": "center",
+      "justify": "between"
+    },
+    {
+      "id": "airbnb_total",
+      "component": "Column",
+      "children": [
+        "airbnb_total_amount",
+        "airbnb_total_label"
+      ],
+      "gap": "none"
+    },
+    {
+      "id": "airbnb_button",
+      "component": "Button",
+      "label": "View on Airbnb",
+      "variant": "outline",
+      "size": "sm",
+      "action": {
+        "name": "view_airbnb",
+        "mutation": {
+          "endpoint": {
+            "path": "url"
+          },
+          "method": "OPEN"
+        }
+      }
+    },
+    {
+      "id": "activities_section",
+      "component": "Card",
+      "title": "Top Luxury Activities & Things to Do",
+      "child": "activities_list"
+    },
+    {
+      "id": "activities_list",
+      "component": "DataList",
+      "children": {
+        "path": "/activities",
+        "templateId": "activity_card"
+      },
+      "emptyText": "No activities available"
+    },
+    {
+      "id": "activity_card",
+      "component": "Card",
+      "child": "activity_content"
+    },
+    {
+      "id": "activity_content",
+      "component": "Column",
+      "children": [
+        "activity_header",
+        "activity_desc",
+        "activity_footer"
+      ],
+      "gap": "sm"
+    },
+    {
+      "id": "activity_header",
+      "component": "Row",
+      "children": [
+        "activity_name",
+        "activity_category"
+      ],
+      "align": "center",
+      "justify": "between"
+    },
+    {
+      "id": "activity_name",
+      "component": "Text",
+      "text": {
+        "path": "name"
+      },
+      "variant": "h4",
+      "weight": "semibold"
+    },
+    {
+      "id": "activity_category",
+      "component": "Badge",
+      "text": {
+        "path": "category"
+      },
+      "variant": "secondary"
+    },
+    {
+      "id": "activity_desc",
+      "component": "Text",
+      "text": {
+        "path": "description"
+      },
+      "variant": "body",
+      "color": "muted"
+    },
+    {
+      "id": "activity_footer",
+      "component": "Row",
+      "children": [
+        "activity_rating_row",
+        "activity_price"
+      ],
+      "align": "center",
+      "justify": "between"
+    },
+    {
+      "id": "activity_rating_row",
+      "component": "Row",
+      "children": [
+        "activity_rating_icon",
+        "activity_rating"
+      ],
+      "gap": "xs",
+      "align": "center"
+    },
+    {
+      "id": "activity_rating_icon",
+      "component": "Icon",
+      "name": "star",
+      "size": "sm"
+    },
+    {
+      "id": "activity_rating",
+      "component": "Text",
+      "text": {
+        "path": "rating"
+      },
+      "weight": "medium"
+    },
+    {
+      "id": "activity_price",
+      "component": "Column",
+      "children": [
+        "activity_price_amount",
+        "activity_price_label"
+      ],
+      "gap": "none"
+    },
+    {
+      "id": "restaurants_section",
+      "component": "Card",
+      "title": "Best Fine Dining Restaurants",
+      "child": "restaurants_list"
+    },
+    {
+      "id": "restaurants_list",
+      "component": "DataList",
+      "children": {
+        "path": "/restaurants",
+        "templateId": "restaurant_card"
+      },
+      "emptyText": "No restaurants available"
+    },
+    {
+      "id": "restaurant_card",
+      "component": "Card",
+      "child": "restaurant_content"
+    },
+    {
+      "id": "restaurant_content",
+      "component": "Column",
+      "children": [
+        "restaurant_header",
+        "restaurant_details",
+        "restaurant_desc",
+        "restaurant_footer"
+      ],
+      "gap": "sm"
+    },
+    {
+      "id": "restaurant_header",
+      "component": "Row",
+      "children": [
+        "restaurant_name",
+        "restaurant_price"
+      ],
+      "align": "center",
+      "justify": "between"
+    },
+    {
+      "id": "restaurant_name",
+      "component": "Text",
+      "text": {
+        "path": "name"
+      },
+      "variant": "h4",
+      "weight": "semibold"
+    },
+    {
+      "id": "restaurant_price",
+      "component": "Badge",
+      "text": {
+        "path": "priceRange"
+      },
+      "variant": "default"
+    },
+    {
+      "id": "restaurant_details",
+      "component": "Row",
+      "children": [
+        "restaurant_cuisine",
+        "restaurant_location"
+      ],
+      "gap": "md"
+    },
+    {
+      "id": "restaurant_cuisine",
+      "component": "Badge",
+      "text": {
+        "path": "cuisine"
+      },
+      "variant": "outline"
+    },
+    {
+      "id": "restaurant_location",
+      "component": "Text",
+      "text": {
+        "path": "location"
+      },
+      "variant": "caption",
+      "color": "muted"
+    },
+    {
+      "id": "restaurant_desc",
+      "component": "Text",
+      "text": {
+        "path": "description"
+      },
+      "variant": "body",
+      "color": "muted"
+    },
+    {
+      "id": "restaurant_footer",
+      "component": "Row",
+      "children": [
+        "restaurant_rating_col",
+        "restaurant_reviews_col"
+      ],
+      "gap": "lg"
+    },
+    {
+      "id": "restaurant_rating_col",
+      "component": "Row",
+      "children": [
+        "restaurant_rating_icon",
+        "restaurant_rating"
+      ],
+      "gap": "xs",
+      "align": "center"
+    },
+    {
+      "id": "restaurant_rating_icon",
+      "component": "Icon",
+      "name": "star",
+      "size": "sm"
+    },
+    {
+      "id": "restaurant_rating",
+      "component": "Text",
+      "text": {
+        "path": "rating"
+      },
+      "weight": "medium"
+    },
+    {
+      "id": "restaurant_reviews_col",
+      "component": "Text",
+      "text": {
+        "path": "reviews"
+      },
+      "variant": "caption",
+      "color": "muted"
+    },
+    {
+      "id": "airbnb_price_amount",
+      "component": "Row",
+      "children": [
+        "airbnb_price_dollar",
+        "airbnb_price_number"
+      ],
+      "gap": "none",
+      "align": "baseline"
+    },
+    {
+      "id": "airbnb_price_per_night",
+      "component": "Text",
+      "text": "per night",
+      "variant": "caption",
+      "color": "muted"
+    },
+    {
+      "id": "airbnb_total_amount",
+      "component": "Row",
+      "children": [
+        "airbnb_total_dollar",
+        "airbnb_total_number"
+      ],
+      "gap": "none",
+      "align": "baseline"
+    },
+    {
+      "id": "airbnb_total_label",
+      "component": "Text",
+      "text": "total",
+      "variant": "caption",
+      "color": "muted"
+    },
+    {
+      "id": "activity_price_amount",
+      "component": "Text",
+      "text": {
+        "path": "estimatedPrice"
+      },
+      "weight": "bold",
+      "color": "primary"
+    },
+    {
+      "id": "activity_price_label",
+      "component": "Text",
+      "text": "estimated",
+      "variant": "caption",
+      "color": "muted"
+    },
+    {
+      "id": "airbnb_price_dollar",
+      "component": "Text",
+      "text": "$",
+      "weight": "medium"
+    },
+    {
+      "id": "airbnb_price_number",
+      "component": "Text",
+      "text": {
+        "path": "price"
+      },
+      "weight": "medium"
+    },
+    {
+      "id": "airbnb_total_dollar",
+      "component": "Text",
+      "text": "$",
+      "weight": "bold",
+      "color": "primary"
+    },
+    {
+      "id": "airbnb_total_number",
+      "component": "Text",
+      "text": {
+        "path": "priceTotal"
+      },
+      "weight": "bold",
+      "color": "primary"
+    },
+    {
+      "id": "recommendations_section",
+      "component": "Card",
+      "title": "Restaurant Recommendations with Details",
+      "child": "recommendations_list"
+    },
+    {
+      "id": "recommendations_list",
+      "component": "DataList",
+      "children": {
+        "path": "/recommendations/restaurants",
+        "templateId": "recommendation_card"
+      },
+      "emptyText": "No recommendations available"
+    },
+    {
+      "id": "recommendation_card",
+      "component": "Card",
+      "child": "recommendation_content"
+    },
+    {
+      "id": "recommendation_content",
+      "component": "Column",
+      "children": [
+        "rec_header",
+        "rec_details_grid",
+        "rec_must_try",
+        "rec_practical",
+        "rec_footer"
+      ],
+      "gap": "md"
+    },
+    {
+      "id": "rec_header",
+      "component": "Row",
+      "children": [
+        "rec_name",
+        "rec_rating_badge"
+      ],
+      "align": "center",
+      "justify": "between"
+    },
+    {
+      "id": "rec_name",
+      "component": "Text",
+      "text": {
+        "path": "name"
+      },
+      "variant": "h4",
+      "weight": "semibold"
+    },
+    {
+      "id": "rec_rating_badge",
+      "component": "Row",
+      "children": [
+        "rec_rating_icon",
+        "rec_rating"
+      ],
+      "gap": "xs",
+      "align": "center"
+    },
+    {
+      "id": "rec_rating_icon",
+      "component": "Icon",
+      "name": "star",
+      "size": "sm"
+    },
+    {
+      "id": "rec_rating",
+      "component": "Text",
+      "text": {
+        "path": "rating"
+      },
+      "weight": "bold"
+    },
+    {
+      "id": "rec_details_grid",
+      "component": "Grid",
+      "columns": 2,
+      "children": [
+        "rec_cuisine_col",
+        "rec_price_col",
+        "rec_location_col",
+        "rec_bestfor_col"
+      ]
+    },
+    {
+      "id": "rec_cuisine_col",
+      "component": "Column",
+      "children": [
+        "rec_cuisine_label",
+        "rec_cuisine_value"
+      ],
+      "gap": "xs"
+    },
+    {
+      "id": "rec_cuisine_label",
+      "component": "Text",
+      "text": "Cuisine",
+      "variant": "caption",
+      "color": "muted"
+    },
+    {
+      "id": "rec_cuisine_value",
+      "component": "Badge",
+      "text": {
+        "path": "cuisine"
+      },
+      "variant": "outline"
+    },
+    {
+      "id": "rec_price_col",
+      "component": "Column",
+      "children": [
+        "rec_price_label",
+        "rec_price_row"
+      ],
+      "gap": "xs"
+    },
+    {
+      "id": "rec_price_label",
+      "component": "Text",
+      "text": "Price per Person",
+      "variant": "caption",
+      "color": "muted"
+    },
+    {
+      "id": "rec_price_row",
+      "component": "Row",
+      "children": [
+        "rec_price_dollar",
+        "rec_price_value"
+      ],
+      "gap": "none",
+      "align": "baseline"
+    },
+    {
+      "id": "rec_price_dollar",
+      "component": "Text",
+      "text": "$",
+      "weight": "medium",
+      "color": "primary"
+    },
+    {
+      "id": "rec_price_value",
+      "component": "Text",
+      "text": {
+        "path": "pricePerPerson"
+      },
+      "weight": "medium",
+      "color": "primary"
+    },
+    {
+      "id": "rec_location_col",
+      "component": "Column",
+      "children": [
+        "rec_location_label",
+        "rec_location_value"
+      ],
+      "gap": "xs"
+    },
+    {
+      "id": "rec_location_label",
+      "component": "Text",
+      "text": "Location",
+      "variant": "caption",
+      "color": "muted"
+    },
+    {
+      "id": "rec_location_value",
+      "component": "Text",
+      "text": {
+        "path": "location"
+      },
+      "variant": "body"
+    },
+    {
+      "id": "rec_bestfor_col",
+      "component": "Column",
+      "children": [
+        "rec_bestfor_label",
+        "rec_bestfor_value"
+      ],
+      "gap": "xs"
+    },
+    {
+      "id": "rec_bestfor_label",
+      "component": "Text",
+      "text": "Best For",
+      "variant": "caption",
+      "color": "muted"
+    },
+    {
+      "id": "rec_bestfor_value",
+      "component": "Badge",
+      "text": {
+        "path": "bestFor"
+      },
+      "variant": "secondary"
+    },
+    {
+      "id": "rec_must_try",
+      "component": "Column",
+      "children": [
+        "rec_must_label",
+        "rec_must_value"
+      ],
+      "gap": "xs"
+    },
+    {
+      "id": "rec_must_label",
+      "component": "Text",
+      "text": "Must Try",
+      "variant": "caption",
+      "color": "muted",
+      "weight": "semibold"
+    },
+    {
+      "id": "rec_must_value",
+      "component": "Text",
+      "text": {
+        "path": "mustTry"
+      },
+      "variant": "body"
+    },
+    {
+      "id": "rec_practical",
+      "component": "Grid",
+      "columns": 2,
+      "children": [
+        "rec_reservations_col",
+        "rec_dress_col"
+      ]
+    },
+    {
+      "id": "rec_reservations_col",
+      "component": "Column",
+      "children": [
+        "rec_res_label",
+        "rec_res_value"
+      ],
+      "gap": "xs"
+    },
+    {
+      "id": "rec_res_label",
+      "component": "Text",
+      "text": "Reservations",
+      "variant": "caption",
+      "color": "muted"
+    },
+    {
+      "id": "rec_res_value",
+      "component": "Text",
+      "text": {
+        "path": "reservations"
+      },
+      "variant": "body"
+    },
+    {
+      "id": "rec_dress_col",
+      "component": "Column",
+      "children": [
+        "rec_dress_label",
+        "rec_dress_value"
+      ],
+      "gap": "xs"
+    },
+    {
+      "id": "rec_dress_label",
+      "component": "Text",
+      "text": "Dress Code",
+      "variant": "caption",
+      "color": "muted"
+    },
+    {
+      "id": "rec_dress_value",
+      "component": "Text",
+      "text": {
+        "path": "dressCode"
+      },
+      "variant": "body"
+    },
+    {
+      "id": "rec_footer",
+      "component": "Row",
+      "children": [
+        "rec_website_btn"
+      ],
+      "justify": "end"
+    },
+    {
+      "id": "rec_website_btn",
+      "component": "Button",
+      "label": "Visit Website",
+      "variant": "default",
+      "size": "sm",
+      "action": {
+        "name": "visit_restaurant",
+        "mutation": {
+          "endpoint": {
+            "path": "website"
+          },
+          "method": "OPEN"
+        }
+      }
+    },
+    {
+      "id": "dining_activities_tabs",
+      "component": "Tabs",
+      "children": [
+        "restaurants_tab",
+        "activities_tab"
+      ]
+    },
+    {
+      "id": "restaurants_tab",
+      "component": "TabPanel",
+      "title": "Restaurants",
+      "children": [
+        "recommendations_list"
+      ]
+    },
+    {
+      "id": "activities_tab",
+      "component": "TabPanel",
+      "title": "Things to Do",
+      "children": [
+        "activities_list"
+      ]
+    },
+    {
+      "id": "main_tabs",
+      "component": "Tabs",
+      "children": [
+        "accommodations_tab",
+        "restaurants_tab",
+        "activities_tab"
+      ]
+    },
+    {
+      "id": "accommodations_tab",
+      "component": "TabPanel",
+      "title": "Accommodations",
+      "children": [
+        "airbnb_list"
+      ]
+    }
+  ],
+  "dataModel": {
+    "budget": {
+      "total": 10000,
+      "accommodation": 4500,
+      "activities": 2250,
+      "dining": 2250,
+      "misc": 1000
+    },
+    "airbnbs": [
+      {
+        "name": "Little Manu",
+        "rating": 4.99,
+        "reviews": 303,
+        "price": 354,
+        "priceTotal": 1770,
+        "nights": 5,
+        "beds": "1 queen bed",
+        "badge": "Guest favorite",
+        "url": "https://www.airbnb.com/rooms/19055561"
+      },
+      {
+        "name": "Spectacular Ocean Front 1bd at Menehune Shores",
+        "rating": 4.96,
+        "reviews": 215,
+        "price": 366,
+        "priceTotal": 1828,
+        "nights": 5,
+        "beds": "1 bedroom, 1 queen bed",
+        "badge": "Guest favorite",
+        "url": "https://www.airbnb.com/rooms/34125134"
+      },
+      {
+        "name": "Direct Waterfront, Air conditioned, Amazing Views!",
+        "rating": 4.96,
+        "reviews": 114,
+        "price": 383,
+        "priceTotal": 1918,
+        "nights": 5,
+        "beds": "1 bedroom, 1 king bed",
+        "badge": "Guest favorite",
+        "url": "https://www.airbnb.com/rooms/30983417"
+      },
+      {
+        "name": "Coastal Dream Oceanfront Condo!",
+        "rating": 4.98,
+        "reviews": 109,
+        "price": 404,
+        "priceTotal": 2020,
+        "nights": 5,
+        "beds": "1 bedroom, 2 beds",
+        "badge": "Guest favorite",
+        "url": "https://www.airbnb.com/rooms/847915416722141565"
+      },
+      {
+        "name": "Gorgeous Kapalua Home with Views",
+        "rating": 5,
+        "reviews": 37,
+        "price": 441,
+        "priceTotal": 2208,
+        "nights": 5,
+        "beds": "1 bedroom, 2 beds",
+        "badge": "Guest favorite",
+        "url": "https://www.airbnb.com/rooms/1256181120840129022"
+      },
+      {
+        "name": "Romantic, Luxury Retreat w/Ocean View-Couples Only",
+        "rating": 4.99,
+        "reviews": 180,
+        "price": 450,
+        "priceTotal": 2249,
+        "nights": 5,
+        "beds": "1 bedroom, 1 king bed",
+        "badge": "Guest favorite",
+        "url": "https://www.airbnb.com/rooms/34124406"
+      },
+      {
+        "name": "Sugar Beach Resort Beach / Ocean Front Unit 426",
+        "rating": 5,
+        "reviews": 184,
+        "price": 376,
+        "priceTotal": 2254,
+        "nights": 6,
+        "beds": "1 bedroom, 1 king bed",
+        "badge": "Guest favorite",
+        "url": "https://www.airbnb.com/rooms/26847541"
+      },
+      {
+        "name": "Beachfront on Kaanapali The Mahana 1106!",
+        "rating": 5,
+        "reviews": 24,
+        "price": 453,
+        "priceTotal": 2264,
+        "nights": 5,
+        "beds": "1 bedroom, 2 beds",
+        "badge": "Guest favorite",
+        "url": "https://www.airbnb.com/rooms/1255630201255740674"
+      }
+    ],
+    "activities": [
+      {
+        "name": "Molokini Snorkel & Turtle Town Adventure",
+        "description": "Snorkel at the volcanic crater of Molokini and swim with sea turtles at Turtle Town. Includes waterslide fun!",
+        "category": "Water Activities",
+        "rating": 4.8,
+        "estimatedPrice": 150
+      },
+      {
+        "name": "Haleakal\u0101 Sunrise & Volcano Bike Tour",
+        "description": "Experience a stunning Hawaiian sunrise from Haleakal\u0101 National Park (10,023 ft) and bike down the dormant volcano.",
+        "category": "Adventure & Nature",
+        "rating": 4.9,
+        "estimatedPrice": 200
+      },
+      {
+        "name": "Private Sailing Charter",
+        "description": "Luxury private boat charter along Maui's coast with sunset views, whale watching (seasonal), and champagne.",
+        "category": "Water Activities",
+        "rating": 5,
+        "estimatedPrice": 800
+      },
+      {
+        "name": "Road to Hana Guided Tour",
+        "description": "Scenic drive through 600+ curves, 50+ bridges, waterfalls, bamboo forests, and black sand beaches.",
+        "category": "Scenic Tours",
+        "rating": 4.7,
+        "estimatedPrice": 180
+      },
+      {
+        "name": "Private Sport Fishing Charter",
+        "description": "Full-day luxury fishing charter targeting marlin, mahi-mahi, and tuna with professional crew.",
+        "category": "Water Activities",
+        "rating": 4.9,
+        "estimatedPrice": 1200
+      },
+      {
+        "name": "Ka'anapali Beach Activities",
+        "description": "World-class beach with snorkeling, paddleboarding, beach volleyball, and beachfront amenities.",
+        "category": "Beach & Relaxation",
+        "rating": 4.6,
+        "estimatedPrice": 0
+      },
+      {
+        "name": "Spa Day at Four Seasons or Grand Wailea",
+        "description": "Lavish spa treatments featuring Hawaiian lomilomi massage, facials, and ocean-view relaxation.",
+        "category": "Wellness & Spa",
+        "rating": 4.8,
+        "estimatedPrice": 350
+      },
+      {
+        "name": "Helicopter Tour of Maui",
+        "description": "Aerial tour showcasing waterfalls, sea cliffs, Haleakal\u0101 crater, and rainforests from above.",
+        "category": "Adventure & Nature",
+        "rating": 5,
+        "estimatedPrice": 300
+      }
+    ],
+    "restaurants": [
+      {
+        "name": "Mama's Fish House",
+        "cuisine": "Fresh Seafood & Hawaiian",
+        "rating": 4.7,
+        "reviews": 15261,
+        "priceRange": "$$$-$$$$",
+        "location": "Paia",
+        "description": "Iconic family-owned restaurant serving the freshest fish caught daily by local fishermen. Oceanfront setting."
+      },
+      {
+        "name": "Merriman's Maui",
+        "cuisine": "Farm-to-Table Hawaiian",
+        "rating": 4.5,
+        "reviews": 3900,
+        "priceRange": "$$$-$$$$",
+        "location": "Kapalua",
+        "description": "Award-winning farm-to-table dining with spectacular ocean views and locally-sourced ingredients."
+      },
+      {
+        "name": "Ka'ana Kitchen",
+        "cuisine": "Contemporary Hawaiian",
+        "rating": 4.4,
+        "reviews": 931,
+        "priceRange": "$$$-$$$$",
+        "location": "Wailea (Andaz Maui)",
+        "description": "Open kitchen concept featuring fresh island ingredients and innovative Hawaiian-inspired dishes."
+      },
+      {
+        "name": "Ferraro's Restaurant & Bar",
+        "cuisine": "Italian & Seafood",
+        "rating": 4.4,
+        "reviews": 2100,
+        "priceRange": "$$$-$$$$",
+        "location": "Wailea (Four Seasons)",
+        "description": "Oceanfront Italian dining at Four Seasons with sunset views, fresh pasta, and coastal cuisine."
+      },
+      {
+        "name": "K\u014d Restaurant",
+        "cuisine": "Pacific Rim Fusion",
+        "rating": 4.4,
+        "reviews": 1594,
+        "priceRange": "$$-$$$",
+        "location": "Wailea",
+        "description": "Plantation-inspired cuisine blending flavors from Hawaii's diverse cultural heritage."
+      },
+      {
+        "name": "The Restaurant at Hotel Wailea",
+        "cuisine": "Contemporary Fine Dining",
+        "rating": 4.3,
+        "reviews": 850,
+        "priceRange": "$$$$",
+        "location": "Wailea",
+        "description": "Intimate fine dining with seasonal tasting menus and an extensive wine collection."
+      },
+      {
+        "name": "Humu at Grand Wailea",
+        "cuisine": "Seafood & Island Cuisine",
+        "rating": 4.5,
+        "reviews": 1200,
+        "priceRange": "$$$-$$$$",
+        "location": "Wailea",
+        "description": "Underwater-themed restaurant with floor-to-ceiling aquarium and exceptional fresh seafood."
+      },
+      {
+        "name": "Son'z Steakhouse",
+        "cuisine": "Premium Steakhouse",
+        "rating": 4.6,
+        "reviews": 980,
+        "priceRange": "$$$-$$$$",
+        "location": "Ka'anapali (Hyatt Regency)",
+        "description": "Classic steakhouse with island elegance, featuring prime cuts and ocean views."
+      }
+    ],
+    "recommendations": {
+      "restaurants": [
+        {
+          "name": "Mama's Fish House",
+          "cuisine": "Fresh Seafood & Hawaiian",
+          "rating": 4.7,
+          "pricePerPerson": 80,
+          "location": "799 Poho Place, Paia",
+          "bestFor": "Romantic Oceanfront Dinner",
+          "mustTry": "Fresh Ono caught daily, Polynesian Black Pearl dessert",
+          "reservations": "Book 2-3 weeks in advance",
+          "dressCode": "Resort Casual",
+          "website": "https://www.mamasfishhouse.com"
+        },
+        {
+          "name": "Merriman's Kapalua",
+          "cuisine": "Farm-to-Table Hawaiian",
+          "rating": 4.5,
+          "pricePerPerson": 75,
+          "location": "1 Bay Club Place, Kapalua",
+          "bestFor": "Sunset Views & Local Ingredients",
+          "mustTry": "Ahi Poke Tacos, Grass-fed Beef Burgers, Lilikoi Cheesecake",
+          "reservations": "Book 1-2 weeks ahead for sunset seating",
+          "dressCode": "Resort Casual",
+          "website": "https://www.merrimanshawaii.com"
+        },
+        {
+          "name": "Ka'ana Kitchen",
+          "cuisine": "Contemporary Hawaiian",
+          "rating": 4.4,
+          "pricePerPerson": 85,
+          "location": "3550 Wailea Alanui Dr, Wailea (Andaz Maui)",
+          "bestFor": "Open Kitchen Experience",
+          "mustTry": "Breakfast buffet (worth it!), Roasted Kampachi, Lilikoi Malasadas",
+          "reservations": "Book 1 week in advance",
+          "dressCode": "Resort Elegant",
+          "website": "https://www.andazmaui.com"
+        },
+        {
+          "name": "Ferraro's Bar e Ristorante",
+          "cuisine": "Italian Coastal",
+          "rating": 4.4,
+          "pricePerPerson": 90,
+          "location": "3900 Wailea Alanui Dr, Wailea (Four Seasons)",
+          "bestFor": "Beachfront Italian & Sunset",
+          "mustTry": "Housemade Pasta, Grilled Mediterranean Branzino, Tiramisu",
+          "reservations": "Book 2 weeks ahead for ocean-view tables",
+          "dressCode": "Resort Elegant",
+          "website": "https://www.fourseasons.com/maui"
+        },
+        {
+          "name": "Humu at Grand Wailea",
+          "cuisine": "Island Seafood",
+          "rating": 4.5,
+          "pricePerPerson": 85,
+          "location": "3850 Wailea Alanui Dr, Wailea",
+          "bestFor": "Unique Underwater Ambiance",
+          "mustTry": "Macadamia Nut Crusted Fresh Catch, Kona Lobster, Molten Lava Cake",
+          "reservations": "Book 1-2 weeks in advance",
+          "dressCode": "Resort Casual to Elegant",
+          "website": "https://www.grandwailea.com"
+        },
+        {
+          "name": "Monkeypod Kitchen",
+          "cuisine": "Contemporary Island Cuisine",
+          "rating": 4.6,
+          "pricePerPerson": 45,
+          "location": "10 Wailea Gateway Pl, Wailea",
+          "bestFor": "Casual Luxury & Craft Cocktails",
+          "mustTry": "Fish Tacos, Pork Chop, Fresh Lilikoi Cream Pie, Mai Tais",
+          "reservations": "Accept walk-ins but can have 30-60 min wait",
+          "dressCode": "Casual",
+          "website": "https://www.monkeypodkitchen.com"
+        },
+        {
+          "name": "Lahaina Grill",
+          "cuisine": "New American Fine Dining",
+          "rating": 4.6,
+          "pricePerPerson": 95,
+          "location": "127 Lahainaluna Rd, Lahaina",
+          "bestFor": "Award-Winning Fine Dining",
+          "mustTry": "Tequila Shrimp & Firecracker Rice, Kona Coffee Roasted Rack of Lamb",
+          "reservations": "Book 2-3 weeks ahead",
+          "dressCode": "Upscale Resort Wear",
+          "website": "https://www.lahainagrill.com"
+        },
+        {
+          "name": "Gannon's",
+          "cuisine": "Pacific Rim",
+          "rating": 4.3,
+          "pricePerPerson": 70,
+          "location": "100 Wailea Golf Club Dr, Wailea",
+          "bestFor": "Golf Course Views & Brunch",
+          "mustTry": "Macadamia Nut Crusted Mahi, Lobster Mac & Cheese, Sunday Brunch",
+          "reservations": "Book 1 week ahead for sunset",
+          "dressCode": "Resort Casual",
+          "website": "https://www.gannonsrestaurant.com"
+        }
+      ]
+    }
+  }
+}

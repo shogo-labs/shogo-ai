@@ -1,0 +1,63 @@
+{
+  "$defs": {
+    "Category": {
+      "type": "object",
+      "x-original-name": "Category",
+      "properties": {
+        "id": { "type": "string", "x-mst-type": "identifier" },
+        "name": { "type": "string" },
+        "icon": { "type": "string" },
+        "color": { "type": "string" }
+      },
+      "required": ["id", "name"]
+    },
+    "PaymentMethod": {
+      "type": "object",
+      "x-original-name": "PaymentMethod",
+      "properties": {
+        "id": { "type": "string", "x-mst-type": "identifier" },
+        "name": { "type": "string" },
+        "type": {
+          "type": "string",
+          "enum": ["cash", "credit", "debit", "bank_transfer", "other"]
+        }
+      },
+      "required": ["id", "name", "type"]
+    },
+    "Expense": {
+      "type": "object",
+      "x-original-name": "Expense",
+      "properties": {
+        "id": { "type": "string", "x-mst-type": "identifier" },
+        "description": { "type": "string" },
+        "amount": { "type": "number" },
+        "date": { "type": "string", "format": "date" },
+        "category": {
+          "$ref": "#/$defs/Category",
+          "x-reference-type": "single"
+        },
+        "paymentMethod": {
+          "$ref": "#/$defs/PaymentMethod",
+          "x-reference-type": "single"
+        },
+        "notes": { "type": "string" },
+        "isRecurring": { "type": "boolean" }
+      },
+      "required": ["id", "description", "amount", "date"]
+    },
+    "Budget": {
+      "type": "object",
+      "x-original-name": "Budget",
+      "properties": {
+        "id": { "type": "string", "x-mst-type": "identifier" },
+        "category": {
+          "$ref": "#/$defs/Category",
+          "x-reference-type": "single"
+        },
+        "monthlyLimit": { "type": "number" },
+        "month": { "type": "string" }
+      },
+      "required": ["id", "monthlyLimit", "month"]
+    }
+  }
+}

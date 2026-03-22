@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Shogo Technologies, Inc.
+import { Loader2 } from 'lucide-react'
+
+interface LoadingSpinnerProps {
+  message?: string
+}
+
+export function LoadingSpinner({ message = 'Loading...' }: LoadingSpinnerProps) {
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center gap-4">
+      <Loader2 className="h-10 w-10 animate-spin text-violet-500" />
+      <p className="text-sm text-muted-foreground">{message}</p>
+    </div>
+  )
+}

@@ -1,0 +1,35 @@
+{
+  "schema": "./prisma/schema.prisma",
+  "models": [
+    "User",
+    "Workspace",
+    "Project",
+    "Folder",
+    "Member",
+    "Invitation",
+    "StarredProject",
+    "Notification",
+    "BillingAccount",
+    "Subscription",
+    "CreditLedger",
+    "UsageEvent",
+    "ChatSession",
+    "ChatMessage",
+    "ToolCallLog",
+    "FeatureSession"
+  ],
+  "outputs": [
+    {
+      "dir": "./apps/api/src/generated",
+      "generate": ["routes", "hooks", "admin-routes"],
+      "perModel": true,
+      "fileExtension": "ts"
+    },
+    {
+      "dir": "./packages/domain-stores/src",
+      "generate": ["types", "mst"],
+      "perModel": true,
+      "fileExtension": "ts"
+    }
+  ]
+}

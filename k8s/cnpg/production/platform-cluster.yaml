@@ -1,0 +1,83 @@
+# =============================================================================
+# Platform PostgreSQL Cluster (Production)
+# =============================================================================
+# Replaces AWS RDS for the Shogo platform database.
+# Manages: users, workspaces, projects, sessions, billing, etc.
+# =============================================================================
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: platform-pg
+  namespace: shogo-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    environment: production
+spec:
+  # HA: 3 instances (primary + 2 replicas) for production
+  instances: 3
+
+  # PostgreSQL configuration
+  postgresql:
+    parameters:
+      max_connections: "600"
+      shared_buffers: "512MB"
+      effective_cache_size: "1536MB"
+      work_mem: "8MB"
+      maintenance_work_mem: "128MB"
+      wal_buffers: "16MB"
+      # Logging
+      log_min_duration_statement: "500"   # Log queries > 500ms
+      log_checkpoints: "on"
+    pg_hba:
+      - host all all 10.0.0.0/8 md5
+      - host all all 172.16.0.0/12 md5
+
+  # Bootstrap: create the initial database
+  bootstrap:
+    initdb:
+      database: shogo
+      owner: shogo
+
+  # Storage: EBS gp3 on EKS, local-path on bare metal
+  storage:
+    size: 50Gi
+    storageClass: ebs-sc
+
+  # Backup to S3
+  backup:
+    barmanObjectStore:
+      destinationPath: s3://shogo-pg-backups-production/platform/
+      s3Credentials:
+        accessKeyId:
+          name: cnpg-s3-credentials
+          key: ACCESS_KEY_ID
+        secretAccessKey:
+          name: cnpg-s3-credentials
+          key: SECRET_ACCESS_KEY
+        region:
+          name: cnpg-s3-credentials
+          key: REGION
+      wal:
+        compression: gzip
+      data:
+        compression: gzip
+    retentionPolicy: "30d"
+
+  # Monitoring
+  monitoring:
+    enablePodMonitor: true
+
+  # Resources
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "200m"
+    limits:
+      memory: "2Gi"
+      cpu: "1000m"
+
+  # Pin to managed node group — never schedule on ephemeral Karpenter nodes
+  affinity:
+    nodeSelector:
+      eks.amazonaws.com/nodegroup: shogo-production-main
+    topologyKey: kubernetes.io/hostname

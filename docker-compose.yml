@@ -1,0 +1,239 @@
+# =============================================================================
+# Shogo AI - Local Development Environment
+# =============================================================================
+# Usage:
+#   docker compose up -d          # Start all services
+#   docker compose logs -f api    # Follow API logs
+#   docker compose down           # Stop all services
+#   docker compose down -v        # Stop and remove volumes
+#
+# Git Worktree Isolation:
+#   Each worktree gets unique ports via PORT_OFFSET in .env.local
+#   Run ./scripts/worktree-setup.sh to generate .env.local with unique ports
+#   COMPOSE_PROJECT_NAME isolates containers, volumes, and networks
+#
+# Architecture:
+#   - Control Plane (shared): studio-core (orgs/teams), better-auth, migrations
+#   - Per-Workspace (isolated): platform-features, studio-chat, user schemas
+#
+# Environment: Reads from .env.local (ports, secrets like ANTHROPIC_API_KEY)
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL Database (Control Plane - Platform Data)
+  # ---------------------------------------------------------------------------
+  # This database stores platform data: users, workspaces, projects, sessions, etc.
+  # Project runtimes should NOT have access to this database.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: shogo
+      POSTGRES_PASSWORD: shogo_dev
+      POSTGRES_DB: shogo
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shogo"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shogo-network
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL Database (Project Runtimes - User Project Data)
+  # ---------------------------------------------------------------------------
+  # This database is used by project runtimes for user-created applications.
+  # Each project can have its own schema within this database.
+  # CRITICAL: This is separate from the platform database to prevent AI agents
+  # from accidentally modifying platform data.
+  # ---------------------------------------------------------------------------
+  postgres-projects:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: project
+      POSTGRES_PASSWORD: project_dev
+      POSTGRES_DB: projects
+    volumes:
+      - postgres_projects_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PROJECTS_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U project"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shogo-network
+
+  # ---------------------------------------------------------------------------
+  # MinIO (S3-compatible storage for schema persistence)
+  # ---------------------------------------------------------------------------
+  # Console: http://localhost:${MINIO_CONSOLE_PORT:-9001} (minioadmin/minioadmin)
+  # API: http://localhost:${MINIO_API_PORT:-9000}
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shogo-network
+
+  # ---------------------------------------------------------------------------
+  # MinIO Bucket Initialization & Schema Seeding
+  # ---------------------------------------------------------------------------
+  # Creates buckets and seeds schemas + workspaces from local directories
+  # ---------------------------------------------------------------------------
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      # Skip workspace seeding for faster startup (workspaces can be synced on-demand)
+      SKIP_WORKSPACE_SEEDING: "${SKIP_WORKSPACE_SEEDING:-1}"
+    volumes:
+      # Mount local schemas to seed into S3
+      - ./.schemas:/schemas:ro
+      # Mount local workspaces to seed into S3
+      - ./workspaces:/workspaces:ro
+      # Mount init script
+      - ./scripts/minio-init.sh:/minio-init.sh:ro
+    entrypoint: ["/bin/sh", "/minio-init.sh"]
+    networks:
+      - shogo-network
+
+  # ---------------------------------------------------------------------------
+  # Redis (BetterAuth session cache)
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - shogo-network
+
+  # ---------------------------------------------------------------------------
+  # Shogo API Server (Control Plane + BetterAuth)
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    # Run as current user to match host workspaces permissions
+    user: "${UID:-1000}:${GID:-1000}"
+    ports:
+      - "${API_PORT:-8002}:8002"
+      # Vite runtime ports for project previews
+      - "${VITE_RUNTIME_BASE:-5200}-${VITE_RUNTIME_END:-5209}:5200-5209"
+    env_file:
+      - path: .env.local
+        required: false
+    environment:
+      API_PORT: "8002"
+      NODE_ENV: development
+      # Internal connections (always use Docker service names and internal ports)
+      # Platform database - stores users, workspaces, projects, sessions, etc.
+      DATABASE_URL: postgres://shogo:shogo_dev@postgres:5432/shogo
+      # Projects database - used by project runtimes for user-created apps
+      # CRITICAL: This is separate to prevent AI agents from modifying platform data
+      PROJECTS_DATABASE_URL: postgres://project:project_dev@postgres-projects:5432/projects
+      POSTGRES_PROJECTS_PORT: "5433"
+      REDIS_URL: redis://redis:6379
+      # External URLs (use parameterized ports for browser access)
+      VITE_PORT: "${WEB_PORT:-3333}"
+      BETTER_AUTH_SECRET: shogo-local-dev-secret-32-chars-minimum-ok
+      BETTER_AUTH_URL: http://localhost:${WEB_PORT:-3333}
+      ALLOWED_ORIGINS: http://localhost:${WEB_PORT:-3333},http://localhost:${VITE_DEV_PORT:-5173}
+      # ANTHROPIC_API_KEY loaded from .env.local via env_file
+      # Runtime workspaces for Vite dev servers
+      WORKSPACES_DIR: /app/workspaces
+      # HOME directory for Claude Code SDK to store session data
+      HOME: /app
+      RUNTIME_BASE_PORT: "${VITE_RUNTIME_BASE:-5200}"
+      RUNTIME_DOMAIN_SUFFIX: localhost
+      # S3/MinIO config for workspace file access
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_ENDPOINT: http://localhost:${MINIO_API_PORT:-9000}
+      S3_FORCE_PATH_STYLE: "true"
+      S3_WORKSPACES_BUCKET: shogo-workspaces
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+    volumes:
+      # Mount workspaces for project runtime Vite servers
+      - ./workspaces:/app/workspaces
+      # Mount schemas for Claude Code SDK's MCP server
+      - ./.schemas:/app/.schemas
+    depends_on:
+      postgres:
+        condition: service_healthy
+      postgres-projects:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8002/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - shogo-network
+
+  # ---------------------------------------------------------------------------
+  # Shogo Web Frontend (Expo Web Export + Nginx)
+  # ---------------------------------------------------------------------------
+  web:
+    build:
+      context: .
+      dockerfile: apps/mobile/Dockerfile
+      args:
+        EXPO_PUBLIC_API_URL: http://localhost:${WEB_PORT:-3333}
+    ports:
+      - "${WEB_PORT:-3333}:80"
+    environment:
+      DNS_RESOLVER: "127.0.0.11"
+      API_UPSTREAM: http://api:8002
+      API_HOST: api
+    depends_on:
+      - api
+    networks:
+      - shogo-network
+
+# =============================================================================
+# Volumes
+# =============================================================================
+# Volume names are automatically prefixed with COMPOSE_PROJECT_NAME
+# e.g., shogo-feat-myfeature_postgres_data
+volumes:
+  postgres_data:
+  postgres_projects_data:
+  minio_data:
+  redis_data:
+
+# =============================================================================
+# Networks
+# =============================================================================
+# Network name is automatically prefixed with COMPOSE_PROJECT_NAME
+# e.g., shogo-feat-myfeature_default
+networks:
+  shogo-network:
+    driver: bridge

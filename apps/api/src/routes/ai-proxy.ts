@@ -1,0 +1,1944 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+/**
+ * AI Model Proxy Routes
+ *
+ * Provides both OpenAI-compatible and Anthropic-native API proxies:
+ * - Authenticates requests via project-scoped tokens (no raw API keys exposed)
+ * - Routes to Anthropic or OpenAI based on the requested model
+ * - Supports streaming (SSE) and non-streaming responses
+ * - Logs usage events for analytics and billing
+ *
+ * Endpoints:
+ * - POST /ai/v1/chat/completions       - OpenAI-compatible chat completions
+ * - GET  /ai/v1/models                 - List available models
+ * - POST /ai/anthropic/v1/messages     - Anthropic-native pass-through (for Claude Code CLI)
+ * - POST /ai/anthropic/v1/messages/count_tokens - Token counting pass-through
+ * - GET  /ai/anthropic/v1/models       - Anthropic models pass-through  
+ * - POST /ai/proxy/tokens              - Generate a proxy token for a project
+ *
+ * Authentication:
+ * - OpenAI-compatible: `Authorization: Bearer <proxy-token>`
+ * - Anthropic-native: `x-api-key: <proxy-token>` (Claude Code CLI sends this)
+ *
+ * Environment Variables:
+ * - ANTHROPIC_API_KEY: Anthropic API key (server-side only)
+ * - OPENAI_API_KEY: OpenAI API key (server-side only)
+ * - AI_PROXY_SECRET: Secret for signing proxy tokens (falls back to BETTER_AUTH_SECRET)
+ */
+
+import { Hono } from 'hono'
+import { prisma } from '../lib/prisma'
+import {
+  generateProxyToken,
+  verifyProxyToken,
+  type ProxyTokenPayload,
+} from '../lib/ai-proxy-token'
+
+// =============================================================================
+// Types
+// =============================================================================
+
+/** OpenAI-compatible chat completion request */
+interface ChatCompletionRequest {
+  model: string
+  messages: Array<{
+    role: 'system' | 'user' | 'assistant' | 'tool'
+    content: string | Array<{ type: string; text?: string; image_url?: { url: string } }>
+    name?: string
+    tool_call_id?: string
+    tool_calls?: Array<{
+      id: string
+      type: 'function'
+      function: { name: string; arguments: string }
+    }>
+  }>
+  temperature?: number
+  top_p?: number
+  max_tokens?: number
+  stream?: boolean
+  stop?: string | string[]
+  tools?: Array<{
+    type: 'function'
+    function: {
+      name: string
+      description?: string
+      parameters?: Record<string, unknown>
+    }
+  }>
+  tool_choice?: 'none' | 'auto' | 'required' | { type: 'function'; function: { name: string } }
+}
+
+/** Supported model providers */
+type Provider = 'anthropic' | 'openai' | 'local'
+
+/** Model routing configuration */
+interface ModelConfig {
+  provider: Provider
+  apiModel: string
+  displayName: string
+}
+
+// =============================================================================
+// Model Registry
+// =============================================================================
+
+const MODEL_REGISTRY: Record<string, ModelConfig> = {
+  // ---------------------------------------------------------------------------
+  // Anthropic models — Current generation
+  // ---------------------------------------------------------------------------
+  'claude-opus-4-6': {
+    provider: 'anthropic',
+    apiModel: 'claude-opus-4-6',
+    displayName: 'Claude Opus 4.6',
+  },
+  'claude-sonnet-4-6': {
+    provider: 'anthropic',
+    apiModel: 'claude-sonnet-4-6',
+    displayName: 'Claude Sonnet 4.6',
+  },
+  'claude-haiku-4-5-20251001': {
+    provider: 'anthropic',
+    apiModel: 'claude-haiku-4-5-20251001',
+    displayName: 'Claude Haiku 4.5',
+  },
+
+  // ---------------------------------------------------------------------------
+  // Anthropic models — Legacy (still available)
+  // ---------------------------------------------------------------------------
+  'claude-sonnet-4-5-20250929': {
+    provider: 'anthropic',
+    apiModel: 'claude-sonnet-4-5-20250929',
+    displayName: 'Claude Sonnet 4.5',
+  },
+  'claude-opus-4-5-20251101': {
+    provider: 'anthropic',
+    apiModel: 'claude-opus-4-5-20251101',
+    displayName: 'Claude Opus 4.5',
+  },
+  'claude-opus-4-1-20250805': {
+    provider: 'anthropic',
+    apiModel: 'claude-opus-4-1-20250805',
+    displayName: 'Claude Opus 4.1',
+  },
+  'claude-sonnet-4-20250514': {
+    provider: 'anthropic',
+    apiModel: 'claude-sonnet-4-20250514',
+    displayName: 'Claude Sonnet 4',
+  },
+  'claude-3-7-sonnet-20250219': {
+    provider: 'anthropic',
+    apiModel: 'claude-3-7-sonnet-20250219',
+    displayName: 'Claude 3.7 Sonnet',
+  },
+  'claude-opus-4-20250514': {
+    provider: 'anthropic',
+    apiModel: 'claude-opus-4-20250514',
+    displayName: 'Claude Opus 4',
+  },
+  'claude-3-haiku-20240307': {
+    provider: 'anthropic',
+    apiModel: 'claude-3-haiku-20240307',
+    displayName: 'Claude 3 Haiku',
+  },
+
+  // ---------------------------------------------------------------------------
+  // OpenAI models — Current generation
+  // ---------------------------------------------------------------------------
+  'gpt-5.4': {
+    provider: 'openai',
+    apiModel: 'gpt-5.4',
+    displayName: 'GPT-5.4',
+  },
+  'gpt-5-mini': {
+    provider: 'openai',
+    apiModel: 'gpt-5-mini',
+    displayName: 'GPT-5 Mini',
+  },
+  'gpt-5-nano': {
+    provider: 'openai',
+    apiModel: 'gpt-5-nano',
+    displayName: 'GPT-5 Nano',
+  },
+  'o3': {
+    provider: 'openai',
+    apiModel: 'o3',
+    displayName: 'o3',
+  },
+  'o4-mini': {
+    provider: 'openai',
+    apiModel: 'o4-mini',
+    displayName: 'o4 Mini',
+  },
+
+  // ---------------------------------------------------------------------------
+  // OpenAI models — Legacy (still available)
+  // ---------------------------------------------------------------------------
+  'gpt-4.1': {
+    provider: 'openai',
+    apiModel: 'gpt-4.1',
+    displayName: 'GPT-4.1',
+  },
+  'gpt-4o': {
+    provider: 'openai',
+    apiModel: 'gpt-4o',
+    displayName: 'GPT-4o',
+  },
+  'gpt-4o-mini': {
+    provider: 'openai',
+    apiModel: 'gpt-4o-mini',
+    displayName: 'GPT-4o Mini',
+  },
+  'gpt-4-turbo': {
+    provider: 'openai',
+    apiModel: 'gpt-4-turbo',
+    displayName: 'GPT-4 Turbo',
+  },
+  'o1': {
+    provider: 'openai',
+    apiModel: 'o1',
+    displayName: 'o1',
+  },
+  'o1-mini': {
+    provider: 'openai',
+    apiModel: 'o1-mini',
+    displayName: 'o1 Mini',
+  },
+  'o3-mini': {
+    provider: 'openai',
+    apiModel: 'o3-mini',
+    displayName: 'o3 Mini',
+  },
+}
+
+// Convenience aliases — current generation (Anthropic)
+MODEL_REGISTRY['claude-opus'] = MODEL_REGISTRY['claude-opus-4-6']
+MODEL_REGISTRY['claude-sonnet'] = MODEL_REGISTRY['claude-sonnet-4-6']
+MODEL_REGISTRY['claude-haiku'] = MODEL_REGISTRY['claude-haiku-4-5-20251001']
+MODEL_REGISTRY['claude-haiku-4-5'] = MODEL_REGISTRY['claude-haiku-4-5-20251001']
+
+// Convenience aliases — legacy (Anthropic)
+MODEL_REGISTRY['claude-sonnet-4-5'] = MODEL_REGISTRY['claude-sonnet-4-5-20250929']
+MODEL_REGISTRY['claude-opus-4-5'] = MODEL_REGISTRY['claude-opus-4-5-20251101']
+MODEL_REGISTRY['claude-opus-4-1'] = MODEL_REGISTRY['claude-opus-4-1-20250805']
+MODEL_REGISTRY['claude-sonnet-4-0'] = MODEL_REGISTRY['claude-sonnet-4-20250514']
+MODEL_REGISTRY['claude-3-7-sonnet-latest'] = MODEL_REGISTRY['claude-3-7-sonnet-20250219']
+MODEL_REGISTRY['claude-opus-4-0'] = MODEL_REGISTRY['claude-opus-4-20250514']
+
+// =============================================================================
+// Provider Routing
+// =============================================================================
+
+/**
+ * Resolve a model name to its configuration.
+ * Supports exact matches and prefix matching (e.g., "claude-3" matches the first claude-3.x model).
+ */
+function resolveModel(model: string): ModelConfig | null {
+  // Agent mode aliases — resolve via resolveAgentModel (handles local vs cloud)
+  if (model === 'basic' || model === 'advanced') {
+    const { resolvedModel, isLocal } = resolveAgentModel(model)
+    if (isLocal) {
+      return { provider: 'local', apiModel: resolvedModel, displayName: model }
+    }
+    return resolveModel(resolvedModel)
+  }
+
+  // Exact match
+  if (MODEL_REGISTRY[model]) {
+    return MODEL_REGISTRY[model]
+  }
+
+  // Prefix match (e.g., "claude-3.5-sonnet" → "claude-3-5-sonnet-20241022")
+  for (const [key, config] of Object.entries(MODEL_REGISTRY)) {
+    if (key.startsWith(model) || config.apiModel.startsWith(model)) {
+      return config
+    }
+  }
+
+  // Infer provider from model name
+  if (model.startsWith('claude')) {
+    return {
+      provider: 'anthropic',
+      apiModel: model,
+      displayName: model,
+    }
+  }
+  if (model.startsWith('gpt') || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('o4')) {
+    return {
+      provider: 'openai',
+      apiModel: model,
+      displayName: model,
+    }
+  }
+
+  return null
+}
+
+/**
+ * Get the API key for a provider.
+ */
+function getProviderApiKey(provider: Provider): string | null {
+  switch (provider) {
+    case 'anthropic':
+      return process.env.ANTHROPIC_API_KEY || null
+    case 'openai':
+      return process.env.OPENAI_API_KEY || null
+    case 'local':
+      return 'local'
+    default:
+      return null
+  }
+}
+
+/**
+ * Resolve 'basic' / 'advanced' agent modes to actual model names.
+ * The proxy is the single source of truth for model resolution.
+ *
+ * When LOCAL_LLM_BASE_URL is set: use admin-configured local models.
+ * Otherwise: use default Claude models.
+ */
+function resolveAgentModel(model: string): { resolvedModel: string; isLocal: boolean } {
+  const localBaseUrl = process.env.LOCAL_LLM_BASE_URL
+  if (localBaseUrl) {
+    if (model === 'basic') {
+      return { resolvedModel: process.env.LOCAL_LLM_BASIC_MODEL || 'llama3', isLocal: true }
+    }
+    if (model === 'advanced') {
+      return { resolvedModel: process.env.LOCAL_LLM_ADVANCED_MODEL || 'llama3', isLocal: true }
+    }
+    return { resolvedModel: model, isLocal: true }
+  }
+  if (model === 'basic') {
+    return { resolvedModel: 'claude-haiku-4-5', isLocal: false }
+  }
+  if (model === 'advanced') {
+    return { resolvedModel: 'claude-sonnet-4-6', isLocal: false }
+  }
+  return { resolvedModel: model, isLocal: false }
+}
+
+// =============================================================================
+// Anthropic Proxy
+// =============================================================================
+
+/**
+ * Convert OpenAI-format messages to Anthropic format.
+ * Anthropic uses a separate `system` parameter and has different message structure.
+ */
+function convertToAnthropicFormat(request: ChatCompletionRequest) {
+  let systemPrompt: string | undefined
+  const messages: Array<{ role: string; content: string | Array<any> }> = []
+
+  for (const msg of request.messages) {
+    if (msg.role === 'system') {
+      // Anthropic takes system as a separate parameter
+      systemPrompt = typeof msg.content === 'string'
+        ? msg.content
+        : msg.content.map(p => p.text || '').join('\n')
+      continue
+    }
+
+    messages.push({
+      role: msg.role === 'tool' ? 'user' : msg.role,
+      content: msg.content,
+    })
+  }
+
+  const body: Record<string, unknown> = {
+    model: request.model,
+    messages,
+    max_tokens: request.max_tokens || 4096,
+  }
+
+  if (systemPrompt) body.system = systemPrompt
+  if (request.temperature !== undefined) body.temperature = request.temperature
+  if (request.top_p !== undefined) body.top_p = request.top_p
+  if (request.stop) body.stop_sequences = Array.isArray(request.stop) ? request.stop : [request.stop]
+  if (request.stream) body.stream = true
+
+  // Convert tools to Anthropic format
+  if (request.tools && request.tools.length > 0) {
+    body.tools = request.tools.map(tool => ({
+      name: tool.function.name,
+      description: tool.function.description || '',
+      input_schema: tool.function.parameters || { type: 'object', properties: {} },
+    }))
+  }
+
+  if (request.tool_choice) {
+    if (request.tool_choice === 'auto') {
+      body.tool_choice = { type: 'auto' }
+    } else if (request.tool_choice === 'required') {
+      body.tool_choice = { type: 'any' }
+    } else if (request.tool_choice === 'none') {
+      // Anthropic doesn't have "none", omit tools instead
+      delete body.tools
+    } else if (typeof request.tool_choice === 'object') {
+      body.tool_choice = { type: 'tool', name: request.tool_choice.function.name }
+    }
+  }
+
+  return body
+}
+
+/**
+ * Convert Anthropic non-streaming response to OpenAI format.
+ */
+function convertAnthropicResponseToOpenAI(anthropicResponse: any, model: string) {
+  const content = anthropicResponse.content || []
+  const textParts = content.filter((c: any) => c.type === 'text')
+  const toolParts = content.filter((c: any) => c.type === 'tool_use')
+
+  const message: any = {
+    role: 'assistant',
+    content: textParts.map((t: any) => t.text).join('') || null,
+  }
+
+  if (toolParts.length > 0) {
+    message.tool_calls = toolParts.map((t: any, i: number) => ({
+      id: t.id,
+      type: 'function',
+      function: {
+        name: t.name,
+        arguments: JSON.stringify(t.input),
+      },
+    }))
+  }
+
+  return {
+    id: anthropicResponse.id || `chatcmpl-${Date.now()}`,
+    object: 'chat.completion',
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [
+      {
+        index: 0,
+        message,
+        finish_reason: mapAnthropicStopReason(anthropicResponse.stop_reason),
+      },
+    ],
+    usage: {
+      prompt_tokens: anthropicResponse.usage?.input_tokens || 0,
+      completion_tokens: anthropicResponse.usage?.output_tokens || 0,
+      total_tokens:
+        (anthropicResponse.usage?.input_tokens || 0) +
+        (anthropicResponse.usage?.output_tokens || 0),
+    },
+  }
+}
+
+function mapAnthropicStopReason(reason: string | undefined): string {
+  switch (reason) {
+    case 'end_turn':
+      return 'stop'
+    case 'max_tokens':
+      return 'length'
+    case 'tool_use':
+      return 'tool_calls'
+    default:
+      return 'stop'
+  }
+}
+
+// =============================================================================
+// Anthropic <-> OpenAI Format Conversion (for local LLM providers)
+// =============================================================================
+
+function convertAnthropicRequestToOpenAIMessages(anthropicReq: any): any[] {
+  const messages: any[] = []
+  if (anthropicReq.system) {
+    const systemText = typeof anthropicReq.system === 'string'
+      ? anthropicReq.system
+      : anthropicReq.system.map((b: any) => b.text || '').join('\n')
+    messages.push({ role: 'system', content: systemText })
+  }
+  for (const msg of anthropicReq.messages || []) {
+    if (msg.role === 'user' || msg.role === 'assistant') {
+      if (typeof msg.content === 'string') {
+        messages.push({ role: msg.role, content: msg.content })
+      } else if (Array.isArray(msg.content)) {
+        const textParts = msg.content
+          .filter((b: any) => b.type === 'text')
+          .map((b: any) => b.text)
+          .join('\n')
+        if (textParts) {
+          messages.push({ role: msg.role, content: textParts })
+        }
+        for (const block of msg.content) {
+          if (block.type === 'tool_use') {
+            messages.push({
+              role: 'assistant',
+              content: null,
+              tool_calls: [{
+                id: block.id,
+                type: 'function',
+                function: { name: block.name, arguments: JSON.stringify(block.input) },
+              }],
+            })
+          }
+          if (block.type === 'tool_result') {
+            const resultContent = typeof block.content === 'string'
+              ? block.content
+              : (block.content || []).map((c: any) => c.text || '').join('\n')
+            messages.push({
+              role: 'tool',
+              tool_call_id: block.tool_use_id,
+              content: resultContent,
+            })
+          }
+        }
+      }
+    }
+  }
+  return messages
+}
+
+function convertOpenAIResponseToAnthropic(openaiResp: any, model: string): any {
+  const choice = openaiResp.choices?.[0]
+  const content: any[] = []
+  if (choice?.message?.content) {
+    content.push({ type: 'text', text: choice.message.content })
+  }
+  if (choice?.message?.tool_calls) {
+    for (const tc of choice.message.tool_calls) {
+      content.push({
+        type: 'tool_use',
+        id: tc.id || `toolu_${Date.now()}`,
+        name: tc.function.name,
+        input: JSON.parse(tc.function.arguments || '{}'),
+      })
+    }
+  }
+  return {
+    id: openaiResp.id || `msg_${Date.now()}`,
+    type: 'message',
+    role: 'assistant',
+    content,
+    model,
+    stop_reason: choice?.finish_reason === 'tool_calls' ? 'tool_use' : 'end_turn',
+    usage: {
+      input_tokens: openaiResp.usage?.prompt_tokens || 0,
+      output_tokens: openaiResp.usage?.completion_tokens || 0,
+    },
+  }
+}
+
+function convertOpenAIStreamToAnthropicStream(body: ReadableStream<Uint8Array>, model: string): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder()
+  const decoder = new TextDecoder()
+  let sseBuffer = ''
+  let contentIndex = 0
+
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(
+        `event: message_start\ndata: ${JSON.stringify({
+          type: 'message_start',
+          message: {
+            id: `msg_${Date.now()}`,
+            type: 'message',
+            role: 'assistant',
+            content: [],
+            model,
+            usage: { input_tokens: 0, output_tokens: 0 },
+          },
+        })}\n\n`
+      ))
+      controller.enqueue(encoder.encode(
+        `event: content_block_start\ndata: ${JSON.stringify({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        })}\n\n`
+      ))
+    },
+    async pull(controller) {
+      const reader = body.getReader()
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          sseBuffer += decoder.decode(value, { stream: true })
+          const lines = sseBuffer.split('\n')
+          sseBuffer = lines.pop() || ''
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            const data = line.slice(6).trim()
+            if (data === '[DONE]') {
+              controller.enqueue(encoder.encode(
+                `event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`
+              ))
+              controller.enqueue(encoder.encode(
+                `event: message_delta\ndata: ${JSON.stringify({
+                  type: 'message_delta',
+                  delta: { stop_reason: 'end_turn' },
+                  usage: { output_tokens: contentIndex },
+                })}\n\n`
+              ))
+              controller.enqueue(encoder.encode(
+                `event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`
+              ))
+              controller.close()
+              return
+            }
+            try {
+              const chunk = JSON.parse(data)
+              const delta = chunk.choices?.[0]?.delta
+              if (delta?.content) {
+                contentIndex += delta.content.length
+                controller.enqueue(encoder.encode(
+                  `event: content_block_delta\ndata: ${JSON.stringify({
+                    type: 'content_block_delta',
+                    index: 0,
+                    delta: { type: 'text_delta', text: delta.content },
+                  })}\n\n`
+                ))
+              }
+            } catch { /* ignore malformed chunks */ }
+          }
+        }
+        controller.close()
+      } catch (err) {
+        controller.error(err)
+      }
+    },
+  })
+}
+
+/**
+ * Proxy a streaming request to Anthropic and convert SSE to OpenAI format.
+ */
+async function proxyAnthropicStream(
+  request: ChatCompletionRequest,
+  apiKey: string,
+  modelConfig: ModelConfig,
+  onComplete?: (inputTokens: number, outputTokens: number) => void
+): Promise<Response> {
+  const body = convertToAnthropicFormat({
+    ...request,
+    model: modelConfig.apiModel,
+    stream: true,
+  })
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify(body),
+  })
+
+  if (!response.ok) {
+    const errorText = await response.text()
+    throw new Error(`Anthropic API error (${response.status}): ${errorText}`)
+  }
+
+  // Transform Anthropic SSE stream to OpenAI SSE format
+  const encoder = new TextEncoder()
+  const decoder = new TextDecoder()
+  const completionId = `chatcmpl-${Date.now()}`
+  let inputTokens = 0
+  let outputTokens = 0
+
+  const transformStream = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      const text = decoder.decode(chunk, { stream: true })
+      const lines = text.split('\n')
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const data = line.slice(6).trim()
+        if (data === '[DONE]') continue
+
+        try {
+          const event = JSON.parse(data)
+          const openAIChunk = convertAnthropicStreamEvent(event, completionId, request.model)
+          if (openAIChunk) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(openAIChunk)}\n\n`))
+          }
+
+          if (event.type === 'message_start' && event.message?.usage) {
+            inputTokens = event.message.usage.input_tokens || 0
+          }
+          if (event.type === 'message_delta' && event.usage) {
+            outputTokens = event.usage.output_tokens || 0
+          }
+        } catch {
+          // Skip unparseable lines
+        }
+      }
+    },
+    flush(controller) {
+      controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+      onComplete?.(inputTokens, outputTokens)
+    },
+  })
+
+  const reader = response.body!.getReader()
+  const readable = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const { done, value } = await reader.read()
+      if (done) {
+        controller.close()
+        return
+      }
+      controller.enqueue(value)
+    },
+  })
+
+  const transformed = readable.pipeThrough(transformStream)
+
+  return new Response(transformed, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Proxy-Provider': 'anthropic',
+      'X-Proxy-Model': modelConfig.apiModel,
+    },
+  })
+}
+
+/**
+ * Convert a single Anthropic SSE event to OpenAI SSE chunk format.
+ */
+function convertAnthropicStreamEvent(event: any, id: string, model: string): any | null {
+  switch (event.type) {
+    case 'content_block_start':
+      if (event.content_block?.type === 'text') {
+        return {
+          id,
+          object: 'chat.completion.chunk',
+          created: Math.floor(Date.now() / 1000),
+          model,
+          choices: [
+            {
+              index: 0,
+              delta: { role: 'assistant', content: '' },
+              finish_reason: null,
+            },
+          ],
+        }
+      }
+      if (event.content_block?.type === 'tool_use') {
+        return {
+          id,
+          object: 'chat.completion.chunk',
+          created: Math.floor(Date.now() / 1000),
+          model,
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    index: event.index || 0,
+                    id: event.content_block.id,
+                    type: 'function',
+                    function: {
+                      name: event.content_block.name,
+                      arguments: '',
+                    },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        }
+      }
+      return null
+
+    case 'content_block_delta':
+      if (event.delta?.type === 'text_delta') {
+        return {
+          id,
+          object: 'chat.completion.chunk',
+          created: Math.floor(Date.now() / 1000),
+          model,
+          choices: [
+            {
+              index: 0,
+              delta: { content: event.delta.text },
+              finish_reason: null,
+            },
+          ],
+        }
+      }
+      if (event.delta?.type === 'input_json_delta') {
+        return {
+          id,
+          object: 'chat.completion.chunk',
+          created: Math.floor(Date.now() / 1000),
+          model,
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    index: event.index || 0,
+                    function: { arguments: event.delta.partial_json },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        }
+      }
+      return null
+
+    case 'message_delta':
+      return {
+        id,
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model,
+        choices: [
+          {
+            index: 0,
+            delta: {},
+            finish_reason: mapAnthropicStopReason(event.delta?.stop_reason),
+          },
+        ],
+      }
+
+    default:
+      return null
+  }
+}
+
+/**
+ * Proxy a non-streaming request to Anthropic.
+ */
+async function proxyAnthropicNonStream(
+  request: ChatCompletionRequest,
+  apiKey: string,
+  modelConfig: ModelConfig
+) {
+  const body = convertToAnthropicFormat({
+    ...request,
+    model: modelConfig.apiModel,
+    stream: false,
+  })
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify(body),
+  })
+
+  if (!response.ok) {
+    const errorText = await response.text()
+    throw new Error(`Anthropic API error (${response.status}): ${errorText}`)
+  }
+
+  const anthropicResponse = await response.json()
+  return convertAnthropicResponseToOpenAI(anthropicResponse, request.model)
+}
+
+// =============================================================================
+// OpenAI Proxy (pass-through)
+// =============================================================================
+
+function getOpenAICompatibleBaseUrl(modelConfig: ModelConfig): string {
+  if (modelConfig.provider === 'local' && process.env.LOCAL_LLM_BASE_URL) {
+    return `${process.env.LOCAL_LLM_BASE_URL.replace(/\/$/, '')}/v1/chat/completions`
+  }
+  return 'https://api.openai.com/v1/chat/completions'
+}
+
+function getOpenAICompatibleHeaders(apiKey: string, modelConfig: ModelConfig): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (modelConfig.provider !== 'local') {
+    headers['Authorization'] = `Bearer ${apiKey}`
+  }
+  return headers
+}
+
+/**
+ * Proxy a streaming request to an OpenAI-compatible endpoint (OpenAI, Ollama, LM Studio).
+ */
+async function proxyOpenAIStream(
+  request: ChatCompletionRequest,
+  apiKey: string,
+  modelConfig: ModelConfig
+): Promise<Response> {
+  const url = getOpenAICompatibleBaseUrl(modelConfig)
+  const headers = getOpenAICompatibleHeaders(apiKey, modelConfig)
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      ...request,
+      model: modelConfig.apiModel,
+      stream: true,
+    }),
+  })
+
+  if (!response.ok) {
+    const errorText = await response.text()
+    throw new Error(`${modelConfig.provider} API error (${response.status}): ${errorText}`)
+  }
+
+  return new Response(response.body, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Proxy-Provider': modelConfig.provider,
+      'X-Proxy-Model': modelConfig.apiModel,
+    },
+  })
+}
+
+/**
+ * Proxy a non-streaming request to an OpenAI-compatible endpoint.
+ */
+async function proxyOpenAINonStream(
+  request: ChatCompletionRequest,
+  apiKey: string,
+  modelConfig: ModelConfig
+) {
+  const url = getOpenAICompatibleBaseUrl(modelConfig)
+  const headers = getOpenAICompatibleHeaders(apiKey, modelConfig)
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      ...request,
+      model: modelConfig.apiModel,
+      stream: false,
+    }),
+  })
+
+  if (!response.ok) {
+    const errorText = await response.text()
+    throw new Error(`${modelConfig.provider} API error (${response.status}): ${errorText}`)
+  }
+
+  return response.json()
+}
+
+// =============================================================================
+// Billing
+// =============================================================================
+
+import { calculateCreditCost, proxyModelToBillingModel, getModelTier } from '../lib/credit-cost'
+import * as billingService from '../services/billing.service'
+import { getProjectUser } from '../lib/project-user-context'
+import { accumulateUsage, hasSession } from '../lib/proxy-billing-session'
+
+/**
+ * Record token usage for billing.
+ *
+ * If there's an active billing session for this project (opened by
+ * project-chat or /api/chat), tokens are accumulated and charged once
+ * when the session closes. Otherwise, charge immediately per-call.
+ */
+async function recordUsage(
+  tokenPayload: ProxyTokenPayload,
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+) {
+  // If a billing session is open, accumulate — the session closer will charge
+  if (accumulateUsage(tokenPayload.projectId, model, inputTokens, outputTokens)) {
+    const totalTokens = inputTokens + outputTokens
+    console.log(`[AI Proxy] 📊 Accumulated ${totalTokens} tokens for session (project: ${tokenPayload.projectId})`)
+    return
+  }
+
+  // No billing session — charge immediately (direct proxy usage)
+  const totalTokens = inputTokens + outputTokens
+  if (totalTokens === 0) return
+
+  try {
+    const billingModel = proxyModelToBillingModel(model)
+    const creditCost = calculateCreditCost(totalTokens, billingModel)
+    const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
+    if (billingUserId === 'system') {
+      console.warn(`[AI Proxy] ⚠️ No real userId for project ${tokenPayload.projectId} — billing as 'system'. Token userId: ${tokenPayload.userId}`)
+    }
+
+    const result = await billingService.consumeCredits(
+      tokenPayload.workspaceId,
+      tokenPayload.projectId || null,
+      billingUserId,
+      'ai_proxy_completion',
+      creditCost,
+      { model, billingModel, inputTokens, outputTokens, totalTokens }
+    )
+
+    if (result.success) {
+      console.log(`[AI Proxy] 💰 Charged ${creditCost} credits (${totalTokens} tokens, model: ${billingModel}) — remaining: ${result.remainingCredits}`)
+    } else {
+      console.warn(`[AI Proxy] ⚠️ Could not charge credits: ${result.error}`)
+    }
+  } catch (err) {
+    console.error('[AI Proxy] Failed to charge credits:', err)
+  }
+}
+
+// =============================================================================
+// Image Generation
+// =============================================================================
+
+type ImageProvider = 'openai' | 'google' | 'local'
+
+interface ImageModelConfig {
+  provider: ImageProvider
+  apiModel: string
+  displayName: string
+}
+
+interface ImageGenerationResponse {
+  created: number
+  data: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>
+}
+
+const IMAGE_MODEL_REGISTRY: Record<string, ImageModelConfig> = {
+  'dall-e-3': { provider: 'openai', apiModel: 'dall-e-3', displayName: 'DALL-E 3' },
+  'dall-e-2': { provider: 'openai', apiModel: 'dall-e-2', displayName: 'DALL-E 2' },
+  'gpt-image-1': { provider: 'openai', apiModel: 'gpt-image-1', displayName: 'GPT Image 1' },
+  'gpt-image-1.5': { provider: 'openai', apiModel: 'gpt-image-1.5', displayName: 'GPT Image 1.5' },
+  'imagen-4': { provider: 'google', apiModel: 'imagen-4.0-generate-001', displayName: 'Imagen 4' },
+  'imagen-4-ultra': { provider: 'google', apiModel: 'imagen-4.0-ultra-generate-001', displayName: 'Imagen 4 Ultra' },
+  'imagen-4-fast': { provider: 'google', apiModel: 'imagen-4.0-fast-generate-001', displayName: 'Imagen 4 Fast' },
+}
+
+function resolveImageModel(model: string): ImageModelConfig | null {
+  if (IMAGE_MODEL_REGISTRY[model]) return IMAGE_MODEL_REGISTRY[model]
+
+  for (const [key, config] of Object.entries(IMAGE_MODEL_REGISTRY)) {
+    if (key.startsWith(model) || config.apiModel.startsWith(model)) return config
+  }
+
+  const localBaseUrl = process.env.LOCAL_IMAGE_GEN_BASE_URL
+  if (localBaseUrl && (model === 'local' || model === process.env.LOCAL_IMAGE_GEN_MODEL)) {
+    return { provider: 'local', apiModel: model, displayName: 'Local Image Model' }
+  }
+
+  return null
+}
+
+function getImageProviderApiKey(provider: ImageProvider): string | null {
+  switch (provider) {
+    case 'openai': return process.env.OPENAI_API_KEY || null
+    case 'google': return process.env.GOOGLE_API_KEY || null
+    case 'local': return 'local'
+    default: return null
+  }
+}
+
+async function generateImageOpenAI(
+  apiKey: string,
+  model: string,
+  params: { prompt: string; size?: string; quality?: string; n?: number },
+): Promise<ImageGenerationResponse> {
+  const body: Record<string, unknown> = {
+    model,
+    prompt: params.prompt,
+    size: params.size || '1024x1024',
+    n: params.n || 1,
+    response_format: 'b64_json',
+  }
+  if (params.quality) body.quality = params.quality
+
+  const response = await fetch('https://api.openai.com/v1/images/generations', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+  })
+
+  if (!response.ok) {
+    const errorText = await response.text()
+    throw new Error(`OpenAI image generation error (${response.status}): ${errorText}`)
+  }
+
+  return await response.json() as ImageGenerationResponse
+}
+
+async function generateImageGoogle(
+  apiKey: string,
+  model: string,
+  params: { prompt: string; size?: string; n?: number },
+): Promise<ImageGenerationResponse> {
+  const sizeToAspect: Record<string, string> = {
+    '1024x1024': '1:1',
+    '1024x1792': '9:16',
+    '1792x1024': '16:9',
+    '1536x1024': '3:2',
+    '1024x1536': '2:3',
+  }
+
+  const body = {
+    instances: [{ prompt: params.prompt }],
+    parameters: {
+      sampleCount: params.n || 1,
+      aspectRatio: sizeToAspect[params.size || '1024x1024'] || '1:1',
+    },
+  }
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:predict`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,
+      },
+      body: JSON.stringify(body),
+    }
+  )
+
+  if (!response.ok) {
+    const errorText = await response.text()
+    throw new Error(`Google Imagen error (${response.status}): ${errorText}`)
+  }
+
+  const googleResult = await response.json() as {
+    predictions?: Array<{ bytesBase64Encoded: string; mimeType?: string }>
+  }
+
+  return {
+    created: Math.floor(Date.now() / 1000),
+    data: (googleResult.predictions || []).map(p => ({
+      b64_json: p.bytesBase64Encoded,
+      revised_prompt: params.prompt,
+    })),
+  }
+}
+
+async function generateImageLocal(
+  _model: string,
+  params: { prompt: string; size?: string; quality?: string; n?: number },
+): Promise<ImageGenerationResponse> {
+  const baseUrl = process.env.LOCAL_IMAGE_GEN_BASE_URL
+  if (!baseUrl) throw new Error('LOCAL_IMAGE_GEN_BASE_URL is not configured')
+
+  const localModel = process.env.LOCAL_IMAGE_GEN_MODEL || _model
+  const body: Record<string, unknown> = {
+    model: localModel,
+    prompt: params.prompt,
+    size: params.size || '1024x1024',
+    n: params.n || 1,
+    response_format: 'b64_json',
+  }
+  if (params.quality) body.quality = params.quality
+
+  const response = await fetch(`${baseUrl}/v1/images/generations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+
+  if (!response.ok) {
+    const errorText = await response.text()
+    throw new Error(`Local image generation error (${response.status}): ${errorText}`)
+  }
+
+  return await response.json() as ImageGenerationResponse
+}
+
+import { calculateImageCreditCost } from '../lib/credit-cost'
+
+async function recordImageUsage(
+  tokenPayload: ProxyTokenPayload,
+  model: string,
+  quality: string,
+  size: string,
+  n: number,
+) {
+  try {
+    const creditCost = calculateImageCreditCost(model, quality, size) * n
+    if (creditCost === 0) return
+
+    const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
+
+    if (hasSession(tokenPayload.projectId)) {
+      accumulateUsage(tokenPayload.projectId, `image:${model}`, 0, 0)
+      console.log(`[AI Proxy] 🎨 Accumulated image gen for session (project: ${tokenPayload.projectId}, model: ${model})`)
+    }
+
+    const result = await billingService.consumeCredits(
+      tokenPayload.workspaceId,
+      tokenPayload.projectId || null,
+      billingUserId,
+      'ai_image_generation',
+      creditCost,
+      { model, quality, size, n }
+    )
+
+    if (result.success) {
+      console.log(`[AI Proxy] 🎨 Charged ${creditCost} credits (image gen, model: ${model}) — remaining: ${result.remainingCredits}`)
+    } else {
+      console.warn(`[AI Proxy] ⚠️ Could not charge image credits: ${result.error}`)
+    }
+  } catch (err) {
+    console.error('[AI Proxy] Failed to charge image credits:', err)
+  }
+}
+
+// =============================================================================
+// Routes
+// =============================================================================
+
+export function aiProxyRoutes() {
+  const router = new Hono()
+
+  /**
+   * Middleware: Validate proxy token on all /ai/v1/* routes.
+   */
+  async function validateProxyAuth(c: any): Promise<ProxyTokenPayload | null> {
+    const authHeader = c.req.header('Authorization')
+    if (!authHeader?.startsWith('Bearer ')) {
+      return null
+    }
+    const token = authHeader.slice(7)
+    return verifyProxyToken(token)
+  }
+
+  // =========================================================================
+  // POST /ai/v1/chat/completions - OpenAI-compatible chat completions proxy
+  // =========================================================================
+  router.post('/ai/v1/chat/completions', async (c) => {
+    // Authenticate
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        {
+          error: {
+            message: 'Invalid or missing proxy token. Use Authorization: Bearer <token>',
+            type: 'authentication_error',
+            code: 'invalid_api_key',
+          },
+        },
+        401
+      )
+    }
+
+    // Pre-check: reject if workspace has no credits
+    if (!await billingService.hasCredits(tokenPayload.workspaceId)) {
+      return c.json(
+        {
+          error: {
+            message: 'Insufficient credits. Please upgrade your plan.',
+            type: 'billing_error',
+            code: 'insufficient_credits',
+          },
+        },
+        402
+      )
+    }
+
+    try {
+      const request: ChatCompletionRequest = await c.req.json()
+
+      // Validate model
+      if (!request.model) {
+        return c.json(
+          {
+            error: {
+              message: 'model is required',
+              type: 'invalid_request_error',
+              code: 'model_required',
+            },
+          },
+          400
+        )
+      }
+
+      const modelConfig = resolveModel(request.model)
+      if (!modelConfig) {
+        return c.json(
+          {
+            error: {
+              message: `Model '${request.model}' is not supported. Use GET /ai/v1/models to see available models.`,
+              type: 'invalid_request_error',
+              code: 'model_not_found',
+            },
+          },
+          400
+        )
+      }
+
+      // Enforce model tier: free users can only use economy-tier models
+      if (modelConfig.provider !== 'local') {
+        const tier = getModelTier(request.model)
+        if (tier !== 'economy') {
+          const isPaid = await billingService.hasPaidSubscription(tokenPayload.workspaceId)
+          if (!isPaid) {
+            return c.json(
+              {
+                error: {
+                  message: `Model '${request.model}' requires a Pro subscription. Free users can use economy-tier models (e.g. claude-haiku-4-5, gpt-5-nano).`,
+                  type: 'billing_error',
+                  code: 'model_tier_restricted',
+                },
+              },
+              403
+            )
+          }
+        }
+      }
+
+      // Get provider API key
+      const apiKey = getProviderApiKey(modelConfig.provider)
+      if (!apiKey) {
+        return c.json(
+          {
+            error: {
+              message: `Provider '${modelConfig.provider}' is not configured on this server.`,
+              type: 'server_error',
+              code: 'provider_not_configured',
+            },
+          },
+          503
+        )
+      }
+
+      console.log(
+        `[AI Proxy] ${tokenPayload.projectId} → ${modelConfig.provider}/${modelConfig.apiModel} (stream: ${!!request.stream})`
+      )
+
+      // Route to provider
+      if (request.stream) {
+        if (modelConfig.provider === 'anthropic') {
+          return await proxyAnthropicStream(request, apiKey, modelConfig, (inTok, outTok) => {
+            recordUsage(tokenPayload, request.model, inTok, outTok)
+          })
+        } else {
+          return await proxyOpenAIStream(request, apiKey, modelConfig)
+        }
+      } else {
+        let result: any
+        if (modelConfig.provider === 'anthropic') {
+          result = await proxyAnthropicNonStream(request, apiKey, modelConfig)
+        } else {
+          result = await proxyOpenAINonStream(request, apiKey, modelConfig)
+        }
+
+        recordUsage(
+          tokenPayload,
+          request.model,
+          result.usage?.prompt_tokens || 0,
+          result.usage?.completion_tokens || 0,
+        )
+
+        return c.json(result)
+      }
+    } catch (error: any) {
+      console.error('[AI Proxy] Error:', error.message)
+
+      // Return OpenAI-compatible error format
+      const statusCode = error.message?.includes('429') ? 429 : error.message?.includes('503') ? 503 : 500
+      return c.json(
+        {
+          error: {
+            message: error.message || 'Internal proxy error',
+            type: 'server_error',
+            code: 'proxy_error',
+          },
+        },
+        statusCode
+      )
+    }
+  })
+
+  // =========================================================================
+  // GET /ai/v1/models - List available models
+  // =========================================================================
+  router.get('/ai/v1/models', async (c) => {
+    // Token validation is optional for model listing (nice for discovery)
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        {
+          error: {
+            message: 'Invalid or missing proxy token.',
+            type: 'authentication_error',
+            code: 'invalid_api_key',
+          },
+        },
+        401
+      )
+    }
+
+    const models = Object.entries(MODEL_REGISTRY)
+      // Filter out aliases (entries where key !== apiModel and another entry has the same apiModel)
+      .filter(([key, config]) => key === config.apiModel)
+      .map(([key, config]) => ({
+        id: key,
+        object: 'model',
+        created: Math.floor(Date.now() / 1000),
+        owned_by: config.provider,
+        display_name: config.displayName,
+        // Indicate if the provider is actually configured
+        available: !!getProviderApiKey(config.provider),
+      }))
+
+    return c.json({
+      object: 'list',
+      data: models,
+    })
+  })
+
+  // =========================================================================
+  // POST /ai/proxy/tokens - Generate a proxy token for a project
+  // =========================================================================
+  router.post('/ai/proxy/tokens', async (c) => {
+    try {
+      const body = await c.req.json()
+      const { projectId, workspaceId, userId, expiryHours } = body
+
+      if (!projectId || !workspaceId) {
+        return c.json(
+          { error: { code: 'invalid_request', message: 'projectId and workspaceId are required' } },
+          400
+        )
+      }
+
+      // Validate project exists and belongs to workspace
+      const project = await prisma.project.findFirst({
+        where: { id: projectId, workspaceId },
+        select: { id: true, name: true },
+      })
+
+      if (!project) {
+        return c.json(
+          { error: { code: 'not_found', message: 'Project not found in workspace' } },
+          404
+        )
+      }
+
+      // Generate token
+      const expiryMs = expiryHours
+        ? expiryHours * 60 * 60 * 1000
+        : undefined // Default: 24 hours
+
+      const token = await generateProxyToken(projectId, workspaceId, userId, expiryMs)
+
+      return c.json({
+        token,
+        projectId,
+        workspaceId,
+        expiresIn: expiryHours ? `${expiryHours}h` : '24h',
+      })
+    } catch (error: any) {
+      console.error('[AI Proxy] Token generation error:', error)
+      return c.json(
+        { error: { code: 'token_error', message: error.message || 'Failed to generate token' } },
+        500
+      )
+    }
+  })
+
+  // =========================================================================
+  // Anthropic-Native Pass-Through Endpoints
+  // =========================================================================
+  // These endpoints accept requests in Anthropic's native API format and
+  // forward them directly to api.anthropic.com. This allows the Claude Code
+  // CLI to use the proxy via ANTHROPIC_BASE_URL without any format conversion.
+  //
+  // Auth: The proxy token is sent via the `x-api-key` header (same header
+  // that Claude Code CLI uses for ANTHROPIC_API_KEY).
+
+  /**
+   * Validate Anthropic-style auth (x-api-key header contains proxy token).
+   */
+  async function validateAnthropicAuth(c: any): Promise<ProxyTokenPayload | null> {
+    const apiKey = c.req.header('x-api-key')
+    if (!apiKey) {
+      return null
+    }
+    return verifyProxyToken(apiKey)
+  }
+
+  /**
+   * POST /ai/anthropic/v1/messages - Anthropic Messages API pass-through
+   *
+   * Claude Code CLI sets ANTHROPIC_BASE_URL to our proxy and sends requests
+   * here. We validate the proxy token (sent as x-api-key), then forward the
+   * request to the real Anthropic API with our server-side API key.
+   */
+  router.post('/ai/anthropic/v1/messages', async (c) => {
+    // Authenticate via x-api-key (proxy token)
+    const tokenPayload = await validateAnthropicAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { type: 'error', error: { type: 'authentication_error', message: 'Invalid or missing proxy token in x-api-key header.' } },
+        401
+      )
+    }
+
+    // Pre-check credits
+    if (!await billingService.hasCredits(tokenPayload.workspaceId)) {
+      return c.json(
+        { type: 'error', error: { type: 'billing_error', message: 'Insufficient credits. Please upgrade your plan.' } },
+        402
+      )
+    }
+
+    try {
+      const body = await c.req.text()
+      let parsed: any = {}
+      try { parsed = JSON.parse(body) } catch { /* ok */ }
+      const requestModel = parsed.model || 'advanced'
+      const isStream = !!parsed.stream
+
+      const { resolvedModel, isLocal } = resolveAgentModel(requestModel)
+      console.log(`[AI Proxy] Anthropic pass-through: ${tokenPayload.projectId} → ${requestModel} resolved to ${resolvedModel} (local: ${isLocal}, stream: ${isStream})`)
+
+      // Enforce model tier: free users can only use economy-tier models
+      if (!isLocal) {
+        const tier = getModelTier(resolvedModel)
+        if (tier !== 'economy') {
+          const isPaid = await billingService.hasPaidSubscription(tokenPayload.workspaceId)
+          if (!isPaid) {
+            return c.json(
+              { type: 'error', error: { type: 'billing_error', message: `Model '${resolvedModel}' requires a Pro subscription. Free users can use economy-tier models (e.g. claude-haiku-4-5, gpt-5-nano).` } },
+              403
+            )
+          }
+        }
+      }
+
+      // ── Local LLM routing: convert Anthropic → OpenAI format ──
+      if (isLocal) {
+        const localBase = process.env.LOCAL_LLM_BASE_URL!.replace(/\/$/, '')
+        const openaiMessages = convertAnthropicRequestToOpenAIMessages(parsed)
+        const openaiBody: any = {
+          model: resolvedModel,
+          messages: openaiMessages,
+          stream: isStream,
+        }
+        if (parsed.max_tokens) openaiBody.max_tokens = parsed.max_tokens
+        if (parsed.temperature !== undefined) openaiBody.temperature = parsed.temperature
+        if (parsed.tools) {
+          openaiBody.tools = parsed.tools.map((t: any) => ({
+            type: 'function',
+            function: { name: t.name, description: t.description, parameters: t.input_schema },
+          }))
+        }
+
+        const response = await fetch(`${localBase}/v1/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(openaiBody),
+        })
+        if (!response.ok) {
+          const errorText = await response.text()
+          return c.json(
+            { type: 'error', error: { type: 'api_error', message: `Local LLM error (${response.status}): ${errorText}` } },
+            response.status as any
+          )
+        }
+
+        if (isStream) {
+          const anthropicStream = convertOpenAIStreamToAnthropicStream(response.body!, resolvedModel)
+          return new Response(anthropicStream, {
+            headers: {
+              'Content-Type': 'text/event-stream',
+              'Cache-Control': 'no-cache',
+              'X-Proxy-Provider': 'local',
+              'X-Proxy-Model': resolvedModel,
+            },
+          })
+        } else {
+          const openaiResult = await response.json() as any
+          const anthropicResult = convertOpenAIResponseToAnthropic(openaiResult, resolvedModel)
+          return c.json(anthropicResult)
+        }
+      }
+
+      // ── Cloud routing: forward to Anthropic API ──
+      const anthropicApiKey = process.env.ANTHROPIC_API_KEY
+      if (!anthropicApiKey) {
+        return c.json(
+          { type: 'error', error: { type: 'api_error', message: 'Anthropic provider is not configured on this server.' } },
+          503
+        )
+      }
+
+      // Replace the model name with the resolved one before forwarding
+      parsed.model = resolvedModel
+      const forwardBody = JSON.stringify(parsed)
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'x-api-key': anthropicApiKey,
+      }
+      for (const [key, value] of Object.entries(c.req.header())) {
+        if (key.toLowerCase().startsWith('anthropic-') && value) {
+          headers[key] = value as string
+        }
+      }
+      if (!headers['anthropic-version']) {
+        headers['anthropic-version'] = '2023-06-01'
+      }
+
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers,
+        body: forwardBody,
+      })
+
+      if (!response.ok) {
+        const errorBody = await response.text()
+        return new Response(errorBody, {
+          status: response.status,
+          headers: { 'Content-Type': response.headers.get('Content-Type') || 'application/json' },
+        })
+      }
+
+      if (!isStream) {
+        const responseBody = await response.json() as any
+        const inTok = responseBody.usage?.input_tokens || 0
+        const outTok = responseBody.usage?.output_tokens || 0
+        recordUsage(tokenPayload, resolvedModel, inTok, outTok)
+        return c.json(responseBody)
+      }
+
+      // Streaming: pass through with token tracking
+      const responseHeaders = new Headers()
+      const contentType = response.headers.get('Content-Type')
+      if (contentType) responseHeaders.set('Content-Type', contentType)
+      const requestId = response.headers.get('request-id')
+      if (requestId) responseHeaders.set('request-id', requestId)
+      responseHeaders.set('X-Proxy-Provider', 'anthropic')
+      responseHeaders.set('X-Proxy-Project', tokenPayload.projectId)
+
+      let streamInputTokens = 0
+      let streamOutputTokens = 0
+      const sseDecoder = new TextDecoder()
+      let sseBuffer = ''
+
+      const tokenTrackingTransform = new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, controller) {
+          controller.enqueue(chunk)
+          sseBuffer += sseDecoder.decode(chunk, { stream: true })
+          const lines = sseBuffer.split('\n')
+          sseBuffer = lines.pop() || ''
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            const data = line.slice(6).trim()
+            if (data === '[DONE]') continue
+            try {
+              const event = JSON.parse(data)
+              if (event.type === 'message_start' && event.message?.usage) {
+                streamInputTokens = event.message.usage.input_tokens || 0
+              }
+              if (event.type === 'message_delta' && event.usage) {
+                streamOutputTokens = event.usage.output_tokens || 0
+              }
+            } catch {}
+          }
+        },
+        flush() {
+          recordUsage(tokenPayload, resolvedModel, streamInputTokens, streamOutputTokens)
+        },
+      })
+
+      const trackedBody = response.body!.pipeThrough(tokenTrackingTransform)
+
+      return new Response(trackedBody, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error: any) {
+      console.error('[AI Proxy] Anthropic pass-through error:', error.message)
+      return c.json(
+        { type: 'error', error: { type: 'api_error', message: error.message || 'Proxy error' } },
+        500
+      )
+    }
+  })
+
+  /**
+   * POST /ai/anthropic/v1/messages/count_tokens - Token counting pass-through
+   */
+  router.post('/ai/anthropic/v1/messages/count_tokens', async (c) => {
+    const tokenPayload = await validateAnthropicAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { type: 'error', error: { type: 'authentication_error', message: 'Invalid proxy token.' } },
+        401
+      )
+    }
+
+    const anthropicApiKey = process.env.ANTHROPIC_API_KEY
+    if (!anthropicApiKey) {
+      return c.json(
+        { type: 'error', error: { type: 'api_error', message: 'Anthropic not configured.' } },
+        503
+      )
+    }
+
+    const body = await c.req.text()
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'x-api-key': anthropicApiKey,
+      'anthropic-version': c.req.header('anthropic-version') || '2023-06-01',
+    }
+
+    const response = await fetch('https://api.anthropic.com/v1/messages/count_tokens', {
+      method: 'POST',
+      headers,
+      body,
+    })
+
+    const responseBody = await response.text()
+    return new Response(responseBody, {
+      status: response.status,
+      headers: { 'Content-Type': response.headers.get('Content-Type') || 'application/json' },
+    })
+  })
+
+  /**
+   * GET /ai/anthropic/v1/models - Models listing pass-through
+   */
+  router.get('/ai/anthropic/v1/models', async (c) => {
+    const tokenPayload = await validateAnthropicAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { type: 'error', error: { type: 'authentication_error', message: 'Invalid proxy token.' } },
+        401
+      )
+    }
+
+    const anthropicApiKey = process.env.ANTHROPIC_API_KEY
+    if (!anthropicApiKey) {
+      return c.json(
+        { type: 'error', error: { type: 'api_error', message: 'Anthropic not configured.' } },
+        503
+      )
+    }
+
+    const response = await fetch('https://api.anthropic.com/v1/models', {
+      headers: {
+        'x-api-key': anthropicApiKey,
+        'anthropic-version': c.req.header('anthropic-version') || '2023-06-01',
+      },
+    })
+
+    const responseBody = await response.text()
+    return new Response(responseBody, {
+      status: response.status,
+      headers: { 'Content-Type': response.headers.get('Content-Type') || 'application/json' },
+    })
+  })
+
+  // =========================================================================
+  // Image Generation Endpoints
+  // =========================================================================
+
+  /**
+   * POST /ai/v1/images/generations - Text-to-image generation proxy
+   *
+   * Routes to OpenAI DALL-E, Google Imagen, or a local provider based on the
+   * requested model. Always returns base64 JSON regardless of provider.
+   */
+  router.post('/ai/v1/images/generations', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
+        401
+      )
+    }
+
+    if (!await billingService.hasCredits(tokenPayload.workspaceId)) {
+      return c.json(
+        { error: { message: 'Insufficient credits. Please upgrade your plan.', type: 'billing_error', code: 'insufficient_credits' } },
+        402
+      )
+    }
+
+    try {
+      const body = await c.req.json() as {
+        prompt: string
+        model?: string
+        size?: string
+        quality?: string
+        n?: number
+        response_format?: string
+      }
+
+      if (!body.prompt) {
+        return c.json(
+          { error: { message: 'prompt is required', type: 'invalid_request_error', code: 'missing_prompt' } },
+          400
+        )
+      }
+
+      const model = body.model || 'dall-e-3'
+      const imageModel = resolveImageModel(model)
+      if (!imageModel) {
+        return c.json(
+          { error: { message: `Image model '${model}' is not supported.`, type: 'invalid_request_error', code: 'model_not_found' } },
+          400
+        )
+      }
+
+      const apiKey = getImageProviderApiKey(imageModel.provider)
+      if (!apiKey) {
+        return c.json(
+          { error: { message: `Image provider '${imageModel.provider}' is not configured on this server.`, type: 'server_error', code: 'provider_not_configured' } },
+          503
+        )
+      }
+
+      console.log(`[AI Proxy] 🎨 Image generation: ${tokenPayload.projectId} → ${imageModel.provider}/${imageModel.apiModel}`)
+
+      let result: ImageGenerationResponse
+      if (imageModel.provider === 'openai') {
+        result = await generateImageOpenAI(apiKey, imageModel.apiModel, body)
+      } else if (imageModel.provider === 'google') {
+        result = await generateImageGoogle(apiKey, imageModel.apiModel, body)
+      } else if (imageModel.provider === 'local') {
+        result = await generateImageLocal(imageModel.apiModel, body)
+      } else {
+        return c.json(
+          { error: { message: `Unsupported image provider: ${imageModel.provider}`, type: 'server_error', code: 'unsupported_provider' } },
+          500
+        )
+      }
+
+      recordImageUsage(tokenPayload, model, body.quality || 'standard', body.size || '1024x1024', body.n || 1)
+
+      return c.json(result)
+    } catch (error: any) {
+      console.error('[AI Proxy] Image generation error:', error.message)
+      const statusCode = error.message?.includes('429') ? 429 : error.message?.includes('503') ? 503 : 500
+      return c.json(
+        { error: { message: error.message || 'Image generation failed', type: 'server_error', code: 'generation_error' } },
+        statusCode
+      )
+    }
+  })
+
+  /**
+   * POST /ai/v1/images/edits - Image editing proxy (reference image + prompt)
+   *
+   * Accepts multipart/form-data with an image file and prompt.
+   * Routes to OpenAI's /v1/images/edits endpoint.
+   */
+  router.post('/ai/v1/images/edits', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
+        401
+      )
+    }
+
+    if (!await billingService.hasCredits(tokenPayload.workspaceId)) {
+      return c.json(
+        { error: { message: 'Insufficient credits. Please upgrade your plan.', type: 'billing_error', code: 'insufficient_credits' } },
+        402
+      )
+    }
+
+    try {
+      const formData = await c.req.formData()
+      const prompt = formData.get('prompt') as string
+      const imageFile = formData.get('image') as File | null
+      const model = (formData.get('model') as string) || 'dall-e-2'
+      const size = (formData.get('size') as string) || '1024x1024'
+      const n = parseInt((formData.get('n') as string) || '1', 10)
+      const quality = (formData.get('quality') as string) || 'standard'
+
+      if (!prompt) {
+        return c.json(
+          { error: { message: 'prompt is required', type: 'invalid_request_error', code: 'missing_prompt' } },
+          400
+        )
+      }
+      if (!imageFile) {
+        return c.json(
+          { error: { message: 'image file is required for edits', type: 'invalid_request_error', code: 'missing_image' } },
+          400
+        )
+      }
+
+      const openaiKey = process.env.OPENAI_API_KEY
+      if (!openaiKey) {
+        return c.json(
+          { error: { message: 'OpenAI is not configured on this server (required for image edits).', type: 'server_error', code: 'provider_not_configured' } },
+          503
+        )
+      }
+
+      console.log(`[AI Proxy] 🎨 Image edit: ${tokenPayload.projectId} → openai/${model}`)
+
+      // OpenAI edits endpoint only supports dall-e-2
+      const editModel = 'dall-e-2'
+      const forwardForm = new FormData()
+      forwardForm.append('image', imageFile)
+      forwardForm.append('prompt', prompt)
+      forwardForm.append('model', editModel)
+      forwardForm.append('size', size)
+      forwardForm.append('n', String(n))
+      forwardForm.append('response_format', 'b64_json')
+
+      const response = await fetch('https://api.openai.com/v1/images/edits', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${openaiKey}` },
+        body: forwardForm,
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`OpenAI image edit error (${response.status}): ${errorText}`)
+      }
+
+      const result = await response.json() as ImageGenerationResponse
+
+      recordImageUsage(tokenPayload, model, quality, size, n)
+
+      return c.json(result)
+    } catch (error: any) {
+      console.error('[AI Proxy] Image edit error:', error.message)
+      const statusCode = error.message?.includes('429') ? 429 : error.message?.includes('503') ? 503 : 500
+      return c.json(
+        { error: { message: error.message || 'Image edit failed', type: 'server_error', code: 'edit_error' } },
+        statusCode
+      )
+    }
+  })
+
+  // =========================================================================
+  // GET /ai/proxy/health - Health check for the AI proxy
+  // =========================================================================
+  router.get('/ai/proxy/health', (c) => {
+    const providers: Record<string, boolean> = {
+      anthropic: !!process.env.ANTHROPIC_API_KEY,
+      openai: !!process.env.OPENAI_API_KEY,
+      google: !!process.env.GOOGLE_API_KEY,
+    }
+
+    return c.json({
+      status: 'ok',
+      providers,
+      modelCount: Object.keys(MODEL_REGISTRY).length,
+      imageModelCount: Object.keys(IMAGE_MODEL_REGISTRY).length,
+    })
+  })
+
+  return router
+}
+
+export default aiProxyRoutes

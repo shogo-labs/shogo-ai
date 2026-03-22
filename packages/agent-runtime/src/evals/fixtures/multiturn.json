@@ -1,0 +1,273 @@
+{
+  "_meta": {
+    "track": "multiturn",
+    "generated": true,
+    "generated_at": "2026-02-22T03:21:56.376Z",
+    "description": "Multi-turn conversation planning + session summarization — extracted from e2e-scenarios.test.ts",
+    "sources": [
+      "packages/agent-runtime/src/__tests__/e2e-scenarios.test.ts",
+      "packages/agent-runtime/src/__tests__/dynamic-app-e2e.test.ts"
+    ]
+  },
+  "constants": {
+    "available_tools": "exec, read_file, write_file, web, browser, memory_read, memory_write, memory_search, send_message, cron, canvas_create, canvas_update, canvas_data, canvas_delete, canvas_action_wait, canvas_components, canvas_trigger_action, canvas_inspect, canvas_api_schema, canvas_api_seed, canvas_api_query, personality_update"
+  },
+  "examples": [
+    {
+      "id": "deploy-log-report",
+      "type": "plan",
+      "source_test": "agent reads config, checks status, and writes a report",
+      "user_message": "Check the deploy log and write a summary report",
+      "conversation_history_summary": "",
+      "expected_tool_sequence": [
+        "read_file",
+        "write_file"
+      ],
+      "expected_iterations": 1,
+      "expected_can_batch": false,
+      "optimal_tool_calls": 2,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "csv-to-json",
+      "type": "plan",
+      "source_test": "agent reads a file, transforms it, and writes the result",
+      "user_message": "Convert data.csv to JSON format and save it",
+      "conversation_history_summary": "",
+      "expected_tool_sequence": [
+        "read_file",
+        "write_file"
+      ],
+      "expected_iterations": 1,
+      "expected_can_batch": false,
+      "optimal_tool_calls": 2,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "discord-notification",
+      "type": "plan",
+      "source_test": "agent send_message tool delivers cross-channel notifications",
+      "user_message": "Notify the Discord channel that v2.4.0 has been deployed",
+      "conversation_history_summary": "",
+      "expected_tool_sequence": [
+        "send_message"
+      ],
+      "expected_iterations": 1,
+      "expected_can_batch": true,
+      "optimal_tool_calls": 1,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "task-tracker-build",
+      "type": "plan",
+      "source_test": "full lifecycle: create surface → apply schema → seed → query",
+      "user_message": "Build me a task tracker where I can add, complete, and delete tasks",
+      "conversation_history_summary": "",
+      "expected_tool_sequence": [
+        "canvas_create",
+        "canvas_api_schema",
+        "canvas_api_seed",
+        "canvas_api_query",
+        "canvas_update"
+      ],
+      "expected_iterations": 1,
+      "expected_can_batch": false,
+      "optimal_tool_calls": 5,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "flight-search-interactive",
+      "type": "plan",
+      "source_test": "agent creates a flight search UI and waits for user selection",
+      "user_message": "Find flights from SFO to JFK and let me pick one",
+      "conversation_history_summary": "",
+      "expected_tool_sequence": [
+        "canvas_create",
+        "canvas_update",
+        "canvas_action_wait"
+      ],
+      "expected_iterations": 1,
+      "expected_can_batch": false,
+      "optimal_tool_calls": 3,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "weather-visual",
+      "type": "plan",
+      "source_test": "agent creates a surface, adds components, and populates data via tool calls",
+      "user_message": "What's the weather like today? Show it visually",
+      "conversation_history_summary": "",
+      "expected_tool_sequence": [
+        "canvas_create",
+        "canvas_update",
+        "canvas_data"
+      ],
+      "expected_iterations": 1,
+      "expected_can_batch": false,
+      "optimal_tool_calls": 3,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "name-recall-from-history",
+      "type": "plan",
+      "source_test": "session history accumulates across turns",
+      "user_message": "What's my name?",
+      "conversation_history_summary": "User: My name is Alice. Agent: Nice to meet you, Alice!",
+      "expected_tool_sequence": [],
+      "expected_iterations": 0,
+      "expected_can_batch": true,
+      "optimal_tool_calls": 0,
+      "optimal_iterations": 0
+    },
+    {
+      "id": "multi-channel-notify",
+      "type": "plan",
+      "source_test": null,
+      "user_message": "Send a message to both Slack and Discord about the new release",
+      "conversation_history_summary": "",
+      "expected_tool_sequence": [
+        "send_message",
+        "send_message"
+      ],
+      "expected_iterations": 1,
+      "expected_can_batch": true,
+      "optimal_tool_calls": 2,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "research-and-save",
+      "type": "plan",
+      "source_test": null,
+      "user_message": "Research the latest AI model benchmarks and save a summary",
+      "conversation_history_summary": "",
+      "expected_tool_sequence": [
+        "web",
+        "memory_write"
+      ],
+      "expected_iterations": 1,
+      "expected_can_batch": false,
+      "optimal_tool_calls": 2,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "summary-github-session",
+      "type": "summarize",
+      "messages_text": "user: My name is Alice, I'm in PST timezone.\nassistant: Nice to meet you, Alice! I'll keep your timezone in mind.\nuser: Can you check my GitHub for new PRs?\nassistant: [tool: web] Found 3 open PRs needing review.\nuser: Great, summarize them.\nassistant: 1. Fix auth bug (#142) - 2 approvals. 2. Add dark mode (#143) - needs review. 3. Refactor DB (#144) - 1 comment.",
+      "expected_key_facts": [
+        "User: Alice",
+        "PST timezone",
+        "3 open PRs",
+        "#143 needs review"
+      ],
+      "expected_user_preferences": [
+        "Timezone: PST"
+      ],
+      "optimal_tool_calls": 0,
+      "optimal_iterations": 0
+    },
+    {
+      "id": "summary-heartbeat-session",
+      "type": "summarize",
+      "messages_text": "system: Heartbeat check.\nassistant: [tool: exec] All systems nominal. CPU: 23%, Memory: 4.2GB/16GB.\nsystem: Heartbeat check.\nassistant: [tool: exec] All systems nominal. CPU: 21%, Memory: 4.1GB/16GB.\nsystem: Heartbeat check.\nassistant: [tool: exec] All systems nominal. CPU: 25%, Memory: 4.3GB/16GB.\nuser: Hey, any issues today?\nassistant: No issues detected. All 3 heartbeat checks passed with normal metrics.",
+      "expected_key_facts": [
+        "3 heartbeat checks",
+        "all passed",
+        "No issues"
+      ],
+      "expected_user_preferences": [],
+      "optimal_tool_calls": 0,
+      "optimal_iterations": 0
+    },
+    {
+      "id": "summary-deploy-session",
+      "type": "summarize",
+      "messages_text": "user: Deploy the new version to staging.\nassistant: [tool: exec] Running deployment to staging... Done. v2.4.0 deployed.\nuser: Run the smoke tests.\nassistant: [tool: exec] All 12 smoke tests passed.\nuser: Great, deploy to production.\nassistant: [tool: exec] Deploying to production... Done. v2.4.0 is live.\nuser: Notify the team on Slack.\nassistant: [tool: send_message] Posted to #releases: v2.4.0 deployed to production.",
+      "expected_key_facts": [
+        "v2.4.0",
+        "staging",
+        "production",
+        "12 smoke tests passed",
+        "Slack #releases"
+      ],
+      "expected_user_preferences": [],
+      "optimal_tool_calls": 0,
+      "optimal_iterations": 0
+    },
+    {
+      "id": "upgrade-display-to-crud",
+      "type": "plan",
+      "source_test": null,
+      "user_message": "Now make my contact list a full CRUD app — add an API backend and seed with 3 contacts",
+      "conversation_history_summary": "User previously built a simple contact list canvas with name, email, phone",
+      "expected_tool_sequence": [
+        "canvas_api_schema",
+        "canvas_api_seed",
+        "canvas_api_query",
+        "canvas_update"
+      ],
+      "expected_iterations": 1,
+      "expected_can_batch": false,
+      "optimal_tool_calls": 4,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "memory-to-canvas-kpi",
+      "type": "plan",
+      "source_test": null,
+      "user_message": "Build me a KPI dashboard canvas using the metrics I told you about",
+      "conversation_history_summary": "User previously said: 'Remember our team tracks these KPIs: MRR, churn rate, NPS score, and active users.'",
+      "expected_tool_sequence": [
+        "canvas_create",
+        "canvas_update",
+        "canvas_data"
+      ],
+      "expected_iterations": 1,
+      "expected_can_batch": false,
+      "optimal_tool_calls": 3,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "incident-escalation",
+      "type": "plan",
+      "source_test": null,
+      "user_message": "Log this in memory as an active incident, then show me an incident status canvas with severity badge",
+      "conversation_history_summary": "User reported: 'Critical ticket — Production database is down, from customer Acme Corp'",
+      "expected_tool_sequence": [
+        "memory_write",
+        "canvas_create",
+        "canvas_update",
+        "canvas_data"
+      ],
+      "expected_iterations": 1,
+      "expected_can_batch": false,
+      "optimal_tool_calls": 4,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "iterative-expense-alert",
+      "type": "plan",
+      "source_test": null,
+      "user_message": "Add an Alert component at the top warning that we're at 85% of budget, yellow/warning severity",
+      "conversation_history_summary": "User previously built an expense dashboard with metrics and a category Chart",
+      "expected_tool_sequence": [
+        "canvas_update"
+      ],
+      "expected_iterations": 1,
+      "expected_can_batch": true,
+      "optimal_tool_calls": 1,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "personality-then-verify",
+      "type": "plan",
+      "source_test": null,
+      "user_message": "What are the benefits of using TypeScript?",
+      "conversation_history_summary": "User previously asked agent to update personality to always respond in exactly 3 bullet points",
+      "expected_tool_sequence": [],
+      "expected_iterations": 0,
+      "expected_can_batch": true,
+      "optimal_tool_calls": 0,
+      "optimal_iterations": 0
+    }
+  ]
+}

@@ -1,0 +1,116 @@
+# =============================================================================
+# Platform PostgreSQL Cluster — Production India (Active-Active Node)
+# =============================================================================
+# Multi-region active-active topology using PG 18 bidirectional logical
+# replication. Each region is a standalone writable cluster; CNPG-managed
+# Publication/Subscription CRDs keep all 42 application tables in sync.
+#
+# Storage: OCI Block Volumes (oci-bv) in ap-mumbai-1
+# Backups: OCI Object Storage (S3-compatible) in ap-mumbai-1
+# =============================================================================
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: platform-pg
+  namespace: shogo-production-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    environment: production
+    region: ap-mumbai-1
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.3
+
+  postgresql:
+    parameters:
+      max_connections: "200"
+      shared_buffers: "512MB"
+      effective_cache_size: "1536MB"
+      work_mem: "8MB"
+      maintenance_work_mem: "128MB"
+      wal_buffers: "16MB"
+      max_wal_senders: "10"
+      max_replication_slots: "10"
+      wal_level: "logical"
+      track_commit_timestamp: "on"
+      log_min_duration_statement: "1000"
+      log_checkpoints: "on"
+    pg_hba:
+      - host all all 10.0.0.0/8 md5
+      - host all all 172.16.0.0/12 md5
+      - hostssl all all 0.0.0.0/0 md5
+      - hostssl replication all 0.0.0.0/0 md5
+
+  managed:
+    roles:
+      - name: logical_replicator
+        login: true
+        replication: true
+        passwordSecret:
+          name: logical-replicator-credentials
+
+  bootstrap:
+    initdb:
+      database: shogo
+      owner: shogo
+
+  storage:
+    size: 50Gi
+    storageClass: oci-bv
+
+  externalClusters:
+    - name: us-primary
+      connectionParameters:
+        host: "129.158.209.173"
+        port: "5432"
+        dbname: shogo
+        user: logical_replicator
+        sslmode: require
+      password:
+        name: logical-replicator-credentials
+        key: password
+
+    - name: eu-primary
+      connectionParameters:
+        host: "141.147.21.125"
+        port: "5432"
+        dbname: shogo
+        user: logical_replicator
+        sslmode: require
+      password:
+        name: logical-replicator-credentials
+        key: password
+
+  backup:
+    barmanObjectStore:
+      endpointURL: https://idin4oltblww.compat.objectstorage.ap-mumbai-1.oraclecloud.com
+      destinationPath: s3://shogo-pg-backups-production-india/platform/
+      s3Credentials:
+        accessKeyId:
+          name: cnpg-s3-credentials
+          key: ACCESS_KEY_ID
+        secretAccessKey:
+          name: cnpg-s3-credentials
+          key: SECRET_ACCESS_KEY
+        region:
+          name: cnpg-s3-credentials
+          key: REGION
+      wal:
+        compression: gzip
+      data:
+        compression: gzip
+    retentionPolicy: "30d"
+
+  monitoring:
+    enablePodMonitor: true
+
+  resources:
+    requests:
+      memory: "1Gi"
+      cpu: "250m"
+    limits:
+      memory: "2Gi"
+      cpu: "1"
+
+  affinity:
+    topologyKey: kubernetes.io/hostname

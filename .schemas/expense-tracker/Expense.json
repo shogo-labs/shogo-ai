@@ -1,0 +1,82 @@
+[
+  {
+    "id": "exp-001",
+    "description": "Grocery shopping at Whole Foods",
+    "amount": 127.50,
+    "date": "2026-01-28",
+    "category": "cat-food",
+    "paymentMethod": "pm-credit",
+    "notes": "Weekly groceries",
+    "isRecurring": false
+  },
+  {
+    "id": "exp-002",
+    "description": "Uber ride to airport",
+    "amount": 45.00,
+    "date": "2026-01-27",
+    "category": "cat-transport",
+    "paymentMethod": "pm-credit",
+    "notes": "Business trip",
+    "isRecurring": false
+  },
+  {
+    "id": "exp-003",
+    "description": "Netflix subscription",
+    "amount": 15.99,
+    "date": "2026-01-25",
+    "category": "cat-entertainment",
+    "paymentMethod": "pm-credit",
+    "notes": "Monthly streaming",
+    "isRecurring": true
+  },
+  {
+    "id": "exp-004",
+    "description": "Electric bill",
+    "amount": 89.50,
+    "date": "2026-01-20",
+    "category": "cat-utilities",
+    "paymentMethod": "pm-bank",
+    "notes": "January electricity",
+    "isRecurring": true
+  },
+  {
+    "id": "exp-005",
+    "description": "Coffee at Starbucks",
+    "amount": 6.75,
+    "date": "2026-01-30",
+    "category": "cat-food",
+    "paymentMethod": "pm-debit",
+    "notes": "",
+    "isRecurring": false
+  },
+  {
+    "id": "exp-006",
+    "description": "Gym membership",
+    "amount": 49.99,
+    "date": "2026-01-15",
+    "category": "cat-health",
+    "paymentMethod": "pm-credit",
+    "notes": "Monthly fitness",
+    "isRecurring": true
+  },
+  {
+    "id": "exp-007",
+    "description": "Amazon order - headphones",
+    "amount": 79.99,
+    "date": "2026-01-22",
+    "category": "cat-shopping",
+    "paymentMethod": "pm-credit",
+    "notes": "Replacement headphones",
+    "isRecurring": false
+  },
+  {
+    "id": "exp-008",
+    "description": "Gas station fill-up",
+    "amount": 52.30,
+    "date": "2026-01-26",
+    "category": "cat-transport",
+    "paymentMethod": "pm-debit",
+    "notes": "",
+    "isRecurring": false
+  }
+]

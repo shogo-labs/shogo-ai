@@ -1,0 +1,82 @@
+// Prisma schema for AI Chat
+// Shogo AI Chat schema
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  importFileExtension = ""
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  chats     Chat[]
+  documents Document[]
+
+  @@map("users")
+}
+
+model Chat {
+  id         String   @id @default(cuid())
+  title      String   @default("New Chat")
+  visibility String   @default("private") // "public" | "private"
+  userId     String   @map("user_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages Message[]
+  votes    Vote[]
+
+  @@index([userId, updatedAt])
+  @@map("chats")
+}
+
+model Message {
+  id          String   @id @default(cuid())
+  chatId      String   @map("chat_id")
+  role        String   // "user" | "assistant" | "system"
+  parts       String   @default("[]") // JSON array of message parts
+  attachments String   @default("[]") // JSON array of attachments
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  chat  Chat   @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  votes Vote[]
+
+  @@index([chatId, createdAt])
+  @@map("messages")
+}
+
+model Vote {
+  chatId    String  @map("chat_id")
+  messageId String  @map("message_id")
+  isUpvoted Boolean @map("is_upvoted")
+
+  chat    Chat    @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@id([chatId, messageId])
+  @@map("votes")
+}
+
+model Document {
+  id        String   @id @default(cuid())
+  title     String
+  content   String?
+  kind      String   @default("text") // "text" | "code" | "image" | "sheet"
+  userId    String   @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("documents")
+}

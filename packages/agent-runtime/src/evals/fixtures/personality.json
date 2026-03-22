@@ -1,0 +1,310 @@
+{
+  "_meta": {
+    "track": "personality",
+    "generated": true,
+    "generated_at": "2026-02-22T03:21:56.375Z",
+    "description": "Agent template selection + personality self-update examples — extracted from agent-templates.ts",
+    "sources": [
+      "packages/agent-runtime/src/agent-templates.ts"
+    ],
+    "template_count": 22
+  },
+  "constants": {
+    "available_templates": [
+      {
+        "id": "personal-assistant",
+        "name": "Personal Assistant",
+        "description": "A general-purpose personal assistant for task management, reminders, and daily productivity.",
+        "category": "personal"
+      },
+      {
+        "id": "email-triage",
+        "name": "Email Triage Assistant",
+        "description": "Monitors your inbox, categorizes emails by priority, and drafts responses for routine messages.",
+        "category": "personal"
+      },
+      {
+        "id": "daily-standup",
+        "name": "Daily Standup Bot",
+        "description": "Collects standup updates, summarizes yesterday's work, and tracks blockers across the team.",
+        "category": "personal"
+      },
+      {
+        "id": "habit-tracker",
+        "name": "Habit Tracker",
+        "description": "Tracks daily habits, sends check-in reminders, and reports streaks and progress over time.",
+        "category": "personal"
+      },
+      {
+        "id": "meeting-notes",
+        "name": "Meeting Notes Agent",
+        "description": "Prepares meeting agendas from calendar events and produces structured meeting summaries with action items.",
+        "category": "personal"
+      },
+      {
+        "id": "github-monitor",
+        "name": "GitHub Monitor",
+        "description": "Watches GitHub repositories for new issues, PRs, CI failures, and security alerts.",
+        "category": "development"
+      },
+      {
+        "id": "pr-reviewer",
+        "name": "PR Reviewer",
+        "description": "Automatically reviews pull requests — checks code quality, test coverage, and provides feedback.",
+        "category": "development"
+      },
+      {
+        "id": "ci-monitor",
+        "name": "CI/CD Monitor",
+        "description": "Monitors CI/CD pipelines, alerts on failures, and provides build status summaries.",
+        "category": "development"
+      },
+      {
+        "id": "dependency-updater",
+        "name": "Dependency Updater",
+        "description": "Scans projects for outdated dependencies, checks changelogs, and recommends updates.",
+        "category": "development"
+      },
+      {
+        "id": "bug-triage",
+        "name": "Bug Triage Agent",
+        "description": "Categorizes new bug reports, assigns priority, and routes issues to the right team members.",
+        "category": "development"
+      },
+      {
+        "id": "social-media-monitor",
+        "name": "Social Media Monitor",
+        "description": "Tracks brand mentions, competitor activity, and trending topics across social platforms.",
+        "category": "business"
+      },
+      {
+        "id": "lead-qualifier",
+        "name": "Lead Qualifier",
+        "description": "Scores incoming leads based on criteria, enriches with company data, and routes to sales team.",
+        "category": "business"
+      },
+      {
+        "id": "content-calendar",
+        "name": "Content Calendar",
+        "description": "Plans content schedules, suggests topics based on trends, and tracks publication deadlines.",
+        "category": "business"
+      },
+      {
+        "id": "customer-feedback",
+        "name": "Customer Feedback Digest",
+        "description": "Aggregates customer feedback from multiple sources, identifies themes, and generates weekly reports.",
+        "category": "business"
+      },
+      {
+        "id": "research-agent",
+        "name": "Research Agent",
+        "description": "Performs deep web research on topics, synthesizes findings, and provides daily briefings.",
+        "category": "research"
+      },
+      {
+        "id": "news-digest",
+        "name": "News Digest",
+        "description": "Delivers daily briefings on topics you care about, curated from multiple news sources.",
+        "category": "research"
+      },
+      {
+        "id": "competitive-intel",
+        "name": "Competitive Intelligence",
+        "description": "Tracks competitor websites, product changes, pricing updates, and public announcements.",
+        "category": "research"
+      },
+      {
+        "id": "academic-scanner",
+        "name": "Academic Paper Scanner",
+        "description": "Finds new research papers in your field from arXiv, Google Scholar, and other academic sources.",
+        "category": "research"
+      },
+      {
+        "id": "system-monitor",
+        "name": "System Monitor",
+        "description": "Monitors server health, disk/CPU/memory usage, and alerts on infrastructure issues.",
+        "category": "operations"
+      },
+      {
+        "id": "log-analyzer",
+        "name": "Log Analyzer",
+        "description": "Reads application logs, detects anomalies, and alerts on error patterns.",
+        "category": "operations"
+      },
+      {
+        "id": "cost-tracker",
+        "name": "Cloud Cost Tracker",
+        "description": "Monitors AWS/GCP/Azure spending, alerts on budget overruns, and suggests cost optimizations.",
+        "category": "operations"
+      },
+      {
+        "id": "slack-bot",
+        "name": "Slack Team Bot",
+        "description": "A friendly team assistant for Slack — answers questions, summarizes threads, and facilitates collaboration.",
+        "category": "business"
+      }
+    ]
+  },
+  "examples": [
+    {
+      "id": "personal-assistant-match",
+      "source_template": "personal-assistant",
+      "user_description": "I want a personal assistant that helps me manage my day",
+      "expected_template_id": "personal-assistant",
+      "expected_confidence_min": 0.8,
+      "agent_type": "personal",
+      "expected_soul_has_boundaries": true,
+      "optimal_tool_calls": 1,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "code-reviewer-semantic",
+      "source_template": "code-reviewer",
+      "user_description": "Help me review pull requests and catch bugs",
+      "expected_template_id": "code-reviewer",
+      "expected_confidence_min": 0.7,
+      "agent_type": "development",
+      "expected_soul_has_boundaries": true,
+      "optimal_tool_calls": 1,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "github-monitor-match",
+      "source_template": "github-monitor",
+      "user_description": "Monitor my GitHub repos for new issues and CI failures",
+      "expected_template_id": "github-monitor",
+      "expected_confidence_min": 0.8,
+      "agent_type": "development",
+      "expected_soul_has_boundaries": true,
+      "optimal_tool_calls": 1,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "meal-planner-semantic",
+      "source_template": "meal-planner",
+      "user_description": "I need help tracking what I eat and planning meals",
+      "expected_template_id": "meal-planner",
+      "expected_confidence_min": 0.7,
+      "agent_type": "personal",
+      "expected_soul_has_boundaries": true,
+      "optimal_tool_calls": 1,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "crypto-monitor-custom",
+      "source_template": null,
+      "user_description": "Build me an agent that monitors cryptocurrency prices and sends alerts",
+      "expected_template_id": "custom",
+      "expected_confidence_min": 0,
+      "agent_type": "operations",
+      "expected_soul_has_boundaries": true,
+      "optimal_tool_calls": 4,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "research-agent-match",
+      "source_template": "research-agent",
+      "user_description": "I need a research agent for web research and daily briefings",
+      "expected_template_id": "research-agent",
+      "expected_confidence_min": 0.8,
+      "agent_type": "research",
+      "expected_soul_has_boundaries": true,
+      "optimal_tool_calls": 1,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "system-monitor-ambiguous",
+      "source_template": "system-monitor",
+      "user_description": "Help me keep my servers running smoothly",
+      "expected_template_id": "system-monitor",
+      "expected_confidence_min": 0.5,
+      "agent_type": "operations",
+      "expected_soul_has_boundaries": true,
+      "optimal_tool_calls": 1,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "customer-support-semantic",
+      "source_template": "customer-support",
+      "user_description": "I want an agent to help triage and respond to customer tickets",
+      "expected_template_id": "customer-support",
+      "expected_confidence_min": 0.7,
+      "agent_type": "business",
+      "expected_soul_has_boundaries": true,
+      "optimal_tool_calls": 1,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "self-update-tone-correction",
+      "source_template": null,
+      "type": "self-update",
+      "conversation_summary": "User said: 'You're being too casual. Please be more formal and professional.'",
+      "current_soul": "# Soul\n\n## Identity\nYou are a helpful assistant.\n\n## Communication Style\nCasual, friendly, uses emojis.\n\n## Boundaries\n- Don't be rude",
+      "expected_should_update": true,
+      "expected_file": "SOUL.md",
+      "expected_section": "Communication Style",
+      "optimal_tool_calls": 1,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "self-update-trivial-no-op",
+      "source_template": null,
+      "type": "self-update",
+      "conversation_summary": "User said: 'What's the weather like?' Agent responded with weather info.",
+      "current_soul": "# Soul\n\n## Identity\nYou are a helpful assistant.\n\n## Communication Style\nFriendly and concise.\n\n## Boundaries\n- Don't be rude",
+      "expected_should_update": false,
+      "expected_file": "",
+      "expected_section": "",
+      "optimal_tool_calls": 0,
+      "optimal_iterations": 0
+    },
+    {
+      "id": "self-update-new-boundary",
+      "source_template": null,
+      "type": "self-update",
+      "conversation_summary": "User said: 'Never suggest changes to my database schema. Just analyze it.'",
+      "current_soul": "# Soul\n\n## Identity\nYou are a database assistant.\n\n## Communication Style\nTechnical, detailed.\n\n## Boundaries\n- Don't execute DDL without approval",
+      "expected_should_update": true,
+      "expected_file": "SOUL.md",
+      "expected_section": "Boundaries",
+      "optimal_tool_calls": 1,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "self-update-domain-expertise",
+      "source_template": null,
+      "type": "self-update",
+      "conversation_summary": "User said: 'You are now a senior DevOps engineer. Always think about infrastructure costs, security implications, and deployment reliability.'",
+      "current_soul": "# Soul\n\n## Identity\nYou are a helpful assistant.\n\n## Communication Style\nFriendly and concise.\n\n## Boundaries\n- Don't be rude",
+      "expected_should_update": true,
+      "expected_file": "SOUL.md",
+      "expected_section": "Identity",
+      "optimal_tool_calls": 1,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "self-update-safety-boundaries",
+      "source_template": null,
+      "type": "self-update",
+      "conversation_summary": "User said: 'Never execute shell commands without asking me first. Never access production databases directly. Always suggest a dry-run before destructive operations.'",
+      "current_soul": "# Soul\n\n## Identity\nYou are a helpful DevOps assistant.\n\n## Communication Style\nTechnical, clear.\n\n## Boundaries\n- Be careful with destructive operations",
+      "expected_should_update": true,
+      "expected_file": "AGENTS.md",
+      "expected_section": "Boundaries",
+      "optimal_tool_calls": 1,
+      "optimal_iterations": 1
+    },
+    {
+      "id": "self-update-style-noop",
+      "source_template": null,
+      "type": "self-update",
+      "conversation_summary": "User said: 'Can you rewrite this in bullet points instead? Here\\'s the text: The quarterly results show growth in three areas.'",
+      "current_soul": "# Soul\n\n## Identity\nYou are a helpful assistant.\n\n## Communication Style\nFriendly and concise.\n\n## Boundaries\n- Don't be rude",
+      "expected_should_update": false,
+      "expected_file": "",
+      "expected_section": "",
+      "optimal_tool_calls": 0,
+      "optimal_iterations": 0
+    }
+  ]
+}

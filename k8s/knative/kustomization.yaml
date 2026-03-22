@@ -1,0 +1,17 @@
+# =============================================================================
+# Kustomize - Knative Workspace Services
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: shogo-workspaces
+
+resources:
+  - namespace.yaml
+  - secrets.yaml
+  - workspace-template.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: shogo
+  app.kubernetes.io/managed-by: kustomize
+

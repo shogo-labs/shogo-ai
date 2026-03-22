@@ -1,0 +1,64 @@
+# =============================================================================
+# ALB Ingress for Shogo Staging
+# =============================================================================
+# Creates an AWS Application Load Balancer via AWS Load Balancer Controller
+# Terminates SSL at the ALB and routes traffic to Kourier
+# Supports SNI with multiple SSL certificates for different domains
+# =============================================================================
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shogo-staging-alb
+  namespace: kourier-system
+  annotations:
+    # Use AWS Load Balancer Controller to provision ALB
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    
+    # Subnet configuration (public subnets for internet-facing ALB)
+    alb.ingress.kubernetes.io/subnets: subnet-0bd7a56ff37bf29ff,subnet-0dcb3b37a5d61ace2,subnet-0ea1740135bdb4ecf
+    
+    # SSL/TLS Configuration - multiple certificates for SNI
+    # Certificates: *.shogo.ai (platform), *.shogo.one (published apps), *.staging.shogo.ai (preview subdomains)
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-1:097357356677:certificate/6608bdc0-2107-45ed-94f6-5cdd8a99a5e3,arn:aws:acm:us-east-1:097357356677:certificate/96fb6c6d-4921-410b-941e-2fb289faa8b8,arn:aws:acm:us-east-1:097357356677:certificate/9c4d0715-3989-45be-94ba-b5bb765db50c
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    
+    # Redirect HTTP to HTTPS
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    
+    # Health check configuration
+    # Kourier/Envoy returns 404 for requests without a matching Host header, which is expected
+    alb.ingress.kubernetes.io/healthcheck-path: /
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "15"
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "5"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/success-codes: "200,404"
+    
+    # Load balancer attributes
+    # idle_timeout: 300s for long-running streams (AI generation, template copying)
+    # HTTP/2 disabled to avoid ERR_HTTP2_PROTOCOL_ERROR on long streams
+    # HTTP/2 has stricter timeout handling that can cause issues with SSE/streaming
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=300,routing.http2.enabled=false
+    
+    # Tags for the ALB
+    alb.ingress.kubernetes.io/tags: Environment=staging,Project=shogo-ai,ManagedBy=kubernetes
+    
+    # Group name for potential future ingress consolidation
+    alb.ingress.kubernetes.io/group.name: shogo-staging
+spec:
+  ingressClassName: alb
+  rules:
+    # Route all traffic to Kourier (which handles Knative routing)
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kourier
+                port:
+                  number: 80

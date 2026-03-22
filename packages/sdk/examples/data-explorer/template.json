@@ -1,0 +1,16 @@
+{
+  "name": "data-explorer",
+  "description": "Explore and visualize data your agent has collected and processed",
+  "complexity": "intermediate",
+  "features": ["prisma", "user-auth", "data-table", "charts", "filtering", "agent-chat", "real-time-updates"],
+  "models": ["User", "Dataset", "SavedQuery"],
+  "tags": ["agent", "data", "explorer", "analytics", "visualization", "agentic"],
+  "useCases": ["data pipeline UI", "agent data explorer", "collected data browser", "analytics dashboard", "data visualization"],
+  "techStack": {
+    "database": "sqlite",
+    "orm": "prisma",
+    "frontend": "react",
+    "backend": "hono",
+    "sdk": "@shogo-ai/sdk"
+  }
+}

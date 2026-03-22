@@ -1,0 +1,38 @@
+# =============================================================================
+# Web/Studio Service - Staging Environment (OCI / OKE)
+# =============================================================================
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: studio
+  namespace: shogo-staging-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    environment: staging
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/min-scale: "1"
+        autoscaling.knative.dev/max-scale: "5"
+    spec:
+      containers:
+        - name: web
+          image: us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-web:staging-oci-latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+          env:
+            - name: API_UPSTREAM
+              value: "http://api.shogo-staging-system.svc.cluster.local"
+            - name: API_HOST
+              value: "api.shogo-staging-system.svc.cluster.local"
+            - name: DNS_RESOLVER
+              value: "kube-dns.kube-system.svc.cluster.local"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"

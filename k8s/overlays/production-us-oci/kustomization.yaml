@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - api-service.yaml
+  - web-service.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: shogo
+      app.kubernetes.io/managed-by: kustomize
+      environment: production
+      region: us-ashburn-1
+    includeSelectors: false
+
+images:
+  - name: shogo-api
+    newName: us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-api
+    newTag: production-oci-latest
+  - name: shogo-web
+    newName: us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-web
+    newTag: production-oci-latest
+  - name: shogo-docs
+    newName: us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-docs
+    newTag: production-oci-latest
+  - name: shogo-runtime
+    newName: us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-runtime
+    newTag: production-oci-latest

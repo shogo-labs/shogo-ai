@@ -1,0 +1,13 @@
+{
+  "schema": "./prisma/schema.prisma",
+  "outputs": [
+    {
+      "dir": "./src/generated",
+      "generate": ["routes", "hooks", "types", "api-client", "auth"]
+    },
+    {
+      "dir": "./src/lib",
+      "generate": ["db"]
+    }
+  ]
+}

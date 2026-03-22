@@ -1,0 +1,38 @@
+{
+  "name": "crm",
+  "description": "Customer relationship management with contacts, companies, deals, tags, and activity notes",
+  "complexity": "advanced",
+  "features": [
+    "prisma",
+    "user-auth",
+    "crud",
+    "one-to-many",
+    "many-to-many",
+    "junction-tables",
+    "complex-filtering",
+    "nested-includes",
+    "aggregations",
+    "activity-log",
+    "pipeline-stages"
+  ],
+  "models": ["User", "Contact", "Company", "Tag", "ContactTag", "Note", "Deal"],
+  "tags": ["crm", "sales", "contacts", "customers", "leads", "deals", "pipeline", "companies", "relationships"],
+  "useCases": [
+    "crm",
+    "customer management",
+    "sales pipeline",
+    "contact management",
+    "lead tracking",
+    "deal tracking",
+    "customer database",
+    "sales tracker",
+    "client management"
+  ],
+  "techStack": {
+    "database": "sqlite",
+    "orm": "prisma",
+    "frontend": "react",
+    "backend": "hono",
+    "sdk": "@shogo-ai/sdk"
+  }
+}
