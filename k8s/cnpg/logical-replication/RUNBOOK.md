@@ -223,7 +223,7 @@ done
 ### Step 13: Run Integration Tests
 
 ```bash
-DB_URL_US="postgresql://shogo:<pw>@129.158.209.173:5432/shogo?sslmode=require" \
+DB_URL_US="postgresql://shogo:<pw>@<US_DB_IP>:5432/shogo?sslmode=require" \
 DB_URL_EU="postgresql://shogo:<pw>@<EU_LB_IP>:5432/shogo?sslmode=require" \
 DB_URL_INDIA="postgresql://shogo:<pw>@<INDIA_LB_IP>:5432/shogo?sslmode=require" \
 bun test e2e/replication/
@@ -245,14 +245,14 @@ If replication is broken but US primary is healthy:
 ```bash
 # EU — revert DATABASE_URL to US primary
 kubectl --context oke-eu -n shogo-production-system create secret generic postgres-credentials \
-  --from-literal=DATABASE_URL="postgresql://shogo:<password>@129.158.209.173:5432/shogo?sslmode=require" \
+  --from-literal=DATABASE_URL="postgresql://shogo:<password>@<US_DB_IP>:5432/shogo?sslmode=require" \
   --from-literal=username=shogo \
   --from-literal=password=<password> \
   --dry-run=client -o yaml | kubectl --context oke-eu apply -f -
 
 # India — same
 kubectl --context oke-india -n shogo-production-system create secret generic postgres-credentials \
-  --from-literal=DATABASE_URL="postgresql://shogo:<password>@129.158.209.173:5432/shogo?sslmode=require" \
+  --from-literal=DATABASE_URL="postgresql://shogo:<password>@<US_DB_IP>:5432/shogo?sslmode=require" \
   --from-literal=username=shogo \
   --from-literal=password=<password> \
   --dry-run=client -o yaml | kubectl --context oke-india apply -f -
