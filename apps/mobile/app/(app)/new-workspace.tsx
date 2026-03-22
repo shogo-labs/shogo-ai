@@ -31,7 +31,7 @@ import { useAuth } from '../../contexts/auth'
 import { useDomainHttp } from '../../contexts/domain'
 import { api } from '../../lib/api'
 import { getRewardfulReferral } from '../../lib/rewardful'
-import { trackInitiateCheckout, trackPurchase } from '../../lib/fbpixel'
+import { trackInitiateCheckout, trackPurchase } from '../../lib/tracking'
 import {
   PRO_TIERS,
   BUSINESS_TIERS,

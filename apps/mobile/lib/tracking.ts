@@ -5,7 +5,7 @@ import { Platform } from 'react-native'
 declare global {
   interface Window {
     fbq?: (...args: unknown[]) => void
-    dataLayer?: Record<string, unknown>[]
+    gtag?: (...args: unknown[]) => void
   }
 }
 
@@ -18,11 +18,9 @@ function fbq(...args: unknown[]) {
   window.fbq?.(...args)
 }
 
-function pushToDataLayer(event: string, ecommerce: Record<string, unknown>) {
+function gtag(...args: unknown[]) {
   if (!isWeb()) return
-  window.dataLayer = window.dataLayer || []
-  window.dataLayer.push({ ecommerce: null })
-  window.dataLayer.push({ event, ecommerce })
+  window.gtag?.(...args)
 }
 
 export function trackInitiateCheckout(params: {
@@ -37,7 +35,7 @@ export function trackInitiateCheckout(params: {
     workspace_id: params.workspaceId,
   })
 
-  pushToDataLayer('begin_checkout', {
+  gtag('event', 'begin_checkout', {
     items: [{
       item_name: params.planId,
       item_category: 'subscription',
@@ -56,7 +54,7 @@ export function trackPurchase(params: {
     workspace_id: params.workspaceId,
   })
 
-  pushToDataLayer('purchase', {
+  gtag('event', 'purchase', {
     transaction_id: params.workspaceId,
     items: [{
       item_name: params.planId,
