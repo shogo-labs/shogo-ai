@@ -70,9 +70,17 @@ _tmp/
 # .terraform.lock.hcl - should be committed for version consistency
 tfplan
 *.auto.tfvars
+terraform.tfvars
+!terraform.tfvars.example
 
 # Kubernetes secrets (managed by GitHub Actions/Terraform, not committed)
 k8s/**/secrets.yaml
+
+# Generated code (regenerated during build)
+**/src/generated/
+
+# Internal operations docs
+docs/production-access.md
 
 apps/web/playwright-report/
 apps/web/test-results/
@@ -146,3 +154,4 @@ apps/api/shogo-local.db
 test-results/
 load-tests/results/
 load-tests/reports/
+load-tests/.env
