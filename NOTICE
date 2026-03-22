@@ -32,3 +32,5 @@ This product includes or depends on the following third-party software:
 - Stripe (MIT License) - https://stripe.com
 - MobX (MIT License) - https://mobx.js.org
 - Gluestack UI (MIT License) - https://gluestack.io
+- @mariozechner/pi-agent-core (MIT License) - https://www.npmjs.com/package/@mariozechner/pi-agent-core
+- @mariozechner/pi-ai (MIT License) - https://www.npmjs.com/package/@mariozechner/pi-ai
