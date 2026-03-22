@@ -64,7 +64,7 @@ RUN rm -rf packages/*/node_modules
 # Production image
 # =============================================================================
 # Use Node.js 22 Alpine as base (Vite 7 requires Node.js 20.19+ or 22.12+)
-FROM node:22-alpine
+FROM node:25-alpine
 
 WORKDIR /app
 
