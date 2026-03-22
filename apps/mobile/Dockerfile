@@ -12,10 +12,10 @@ WORKDIR /app
 
 # Build arguments — empty defaults produce relative URLs (proxied by nginx)
 ARG EXPO_PUBLIC_API_URL=
-ARG VITE_GTM_ID=
+ARG GA4_MEASUREMENT_ID=
 ARG FB_PIXEL_ID=
 ENV EXPO_PUBLIC_API_URL=$EXPO_PUBLIC_API_URL
-ENV EXPO_PUBLIC_GTM_ID=$VITE_GTM_ID
+ENV EXPO_PUBLIC_GA4_ID=$GA4_MEASUREMENT_ID
 ENV EXPO_PUBLIC_FB_PIXEL_ID=$FB_PIXEL_ID
 
 # Install Bun (used for fast dependency installation)

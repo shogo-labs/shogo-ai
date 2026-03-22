@@ -64,7 +64,7 @@ import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { setActiveWorkspaceId } from '../../lib/workspace-store'
 import { api, API_URL } from '../../lib/api'
 import { getRewardfulReferral } from '../../lib/rewardful'
-import { trackInitiateCheckout } from '../../lib/fbpixel'
+import { trackInitiateCheckout } from '../../lib/tracking'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { usePlatformConfig } from '../../lib/platform-config'
 import {

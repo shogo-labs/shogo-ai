@@ -83,7 +83,7 @@ import {
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { formatCredits, DAILY_CREDITS } from '../../lib/billing-config'
 import { api } from '../../lib/api'
-import { trackPurchase } from '../../lib/fbpixel'
+import { trackPurchase } from '../../lib/tracking'
 import { getActiveWorkspaceId, setActiveWorkspaceId } from '../../lib/workspace-store'
 import { usePlatformConfig } from '../../lib/platform-config'
 
