@@ -46,6 +46,11 @@ variable "tags" {
   default     = {}
 }
 
+variable "nfs_allowed_cidr" {
+  description = "CIDR block allowed to mount NFS (typically worker node subnet)"
+  type        = string
+}
+
 # -----------------------------------------------------------------------------
 # File System
 # -----------------------------------------------------------------------------
@@ -85,9 +90,9 @@ resource "oci_file_storage_export" "main" {
   path           = "/${var.name}"
 
   export_options {
-    source                         = "0.0.0.0/0"
+    source                         = var.nfs_allowed_cidr
     access                         = "READ_WRITE"
-    identity_squash                = "NONE"
+    identity_squash                = "ROOT"
     require_privileged_source_port = false
   }
 }

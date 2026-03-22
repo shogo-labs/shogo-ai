@@ -18,6 +18,9 @@
 
 name: Build, Test, and Deploy
 
+permissions:
+  contents: read
+
 on:
   push:
     branches:

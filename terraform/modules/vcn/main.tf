@@ -43,6 +43,11 @@ variable "single_nat_gateway" {
   default     = true
 }
 
+variable "oke_api_allowed_cidrs" {
+  description = "CIDRs allowed to reach the OKE API endpoint (port 6443). Restrict to VPN/bastion ranges."
+  type        = list(string)
+}
+
 # OCI subnets can be regional (span all ADs) — no need to enumerate ADs
 # for subnet placement. We create one public and one private regional subnet.
 
@@ -289,10 +294,12 @@ resource "oci_core_network_security_group" "oke_api" {
 }
 
 resource "oci_core_network_security_group_security_rule" "oke_api_ingress" {
+  for_each = toset(var.oke_api_allowed_cidrs)
+
   network_security_group_id = oci_core_network_security_group.oke_api.id
   direction                 = "INGRESS"
   protocol                  = "6" # TCP
-  source                    = "0.0.0.0/0"
+  source                    = each.value
   source_type               = "CIDR_BLOCK"
   stateless                 = false
 
