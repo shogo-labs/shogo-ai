@@ -1,0 +1,51 @@
+{
+  "expo": {
+    "name": "Shogo",
+    "slug": "shogo",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/shogo-icon.png",
+    "scheme": "shogo",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#121212"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "ai.shogo.mobile"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#121212"
+      },
+      "package": "ai.shogo.mobile",
+      "softInputMode": "adjustResize"
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/shogo-icon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-web-browser",
+      "expo-localization"
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "1523dfce-1689-48f6-b921-68d992ff05c5"
+      }
+    },
+    "runtimeVersion": {
+      "policy": "fingerprint"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/1523dfce-1689-48f6-b921-68d992ff05c5"
+    }
+  }
+}

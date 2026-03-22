@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shogo-production-system
+  labels:
+    environment: production
+    region: eu-frankfurt-1
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shogo-production-workspaces
+  labels:
+    environment: production
+    region: eu-frankfurt-1

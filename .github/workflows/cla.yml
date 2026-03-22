@@ -1,0 +1,36 @@
+name: CLA Check
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, closed]
+  issue_comment:
+    types: [created]
+
+jobs:
+  cla:
+    if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      statuses: write
+    steps:
+      - name: CLA Assistant
+        uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          path-to-document: CLA.md
+          path-to-signatures: .github/cla-signatures.json
+          branch: cla-signatures
+          custom-pr-sign-comment: |
+            Thanks for the contribution. Before we can merge this pull request,
+            please review `CLA.md` and reply with:
+
+            I have read the CLA Document and I hereby sign the CLA
+          custom-notsigned-prcomment: |
+            This pull request is waiting on the Contributor License Agreement.
+            Please read `CLA.md` and reply with:
+
+            I have read the CLA Document and I hereby sign the CLA

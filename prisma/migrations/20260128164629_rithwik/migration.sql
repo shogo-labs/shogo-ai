@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "chat_sessions" ADD COLUMN     "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;

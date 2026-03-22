@@ -1,0 +1,10 @@
+# Default owner for everything
+* @shogo-ai/maintainers
+
+# Infrastructure and deployment (require explicit maintainer review)
+.github/          @shogo-ai/maintainers
+terraform/        @shogo-ai/maintainers
+k8s/              @shogo-ai/maintainers
+
+# SDK (public API surface)
+packages/sdk/     @shogo-ai/maintainers

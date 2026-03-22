@@ -1,0 +1,150 @@
+# =============================================================================
+# OCIR Image Cleanup
+# =============================================================================
+# Removes old container images from OCI Container Registry to prevent unbounded
+# storage growth. Each deploy pushes SHA-tagged images that are never deleted;
+# this workflow prunes all but the N most recent per repository.
+#
+# Runs weekly (Sunday 04:00 UTC) and supports manual dispatch with configurable
+# retention count and dry-run mode.
+#
+# Covers all 4 environments (production-us, production-eu, production-india,
+# staging), each with its own OCIR region and credentials.
+# =============================================================================
+
+name: Cleanup OCIR Images
+
+on:
+  schedule:
+    - cron: '0 4 * * 0' # Sunday 04:00 UTC
+  workflow_dispatch:
+    inputs:
+      keep_count:
+        description: 'Number of recent images to keep per repository'
+        required: false
+        default: '10'
+        type: string
+      dry_run:
+        description: 'Log deletions without actually deleting'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  cleanup:
+    name: Cleanup ${{ matrix.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        environment:
+          - production-us
+          - production-eu
+          - production-india
+          - staging
+
+    environment: ${{ matrix.environment }}
+
+    env:
+      OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+      OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+      OCI_CLI_REGION: ${{ vars.OCI_REGION }}
+
+    steps:
+      - name: Install OCI CLI
+        run: |
+          pip install oci-cli --quiet
+          oci --version
+
+      - name: Clean up old images
+        env:
+          KEEP_COUNT: ${{ github.event.inputs.keep_count || '10' }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+          COMPARTMENT_ID: ${{ secrets.OCI_TENANCY_OCID }}
+        run: |
+          REPOS=(
+            "shogo/shogo-api"
+            "shogo/shogo-web"
+            "shogo/shogo-runtime"
+            "shogo/shogo-docs"
+            "shogo/shogo-runtime-base"
+            "shogo/agent-runtime"
+            "shogo/project-runtime"
+          )
+
+          TOTAL_DELETED=0
+          TOTAL_KEPT=0
+          TOTAL_PROTECTED=0
+
+          for REPO in "${REPOS[@]}"; do
+            echo ""
+            echo "============================================"
+            echo "Repository: $REPO"
+            echo "============================================"
+
+            IMAGES_JSON=$(oci artifacts container image list \
+              --compartment-id "$COMPARTMENT_ID" \
+              --repository-name "$REPO" \
+              --sort-by TIMECREATED \
+              --sort-order DESC \
+              --all \
+              --output json 2>&1) || true
+
+            IMAGE_COUNT=$(echo "$IMAGES_JSON" | jq '.data.items | length' 2>/dev/null)
+
+            if [ -z "$IMAGE_COUNT" ] || [ "$IMAGE_COUNT" = "0" ] || [ "$IMAGE_COUNT" = "null" ]; then
+              echo "  No images found (repository may not exist in this region). Skipping."
+              continue
+            fi
+
+            echo "  Total images: $IMAGE_COUNT"
+
+            KEPT=0
+            DELETED=0
+            PROTECTED=0
+
+            for i in $(seq 0 $((IMAGE_COUNT - 1))); do
+              IMAGE_ID=$(echo "$IMAGES_JSON" | jq -r ".data.items[$i].id")
+              DISPLAY_NAME=$(echo "$IMAGES_JSON" | jq -r ".data.items[$i].\"display-name\"")
+              TIME_CREATED=$(echo "$IMAGES_JSON" | jq -r ".data.items[$i].\"time-created\"")
+              VERSION=$(echo "$IMAGES_JSON" | jq -r ".data.items[$i].version // empty")
+
+              if echo "$VERSION" | grep -q "latest"; then
+                echo "  PROTECT: $DISPLAY_NAME"
+                PROTECTED=$((PROTECTED + 1))
+                TOTAL_PROTECTED=$((TOTAL_PROTECTED + 1))
+                continue
+              fi
+
+              if [ "$KEPT" -lt "$KEEP_COUNT" ]; then
+                echo "  KEEP ($((KEPT + 1))/$KEEP_COUNT): $DISPLAY_NAME ($TIME_CREATED)"
+                KEPT=$((KEPT + 1))
+                TOTAL_KEPT=$((TOTAL_KEPT + 1))
+              else
+                if [ "$DRY_RUN" = "true" ]; then
+                  echo "  DRY-RUN DELETE: $DISPLAY_NAME ($TIME_CREATED)"
+                else
+                  echo "  DELETE: $DISPLAY_NAME ($TIME_CREATED)"
+                  oci artifacts container image delete \
+                    --image-id "$IMAGE_ID" \
+                    --force 2>&1 || echo "    WARNING: Failed to delete $DISPLAY_NAME"
+                fi
+                DELETED=$((DELETED + 1))
+                TOTAL_DELETED=$((TOTAL_DELETED + 1))
+              fi
+            done
+
+            echo "  --- kept=$KEPT, deleted=$DELETED, protected=$PROTECTED"
+          done
+
+          echo ""
+          echo "============================================"
+          echo "Overall: kept=$TOTAL_KEPT, deleted=$TOTAL_DELETED, protected(latest)=$TOTAL_PROTECTED"
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "Mode: DRY RUN (no images were actually deleted)"
+          fi
+          echo "============================================"

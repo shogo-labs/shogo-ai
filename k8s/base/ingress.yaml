@@ -1,0 +1,42 @@
+# =============================================================================
+# Ingress - Route external traffic to services
+# =============================================================================
+# Routes:
+#   - /          -> shogo-web (frontend)
+#   - /api/*     -> shogo-api (control plane)
+#   - /workspace/* -> Knative services (workspace MCP)
+#
+# In production, this would be ALB Ingress Controller on EKS.
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shogo-ingress
+  namespace: shogo-system
+  annotations:
+    # Increase timeout for long-running MCP operations
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-body-size: "12m"
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          # API routes
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: shogo-api
+                port:
+                  number: 8002
+          # Web frontend (catch-all)
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: shogo-web
+                port:
+                  number: 80
+

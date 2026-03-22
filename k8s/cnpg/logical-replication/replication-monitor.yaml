@@ -1,0 +1,122 @@
+# CronJob that checks logical replication health across all subscriptions
+# every 5 minutes. Logs warnings for disabled subscriptions, high conflict
+# counts, inactive replication slots, and replication lag > 10s.
+#
+# Deploy once per region. The job connects to the local CNPG cluster.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: replication-monitor
+  namespace: shogo-production-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    app.kubernetes.io/component: replication-monitor
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 120
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: monitor
+              image: ghcr.io/cloudnative-pg/postgresql:18.3
+              env:
+                - name: PGHOST
+                  value: platform-pg-rw.shogo-production-system
+                - name: PGPORT
+                  value: "5432"
+                - name: PGDATABASE
+                  value: shogo
+                - name: PGUSER
+                  valueFrom:
+                    secretKeyRef:
+                      name: platform-pg-app
+                      key: username
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: platform-pg-app
+                      key: password
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  echo "=== Replication Monitor — $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+
+                  echo "--- Subscription Status ---"
+                  psql -X -t -A -F'|' -c "
+                    SELECT subname,
+                           CASE WHEN pid IS NOT NULL THEN 'streaming' ELSE 'STOPPED' END AS status,
+                           received_lsn,
+                           latest_end_lsn,
+                           latest_end_time
+                    FROM pg_stat_subscription
+                    WHERE subname LIKE 'sub_from_%'
+                    ORDER BY subname;
+                  "
+
+                  STOPPED=$(psql -X -t -A -c "
+                    SELECT count(*)
+                    FROM pg_stat_subscription
+                    WHERE subname LIKE 'sub_from_%' AND pid IS NULL;
+                  ")
+
+                  if [ "$STOPPED" -gt 0 ]; then
+                    echo "WARNING: $STOPPED subscription(s) not streaming!"
+                  fi
+
+                  echo "--- Conflict Stats (PG 18) ---"
+                  psql -X -t -A -F'|' -c "
+                    SELECT subname,
+                           apply_error_count,
+                           sync_error_count
+                    FROM pg_stat_subscription_stats
+                    WHERE subname LIKE 'sub_from_%'
+                    ORDER BY subname;
+                  " 2>/dev/null || echo "(pg_stat_subscription_stats not available)"
+
+                  echo "--- Replication Slots ---"
+                  psql -X -t -A -F'|' -c "
+                    SELECT slot_name,
+                           active,
+                           pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS wal_lag
+                    FROM pg_replication_slots
+                    WHERE slot_type = 'logical'
+                    ORDER BY slot_name;
+                  "
+
+                  INACTIVE_SLOTS=$(psql -X -t -A -c "
+                    SELECT count(*)
+                    FROM pg_replication_slots
+                    WHERE slot_type = 'logical' AND NOT active;
+                  ")
+
+                  if [ "$INACTIVE_SLOTS" -gt 0 ]; then
+                    echo "WARNING: $INACTIVE_SLOTS inactive logical replication slot(s)!"
+                  fi
+
+                  WAL_BLOAT=$(psql -X -t -A -c "
+                    SELECT count(*)
+                    FROM pg_replication_slots
+                    WHERE slot_type = 'logical'
+                      AND pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) > 1073741824;
+                  ")
+
+                  if [ "$WAL_BLOAT" -gt 0 ]; then
+                    echo "CRITICAL: $WAL_BLOAT slot(s) with > 1GB WAL lag!"
+                  fi
+
+                  echo "=== Monitor complete ==="
+              resources:
+                requests:
+                  memory: "64Mi"
+                  cpu: "50m"
+                limits:
+                  memory: "128Mi"
+                  cpu: "100m"

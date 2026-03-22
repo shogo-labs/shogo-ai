@@ -1,0 +1,45 @@
+{
+  "name": "expo-app",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "main": "expo-router/entry",
+  "scripts": {
+    "dev": "expo start --web --port ${PORT:-8081}",
+    "build": "expo export --platform web --output-dir dist",
+    "start": "bun run server.ts",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "db:generate": "bunx --bun prisma generate",
+    "db:push": "bunx --bun prisma db push",
+    "db:reset": "bunx --bun prisma db push --force-reset --accept-data-loss",
+    "db:studio": "bunx --bun prisma studio"
+  },
+  "dependencies": {
+    "@prisma/adapter-libsql": "^7.3.0",
+    "@prisma/client": "^7.3.0",
+    "@shogo-ai/sdk": "^0.4.0",
+    "expo": "~52.0.0",
+    "expo-constants": "~17.0.0",
+    "expo-linking": "~7.0.0",
+    "expo-router": "~4.0.0",
+    "expo-status-bar": "~2.0.0",
+    "hono": "^4.0.0",
+    "mobx": "^6.13.0",
+    "mobx-react-lite": "^4.0.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-native": "0.76.7",
+    "react-native-safe-area-context": "4.14.0",
+    "react-native-screens": "~4.4.0",
+    "react-native-web": "~0.19.13"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.0",
+    "@prisma/internals": "^7.3.0",
+    "@types/react": "~18.3.0",
+    "prisma": "^7.3.0",
+    "typescript": "^5.0.0"
+  }
+}

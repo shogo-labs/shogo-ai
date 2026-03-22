@@ -1,0 +1,228 @@
+#!/usr/bin/env node
+
+/**
+ * Bundles the API server for Electron desktop packaging using `bun build`.
+ *
+ * Instead of copying the full source tree + node_modules (~500MB+), this script
+ * uses bun's bundler to compile each entry point into a single JS file with all
+ * dependencies inlined. Only native modules that can't be bundled (Prisma, sqlite-vec)
+ * are kept as external packages in a minimal node_modules.
+ *
+ * Entry points bundled:
+ *   1. apps/api/src/entry.ts       → bundle/api.js        (~17 MB)
+ *   2. packages/agent-runtime/src/server.ts → bundle/agent-runtime.js (~14 MB)
+ *   3. packages/agent-runtime/src/tools/mcp-server.ts → bundle/mcp-server.js (~134 KB)
+ *
+ * Structure created inside apps/desktop/resources/:
+ *   bundle/             — compiled JS entry points
+ *   node_modules/       — only native/external packages
+ *   prisma/             — local SQLite schema
+ *   package.json        — minimal manifest for external deps
+ *   prisma.config.local.ts
+ *
+ * Usage:
+ *   node scripts/bundle-api.mjs                 # default
+ *   node scripts/bundle-api.mjs --skip-install  # skip external dep install
+ */
+
+import { execSync } from 'child_process'
+import fs from 'fs'
+import path from 'path'
+import { fileURLToPath } from 'url'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const DESKTOP_DIR = path.join(__dirname, '..')
+const RESOURCES_DIR = path.join(DESKTOP_DIR, 'resources')
+const REPO_ROOT = path.resolve(DESKTOP_DIR, '..', '..')
+
+const ITEMS_TO_CLEAN = [
+  'bundle',
+  'apps',
+  'packages',
+  'node_modules',
+  'prisma',
+  'scripts',
+  'package.json',
+  'bun.lock',
+  'tsconfig.base.json',
+  'prisma.config.local.ts',
+]
+
+/**
+ * Packages that contain native binaries or dynamic requires that can't be bundled.
+ * These are kept as external imports and installed in a minimal node_modules.
+ */
+const EXTERNAL_PACKAGES = [
+  'playwright-core',
+  '@playwright/mcp',
+  '@prisma/client',
+  'prisma-adapter-bun-sqlite',
+  'sqlite-vec',
+  '@anthropic-ai/claude-agent-sdk',
+]
+
+/**
+ * Entry points to bundle with bun build.
+ */
+const ENTRY_POINTS = [
+  {
+    name: 'api',
+    input: 'apps/api/src/entry.ts',
+    output: 'api.js',
+  },
+  {
+    name: 'agent-runtime',
+    input: 'packages/agent-runtime/src/server.ts',
+    output: 'agent-runtime.js',
+  },
+  {
+    name: 'mcp-server',
+    input: 'packages/agent-runtime/src/tools/mcp-server.ts',
+    output: 'mcp-server.js',
+  },
+]
+
+function clean() {
+  for (const item of ITEMS_TO_CLEAN) {
+    const target = path.join(RESOURCES_DIR, item)
+    if (fs.existsSync(target)) {
+      fs.rmSync(target, { recursive: true, force: true })
+    }
+  }
+}
+
+function main() {
+  const skipInstall = process.argv.includes('--skip-install')
+
+  console.log('Bundling API server for desktop (bun build)...')
+  console.log(`  Repo root:    ${REPO_ROOT}`)
+  console.log(`  Resources:    ${RESOURCES_DIR}`)
+
+  clean()
+  const bundleDir = path.join(RESOURCES_DIR, 'bundle')
+  fs.mkdirSync(bundleDir, { recursive: true })
+
+  // --- Bundle entry points ---
+  const externals = EXTERNAL_PACKAGES.map((p) => `--external ${p}`).join(' ')
+
+  for (let i = 0; i < ENTRY_POINTS.length; i++) {
+    const { name, input, output } = ENTRY_POINTS[i]
+    console.log(`\n[${i + 1}/${ENTRY_POINTS.length + 4}] Bundling ${name}...`)
+
+    const inputPath = path.join(REPO_ROOT, input)
+    const tempDir = path.join(bundleDir, `_tmp_${name}`)
+    fs.mkdirSync(tempDir, { recursive: true })
+
+    const cmd = `bun build "${inputPath}" --target bun --outdir "${tempDir}" ${externals}`
+
+    try {
+      const result = execSync(cmd, { cwd: REPO_ROOT, stdio: 'pipe', encoding: 'utf-8' })
+      console.log(`  ${result.trim().split('\n').pop()}`)
+
+      // Move the main entry file to the expected output name.
+      // Also move any .node asset files alongside it.
+      const files = fs.readdirSync(tempDir)
+      const entryFile = files.find((f) => f.endsWith('.js'))
+      if (entryFile) {
+        fs.renameSync(path.join(tempDir, entryFile), path.join(bundleDir, output))
+      }
+      for (const f of files) {
+        if (f.endsWith('.node')) {
+          fs.renameSync(path.join(tempDir, f), path.join(bundleDir, f))
+        }
+      }
+      fs.rmSync(tempDir, { recursive: true, force: true })
+    } catch (err) {
+      console.error(`  Failed to bundle ${name}:`)
+      console.error(err.stderr || err.message)
+      fs.rmSync(tempDir, { recursive: true, force: true })
+      process.exit(1)
+    }
+  }
+
+  const stepOffset = ENTRY_POINTS.length
+
+  // --- Prisma schema ---
+  console.log(`[${stepOffset + 1}/${stepOffset + 4}] Copying Prisma schema...`)
+  const prismaDir = path.join(RESOURCES_DIR, 'prisma')
+  fs.mkdirSync(prismaDir, { recursive: true })
+  const localSchema = path.join(REPO_ROOT, 'prisma', 'schema.local.prisma')
+  if (fs.existsSync(localSchema)) {
+    fs.copyFileSync(localSchema, path.join(prismaDir, 'schema.local.prisma'))
+  }
+
+  // --- Config files ---
+  console.log(`[${stepOffset + 2}/${stepOffset + 4}] Copying config files...`)
+  const prismaConfig = path.join(REPO_ROOT, 'prisma.config.local.ts')
+  if (fs.existsSync(prismaConfig)) {
+    fs.copyFileSync(prismaConfig, path.join(RESOURCES_DIR, 'prisma.config.local.ts'))
+    console.log('  ✓ prisma.config.local.ts')
+  }
+
+  // --- Install external packages ---
+  console.log(`[${stepOffset + 3}/${stepOffset + 4}] Installing external packages...`)
+  const externalPkg = {
+    name: 'shogo-desktop-bundle',
+    private: true,
+    dependencies: {},
+  }
+
+  // Read versions from the source package.json files to pin external deps
+  const apiPkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'apps/api/package.json'), 'utf-8'))
+  const agentPkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'packages/agent-runtime/package.json'), 'utf-8'))
+  const allSourceDeps = { ...agentPkg.dependencies, ...apiPkg.dependencies }
+
+  for (const pkg of EXTERNAL_PACKAGES) {
+    const version = allSourceDeps[pkg]
+    if (version) {
+      externalPkg.dependencies[pkg] = version
+    }
+  }
+
+  fs.writeFileSync(
+    path.join(RESOURCES_DIR, 'package.json'),
+    JSON.stringify(externalPkg, null, 2) + '\n',
+  )
+
+  if (!skipInstall) {
+    const isWindows = process.platform === 'win32'
+    const installCmd = isWindows
+      ? 'bun install --production --linker=isolated'
+      : 'bun install --production'
+    console.log(`  Running: ${installCmd}`)
+    execSync(installCmd, {
+      cwd: RESOURCES_DIR,
+      stdio: 'inherit',
+    })
+  }
+
+  // --- Patch claude-agent-sdk (runs post-install in cloud, do it manually here) ---
+  console.log(`[${stepOffset + 4}/${stepOffset + 4}] Patching claude-agent-sdk...`)
+  const patchScript = path.join(REPO_ROOT, 'scripts', 'patch-claude-sdk.ts')
+  if (fs.existsSync(patchScript)) {
+    try {
+      execSync(`bun run "${patchScript}"`, {
+        cwd: RESOURCES_DIR,
+        stdio: 'inherit',
+      })
+    } catch {
+      console.warn('  Patch script failed (non-fatal)')
+    }
+  }
+
+  // --- Summary ---
+  let totalSize = 0
+  for (const { output } of ENTRY_POINTS) {
+    const f = path.join(bundleDir, output)
+    if (fs.existsSync(f)) {
+      const size = fs.statSync(f).size
+      totalSize += size
+      console.log(`  ${output}: ${(size / 1024 / 1024).toFixed(1)} MB`)
+    }
+  }
+  console.log(`  Total bundle: ${(totalSize / 1024 / 1024).toFixed(1)} MB`)
+
+  console.log('\n✅ API bundle complete!')
+}
+
+main()

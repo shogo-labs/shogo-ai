@@ -1,0 +1,27 @@
+{
+  "name": "todo-app",
+  "description": "Simple task management app with user authentication",
+  "complexity": "beginner",
+  "features": [
+    "prisma",
+    "user-auth",
+    "crud",
+    "one-to-many"
+  ],
+  "models": ["User", "Todo"],
+  "tags": ["tasks", "todo", "checklist", "productivity", "simple"],
+  "useCases": [
+    "task list",
+    "todo app", 
+    "checklist",
+    "simple crud app",
+    "getting started"
+  ],
+  "techStack": {
+    "database": "sqlite",
+    "orm": "prisma",
+    "frontend": "react",
+    "backend": "hono",
+    "sdk": "@shogo-ai/sdk"
+  }
+}

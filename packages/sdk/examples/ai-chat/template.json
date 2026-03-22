@@ -1,0 +1,16 @@
+{
+  "name": "ai-chat",
+  "description": "Full-featured AI chat interface with conversations, artifacts, and document management",
+  "complexity": "advanced",
+  "features": ["prisma", "user-auth", "chat", "artifacts", "documents", "code-blocks", "markdown", "real-time-streaming"],
+  "models": ["User", "Chat", "Message", "Vote", "Document"],
+  "tags": ["ai", "chat", "conversation", "artifacts", "documents", "streaming"],
+  "useCases": ["AI chat interface", "chatbot UI", "conversation manager", "AI assistant frontend", "document editor"],
+  "techStack": {
+    "database": "sqlite",
+    "orm": "prisma",
+    "frontend": "react",
+    "backend": "hono",
+    "sdk": "@shogo-ai/sdk"
+  }
+}

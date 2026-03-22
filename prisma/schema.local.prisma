@@ -1,0 +1,904 @@
+// Shogo AI - SQLite Prisma Schema (Local/Desktop Mode)
+//
+// This schema mirrors schema.prisma but targets SQLite for local mode.
+// Key differences from the PostgreSQL schema:
+// - provider = "sqlite"
+// - String[] fields → String (JSON-encoded arrays)
+// - @db.Text annotations removed (SQLite TEXT is the default)
+//
+// Generate with: bunx prisma generate --schema=prisma/schema.local.prisma
+// Migrate with:  bunx prisma migrate dev --schema=prisma/schema.local.prisma
+
+generator client {
+  provider = "prisma-client"
+  output   = "../apps/api/src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// =============================================================================
+// BETTER-AUTH (Authentication)
+// =============================================================================
+
+model User {
+  id                  String   @id @default(cuid())
+  name                String?
+  email               String   @unique
+  emailVerified       Boolean  @default(false)
+  image               String?
+  role                String   @default("user")
+  onboardingCompleted Boolean  @default(false)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  sessions        Session[]
+  accounts        Account[]
+  members         Member[]
+  notifications   Notification[]
+  starredProjects StarredProject[]
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model Account {
+  id                    String    @id @default(cuid())
+  userId                String
+  accountId             String
+  providerId            String
+  accessToken           String?
+  refreshToken          String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  idToken               String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, accountId])
+  @@index([userId])
+  @@map("accounts")
+}
+
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verifications")
+}
+
+// =============================================================================
+// STUDIO-CORE (Multi-tenancy & Project Management)
+// =============================================================================
+
+model Workspace {
+  id          String   @id @default(uuid())
+  name        String
+  slug        String   @unique
+  description String?
+  ssoSettings String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  projects        Project[]
+  members         Member[]
+  billingAccounts BillingAccount[]
+  invitations     Invitation[]
+  inviteLinks     InviteLink[]
+  folders         Folder[]
+  subscriptions   Subscription[]
+  creditLedgers   CreditLedger[]
+  usageEvents     UsageEvent[]
+  starredProjects StarredProject[]
+
+  @@map("workspaces")
+}
+
+model Project {
+  id                 String   @id @default(uuid())
+  name               String
+  description        String?
+  workspaceId        String
+  tier               String   @default("starter")
+  status             String   @default("draft")
+  schemas            String   @default("[]")
+  createdBy          String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  folderId           String?
+  publishedSubdomain String?  @unique
+  publishedAt        DateTime?
+  accessLevel        String   @default("anyone")
+  category           String?
+  type               String   @default("APP")
+  siteTitle          String?
+  siteDescription    String?
+  thumbnailUrl       String?
+  templateId         String?
+  knativeServiceName String?
+  settings           String?
+
+  workspace        Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  folder           Folder?            @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  members          Member[]
+  inviteLinks      InviteLink[]
+  featureSessions  FeatureSession[]
+  chatSessions     ChatSession[]
+  usageEvents      UsageEvent[]
+  checkpoints      ProjectCheckpoint[]
+  githubConnection GitHubConnection?
+  starredBy        StarredProject[]
+  agentConfig      AgentConfig?
+
+  @@index([workspaceId])
+  @@index([folderId])
+  @@map("projects")
+}
+
+model AgentConfig {
+  id                String   @id @default(uuid())
+  projectId         String   @unique
+  heartbeatInterval Int      @default(1800)
+  heartbeatEnabled  Boolean  @default(false)
+  channels          String   @default("[]")
+  modelProvider     String   @default("anthropic")
+  modelName         String   @default("claude-sonnet-4-5")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("agent_configs")
+}
+
+// =============================================================================
+// VERSION CONTROL (Checkpoints & GitHub Integration)
+// =============================================================================
+
+model ProjectCheckpoint {
+  id            String   @id @default(uuid())
+  projectId     String
+  name          String?
+  description   String?
+  commitSha     String
+  commitMessage String
+  branch        String   @default("main")
+  includesDb    Boolean  @default(false)
+  filesChanged  Int      @default(0)
+  additions     Int      @default(0)
+  deletions     Int      @default(0)
+  isAutomatic   Boolean  @default(false)
+  createdBy     String?
+  createdAt     DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt(sort: Desc)])
+  @@index([commitSha])
+  @@map("project_checkpoints")
+}
+
+model GitHubConnection {
+  id             String    @id @default(uuid())
+  projectId      String    @unique
+  repoOwner      String
+  repoName       String
+  repoFullName   String
+  defaultBranch  String    @default("main")
+  installationId Int?
+  repoId         Int?
+  isPrivate      Boolean   @default(true)
+  syncEnabled    Boolean   @default(true)
+  lastPushAt     DateTime?
+  lastPullAt     DateTime?
+  lastSyncError  String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([installationId])
+  @@index([repoFullName])
+  @@map("github_connections")
+}
+
+model StarredProject {
+  id          String   @id @default(uuid())
+  userId      String
+  projectId   String
+  workspaceId String
+  createdAt   DateTime @default(now())
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, projectId])
+  @@index([workspaceId])
+  @@index([projectId])
+  @@index([userId])
+  @@map("starred_projects")
+}
+
+model Member {
+  id             String   @id @default(uuid())
+  userId         String
+  role           String   @default("member")
+  workspaceId    String?
+  projectId      String?
+  isBillingAdmin Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([workspaceId])
+  @@index([projectId])
+  @@map("members")
+}
+
+model BillingAccount {
+  id               String   @id @default(uuid())
+  workspaceId      String
+  stripeCustomerId String?
+  taxId            String?
+  creditsBalance   Float    @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId])
+  @@map("billing_accounts")
+}
+
+model Invitation {
+  id          String    @id @default(uuid())
+  email       String
+  role        String    @default("member")
+  workspaceId String?
+  projectId   String?
+  status      String    @default("pending")
+  emailStatus String    @default("not_sent")
+  emailSentAt DateTime?
+  emailError  String?
+  invitedBy   String?
+  expiresAt   DateTime
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([email])
+  @@index([workspaceId])
+  @@map("invitations")
+}
+
+model InviteLink {
+  id          String    @id @default(uuid())
+  token       String    @unique @default(uuid())
+  projectId   String?
+  workspaceId String?
+  role        String    @default("member")
+  createdBy   String
+  enabled     Boolean   @default(true)
+  expiresAt   DateTime?
+  useCount    Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  project   Project?   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([projectId])
+  @@map("invite_links")
+}
+
+model Folder {
+  id          String   @id @default(uuid())
+  name        String
+  workspaceId String
+  parentId    String?
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  parent    Folder?   @relation("FolderHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children  Folder[]  @relation("FolderHierarchy")
+  projects  Project[]
+
+  @@index([workspaceId])
+  @@index([parentId])
+  @@map("folders")
+}
+
+model Notification {
+  id        String    @id @default(uuid())
+  userId    String
+  type      String
+  title     String
+  message   String
+  metadata  String?
+  actionUrl String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, readAt])
+  @@map("notifications")
+}
+
+// =============================================================================
+// BILLING (Subscriptions & Credits)
+// =============================================================================
+
+model Subscription {
+  id                   String   @id @default(uuid())
+  workspaceId          String
+  stripeSubscriptionId String   @unique
+  stripeCustomerId     String
+  planId               String
+  status               String
+  billingInterval      String
+  currentPeriodStart   DateTime
+  currentPeriodEnd     DateTime
+  cancelAtPeriodEnd    Boolean  @default(false)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("subscriptions")
+}
+
+model CreditLedger {
+  id               String   @id @default(uuid())
+  workspaceId      String   @unique
+  monthlyCredits   Float    @default(0)
+  dailyCredits     Float    @default(0)
+  rolloverCredits  Float    @default(0)
+  anniversaryDay   Int
+  lastDailyReset   DateTime
+  lastMonthlyReset DateTime
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("credit_ledgers")
+}
+
+model UsageEvent {
+  id             String   @id @default(uuid())
+  workspaceId    String
+  projectId      String?
+  memberId       String
+  actionType     String
+  actionMetadata String?
+  creditCost     Float
+  creditSource   String
+  balanceBefore  Float
+  balanceAfter   Float
+  createdAt      DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId])
+  @@index([projectId])
+  @@index([memberId])
+  @@index([createdAt])
+  @@map("usage_events")
+}
+
+// =============================================================================
+// STUDIO-CHAT (Chat Sessions & Messages)
+// =============================================================================
+
+model ChatSession {
+  id                  String   @id @default(uuid())
+  name                String?
+  inferredName        String
+  contextType         String
+  contextId           String?
+  phase               String?
+  claudeCodeSessionId String?
+  cachedMessageCount  Int      @default(0)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @default(now()) @updatedAt
+  lastActiveAt        DateTime @default(now())
+
+  project      Project?      @relation(fields: [contextId], references: [id], onDelete: Cascade)
+  messages     ChatMessage[]
+  toolCallLogs ToolCallLog[]
+
+  @@index([contextType, contextId])
+  @@map("chat_sessions")
+}
+
+model ChatMessage {
+  id        String   @id @default(uuid())
+  sessionId String
+  role      String
+  content   String
+  imageData String?
+  parts     String?
+  createdAt DateTime @default(now())
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([sessionId, createdAt])
+  @@map("chat_messages")
+}
+
+model ToolCallLog {
+  id            String   @id @default(uuid())
+  chatSessionId String
+  messageId     String
+  toolName      String
+  status        String
+  args          String?
+  result        String?
+  duration      Int?
+  createdAt     DateTime @default(now())
+
+  chatSession ChatSession @relation(fields: [chatSessionId], references: [id], onDelete: Cascade)
+
+  @@index([chatSessionId])
+  @@index([messageId])
+  @@map("tool_call_logs")
+}
+
+// =============================================================================
+// PLATFORM-FEATURES (Feature Development Pipeline)
+// =============================================================================
+
+model FeatureSession {
+  id                 String   @id @default(cuid())
+  name               String
+  intent             String
+  status             String   @default("discovery")
+  affectedPackages   String   @default("[]")
+  schemaName         String?
+  initialAssessment  String?
+  featureArchetype   String?
+  applicablePatterns String   @default("[]")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  projectId          String?
+
+  project                 Project?               @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  requirements            Requirement[]
+  designDecisions         DesignDecision[]
+  classificationDecisions ClassificationDecision[]
+  analysisFindings        AnalysisFinding[]
+  integrationPoints       IntegrationPoint[]
+  testCases               TestCase[]
+  implementationTasks     ImplementationTask[]
+  implementationRuns      ImplementationRun[]
+
+  @@index([projectId])
+  @@index([status])
+  @@map("feature_sessions")
+}
+
+model Requirement {
+  id           String   @id @default(cuid())
+  sessionId    String
+  name         String
+  description  String
+  priority     String
+  status       String   @default("proposed")
+  auditVerdict String?
+  auditNotes   String?
+  createdAt    DateTime @default(now())
+
+  session             FeatureSession      @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  testCases           TestCase[]
+  implementationTasks ImplementationTask[]
+  testSpecifications  TestSpecification[]
+
+  @@index([sessionId])
+  @@map("requirements")
+}
+
+model DesignDecision {
+  id        String   @id @default(cuid())
+  sessionId String
+  name      String
+  question  String
+  decision  String
+  rationale String
+  createdAt DateTime @default(now())
+
+  session FeatureSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@map("design_decisions")
+}
+
+model ClassificationDecision {
+  id                 String   @id @default(cuid())
+  sessionId          String
+  initialAssessment  String?
+  validatedArchetype String
+  evidenceChecklist  String?
+  rationale          String
+  correction         String?
+  createdAt          DateTime @default(now())
+
+  session FeatureSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@map("classification_decisions")
+}
+
+model AnalysisFinding {
+  id             String   @id @default(cuid())
+  sessionId      String
+  name           String
+  type           String
+  description    String
+  location       String
+  relevantCode   String?
+  recommendation String?
+  createdAt      DateTime @default(now())
+
+  session           FeatureSession     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  integrationPoints IntegrationPoint[]
+
+  @@index([sessionId])
+  @@index([type])
+  @@map("analysis_findings")
+}
+
+model IntegrationPoint {
+  id             String   @id @default(cuid())
+  sessionId      String
+  name           String
+  filePath       String
+  package        String?
+  targetFunction String?
+  changeType     String?
+  description    String
+  rationale      String?
+  findingId      String?
+  isGenerated    Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  session             FeatureSession       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  finding             AnalysisFinding?     @relation(fields: [findingId], references: [id], onDelete: SetNull)
+  implementationTasks ImplementationTask[]
+
+  @@index([sessionId])
+  @@index([findingId])
+  @@map("integration_points")
+}
+
+model TestCase {
+  id            String   @id @default(cuid())
+  sessionId     String
+  requirementId String?
+  name          String
+  description   String
+  given         String
+  when          String
+  then          String
+  status        String   @default("specified")
+  createdAt     DateTime @default(now())
+
+  session     FeatureSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  requirement Requirement?   @relation(fields: [requirementId], references: [id], onDelete: SetNull)
+
+  @@index([sessionId])
+  @@index([requirementId])
+  @@map("test_cases")
+}
+
+model ImplementationTask {
+  id                 String   @id @default(cuid())
+  sessionId          String
+  name               String
+  integrationPointId String?
+  requirementId      String?
+  description        String
+  acceptanceCriteria String   @default("[]")
+  status             String   @default("planned")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  session            FeatureSession      @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  integrationPoint   IntegrationPoint?   @relation(fields: [integrationPointId], references: [id], onDelete: SetNull)
+  requirement        Requirement?        @relation(fields: [requirementId], references: [id], onDelete: SetNull)
+  dependencies       TaskDependency[]    @relation("DependentTask")
+  dependents         TaskDependency[]    @relation("BlockingTask")
+  testSpecifications TestSpecification[]
+  taskExecutions     TaskExecution[]
+
+  @@index([sessionId])
+  @@index([integrationPointId])
+  @@index([requirementId])
+  @@map("implementation_tasks")
+}
+
+model TaskDependency {
+  id              String @id @default(cuid())
+  dependentTaskId String
+  blockingTaskId  String
+
+  dependentTask ImplementationTask @relation("DependentTask", fields: [dependentTaskId], references: [id], onDelete: Cascade)
+  blockingTask  ImplementationTask @relation("BlockingTask", fields: [blockingTaskId], references: [id], onDelete: Cascade)
+
+  @@unique([dependentTaskId, blockingTaskId])
+  @@map("task_dependencies")
+}
+
+model TestSpecification {
+  id            String   @id @default(cuid())
+  taskId        String
+  requirementId String?
+  scenario      String
+  given         String   @default("[]")
+  when          String
+  then          String   @default("[]")
+  testType      String
+  targetFile    String?
+  createdAt     DateTime @default(now())
+
+  task        ImplementationTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  requirement Requirement?       @relation(fields: [requirementId], references: [id], onDelete: SetNull)
+
+  @@index([taskId])
+  @@index([requirementId])
+  @@map("test_specifications")
+}
+
+model ImplementationRun {
+  id             String    @id @default(cuid())
+  sessionId      String
+  status         String    @default("in_progress")
+  currentTaskId  String?
+  completedTasks String    @default("[]")
+  failedTasks    String    @default("[]")
+  startedAt      DateTime  @default(now())
+  completedAt    DateTime?
+  lastError      String?
+
+  session        FeatureSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  taskExecutions TaskExecution[]
+
+  @@index([sessionId])
+  @@map("implementation_runs")
+}
+
+model TaskExecution {
+  id                     String    @id @default(cuid())
+  runId                  String
+  taskId                 String
+  status                 String    @default("pending")
+  testFilePath           String?
+  implementationFilePath String?
+  testOutput             String?
+  retryCount             Int       @default(0)
+  errorMessage           String?
+  startedAt              DateTime  @default(now())
+  completedAt            DateTime?
+
+  run  ImplementationRun  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  task ImplementationTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+  @@index([taskId])
+  @@map("task_executions")
+}
+
+// =============================================================================
+// COMPONENT-BUILDER (Dynamic UI System)
+// =============================================================================
+
+model ComponentDefinition {
+  id                String   @id @default(cuid())
+  name              String
+  category          String
+  description       String?
+  propsSchema       String?
+  implementationRef String
+  previewRef        String?
+  tags              String   @default("[]")
+  supportedConfig   String   @default("[]")
+  aiGuidance        String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  bindings       RendererBinding[]
+  fallbackFor    Registry[]     @relation("FallbackComponent")
+  componentSpecs ComponentSpec[]
+
+  @@unique([implementationRef])
+  @@map("component_definitions")
+}
+
+model Registry {
+  id                  String   @id @default(cuid())
+  name                String   @unique
+  description         String?
+  extendsId           String?
+  fallbackComponentId String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  extends           Registry?           @relation("RegistryExtends", fields: [extendsId], references: [id], onDelete: SetNull)
+  extendedBy        Registry[]          @relation("RegistryExtends")
+  fallbackComponent ComponentDefinition? @relation("FallbackComponent", fields: [fallbackComponentId], references: [id], onDelete: SetNull)
+  bindings          RendererBinding[]
+
+  @@index([extendsId])
+  @@map("registries")
+}
+
+model RendererBinding {
+  id              String   @id @default(cuid())
+  name            String
+  registryId      String
+  componentId     String
+  matchExpression String
+  priority        Int      @default(0)
+  defaultConfig   String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  registry  Registry            @relation(fields: [registryId], references: [id], onDelete: Cascade)
+  component ComponentDefinition @relation(fields: [componentId], references: [id], onDelete: Cascade)
+
+  @@index([registryId])
+  @@index([componentId])
+  @@index([registryId, priority])
+  @@map("renderer_bindings")
+}
+
+model LayoutTemplate {
+  id              String   @id @default(cuid())
+  name            String   @unique
+  description     String?
+  slots           String   @default("[]")
+  defaultBindings String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  compositions Composition[]
+
+  @@map("layout_templates")
+}
+
+model Composition {
+  id              String   @id @default(cuid())
+  name            String
+  description     String?
+  layoutId        String
+  slotContent     String   @default("[]")
+  dataContext     String?
+  providerWrapper String?
+  providerConfig  String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  layout LayoutTemplate @relation(fields: [layoutId], references: [id], onDelete: Cascade)
+
+  @@index([layoutId])
+  @@map("compositions")
+}
+
+model ComponentSpec {
+  id                  String   @id @default(cuid())
+  name                String
+  intent              String
+  componentType       String
+  schemas             String   @default("[]")
+  status              String   @default("draft")
+  requirements        String?
+  layoutDecisions     String?
+  dataBindings        String?
+  interactionPatterns String?
+  reuseOpportunities  String?
+  implementedAsId     String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  implementedAs ComponentDefinition? @relation(fields: [implementedAsId], references: [id], onDelete: SetNull)
+
+  @@index([implementedAsId])
+  @@map("component_specs")
+}
+
+// ============================================================================
+// Platform Settings (runtime-configurable by super admins)
+// ============================================================================
+
+model PlatformSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+
+  @@map("platform_settings")
+}
+
+// ============================================================================
+// Infrastructure Metrics
+// ============================================================================
+
+model InfraSnapshot {
+  id             String   @id @default(uuid())
+  timestamp      DateTime @default(now())
+
+  totalNodes     Int
+  asgDesired     Int
+  asgMax         Int
+  totalPodSlots  Int
+  usedPodSlots   Int
+  totalCpuMillis Int
+  usedCpuMillis  Int
+  limitCpuMillis Int      @default(0)
+
+  warmAvailable  Int
+  warmTarget     Int
+  warmAssigned   Int
+  coldStarts     Int @default(0)
+
+  totalProjects  Int
+  readyProjects  Int
+  runningProjects Int
+  scaledToZero   Int
+
+  orphansDeleted Int @default(0)
+  idleEvictions  Int @default(0)
+
+  @@index([timestamp])
+  @@map("infra_snapshots")
+}
+
+// =============================================================================
+// LOCAL CONFIG (Desktop/Local mode only — key-value settings store)
+// =============================================================================
+
+model LocalConfig {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+
+  @@map("local_config")
+}

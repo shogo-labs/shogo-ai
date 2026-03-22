@@ -1,0 +1,33 @@
+{
+  "name": "expense-tracker",
+  "description": "Personal finance tracker with categories, transactions, and budget management",
+  "complexity": "intermediate",
+  "features": [
+    "prisma",
+    "user-auth",
+    "crud",
+    "one-to-many",
+    "aggregations",
+    "groupBy",
+    "date-queries",
+    "financial-calculations"
+  ],
+  "models": ["User", "Category", "Transaction", "Budget"],
+  "tags": ["finance", "expense", "budget", "income", "money", "transactions", "spending"],
+  "useCases": [
+    "expense tracker",
+    "budget app",
+    "personal finance",
+    "money tracker",
+    "spending tracker",
+    "income tracker",
+    "financial dashboard"
+  ],
+  "techStack": {
+    "database": "sqlite",
+    "orm": "prisma",
+    "frontend": "react",
+    "router": "tanstack-router",
+    "sdk": "@shogo-ai/sdk"
+  }
+}

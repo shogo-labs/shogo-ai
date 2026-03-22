@@ -1,0 +1,157 @@
+# dependencies (bun install)
+node_modules
+
+# virtual environments
+**/.venv/
+**/.venv.bak/
+
+# output
+out
+dist
+dist-client
+*.tgz
+
+# code coverage
+coverage
+*.lcov
+
+# logs
+logs
+_.log
+report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
+
+# dotenv environment variable files
+# .env is a sanitized tracked example for local development
+# Real secrets should live in .env.local, which remains ignored
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# caches
+.eslintcache
+.cache
+*.tsbuildinfo
+
+# IntelliJ based IDEs
+.idea
+
+# Finder (MacOS) folder config
+.DS_Store
+
+# Turbo
+.turbo
+
+# Tool directories (Claude Code patterns)
+_tmp/
+.superdesign/
+.cursor/
+.codanna/
+.codex/
+.playwright-mcp/
+.serena/
+
+# Workspace files
+*.code-workspace
+
+# Schema session data (user-specific, generated at runtime)
+# .schemas/*/data/
+.schemas/*/workspaces/
+!.data/
+.data/*
+!.data/.gitkeep
+
+# Git worktrees (managed by git-gtr)
+.worktrees/
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+# .terraform.lock.hcl - should be committed for version consistency
+tfplan
+*.auto.tfvars
+terraform.tfvars
+!terraform.tfvars.example
+
+# Kubernetes secrets (managed by GitHub Actions/Terraform, not committed)
+k8s/**/secrets.yaml
+
+# Generated code (regenerated during build)
+**/src/generated/
+
+# Internal operations docs
+docs/production-access.md
+
+apps/web/playwright-report/
+apps/web/test-results/
+
+# Docusaurus
+apps/docs/build/
+apps/docs/.docusaurus/
+
+workspaces/
+
+.bun/
+.npm/
+
+/packages/sdk/examples/*/test-results
+/packages/sdk/examples/*/playwright-report
+/packages/sdk/examples/*/.output
+/packages/sdk/examples/*/.nitro
+/packages/sdk/examples/*/dev-docs/build
+/packages/sdk/examples/*/dev-docs/node_modules
+/packages/sdk/examples/*/dev-docs/.docusaurus
+
+# Vite/TanStack generated timestamp files (bust Docker cache)
+app.config.timestamp*.js
+electron.vite.config.*.mjs
+
+apps/mobile/.expo/
+# Chat export logs (auto-generated agent outputs)
+shogo-chats/
+packages/agent-runtime/src/evals/dspy/__pycache__/
+packages/agent-runtime/src/evals/dspy/results/
+packages/agent-runtime/src/bundled-claude-skills/
+
+
+
+apps/api/.env
+apps/mobile/.env
+apps/mobile/google-services.json
+apps/mobile/android/
+apps/mobile/ios/
+*.keystore
+
+*.png
+!apps/mobile/assets/*.png
+!apps/desktop/resources/icon.png
+tests/
+
+.dynamic-app-runtimes/
+
+# Desktop app build artifacts
+apps/desktop/dist/
+apps/desktop/out/
+apps/desktop/resources/bun/
+apps/desktop/resources/web/
+apps/desktop/resources/bundle/
+apps/desktop/resources/apps/
+apps/desktop/resources/packages/
+apps/desktop/resources/node_modules/
+apps/desktop/resources/prisma/
+apps/desktop/resources/scripts/
+apps/desktop/resources/package.json
+apps/desktop/resources/bun.lock
+apps/desktop/resources/tsconfig.base.json
+apps/desktop/resources/prisma.config.local.ts
+
+# Local SQLite databases
+*.local.db
+shogo-local.db
+apps/api/shogo-local.db
+
+*.webm
+test-results/
+load-tests/results/
+load-tests/reports/
+load-tests/.env

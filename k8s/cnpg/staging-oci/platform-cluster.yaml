@@ -1,0 +1,77 @@
+# =============================================================================
+# Platform PostgreSQL Cluster (Staging - OCI / OKE)
+# =============================================================================
+# Manages: users, workspaces, projects, sessions, billing, etc.
+# Uses OCI Block Volumes (oci-bv) and OCI Object Storage for backups.
+# =============================================================================
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: platform-pg
+  namespace: shogo-staging-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    environment: staging
+spec:
+  instances: 1
+
+  enablePDB: false
+
+  postgresql:
+    parameters:
+      max_connections: "400"
+      shared_buffers: "256MB"
+      effective_cache_size: "768MB"
+      work_mem: "4MB"
+      maintenance_work_mem: "64MB"
+      wal_buffers: "8MB"
+      log_min_duration_statement: "1000"
+      log_checkpoints: "on"
+    pg_hba:
+      - host all all 10.0.0.0/8 md5
+      - host all all 172.16.0.0/12 md5
+
+  bootstrap:
+    initdb:
+      database: shogo
+      owner: shogo
+
+  storage:
+    size: 20Gi
+    storageClass: oci-bv
+
+  backup:
+    barmanObjectStore:
+      endpointURL: https://idin4oltblww.compat.objectstorage.us-ashburn-1.oraclecloud.com
+      destinationPath: s3://shogo-pg-backups-staging/platform/
+      s3Credentials:
+        accessKeyId:
+          name: cnpg-s3-credentials
+          key: ACCESS_KEY_ID
+        secretAccessKey:
+          name: cnpg-s3-credentials
+          key: SECRET_ACCESS_KEY
+        region:
+          name: cnpg-s3-credentials
+          key: REGION
+      wal:
+        compression: gzip
+      data:
+        compression: gzip
+    retentionPolicy: "7d"
+
+  monitoring:
+    enablePodMonitor: true
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "1Gi"
+      cpu: "500m"
+
+  affinity:
+    nodeSelector:
+      node.kubernetes.io/purpose: system
+    topologyKey: kubernetes.io/hostname

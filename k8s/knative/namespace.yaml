@@ -1,0 +1,10 @@
+# =============================================================================
+# Shogo Workspaces Namespace
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shogo-workspaces
+  labels:
+    app.kubernetes.io/part-of: shogo
+

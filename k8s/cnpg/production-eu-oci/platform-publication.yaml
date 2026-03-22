@@ -1,0 +1,57 @@
+# Publication for bidirectional logical replication — EU region.
+# Publishes all 42 application tables (excludes _prisma_migrations).
+apiVersion: postgresql.cnpg.io/v1
+kind: Publication
+metadata:
+  name: platform-pg-pub
+  namespace: shogo-production-system
+spec:
+  cluster:
+    name: platform-pg
+  dbname: shogo
+  name: shogo_all_pub
+  publicationReclaimPolicy: retain
+  target:
+    objects:
+      - table: { name: accounts }
+      - table: { name: agent_configs }
+      - table: { name: analysis_findings }
+      - table: { name: billing_accounts }
+      - table: { name: chat_messages }
+      - table: { name: chat_sessions }
+      - table: { name: classification_decisions }
+      - table: { name: component_definitions }
+      - table: { name: component_specs }
+      - table: { name: compositions }
+      - table: { name: credit_ledgers }
+      - table: { name: design_decisions }
+      - table: { name: feature_sessions }
+      - table: { name: folders }
+      - table: { name: github_connections }
+      - table: { name: implementation_runs }
+      - table: { name: implementation_tasks }
+      - table: { name: infra_snapshots }
+      - table: { name: integration_points }
+      - table: { name: invitations }
+      - table: { name: invite_links }
+      - table: { name: layout_templates }
+      - table: { name: members }
+      - table: { name: notifications }
+      - table: { name: platform_settings }
+      - table: { name: project_checkpoints }
+      - table: { name: projects }
+      - table: { name: registries }
+      - table: { name: renderer_bindings }
+      - table: { name: requirements }
+      - table: { name: sessions }
+      - table: { name: starred_projects }
+      - table: { name: subscriptions }
+      - table: { name: task_dependencies }
+      - table: { name: task_executions }
+      - table: { name: test_cases }
+      - table: { name: test_specifications }
+      - table: { name: tool_call_logs }
+      - table: { name: usage_events }
+      - table: { name: users }
+      - table: { name: verifications }
+      - table: { name: workspaces }

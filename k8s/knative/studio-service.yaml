@@ -1,0 +1,45 @@
+# =============================================================================
+# Studio Knative Service - Serves published apps
+# =============================================================================
+# This Knative Service serves the web frontend for published apps.
+# DomainMappings created by the publish API point to this service.
+# The web app uses the hostname to identify which project to display.
+# =============================================================================
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: studio
+  namespace: shogo-workspaces
+  labels:
+    app.kubernetes.io/part-of: shogo
+    shogo.io/component: studio
+spec:
+  template:
+    metadata:
+      annotations:
+        # Keep at least 1 replica running for faster cold starts
+        autoscaling.knative.dev/min-scale: "1"
+        # Maximum 5 replicas for published apps
+        autoscaling.knative.dev/max-scale: "5"
+        # Target 100 concurrent requests per pod
+        autoscaling.knative.dev/target: "100"
+    spec:
+      timeoutSeconds: 60
+      containers:
+        - name: web
+          image: k3d-shogo-registry:5000/shogo-web:latest
+          ports:
+            - containerPort: 80
+              protocol: TCP
+          env:
+            - name: API_UPSTREAM
+              value: "http://shogo-api.shogo-system.svc.cluster.local:8002"
+            - name: API_HOST
+              value: "shogo-api.shogo-system.svc.cluster.local"
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"

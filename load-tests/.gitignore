@@ -1,0 +1,28 @@
+# Python virtual environment
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Environment variables
+.env
+
+# Reports (generated)
+reports/*.html
+reports/*.csv
+reports/*.json
+
+# Keep the directory
+!reports/.gitkeep
+
+# Locust logs
+locust.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

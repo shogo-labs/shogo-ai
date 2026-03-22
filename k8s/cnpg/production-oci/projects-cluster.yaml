@@ -1,0 +1,75 @@
+# =============================================================================
+# Projects PostgreSQL Cluster (Production - OCI / OKE)
+# =============================================================================
+# Per-project databases for user workspaces and runtime environments.
+# Higher connection limits and larger storage for project data.
+# =============================================================================
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: projects-pg
+  namespace: shogo-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    environment: production
+spec:
+  instances: 3
+
+  postgresql:
+    parameters:
+      max_connections: "1000"
+      shared_buffers: "1GB"
+      effective_cache_size: "3GB"
+      work_mem: "8MB"
+      maintenance_work_mem: "256MB"
+      wal_buffers: "32MB"
+      log_min_duration_statement: "500"
+      log_checkpoints: "on"
+    pg_hba:
+      - host all all 10.0.0.0/8 md5
+      - host all all 172.16.0.0/12 md5
+
+  bootstrap:
+    initdb:
+      database: shogo_projects
+      owner: shogo
+
+  storage:
+    size: 200Gi
+    storageClass: oci-bv
+
+  backup:
+    barmanObjectStore:
+      endpointURL: https://idin4oltblww.compat.objectstorage.us-ashburn-1.oraclecloud.com
+      destinationPath: s3://shogo-pg-backups-production/projects/
+      s3Credentials:
+        accessKeyId:
+          name: cnpg-s3-credentials
+          key: ACCESS_KEY_ID
+        secretAccessKey:
+          name: cnpg-s3-credentials
+          key: SECRET_ACCESS_KEY
+        region:
+          name: cnpg-s3-credentials
+          key: REGION
+      wal:
+        compression: gzip
+      data:
+        compression: gzip
+    retentionPolicy: "30d"
+
+  monitoring:
+    enablePodMonitor: true
+
+  resources:
+    requests:
+      memory: "1Gi"
+      cpu: "500m"
+    limits:
+      memory: "4Gi"
+      cpu: "2000m"
+
+  affinity:
+    nodeSelector:
+      node.kubernetes.io/purpose: system
+    topologyKey: kubernetes.io/hostname

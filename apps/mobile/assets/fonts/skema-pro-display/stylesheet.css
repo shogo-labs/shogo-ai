@@ -1,0 +1,44 @@
+/**
+ * Skema Pro Display — woff2 subset (no eot/ttf/woff).
+ * Weights: Light + Light Italic (300), Regular (400), SemiBold (600), Bold (700).
+ * License: Mint Type.
+ */
+@font-face {
+  font-family: 'Skema Pro Display';
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url('SkemaProDisplay-Light.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Skema Pro Display';
+  font-style: italic;
+  font-weight: 300;
+  font-display: swap;
+  src: url('SkemaProDisplay-LightItalic.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Skema Pro Display';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('SkemaProDisplay-Regular.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Skema Pro Display';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('SkemaProDisplay-SemiBold.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Skema Pro Display';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('SkemaProDisplay-Bold.woff2') format('woff2');
+}

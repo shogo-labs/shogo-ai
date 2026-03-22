@@ -1,0 +1,1290 @@
+# =============================================================================
+# Shogo AI - Build, Test, and Deploy Pipeline (OCI / OKE)
+# =============================================================================
+# Multi-region deployment to Oracle Cloud Infrastructure:
+#   - push to main     → staging (auto-deploy)
+#   - push tag v*      → production (US → EU → India)
+#   - workflow_dispatch → manual deploy to staging or production
+#
+# Pipeline stages:
+#   1. Setup - Determine environment from trigger
+#   2. Detect Changes - Skip image builds when code hasn't changed
+#   3. Build Runtime Base - Rebuild base image when templates/deps change
+#   4. Build & Push - Build Docker images and push to US OCIR
+#   5. Replicate Images - Copy changed images to EU and India OCIR (production)
+#   6. Deploy US - Primary region (runs migrations)
+#   7. Deploy EU + India - Secondary regions (parallel, skip migrations)
+# =============================================================================
+
+name: Build, Test, and Deploy
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+concurrency:
+  group: deploy-${{ github.ref_name }}
+  cancel-in-progress: false
+
+# =============================================================================
+# Jobs
+# =============================================================================
+jobs:
+  # ===========================================================================
+  # Stage 0: Setup - Determine Environment
+  # ===========================================================================
+  setup:
+    name: Determine Environment
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.set-env.outputs.environment }}
+      is_production: ${{ steps.set-env.outputs.is_production }}
+    steps:
+      - name: Determine environment from trigger
+        id: set-env
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            ENV="${{ github.event.inputs.environment }}"
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            ENV="production"
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            ENV="staging"
+          else
+            echo "Unknown ref, defaulting to staging"
+            ENV="staging"
+          fi
+
+          IS_PROD="false"
+          if [[ "$ENV" == "production" ]]; then
+            IS_PROD="true"
+          fi
+
+          echo "environment=$ENV" >> $GITHUB_OUTPUT
+          echo "is_production=$IS_PROD" >> $GITHUB_OUTPUT
+          echo "Deploying to: $ENV (is_production=$IS_PROD)"
+
+  # ===========================================================================
+  # Stage 0.1: Resolve Config - Read environment-scoped variables
+  # For production, this resolves the US (primary) region config.
+  # ===========================================================================
+  resolve-config:
+    name: Resolve Config (${{ needs.setup.outputs.environment }})
+    runs-on: ubuntu-latest
+    needs: [setup]
+    environment: ${{ needs.setup.outputs.environment == 'production' && 'production-us' || needs.setup.outputs.environment }}
+    outputs:
+      environment: ${{ needs.setup.outputs.environment }}
+      is_production: ${{ needs.setup.outputs.is_production }}
+      ocir_registry: ${{ steps.registry.outputs.ocir_registry }}
+      oke_cluster_ocid: ${{ vars.OKE_CLUSTER_OCID }}
+      node_pool_ocid: ${{ vars.NODE_POOL_OCID }}
+      namespace_system: ${{ vars.NAMESPACE_SYSTEM }}
+      namespace_workspaces: ${{ vars.NAMESPACE_WORKSPACES }}
+      domain: ${{ vars.DOMAIN }}
+      docs_domain: ${{ vars.DOCS_DOMAIN }}
+      oci_region: ${{ vars.OCI_REGION }}
+      oci_tenancy_namespace: ${{ vars.OCI_TENANCY_NAMESPACE }}
+    steps:
+      - name: Compute OCIR registry URL
+        id: registry
+        run: |
+          echo "ocir_registry=${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}" >> $GITHUB_OUTPUT
+
+      - name: Print resolved config
+        run: |
+          echo "Environment: ${{ needs.setup.outputs.environment }}"
+          echo "Domain: ${{ vars.DOMAIN }}"
+
+  # ===========================================================================
+  # Stage 0.5: Detect Changes
+  # ===========================================================================
+  detect-changes:
+    name: Detect Changed Images
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      has_changes: ${{ steps.set-matrix.outputs.has_changes }}
+      api_changed: ${{ steps.set-matrix.outputs.api_changed }}
+      web_changed: ${{ steps.set-matrix.outputs.web_changed }}
+      runtime_changed: ${{ steps.set-matrix.outputs.runtime_changed }}
+      runtime_base_changed: ${{ steps.set-matrix.outputs.runtime_base_changed }}
+      docs_changed: ${{ steps.set-matrix.outputs.docs_changed }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed paths and build matrix
+        id: set-matrix
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          FORCE_ALL="${{ github.event_name == 'workflow_dispatch' }}"
+
+          if [ "$FORCE_ALL" = "true" ]; then
+            echo "workflow_dispatch -- forcing all image builds"
+            CHANGED=""
+          elif [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$BEFORE_SHA" 2>/dev/null; then
+            CHANGED=$(git diff --name-only "$BEFORE_SHA" HEAD)
+            echo "Comparing $BEFORE_SHA..HEAD (push event)"
+          elif git rev-parse HEAD~1 >/dev/null 2>&1; then
+            CHANGED=$(git diff --name-only HEAD~1 HEAD)
+            echo "Comparing HEAD~1..HEAD (fallback)"
+          else
+            echo "Single-commit repo or tag push with no parent — treating all files as changed"
+            CHANGED=$(git ls-tree --name-only -r HEAD)
+          fi
+
+          echo ""
+          echo "Changed files:"
+          echo "$CHANGED"
+          echo ""
+
+          has_match() {
+            [ "$FORCE_ALL" = "true" ] && { echo "true"; return; }
+            echo "$CHANGED" | grep -qE "$1" && echo "true" || echo "false"
+          }
+
+          SHARED=$(has_match '^(package\.json|bun\.lock|tsconfig\.base\.json|scripts/)')
+          SDK=$(has_match '^packages/sdk/')
+          SHARED_RUNTIME=$(has_match '^packages/shared-runtime/')
+          RUNTIME_PKG=$(has_match '^packages/(agent-runtime|project-runtime)/')
+          API_APP=$(has_match '^(apps/api/|prisma/|prisma\.config\.ts|templates/runtime-template/)')
+          WEB_APP=$(has_match '^(apps/mobile/|packages/domain-stores/|packages/shared-app/|packages/shared-ui/|packages/ui-kit/)')
+          DOCS_APP=$(has_match '^apps/docs/')
+
+          BASE_DOCKERFILE=$(has_match '^packages/agent-runtime/Dockerfile\.base')
+          SDK_EXAMPLES=$(has_match '^packages/sdk/examples/')
+          RUNTIME_BASE_CHANGED=false
+          if [ "$BASE_DOCKERFILE" = "true" ] || [ "$SDK_EXAMPLES" = "true" ]; then
+            RUNTIME_BASE_CHANGED=true
+          fi
+
+          API_CHANGED=false
+          if [ "$SHARED" = "true" ] || [ "$SDK" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$RUNTIME_PKG" = "true" ] || [ "$API_APP" = "true" ]; then
+            API_CHANGED=true
+          fi
+
+          WEB_CHANGED=false
+          if [ "$SHARED" = "true" ] || [ "$SDK" = "true" ] || [ "$WEB_APP" = "true" ]; then
+            WEB_CHANGED=true
+          fi
+
+          RUNTIME_CHANGED=false
+          if [ "$SHARED" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$RUNTIME_PKG" = "true" ] || [ "$RUNTIME_BASE_CHANGED" = "true" ]; then
+            RUNTIME_CHANGED=true
+          fi
+
+          DOCS_CHANGED=false
+          if [ "$DOCS_APP" = "true" ]; then
+            DOCS_CHANGED=true
+          fi
+
+          echo "api_changed=$API_CHANGED" >> $GITHUB_OUTPUT
+          echo "web_changed=$WEB_CHANGED" >> $GITHUB_OUTPUT
+          echo "runtime_changed=$RUNTIME_CHANGED" >> $GITHUB_OUTPUT
+          echo "runtime_base_changed=$RUNTIME_BASE_CHANGED" >> $GITHUB_OUTPUT
+          echo "docs_changed=$DOCS_CHANGED" >> $GITHUB_OUTPUT
+
+          ENTRIES=""
+          add_entry() {
+            [ -n "$ENTRIES" ] && ENTRIES="$ENTRIES,"
+            ENTRIES="$ENTRIES$1"
+          }
+
+          [ "$API_CHANGED" = "true" ] && add_entry '{"image":"api","dockerfile":"apps/api/Dockerfile","image_name":"shogo-api","build_args":"api"}'
+          [ "$WEB_CHANGED" = "true" ] && add_entry '{"image":"web","dockerfile":"apps/mobile/Dockerfile","image_name":"shogo-web","build_args":"web"}'
+          [ "$RUNTIME_CHANGED" = "true" ] && add_entry '{"image":"runtime","dockerfile":"packages/agent-runtime/Dockerfile","image_name":"shogo-runtime","build_args":"runtime"}'
+          [ "$DOCS_CHANGED" = "true" ] && add_entry '{"image":"docs","dockerfile":"apps/docs/Dockerfile","image_name":"shogo-docs","build_args":""}'
+
+          if [ -z "$ENTRIES" ]; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "matrix={\"include\":[]}" >> $GITHUB_OUTPUT
+            echo "No image changes detected -- all builds will be skipped"
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "matrix={\"include\":[$ENTRIES]}" >> $GITHUB_OUTPUT
+          fi
+
+          echo ""
+          echo "Changes detected:"
+          echo "  api: $API_CHANGED"
+          echo "  web: $WEB_CHANGED"
+          echo "  runtime: $RUNTIME_CHANGED"
+          echo "  runtime_base: $RUNTIME_BASE_CHANGED"
+          echo "  docs: $DOCS_CHANGED"
+
+  # ===========================================================================
+  # Stage 1.5: Build Runtime Base Image
+  # ===========================================================================
+  build-base-image:
+    name: Build Runtime Base Image
+    runs-on: ubuntu-latest
+    needs: [resolve-config, detect-changes]
+    if: needs.detect-changes.outputs.runtime_base_changed == 'true'
+    environment: ${{ needs.resolve-config.outputs.environment == 'production' && 'production-us' || needs.resolve-config.outputs.environment }}
+    timeout-minutes: 45
+
+    env:
+      OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+      OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+      OCI_CLI_REGION: ${{ vars.OCI_REGION }}
+
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Login to OCIR
+        run: |
+          echo "${{ secrets.OCI_AUTH_TOKEN }}" | docker login \
+            ${{ vars.OCI_REGION }}.ocir.io \
+            -u "${{ vars.OCI_TENANCY_NAMESPACE }}/${{ secrets.OCI_USERNAME }}" \
+            --password-stdin
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Build and push base image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: packages/agent-runtime/Dockerfile.base
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: |
+            ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/shogo-runtime-base:latest
+            ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/shogo-runtime-base:${{ github.sha }}
+          cache-from: type=gha,scope=runtime-base-oci
+          cache-to: type=gha,mode=max,scope=runtime-base-oci
+
+  # ===========================================================================
+  # Stage 2: Build and Push Docker Images to OCIR (in parallel)
+  # Images are pushed to the primary (US) OCIR registry.
+  # ===========================================================================
+  build-and-push:
+    name: Build ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    needs: [resolve-config, detect-changes, build-base-image]
+    if: |
+      always() &&
+      needs.resolve-config.result == 'success' &&
+      needs.detect-changes.result == 'success' &&
+      needs.detect-changes.outputs.has_changes == 'true' &&
+      (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped')
+    environment: ${{ needs.resolve-config.outputs.environment == 'production' && 'production-us' || needs.resolve-config.outputs.environment }}
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+
+    env:
+      OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+      OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+      OCI_CLI_REGION: ${{ vars.OCI_REGION }}
+
+    steps:
+      - name: Free disk space (large runtime images)
+        if: matrix.image == 'runtime'
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Login to OCIR
+        run: |
+          echo "${{ secrets.OCI_AUTH_TOKEN }}" | docker login \
+            ${{ vars.OCI_REGION }}.ocir.io \
+            -u "${{ vars.OCI_TENANCY_NAMESPACE }}/${{ secrets.OCI_USERNAME }}" \
+            --password-stdin
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Determine image tag prefix
+        id: tag-prefix
+        run: |
+          if [[ "${{ needs.resolve-config.outputs.environment }}" == "production" ]]; then
+            echo "prefix=production" >> $GITHUB_OUTPUT
+          else
+            echo "prefix=${{ needs.resolve-config.outputs.environment }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build and push ${{ matrix.image }} image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: |
+            ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/${{ matrix.image_name }}:${{ steps.tag-prefix.outputs.prefix }}-latest
+            ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/${{ matrix.image_name }}:${{ steps.tag-prefix.outputs.prefix }}-${{ github.sha }}
+          build-args: |
+            ${{ matrix.build_args == 'api' && format('ALLOWED_ORIGINS={0}', vars.ALLOWED_ORIGINS) || '' }}
+            ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_API_URL={0}', vars.EXPO_PUBLIC_API_URL) || '' }}
+            ${{ matrix.build_args == 'web' && needs.resolve-config.outputs.environment == 'production' && format('VITE_GTM_ID={0}', secrets.VITE_GTM_ID) || '' }}
+            ${{ matrix.build_args == 'runtime' && format('BASE_IMAGE={0}/shogo/shogo-runtime-base:latest', needs.resolve-config.outputs.ocir_registry) || '' }}
+          cache-from: type=gha,scope=${{ matrix.image }}-oci
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}-oci
+
+  # ===========================================================================
+  # Stage 2.5: Replicate Images to Secondary Regions (production only)
+  # Uses skopeo to copy images from US OCIR to EU and India OCIR.
+  # ===========================================================================
+  replicate-images:
+    name: Replicate to ${{ matrix.target_region }}
+    runs-on: ubuntu-latest
+    needs: [resolve-config, detect-changes, build-base-image, build-and-push]
+    if: |
+      always() &&
+      needs.resolve-config.outputs.is_production == 'true' &&
+      needs.resolve-config.result == 'success' &&
+      needs.detect-changes.result == 'success' &&
+      (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped') &&
+      (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped')
+
+    strategy:
+      fail-fast: false
+      matrix:
+        target_region:
+          - region: eu-frankfurt-1
+            environment: production-eu
+          - region: ap-mumbai-1
+            environment: production-india
+
+    environment: ${{ matrix.target_region.environment }}
+
+    env:
+      US_REGISTRY: ${{ needs.resolve-config.outputs.ocir_registry }}
+      TAG: production-${{ github.sha }}
+      LATEST_TAG: production-latest
+
+    steps:
+      - name: Install skopeo
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq skopeo
+
+      - name: Copy images to ${{ matrix.target_region.region }}
+        run: |
+          TARGET_REGISTRY="${{ matrix.target_region.region }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}"
+
+          US_CREDS="${{ needs.resolve-config.outputs.oci_tenancy_namespace }}/${{ secrets.OCI_USERNAME }}:${{ secrets.OCI_AUTH_TOKEN }}"
+          TARGET_CREDS="${{ vars.OCI_TENANCY_NAMESPACE }}/${{ secrets.OCI_USERNAME }}:${{ secrets.OCI_AUTH_TOKEN }}"
+
+          IMAGES=""
+          if [ "${{ needs.detect-changes.outputs.api_changed }}" = "true" ]; then IMAGES="$IMAGES shogo-api"; fi
+          if [ "${{ needs.detect-changes.outputs.web_changed }}" = "true" ]; then IMAGES="$IMAGES shogo-web"; fi
+          if [ "${{ needs.detect-changes.outputs.runtime_changed }}" = "true" ]; then IMAGES="$IMAGES shogo-runtime"; fi
+          if [ "${{ needs.detect-changes.outputs.docs_changed }}" = "true" ]; then IMAGES="$IMAGES shogo-docs"; fi
+          if [ "${{ needs.detect-changes.outputs.runtime_base_changed }}" = "true" ]; then IMAGES="$IMAGES shogo-runtime-base"; fi
+
+          if [ -z "$IMAGES" ]; then
+            echo "No changed images to replicate"
+            exit 0
+          fi
+
+          for IMAGE in $IMAGES; do
+            echo "Copying $IMAGE to ${{ matrix.target_region.region }}..."
+
+            for TAG_SUFFIX in "$TAG" "$LATEST_TAG"; do
+              if [ "$IMAGE" = "shogo-runtime-base" ]; then
+                SRC_TAG=$(echo "$TAG_SUFFIX" | sed 's/production-//')
+                skopeo copy --all \
+                  --src-creds "$US_CREDS" \
+                  --dest-creds "$TARGET_CREDS" \
+                  "docker://${US_REGISTRY}/shogo/$IMAGE:$SRC_TAG" \
+                  "docker://${TARGET_REGISTRY}/shogo/$IMAGE:$SRC_TAG" || echo "Warning: failed to copy $IMAGE:$SRC_TAG"
+              else
+                skopeo copy --all \
+                  --src-creds "$US_CREDS" \
+                  --dest-creds "$TARGET_CREDS" \
+                  "docker://${US_REGISTRY}/shogo/$IMAGE:$TAG_SUFFIX" \
+                  "docker://${TARGET_REGISTRY}/shogo/$IMAGE:$TAG_SUFFIX" || echo "Warning: failed to copy $IMAGE:$TAG_SUFFIX"
+              fi
+            done
+
+            echo "Done: $IMAGE"
+          done
+
+  # ===========================================================================
+  # Stage 3: Deploy to OKE
+  # For production: deploys to US first (with migrations), then EU + India.
+  # For staging: single deploy.
+  # ===========================================================================
+
+  # --- Staging deploy (single region) ---
+  deploy-staging:
+    name: Deploy to OKE (staging)
+    runs-on: ubuntu-latest
+    needs: [resolve-config, detect-changes, build-base-image, build-and-push]
+    if: |
+      always() &&
+      needs.resolve-config.outputs.is_production == 'false' &&
+      needs.resolve-config.result == 'success' &&
+      needs.detect-changes.result == 'success' &&
+      (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped') &&
+      (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped')
+    environment: ${{ needs.resolve-config.outputs.environment }}
+
+    env:
+      OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+      OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+      OCI_CLI_REGION: ${{ vars.OCI_REGION }}
+      ENVIRONMENT: ${{ needs.resolve-config.outputs.environment }}
+      NS_SYSTEM: ${{ needs.resolve-config.outputs.namespace_system }}
+      NS_WORKSPACES: ${{ needs.resolve-config.outputs.namespace_workspaces }}
+      DOMAIN: ${{ needs.resolve-config.outputs.domain }}
+      DOCS_DOMAIN: ${{ needs.resolve-config.outputs.docs_domain }}
+      IMAGE_TAG: ${{ needs.resolve-config.outputs.environment }}-${{ github.sha }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install OCI CLI
+        run: pip install oci-cli --quiet
+
+      - name: Configure kubectl for OKE
+        run: |
+          mkdir -p ~/.kube
+          oci ce cluster create-kubeconfig \
+            --cluster-id ${{ needs.resolve-config.outputs.oke_cluster_ocid }} \
+            --region ${{ vars.OCI_REGION }} \
+            --token-version 2.0.0 \
+            --kube-endpoint PUBLIC_ENDPOINT
+          kubectl get nodes > /dev/null
+
+      - name: Create namespaces if not exist
+        run: |
+          kubectl create namespace ${{ env.NS_SYSTEM }} --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace ${{ env.NS_WORKSPACES }} --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Create or update API secrets
+        run: |
+          SECRET_ARGS=(
+            --from-literal=ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}"
+          )
+          if [ -n "${{ secrets.BETTER_AUTH_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}"); fi
+          if [ -n "${{ secrets.STRIPE_SECRET_KEY }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}"); fi
+          if [ -n "${{ secrets.STRIPE_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_WEBHOOK_SECRET="${{ secrets.STRIPE_WEBHOOK_SECRET }}"); fi
+          if [ -n "${{ secrets.GH_APP_ID }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_ID="${{ secrets.GH_APP_ID }}"); fi
+          if [ -n "${{ secrets.GH_APP_CLIENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_ID="${{ secrets.GH_APP_CLIENT_ID }}"); fi
+          if [ -n "${{ secrets.GH_APP_CLIENT_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_SECRET="${{ secrets.GH_APP_CLIENT_SECRET }}"); fi
+          if [ -n "${{ secrets.GH_APP_PRIVATE_KEY }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_PRIVATE_KEY="${{ secrets.GH_APP_PRIVATE_KEY }}"); fi
+          if [ -n "${{ secrets.GH_APP_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_WEBHOOK_SECRET="${{ secrets.GH_APP_WEBHOOK_SECRET }}"); fi
+          if [ -n "${{ secrets.GH_APP_SLUG }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_SLUG="${{ secrets.GH_APP_SLUG }}"); fi
+          if [ -n "${{ secrets.GOOGLE_CLIENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_CLIENT_ID="${{ secrets.GOOGLE_CLIENT_ID }}"); fi
+          if [ -n "${{ secrets.GOOGLE_CLIENT_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_CLIENT_SECRET="${{ secrets.GOOGLE_CLIENT_SECRET }}"); fi
+          if [ -n "${{ secrets.SERPER_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=SERPER_API_KEY="${{ secrets.SERPER_API_KEY }}"); fi
+          if [ -n "${{ secrets.COMPOSIO_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=COMPOSIO_API_KEY="${{ secrets.COMPOSIO_API_KEY }}"); fi
+          if [ -n "${{ secrets.COMPOSIO_PROJECT_ID }}" ]; then SECRET_ARGS+=(--from-literal=COMPOSIO_PROJECT_ID="${{ secrets.COMPOSIO_PROJECT_ID }}"); fi
+          if [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}"); fi
+          if [ -n "${{ secrets.GOOGLE_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}"); fi
+          if [ -n "${{ secrets.LOAD_TEST_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LOAD_TEST_SECRET="${{ secrets.LOAD_TEST_SECRET }}"); fi
+
+          kubectl create secret generic api-secrets \
+            --namespace=${{ env.NS_SYSTEM }} \
+            "${SECRET_ARGS[@]}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          kubectl create secret generic anthropic-credentials \
+            --namespace=${{ env.NS_WORKSPACES }} \
+            --from-literal=api-key="${{ secrets.ANTHROPIC_API_KEY }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          if [ -n "${{ secrets.BETTER_AUTH_SECRET }}" ]; then
+            kubectl create secret generic preview-secrets \
+              --namespace=${{ env.NS_WORKSPACES }} \
+              --from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}" \
+              --dry-run=client -o yaml | kubectl apply -f -
+          fi
+
+          if [ -n "${{ secrets.SIGNOZ_INGESTION_KEY }}" ]; then
+            kubectl create secret generic signoz-credentials \
+              --namespace=${{ env.NS_SYSTEM }} \
+              --from-literal=SIGNOZ_INGESTION_KEY="${{ secrets.SIGNOZ_INGESTION_KEY }}" \
+              --dry-run=client -o yaml | kubectl apply -f -
+          fi
+
+          # Kourier TLS secret for Knative HTTPS termination (Cloudflare origin cert)
+          if [ -n "${{ secrets.KOURIER_TLS_CERT }}" ] && [ -n "${{ secrets.KOURIER_TLS_KEY }}" ]; then
+            kubectl create namespace kourier-system 2>/dev/null || true
+            kubectl create secret tls kourier-tls \
+              --namespace=kourier-system \
+              --cert=<(echo "${{ secrets.KOURIER_TLS_CERT }}") \
+              --key=<(echo "${{ secrets.KOURIER_TLS_KEY }}") \
+              --dry-run=client -o yaml | kubectl apply -f -
+          fi
+
+      - name: Save current Knative service images
+        id: save-images
+        run: |
+          get_image() {
+            kubectl get ksvc "$1" -n "$2" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo ""
+          }
+          echo "web_image=$(get_image studio ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
+          echo "api_image=$(get_image api ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
+          echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
+
+      - name: Apply Kubernetes manifests
+        run: |
+          kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/ || true
+
+      - name: Ensure Kourier TLS configuration
+        run: |
+          kubectl set env deployment/net-kourier-controller -n knative-serving \
+            CERTS_SECRET_NAMESPACE=kourier-system \
+            CERTS_SECRET_NAME=kourier-tls || true
+
+      - name: Ensure Kourier connection draining
+        run: |
+          kubectl patch configmap config-kourier -n knative-serving --type merge \
+            -p '{"data":{"drain-time-seconds":"15"}}' || true
+
+      - name: Deploy Cluster Autoscaler
+        env:
+          NODE_POOL_OCID: ${{ needs.resolve-config.outputs.node_pool_ocid }}
+        run: |
+          if [ -z "$NODE_POOL_OCID" ]; then
+            echo "NODE_POOL_OCID not set, skipping"
+          else
+            sed "s|NODE_POOL_OCID_PLACEHOLDER|$NODE_POOL_OCID|g" k8s/base/cluster-autoscaler.yaml | kubectl apply -f -
+            kubectl get pods -n kube-system -l app=cluster-autoscaler
+          fi
+
+      - name: Deploy Image Prepuller DaemonSet
+        env:
+          OCIR_REGISTRY: ${{ needs.resolve-config.outputs.ocir_registry }}
+        run: |
+          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:${{ needs.resolve-config.outputs.environment }}-latest"
+          sed -e "s|RUNTIME_IMAGE_PLACEHOLDER|$RUNTIME_IMAGE|g" \
+              -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
+              k8s/base/image-prepuller.yaml | kubectl apply -f -
+          kubectl get daemonset image-prepuller -n ${{ env.NS_SYSTEM }}
+
+      - name: Deploy Knative services
+        env:
+          OCIR_REGISTRY: ${{ needs.resolve-config.outputs.ocir_registry }}
+          WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
+          API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
+          DOCS_CHANGED: ${{ needs.detect-changes.outputs.docs_changed }}
+          PREV_WEB_IMAGE: ${{ steps.save-images.outputs.web_image }}
+          PREV_API_IMAGE: ${{ steps.save-images.outputs.api_image }}
+          PREV_DOCS_IMAGE: ${{ steps.save-images.outputs.docs_image }}
+        run: |
+          patch_ksvc() {
+            local name=$1 ns=$2 image_name=$3 changed=$4 prev=$5
+            if [ "$changed" = "true" ]; then
+              echo "Deploying $name -> ${{ env.IMAGE_TAG }}"
+              kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
+                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${OCIR_REGISTRY}/shogo/${image_name}:${{ env.IMAGE_TAG }}\"}
+              ]" || echo "$name not found"
+            elif [ -n "$prev" ]; then
+              echo "Restoring $name -> $prev"
+              kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
+                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${prev}\"}
+              ]" || true
+            fi
+          }
+
+          patch_ksvc studio "${{ env.NS_SYSTEM }}" shogo-web "$WEB_CHANGED" "$PREV_WEB_IMAGE"
+          patch_ksvc api "${{ env.NS_SYSTEM }}" shogo-api "$API_CHANGED" "$PREV_API_IMAGE"
+          patch_ksvc docs "${{ env.NS_SYSTEM }}" shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
+
+      - name: Sync API environment variables
+        run: |
+          EXPECTED_AUTH_URL="https://${{ env.DOMAIN }}"
+          IDX=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o json | \
+            python3 -c "import sys,json; envs=json.load(sys.stdin)['spec']['template']['spec']['containers'][0]['env']; print(next(i for i,e in enumerate(envs) if e['name']=='BETTER_AUTH_URL'))" 2>/dev/null) || true
+          if [ -z "$IDX" ]; then
+            echo "BETTER_AUTH_URL not found, skipping"
+          else
+            CURRENT=$(kubectl get ksvc api -n ${{ env.NS_SYSTEM }} -o jsonpath="{.spec.template.spec.containers[0].env[${IDX}].value}")
+            if [ "$CURRENT" != "$EXPECTED_AUTH_URL" ]; then
+              echo "Updating BETTER_AUTH_URL: $CURRENT -> $EXPECTED_AUTH_URL"
+              kubectl patch ksvc api -n ${{ env.NS_SYSTEM }} --type='json' -p="[
+                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/env/${IDX}/value\", \"value\": \"${EXPECTED_AUTH_URL}\"}
+              ]"
+            fi
+          fi
+
+      - name: Wait for rollout
+        run: |
+          kubectl wait --for=condition=ready ksvc/studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          kubectl wait --for=condition=ready ksvc/docs -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+
+      - name: Restart image prepuller
+        if: needs.detect-changes.outputs.runtime_changed == 'true'
+        run: |
+          if ! kubectl get daemonset/image-prepuller -n ${{ env.NS_SYSTEM }} &>/dev/null; then exit 0; fi
+          STUCK=$(kubectl get pods -n ${{ env.NS_SYSTEM }} -l app.kubernetes.io/name=image-prepuller --field-selector=status.phase!=Running -o name 2>/dev/null || true)
+          if [ -n "$STUCK" ]; then
+            echo "$STUCK" | xargs -r kubectl delete -n ${{ env.NS_SYSTEM }} --force --grace-period=0 2>/dev/null || true
+            sleep 5
+          fi
+          kubectl rollout restart daemonset/image-prepuller -n ${{ env.NS_SYSTEM }}
+          kubectl rollout status daemonset/image-prepuller -n ${{ env.NS_SYSTEM }} --timeout=300s || echo "Prepuller rollout timeout"
+
+      - name: Verify deployment
+        run: |
+          kubectl get ksvc -n ${{ env.NS_SYSTEM }} -o name
+          echo "Staging deploy verified"
+
+      - name: Post-deploy health check
+        run: |
+          echo "Waiting 30s for revisions to propagate..."
+          sleep 30
+          HEALTHY=false
+          for i in $(seq 1 20); do
+            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 "https://${{ env.DOMAIN }}/api/health" 2>/dev/null) || STATUS="000"
+            if [ "$STATUS" = "200" ]; then
+              echo "API healthy (attempt $i)"
+              HEALTHY=true
+              break
+            fi
+            echo "API not ready (HTTP $STATUS), retrying... ($i/20)"
+            sleep 10
+          done
+          if [ "$HEALTHY" != "true" ]; then
+            echo "::warning::API health check did not return 200 after 20 attempts"
+          fi
+
+  # --- Production: Deploy US (primary, runs migrations) ---
+  deploy-us:
+    name: Deploy to US (primary)
+    runs-on: ubuntu-latest
+    needs: [resolve-config, detect-changes, build-base-image, build-and-push]
+    if: |
+      always() &&
+      needs.resolve-config.outputs.is_production == 'true' &&
+      needs.resolve-config.result == 'success' &&
+      needs.detect-changes.result == 'success' &&
+      (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped') &&
+      (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped')
+    environment: production-us
+
+    env:
+      OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+      OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+      OCI_CLI_REGION: ${{ vars.OCI_REGION }}
+      ENVIRONMENT: production-us
+      NS_SYSTEM: ${{ vars.NAMESPACE_SYSTEM }}
+      NS_WORKSPACES: ${{ vars.NAMESPACE_WORKSPACES }}
+      DOMAIN: ${{ vars.DOMAIN }}
+      DOCS_DOMAIN: ${{ vars.DOCS_DOMAIN }}
+      IMAGE_TAG: production-${{ github.sha }}
+      REGION_KEY: us
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install OCI CLI
+        run: pip install oci-cli --quiet
+
+      - name: Configure kubectl for OKE
+        run: |
+          mkdir -p ~/.kube
+          oci ce cluster create-kubeconfig \
+            --cluster-id ${{ vars.OKE_CLUSTER_OCID }} \
+            --region ${{ vars.OCI_REGION }} \
+            --token-version 2.0.0 \
+            --kube-endpoint PUBLIC_ENDPOINT
+          kubectl get nodes > /dev/null
+
+      - name: Create namespaces
+        run: |
+          kubectl create namespace ${{ env.NS_SYSTEM }} --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace ${{ env.NS_WORKSPACES }} --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Create or update secrets
+        run: |
+          SECRET_ARGS=(
+            --from-literal=ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}"
+          )
+          if [ -n "${{ secrets.BETTER_AUTH_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}"); fi
+          if [ -n "${{ secrets.STRIPE_SECRET_KEY }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}"); fi
+          if [ -n "${{ secrets.STRIPE_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_WEBHOOK_SECRET="${{ secrets.STRIPE_WEBHOOK_SECRET }}"); fi
+          if [ -n "${{ secrets.GH_APP_ID }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_ID="${{ secrets.GH_APP_ID }}"); fi
+          if [ -n "${{ secrets.GH_APP_CLIENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_ID="${{ secrets.GH_APP_CLIENT_ID }}"); fi
+          if [ -n "${{ secrets.GH_APP_CLIENT_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_SECRET="${{ secrets.GH_APP_CLIENT_SECRET }}"); fi
+          if [ -n "${{ secrets.GH_APP_PRIVATE_KEY }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_PRIVATE_KEY="${{ secrets.GH_APP_PRIVATE_KEY }}"); fi
+          if [ -n "${{ secrets.GH_APP_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_WEBHOOK_SECRET="${{ secrets.GH_APP_WEBHOOK_SECRET }}"); fi
+          if [ -n "${{ secrets.GH_APP_SLUG }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_SLUG="${{ secrets.GH_APP_SLUG }}"); fi
+          if [ -n "${{ secrets.GOOGLE_CLIENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_CLIENT_ID="${{ secrets.GOOGLE_CLIENT_ID }}"); fi
+          if [ -n "${{ secrets.GOOGLE_CLIENT_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_CLIENT_SECRET="${{ secrets.GOOGLE_CLIENT_SECRET }}"); fi
+          if [ -n "${{ secrets.SERPER_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=SERPER_API_KEY="${{ secrets.SERPER_API_KEY }}"); fi
+          if [ -n "${{ secrets.COMPOSIO_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=COMPOSIO_API_KEY="${{ secrets.COMPOSIO_API_KEY }}"); fi
+          if [ -n "${{ secrets.COMPOSIO_PROJECT_ID }}" ]; then SECRET_ARGS+=(--from-literal=COMPOSIO_PROJECT_ID="${{ secrets.COMPOSIO_PROJECT_ID }}"); fi
+          if [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}"); fi
+          if [ -n "${{ secrets.GOOGLE_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}"); fi
+          if [ -n "${{ secrets.LOAD_TEST_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LOAD_TEST_SECRET="${{ secrets.LOAD_TEST_SECRET }}"); fi
+
+          kubectl create secret generic api-secrets \
+            --namespace=${{ env.NS_SYSTEM }} \
+            "${SECRET_ARGS[@]}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          kubectl create secret generic anthropic-credentials \
+            --namespace=${{ env.NS_WORKSPACES }} \
+            --from-literal=api-key="${{ secrets.ANTHROPIC_API_KEY }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          if [ -n "${{ secrets.BETTER_AUTH_SECRET }}" ]; then
+            kubectl create secret generic preview-secrets \
+              --namespace=${{ env.NS_WORKSPACES }} \
+              --from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}" \
+              --dry-run=client -o yaml | kubectl apply -f -
+          fi
+
+          if [ -n "${{ secrets.SIGNOZ_INGESTION_KEY }}" ]; then
+            kubectl create secret generic signoz-credentials \
+              --namespace=${{ env.NS_SYSTEM }} \
+              --from-literal=SIGNOZ_INGESTION_KEY="${{ secrets.SIGNOZ_INGESTION_KEY }}" \
+              --dry-run=client -o yaml | kubectl apply -f -
+          fi
+
+          # Kourier TLS secret for Knative HTTPS termination (Cloudflare origin cert)
+          if [ -n "${{ secrets.KOURIER_TLS_CERT }}" ] && [ -n "${{ secrets.KOURIER_TLS_KEY }}" ]; then
+            kubectl create namespace kourier-system 2>/dev/null || true
+            kubectl create secret tls kourier-tls \
+              --namespace=kourier-system \
+              --cert=<(echo "${{ secrets.KOURIER_TLS_CERT }}") \
+              --key=<(echo "${{ secrets.KOURIER_TLS_KEY }}") \
+              --dry-run=client -o yaml | kubectl apply -f -
+          fi
+
+      - name: Save current images
+        id: save-images
+        run: |
+          get_image() { kubectl get ksvc "$1" -n "$2" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo ""; }
+          echo "web_image=$(get_image studio ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
+          echo "api_image=$(get_image api ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
+          echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
+
+      - name: Apply Kubernetes manifests
+        run: kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/ || true
+
+      - name: Ensure Kourier TLS configuration
+        run: |
+          kubectl set env deployment/net-kourier-controller -n knative-serving \
+            CERTS_SECRET_NAMESPACE=kourier-system \
+            CERTS_SECRET_NAME=kourier-tls || true
+
+      - name: Ensure Kourier connection draining
+        run: |
+          kubectl patch configmap config-kourier -n knative-serving --type merge \
+            -p '{"data":{"drain-time-seconds":"15"}}' || true
+
+      - name: Deploy Cluster Autoscaler
+        run: |
+          NODE_POOL_OCID="${{ vars.NODE_POOL_OCID }}"
+          if [ -z "$NODE_POOL_OCID" ]; then echo "Skipping autoscaler"; exit 0; fi
+          sed "s|NODE_POOL_OCID_PLACEHOLDER|$NODE_POOL_OCID|g" k8s/base/cluster-autoscaler.yaml | kubectl apply -f -
+
+      - name: Deploy Image Prepuller
+        run: |
+          OCIR_REGISTRY="${{ needs.resolve-config.outputs.ocir_registry }}"
+          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:production-latest"
+          sed -e "s|RUNTIME_IMAGE_PLACEHOLDER|$RUNTIME_IMAGE|g" \
+              -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
+              k8s/base/image-prepuller.yaml | kubectl apply -f -
+
+      - name: Deploy Knative services
+        env:
+          OCIR_REGISTRY: ${{ needs.resolve-config.outputs.ocir_registry }}
+          WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
+          API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
+          DOCS_CHANGED: ${{ needs.detect-changes.outputs.docs_changed }}
+          PREV_WEB_IMAGE: ${{ steps.save-images.outputs.web_image }}
+          PREV_API_IMAGE: ${{ steps.save-images.outputs.api_image }}
+          PREV_DOCS_IMAGE: ${{ steps.save-images.outputs.docs_image }}
+        run: |
+          patch_ksvc() {
+            local name=$1 ns=$2 image_name=$3 changed=$4 prev=$5
+            if [ "$changed" = "true" ]; then
+              kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
+                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${OCIR_REGISTRY}/shogo/${image_name}:${{ env.IMAGE_TAG }}\"}
+              ]" || echo "$name not found"
+            elif [ -n "$prev" ]; then
+              kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
+                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${prev}\"}
+              ]" || true
+            fi
+          }
+          patch_ksvc studio "${{ env.NS_SYSTEM }}" shogo-web "$WEB_CHANGED" "$PREV_WEB_IMAGE"
+          patch_ksvc api "${{ env.NS_SYSTEM }}" shogo-api "$API_CHANGED" "$PREV_API_IMAGE"
+          patch_ksvc docs "${{ env.NS_SYSTEM }}" shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
+
+      - name: Wait for rollout and health check
+        run: |
+          kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          kubectl wait --for=condition=ready ksvc/studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+
+          sleep 30
+          HEALTHY=false
+          for i in $(seq 1 20); do
+            KOURIER_IP=$(kubectl get svc kourier -n kourier-system -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+            if [ -n "$KOURIER_IP" ]; then
+              STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 -H "Host: ${{ env.DOMAIN }}" "http://${KOURIER_IP}/api/health" 2>/dev/null) || STATUS="000"
+            else
+              STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 "https://${{ env.DOMAIN }}/api/health" 2>/dev/null) || STATUS="000"
+            fi
+            if [ "$STATUS" = "200" ]; then
+              echo "US API healthy (attempt $i)"
+              HEALTHY=true
+              break
+            fi
+            echo "US API not ready ($STATUS), retrying... ($i/20)"
+            sleep 10
+          done
+          if [ "$HEALTHY" != "true" ]; then
+            echo "::warning::US API health check failed after 20 attempts"
+          fi
+
+      - name: Verify deployment
+        run: |
+          kubectl get ksvc -n ${{ env.NS_SYSTEM }} -o name
+          echo "US deploy verified"
+
+      - name: Summary
+        run: |
+          echo "## US Production Deploy" >> $GITHUB_STEP_SUMMARY
+          echo "- API: ${{ needs.detect-changes.outputs.api_changed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Web: ${{ needs.detect-changes.outputs.web_changed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Runtime: ${{ needs.detect-changes.outputs.runtime_changed }}" >> $GITHUB_STEP_SUMMARY
+
+  # --- Production: Deploy EU (active-active node, parallel with India) ---
+  deploy-eu:
+    name: Deploy to EU (active-active)
+    runs-on: ubuntu-latest
+    needs: [resolve-config, detect-changes, build-base-image, build-and-push, replicate-images, deploy-us]
+    if: |
+      always() &&
+      needs.resolve-config.outputs.is_production == 'true' &&
+      needs.deploy-us.result == 'success' &&
+      (needs.replicate-images.result == 'success' || needs.replicate-images.result == 'skipped')
+    environment: production-eu
+
+    env:
+      OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+      OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+      OCI_CLI_REGION: ${{ vars.OCI_REGION }}
+      ENVIRONMENT: production-eu
+      NS_SYSTEM: ${{ vars.NAMESPACE_SYSTEM }}
+      NS_WORKSPACES: ${{ vars.NAMESPACE_WORKSPACES }}
+      DOMAIN: ${{ vars.DOMAIN }}
+      IMAGE_TAG: production-${{ github.sha }}
+      REGION_KEY: eu
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install OCI CLI
+        run: pip install oci-cli --quiet
+
+      - name: Configure kubectl for OKE
+        run: |
+          mkdir -p ~/.kube
+          oci ce cluster create-kubeconfig \
+            --cluster-id ${{ vars.OKE_CLUSTER_OCID }} \
+            --region ${{ vars.OCI_REGION }} \
+            --token-version 2.0.0 \
+            --kube-endpoint PUBLIC_ENDPOINT
+          kubectl get nodes > /dev/null
+
+      - name: Create namespaces
+        run: |
+          kubectl create namespace ${{ env.NS_SYSTEM }} --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace ${{ env.NS_WORKSPACES }} --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Create or update secrets
+        run: |
+          SECRET_ARGS=(
+            --from-literal=ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}"
+          )
+          if [ -n "${{ secrets.BETTER_AUTH_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}"); fi
+          if [ -n "${{ secrets.STRIPE_SECRET_KEY }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}"); fi
+          if [ -n "${{ secrets.STRIPE_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_WEBHOOK_SECRET="${{ secrets.STRIPE_WEBHOOK_SECRET }}"); fi
+          if [ -n "${{ secrets.GH_APP_ID }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_ID="${{ secrets.GH_APP_ID }}"); fi
+          if [ -n "${{ secrets.GH_APP_CLIENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_ID="${{ secrets.GH_APP_CLIENT_ID }}"); fi
+          if [ -n "${{ secrets.GH_APP_CLIENT_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_SECRET="${{ secrets.GH_APP_CLIENT_SECRET }}"); fi
+          if [ -n "${{ secrets.GH_APP_PRIVATE_KEY }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_PRIVATE_KEY="${{ secrets.GH_APP_PRIVATE_KEY }}"); fi
+          if [ -n "${{ secrets.GH_APP_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_WEBHOOK_SECRET="${{ secrets.GH_APP_WEBHOOK_SECRET }}"); fi
+          if [ -n "${{ secrets.GH_APP_SLUG }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_SLUG="${{ secrets.GH_APP_SLUG }}"); fi
+          if [ -n "${{ secrets.GOOGLE_CLIENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_CLIENT_ID="${{ secrets.GOOGLE_CLIENT_ID }}"); fi
+          if [ -n "${{ secrets.GOOGLE_CLIENT_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_CLIENT_SECRET="${{ secrets.GOOGLE_CLIENT_SECRET }}"); fi
+          if [ -n "${{ secrets.SERPER_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=SERPER_API_KEY="${{ secrets.SERPER_API_KEY }}"); fi
+          if [ -n "${{ secrets.COMPOSIO_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=COMPOSIO_API_KEY="${{ secrets.COMPOSIO_API_KEY }}"); fi
+          if [ -n "${{ secrets.COMPOSIO_PROJECT_ID }}" ]; then SECRET_ARGS+=(--from-literal=COMPOSIO_PROJECT_ID="${{ secrets.COMPOSIO_PROJECT_ID }}"); fi
+          if [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}"); fi
+          if [ -n "${{ secrets.GOOGLE_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}"); fi
+          if [ -n "${{ secrets.LOAD_TEST_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LOAD_TEST_SECRET="${{ secrets.LOAD_TEST_SECRET }}"); fi
+
+          kubectl create secret generic api-secrets \
+            --namespace=${{ env.NS_SYSTEM }} \
+            "${SECRET_ARGS[@]}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          kubectl create secret generic anthropic-credentials \
+            --namespace=${{ env.NS_WORKSPACES }} \
+            --from-literal=api-key="${{ secrets.ANTHROPIC_API_KEY }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          if [ -n "${{ secrets.BETTER_AUTH_SECRET }}" ]; then
+            kubectl create secret generic preview-secrets \
+              --namespace=${{ env.NS_WORKSPACES }} \
+              --from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}" \
+              --dry-run=client -o yaml | kubectl apply -f -
+          fi
+
+          if [ -n "${{ secrets.SIGNOZ_INGESTION_KEY }}" ]; then
+            kubectl create secret generic signoz-credentials \
+              --namespace=${{ env.NS_SYSTEM }} \
+              --from-literal=SIGNOZ_INGESTION_KEY="${{ secrets.SIGNOZ_INGESTION_KEY }}" \
+              --dry-run=client -o yaml | kubectl apply -f -
+          fi
+
+          # Kourier TLS secret for Knative HTTPS termination (Cloudflare origin cert)
+          if [ -n "${{ secrets.KOURIER_TLS_CERT }}" ] && [ -n "${{ secrets.KOURIER_TLS_KEY }}" ]; then
+            kubectl create namespace kourier-system 2>/dev/null || true
+            kubectl create secret tls kourier-tls \
+              --namespace=kourier-system \
+              --cert=<(echo "${{ secrets.KOURIER_TLS_CERT }}") \
+              --key=<(echo "${{ secrets.KOURIER_TLS_KEY }}") \
+              --dry-run=client -o yaml | kubectl apply -f -
+          fi
+
+      - name: Save current images
+        id: save-images
+        run: |
+          get_image() { kubectl get ksvc "$1" -n "$2" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo ""; }
+          echo "web_image=$(get_image studio ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
+          echo "api_image=$(get_image api ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
+          echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
+
+      - name: Apply Kubernetes manifests
+        run: kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/ || true
+
+      - name: Ensure Kourier TLS configuration
+        run: |
+          kubectl set env deployment/net-kourier-controller -n knative-serving \
+            CERTS_SECRET_NAMESPACE=kourier-system \
+            CERTS_SECRET_NAME=kourier-tls || true
+
+      - name: Ensure Kourier connection draining
+        run: |
+          kubectl patch configmap config-kourier -n knative-serving --type merge \
+            -p '{"data":{"drain-time-seconds":"15"}}' || true
+
+      - name: Run Prisma migrations
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        run: |
+          DB_URL=$(kubectl get secret postgres-credentials -n ${{ env.NS_SYSTEM }} -o jsonpath='{.data.DATABASE_URL}' | base64 -d)
+          kubectl run prisma-migrate-eu --rm -i --restart=Never \
+            --namespace=${{ env.NS_SYSTEM }} \
+            --image="${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}/shogo/shogo-api:${{ env.IMAGE_TAG }}" \
+            --env="DATABASE_URL=${DB_URL}" \
+            --env="SKIP_MIGRATIONS=false" \
+            --command -- sh -c "cd /app && bunx prisma migrate deploy" \
+            --timeout=120s || echo "::warning::EU migration completed with warnings"
+
+      - name: Deploy Cluster Autoscaler
+        run: |
+          NODE_POOL_OCID="${{ vars.NODE_POOL_OCID }}"
+          if [ -z "$NODE_POOL_OCID" ]; then echo "Skipping autoscaler"; exit 0; fi
+          sed "s|NODE_POOL_OCID_PLACEHOLDER|$NODE_POOL_OCID|g" k8s/base/cluster-autoscaler.yaml | kubectl apply -f -
+
+      - name: Deploy Image Prepuller
+        run: |
+          OCIR_REGISTRY="${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}"
+          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:production-latest"
+          sed -e "s|RUNTIME_IMAGE_PLACEHOLDER|$RUNTIME_IMAGE|g" \
+              -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
+              k8s/base/image-prepuller.yaml | kubectl apply -f -
+
+      - name: Deploy Knative services
+        env:
+          OCIR_REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
+          WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
+          API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
+          DOCS_CHANGED: ${{ needs.detect-changes.outputs.docs_changed }}
+          PREV_WEB_IMAGE: ${{ steps.save-images.outputs.web_image }}
+          PREV_API_IMAGE: ${{ steps.save-images.outputs.api_image }}
+          PREV_DOCS_IMAGE: ${{ steps.save-images.outputs.docs_image }}
+        run: |
+          patch_ksvc() {
+            local name=$1 ns=$2 image_name=$3 changed=$4 prev=$5
+            if [ "$changed" = "true" ]; then
+              kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
+                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${OCIR_REGISTRY}/shogo/${image_name}:${{ env.IMAGE_TAG }}\"}
+              ]" || echo "$name not found"
+            elif [ -n "$prev" ]; then
+              kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
+                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${prev}\"}
+              ]" || true
+            fi
+          }
+          patch_ksvc studio "${{ env.NS_SYSTEM }}" shogo-web "$WEB_CHANGED" "$PREV_WEB_IMAGE"
+          patch_ksvc api "${{ env.NS_SYSTEM }}" shogo-api "$API_CHANGED" "$PREV_API_IMAGE"
+          patch_ksvc docs "${{ env.NS_SYSTEM }}" shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
+
+      - name: Wait for rollout and health check
+        run: |
+          kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          kubectl wait --for=condition=ready ksvc/studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          sleep 15
+          KOURIER_IP=$(kubectl get svc kourier -n kourier-system -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+          if [ -n "$KOURIER_IP" ]; then
+            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 -H "Host: ${{ env.DOMAIN }}" "http://${KOURIER_IP}/api/health" 2>/dev/null) || STATUS="000"
+            echo "EU health: HTTP $STATUS"
+          fi
+
+      - name: Summary
+        run: |
+          echo "## EU Production Deploy" >> $GITHUB_STEP_SUMMARY
+          echo "- Role: active-active" >> $GITHUB_STEP_SUMMARY
+
+  # --- Production: Deploy India (active-active node, parallel with EU) ---
+  deploy-india:
+    name: Deploy to India (active-active)
+
+    runs-on: ubuntu-latest
+    needs: [resolve-config, detect-changes, build-base-image, build-and-push, replicate-images, deploy-us]
+    if: |
+      always() &&
+      needs.resolve-config.outputs.is_production == 'true' &&
+      needs.deploy-us.result == 'success' &&
+      (needs.replicate-images.result == 'success' || needs.replicate-images.result == 'skipped')
+    environment: production-india
+
+    env:
+      OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+      OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+      OCI_CLI_REGION: ${{ vars.OCI_REGION }}
+      ENVIRONMENT: production-india
+      NS_SYSTEM: ${{ vars.NAMESPACE_SYSTEM }}
+      NS_WORKSPACES: ${{ vars.NAMESPACE_WORKSPACES }}
+      DOMAIN: ${{ vars.DOMAIN }}
+      IMAGE_TAG: production-${{ github.sha }}
+      REGION_KEY: india
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install OCI CLI
+        run: pip install oci-cli --quiet
+
+      - name: Configure kubectl for OKE
+        run: |
+          mkdir -p ~/.kube
+          oci ce cluster create-kubeconfig \
+            --cluster-id ${{ vars.OKE_CLUSTER_OCID }} \
+            --region ${{ vars.OCI_REGION }} \
+            --token-version 2.0.0 \
+            --kube-endpoint PUBLIC_ENDPOINT
+          kubectl get nodes > /dev/null
+
+      - name: Create namespaces
+        run: |
+          kubectl create namespace ${{ env.NS_SYSTEM }} --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace ${{ env.NS_WORKSPACES }} --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Create or update secrets
+        run: |
+          SECRET_ARGS=(
+            --from-literal=ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}"
+          )
+          if [ -n "${{ secrets.BETTER_AUTH_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}"); fi
+          if [ -n "${{ secrets.STRIPE_SECRET_KEY }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}"); fi
+          if [ -n "${{ secrets.STRIPE_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_WEBHOOK_SECRET="${{ secrets.STRIPE_WEBHOOK_SECRET }}"); fi
+          if [ -n "${{ secrets.GH_APP_ID }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_ID="${{ secrets.GH_APP_ID }}"); fi
+          if [ -n "${{ secrets.GH_APP_CLIENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_ID="${{ secrets.GH_APP_CLIENT_ID }}"); fi
+          if [ -n "${{ secrets.GH_APP_CLIENT_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_SECRET="${{ secrets.GH_APP_CLIENT_SECRET }}"); fi
+          if [ -n "${{ secrets.GH_APP_PRIVATE_KEY }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_PRIVATE_KEY="${{ secrets.GH_APP_PRIVATE_KEY }}"); fi
+          if [ -n "${{ secrets.GH_APP_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_WEBHOOK_SECRET="${{ secrets.GH_APP_WEBHOOK_SECRET }}"); fi
+          if [ -n "${{ secrets.GH_APP_SLUG }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_SLUG="${{ secrets.GH_APP_SLUG }}"); fi
+          if [ -n "${{ secrets.GOOGLE_CLIENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_CLIENT_ID="${{ secrets.GOOGLE_CLIENT_ID }}"); fi
+          if [ -n "${{ secrets.GOOGLE_CLIENT_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_CLIENT_SECRET="${{ secrets.GOOGLE_CLIENT_SECRET }}"); fi
+          if [ -n "${{ secrets.SERPER_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=SERPER_API_KEY="${{ secrets.SERPER_API_KEY }}"); fi
+          if [ -n "${{ secrets.COMPOSIO_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=COMPOSIO_API_KEY="${{ secrets.COMPOSIO_API_KEY }}"); fi
+          if [ -n "${{ secrets.COMPOSIO_PROJECT_ID }}" ]; then SECRET_ARGS+=(--from-literal=COMPOSIO_PROJECT_ID="${{ secrets.COMPOSIO_PROJECT_ID }}"); fi
+          if [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}"); fi
+          if [ -n "${{ secrets.GOOGLE_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}"); fi
+          if [ -n "${{ secrets.LOAD_TEST_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LOAD_TEST_SECRET="${{ secrets.LOAD_TEST_SECRET }}"); fi
+
+          kubectl create secret generic api-secrets \
+            --namespace=${{ env.NS_SYSTEM }} \
+            "${SECRET_ARGS[@]}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          kubectl create secret generic anthropic-credentials \
+            --namespace=${{ env.NS_WORKSPACES }} \
+            --from-literal=api-key="${{ secrets.ANTHROPIC_API_KEY }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          if [ -n "${{ secrets.BETTER_AUTH_SECRET }}" ]; then
+            kubectl create secret generic preview-secrets \
+              --namespace=${{ env.NS_WORKSPACES }} \
+              --from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}" \
+              --dry-run=client -o yaml | kubectl apply -f -
+          fi
+
+          if [ -n "${{ secrets.SIGNOZ_INGESTION_KEY }}" ]; then
+            kubectl create secret generic signoz-credentials \
+              --namespace=${{ env.NS_SYSTEM }} \
+              --from-literal=SIGNOZ_INGESTION_KEY="${{ secrets.SIGNOZ_INGESTION_KEY }}" \
+              --dry-run=client -o yaml | kubectl apply -f -
+          fi
+
+          # Kourier TLS secret for Knative HTTPS termination (Cloudflare origin cert)
+          if [ -n "${{ secrets.KOURIER_TLS_CERT }}" ] && [ -n "${{ secrets.KOURIER_TLS_KEY }}" ]; then
+            kubectl create namespace kourier-system 2>/dev/null || true
+            kubectl create secret tls kourier-tls \
+              --namespace=kourier-system \
+              --cert=<(echo "${{ secrets.KOURIER_TLS_CERT }}") \
+              --key=<(echo "${{ secrets.KOURIER_TLS_KEY }}") \
+              --dry-run=client -o yaml | kubectl apply -f -
+          fi
+
+      - name: Save current images
+        id: save-images
+        run: |
+          get_image() { kubectl get ksvc "$1" -n "$2" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo ""; }
+          echo "web_image=$(get_image studio ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
+          echo "api_image=$(get_image api ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
+          echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
+
+      - name: Apply Kubernetes manifests
+        run: kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/ || true
+
+      - name: Ensure Kourier TLS configuration
+        run: |
+          kubectl set env deployment/net-kourier-controller -n knative-serving \
+            CERTS_SECRET_NAMESPACE=kourier-system \
+            CERTS_SECRET_NAME=kourier-tls || true
+
+      - name: Ensure Kourier connection draining
+        run: |
+          kubectl patch configmap config-kourier -n knative-serving --type merge \
+            -p '{"data":{"drain-time-seconds":"15"}}' || true
+
+      - name: Run Prisma migrations
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        run: |
+          DB_URL=$(kubectl get secret postgres-credentials -n ${{ env.NS_SYSTEM }} -o jsonpath='{.data.DATABASE_URL}' | base64 -d)
+          kubectl run prisma-migrate-india --rm -i --restart=Never \
+            --namespace=${{ env.NS_SYSTEM }} \
+            --image="${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}/shogo/shogo-api:${{ env.IMAGE_TAG }}" \
+            --env="DATABASE_URL=${DB_URL}" \
+            --env="SKIP_MIGRATIONS=false" \
+            --command -- sh -c "cd /app && bunx prisma migrate deploy" \
+            --timeout=120s || echo "::warning::India migration completed with warnings"
+
+      - name: Deploy Cluster Autoscaler
+        run: |
+          NODE_POOL_OCID="${{ vars.NODE_POOL_OCID }}"
+          if [ -z "$NODE_POOL_OCID" ]; then echo "Skipping autoscaler"; exit 0; fi
+          sed "s|NODE_POOL_OCID_PLACEHOLDER|$NODE_POOL_OCID|g" k8s/base/cluster-autoscaler.yaml | kubectl apply -f -
+
+      - name: Deploy Image Prepuller
+        run: |
+          OCIR_REGISTRY="${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}"
+          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:production-latest"
+          sed -e "s|RUNTIME_IMAGE_PLACEHOLDER|$RUNTIME_IMAGE|g" \
+              -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
+              k8s/base/image-prepuller.yaml | kubectl apply -f -
+
+      - name: Deploy Knative services
+        env:
+          OCIR_REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
+          WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
+          API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
+          DOCS_CHANGED: ${{ needs.detect-changes.outputs.docs_changed }}
+          PREV_WEB_IMAGE: ${{ steps.save-images.outputs.web_image }}
+          PREV_API_IMAGE: ${{ steps.save-images.outputs.api_image }}
+          PREV_DOCS_IMAGE: ${{ steps.save-images.outputs.docs_image }}
+        run: |
+          patch_ksvc() {
+            local name=$1 ns=$2 image_name=$3 changed=$4 prev=$5
+            if [ "$changed" = "true" ]; then
+              kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
+                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${OCIR_REGISTRY}/shogo/${image_name}:${{ env.IMAGE_TAG }}\"}
+              ]" || echo "$name not found"
+            elif [ -n "$prev" ]; then
+              kubectl patch ksvc "$name" -n "$ns" --type='json' -p="[
+                {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${prev}\"}
+              ]" || true
+            fi
+          }
+          patch_ksvc studio "${{ env.NS_SYSTEM }}" shogo-web "$WEB_CHANGED" "$PREV_WEB_IMAGE"
+          patch_ksvc api "${{ env.NS_SYSTEM }}" shogo-api "$API_CHANGED" "$PREV_API_IMAGE"
+          patch_ksvc docs "${{ env.NS_SYSTEM }}" shogo-docs "$DOCS_CHANGED" "$PREV_DOCS_IMAGE"
+
+      - name: Wait for rollout and health check
+        run: |
+          kubectl wait --for=condition=ready ksvc/api -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          kubectl wait --for=condition=ready ksvc/studio -n ${{ env.NS_SYSTEM }} --timeout=300s || true
+          sleep 15
+          KOURIER_IP=$(kubectl get svc kourier -n kourier-system -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+          if [ -n "$KOURIER_IP" ]; then
+            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 -H "Host: ${{ env.DOMAIN }}" "http://${KOURIER_IP}/api/health" 2>/dev/null) || STATUS="000"
+            echo "India health: HTTP $STATUS"
+          fi
+
+      - name: Summary
+        run: |
+          echo "## India Production Deploy" >> $GITHUB_STEP_SUMMARY
+          echo "- Role: active-active" >> $GITHUB_STEP_SUMMARY

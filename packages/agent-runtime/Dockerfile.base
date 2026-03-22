@@ -1,0 +1,75 @@
+# syntax=docker/dockerfile:1.4
+# =============================================================================
+# Base Runtime Image
+# =============================================================================
+# Slow-changing layer: system packages, Claude Code CLI, and MCP server
+# packages. Rebuilt only when these change.
+#
+# Build: DOCKER_BUILDKIT=1 docker build -t runtime-base -f packages/agent-runtime/Dockerfile.base .
+# =============================================================================
+
+# APP_MODE_DISABLED: Stage 1 (template-deps) removed — app template building
+# and archiving no longer needed. See APP_MODE_DISABLED.md for restoration.
+
+# =============================================================================
+# Base — system packages, CLI tools, MCP servers
+# =============================================================================
+FROM oven/bun:1.3-alpine
+
+WORKDIR /app
+
+RUN echo "https://dl-cdn.alpinelinux.org/alpine/v3.21/main" >> /etc/apk/repositories && \
+    apk add --no-cache \
+    curl bash git tar gzip \
+    'nodejs>22' npm \
+    chromium nss freetype harfbuzz ca-certificates ttf-freefont \
+    aws-cli
+
+# CLI tools: gh (GitHub), glab (GitLab), oci (Oracle Cloud), stripe
+RUN echo "https://dl-cdn.alpinelinux.org/alpine/v3.21/community" >> /etc/apk/repositories && \
+    apk add --no-cache github-cli glab python3 py3-pip && \
+    pip3 install --break-system-packages oci-cli && \
+    STRIPE_VER=$(curl -fsSL https://api.github.com/repos/stripe/stripe-cli/releases/latest \
+      | grep '"tag_name"' | head -1 | cut -d'"' -f4) && \
+    STRIPE_ARCH="$(uname -m | sed 's/aarch64/arm64/')" && \
+    curl -fsSL "https://github.com/stripe/stripe-cli/releases/download/${STRIPE_VER}/stripe_${STRIPE_VER#v}_linux_${STRIPE_ARCH}.tar.gz" \
+      | tar -xz -C /usr/local/bin stripe
+
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+
+RUN npm install -g @anthropic-ai/claude-code
+
+ENV SHELL=/bin/bash
+
+RUN addgroup -g 1001 -S appgroup && \
+    adduser -u 1001 -S appuser -G appgroup
+
+# Pre-install popular MCP server packages (all cloud-compatible catalog entries)
+RUN mkdir -p /app/mcp-packages && \
+    cd /app/mcp-packages && \
+    npm init -y --silent 2>/dev/null && \
+    npm install --omit=dev --no-audit --no-fund \
+      @openbnb/mcp-server-airbnb@0.1.3 \
+      mcp-fetch-node@latest \
+      @modelcontextprotocol/server-postgres@latest \
+      @modelcontextprotocol/server-filesystem@latest \
+      @playwright/mcp@latest \
+      mongodb-mcp-server@latest \
+      @discourse/mcp@latest \
+      @modelcontextprotocol/server-github@latest \
+      @modelcontextprotocol/server-gitlab@latest \
+      mcp-server-linear@latest \
+      mcp-server-sqlite@latest \
+      @modelcontextprotocol/server-slack@latest \
+      @notionhq/notion-mcp-server@latest \
+      mcp-server-stripe@latest \
+      @modelcontextprotocol/server-brave-search@latest \
+      exa-mcp-server@latest \
+      @sentry/mcp-server@latest \
+    && rm -rf /app/mcp-packages/package.json /app/mcp-packages/package-lock.json
+
+# APP_MODE_DISABLED: template archive COPY removed
+
+RUN mkdir -p /app/workspace /app/workspace/project /app/.schemas /app/.claude && \
+    chown -R appuser:appgroup /app /usr/local/lib/node_modules
