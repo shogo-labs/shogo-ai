@@ -1,33 +1,21 @@
 ## Summary
 
-Describe the change and why it is needed.
+<!-- Brief description of the changes and why they're needed -->
 
-## Checklist
+## Changes
 
-- [ ] I have read `CONTRIBUTING.md`
-- [ ] I have read `CLA.md` and completed the CLA requirement
-- [ ] I ran relevant tests locally
-- [ ] I updated documentation when needed
-- [ ] I documented any new env vars, config, or migration steps
+<!-- List the key changes made -->
 
-## Scope
-
-- [ ] Core platform
-- [ ] Self-hosting
-- [ ] Cloud-only behavior
-- [ ] SDK
-- [ ] Docs
+-
 
 ## Testing
 
-List the commands you ran and the behavior you verified.
+<!-- How were these changes tested? -->
 
-```bash
-# Example
-bun run test
-bun run typecheck
-```
+- [ ] Tested locally
+- [ ] Added/updated tests
+- [ ] Verified no regressions
 
-## Notes
+## Related Issues
 
-Include rollout concerns, backward compatibility notes, or follow-up work.
+<!-- Link any related issues: Fixes #123, Closes #456 -->
