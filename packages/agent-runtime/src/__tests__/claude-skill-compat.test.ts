@@ -302,8 +302,8 @@ Instructions for ${name}.
         userInvocable: true,
       }])
       const ctx = createCtx()
-      const result = await exec(ctx, 'skill', { skill: 'greet', args: 'Russell' })
-      expect(result.content).toContain('Say hello to Russell')
+      const result = await exec(ctx, 'skill', { skill: 'greet', args: 'Alex' })
+      expect(result.content).toContain('Say hello to Alex')
     })
 
     test('substitutes positional $0, $1 arguments', async () => {

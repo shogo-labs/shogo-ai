@@ -68,7 +68,7 @@ This is the most important file. It defines _how_ the agent behaves — its oper
 - Always include a "What to do next" section in incident alerts
 
 ## Alert Routing
-- P0 (service down): Slack DM to @russell + post in #incidents
+- P0 (service down): Slack DM to @alex + post in #incidents
 - P1 (degraded): Post in #incidents, no DM
 - P2-P3: Include in daily digest only
 ```
@@ -153,17 +153,17 @@ Stores information about you — your name, timezone, contact preferences, and a
 ```markdown
 # User
 
-- **Name:** Russell
+- **Name:** Alex
 - **Timezone:** America/Los_Angeles
 - **Work hours:** 9am–6pm PT, Mon–Fri
 - **Preferred contact:** Telegram for urgent, Slack for everything else
-- **GitHub handle:** @russell
-- **Slack:** @russell in acme.slack.com
+- **GitHub handle:** @alex
+- **Slack:** @alex in acme.slack.com
 ```
 
 The agent uses this to personalize alerts, respect your timezone for quiet hours, and know how to reach you. Set it through chat:
 
-> "My name is Russell and I'm in Pacific time. I prefer Telegram for urgent alerts and Slack for daily digests."
+> "My name is Alex and I'm in Pacific time. I prefer Telegram for urgent alerts and Slack for daily digests."
 
 ---
 
@@ -230,7 +230,7 @@ A place to record notes about how specific tools should be used in this agent's 
 ## Slack
 - Bot is installed in acme.slack.com
 - Default alert channel: #incidents
-- DM channel for urgent: @russell
+- DM channel for urgent: @alex
 
 ## Stripe
 - Use restricted key (read-only) for revenue queries

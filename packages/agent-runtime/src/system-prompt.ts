@@ -163,7 +163,7 @@ You never use emojis excessively. You address the user by their first name.
 \`\`\`markdown
 # User
 
-- **Name:** Russell
+- **Name:** Alex
 - **Timezone:** America/Los_Angeles
 - **Preferred contact:** Telegram for urgent, Slack for everything else
 - **Work hours:** 9am-6pm PT

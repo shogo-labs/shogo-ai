@@ -39,7 +39,7 @@ function setupWorkspace(extras?: Record<string, string>) {
   writeFileSync(join(TEST_DIR, 'AGENTS.md'), '# Agent\nYou are a helpful AI agent.')
   writeFileSync(join(TEST_DIR, 'SOUL.md'), '# Soul\nBe concise and take action.')
   writeFileSync(join(TEST_DIR, 'IDENTITY.md'), '# Identity\nTest Agent')
-  writeFileSync(join(TEST_DIR, 'USER.md'), '# User\nRussell, timezone: America/Los_Angeles')
+  writeFileSync(join(TEST_DIR, 'USER.md'), '# User\nAlex, timezone: America/Los_Angeles')
   writeFileSync(join(TEST_DIR, 'MEMORY.md'), '# Memory\n- User prefers TypeScript\n- Project uses Bun')
 
   for (const [file, content] of Object.entries(extras || {})) {
@@ -158,7 +158,7 @@ describe('E2E: Channel message flow with tools', () => {
       channelId: '12345',
       channelType: 'telegram',
       senderId: 'user-1',
-      senderName: 'Russell',
+      senderName: 'Alex',
       timestamp: Date.now(),
     })
 

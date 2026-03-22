@@ -560,7 +560,7 @@ describe('Use Case: Task Tracker', () => {
       title: 'Implement API layer',
       description: 'Build the managed API runtime',
       priority: 'high',
-      assignee: 'russell',
+      assignee: 'alex',
     })
     expect(task.ok).toBe(true)
     expect(task.item.status).toBe('todo')
@@ -574,7 +574,7 @@ describe('Use Case: Task Tracker', () => {
     // Add comment
     const comment = await apiRequest(runtime, 'POST', '/api/comments', {
       taskId: task.item.id,
-      author: 'russell',
+      author: 'alex',
       text: 'Starting work on this now',
     })
     expect(comment.ok).toBe(true)
