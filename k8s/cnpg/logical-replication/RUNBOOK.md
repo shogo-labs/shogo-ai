@@ -33,7 +33,7 @@ kubectl --context oke-india wait --for=delete pod -l cnpg.io/cluster=platform-pg
 Apply the updated US manifest. CNPG will perform a rolling `pg_upgrade`.
 
 ```bash
-kubectl --context oke-us apply -f k8s/cnpg/production-us-oci/platform-cluster.yaml
+kubectl --context oke-us apply -f k8s/cnpg/production-us/platform-cluster.yaml
 ```
 
 Monitor the upgrade:
@@ -57,8 +57,8 @@ kubectl --context oke-us exec -n shogo-production-system platform-pg-1 -c postgr
 ### Step 3: Create LoadBalancer Services for EU and India
 
 ```bash
-kubectl --context oke-eu apply -f k8s/cnpg/production-eu-oci/platform-pg-external.yaml
-kubectl --context oke-india apply -f k8s/cnpg/production-india-oci/platform-pg-external.yaml
+kubectl --context oke-eu apply -f k8s/cnpg/production-eu/platform-pg-external.yaml
+kubectl --context oke-india apply -f k8s/cnpg/production-india/platform-pg-external.yaml
 ```
 
 Wait for external IPs and note them:
@@ -70,21 +70,21 @@ kubectl --context oke-india get svc platform-pg-external -n shogo-production-sys
 
 **Update the placeholder IPs** in the cluster manifests:
 
-- In `production-us-oci/platform-cluster.yaml`: replace `EU_LB_IP_PLACEHOLDER` and `INDIA_LB_IP_PLACEHOLDER`
-- In `production-eu-oci/platform-cluster.yaml`: replace `INDIA_LB_IP_PLACEHOLDER`
-- In `production-india-oci/platform-cluster.yaml`: replace `EU_LB_IP_PLACEHOLDER`
+- In `production-us/platform-cluster.yaml`: replace `EU_LB_IP_PLACEHOLDER` and `INDIA_LB_IP_PLACEHOLDER`
+- In `production-eu/platform-cluster.yaml`: replace `INDIA_LB_IP_PLACEHOLDER`
+- In `production-india/platform-cluster.yaml`: replace `EU_LB_IP_PLACEHOLDER`
 
 Re-apply the US manifest after updating IPs:
 
 ```bash
-kubectl --context oke-us apply -f k8s/cnpg/production-us-oci/platform-cluster.yaml
+kubectl --context oke-us apply -f k8s/cnpg/production-us/platform-cluster.yaml
 ```
 
 ### Step 4: Create EU and India Standalone PG 18 Clusters
 
 ```bash
-kubectl --context oke-eu apply -f k8s/cnpg/production-eu-oci/platform-cluster.yaml
-kubectl --context oke-india apply -f k8s/cnpg/production-india-oci/platform-cluster.yaml
+kubectl --context oke-eu apply -f k8s/cnpg/production-eu/platform-cluster.yaml
+kubectl --context oke-india apply -f k8s/cnpg/production-india/platform-cluster.yaml
 ```
 
 Wait for clusters to be ready:
@@ -126,9 +126,9 @@ done
 ### Step 7: Apply Publication CRDs
 
 ```bash
-kubectl --context oke-us apply -f k8s/cnpg/production-us-oci/platform-publication.yaml
-kubectl --context oke-eu apply -f k8s/cnpg/production-eu-oci/platform-publication.yaml
-kubectl --context oke-india apply -f k8s/cnpg/production-india-oci/platform-publication.yaml
+kubectl --context oke-us apply -f k8s/cnpg/production-us/platform-publication.yaml
+kubectl --context oke-eu apply -f k8s/cnpg/production-eu/platform-publication.yaml
+kubectl --context oke-india apply -f k8s/cnpg/production-india/platform-publication.yaml
 ```
 
 Verify publications:
@@ -143,16 +143,16 @@ done
 
 ```bash
 # US subscriptions
-kubectl --context oke-us apply -f k8s/cnpg/production-us-oci/sub-from-eu.yaml
-kubectl --context oke-us apply -f k8s/cnpg/production-us-oci/sub-from-india.yaml
+kubectl --context oke-us apply -f k8s/cnpg/production-us/sub-from-eu.yaml
+kubectl --context oke-us apply -f k8s/cnpg/production-us/sub-from-india.yaml
 
 # EU subscriptions
-kubectl --context oke-eu apply -f k8s/cnpg/production-eu-oci/sub-from-us.yaml
-kubectl --context oke-eu apply -f k8s/cnpg/production-eu-oci/sub-from-india.yaml
+kubectl --context oke-eu apply -f k8s/cnpg/production-eu/sub-from-us.yaml
+kubectl --context oke-eu apply -f k8s/cnpg/production-eu/sub-from-india.yaml
 
 # India subscriptions
-kubectl --context oke-india apply -f k8s/cnpg/production-india-oci/sub-from-us.yaml
-kubectl --context oke-india apply -f k8s/cnpg/production-india-oci/sub-from-eu.yaml
+kubectl --context oke-india apply -f k8s/cnpg/production-india/sub-from-us.yaml
+kubectl --context oke-india apply -f k8s/cnpg/production-india/sub-from-eu.yaml
 ```
 
 ### Step 9: Enable PG 18 Conflict Resolution

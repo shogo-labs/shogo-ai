@@ -1,12 +1,8 @@
-# =============================================================================
-# API Service - Production Environment (OCI / OKE)
-# =============================================================================
-
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: api-service-account
-  namespace: shogo-system
+  namespace: shogo-production-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -17,8 +13,8 @@ rules:
     resources: ["domainmappings"]
     verbs: ["get", "list", "create", "update", "patch", "delete"]
   - apiGroups: ["serving.knative.dev"]
-    resources: ["services", "revisions", "configurations", "routes"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    resources: ["services"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["list"]
@@ -33,7 +29,7 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: api-service-account
-    namespace: shogo-system
+    namespace: shogo-production-system
 roleRef:
   kind: ClusterRole
   name: shogo-production-api-domainmapping-manager
@@ -43,7 +39,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: shogo-api-db-secret-manager
-  namespace: shogo-workspaces
+  namespace: shogo-production-workspaces
 rules:
   - apiGroups: [""]
     resources: ["secrets"]
@@ -53,11 +49,11 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: shogo-api-db-secret-manager
-  namespace: shogo-workspaces
+  namespace: shogo-production-workspaces
 subjects:
   - kind: ServiceAccount
     name: api-service-account
-    namespace: shogo-system
+    namespace: shogo-production-system
 roleRef:
   kind: Role
   name: shogo-api-db-secret-manager
@@ -67,7 +63,7 @@ apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
   name: api
-  namespace: shogo-system
+  namespace: shogo-production-system
   labels:
     app.kubernetes.io/part-of: shogo
     environment: production
@@ -77,12 +73,11 @@ spec:
       annotations:
         autoscaling.knative.dev/min-scale: "2"
         autoscaling.knative.dev/max-scale: "10"
-        autoscaling.knative.dev/target: "50"
     spec:
       serviceAccountName: api-service-account
       containers:
         - name: api
-          image: us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-api:production-latest
+          image: eu-frankfurt-1.ocir.io/idin4oltblww/shogo/shogo-api:production-latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8002
@@ -91,14 +86,16 @@ spec:
               value: "8002"
             - name: NODE_ENV
               value: "production"
+            - name: SKIP_MIGRATIONS
+              value: "false"
             - name: SYSTEM_NAMESPACE
-              value: "shogo-system"
+              value: "shogo-production-system"
             - name: NODE_TLS_REJECT_UNAUTHORIZED
               value: "0"
             - name: PROJECT_NAMESPACE
-              value: "shogo-workspaces"
+              value: "shogo-production-workspaces"
             - name: RUNTIME_IMAGE
-              value: "us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-runtime:production-oci-latest"
+              value: "eu-frankfurt-1.ocir.io/idin4oltblww/shogo/shogo-runtime:production-latest"
             - name: PREVIEW_BASE_DOMAIN
               value: "shogo.ai"
             - name: PREVIEW_ENVIRONMENT
@@ -110,15 +107,15 @@ spec:
             - name: S3_ENDPOINT
               value: "https://idin4oltblww.compat.objectstorage.us-ashburn-1.oraclecloud.com"
             - name: PUBLISH_NAMESPACE
-              value: "shogo-system"
+              value: "shogo-production-system"
             - name: PUBLISH_DOMAIN
               value: "shogo.one"
             - name: BETTER_AUTH_URL
               value: "https://studio.shogo.ai"
             - name: ALLOWED_ORIGINS
-              value: "https://studio.shogo.ai,https://shogo.ai,https://eu.studio.shogo.ai,https://india.studio.shogo.ai"
+              value: "https://studio.shogo.ai,https://eu.studio.shogo.ai,https://india.studio.shogo.ai"
             - name: REDIS_URL
-              value: "redis://redis-master.shogo-system:6379"
+              value: "redis://redis-master.shogo-production-system:6379"
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -221,9 +218,11 @@ spec:
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "https://ingest.us.signoz.cloud:443"
             - name: OTEL_SERVICE_NAME
-              value: "shogo-api-production-oci"
+              value: "shogo-api-production-eu"
             - name: OTEL_LOG_LEVEL
               value: "info"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "cloud.region=eu-frankfurt-1,deployment.tier=full"
             - name: SIGNOZ_INGESTION_KEY
               valueFrom:
                 secretKeyRef:
@@ -231,15 +230,19 @@ spec:
                   key: SIGNOZ_INGESTION_KEY
                   optional: true
             - name: WARM_POOL_MIN_PODS
-              value: "10"
+              value: "5"
             - name: REGION_ID
-              value: "us-ashburn-1"
+              value: "eu-frankfurt-1"
             - name: REGION_LABEL
-              value: "US (Ashburn)"
+              value: "EU (Frankfurt)"
             - name: REGION_PEERS
-              value: '[{"id":"eu-frankfurt-1","label":"EU (Frankfurt)","url":"https://79.76.126.115"},{"id":"ap-mumbai-1","label":"India (Mumbai)","url":"https://161.118.170.159"}]'
+              value: '[{"id":"us-ashburn-1","label":"US (Ashburn)","url":"https://152.70.192.220"},{"id":"ap-mumbai-1","label":"India (Mumbai)","url":"https://161.118.170.159"}]'
             - name: WARM_POOL_MAX_AGE_MS
               value: "3600000"
+            - name: PROMOTED_POD_GC_ENABLED
+              value: "true"
+            - name: PROMOTED_POD_IDLE_TIMEOUT_MS
+              value: "600000"
             - name: LOAD_TEST_SECRET
               valueFrom:
                 secretKeyRef:
@@ -248,10 +251,6 @@ spec:
                   optional: true
             - name: BUN_JSC_forceRAMSize
               value: "5905580032"
-          lifecycle:
-            preStop:
-              exec:
-                command: ["sleep", "15"]
           resources:
             requests:
               memory: "1Gi"
@@ -259,4 +258,4 @@ spec:
             limits:
               memory: "6Gi"
               cpu: "3"
-      terminationGracePeriodSeconds: 630
+      timeoutSeconds: 600

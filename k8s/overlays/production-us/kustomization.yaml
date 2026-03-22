@@ -17,13 +17,13 @@ labels:
 images:
   - name: shogo-api
     newName: us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-api
-    newTag: production-oci-latest
+    newTag: production-latest
   - name: shogo-web
     newName: us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-web
-    newTag: production-oci-latest
+    newTag: production-latest
   - name: shogo-docs
     newName: us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-docs
-    newTag: production-oci-latest
+    newTag: production-latest
   - name: shogo-runtime
     newName: us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-runtime
-    newTag: production-oci-latest
+    newTag: production-latest

@@ -77,7 +77,7 @@ spec:
       serviceAccountName: api-service-account
       containers:
         - name: api
-          image: us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-api:production-oci-latest
+          image: us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-api:production-latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8002
@@ -93,7 +93,7 @@ spec:
             - name: PROJECT_NAMESPACE
               value: "shogo-production-workspaces"
             - name: RUNTIME_IMAGE
-              value: "us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-runtime:production-oci-latest"
+              value: "us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-runtime:production-latest"
             - name: PREVIEW_BASE_DOMAIN
               value: "shogo.ai"
             - name: PREVIEW_ENVIRONMENT

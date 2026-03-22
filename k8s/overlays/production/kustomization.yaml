@@ -1,7 +1,7 @@
 # =============================================================================
 # Kustomize Overlay - Production Environment (OCI / OKE)
 # =============================================================================
-# Usage: kubectl apply -k k8s/overlays/production-oci/
+# Usage: kubectl apply -k k8s/overlays/production/
 # =============================================================================
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization

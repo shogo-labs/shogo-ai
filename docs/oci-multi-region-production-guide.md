@@ -111,8 +111,8 @@ terraform/
 │   └── object-storage-replication/  ← Tier 1 → Tier 1 data sync
 │
 ├── environments/
-│   ├── staging-oci/             ← existing (single region)
-│   ├── production-oci/          ← existing (single region, migration path)
+│   ├── staging/             ← existing (single region)
+│   ├── production/          ← existing (single region, migration path)
 │   │
 │   ├── production-us/           ← Tier 1 Primary
 │   ├── production-eu/           ← Tier 1 Replica
@@ -312,7 +312,7 @@ Both clusters define the full topology in `externalClusters` and use `.spec.repl
 
 When `primary` matches `self`, the cluster is the primary. Otherwise, it replicates from `source`.
 
-### Tier 1 Primary — US (`k8s/cnpg/production-us-oci/platform-cluster.yaml`)
+### Tier 1 Primary — US (`k8s/cnpg/production-us/platform-cluster.yaml`)
 
 ```yaml
 spec:
@@ -339,7 +339,7 @@ spec:
       destinationPath: s3://shogo-pg-backups-production/platform/
 ```
 
-### Tier 1 Replica — EU (`k8s/cnpg/production-eu-oci/platform-cluster.yaml`)
+### Tier 1 Replica — EU (`k8s/cnpg/production-eu/platform-cluster.yaml`)
 
 ```yaml
 spec:
@@ -538,7 +538,7 @@ Deploy the same `kourier-tls` secret to every region's `kourier-system` namespac
 ### Updated workflow structure
 
 ```
-deploy-oci.yml
+deploy.yml
   ├── detect-changes
   ├── build (images → US OCIR)
   ├── replicate-images (parallel: US → EU, US → India)
@@ -563,9 +563,9 @@ Each environment has its own `OKE_CLUSTER_OCID`, `NODE_POOL_OCID`, and `OCIR_REG
 
 ```
 k8s/overlays/
-  ├── production-us-oci/        ← Tier 1 (api-service has local DB URL)
-  ├── production-eu-oci/        ← Tier 1 (api-service has replica DB URL)
-  └── production-india-oci/     ← Tier 2 (api-service points to US DB)
+  ├── production-us/        ← Tier 1 (api-service has local DB URL)
+  ├── production-eu/        ← Tier 1 (api-service has replica DB URL)
+  └── production-india/     ← Tier 2 (api-service points to US DB)
 ```
 
 ### Tier 2 api-service.yaml differences
@@ -747,8 +747,8 @@ With 1-year Universal Credits: **~$1,100–1,300/mo** (30% savings).
 | `terraform/environments/production-eu/` | Tier 1 Replica |
 | `terraform/environments/production-india/` | Tier 2 Light |
 | `terraform/environments/production-global/` | Cloudflare LB (no OCI) |
-| `k8s/cnpg/production-us-oci/platform-cluster.yaml` | CNPG Distributed Topology primary |
-| `k8s/cnpg/production-eu-oci/platform-cluster.yaml` | CNPG Distributed Topology replica |
+| `k8s/cnpg/production-us/platform-cluster.yaml` | CNPG Distributed Topology primary |
+| `k8s/cnpg/production-eu/platform-cluster.yaml` | CNPG Distributed Topology replica |
 
 ### CIDR allocation
 

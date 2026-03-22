@@ -1,7 +1,7 @@
 # =============================================================================
 # Kustomize Overlay - Staging Environment (OCI / OKE)
 # =============================================================================
-# Usage: kubectl apply -k k8s/overlays/staging-oci/
+# Usage: kubectl apply -k k8s/overlays/staging/
 # =============================================================================
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -22,13 +22,13 @@ labels:
 images:
   - name: shogo-api
     newName: us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-api
-    newTag: staging-oci-latest
+    newTag: staging-latest
   - name: shogo-web
     newName: us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-web
-    newTag: staging-oci-latest
+    newTag: staging-latest
   - name: shogo-docs
     newName: us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-docs
-    newTag: staging-oci-latest
+    newTag: staging-latest
   - name: shogo-runtime
     newName: us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-runtime
-    newTag: staging-oci-latest
+    newTag: staging-latest

@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: web
-          image: eu-frankfurt-1.ocir.io/idin4oltblww/shogo/shogo-web:production-oci-latest
+          image: eu-frankfurt-1.ocir.io/idin4oltblww/shogo/shogo-web:production-latest
           imagePullPolicy: Always
           ports:
             - containerPort: 80

@@ -9,7 +9,7 @@
 # retention count and dry-run mode.
 #
 # Covers all 4 environments (production-us, production-eu, production-india,
-# staging-oci), each with its own OCIR region and credentials.
+# staging), each with its own OCIR region and credentials.
 # =============================================================================
 
 name: Cleanup OCIR Images
@@ -43,7 +43,7 @@ jobs:
           - production-us
           - production-eu
           - production-india
-          - staging-oci
+          - staging
 
     environment: ${{ matrix.environment }}
 

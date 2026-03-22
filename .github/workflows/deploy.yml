@@ -2,8 +2,8 @@
 # Shogo AI - Build, Test, and Deploy Pipeline (OCI / OKE)
 # =============================================================================
 # Multi-region deployment to Oracle Cloud Infrastructure:
-#   - production-oci branch → production (US → EU → India)
-#   - staging-oci / oracle-migration → staging-oci
+#   - production branch → production (US → EU → India)
+#   - staging / oracle-migration → staging
 #
 # Pipeline stages:
 #   1. Setup - Determine environment from branch
@@ -21,19 +21,19 @@ on:
   push:
     branches:
       - main
-      - production-oci
-      - staging-oci
+      - production
+      - staging
       - oracle-migration
   workflow_dispatch:
     inputs:
       environment:
         description: 'Environment to deploy to'
         required: true
-        default: 'staging-oci'
+        default: 'staging'
         type: choice
         options:
-          - staging-oci
-          - production-oci
+          - staging
+          - production
 
 concurrency:
   group: deploy-${{ github.ref_name }}
@@ -58,17 +58,17 @@ jobs:
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             ENV="${{ github.event.inputs.environment }}"
-          elif [[ "${{ github.ref }}" == "refs/heads/main" ]] || [[ "${{ github.ref }}" == "refs/heads/production-oci" ]]; then
-            ENV="production-oci"
-          elif [[ "${{ github.ref }}" == "refs/heads/staging-oci" ]] || [[ "${{ github.ref }}" == "refs/heads/oracle-migration" ]]; then
-            ENV="staging-oci"
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]] || [[ "${{ github.ref }}" == "refs/heads/production" ]]; then
+            ENV="production"
+          elif [[ "${{ github.ref }}" == "refs/heads/staging" ]] || [[ "${{ github.ref }}" == "refs/heads/oracle-migration" ]]; then
+            ENV="staging"
           else
-            echo "Unknown branch, defaulting to staging-oci"
-            ENV="staging-oci"
+            echo "Unknown branch, defaulting to staging"
+            ENV="staging"
           fi
 
           IS_PROD="false"
-          if [[ "$ENV" == "production-oci" ]]; then
+          if [[ "$ENV" == "production" ]]; then
             IS_PROD="true"
           fi
 
@@ -84,7 +84,7 @@ jobs:
     name: Resolve Config (${{ needs.setup.outputs.environment }})
     runs-on: ubuntu-latest
     needs: [setup]
-    environment: ${{ needs.setup.outputs.environment == 'production-oci' && 'production-us' || needs.setup.outputs.environment }}
+    environment: ${{ needs.setup.outputs.environment == 'production' && 'production-us' || needs.setup.outputs.environment }}
     outputs:
       environment: ${{ needs.setup.outputs.environment }}
       is_production: ${{ needs.setup.outputs.is_production }}
@@ -235,7 +235,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [resolve-config, detect-changes]
     if: needs.detect-changes.outputs.runtime_base_changed == 'true'
-    environment: ${{ needs.resolve-config.outputs.environment == 'production-oci' && 'production-us' || needs.resolve-config.outputs.environment }}
+    environment: ${{ needs.resolve-config.outputs.environment == 'production' && 'production-us' || needs.resolve-config.outputs.environment }}
     timeout-minutes: 45
 
     env:
@@ -298,7 +298,7 @@ jobs:
       needs.detect-changes.result == 'success' &&
       needs.detect-changes.outputs.has_changes == 'true' &&
       (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped')
-    environment: ${{ needs.resolve-config.outputs.environment == 'production-oci' && 'production-us' || needs.resolve-config.outputs.environment }}
+    environment: ${{ needs.resolve-config.outputs.environment == 'production' && 'production-us' || needs.resolve-config.outputs.environment }}
     timeout-minutes: 30
 
     strategy:
@@ -341,8 +341,8 @@ jobs:
       - name: Determine image tag prefix
         id: tag-prefix
         run: |
-          if [[ "${{ needs.resolve-config.outputs.environment }}" == "production-oci" ]]; then
-            echo "prefix=production-oci" >> $GITHUB_OUTPUT
+          if [[ "${{ needs.resolve-config.outputs.environment }}" == "production" ]]; then
+            echo "prefix=production" >> $GITHUB_OUTPUT
           else
             echo "prefix=${{ needs.resolve-config.outputs.environment }}" >> $GITHUB_OUTPUT
           fi
@@ -361,7 +361,7 @@ jobs:
           build-args: |
             ${{ matrix.build_args == 'api' && format('ALLOWED_ORIGINS={0}', vars.ALLOWED_ORIGINS) || '' }}
             ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_API_URL={0}', vars.EXPO_PUBLIC_API_URL) || '' }}
-            ${{ matrix.build_args == 'web' && needs.resolve-config.outputs.environment == 'production-oci' && format('VITE_GTM_ID={0}', secrets.VITE_GTM_ID) || '' }}
+            ${{ matrix.build_args == 'web' && needs.resolve-config.outputs.environment == 'production' && format('VITE_GTM_ID={0}', secrets.VITE_GTM_ID) || '' }}
             ${{ matrix.build_args == 'runtime' && format('BASE_IMAGE={0}/shogo/shogo-runtime-base:latest', needs.resolve-config.outputs.ocir_registry) || '' }}
           cache-from: type=gha,scope=${{ matrix.image }}-oci
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}-oci
@@ -395,8 +395,8 @@ jobs:
 
     env:
       US_REGISTRY: ${{ needs.resolve-config.outputs.ocir_registry }}
-      TAG: production-oci-${{ github.sha }}
-      LATEST_TAG: production-oci-latest
+      TAG: production-${{ github.sha }}
+      LATEST_TAG: production-latest
 
     steps:
       - name: Install skopeo
@@ -428,7 +428,7 @@ jobs:
 
             for TAG_SUFFIX in "$TAG" "$LATEST_TAG"; do
               if [ "$IMAGE" = "shogo-runtime-base" ]; then
-                SRC_TAG=$(echo "$TAG_SUFFIX" | sed 's/production-oci-//')
+                SRC_TAG=$(echo "$TAG_SUFFIX" | sed 's/production-//')
                 skopeo copy --all \
                   --src-creds "$US_CREDS" \
                   --dest-creds "$TARGET_CREDS" \
@@ -714,12 +714,12 @@ jobs:
       OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
       OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
       OCI_CLI_REGION: ${{ vars.OCI_REGION }}
-      ENVIRONMENT: production-us-oci
+      ENVIRONMENT: production-us
       NS_SYSTEM: ${{ vars.NAMESPACE_SYSTEM }}
       NS_WORKSPACES: ${{ vars.NAMESPACE_WORKSPACES }}
       DOMAIN: ${{ vars.DOMAIN }}
       DOCS_DOMAIN: ${{ vars.DOCS_DOMAIN }}
-      IMAGE_TAG: production-oci-${{ github.sha }}
+      IMAGE_TAG: production-${{ github.sha }}
       REGION_KEY: us
 
     steps:
@@ -832,7 +832,7 @@ jobs:
       - name: Deploy Image Prepuller
         run: |
           OCIR_REGISTRY="${{ needs.resolve-config.outputs.ocir_registry }}"
-          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:production-oci-latest"
+          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:production-latest"
           sed -e "s|RUNTIME_IMAGE_PLACEHOLDER|$RUNTIME_IMAGE|g" \
               -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
               k8s/base/image-prepuller.yaml | kubectl apply -f -
@@ -923,11 +923,11 @@ jobs:
       OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
       OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
       OCI_CLI_REGION: ${{ vars.OCI_REGION }}
-      ENVIRONMENT: production-eu-oci
+      ENVIRONMENT: production-eu
       NS_SYSTEM: ${{ vars.NAMESPACE_SYSTEM }}
       NS_WORKSPACES: ${{ vars.NAMESPACE_WORKSPACES }}
       DOMAIN: ${{ vars.DOMAIN }}
-      IMAGE_TAG: production-oci-${{ github.sha }}
+      IMAGE_TAG: production-${{ github.sha }}
       REGION_KEY: eu
 
     steps:
@@ -1052,7 +1052,7 @@ jobs:
       - name: Deploy Image Prepuller
         run: |
           OCIR_REGISTRY="${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}"
-          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:production-oci-latest"
+          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:production-latest"
           sed -e "s|RUNTIME_IMAGE_PLACEHOLDER|$RUNTIME_IMAGE|g" \
               -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
               k8s/base/image-prepuller.yaml | kubectl apply -f -
@@ -1120,11 +1120,11 @@ jobs:
       OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
       OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
       OCI_CLI_REGION: ${{ vars.OCI_REGION }}
-      ENVIRONMENT: production-india-oci
+      ENVIRONMENT: production-india
       NS_SYSTEM: ${{ vars.NAMESPACE_SYSTEM }}
       NS_WORKSPACES: ${{ vars.NAMESPACE_WORKSPACES }}
       DOMAIN: ${{ vars.DOMAIN }}
-      IMAGE_TAG: production-oci-${{ github.sha }}
+      IMAGE_TAG: production-${{ github.sha }}
       REGION_KEY: india
 
     steps:
@@ -1249,7 +1249,7 @@ jobs:
       - name: Deploy Image Prepuller
         run: |
           OCIR_REGISTRY="${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}"
-          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:production-oci-latest"
+          RUNTIME_IMAGE="${OCIR_REGISTRY}/shogo/shogo-runtime:production-latest"
           sed -e "s|RUNTIME_IMAGE_PLACEHOLDER|$RUNTIME_IMAGE|g" \
               -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
               k8s/base/image-prepuller.yaml | kubectl apply -f -

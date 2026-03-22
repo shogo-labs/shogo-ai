@@ -10,12 +10,12 @@ spec:
   template:
     metadata:
       annotations:
-        autoscaling.knative.dev/min-scale: "2"
-        autoscaling.knative.dev/max-scale: "20"
+        autoscaling.knative.dev/min-scale: "1"
+        autoscaling.knative.dev/max-scale: "10"
     spec:
       containers:
         - name: web
-          image: us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-web:production-oci-latest
+          image: ap-mumbai-1.ocir.io/idin4oltblww/shogo/shogo-web:production-latest
           imagePullPolicy: Always
           ports:
             - containerPort: 80

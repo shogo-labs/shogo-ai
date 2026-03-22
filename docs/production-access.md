@@ -260,7 +260,7 @@ S3-compatible access uses OCI Customer Secret Keys stored in the `s3-credentials
 
 Deployments are triggered via GitHub Actions (`.github/workflows/deploy-oci.yml`) on pushes to:
 - `oracle-migration` branch → staging
-- `production-oci` branch → all production regions
+- `production` branch → all production regions
 
 The workflow builds images in US OCIR, replicates to EU/India with `skopeo`, and deploys via `kubectl apply -k` to each region's kustomize overlay.
 

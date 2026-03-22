@@ -3,14 +3,14 @@
 ## Overview
 
 The CI/CD pipeline uses GitHub Environments to scope secrets and variables per region.
-For staging, a single `staging-oci` environment is used.
+For staging, a single `staging` environment is used.
 For production, there are **5 environments**: one per region + the primary build environment.
 
 ## Environments
 
 | Environment | Purpose | Region |
 |---|---|---|
-| `staging-oci` | Staging (single region) | us-ashburn-1 |
+| `staging` | Staging (single region) | us-ashburn-1 |
 | `production-us` | Production primary (US) - builds images, runs migrations | us-ashburn-1 |
 | `production-eu` | Production EU (Tier 1 replica) | eu-frankfurt-1 |
 | `production-india` | Production India (Tier 2 edge) | ap-mumbai-1 |
@@ -19,7 +19,7 @@ For production, there are **5 environments**: one per region + the primary build
 
 These are **non-secret** configuration values.
 
-| Variable | staging-oci | production-us | production-eu | production-india |
+| Variable | staging | production-us | production-eu | production-india |
 |---|---|---|---|---|
 | `OCI_REGION` | us-ashburn-1 | us-ashburn-1 | eu-frankfurt-1 | ap-mumbai-1 |
 | `OCI_TENANCY_NAMESPACE` | idin4oltblww | idin4oltblww | idin4oltblww | idin4oltblww |
@@ -80,5 +80,5 @@ These should ideally be set as **organization-level secrets** to avoid duplicati
    - The OCI variables from the Variables table (use the actual OKE cluster OCIDs after provisioning)
    - The OCI credential secrets
    - The application secrets (or configure at org level)
-4. The `production-oci` branch triggers the production pipeline
-5. The `staging-oci` branch triggers the staging pipeline
+4. The `production` branch triggers the production pipeline
+5. The `staging` branch triggers the staging pipeline
