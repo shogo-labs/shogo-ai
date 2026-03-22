@@ -20,18 +20,18 @@ jobs:
     name: Build Expo Web
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@735343b667d3e6a283c1b00a516b2e9ed620a6c0 # v2.0.2
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Cache bun dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: ~/.bun/install/cache
           key: bun-web-${{ hashFiles('bun.lock') }}
@@ -50,7 +50,7 @@ jobs:
           EXPO_PUBLIC_API_URL: 'http://localhost:8002'
 
       - name: Upload web build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: web-dist
           path: apps/mobile/dist/
@@ -77,25 +77,25 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@735343b667d3e6a283c1b00a516b2e9ed620a6c0 # v2.0.2
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Cache bun dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: ~/.bun/install/cache
           key: bun-desktop-${{ matrix.platform }}-${{ matrix.arch }}-${{ hashFiles('bun.lock') }}
           restore-keys: bun-desktop-${{ matrix.platform }}-${{ matrix.arch }}-
 
       - name: Download web build
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: web-dist
           path: apps/mobile/dist/
@@ -176,7 +176,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
           path: apps/desktop/out/make/**/*
@@ -190,13 +190,13 @@ jobs:
       contents: write
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: artifacts/
           pattern: desktop-*
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
           name: Shogo Desktop ${{ github.ref_name }}
           draft: true
