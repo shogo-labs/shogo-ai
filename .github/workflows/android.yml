@@ -125,7 +125,7 @@ jobs:
       - name: Restore cached fingerprint
         if: steps.fingerprint.outputs.runtime_version != 'unknown'
         id: cache
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: .fingerprint-android
           key: android-fingerprint-${{ steps.resolve-env.outputs.environment }}-${{ steps.fingerprint.outputs.runtime_version }}
@@ -136,7 +136,7 @@ jobs:
 
       - name: Save fingerprint cache
         if: steps.cache.outputs.cache-hit != 'true' && steps.fingerprint.outputs.runtime_version != 'unknown'
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: .fingerprint-android
           key: android-fingerprint-${{ steps.resolve-env.outputs.environment }}-${{ steps.fingerprint.outputs.runtime_version }}
@@ -232,7 +232,7 @@ jobs:
           bun-version: latest
 
       - name: Cache bun dependencies
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: |
             node_modules
@@ -256,7 +256,7 @@ jobs:
         uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
 
       - name: Cache Gradle dependencies
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: |
             ~/.gradle/caches
@@ -366,7 +366,7 @@ jobs:
           echo "$RUNTIME_VERSION" > .fingerprint-android
 
       - name: Cache fingerprint
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: .fingerprint-android
           key: android-fingerprint-${{ needs.check-fingerprint.outputs.environment }}-${{ needs.check-fingerprint.outputs.runtime_version || 'manual' }}
