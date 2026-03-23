@@ -74,17 +74,23 @@ test.describe("Credit Tracking", () => {
     await page.keyboard.press("Escape")
 
     // Wait for the agent to finish its response
-    await page.waitForTimeout(20_000)
+    await page.waitForSelector('[aria-label="Stop"], [aria-label="stop"]', { state: "detached", timeout: 60_000 }).catch(() => {})
+    await page.waitForTimeout(5_000)
 
-    // Check billing page
-    await page.goto("/billing")
-    await page.waitForSelector("text=Billing", { timeout: 10_000 })
+    // Poll billing page — credit deduction can take a few seconds to propagate
+    let remaining = 105
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await page.goto("/billing")
+      await page.waitForSelector("text=Billing", { timeout: 10_000 })
 
-    const creditsEl = page.getByText(/[\d.]+ of 105/)
-    await expect(creditsEl).toBeVisible()
+      const creditsEl = page.getByText(/[\d.]+ of 105/)
+      await expect(creditsEl).toBeVisible()
 
-    const text = await creditsEl.textContent()
-    const remaining = parseFloat(text?.match(/([\d.]+) of 105/)?.[1] ?? "105")
+      const text = await creditsEl.textContent()
+      remaining = parseFloat(text?.match(/([\d.]+) of 105/)?.[1] ?? "105")
+      if (remaining < 105) break
+      await page.waitForTimeout(5_000)
+    }
 
     expect(remaining).toBeLessThan(105)
     expect(remaining).toBeGreaterThan(100)

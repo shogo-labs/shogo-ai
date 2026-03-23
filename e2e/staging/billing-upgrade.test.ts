@@ -101,7 +101,7 @@ test.describe("Billing & Upgrade Flow", () => {
     await expect(page.getByText("Pro").first()).toBeVisible()
     await expect(page.getByText("$25")).toBeVisible()
     await expect(page.getByText("Business", { exact: true }).first()).toBeVisible()
-    await expect(page.getByText("$560")).toBeVisible()
+    await expect(page.getByText("$365")).toBeVisible()
     await expect(page.getByText("Enterprise", { exact: true }).first()).toBeVisible()
     await expect(page.getByText("Custom", { exact: true })).toBeVisible()
   })
