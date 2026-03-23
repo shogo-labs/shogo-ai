@@ -90,9 +90,13 @@ module "us" {
   compartment_id = var.compartment_id
   tenancy_id     = var.tenancy_id
 
+  # ARM64 custom OKE image (A4 Flex) — AD-1 to match existing PVs
+  image_id           = "ocid1.image.oc1.iad.aaaaaaaaxlqapo7gpvnvfndkhfnixrnvlumdgaexjvakamdmhiegulsypa5a"
+  placement_ad_names = ["XYpk:US-ASHBURN-AD-1"]
+
   # System nodes (API, web, CNPG, Knative controllers)
   system_node_ocpus     = 8
-  system_node_memory_gb = 64
+  system_node_memory_gb = 48
   system_pool_size      = 3
   system_pool_min       = 2
   system_pool_max       = 15
@@ -100,7 +104,7 @@ module "us" {
   # Workload nodes (agent runtimes)
   enable_workload_pool      = true
   workload_node_ocpus       = 8
-  workload_node_memory_gb   = 64
+  workload_node_memory_gb   = 48
   workload_pool_size        = 2
   workload_pool_min         = 1
   workload_pool_max         = 100

@@ -102,6 +102,9 @@ module "oke" {
   api_nsg_id                = module.vcn.oke_api_nsg_id
   workers_nsg_id            = module.vcn.oke_workers_nsg_id
 
+  image_id           = var.image_id
+  placement_ad_names = var.placement_ad_names
+
   node_ocpus     = var.system_node_ocpus
   node_memory_gb = var.system_node_memory_gb
   node_pool_size = var.system_pool_size

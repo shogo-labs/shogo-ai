@@ -27,7 +27,7 @@ variable "compartment_id" {
 variable "kubernetes_version" {
   description = "Kubernetes version"
   type        = string
-  default     = "v1.31.1"
+  default     = "v1.35.0"
 }
 
 variable "vcn_id" {
@@ -63,7 +63,7 @@ variable "workers_nsg_id" {
 variable "node_shape" {
   description = "Compute shape for worker nodes"
   type        = string
-  default     = "VM.Standard.E4.Flex"
+  default     = "VM.Standard.A4.Flex"
 }
 
 variable "node_ocpus" {
@@ -111,7 +111,7 @@ variable "enable_workload_pool" {
 variable "workload_node_shape" {
   description = "Compute shape for workload nodes"
   type        = string
-  default     = "VM.Standard.E4.Flex"
+  default     = "VM.Standard.A4.Flex"
 }
 
 variable "workload_node_ocpus" {
@@ -150,6 +150,12 @@ variable "image_id" {
   default     = ""
 }
 
+variable "placement_ad_names" {
+  description = "Availability domain names for node placement. If empty, spreads across all ADs."
+  type        = list(string)
+  default     = []
+}
+
 variable "ssh_public_key" {
   description = "SSH public key for node access (optional)"
   type        = string
@@ -176,8 +182,9 @@ data "oci_containerengine_node_pool_option" "default" {
 }
 
 locals {
-  # Use first AD for single-AD regions, spread across ADs for multi-AD
-  availability_domains = data.oci_identity_availability_domains.ads.availability_domains[*].name
+  all_ads              = data.oci_identity_availability_domains.ads.availability_domains[*].name
+  availability_domains = length(var.placement_ad_names) > 0 ? var.placement_ad_names : local.all_ads
+  use_custom_image     = var.image_id != ""
 }
 
 # -----------------------------------------------------------------------------
@@ -261,11 +268,13 @@ resource "oci_containerengine_node_pool" "main" {
 
   node_source_details {
     source_type             = "IMAGE"
-    image_id                = var.image_id != "" ? var.image_id : data.oci_containerengine_node_pool_option.default.sources[0].image_id
+    image_id                = local.use_custom_image ? var.image_id : data.oci_containerengine_node_pool_option.default.sources[0].image_id
     boot_volume_size_in_gbs = var.boot_volume_gb
   }
 
-  node_metadata = {
+  # Custom OKE images have their own bootstrap — user_data overrides it and
+  # causes RegisterTimeOut. Only set user_data for auto-detected OKE images.
+  node_metadata = local.use_custom_image ? {} : {
     user_data = base64encode(join("\n", [
       "#!/bin/bash",
       "curl --fail -H \"Authorization: Bearer Oracle\" -L0 http://169.254.169.254/opc/v2/instance/metadata/oke_init_script | base64 --decode >/var/run/oke-init.sh",
@@ -329,11 +338,11 @@ resource "oci_containerengine_node_pool" "workloads" {
 
   node_source_details {
     source_type             = "IMAGE"
-    image_id                = var.image_id != "" ? var.image_id : data.oci_containerengine_node_pool_option.default.sources[0].image_id
+    image_id                = local.use_custom_image ? var.image_id : data.oci_containerengine_node_pool_option.default.sources[0].image_id
     boot_volume_size_in_gbs = var.boot_volume_gb
   }
 
-  node_metadata = {
+  node_metadata = local.use_custom_image ? {} : {
     user_data = base64encode(join("\n", [
       "#!/bin/bash",
       "curl --fail -H \"Authorization: Bearer Oracle\" -L0 http://169.254.169.254/opc/v2/instance/metadata/oke_init_script | base64 --decode >/var/run/oke-init.sh",

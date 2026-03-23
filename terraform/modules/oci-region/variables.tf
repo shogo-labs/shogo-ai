@@ -104,6 +104,18 @@ variable "system_pool_max" {
   default     = 15
 }
 
+variable "image_id" {
+  description = "Custom OKE node image OCID. If empty, auto-detects latest OKE image."
+  type        = string
+  default     = ""
+}
+
+variable "placement_ad_names" {
+  description = "Availability domain names for node placement. If empty, spreads across all ADs."
+  type        = list(string)
+  default     = []
+}
+
 variable "enable_workload_pool" {
   description = "Enable a separate node pool for agent runtimes"
   type        = bool
