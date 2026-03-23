@@ -25,6 +25,8 @@ interface RateLimitOptions {
   keyGenerator?: (c: Context) => string
   /** Message returned when rate-limited (default: 'Too many requests') */
   message?: string
+  /** Path prefixes to exempt from this limiter (they use their own auth/limits) */
+  skipPrefixes?: string[]
 }
 
 const stores = new Map<string, Map<string, RateLimitEntry>>()
@@ -73,6 +75,7 @@ export function rateLimiter(
   const windowMs = opts.windowMs ?? 60_000
   const message = opts.message ?? 'Too many requests, please try again later'
   const keyGenerator = opts.keyGenerator ?? getClientIp
+  const skipPrefixes = opts.skipPrefixes
   const store = getStore(name)
 
   ensureGC()
@@ -81,6 +84,14 @@ export function rateLimiter(
     if (LOAD_TEST_SECRET && c.req.header('x-load-test-key') === LOAD_TEST_SECRET) {
       await next()
       return
+    }
+
+    if (skipPrefixes?.length) {
+      const path = new URL(c.req.url).pathname
+      if (skipPrefixes.some((p) => path.startsWith(p))) {
+        await next()
+        return
+      }
     }
 
     const key = keyGenerator(c)
