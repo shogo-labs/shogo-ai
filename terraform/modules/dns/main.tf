@@ -30,6 +30,12 @@ variable "lb_ip_or_hostname" {
   type        = string
 }
 
+variable "subdomain" {
+  description = "Environment subdomain prefix (e.g. 'staging' for studio.staging.shogo.ai). Empty for production."
+  type        = string
+  default     = ""
+}
+
 variable "additional_records" {
   description = "Additional DNS records to create"
   type = list(object({
@@ -41,23 +47,28 @@ variable "additional_records" {
   default = []
 }
 
+locals {
+  studio_name = var.subdomain != "" ? "studio.${var.subdomain}" : "studio"
+  docs_name   = var.subdomain != "" ? "docs.${var.subdomain}" : "docs"
+}
+
 # -----------------------------------------------------------------------------
 # Platform DNS Records
 # -----------------------------------------------------------------------------
 
-# studio.shogo.ai → OKE Load Balancer (Kourier)
+# studio[.subdomain].shogo.ai → OKE Load Balancer (Kourier)
 resource "cloudflare_record" "studio" {
   zone_id = var.cloudflare_zone_id
-  name    = "studio"
+  name    = local.studio_name
   content = var.lb_ip_or_hostname
   type    = "A"
   proxied = true
 }
 
-# docs.shogo.ai → OKE Load Balancer (Kourier)
+# docs[.subdomain].shogo.ai → OKE Load Balancer (Kourier)
 resource "cloudflare_record" "docs" {
   zone_id = var.cloudflare_zone_id
-  name    = "docs"
+  name    = local.docs_name
   content = var.lb_ip_or_hostname
   type    = "A"
   proxied = true

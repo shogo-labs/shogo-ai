@@ -248,6 +248,7 @@ module "dns" {
 
   cloudflare_zone_id = var.cloudflare_zone_id
   domain             = local.domain
+  subdomain          = "staging"
   lb_ip_or_hostname  = "0.0.0.0" # Populated after initial apply via kubectl get svc
   additional_records = []
 }
