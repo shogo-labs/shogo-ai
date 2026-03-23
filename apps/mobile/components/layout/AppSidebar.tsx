@@ -83,6 +83,7 @@ import {
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { formatCredits, DAILY_CREDITS } from '../../lib/billing-config'
 import { api } from '../../lib/api'
+import { trackPurchase } from '../../lib/tracking'
 import { getActiveWorkspaceId, setActiveWorkspaceId } from '../../lib/workspace-store'
 import { usePlatformConfig } from '../../lib/platform-config'
 
@@ -1018,7 +1019,10 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
     const sessionId = params.get('session_id')
     if ((checkout === 'workspace_created' || checkout === 'success') && wsId && sessionId) {
       const provision = async () => {
-        try { await api.verifyCheckout(http, sessionId) } catch { /* webhook will handle it */ }
+        try {
+          const result = await api.verifyCheckout(http, sessionId)
+          trackPurchase({ planId: result.planId, workspaceId: wsId })
+        } catch { /* webhook will handle it */ }
         window.location.href = `/?workspace=${wsId}`
       }
       provision()

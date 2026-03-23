@@ -35,6 +35,7 @@ import { useAuth } from '../../contexts/auth'
 import { useWorkspaceCollection, useDomainHttp } from '../../contexts/domain'
 import { api } from '../../lib/api'
 import { getRewardfulReferral } from '../../lib/rewardful'
+import { trackInitiateCheckout, trackPurchase } from '../../lib/tracking'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useDomainActions } from '@shogo/shared-app/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
@@ -114,6 +115,7 @@ export default observer(function BillingPage() {
         ? ExpoLinking.createURL('billing')
         : (typeof window !== 'undefined' ? window.location.origin : undefined)
       console.log('[Billing] checkout start', { planId, billingInterval, isNative, redirectBase })
+      trackInitiateCheckout({ planId, billingInterval, workspaceId: currentWorkspace.id })
 
       const data = await api.createCheckoutSession(http, {
         workspaceId: currentWorkspace.id,
@@ -150,6 +152,9 @@ export default observer(function BillingPage() {
                 try {
                   const verifyResult = await api.verifyCheckout(http, sessionId)
                   console.log('[Billing] verify result:', verifyResult)
+                  if (checkout === 'success') {
+                    trackPurchase({ planId: verifyResult.planId, workspaceId: currentWorkspace?.id })
+                  }
                 } catch (verifyErr) {
                   console.warn('[Billing] verify failed (webhook will handle):', verifyErr)
                 }
