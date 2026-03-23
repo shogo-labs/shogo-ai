@@ -153,7 +153,7 @@ export default observer(function BillingPage() {
                   const verifyResult = await api.verifyCheckout(http, sessionId)
                   console.log('[Billing] verify result:', verifyResult)
                   if (checkout === 'success') {
-                    trackPurchase({ planId: verifyResult.planId, workspaceId: currentWorkspace?.id })
+                    trackPurchase({ planId: verifyResult.planId, billingInterval, workspaceId: currentWorkspace?.id })
                   }
                 } catch (verifyErr) {
                   console.warn('[Billing] verify failed (webhook will handle):', verifyErr)
