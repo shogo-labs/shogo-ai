@@ -30,7 +30,7 @@ import * as fs from 'fs'
 import { trace, SpanStatusCode, metrics } from '@opentelemetry/api'
 import { generateProxyToken } from './ai-proxy-token'
 import * as databaseService from '../services/database.service'
-import { ensureCapacityForPods, getCapacitySummary } from './proactive-node-scaler'
+
 import { RUNTIME_CONFIG } from '@shogo/shared-runtime'
 
 const poolTracer = trace.getTracer('shogo-warm-pool')
@@ -47,9 +47,6 @@ const poolAssignedCounter = meter.createCounter('warm_pool.assignments', {
 })
 const poolColdStartCounter = meter.createCounter('warm_pool.cold_starts', {
   description: 'Times a pod was requested but no warm pod was available',
-})
-const nodeScaleUpCounter = meter.createCounter('warm_pool.node_scale_ups', {
-  description: 'Proactive node scale-up events triggered by warm pool',
 })
 
 // =============================================================================
@@ -446,21 +443,6 @@ export class WarmPoolController {
         )
       }
       deficit = 0
-    }
-
-    // Proactive node scaling: ensure cluster has capacity BEFORE creating pods
-    if (deficit > 0) {
-      try {
-        const nodesAdded = await ensureCapacityForPods(deficit)
-        if (nodesAdded > 0) {
-          nodeScaleUpCounter.add(1, { nodes_added: nodesAdded, trigger: 'reconcile' })
-          console.log(
-            `[WarmPool] Proactive scale-up: requested ${nodesAdded} additional nodes for ${deficit} pods`
-          )
-        }
-      } catch (err: any) {
-        console.error('[WarmPool] Proactive scaling check failed (non-fatal):', err.message)
-      }
     }
 
     const MAX_CREATIONS_PER_CYCLE = 3
@@ -941,17 +923,7 @@ export class WarmPoolController {
    */
   async getExtendedStatus() {
     const base = this.getStatus()
-    try {
-      const capacity = await getCapacitySummary()
-      return {
-        ...base,
-        cluster: capacity,
-        promotedPods: this.promotedPods,
-        gcStats: this.gcStats,
-      }
-    } catch {
-      return { ...base, cluster: null, promotedPods: this.promotedPods, gcStats: this.gcStats }
-    }
+    return { ...base, cluster: null, promotedPods: this.promotedPods, gcStats: this.gcStats }
   }
 
   /**
