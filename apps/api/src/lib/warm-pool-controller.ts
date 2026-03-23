@@ -918,12 +918,85 @@ export class WarmPoolController {
   }
 
   /**
+   * Gather live cluster capacity by querying the K8s API for node resources.
+   */
+  private async getCapacitySummary(): Promise<{
+    totalNodes: number
+    asgDesired: number
+    asgMax: number
+    totalPodSlots: number
+    usedPodSlots: number
+    totalCpuMillis: number
+    usedCpuMillis: number
+    limitCpuMillis: number
+  } | null> {
+    try {
+      const coreApi = getCoreApi()
+      const nodeResponse = await coreApi.listNode()
+      const nodes = nodeResponse.items || []
+
+      let totalNodes = 0
+      let totalCpuMillis = 0
+      let totalPodSlots = 0
+
+      for (const node of nodes) {
+        const conditions = node.status?.conditions || []
+        const readyCondition = conditions.find((c) => c.type === 'Ready')
+        const unschedulable = node.spec?.unschedulable
+        if (readyCondition?.status !== 'True' || unschedulable) continue
+
+        totalNodes++
+        const allocatable = node.status?.allocatable || {}
+        const cpuStr = allocatable['cpu'] || '0'
+        totalCpuMillis += cpuStr.endsWith('m')
+          ? parseInt(cpuStr)
+          : Math.round(parseFloat(cpuStr) * 1000)
+        totalPodSlots += parseInt(allocatable['pods'] || '0', 10)
+      }
+
+      const podResponse = await coreApi.listPodForAllNamespaces(
+        undefined, undefined, 'status.phase=Running'
+      )
+      const runningPods = podResponse.items || []
+      let usedCpuMillis = 0
+      let limitCpuMillis = 0
+      for (const pod of runningPods) {
+        for (const c of pod.spec?.containers || []) {
+          const req = c.resources?.requests?.['cpu'] || '0'
+          usedCpuMillis += req.endsWith('m')
+            ? parseInt(req)
+            : Math.round(parseFloat(req) * 1000)
+          const lim = c.resources?.limits?.['cpu'] || '0'
+          limitCpuMillis += lim.endsWith('m')
+            ? parseInt(lim)
+            : Math.round(parseFloat(lim) * 1000)
+        }
+      }
+
+      return {
+        totalNodes,
+        asgDesired: totalNodes,
+        asgMax: totalNodes,
+        totalPodSlots,
+        usedPodSlots: runningPods.length,
+        totalCpuMillis,
+        usedCpuMillis,
+        limitCpuMillis,
+      }
+    } catch (err: any) {
+      console.warn('[WarmPool] getCapacitySummary failed:', err.message)
+      return null
+    }
+  }
+
+  /**
    * Get extended status including cluster capacity, promoted pods, and GC stats.
    * Used by health/status endpoints and admin API for operational visibility.
    */
   async getExtendedStatus() {
     const base = this.getStatus()
-    return { ...base, cluster: null, promotedPods: this.promotedPods, gcStats: this.gcStats }
+    const cluster = await this.getCapacitySummary()
+    return { ...base, cluster, promotedPods: this.promotedPods, gcStats: this.gcStats }
   }
 
   /**
