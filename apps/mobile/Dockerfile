@@ -6,7 +6,7 @@
 # 2. Serve static files with Nginx (reverse proxy for /api)
 # =============================================================================
 
-FROM node:22-alpine AS builder
+FROM --platform=$BUILDPLATFORM node:22-alpine AS builder
 
 WORKDIR /app
 
