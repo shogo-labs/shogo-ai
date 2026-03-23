@@ -87,7 +87,7 @@ async function adminUpdateUser(
   }
 }
 
-async function adminDeleteUser(userId: string): Promise<{ ok: boolean }> {
+async function adminDeleteUser(userId: string): Promise<{ ok?: boolean; error?: { code: string; message: string } }> {
   try {
     const res = await fetch(`${API_BASE}/users/${userId}`, {
       method: 'DELETE',
@@ -95,7 +95,7 @@ async function adminDeleteUser(userId: string): Promise<{ ok: boolean }> {
     })
     return res.json()
   } catch {
-    return { ok: false }
+    return { error: { code: 'network_error', message: 'Network error. Please try again.' } }
   }
 }
 
@@ -150,7 +150,11 @@ export default function AdminUserDetailPage() {
           style: 'destructive',
           onPress: async () => {
             const result = await adminDeleteUser(user.id)
-            if (result.ok) router.replace('/(admin)/users' as any)
+            if (result.ok) {
+              router.replace('/(admin)/users' as any)
+            } else if (result.error) {
+              Alert.alert('Cannot Delete User', result.error.message)
+            }
           },
         },
       ]

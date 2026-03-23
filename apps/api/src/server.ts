@@ -5032,6 +5032,29 @@ app.route('/api', toolsProxy)
 // Super Admin Routes (self-contained auth middleware)
 // =============================================================================
 
+// Guard: block admin user deletion when the user owns a workspace with an active subscription
+app.delete('/api/admin/users/:id', authMiddleware, requireAuth, requireSuperAdmin, async (c) => {
+  const id = c.req.param('id')
+  const workspacesWithSubs = await prisma.workspace.findMany({
+    where: {
+      members: { some: { userId: id, role: 'owner' } },
+      subscriptions: { some: { status: { in: ['active', 'past_due', 'trialing'] } } },
+    },
+    select: { name: true, subscriptions: { where: { status: { in: ['active', 'past_due', 'trialing'] } }, select: { planId: true } } },
+  })
+  if (workspacesWithSubs.length > 0) {
+    const ws = workspacesWithSubs[0]
+    return c.json({
+      error: {
+        code: 'active_subscription',
+        message: `Cannot delete user while workspace "${ws.name}" has an active subscription (${ws.subscriptions[0]?.planId}). Cancel the subscription first.`,
+      },
+    }, 400)
+  }
+  await prisma.user.delete({ where: { id } })
+  return c.json({ ok: true })
+})
+
 // Generated admin CRUD routes - full model CRUD with pagination/search/sorting
 // Protected by auth + requireSuperAdmin middleware stack
 app.route('/api/admin', createAdminRoutes({

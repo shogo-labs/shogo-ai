@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """
-Post-load-test cleanup — deletes all users, projects, and workspaces
+Post-load-test cleanup — deletes all users, workspaces, and projects
 created by the load test scripts.
 
 Authenticates as a super admin, then uses the admin API to:
   1. Find all users matching the load test prefix
-  2. Delete each user's project pods (Knative services + PVCs)
-  3. Delete users (cascades to DB records for sessions, accounts, etc.)
+  2. Find all workspaces owned by those users (via member records)
+  3. Find all load test projects (by name patterns + workspace ownership)
+  4. Delete project pods (Knative services + PVCs) — K8s cleanup
+  5. Delete workspaces (DB cascade removes projects, billing, chat, etc.)
+  6. Delete users (DB cascade removes sessions, accounts, notifications)
+
+NOTE: Deleting a user does NOT cascade to workspaces or projects in the
+Prisma schema (the FK goes through Member, not a direct relation). That is
+why workspaces must be deleted explicitly before users.
 
 When targeting a direct region IP, use --host-header to set the Host header
 so Knative routes the request correctly.
@@ -138,8 +145,24 @@ class AdminSession:
         resp = self.session.delete(f"{self.host}/api/admin/workspaces/{workspace_id}")
         if resp.status_code == 200:
             return True
+        if resp.status_code == 404:
+            return True
         print(f"    WARN: Workspace delete {workspace_id}: {resp.status_code} {resp.text[:100]}")
         return False
+
+    def list_members(self, user_id: str, role: str = "", page: int = 1, limit: int = 100):
+        params = {"userId": user_id, "page": page, "limit": limit}
+        if role:
+            params["role"] = role
+        resp = self.session.get(
+            f"{self.host}/api/admin/members",
+            params=params,
+        )
+        if resp.status_code != 200:
+            print(f"  ERROR: List members failed: {resp.status_code}")
+            return [], 0
+        data = resp.json().get("data", {})
+        return data.get("members", []), data.get("total", 0)
 
 
 def paginate_all(list_fn, search: str, batch_size: int = 100):
@@ -200,12 +223,23 @@ def main():
         print("Nothing to clean up.")
         return
 
-    # ---- Step 2: Find all load test projects ----
-    # Search for projects with "dry-run" prefix (created by dry_run_simulation)
-    # and also by createdBy matching user IDs
+    user_ids = {u["id"] for u in users}
+
+    # ---- Step 2: Find all workspaces owned by load test users ----
+    print("Finding workspaces owned by load test users...")
+    workspace_ids = set()
+    for uid in user_ids:
+        members, _ = admin.list_members(uid, limit=batch_size)
+        for m in members:
+            wid = m.get("workspaceId")
+            if wid:
+                workspace_ids.add(wid)
+    print(f"  Found {len(workspace_ids)} workspaces")
+    print()
+
+    # ---- Step 3: Find all load test projects ----
     print("Finding load test projects...")
     projects = paginate_all(admin.list_projects, "dry-run", batch_size)
-    # Also search for other load test project name patterns
     for pattern in ["cold-start", "chat-heavy", "agent-load", "Load Test Project"]:
         extra = paginate_all(admin.list_projects, pattern, batch_size)
         seen_ids = {p["id"] for p in projects}
@@ -213,15 +247,20 @@ def main():
             if p["id"] not in seen_ids:
                 projects.append(p)
 
-    # Filter to only projects owned by load test users
-    user_ids = {u["id"] for u in users}
     lt_projects = [p for p in projects if p.get("createdBy") in user_ids]
+    # Also include any project whose workspace belongs to a load test user
+    lt_project_ids = {p["id"] for p in lt_projects}
+    for p in projects:
+        if p.get("workspaceId") in workspace_ids and p["id"] not in lt_project_ids:
+            lt_projects.append(p)
+            lt_project_ids.add(p["id"])
     print(f"  Found {len(lt_projects)} projects owned by load test users (out of {len(projects)} matched)")
     print()
 
     if dry_run:
         print("DRY RUN — would delete:")
-        print(f"  {len(lt_projects)} project pods + DB records")
+        print(f"  {len(lt_projects)} project pods")
+        print(f"  {len(workspace_ids)} workspaces (cascades to projects + children in DB)")
         print(f"  {len(users)} users (+ cascaded sessions, accounts, memberships)")
         print()
         print("Users:")
@@ -230,6 +269,12 @@ def main():
         if len(users) > 20:
             print(f"  ... and {len(users) - 20} more")
         print()
+        print("Workspaces:")
+        for wid in list(workspace_ids)[:20]:
+            print(f"  - {wid}")
+        if len(workspace_ids) > 20:
+            print(f"  ... and {len(workspace_ids) - 20} more")
+        print()
         print("Projects:")
         for p in lt_projects[:20]:
             print(f"  - {p.get('name', 'unnamed')} (id={p['id']})")
@@ -237,7 +282,7 @@ def main():
             print(f"  ... and {len(lt_projects) - 20} more")
         return
 
-    # ---- Step 3: Delete project pods (K8s resources) ----
+    # ---- Step 4: Delete project pods (K8s resources) ----
     print(f"Deleting {len(lt_projects)} project pods...")
     pod_ok = 0
     pod_fail = 0
@@ -252,11 +297,27 @@ def main():
     print(f"  Pods deleted: {pod_ok}, failed: {pod_fail}")
     print()
 
-    # Small delay to let K8s resources settle
     if lt_projects:
         time.sleep(2)
 
-    # ---- Step 4: Delete users (cascades to DB records) ----
+    # ---- Step 5: Delete workspaces (cascades to projects, billing, etc. in DB) ----
+    # Workspace ON DELETE CASCADE removes: projects, members, billing accounts,
+    # invitations, invite links, folders, subscriptions, credit ledgers, usage events,
+    # and all project children (chat sessions, checkpoints, agent configs, etc.)
+    print(f"Deleting {len(workspace_ids)} workspaces...")
+    ws_ok = 0
+    ws_fail = 0
+    for i, wid in enumerate(workspace_ids):
+        if admin.delete_workspace(wid):
+            ws_ok += 1
+        else:
+            ws_fail += 1
+        if (i + 1) % 10 == 0:
+            print(f"  ... {i + 1}/{len(workspace_ids)} workspaces processed")
+    print(f"  Workspaces deleted: {ws_ok}, failed: {ws_fail}")
+    print()
+
+    # ---- Step 6: Delete users (cascades to sessions, accounts, notifications) ----
     print(f"Deleting {len(users)} users...")
     user_ok = 0
     user_fail = 0
@@ -276,8 +337,9 @@ def main():
     print("  Cleanup Summary")
     print("=" * 60)
     print(f"  Project pods:  {pod_ok} deleted, {pod_fail} failed")
+    print(f"  Workspaces:    {ws_ok} deleted, {ws_fail} failed")
     print(f"  Users:         {user_ok} deleted, {user_fail} failed")
-    total_fail = pod_fail + user_fail
+    total_fail = pod_fail + ws_fail + user_fail
     if total_fail > 0:
         print(f"  WARNING: {total_fail} operations failed — some resources may need manual cleanup")
     else:
