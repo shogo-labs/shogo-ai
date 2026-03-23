@@ -20,6 +20,7 @@ import { View, useWindowDimensions } from 'react-native'
 import { Slot, usePathname, useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useAuth } from '../../contexts/auth'
+import { trackSignUp, trackLogin } from '../../lib/tracking'
 import { usePostHogIdentify, usePostHogSafe } from '../../contexts/posthog'
 import { DomainProvider } from '../../contexts/domain'
 import { AppSidebar } from '../../components/layout/AppSidebar'
@@ -53,6 +54,23 @@ export default function AppLayout() {
       router.replace('/(auth)/sign-in')
     }
   }, [isAuthenticated, isLoading, router])
+
+  useEffect(() => {
+    if (!isAuthenticated) return
+    try {
+      const pending = sessionStorage.getItem('oauth_pending')
+      if (pending) {
+        sessionStorage.removeItem('oauth_pending')
+        const isNew = !localStorage.getItem('shogo_returned')
+        if (isNew) {
+          trackSignUp(pending as 'google')
+          localStorage.setItem('shogo_returned', '1')
+        } else {
+          trackLogin(pending as 'google')
+        }
+      }
+    } catch {}
+  }, [isAuthenticated])
 
   const openDrawer = useCallback(() => setDrawerOpen(true), [])
   const closeDrawer = useCallback(() => setDrawerOpen(false), [])
