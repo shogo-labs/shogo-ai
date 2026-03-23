@@ -115,7 +115,7 @@ export default function NewWorkspacePage() {
                 try {
                   const verifyResult = await api.verifyCheckout(http, sessionId)
                   console.log('[NewWorkspace] verify result:', verifyResult)
-                  trackPurchase({ planId: verifyResult.planId, billingInterval, workspaceId: verifyResult.workspaceId ?? wsId ?? undefined })
+                  trackPurchase({ planId: verifyResult.planId, billingInterval, workspaceId: verifyResult.workspaceId ?? wsId ?? undefined, sessionId })
                 } catch (verifyErr) {
                   console.warn('[NewWorkspace] verify failed (webhook will handle):', verifyErr)
                 }

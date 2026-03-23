@@ -1021,7 +1021,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
       const provision = async () => {
         try {
           const result = await api.verifyCheckout(http, sessionId)
-          trackPurchase({ planId: result.planId, workspaceId: wsId })
+          trackPurchase({ planId: result.planId, workspaceId: wsId, sessionId })
         } catch { /* webhook will handle it */ }
         window.location.href = `/?workspace=${wsId}`
       }
