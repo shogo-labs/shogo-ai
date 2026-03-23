@@ -63,6 +63,10 @@ RUN bun run build
 WORKDIR /app/apps/mobile
 RUN npx expo export --platform web
 
+# Inject analytics scripts into the exported HTML (Expo "single" mode strips
+# <script> tags from +html.tsx, so we inject them post-export)
+RUN node scripts/inject-analytics.js
+
 # =============================================================================
 # Production image with Nginx
 # =============================================================================
