@@ -6,6 +6,7 @@
 # packages. Rebuilt only when these change.
 #
 # Build: DOCKER_BUILDKIT=1 docker build -t runtime-base -f packages/agent-runtime/Dockerfile.base .
+# Architecture: linux/arm64 (A4 Flex nodes)
 # =============================================================================
 
 # APP_MODE_DISABLED: Stage 1 (template-deps) removed — app template building
