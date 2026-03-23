@@ -7,6 +7,20 @@ const tracer = trace.getTracer('shogo-api')
 
 const IGNORED_PATHS = new Set(['/api/health', '/healthz', '/ready'])
 
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi
+const CUID_RE = /\/[a-z0-9]{20,30}(?=\/|$)/g
+
+/**
+ * Normalize a concrete path into a route-like pattern for span grouping.
+ * Replaces UUIDs and cuid-style IDs with `:id` so traces group properly
+ * even when Hono's routePath is unavailable (e.g. middleware short-circuits).
+ */
+function normalizePath(path: string): string {
+  return path
+    .replace(UUID_RE, ':id')
+    .replace(CUID_RE, '/:id')
+}
+
 export const tracingMiddleware: MiddlewareHandler = async (c, next) => {
   const path = c.req.path
   if (IGNORED_PATHS.has(path)) {
@@ -14,7 +28,8 @@ export const tracingMiddleware: MiddlewareHandler = async (c, next) => {
   }
 
   const method = c.req.method
-  const spanName = `${method} ${path}`
+  const normalizedPath = normalizePath(path)
+  const spanName = `${method} ${normalizedPath}`
 
   return tracer.startActiveSpan(spanName, {
     kind: SpanKind.SERVER,
@@ -22,6 +37,7 @@ export const tracingMiddleware: MiddlewareHandler = async (c, next) => {
       'http.method': method,
       'http.target': path,
       'http.url': c.req.url,
+      'http.route': normalizedPath,
       'http.user_agent': c.req.header('user-agent') || '',
     },
   }, async (span) => {
@@ -39,9 +55,8 @@ export const tracingMiddleware: MiddlewareHandler = async (c, next) => {
       span.recordException(err)
       throw err
     } finally {
-      // Attach matched route pattern when available (e.g. /api/projects/:id)
       const matched = c.req.routePath
-      if (matched) {
+      if (matched && matched !== '/api/*' && matched !== '/*' && matched !== '*') {
         span.setAttribute('http.route', matched)
         span.updateName(`${method} ${matched}`)
       }
