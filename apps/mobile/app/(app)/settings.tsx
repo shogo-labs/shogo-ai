@@ -691,15 +691,18 @@ function AccountTab() {
       await api.deleteAccount(http, user.id)
       await signOut()
       router.replace('/(auth)/sign-in')
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to delete account:', error)
+      const msg = error?.details?.error?.message
+        || error?.message
+        || 'Failed to delete account. Please try again or contact support.'
       toast.show({
         placement: 'top',
         duration: 5000,
         render: ({ id }: { id: string }) => (
           <Toast nativeID={id} variant="outline" action="error">
             <ToastTitle>Failed to delete account</ToastTitle>
-            <ToastDescription>Please try again or contact support.</ToastDescription>
+            <ToastDescription>{msg}</ToastDescription>
           </Toast>
         ),
       })

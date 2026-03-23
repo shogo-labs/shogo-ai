@@ -216,6 +216,11 @@ export const userHooks: UserHooks = {
         members: {
           where: { role: 'owner' },
         },
+        subscriptions: {
+          where: {
+            status: { in: ['active', 'past_due', 'trialing'] },
+          },
+        },
       },
     })
 
@@ -226,6 +231,18 @@ export const userHooks: UserHooks = {
         error: {
           code: "last_owner",
           message: "Cannot delete account while being the last owner of workspaces. Transfer ownership first.",
+        },
+      }
+    }
+
+    const wsWithActiveSub = ownedWorkspaces.find((ws: any) => ws.subscriptions.length > 0)
+    if (wsWithActiveSub) {
+      const sub = wsWithActiveSub.subscriptions[0]
+      return {
+        ok: false,
+        error: {
+          code: "active_subscription",
+          message: `Cannot delete account while workspace "${wsWithActiveSub.name}" has an active subscription (${sub.planId}). Cancel the subscription first.`,
         },
       }
     }
