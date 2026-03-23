@@ -71,7 +71,7 @@ spec:
   template:
     metadata:
       annotations:
-        autoscaling.knative.dev/min-scale: "1"
+        autoscaling.knative.dev/min-scale: "2"
         autoscaling.knative.dev/max-scale: "10"
     spec:
       serviceAccountName: api-service-account
