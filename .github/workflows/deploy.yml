@@ -144,12 +144,25 @@ jobs:
         id: set-matrix
         env:
           BEFORE_SHA: ${{ github.event.before }}
+          IS_TAG_PUSH: ${{ github.ref_type == 'tag' }}
+          CURRENT_TAG: ${{ github.ref_name }}
         run: |
           FORCE_ALL="${{ github.event_name == 'workflow_dispatch' }}"
 
           if [ "$FORCE_ALL" = "true" ]; then
             echo "workflow_dispatch -- forcing all image builds"
             CHANGED=""
+          elif [ "$IS_TAG_PUSH" = "true" ]; then
+            # For tag pushes (production), diff against the previous tag to capture
+            # all changes accumulated since the last release, not just the tagged commit.
+            PREV_TAG=$(git tag --sort=-version:refname | grep -v "^${CURRENT_TAG}$" | head -1)
+            if [ -n "$PREV_TAG" ]; then
+              CHANGED=$(git diff --name-only "$PREV_TAG" HEAD)
+              echo "Comparing $PREV_TAG..HEAD (tag-to-tag range)"
+            else
+              echo "No previous tag found — treating all files as changed"
+              CHANGED=$(git ls-tree --name-only -r HEAD)
+            fi
           elif [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$BEFORE_SHA" 2>/dev/null; then
             CHANGED=$(git diff --name-only "$BEFORE_SHA" HEAD)
             echo "Comparing $BEFORE_SHA..HEAD (push event)"
@@ -157,7 +170,7 @@ jobs:
             CHANGED=$(git diff --name-only HEAD~1 HEAD)
             echo "Comparing HEAD~1..HEAD (fallback)"
           else
-            echo "Single-commit repo or tag push with no parent — treating all files as changed"
+            echo "Single-commit repo — treating all files as changed"
             CHANGED=$(git ls-tree --name-only -r HEAD)
           fi
 
