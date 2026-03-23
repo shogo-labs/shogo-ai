@@ -113,9 +113,9 @@ spec:
             - name: PUBLISH_DOMAIN
               value: "shogo.one"
             - name: BETTER_AUTH_URL
-              value: "https://staging.studio.shogo.ai"
+              value: "https://studio.staging.shogo.ai"
             - name: ALLOWED_ORIGINS
-              value: "https://staging.studio.shogo.ai"
+              value: "https://studio.staging.shogo.ai"
             - name: REDIS_URL
               value: "redis://redis-master.shogo-staging-system:6379"
             - name: DATABASE_URL

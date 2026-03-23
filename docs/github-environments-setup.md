@@ -27,10 +27,10 @@ These are **non-secret** configuration values.
 | `NODE_POOL_OCID` | (staging pool) | (US pool) | (EU pool) | (India pool) |
 | `NAMESPACE_SYSTEM` | shogo-staging-system | shogo-production-system | shogo-production-system | shogo-production-system |
 | `NAMESPACE_WORKSPACES` | shogo-staging-workspaces | shogo-production-workspaces | shogo-production-workspaces | shogo-production-workspaces |
-| `DOMAIN` | staging.studio.shogo.ai | studio.shogo.ai | studio.shogo.ai | studio.shogo.ai |
-| `DOCS_DOMAIN` | staging.docs.shogo.ai | docs.shogo.ai | docs.shogo.ai | docs.shogo.ai |
-| `ALLOWED_ORIGINS` | https://staging.studio.shogo.ai | https://studio.shogo.ai | https://studio.shogo.ai | https://studio.shogo.ai |
-| `EXPO_PUBLIC_API_URL` | https://staging.studio.shogo.ai | https://studio.shogo.ai | https://studio.shogo.ai | https://studio.shogo.ai |
+| `DOMAIN` | studio.staging.shogo.ai | studio.shogo.ai | studio.shogo.ai | studio.shogo.ai |
+| `DOCS_DOMAIN` | docs.staging.shogo.ai | docs.shogo.ai | docs.shogo.ai | docs.shogo.ai |
+| `ALLOWED_ORIGINS` | https://studio.staging.shogo.ai | https://studio.shogo.ai | https://studio.shogo.ai | https://studio.shogo.ai |
+| `EXPO_PUBLIC_API_URL` | https://studio.staging.shogo.ai | https://studio.shogo.ai | https://studio.shogo.ai | https://studio.shogo.ai |
 
 ## Secrets (per environment)
 
