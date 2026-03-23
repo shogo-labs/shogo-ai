@@ -6,6 +6,7 @@ import { SafeAreaView } from 'react-native-safe-area-context'
 import { useAuth } from '../../contexts/auth'
 import { useTheme } from '../../contexts/theme'
 import { usePlatformConfig } from '../../lib/platform-config'
+import { trackSignUp, trackLogin } from '../../lib/tracking'
 import { LoginScreen } from '@shogo/shared-ui/screens'
 
 export default function SignInScreen() {
@@ -21,6 +22,7 @@ export default function SignInScreen() {
   const handleSignIn = async (email: string, password: string) => {
     try {
       await signIn(email, password)
+      trackLogin('email')
       router.replace('/')
     } catch {}
   }
@@ -28,8 +30,14 @@ export default function SignInScreen() {
   const handleSignUp = async (name: string, email: string, password: string) => {
     try {
       await signUp(name, email, password)
+      trackSignUp('email')
       router.replace('/')
     } catch {}
+  }
+
+  const handleGoogleSignIn = () => {
+    try { sessionStorage.setItem('oauth_pending', 'google') } catch {}
+    signInWithGoogle()
   }
 
   return (
@@ -37,7 +45,7 @@ export default function SignInScreen() {
       <LoginScreen
         onSignIn={handleSignIn}
         onSignUp={handleSignUp}
-        onGoogleSignIn={features.oauth ? signInWithGoogle : undefined}
+        onGoogleSignIn={features.oauth ? handleGoogleSignIn : undefined}
         isLoading={isLoading}
         error={error}
         onClearError={clearError}

@@ -29,6 +29,25 @@ function gtag(...args: unknown[]) {
   window.gtag?.(...args)
 }
 
+export function trackSignUp(method: 'email' | 'google') {
+  const eventId = generateEventId('signup')
+
+  fbq('track', 'CompleteRegistration', {
+    content_name: method,
+    status: true,
+  }, { eventID: eventId })
+
+  gtag('event', 'sign_up', { method })
+}
+
+export function trackLogin(method: 'email' | 'google') {
+  fbq('track', 'Lead', {
+    content_name: method,
+  })
+
+  gtag('event', 'login', { method })
+}
+
 export function lookupPlanValue(planId: string, billingInterval: string): number | undefined {
   const isAnnual = billingInterval === 'annual'
   const match = planId.match(/^(pro|business)(?:_(\d+))?$/)
