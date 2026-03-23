@@ -756,7 +756,11 @@ app.use('/api/*', csrf({
 // Defaults can be overridden via RATE_LIMIT_*_MAX and RATE_LIMIT_*_WINDOW_MS env vars.
 app.use('/api/auth/*', rateLimiter('auth', { max: Number(process.env.RATE_LIMIT_AUTH_MAX) || 60, windowMs: Number(process.env.RATE_LIMIT_AUTH_WINDOW_MS) || 60_000 }))
 app.use('/api/webhooks/*', rateLimiter('webhooks', { max: Number(process.env.RATE_LIMIT_WEBHOOKS_MAX) || 90, windowMs: Number(process.env.RATE_LIMIT_WEBHOOKS_WINDOW_MS) || 60_000 }))
-app.use('/api/*', rateLimiter('global', { max: Number(process.env.RATE_LIMIT_GLOBAL_MAX) || 600, windowMs: Number(process.env.RATE_LIMIT_GLOBAL_WINDOW_MS) || 60_000 }))
+app.use('/api/*', rateLimiter('global', {
+  max: Number(process.env.RATE_LIMIT_GLOBAL_MAX) || 600,
+  windowMs: Number(process.env.RATE_LIMIT_GLOBAL_WINDOW_MS) || 60_000,
+  skipPrefixes: ['/api/ai/', '/api/internal/'],
+}))
 
 // Auth middleware — extract session for ALL /api/* routes so c.get('auth') is
 // always populated, then require authentication except for known public paths.
