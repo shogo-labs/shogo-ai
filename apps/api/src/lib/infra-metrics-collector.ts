@@ -47,9 +47,13 @@ async function collectSnapshot(prisma: PrismaClient): Promise<void> {
     }
 
     const warmAvail =
-      (extended.available?.project ?? 0) + (extended.available?.agent ?? 0)
+      typeof extended.available === 'number'
+        ? extended.available
+        : ((extended.available as any)?.project ?? 0) + ((extended.available as any)?.agent ?? 0)
     const warmTgt =
-      (extended.targetSize?.project ?? 0) + (extended.targetSize?.agent ?? 0)
+      typeof extended.targetSize === 'number'
+        ? extended.targetSize
+        : ((extended.targetSize as any)?.project ?? 0) + ((extended.targetSize as any)?.agent ?? 0)
 
     await prisma.infraSnapshot.create({
       data: {
