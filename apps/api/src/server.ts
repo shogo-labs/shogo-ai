@@ -778,6 +778,8 @@ app.use(
       '/api/invite-links/',
       '/api/internal/',
       '/api/local/',
+      '/api/ai/',
+      '/api/tools/',
     ]
     if (publicPrefixes.some((p) => path.startsWith(p))) return next()
     return requireAuth(c, next)
