@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: oci-growfs
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: oci-growfs
+  template:
+    metadata:
+      labels:
+        app: oci-growfs
+    spec:
+      hostPID: true
+      priorityClassName: system-node-critical
+      initContainers:
+      - name: growfs
+        image: busybox:latest
+        command:
+        - sh
+        - -c
+        - |
+          chroot /host /usr/libexec/oci-growfs -y || true
+          chroot /host pvresize /dev/sda3 || true
+          chroot /host lvextend -l +100%FREE /dev/ocivolume/root || true
+          chroot /host xfs_growfs / || true
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: host
+          mountPath: /host
+      containers:
+      - name: pause
+        image: registry.k8s.io/pause:3.9
+      volumes:
+      - name: host
+        hostPath:
+          path: /
+      tolerations:
+      - operator: Exists
+      nodeSelector:
+        kubernetes.io/arch: arm64

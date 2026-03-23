@@ -125,8 +125,11 @@ module "oke" {
   api_nsg_id                = module.vcn.oke_api_nsg_id
   workers_nsg_id            = module.vcn.oke_workers_nsg_id
 
+  image_id           = "ocid1.image.oc1.iad.aaaaaaaaxlqapo7gpvnvfndkhfnixrnvlumdgaexjvakamdmhiegulsypa5a"
+  placement_ad_names = ["XYpk:US-ASHBURN-AD-2"]
+
   node_ocpus     = 4
-  node_memory_gb = 32
+  node_memory_gb = 24
   node_pool_size = 2
   node_pool_min  = 1
   node_pool_max  = 6

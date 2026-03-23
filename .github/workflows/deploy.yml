@@ -37,6 +37,11 @@ on:
         options:
           - staging
           - production
+      build_only:
+        description: 'Build and push images only (skip deploy). Use when pre-building images for node migration.'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: deploy-${{ github.ref_name }}
@@ -55,6 +60,7 @@ jobs:
     outputs:
       environment: ${{ steps.set-env.outputs.environment }}
       is_production: ${{ steps.set-env.outputs.is_production }}
+      build_only: ${{ steps.set-env.outputs.build_only }}
     steps:
       - name: Determine environment from trigger
         id: set-env
@@ -75,9 +81,12 @@ jobs:
             IS_PROD="true"
           fi
 
+          BUILD_ONLY="${{ github.event.inputs.build_only || 'false' }}"
+
           echo "environment=$ENV" >> $GITHUB_OUTPUT
           echo "is_production=$IS_PROD" >> $GITHUB_OUTPUT
-          echo "Deploying to: $ENV (is_production=$IS_PROD)"
+          echo "build_only=$BUILD_ONLY" >> $GITHUB_OUTPUT
+          echo "Deploying to: $ENV (is_production=$IS_PROD, build_only=$BUILD_ONLY)"
 
   # ===========================================================================
   # Stage 0.1: Resolve Config - Read environment-scoped variables
@@ -467,9 +476,10 @@ jobs:
   deploy-staging:
     name: Deploy to OKE (staging)
     runs-on: ubuntu-latest
-    needs: [resolve-config, detect-changes, build-base-image, build-and-push]
+    needs: [setup, resolve-config, detect-changes, build-base-image, build-and-push]
     if: |
       always() &&
+      needs.setup.outputs.build_only != 'true' &&
       needs.resolve-config.outputs.is_production == 'false' &&
       needs.resolve-config.result == 'success' &&
       needs.detect-changes.result == 'success' &&
@@ -711,9 +721,10 @@ jobs:
   deploy-us:
     name: Deploy to US (primary)
     runs-on: ubuntu-latest
-    needs: [resolve-config, detect-changes, build-base-image, build-and-push]
+    needs: [setup, resolve-config, detect-changes, build-base-image, build-and-push]
     if: |
       always() &&
+      needs.setup.outputs.build_only != 'true' &&
       needs.resolve-config.outputs.is_production == 'true' &&
       needs.resolve-config.result == 'success' &&
       needs.detect-changes.result == 'success' &&

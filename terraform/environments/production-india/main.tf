@@ -86,16 +86,21 @@ module "india" {
   compartment_id = var.compartment_id
   tenancy_id     = var.tenancy_id
 
-  # Active-active node with local DB — matches US/EU sizing
+  # ARM64 custom OKE image (A4 Flex) — must be created in ap-mumbai-1
+  # Follow docs/oke-arm64-custom-image.md to create per-region image
+  image_id           = "" # TODO: create custom ARM image in ap-mumbai-1
+  placement_ad_names = [] # TODO: determine which AD has A4.Flex capacity
+
+  # Active-active node with local DB — matches US sizing (A4: 6 GB/OCPU)
   system_node_ocpus     = 8
-  system_node_memory_gb = 32
+  system_node_memory_gb = 48
   system_pool_size      = 3
   system_pool_min       = 2
   system_pool_max       = 10
 
   enable_workload_pool      = true
   workload_node_ocpus       = 8
-  workload_node_memory_gb   = 64
+  workload_node_memory_gb   = 48
   workload_pool_size        = 1
   workload_pool_min         = 1
   workload_pool_max         = 30

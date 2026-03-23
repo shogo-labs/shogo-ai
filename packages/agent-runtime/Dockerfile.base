@@ -26,10 +26,9 @@ RUN echo "https://dl-cdn.alpinelinux.org/alpine/v3.21/main" >> /etc/apk/reposito
     chromium nss freetype harfbuzz ca-certificates ttf-freefont \
     aws-cli
 
-# CLI tools: gh (GitHub), glab (GitLab), oci (Oracle Cloud), stripe
+# CLI tools: gh (GitHub), glab (GitLab), stripe
 RUN echo "https://dl-cdn.alpinelinux.org/alpine/v3.21/community" >> /etc/apk/repositories && \
     apk add --no-cache github-cli glab python3 py3-pip && \
-    pip3 install --break-system-packages oci-cli && \
     STRIPE_VER=$(curl -fsSL https://api.github.com/repos/stripe/stripe-cli/releases/latest \
       | grep '"tag_name"' | head -1 | cut -d'"' -f4) && \
     STRIPE_ARCH="$(uname -m | sed 's/aarch64/arm64/')" && \

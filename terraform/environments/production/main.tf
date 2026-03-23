@@ -125,15 +125,18 @@ module "oke" {
   api_nsg_id                = module.vcn.oke_api_nsg_id
   workers_nsg_id            = module.vcn.oke_workers_nsg_id
 
+  image_id           = "ocid1.image.oc1.iad.aaaaaaaaxlqapo7gpvnvfndkhfnixrnvlumdgaexjvakamdmhiegulsypa5a"
+  placement_ad_names = ["XYpk:US-ASHBURN-AD-1"]
+
   node_ocpus     = 8
-  node_memory_gb = 64
+  node_memory_gb = 48
   node_pool_size = 3
   node_pool_min  = 2
   node_pool_max  = 15
 
   enable_workload_pool      = true
   workload_node_ocpus       = 8
-  workload_node_memory_gb   = 64
+  workload_node_memory_gb   = 48
   workload_pool_size        = 2
   workload_pool_min         = 1
   workload_pool_max         = 100
