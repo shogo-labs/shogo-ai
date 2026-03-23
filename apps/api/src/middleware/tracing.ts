@@ -47,8 +47,11 @@ export const tracingMiddleware: MiddlewareHandler = async (c, next) => {
       const status = c.res.status
       span.setAttribute('http.status_code', status)
 
-      if (status >= 400) {
+      if (status >= 500) {
         span.setStatus({ code: SpanStatusCode.ERROR, message: `HTTP ${status}` })
+      } else if (status >= 400) {
+        span.setStatus({ code: SpanStatusCode.UNSET })
+        span.setAttribute('http.error_type', `${status}`)
       }
     } catch (err: any) {
       span.setStatus({ code: SpanStatusCode.ERROR, message: err.message })
