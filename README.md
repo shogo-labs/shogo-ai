@@ -1,7 +1,9 @@
-# Shogo AI
+# [Shogo AI](https://shogo.ai)
 
 AI-first agent builder for chat-driven apps, persistent agents, and dynamic
 workspaces.
+
+**[Website](https://shogo.ai)** &middot; **[Launch Studio](https://studio.shogo.ai)** &middot; **[Documentation](https://shogo.ai/docs)**
 
 Shogo combines a Hono API, Expo-based clients, agent runtimes, project
 runtimes, and a developer SDK into one platform for building and operating
@@ -114,6 +116,15 @@ Local desktop/offline usage is documented in `apps/desktop/README.md`.
 | `bun run typecheck` | Run TypeScript checks |
 | `bun run lint` | Run linters |
 
+## Links
+
+- [Shogo AI Website](https://shogo.ai) -- learn about the platform
+- [Shogo Studio](https://studio.shogo.ai) -- launch the web app
+- [Pricing](https://shogo.ai/pricing) -- plans and features
+- [Blog](https://shogo.ai/blog) -- updates and tutorials
+- [Templates](https://shogo.ai/templates) -- pre-built agent templates
+- [Integrations](https://shogo.ai/integrations) -- 970+ app connections
+
 ## Community
 
 - `CONTRIBUTING.md` for contribution guidelines
@@ -123,6 +134,7 @@ Local desktop/offline usage is documented in `apps/desktop/README.md`.
 
 ## Documentation
 
+- [Getting Started](https://shogo.ai/docs) -- quickstart guide
 - `docs/GETTING_STARTED.md`
 - `docs/ARCHITECTURE.md`
 - `docs/SELF_HOSTING.md`
