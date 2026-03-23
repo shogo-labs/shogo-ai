@@ -274,12 +274,15 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
+      - name: Set up QEMU for multi-arch builds
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+
       - name: Build and push base image
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: packages/agent-runtime/Dockerfile.base
-          platforms: linux/amd64
+          platforms: linux/arm64
           push: true
           provenance: false
           tags: |
@@ -351,12 +354,15 @@ jobs:
             echo "prefix=${{ needs.resolve-config.outputs.environment }}" >> $GITHUB_OUTPUT
           fi
 
+      - name: Set up QEMU for multi-arch builds
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+
       - name: Build and push ${{ matrix.image }} image
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64
+          platforms: linux/arm64
           push: true
           provenance: false
           tags: |
@@ -549,6 +555,10 @@ jobs:
           if [ -n "${{ secrets.SIGNOZ_INGESTION_KEY }}" ]; then
             kubectl create secret generic signoz-credentials \
               --namespace=${{ env.NS_SYSTEM }} \
+              --from-literal=SIGNOZ_INGESTION_KEY="${{ secrets.SIGNOZ_INGESTION_KEY }}" \
+              --dry-run=client -o yaml | kubectl apply -f -
+            kubectl create secret generic signoz-credentials \
+              --namespace=${{ env.NS_WORKSPACES }} \
               --from-literal=SIGNOZ_INGESTION_KEY="${{ secrets.SIGNOZ_INGESTION_KEY }}" \
               --dry-run=client -o yaml | kubectl apply -f -
           fi
@@ -792,6 +802,10 @@ jobs:
               --namespace=${{ env.NS_SYSTEM }} \
               --from-literal=SIGNOZ_INGESTION_KEY="${{ secrets.SIGNOZ_INGESTION_KEY }}" \
               --dry-run=client -o yaml | kubectl apply -f -
+            kubectl create secret generic signoz-credentials \
+              --namespace=${{ env.NS_WORKSPACES }} \
+              --from-literal=SIGNOZ_INGESTION_KEY="${{ secrets.SIGNOZ_INGESTION_KEY }}" \
+              --dry-run=client -o yaml | kubectl apply -f -
           fi
 
           # Kourier TLS secret for Knative HTTPS termination (Cloudflare origin cert)
@@ -996,6 +1010,10 @@ jobs:
               --namespace=${{ env.NS_SYSTEM }} \
               --from-literal=SIGNOZ_INGESTION_KEY="${{ secrets.SIGNOZ_INGESTION_KEY }}" \
               --dry-run=client -o yaml | kubectl apply -f -
+            kubectl create secret generic signoz-credentials \
+              --namespace=${{ env.NS_WORKSPACES }} \
+              --from-literal=SIGNOZ_INGESTION_KEY="${{ secrets.SIGNOZ_INGESTION_KEY }}" \
+              --dry-run=client -o yaml | kubectl apply -f -
           fi
 
           # Kourier TLS secret for Knative HTTPS termination (Cloudflare origin cert)
@@ -1189,6 +1207,10 @@ jobs:
           if [ -n "${{ secrets.SIGNOZ_INGESTION_KEY }}" ]; then
             kubectl create secret generic signoz-credentials \
               --namespace=${{ env.NS_SYSTEM }} \
+              --from-literal=SIGNOZ_INGESTION_KEY="${{ secrets.SIGNOZ_INGESTION_KEY }}" \
+              --dry-run=client -o yaml | kubectl apply -f -
+            kubectl create secret generic signoz-credentials \
+              --namespace=${{ env.NS_WORKSPACES }} \
               --from-literal=SIGNOZ_INGESTION_KEY="${{ secrets.SIGNOZ_INGESTION_KEY }}" \
               --dry-run=client -o yaml | kubectl apply -f -
           fi

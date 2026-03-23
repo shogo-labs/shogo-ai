@@ -10,7 +10,6 @@ Quick reference for connecting to Shogo production infrastructure.
 |------|---------|
 | `kubectl` | `brew install kubectl` |
 | `oci` (OCI CLI) | `brew install oci-cli` |
-| `aws` (AWS CLI) | `brew install awscli` |
 | `skopeo` | `brew install skopeo` (image replication) |
 
 ### OCI CLI Setup
@@ -22,14 +21,6 @@ oci setup config
 Config lives at `~/.oci/config`. You need:
 - User OCID, tenancy OCID, region, API key fingerprint
 - Private key at `~/.oci/oci_api_key.pem`
-
-### AWS CLI Setup
-
-The `shogo` AWS profile is used for the legacy AWS EKS cluster:
-
-```bash
-aws configure --profile shogo
-```
 
 ---
 
@@ -43,7 +34,6 @@ Each cluster has a dedicated kubeconfig file to avoid context-switching mistakes
 | `~/.kube/config-oke-eu` | OCI OKE EU | eu-frankfurt-1 | Tier 1 production |
 | `~/.kube/config-oke-india` | OCI OKE India | ap-mumbai-1 | Tier 2 production |
 | `~/.kube/config-oke-staging` | OCI OKE Staging | us-ashburn-1 | Staging |
-| `~/.kube/config-aws-prod` | AWS EKS | us-east-1 | Legacy AWS production |
 
 ### Generating Kubeconfigs
 
@@ -75,15 +65,6 @@ oci ce cluster create-kubeconfig \
   --kube-endpoint PUBLIC_ENDPOINT
 ```
 
-For AWS EKS:
-
-```bash
-AWS_PROFILE=shogo aws eks update-kubeconfig \
-  --name shogo-production \
-  --region us-east-1 \
-  --kubeconfig ~/.kube/config-aws-prod
-```
-
 ---
 
 ## Connecting to Clusters
@@ -113,7 +94,6 @@ alias kus='KUBECONFIG=~/.kube/config-oke-us kubectl'
 alias keu='KUBECONFIG=~/.kube/config-oke-eu kubectl'
 alias kin='KUBECONFIG=~/.kube/config-oke-india kubectl'
 alias kst='KUBECONFIG=~/.kube/config-oke-staging kubectl'
-alias kaws='KUBECONFIG=~/.kube/config-aws-prod kubectl'
 ```
 
 Then: `kus get pods -n shogo-production-system`
@@ -258,8 +238,8 @@ S3-compatible access uses OCI Customer Secret Keys stored in the `s3-credentials
 
 ### CI/CD
 
-Deployments are triggered via GitHub Actions (`.github/workflows/deploy-oci.yml`) on pushes to:
-- `oracle-migration` branch → staging
+Deployments are triggered via GitHub Actions (`.github/workflows/deploy.yml`) on pushes to:
+- `main` branch → staging
 - `production` branch → all production regions
 
 The workflow builds images in US OCIR, replicates to EU/India with `skopeo`, and deploys via `kubectl apply -k` to each region's kustomize overlay.

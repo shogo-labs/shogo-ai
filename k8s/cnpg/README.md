@@ -9,9 +9,9 @@ cluster is planned but not yet implemented — dev projects use SQLite and
 published-app PostgreSQL provisioning is still on the roadmap.
 
 ### Platform Cluster (`platform-pg`) — **active**
-- Replaces AWS RDS for the platform database
+- Runs on OCI OKE clusters across all regions
 - HA with automated failover (2-3 instances)
-- Continuous backup to S3/MinIO via Barman
+- Continuous backup to OCI Object Storage via Barman (S3-compatible API)
 - Used by: API, MCP, Auth services
 
 ### Projects Cluster (`projects-pg`) — **stub / not deployed**
@@ -42,20 +42,22 @@ To apply manually:
 
 ```bash
 # Staging
-kubectl apply -f k8s/cnpg/staging/
+kubectl apply -f k8s/cnpg/staging-oci/
 
-# Production
-kubectl apply -f k8s/cnpg/production/
+# Production US
+kubectl apply -f k8s/cnpg/production-oci/
+
+# Production EU
+kubectl apply -f k8s/cnpg/production-eu-oci/
 ```
 
 ## Storage
 
-- **EKS**: Uses `gp3` EBS volumes (StorageClass: `ebs-sc`)
-- **Bare metal**: Uses `local-path` or `openebs-hostpath`
+- **OCI OKE**: Uses `oci-bv` block volume StorageClass
 
 ## Backup
 
-Continuous backup via Barman to S3-compatible storage:
+Continuous backup via Barman to OCI Object Storage (S3-compatible):
 - WAL archiving for point-in-time recovery (PITR)
 - Scheduled base backups
-- Works with both AWS S3 and self-hosted MinIO
+- Uses OCI Customer Secret Keys for S3-compatible access
