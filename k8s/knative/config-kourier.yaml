@@ -1,0 +1,28 @@
+# =============================================================================
+# Kourier Gateway Configuration
+# =============================================================================
+# Applied to the knative-serving namespace on all OCI production clusters.
+#
+# trusted-hops-count: "1" — OCI NLB sits between Cloudflare and Kourier,
+#   so Envoy must look 1 hop back in X-Forwarded-For to find the real
+#   client IP. Without this, all traffic appears to come from the NLB's
+#   internal IP, breaking per-user rate limiting.
+#
+# use-remote-address: "true" — tells Envoy to use the immediate downstream
+#   connection address when determining internal vs external origin.
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config-kourier
+  namespace: knative-serving
+  labels:
+    app.kubernetes.io/component: net-kourier
+    app.kubernetes.io/name: knative-serving
+    networking.knative.dev/ingress-provider: kourier
+data:
+  trusted-hops-count: "1"
+  use-remote-address: "true"
+  certs-secret-name: kourier-tls
+  certs-secret-namespace: kourier-system
+  drain-time-seconds: "15"

@@ -54,12 +54,13 @@ resource "cloudflare_load_balancer_monitor" "health" {
 # =============================================================================
 
 resource "cloudflare_load_balancer_pool" "us" {
-  account_id = var.cloudflare_account_id
-  name       = "shogo-us"
-  enabled    = true
-  monitor    = cloudflare_load_balancer_monitor.health.id
-  latitude   = 39.0
-  longitude  = -77.5
+  account_id    = var.cloudflare_account_id
+  name          = "shogo-us"
+  enabled       = true
+  monitor       = cloudflare_load_balancer_monitor.health.id
+  latitude      = 39.0
+  longitude     = -77.5
+  check_regions = ["ENAM", "WNAM"]
 
   origins {
     name    = "kourier-us"
@@ -70,12 +71,13 @@ resource "cloudflare_load_balancer_pool" "us" {
 }
 
 resource "cloudflare_load_balancer_pool" "eu" {
-  account_id = var.cloudflare_account_id
-  name       = "shogo-eu"
-  enabled    = true
-  monitor    = cloudflare_load_balancer_monitor.health.id
-  latitude   = 50.1
-  longitude  = 8.7
+  account_id    = var.cloudflare_account_id
+  name          = "shogo-eu"
+  enabled       = true
+  monitor       = cloudflare_load_balancer_monitor.health.id
+  latitude      = 50.1
+  longitude     = 8.7
+  check_regions = ["WEU", "EEU"]
 
   origins {
     name    = "kourier-eu"
@@ -86,12 +88,13 @@ resource "cloudflare_load_balancer_pool" "eu" {
 }
 
 resource "cloudflare_load_balancer_pool" "india" {
-  account_id = var.cloudflare_account_id
-  name       = "shogo-in"
-  enabled    = true
-  monitor    = cloudflare_load_balancer_monitor.health.id
-  latitude   = 19.1
-  longitude  = 72.9
+  account_id    = var.cloudflare_account_id
+  name          = "shogo-in"
+  enabled       = true
+  monitor       = cloudflare_load_balancer_monitor.health.id
+  latitude      = 19.1
+  longitude     = 72.9
+  check_regions = ["IN", "SEAS"]
 
   origins {
     name    = "kourier-in"

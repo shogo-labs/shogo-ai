@@ -759,7 +759,7 @@ app.use('/api/webhooks/*', rateLimiter('webhooks', { max: Number(process.env.RAT
 app.use('/api/*', rateLimiter('global', {
   max: Number(process.env.RATE_LIMIT_GLOBAL_MAX) || 600,
   windowMs: Number(process.env.RATE_LIMIT_GLOBAL_WINDOW_MS) || 60_000,
-  skipPrefixes: ['/api/ai/', '/api/internal/'],
+  skipPrefixes: ['/api/ai/', '/api/internal/', '/api/health', '/api/warm-pool/status'],
 }))
 
 // Auth middleware — extract session for ALL /api/* routes so c.get('auth') is
