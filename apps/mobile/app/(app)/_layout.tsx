@@ -27,7 +27,7 @@ import { AppSidebar } from '../../components/layout/AppSidebar'
 import { AppHeader } from '../../components/layout/AppHeader'
 
 export default function AppLayout() {
-  const { isAuthenticated, isLoading } = useAuth()
+  const { isAuthenticated, isLoading, user } = useAuth()
   const router = useRouter()
   const pathname = usePathname()
   const { width } = useWindowDimensions()
@@ -56,21 +56,22 @@ export default function AppLayout() {
   }, [isAuthenticated, isLoading, router])
 
   useEffect(() => {
-    if (!isAuthenticated) return
+    if (!isAuthenticated || !user) return
     try {
       const pending = sessionStorage.getItem('oauth_pending')
       if (pending) {
         sessionStorage.removeItem('oauth_pending')
-        const isNew = !localStorage.getItem('shogo_returned')
-        if (isNew) {
+        const accountAge = user.createdAt
+          ? Date.now() - new Date(user.createdAt).getTime()
+          : Infinity
+        if (accountAge < 60_000) {
           trackSignUp(pending as 'google')
-          localStorage.setItem('shogo_returned', '1')
         } else {
           trackLogin(pending as 'google')
         }
       }
     } catch {}
-  }, [isAuthenticated])
+  }, [isAuthenticated, user])
 
   const openDrawer = useCallback(() => setDrawerOpen(true), [])
   const closeDrawer = useCallback(() => setDrawerOpen(false), [])
