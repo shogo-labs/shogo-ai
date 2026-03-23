@@ -67,6 +67,7 @@
     "@babel/preset-env": "^7.29.0",
     "@babel/preset-typescript": "^7.28.5",
     "@babel/runtime": "^7.28.6",
+    "@playwright/test": "^1.58.2",
     "@prisma/adapter-libsql": "^7.3.0",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/pg": "^8.20.0",
