@@ -376,7 +376,7 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       return c.json({ ok: true, projectId, durationMs: duration })
     } catch (error: any) {
       state.poolAssigned = false
-      state.currentProjectId = null
+      state.currentProjectId = undefined
       currentProjectId = '__POOL__'
       process.env.PROJECT_ID = '__POOL__'
       console.error(`[${config.name}] Pool assignment failed for ${projectId}:`, error.message)

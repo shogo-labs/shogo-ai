@@ -55,6 +55,8 @@ export interface AgentEval {
   initialMode?: 'canvas' | 'app' | 'none'
   /** Arbitrary tags for filtering (e.g. 'view-only', 'interactive') */
   tags?: string[]
+  /** Agent mode required for this eval (e.g. 'basic', 'advanced') */
+  requiredAgent?: string
 }
 
 export interface ConversationTurn {
@@ -157,6 +159,8 @@ export interface CategorySummary {
 
 export interface CostSummary {
   totalInputTokens: number
+  totalCacheReadTokens?: number
+  totalCacheWriteTokens?: number
   totalOutputTokens: number
   totalCost: number
   costPerEval: number

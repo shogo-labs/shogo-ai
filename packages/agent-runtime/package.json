@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "bun run --watch src/server.ts",
     "start": "bun run src/server.ts",
-    "build": "bun build src/server.ts --outdir dist --target bun",
+    "build": "bun build src/server.ts --outdir dist --target bun --packages external",
     "typecheck": "tsc --noEmit",
     "evals:fixtures": "bun run src/evals/extract-fixtures.ts",
     "evals:fixtures:check": "bun run src/evals/extract-fixtures.ts --check",
