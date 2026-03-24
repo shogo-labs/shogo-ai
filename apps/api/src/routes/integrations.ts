@@ -4,8 +4,10 @@
  * Integrations Routes - Composio-powered OAuth integrations
  *
  * Only COMPOSIO_API_KEY is required. Composio provides managed OAuth
- * credentials for all toolkits by default. Optional COMPOSIO_*_AUTH_CONFIG
- * env vars enable white-labeling (consent screens show your app name).
+ * credentials for all toolkits by default. Any toolkit name that Composio
+ * supports can be used — no server-side allowlist needed. Optional
+ * COMPOSIO_*_AUTH_CONFIG env vars enable white-labeling for specific
+ * toolkits (consent screens show your app name instead of Composio's).
  *
  * Endpoints:
  * - GET    /integrations/providers       - List available Composio-backed providers
@@ -17,11 +19,6 @@
 
 import { Hono } from 'hono'
 import { Composio } from '@composio/core'
-
-const SUPPORTED_TOOLKITS = [
-  'googlecalendar', 'gmail', 'googledrive',
-  'slack', 'github', 'linear', 'notion',
-] as const
 
 const TOOLKIT_AUTH_CONFIG_OVERRIDES: Record<string, string> = {}
 
@@ -39,6 +36,9 @@ const TOOLKIT_AUTH_CONFIG_OVERRIDES: Record<string, string> = {}
  *   COMPOSIO_GITHUB_AUTH_CONFIG — covers github
  *   COMPOSIO_LINEAR_AUTH_CONFIG — covers linear
  *   COMPOSIO_NOTION_AUTH_CONFIG — covers notion
+ *   COMPOSIO_STRIPE_AUTH_CONFIG — covers stripe
+ *
+ * Adding a new toolkit requires no code changes here — just set the env var.
  */
 function loadAuthConfigs() {
   const envMap: Record<string, string[]> = {
@@ -47,6 +47,7 @@ function loadAuthConfigs() {
     COMPOSIO_GITHUB_AUTH_CONFIG: ['github'],
     COMPOSIO_LINEAR_AUTH_CONFIG: ['linear'],
     COMPOSIO_NOTION_AUTH_CONFIG: ['notion'],
+    COMPOSIO_STRIPE_AUTH_CONFIG: ['stripe'],
   }
 
   const missing: string[] = []
@@ -91,17 +92,7 @@ export function integrationRoutes() {
 
   router.get('/integrations/providers', (c) => {
     const composio = getComposio()
-    if (!composio) {
-      return c.json({ ok: true, data: [], enabled: false })
-    }
-
-    const providers = SUPPORTED_TOOLKITS.map((toolkit) => ({
-      toolkit,
-      whiteLabeled: !!TOOLKIT_AUTH_CONFIG_OVERRIDES[toolkit],
-      available: true,
-    }))
-
-    return c.json({ ok: true, data: providers, enabled: true })
+    return c.json({ ok: true, data: [], enabled: !!composio })
   })
 
   router.post('/integrations/connect', async (c) => {
@@ -125,10 +116,6 @@ export function integrationRoutes() {
 
     if (!toolkit || !projectId) {
       return c.json({ error: 'toolkit and projectId are required' }, 400)
-    }
-
-    if (!SUPPORTED_TOOLKITS.includes(toolkit as typeof SUPPORTED_TOOLKITS[number])) {
-      return c.json({ error: `Unsupported toolkit '${toolkit}'. Supported: ${SUPPORTED_TOOLKITS.join(', ')}` }, 400)
     }
 
     if (callbackUrl) {
@@ -263,10 +250,6 @@ export function integrationRoutes() {
     const projectId = c.req.query('projectId')
     if (!projectId) {
       return c.json({ error: 'projectId query parameter required' }, 400)
-    }
-
-    if (!SUPPORTED_TOOLKITS.includes(toolkit as typeof SUPPORTED_TOOLKITS[number])) {
-      return c.json({ error: `Unsupported toolkit '${toolkit}'. Supported: ${SUPPORTED_TOOLKITS.join(', ')}` }, 400)
     }
 
     // Check both the authenticated user's entity and the 'default' entity.
