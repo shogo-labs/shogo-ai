@@ -178,3 +178,66 @@ export function seedWorkspaceFromTemplate(dir: string, templateId: string, agent
 
   return true
 }
+
+// ---------------------------------------------------------------------------
+// Skill Server Seed
+// ---------------------------------------------------------------------------
+
+const SKILL_SERVER_SCHEMA = `datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "./generated/prisma"
+}
+
+// Add your models below. Each model gets CRUD routes at /api/{model-name-plural}.
+// After editing, run: bunx shogo generate && bunx prisma db push
+`
+
+const SKILL_SERVER_CONFIG = JSON.stringify(
+  {
+    schema: './schema.prisma',
+    outputs: [
+      {
+        dir: './generated',
+        generate: ['routes', 'hooks', 'types'],
+      },
+      {
+        dir: '.',
+        generate: ['server'],
+      },
+      {
+        dir: '.',
+        generate: ['db'],
+      },
+    ],
+  },
+  null,
+  2,
+)
+
+/**
+ * Seed the skill server skeleton in .shogo/server/.
+ * Creates schema.prisma, shogo.config.json, and necessary directories.
+ * Only writes files that don't already exist.
+ */
+export function seedSkillServer(workspaceDir: string): { created: boolean; serverDir: string } {
+  const serverDir = join(workspaceDir, '.shogo', 'server')
+  const schemaPath = join(serverDir, 'schema.prisma')
+
+  if (existsSync(schemaPath)) {
+    return { created: false, serverDir }
+  }
+
+  mkdirSync(serverDir, { recursive: true })
+  mkdirSync(join(serverDir, 'generated'), { recursive: true })
+  mkdirSync(join(serverDir, 'hooks'), { recursive: true })
+
+  writeFileSync(schemaPath, SKILL_SERVER_SCHEMA, 'utf-8')
+  writeFileSync(join(serverDir, 'shogo.config.json'), SKILL_SERVER_CONFIG, 'utf-8')
+
+  return { created: true, serverDir }
+}
