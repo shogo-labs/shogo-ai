@@ -18,7 +18,10 @@
     "evals:agent:all": "bun run src/evals/run-eval.ts --track all",
     "evals:optimize": "cd src/evals/dspy && python3 optimize.py --track all --eval-model haiku --optimize-model sonnet --strategy bootstrap --no-cache",
     "evals:apply": "bun run src/evals/apply-optimizations.ts",
-    "evals:pipeline": "bun run evals:optimize && bun run evals:apply"
+    "evals:pipeline": "bun run evals:optimize && bun run evals:apply",
+    "generate-templates": "bun run src/template-generator/cli.ts",
+    "generate-templates:force": "bun run src/template-generator/cli.ts --force",
+    "generate-templates:dry": "bun run src/template-generator/cli.ts --dry-run"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.76",
