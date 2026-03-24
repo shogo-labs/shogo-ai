@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { Component, type ReactNode } from 'react'
 import { View } from 'react-native'
+import * as Sentry from '@sentry/react-native'
 import { Text } from '@/components/ui/text'
 import { Button, ButtonText } from '@/components/ui/button'
 import { AlertTriangle, RefreshCw } from 'lucide-react-native'
@@ -35,6 +36,7 @@ export class CanvasErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error) {
+    Sentry.captureException(error, { tags: { boundary: 'canvas' } })
     console.error('[CanvasErrorBoundary] Render crash:', error.message)
 
     if (this.state.errorCount < MAX_AUTO_RETRIES) {
