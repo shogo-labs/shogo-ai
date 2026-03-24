@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState, useEffect } from 'react'
 import { Platform } from 'react-native'
-import { API_URL } from './api'
+import { PlatformApi } from '@shogo-ai/sdk'
+import { createHttpClient } from './api'
 
 export interface PlatformConfig {
   localMode: boolean
@@ -46,12 +47,10 @@ function getInitialConfig(): PlatformConfig {
 async function fetchConfig(): Promise<PlatformConfig> {
   if (cachedConfig?.configLoaded) return cachedConfig
   try {
-    const res = await fetch(`${API_URL}/api/config`, { signal: AbortSignal.timeout(3000) })
-    if (res.ok) {
-      const data = await res.json()
-      cachedConfig = { ...data, configLoaded: true }
-      return cachedConfig!
-    }
+    const platform = new PlatformApi(createHttpClient())
+    const data = await platform.getConfig()
+    cachedConfig = { ...data, configLoaded: true }
+    return cachedConfig!
   } catch {}
   const fallback = getInitialConfig()
   cachedConfig = { ...fallback, configLoaded: true }
