@@ -1,8 +1,6 @@
 const path = require('path')
 const { getDefaultConfig } = require('expo/metro-config')
 const { withNativeWind } = require('nativewind/metro')
-const { withSentryConfig } = require('@sentry/react-native/metro')
-
 const config = getDefaultConfig(__dirname)
 
 const monorepoRoot = path.resolve(__dirname, '../..')
@@ -51,4 +49,4 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
   return context.resolveRequest(context, moduleName, platform)
 }
 
-module.exports = withSentryConfig(withNativeWind(config, { input: './global.css' }))
+module.exports = withNativeWind(config, { input: './global.css' })
