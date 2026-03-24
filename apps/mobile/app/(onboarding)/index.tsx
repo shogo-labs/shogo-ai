@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   View,
   Text,
@@ -28,11 +28,13 @@ import {
   Check,
   ChevronDown,
   Shield,
+  Cloud,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { usePostHogSafe } from '../../contexts/posthog'
 import { useAuth } from '../../contexts/auth'
 import { usePlatformConfig, invalidatePlatformConfigCache } from '../../lib/platform-config'
+import { PlatformApi } from '@shogo-ai/sdk'
 import { API_URL, api, createHttpClient } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { getStoredAttribution, clearStoredAttribution } from '../../lib/attribution'
@@ -42,7 +44,7 @@ import { SecurityPreferenceSelector } from '../../components/security/SecurityPr
 // Types
 // =============================================================================
 
-type AIConfigMode = 'api-keys' | 'local-llm' | null
+type AIConfigMode = 'shogo-cloud' | 'api-keys' | 'local-llm' | null
 
 interface ModelInfo {
   id: string
@@ -73,7 +75,7 @@ type StepId =
 
 function getSteps(localMode: boolean, needsSetup: boolean): StepId[] {
   if (localMode && needsSetup) {
-    return ['welcome', 'create-account', 'security-preference']
+    return ['welcome', 'create-account', 'configure-ai', 'security-preference']
   }
   // Cloud onboarding
   return ['welcome', 'features', 'templates', 'get-started']
@@ -90,6 +92,8 @@ export default function OnboardingPage() {
   const { localMode, needsSetup, features } = usePlatformConfig()
   const { width } = useWindowDimensions()
   const isWide = width >= 768
+
+  const platform = useMemo(() => new PlatformApi(createHttpClient()), [])
 
   const steps = getSteps(localMode, needsSetup ?? false)
   const [currentStepIdx, setCurrentStepIdx] = useState(0)
@@ -111,6 +115,8 @@ export default function OnboardingPage() {
   const [aiMode, setAiMode] = useState<AIConfigMode>(null)
   const [anthropicKey, setAnthropicKey] = useState('')
   const [openaiKey, setOpenaiKey] = useState('')
+  const [shogoApiKey, setShogoApiKey] = useState('')
+  const [shogoKeyError, setShogoKeyError] = useState('')
   const [llmBaseUrl, setLlmBaseUrl] = useState('')
   const [basicModel, setBasicModel] = useState('')
   const [advancedModel, setAdvancedModel] = useState('')
@@ -215,11 +221,7 @@ export default function OnboardingPage() {
     setIsTesting(true)
     setConnectionStatus('idle')
     try {
-      const res = await fetch(
-        `${API_URL}/api/local/models?baseUrl=${encodeURIComponent(llmBaseUrl)}`,
-        { credentials: 'include' }
-      )
-      const data = await res.json() as { ok: boolean; models: ModelInfo[] }
+      const data = await platform.getLocalModels(llmBaseUrl)
       if (data.ok) {
         setModels(data.models)
         setConnectionStatus('connected')
@@ -231,36 +233,31 @@ export default function OnboardingPage() {
     } finally {
       setIsTesting(false)
     }
-  }, [llmBaseUrl])
+  }, [llmBaseUrl, platform])
 
   // -- Save AI config
   const handleSaveAIConfig = useCallback(async () => {
     setIsSavingAI(true)
+    setShogoKeyError('')
     try {
-      if (aiMode === 'api-keys') {
+      if (aiMode === 'shogo-cloud') {
+        const data = await platform.connectShogoKey(shogoApiKey)
+        if (!data.ok) {
+          setShogoKeyError(data.error || 'Failed to validate key')
+          setIsSavingAI(false)
+          return
+        }
+      } else if (aiMode === 'api-keys') {
         const body: Record<string, string> = {}
         if (anthropicKey) body.anthropicApiKey = anthropicKey
         if (openaiKey) body.openaiApiKey = openaiKey
-        const res = await fetch(`${API_URL}/api/local/api-keys`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify(body),
-        })
-        if (!res.ok) throw new Error('Failed to save API keys')
+        await platform.putProviderKeys(body)
       } else if (aiMode === 'local-llm') {
-        const llmBody: Record<string, string | null> = {
+        await platform.putLlmConfig({
           LOCAL_LLM_BASE_URL: llmBaseUrl || null,
           LOCAL_LLM_BASIC_MODEL: basicModel || null,
           LOCAL_LLM_ADVANCED_MODEL: advancedModel || null,
-        }
-        const res = await fetch(`${API_URL}/api/local/llm-config`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify(llmBody),
         })
-        if (!res.ok) throw new Error('Failed to save LLM config')
       }
       setAiSaved(true)
       goNext()
@@ -269,7 +266,7 @@ export default function OnboardingPage() {
     } finally {
       setIsSavingAI(false)
     }
-  }, [aiMode, anthropicKey, openaiKey, llmBaseUrl, basicModel, advancedModel, goNext])
+  }, [aiMode, shogoApiKey, anthropicKey, openaiKey, llmBaseUrl, basicModel, advancedModel, goNext, platform])
 
   // -- Complete onboarding
   const handleComplete = useCallback(async () => {
@@ -358,6 +355,9 @@ export default function OnboardingPage() {
               openaiKey={openaiKey}
               onAnthropicKeyChange={setAnthropicKey}
               onOpenaiKeyChange={setOpenaiKey}
+              shogoApiKey={shogoApiKey}
+              onShogoApiKeyChange={setShogoApiKey}
+              shogoKeyError={shogoKeyError}
               llmBaseUrl={llmBaseUrl}
               onLlmBaseUrlChange={setLlmBaseUrl}
               basicModel={basicModel}
@@ -531,6 +531,9 @@ function ConfigureAIStep({
   openaiKey,
   onAnthropicKeyChange,
   onOpenaiKeyChange,
+  shogoApiKey,
+  onShogoApiKeyChange,
+  shogoKeyError,
   llmBaseUrl,
   onLlmBaseUrlChange,
   basicModel,
@@ -551,6 +554,9 @@ function ConfigureAIStep({
   openaiKey: string
   onAnthropicKeyChange: (v: string) => void
   onOpenaiKeyChange: (v: string) => void
+  shogoApiKey: string
+  onShogoApiKeyChange: (v: string) => void
+  shogoKeyError: string
   llmBaseUrl: string
   onLlmBaseUrlChange: (v: string) => void
   basicModel: string
@@ -577,6 +583,26 @@ function ConfigureAIStep({
       {/* Mode selection */}
       <View className="gap-3">
         <Pressable
+          onPress={() => onAiModeChange('shogo-cloud')}
+          className={cn(
+            'flex-row items-center gap-4 p-4 rounded-xl border',
+            aiMode === 'shogo-cloud' ? 'border-primary bg-primary/5' : 'border-border bg-card'
+          )}
+        >
+          <View className={cn(
+            'w-10 h-10 rounded-lg items-center justify-center',
+            aiMode === 'shogo-cloud' ? 'bg-primary/10' : 'bg-muted'
+          )}>
+            <Cloud size={20} className={aiMode === 'shogo-cloud' ? 'text-primary' : 'text-muted-foreground'} />
+          </View>
+          <View className="flex-1">
+            <Text className="text-sm font-semibold text-foreground">Use Shogo Cloud</Text>
+            <Text className="text-xs text-muted-foreground mt-0.5">Connect your Shogo account — no API keys needed</Text>
+          </View>
+          {aiMode === 'shogo-cloud' && <Check size={18} className="text-primary" />}
+        </Pressable>
+
+        <Pressable
           onPress={() => onAiModeChange('api-keys')}
           className={cn(
             'flex-row items-center gap-4 p-4 rounded-xl border',
@@ -590,7 +616,7 @@ function ConfigureAIStep({
             <Key size={20} className={aiMode === 'api-keys' ? 'text-primary' : 'text-muted-foreground'} />
           </View>
           <View className="flex-1">
-            <Text className="text-sm font-semibold text-foreground">Cloud API Keys</Text>
+            <Text className="text-sm font-semibold text-foreground">Your Own API Keys</Text>
             <Text className="text-xs text-muted-foreground mt-0.5">Use Anthropic or OpenAI API keys</Text>
           </View>
           {aiMode === 'api-keys' && <Check size={18} className="text-primary" />}
@@ -616,6 +642,30 @@ function ConfigureAIStep({
           {aiMode === 'local-llm' && <Check size={18} className="text-primary" />}
         </Pressable>
       </View>
+
+      {/* Shogo Cloud form */}
+      {aiMode === 'shogo-cloud' && (
+        <View className="gap-4 bg-card border border-border rounded-xl p-5">
+          <Text className="text-sm text-muted-foreground leading-5">
+            Enter your Shogo API key from the cloud dashboard. Usage will be billed to your Shogo cloud account.
+          </Text>
+          <FieldInput
+            label="Shogo API Key"
+            value={shogoApiKey}
+            onChangeText={onShogoApiKeyChange}
+            placeholder="shogo_sk_..."
+            secureTextEntry
+            autoCapitalize="none"
+            hint="Get your key from studio.shogo.ai → Settings → API Keys"
+          />
+          {shogoKeyError ? (
+            <View className="flex-row items-center gap-1.5">
+              <AlertTriangle size={14} className="text-destructive" />
+              <Text className="text-sm text-destructive">{shogoKeyError}</Text>
+            </View>
+          ) : null}
+        </View>
+      )}
 
       {/* API Keys form */}
       {aiMode === 'api-keys' && (
@@ -691,12 +741,12 @@ function ConfigureAIStep({
       {aiMode && (
         <Pressable
           onPress={onSave}
-          disabled={isSaving || (aiMode === 'api-keys' && !anthropicKey)}
+          disabled={isSaving || (aiMode === 'api-keys' && !anthropicKey) || (aiMode === 'shogo-cloud' && !shogoApiKey)}
           accessibilityRole="button"
           accessibilityLabel="Save and Continue"
           className={cn(
             'flex-row items-center justify-center gap-2 py-3.5 rounded-xl',
-            isSaving || (aiMode === 'api-keys' && !anthropicKey) ? 'bg-primary/50' : 'bg-primary'
+            isSaving || (aiMode === 'api-keys' && !anthropicKey) || (aiMode === 'shogo-cloud' && !shogoApiKey) ? 'bg-primary/50' : 'bg-primary'
           )}
         >
           {isSaving ? (

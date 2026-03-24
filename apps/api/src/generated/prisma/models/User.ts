@@ -220,6 +220,7 @@ export type UserWhereInput = {
   notifications?: Prisma.NotificationListRelationFilter
   starredProjects?: Prisma.StarredProjectListRelationFilter
   signupAttribution?: Prisma.XOR<Prisma.SignupAttributionNullableScalarRelationFilter, Prisma.SignupAttributionWhereInput> | null
+  apiKeys?: Prisma.ApiKeyListRelationFilter
 }
 
 export type UserOrderByWithRelationInput = {
@@ -238,6 +239,7 @@ export type UserOrderByWithRelationInput = {
   notifications?: Prisma.NotificationOrderByRelationAggregateInput
   starredProjects?: Prisma.StarredProjectOrderByRelationAggregateInput
   signupAttribution?: Prisma.SignupAttributionOrderByWithRelationInput
+  apiKeys?: Prisma.ApiKeyOrderByRelationAggregateInput
 }
 
 export type UserWhereUniqueInput = Prisma.AtLeast<{
@@ -259,6 +261,7 @@ export type UserWhereUniqueInput = Prisma.AtLeast<{
   notifications?: Prisma.NotificationListRelationFilter
   starredProjects?: Prisma.StarredProjectListRelationFilter
   signupAttribution?: Prisma.XOR<Prisma.SignupAttributionNullableScalarRelationFilter, Prisma.SignupAttributionWhereInput> | null
+  apiKeys?: Prisma.ApiKeyListRelationFilter
 }, "id" | "email">
 
 export type UserOrderByWithAggregationInput = {
@@ -307,6 +310,7 @@ export type UserCreateInput = {
   notifications?: Prisma.NotificationCreateNestedManyWithoutUserInput
   starredProjects?: Prisma.StarredProjectCreateNestedManyWithoutUserInput
   signupAttribution?: Prisma.SignupAttributionCreateNestedOneWithoutUserInput
+  apiKeys?: Prisma.ApiKeyCreateNestedManyWithoutUserInput
 }
 
 export type UserUncheckedCreateInput = {
@@ -325,6 +329,7 @@ export type UserUncheckedCreateInput = {
   notifications?: Prisma.NotificationUncheckedCreateNestedManyWithoutUserInput
   starredProjects?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutUserInput
   signupAttribution?: Prisma.SignupAttributionUncheckedCreateNestedOneWithoutUserInput
+  apiKeys?: Prisma.ApiKeyUncheckedCreateNestedManyWithoutUserInput
 }
 
 export type UserUpdateInput = {
@@ -343,6 +348,7 @@ export type UserUpdateInput = {
   notifications?: Prisma.NotificationUpdateManyWithoutUserNestedInput
   starredProjects?: Prisma.StarredProjectUpdateManyWithoutUserNestedInput
   signupAttribution?: Prisma.SignupAttributionUpdateOneWithoutUserNestedInput
+  apiKeys?: Prisma.ApiKeyUpdateManyWithoutUserNestedInput
 }
 
 export type UserUncheckedUpdateInput = {
@@ -361,6 +367,7 @@ export type UserUncheckedUpdateInput = {
   notifications?: Prisma.NotificationUncheckedUpdateManyWithoutUserNestedInput
   starredProjects?: Prisma.StarredProjectUncheckedUpdateManyWithoutUserNestedInput
   signupAttribution?: Prisma.SignupAttributionUncheckedUpdateOneWithoutUserNestedInput
+  apiKeys?: Prisma.ApiKeyUncheckedUpdateManyWithoutUserNestedInput
 }
 
 export type UserCreateManyInput = {
@@ -544,6 +551,20 @@ export type UserUpdateOneRequiredWithoutSignupAttributionNestedInput = {
   update?: Prisma.XOR<Prisma.XOR<Prisma.UserUpdateToOneWithWhereWithoutSignupAttributionInput, Prisma.UserUpdateWithoutSignupAttributionInput>, Prisma.UserUncheckedUpdateWithoutSignupAttributionInput>
 }
 
+export type UserCreateNestedOneWithoutApiKeysInput = {
+  create?: Prisma.XOR<Prisma.UserCreateWithoutApiKeysInput, Prisma.UserUncheckedCreateWithoutApiKeysInput>
+  connectOrCreate?: Prisma.UserCreateOrConnectWithoutApiKeysInput
+  connect?: Prisma.UserWhereUniqueInput
+}
+
+export type UserUpdateOneRequiredWithoutApiKeysNestedInput = {
+  create?: Prisma.XOR<Prisma.UserCreateWithoutApiKeysInput, Prisma.UserUncheckedCreateWithoutApiKeysInput>
+  connectOrCreate?: Prisma.UserCreateOrConnectWithoutApiKeysInput
+  upsert?: Prisma.UserUpsertWithoutApiKeysInput
+  connect?: Prisma.UserWhereUniqueInput
+  update?: Prisma.XOR<Prisma.XOR<Prisma.UserUpdateToOneWithWhereWithoutApiKeysInput, Prisma.UserUpdateWithoutApiKeysInput>, Prisma.UserUncheckedUpdateWithoutApiKeysInput>
+}
+
 export type UserCreateWithoutSessionsInput = {
   id?: string
   name?: string | null
@@ -559,6 +580,7 @@ export type UserCreateWithoutSessionsInput = {
   notifications?: Prisma.NotificationCreateNestedManyWithoutUserInput
   starredProjects?: Prisma.StarredProjectCreateNestedManyWithoutUserInput
   signupAttribution?: Prisma.SignupAttributionCreateNestedOneWithoutUserInput
+  apiKeys?: Prisma.ApiKeyCreateNestedManyWithoutUserInput
 }
 
 export type UserUncheckedCreateWithoutSessionsInput = {
@@ -576,6 +598,7 @@ export type UserUncheckedCreateWithoutSessionsInput = {
   notifications?: Prisma.NotificationUncheckedCreateNestedManyWithoutUserInput
   starredProjects?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutUserInput
   signupAttribution?: Prisma.SignupAttributionUncheckedCreateNestedOneWithoutUserInput
+  apiKeys?: Prisma.ApiKeyUncheckedCreateNestedManyWithoutUserInput
 }
 
 export type UserCreateOrConnectWithoutSessionsInput = {
@@ -609,6 +632,7 @@ export type UserUpdateWithoutSessionsInput = {
   notifications?: Prisma.NotificationUpdateManyWithoutUserNestedInput
   starredProjects?: Prisma.StarredProjectUpdateManyWithoutUserNestedInput
   signupAttribution?: Prisma.SignupAttributionUpdateOneWithoutUserNestedInput
+  apiKeys?: Prisma.ApiKeyUpdateManyWithoutUserNestedInput
 }
 
 export type UserUncheckedUpdateWithoutSessionsInput = {
@@ -626,6 +650,7 @@ export type UserUncheckedUpdateWithoutSessionsInput = {
   notifications?: Prisma.NotificationUncheckedUpdateManyWithoutUserNestedInput
   starredProjects?: Prisma.StarredProjectUncheckedUpdateManyWithoutUserNestedInput
   signupAttribution?: Prisma.SignupAttributionUncheckedUpdateOneWithoutUserNestedInput
+  apiKeys?: Prisma.ApiKeyUncheckedUpdateManyWithoutUserNestedInput
 }
 
 export type UserCreateWithoutAccountsInput = {
@@ -643,6 +668,7 @@ export type UserCreateWithoutAccountsInput = {
   notifications?: Prisma.NotificationCreateNestedManyWithoutUserInput
   starredProjects?: Prisma.StarredProjectCreateNestedManyWithoutUserInput
   signupAttribution?: Prisma.SignupAttributionCreateNestedOneWithoutUserInput
+  apiKeys?: Prisma.ApiKeyCreateNestedManyWithoutUserInput
 }
 
 export type UserUncheckedCreateWithoutAccountsInput = {
@@ -660,6 +686,7 @@ export type UserUncheckedCreateWithoutAccountsInput = {
   notifications?: Prisma.NotificationUncheckedCreateNestedManyWithoutUserInput
   starredProjects?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutUserInput
   signupAttribution?: Prisma.SignupAttributionUncheckedCreateNestedOneWithoutUserInput
+  apiKeys?: Prisma.ApiKeyUncheckedCreateNestedManyWithoutUserInput
 }
 
 export type UserCreateOrConnectWithoutAccountsInput = {
@@ -693,6 +720,7 @@ export type UserUpdateWithoutAccountsInput = {
   notifications?: Prisma.NotificationUpdateManyWithoutUserNestedInput
   starredProjects?: Prisma.StarredProjectUpdateManyWithoutUserNestedInput
   signupAttribution?: Prisma.SignupAttributionUpdateOneWithoutUserNestedInput
+  apiKeys?: Prisma.ApiKeyUpdateManyWithoutUserNestedInput
 }
 
 export type UserUncheckedUpdateWithoutAccountsInput = {
@@ -710,6 +738,7 @@ export type UserUncheckedUpdateWithoutAccountsInput = {
   notifications?: Prisma.NotificationUncheckedUpdateManyWithoutUserNestedInput
   starredProjects?: Prisma.StarredProjectUncheckedUpdateManyWithoutUserNestedInput
   signupAttribution?: Prisma.SignupAttributionUncheckedUpdateOneWithoutUserNestedInput
+  apiKeys?: Prisma.ApiKeyUncheckedUpdateManyWithoutUserNestedInput
 }
 
 export type UserCreateWithoutStarredProjectsInput = {
@@ -727,6 +756,7 @@ export type UserCreateWithoutStarredProjectsInput = {
   members?: Prisma.MemberCreateNestedManyWithoutUserInput
   notifications?: Prisma.NotificationCreateNestedManyWithoutUserInput
   signupAttribution?: Prisma.SignupAttributionCreateNestedOneWithoutUserInput
+  apiKeys?: Prisma.ApiKeyCreateNestedManyWithoutUserInput
 }
 
 export type UserUncheckedCreateWithoutStarredProjectsInput = {
@@ -744,6 +774,7 @@ export type UserUncheckedCreateWithoutStarredProjectsInput = {
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutUserInput
   notifications?: Prisma.NotificationUncheckedCreateNestedManyWithoutUserInput
   signupAttribution?: Prisma.SignupAttributionUncheckedCreateNestedOneWithoutUserInput
+  apiKeys?: Prisma.ApiKeyUncheckedCreateNestedManyWithoutUserInput
 }
 
 export type UserCreateOrConnectWithoutStarredProjectsInput = {
@@ -777,6 +808,7 @@ export type UserUpdateWithoutStarredProjectsInput = {
   members?: Prisma.MemberUpdateManyWithoutUserNestedInput
   notifications?: Prisma.NotificationUpdateManyWithoutUserNestedInput
   signupAttribution?: Prisma.SignupAttributionUpdateOneWithoutUserNestedInput
+  apiKeys?: Prisma.ApiKeyUpdateManyWithoutUserNestedInput
 }
 
 export type UserUncheckedUpdateWithoutStarredProjectsInput = {
@@ -794,6 +826,7 @@ export type UserUncheckedUpdateWithoutStarredProjectsInput = {
   members?: Prisma.MemberUncheckedUpdateManyWithoutUserNestedInput
   notifications?: Prisma.NotificationUncheckedUpdateManyWithoutUserNestedInput
   signupAttribution?: Prisma.SignupAttributionUncheckedUpdateOneWithoutUserNestedInput
+  apiKeys?: Prisma.ApiKeyUncheckedUpdateManyWithoutUserNestedInput
 }
 
 export type UserCreateWithoutMembersInput = {
@@ -811,6 +844,7 @@ export type UserCreateWithoutMembersInput = {
   notifications?: Prisma.NotificationCreateNestedManyWithoutUserInput
   starredProjects?: Prisma.StarredProjectCreateNestedManyWithoutUserInput
   signupAttribution?: Prisma.SignupAttributionCreateNestedOneWithoutUserInput
+  apiKeys?: Prisma.ApiKeyCreateNestedManyWithoutUserInput
 }
 
 export type UserUncheckedCreateWithoutMembersInput = {
@@ -828,6 +862,7 @@ export type UserUncheckedCreateWithoutMembersInput = {
   notifications?: Prisma.NotificationUncheckedCreateNestedManyWithoutUserInput
   starredProjects?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutUserInput
   signupAttribution?: Prisma.SignupAttributionUncheckedCreateNestedOneWithoutUserInput
+  apiKeys?: Prisma.ApiKeyUncheckedCreateNestedManyWithoutUserInput
 }
 
 export type UserCreateOrConnectWithoutMembersInput = {
@@ -861,6 +896,7 @@ export type UserUpdateWithoutMembersInput = {
   notifications?: Prisma.NotificationUpdateManyWithoutUserNestedInput
   starredProjects?: Prisma.StarredProjectUpdateManyWithoutUserNestedInput
   signupAttribution?: Prisma.SignupAttributionUpdateOneWithoutUserNestedInput
+  apiKeys?: Prisma.ApiKeyUpdateManyWithoutUserNestedInput
 }
 
 export type UserUncheckedUpdateWithoutMembersInput = {
@@ -878,6 +914,7 @@ export type UserUncheckedUpdateWithoutMembersInput = {
   notifications?: Prisma.NotificationUncheckedUpdateManyWithoutUserNestedInput
   starredProjects?: Prisma.StarredProjectUncheckedUpdateManyWithoutUserNestedInput
   signupAttribution?: Prisma.SignupAttributionUncheckedUpdateOneWithoutUserNestedInput
+  apiKeys?: Prisma.ApiKeyUncheckedUpdateManyWithoutUserNestedInput
 }
 
 export type UserCreateWithoutNotificationsInput = {
@@ -895,6 +932,7 @@ export type UserCreateWithoutNotificationsInput = {
   members?: Prisma.MemberCreateNestedManyWithoutUserInput
   starredProjects?: Prisma.StarredProjectCreateNestedManyWithoutUserInput
   signupAttribution?: Prisma.SignupAttributionCreateNestedOneWithoutUserInput
+  apiKeys?: Prisma.ApiKeyCreateNestedManyWithoutUserInput
 }
 
 export type UserUncheckedCreateWithoutNotificationsInput = {
@@ -912,6 +950,7 @@ export type UserUncheckedCreateWithoutNotificationsInput = {
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutUserInput
   starredProjects?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutUserInput
   signupAttribution?: Prisma.SignupAttributionUncheckedCreateNestedOneWithoutUserInput
+  apiKeys?: Prisma.ApiKeyUncheckedCreateNestedManyWithoutUserInput
 }
 
 export type UserCreateOrConnectWithoutNotificationsInput = {
@@ -945,6 +984,7 @@ export type UserUpdateWithoutNotificationsInput = {
   members?: Prisma.MemberUpdateManyWithoutUserNestedInput
   starredProjects?: Prisma.StarredProjectUpdateManyWithoutUserNestedInput
   signupAttribution?: Prisma.SignupAttributionUpdateOneWithoutUserNestedInput
+  apiKeys?: Prisma.ApiKeyUpdateManyWithoutUserNestedInput
 }
 
 export type UserUncheckedUpdateWithoutNotificationsInput = {
@@ -962,6 +1002,7 @@ export type UserUncheckedUpdateWithoutNotificationsInput = {
   members?: Prisma.MemberUncheckedUpdateManyWithoutUserNestedInput
   starredProjects?: Prisma.StarredProjectUncheckedUpdateManyWithoutUserNestedInput
   signupAttribution?: Prisma.SignupAttributionUncheckedUpdateOneWithoutUserNestedInput
+  apiKeys?: Prisma.ApiKeyUncheckedUpdateManyWithoutUserNestedInput
 }
 
 export type UserCreateWithoutSignupAttributionInput = {
@@ -979,6 +1020,7 @@ export type UserCreateWithoutSignupAttributionInput = {
   members?: Prisma.MemberCreateNestedManyWithoutUserInput
   notifications?: Prisma.NotificationCreateNestedManyWithoutUserInput
   starredProjects?: Prisma.StarredProjectCreateNestedManyWithoutUserInput
+  apiKeys?: Prisma.ApiKeyCreateNestedManyWithoutUserInput
 }
 
 export type UserUncheckedCreateWithoutSignupAttributionInput = {
@@ -996,6 +1038,7 @@ export type UserUncheckedCreateWithoutSignupAttributionInput = {
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutUserInput
   notifications?: Prisma.NotificationUncheckedCreateNestedManyWithoutUserInput
   starredProjects?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutUserInput
+  apiKeys?: Prisma.ApiKeyUncheckedCreateNestedManyWithoutUserInput
 }
 
 export type UserCreateOrConnectWithoutSignupAttributionInput = {
@@ -1029,6 +1072,7 @@ export type UserUpdateWithoutSignupAttributionInput = {
   members?: Prisma.MemberUpdateManyWithoutUserNestedInput
   notifications?: Prisma.NotificationUpdateManyWithoutUserNestedInput
   starredProjects?: Prisma.StarredProjectUpdateManyWithoutUserNestedInput
+  apiKeys?: Prisma.ApiKeyUpdateManyWithoutUserNestedInput
 }
 
 export type UserUncheckedUpdateWithoutSignupAttributionInput = {
@@ -1046,6 +1090,95 @@ export type UserUncheckedUpdateWithoutSignupAttributionInput = {
   members?: Prisma.MemberUncheckedUpdateManyWithoutUserNestedInput
   notifications?: Prisma.NotificationUncheckedUpdateManyWithoutUserNestedInput
   starredProjects?: Prisma.StarredProjectUncheckedUpdateManyWithoutUserNestedInput
+  apiKeys?: Prisma.ApiKeyUncheckedUpdateManyWithoutUserNestedInput
+}
+
+export type UserCreateWithoutApiKeysInput = {
+  id?: string
+  name?: string | null
+  email: string
+  emailVerified?: boolean
+  image?: string | null
+  role?: $Enums.UserRole
+  onboardingCompleted?: boolean
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  sessions?: Prisma.SessionCreateNestedManyWithoutUserInput
+  accounts?: Prisma.AccountCreateNestedManyWithoutUserInput
+  members?: Prisma.MemberCreateNestedManyWithoutUserInput
+  notifications?: Prisma.NotificationCreateNestedManyWithoutUserInput
+  starredProjects?: Prisma.StarredProjectCreateNestedManyWithoutUserInput
+  signupAttribution?: Prisma.SignupAttributionCreateNestedOneWithoutUserInput
+}
+
+export type UserUncheckedCreateWithoutApiKeysInput = {
+  id?: string
+  name?: string | null
+  email: string
+  emailVerified?: boolean
+  image?: string | null
+  role?: $Enums.UserRole
+  onboardingCompleted?: boolean
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  sessions?: Prisma.SessionUncheckedCreateNestedManyWithoutUserInput
+  accounts?: Prisma.AccountUncheckedCreateNestedManyWithoutUserInput
+  members?: Prisma.MemberUncheckedCreateNestedManyWithoutUserInput
+  notifications?: Prisma.NotificationUncheckedCreateNestedManyWithoutUserInput
+  starredProjects?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutUserInput
+  signupAttribution?: Prisma.SignupAttributionUncheckedCreateNestedOneWithoutUserInput
+}
+
+export type UserCreateOrConnectWithoutApiKeysInput = {
+  where: Prisma.UserWhereUniqueInput
+  create: Prisma.XOR<Prisma.UserCreateWithoutApiKeysInput, Prisma.UserUncheckedCreateWithoutApiKeysInput>
+}
+
+export type UserUpsertWithoutApiKeysInput = {
+  update: Prisma.XOR<Prisma.UserUpdateWithoutApiKeysInput, Prisma.UserUncheckedUpdateWithoutApiKeysInput>
+  create: Prisma.XOR<Prisma.UserCreateWithoutApiKeysInput, Prisma.UserUncheckedCreateWithoutApiKeysInput>
+  where?: Prisma.UserWhereInput
+}
+
+export type UserUpdateToOneWithWhereWithoutApiKeysInput = {
+  where?: Prisma.UserWhereInput
+  data: Prisma.XOR<Prisma.UserUpdateWithoutApiKeysInput, Prisma.UserUncheckedUpdateWithoutApiKeysInput>
+}
+
+export type UserUpdateWithoutApiKeysInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  email?: Prisma.StringFieldUpdateOperationsInput | string
+  emailVerified?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  image?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  role?: Prisma.EnumUserRoleFieldUpdateOperationsInput | $Enums.UserRole
+  onboardingCompleted?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  sessions?: Prisma.SessionUpdateManyWithoutUserNestedInput
+  accounts?: Prisma.AccountUpdateManyWithoutUserNestedInput
+  members?: Prisma.MemberUpdateManyWithoutUserNestedInput
+  notifications?: Prisma.NotificationUpdateManyWithoutUserNestedInput
+  starredProjects?: Prisma.StarredProjectUpdateManyWithoutUserNestedInput
+  signupAttribution?: Prisma.SignupAttributionUpdateOneWithoutUserNestedInput
+}
+
+export type UserUncheckedUpdateWithoutApiKeysInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  email?: Prisma.StringFieldUpdateOperationsInput | string
+  emailVerified?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  image?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  role?: Prisma.EnumUserRoleFieldUpdateOperationsInput | $Enums.UserRole
+  onboardingCompleted?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  sessions?: Prisma.SessionUncheckedUpdateManyWithoutUserNestedInput
+  accounts?: Prisma.AccountUncheckedUpdateManyWithoutUserNestedInput
+  members?: Prisma.MemberUncheckedUpdateManyWithoutUserNestedInput
+  notifications?: Prisma.NotificationUncheckedUpdateManyWithoutUserNestedInput
+  starredProjects?: Prisma.StarredProjectUncheckedUpdateManyWithoutUserNestedInput
+  signupAttribution?: Prisma.SignupAttributionUncheckedUpdateOneWithoutUserNestedInput
 }
 
 
@@ -1059,6 +1192,7 @@ export type UserCountOutputType = {
   members: number
   notifications: number
   starredProjects: number
+  apiKeys: number
 }
 
 export type UserCountOutputTypeSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
@@ -1067,6 +1201,7 @@ export type UserCountOutputTypeSelect<ExtArgs extends runtime.Types.Extensions.I
   members?: boolean | UserCountOutputTypeCountMembersArgs
   notifications?: boolean | UserCountOutputTypeCountNotificationsArgs
   starredProjects?: boolean | UserCountOutputTypeCountStarredProjectsArgs
+  apiKeys?: boolean | UserCountOutputTypeCountApiKeysArgs
 }
 
 /**
@@ -1114,6 +1249,13 @@ export type UserCountOutputTypeCountStarredProjectsArgs<ExtArgs extends runtime.
   where?: Prisma.StarredProjectWhereInput
 }
 
+/**
+ * UserCountOutputType without action
+ */
+export type UserCountOutputTypeCountApiKeysArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  where?: Prisma.ApiKeyWhereInput
+}
+
 
 export type UserSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetSelect<{
   id?: boolean
@@ -1131,6 +1273,7 @@ export type UserSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs = r
   notifications?: boolean | Prisma.User$notificationsArgs<ExtArgs>
   starredProjects?: boolean | Prisma.User$starredProjectsArgs<ExtArgs>
   signupAttribution?: boolean | Prisma.User$signupAttributionArgs<ExtArgs>
+  apiKeys?: boolean | Prisma.User$apiKeysArgs<ExtArgs>
   _count?: boolean | Prisma.UserCountOutputTypeDefaultArgs<ExtArgs>
 }, ExtArgs["result"]["user"]>
 
@@ -1178,6 +1321,7 @@ export type UserInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs = 
   notifications?: boolean | Prisma.User$notificationsArgs<ExtArgs>
   starredProjects?: boolean | Prisma.User$starredProjectsArgs<ExtArgs>
   signupAttribution?: boolean | Prisma.User$signupAttributionArgs<ExtArgs>
+  apiKeys?: boolean | Prisma.User$apiKeysArgs<ExtArgs>
   _count?: boolean | Prisma.UserCountOutputTypeDefaultArgs<ExtArgs>
 }
 export type UserIncludeCreateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {}
@@ -1192,6 +1336,7 @@ export type $UserPayload<ExtArgs extends runtime.Types.Extensions.InternalArgs =
     notifications: Prisma.$NotificationPayload<ExtArgs>[]
     starredProjects: Prisma.$StarredProjectPayload<ExtArgs>[]
     signupAttribution: Prisma.$SignupAttributionPayload<ExtArgs> | null
+    apiKeys: Prisma.$ApiKeyPayload<ExtArgs>[]
   }
   scalars: runtime.Types.Extensions.GetPayloadResult<{
     id: string
@@ -1603,6 +1748,7 @@ export interface Prisma__UserClient<T, Null = never, ExtArgs extends runtime.Typ
   notifications<T extends Prisma.User$notificationsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.User$notificationsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$NotificationPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   starredProjects<T extends Prisma.User$starredProjectsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.User$starredProjectsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$StarredProjectPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   signupAttribution<T extends Prisma.User$signupAttributionArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.User$signupAttributionArgs<ExtArgs>>): Prisma.Prisma__SignupAttributionClient<runtime.Types.Result.GetResult<Prisma.$SignupAttributionPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions> | null, null, ExtArgs, GlobalOmitOptions>
+  apiKeys<T extends Prisma.User$apiKeysArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.User$apiKeysArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$ApiKeyPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   /**
    * Attaches callbacks for the resolution and/or rejection of the Promise.
    * @param onfulfilled The callback to execute when the Promise is resolved.
@@ -2165,6 +2311,30 @@ export type User$signupAttributionArgs<ExtArgs extends runtime.Types.Extensions.
    */
   include?: Prisma.SignupAttributionInclude<ExtArgs> | null
   where?: Prisma.SignupAttributionWhereInput
+}
+
+/**
+ * User.apiKeys
+ */
+export type User$apiKeysArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  /**
+   * Select specific fields to fetch from the ApiKey
+   */
+  select?: Prisma.ApiKeySelect<ExtArgs> | null
+  /**
+   * Omit specific fields from the ApiKey
+   */
+  omit?: Prisma.ApiKeyOmit<ExtArgs> | null
+  /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.ApiKeyInclude<ExtArgs> | null
+  where?: Prisma.ApiKeyWhereInput
+  orderBy?: Prisma.ApiKeyOrderByWithRelationInput | Prisma.ApiKeyOrderByWithRelationInput[]
+  cursor?: Prisma.ApiKeyWhereUniqueInput
+  take?: number
+  skip?: number
+  distinct?: Prisma.ApiKeyScalarFieldEnum | Prisma.ApiKeyScalarFieldEnum[]
 }
 
 /**
