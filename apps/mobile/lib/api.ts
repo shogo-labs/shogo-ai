@@ -1,7 +1,29 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
+import Constants from 'expo-constants'
 import { Platform } from 'react-native'
 import { HttpClient } from '@shogo-ai/sdk'
+
+const API_PORT = process.env.EXPO_PUBLIC_API_PORT ?? '8002'
+
+/** LAN host of the machine running Metro (same host as the API in local dev). */
+function inferDevMachineHost(): string | undefined {
+  const go = (Constants as { expoGoConfig?: { debuggerHost?: string } }).expoGoConfig
+  const raw = go?.debuggerHost ?? Constants.expoConfig?.hostUri
+  if (!raw || typeof raw !== 'string') return undefined
+  const cleaned = raw.replace(/^exp:\/\//i, '').replace(/^https?:\/\//i, '')
+  const host = cleaned.split(':')[0]?.trim()
+  if (!host || host === 'localhost' || host === '127.0.0.1') return undefined
+  return host
+}
+
+function nativeApiUrlWithoutEnv(): string {
+  const lan = inferDevMachineHost()
+  if (lan) return `http://${lan}:${API_PORT}`
+  // Android emulator: host loopback. iOS simulator: localhost reaches the Mac.
+  if (Platform.OS === 'android') return `http://10.0.2.2:${API_PORT}`
+  return `http://localhost:${API_PORT}`
+}
 
 export const API_URL = (() => {
   const envUrl = process.env.EXPO_PUBLIC_API_URL
@@ -12,16 +34,12 @@ export const API_URL = (() => {
     if (envUrl) return envUrl
     const origin = window.location.origin
     if (!origin.includes('localhost')) return origin
-    return 'http://localhost:8002'
+    return `http://localhost:${API_PORT}`
   }
 
   if (envUrl) return envUrl
 
-  return Platform.select({
-    ios: 'http://192.168.1.132:8002',
-    android: 'http://192.168.1.132:8002',
-    default: 'http://localhost:8002',
-  })!
+  return nativeApiUrlWithoutEnv()
 })()
 
 /**
@@ -59,7 +77,38 @@ export interface WorkspaceCheckoutParams {
   referralId?: string
 }
 
+function throwIfBetterAuthErrorPayload(data: unknown): void {
+  if (!data || typeof data !== 'object') return
+  const err = (data as { error?: { message?: unknown } | null }).error
+  if (err && typeof err === 'object' && err !== null && 'message' in err && err.message) {
+    throw new Error(String(err.message))
+  }
+}
+
 export const api = {
+  /** POST /api/users/me/attribution (after signup; session cookie / token via HttpClient). */
+  async postSignupAttribution(http: HttpClient, body: Record<string, unknown>) {
+    await http.post('/api/users/me/attribution', body)
+  },
+
+  /** Better Auth: POST .../api/auth/request-password-reset */
+  async authRequestPasswordReset(http: HttpClient, params: { email: string; redirectTo: string }) {
+    const res = await http.authRequest<unknown>('/request-password-reset', {
+      method: 'POST',
+      body: params,
+    })
+    throwIfBetterAuthErrorPayload(res.data)
+  },
+
+  /** Better Auth: POST .../api/auth/reset-password */
+  async authResetPassword(http: HttpClient, params: { newPassword: string; token: string }) {
+    const res = await http.authRequest<unknown>('/reset-password', {
+      method: 'POST',
+      body: params,
+    })
+    throwIfBetterAuthErrorPayload(res.data)
+  },
+
   async createCheckoutSession(http: HttpClient, params: CheckoutParams) {
     const res = await http.post<{ url?: string }>('/api/billing/checkout', params)
     return res.data
@@ -307,6 +356,22 @@ export const api = {
   async completeOnboarding(http: HttpClient) {
     const res = await http.post<{ ok: boolean }>('/api/onboarding/complete')
     return res.data
+  },
+
+  async getLocalModels(http: HttpClient, baseUrl: string) {
+    const res = await http.get<{ ok: boolean; models: Array<{ id: string; name: string }> }>(
+      '/api/local/models',
+      { baseUrl },
+    )
+    return res.data
+  },
+
+  async putLocalApiKeys(http: HttpClient, body: Record<string, string>) {
+    await http.request('/api/local/api-keys', { method: 'PUT', body })
+  },
+
+  async putLocalLlmConfig(http: HttpClient, body: Record<string, string | null>) {
+    await http.request('/api/local/llm-config', { method: 'PUT', body })
   },
 
   // ─── Local Security Preferences ───────────────────────────
