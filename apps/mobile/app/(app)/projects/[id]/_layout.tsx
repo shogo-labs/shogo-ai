@@ -25,6 +25,7 @@ import {
   ScrollView,
   Platform,
 } from 'react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useLocalSearchParams, useRouter, Stack } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import AsyncStorage from '@react-native-async-storage/async-storage'
@@ -48,6 +49,7 @@ import { authClient } from '../../../../lib/auth-client'
 import { API_URL, api } from '../../../../lib/api'
 import { usePlatformConfig } from '../../../../lib/platform-config'
 import { consumePendingFiles } from '../../../../lib/pending-image-store'
+import { isNativePhoneIntegrationsLayout } from '../../../../lib/native-phone-layout'
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
 import { ChatSessionPicker, ChatSessionSidebar, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
 import { DynamicAppRenderer } from '../../../../components/dynamic-app/DynamicAppRenderer'
@@ -82,8 +84,12 @@ export default observer(function ProjectLayout() {
     showIntegrations?: string
   }>()
   const projectId = params.id
-  const { width } = useWindowDimensions()
+  const { width, height } = useWindowDimensions()
   const isWide = width >= WIDE_BREAKPOINT
+  const insets = useSafeAreaInsets()
+  const nativePhone = isNativePhoneIntegrationsLayout(width, height)
+  /** Handset + narrow project layout: float integrations above the composer. Tablets/web use default placement. */
+  const liftIntegrationsAboveComposer = nativePhone && !isWide
   const { user } = useAuth()
   const http = useDomainHttp()
 
@@ -917,7 +923,15 @@ export default observer(function ProjectLayout() {
           {/* Floating integrations card */}
           {showIntegrationsCard && (
             <View
-              className="absolute bottom-4 right-4 z-30"
+              className={cn(
+                'absolute z-30',
+                liftIntegrationsAboveComposer ? 'right-3' : 'bottom-4 right-4',
+              )}
+              style={
+                liftIntegrationsAboveComposer
+                  ? { bottom: insets.bottom + 84 }
+                  : undefined
+              }
               pointerEvents="box-none"
             >
               <IntegrationsCard
