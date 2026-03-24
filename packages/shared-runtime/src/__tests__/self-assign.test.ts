@@ -89,9 +89,8 @@ describe('Self-Assign', () => {
     process.env.ASSIGNED_PROJECT = 'test-project-fail'
     mockFetch.mockResolvedValueOnce({
       ok: false,
-      status: 500,
       text: () => Promise.resolve('Internal Server Error'),
-    })
+    } as any)
 
     const { checkSelfAssign } = await import('../self-assign')
     const result = await checkSelfAssign('http://api.test.local')

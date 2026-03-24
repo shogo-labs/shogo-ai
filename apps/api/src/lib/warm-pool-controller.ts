@@ -954,7 +954,7 @@ export class WarmPoolController {
         totalPodSlots += parseInt(allocatable['pods'] || '0', 10)
       }
 
-      const podResponse = await coreApi.listPodForAllNamespaces(
+      const podResponse = await (coreApi as any).listPodForAllNamespaces(
         undefined, undefined, 'status.phase=Running'
       )
       const runningPods = podResponse.items || []
