@@ -4,26 +4,39 @@
  * Skill Server Manager
  *
  * Manages a per-workspace Hono API server that skills can add endpoints to.
- * The agent authors a Prisma schema + hooks, runs `shogo generate` + `prisma db push`,
- * and this manager keeps the resulting server process alive.
+ * The agent authors a Prisma schema, and this manager handles the full pipeline:
+ *
+ *   schema.prisma change detected →
+ *     bun install (if needed) →
+ *     shogo generate (routes, types, hooks, server, db) →
+ *     prisma generate + db push →
+ *     spawn/restart server
+ *
+ * The agent only needs write_file for schema.prisma — everything else is automatic.
  *
  * Lifecycle:
- *   1. Gateway calls start() — spawns child process if .shogo/server/server.ts exists
- *   2. File watcher detects changes in generated/ — auto-restarts the child
- *   3. Gateway calls stop() on shutdown — kills the child process
- *
- * Modeled on PreviewManager's spawn + ChildProcess pattern.
+ *   1. Gateway calls start() — if schema.prisma exists, regenerate + spawn
+ *   2. File watcher on schema.prisma — auto-regenerates and restarts
+ *   3. File watcher on generated/ — restarts the server (for manual edits)
+ *   4. Gateway calls stop() on shutdown — kills the child process
  */
 
-import { spawn, type ChildProcess } from 'child_process'
-import { join } from 'path'
-import { existsSync, watch, type FSWatcher, appendFileSync, writeFileSync } from 'fs'
+import { spawn, execSync, type ChildProcess } from 'child_process'
+import { join, resolve, dirname } from 'path'
+import { existsSync, watch, mkdirSync, writeFileSync, type FSWatcher, appendFileSync } from 'fs'
+import { fileURLToPath } from 'url'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+const MONOREPO_ROOT = resolve(__dirname, '../../..')
+const SDK_CLI_PATH = join(MONOREPO_ROOT, 'packages', 'sdk', 'bin', 'shogo.ts')
 
 const LOG_PREFIX = 'skill-server'
 const DEFAULT_PORT = 4100
 const DEFAULT_HEALTH_CHECK_RETRIES = 10
 const DEFAULT_HEALTH_CHECK_INTERVAL_MS = 500
 const RESTART_DEBOUNCE_MS = 1000
+const SCHEMA_DEBOUNCE_MS = 2000
 const CRASH_BACKOFF_BASE_MS = 1000
 const CRASH_BACKOFF_MAX_MS = 30_000
 const MAX_CRASH_RESTARTS = 5
@@ -31,6 +44,7 @@ const MAX_CRASH_RESTARTS = 5
 export type SkillServerPhase =
   | 'idle'
   | 'starting'
+  | 'generating'
   | 'healthy'
   | 'restarting'
   | 'crashed'
@@ -48,14 +62,17 @@ export class SkillServerManager {
   private _port: number
   private serverProcess: ChildProcess | null = null
   private _phase: SkillServerPhase = 'idle'
-  private watcher: FSWatcher | null = null
+  private generatedWatcher: FSWatcher | null = null
+  private schemaWatcher: FSWatcher | null = null
   private restartTimer: ReturnType<typeof setTimeout> | null = null
+  private schemaTimer: ReturnType<typeof setTimeout> | null = null
   private crashCount = 0
   private intentionalStop = false
   private restarting = false
   private serverDir: string
   private healthCheckRetries: number
   private healthCheckIntervalMs: number
+  private _lastGenerateError: string | null = null
 
   constructor(config: SkillServerManagerConfig) {
     this.workspaceDir = config.workspaceDir
@@ -82,8 +99,26 @@ export class SkillServerManager {
     return `http://localhost:${this._port}`
   }
 
+  get lastGenerateError(): string | null {
+    return this._lastGenerateError
+  }
+
+  private get schemaPath(): string {
+    return join(this.serverDir, 'schema.prisma')
+  }
+
   private get serverEntryPath(): string {
     return join(this.serverDir, 'server.ts')
+  }
+
+  private get serverEntryTsxPath(): string {
+    return join(this.serverDir, 'server.tsx')
+  }
+
+  private get actualServerEntry(): string | null {
+    if (existsSync(this.serverEntryPath)) return this.serverEntryPath
+    if (existsSync(this.serverEntryTsxPath)) return this.serverEntryTsxPath
+    return null
   }
 
   private get logPath(): string {
@@ -91,37 +126,60 @@ export class SkillServerManager {
   }
 
   /**
-   * Start the skill server if .shogo/server/server.ts exists.
-   * No-op if the entry file doesn't exist or the server is already running.
+   * Start the skill server. If only schema.prisma exists (no server.ts yet),
+   * runs code generation first. Then spawns the server.
    */
   async start(): Promise<{ started: boolean; port: number | null }> {
-    if (this._phase === 'healthy' || this._phase === 'starting') {
+    if (this._phase === 'healthy' || this._phase === 'starting' || this._phase === 'generating') {
       return { started: true, port: this._port }
     }
 
-    if (!existsSync(this.serverEntryPath)) {
-      console.log(`[${LOG_PREFIX}] No server entry at ${this.serverEntryPath} — skipping`)
+    const hasSchema = existsSync(this.schemaPath)
+    const hasServer = !!this.actualServerEntry
+
+    if (!hasSchema && !hasServer) {
+      console.log(`[${LOG_PREFIX}] No schema or server at ${this.serverDir} — skipping`)
+      this.startSchemaWatcher()
       return { started: false, port: null }
     }
 
     this.intentionalStop = false
     this.crashCount = 0
-    await this.spawnServer()
-    this.startWatcher()
+
+    if (hasSchema && !hasServer) {
+      console.log(`[${LOG_PREFIX}] Schema found but no server.ts — running code generation...`)
+      const ok = await this.regenerate()
+      if (!ok) {
+        console.error(`[${LOG_PREFIX}] Code generation failed, cannot start server`)
+        this.startSchemaWatcher()
+        return { started: false, port: null }
+      }
+    }
+
+    if (this.actualServerEntry) {
+      await this.spawnServer()
+      this.startGeneratedWatcher()
+    }
+    this.startSchemaWatcher()
 
     return { started: this._phase === 'healthy', port: this._phase === 'healthy' ? this._port : null }
   }
 
   /**
-   * Stop the skill server and clean up the file watcher.
+   * Stop the skill server and clean up watchers.
    */
   async stop(): Promise<void> {
     this.intentionalStop = true
-    this.stopWatcher()
+    this.stopGeneratedWatcher()
+    this.stopSchemaWatcher()
 
     if (this.restartTimer) {
       clearTimeout(this.restartTimer)
       this.restartTimer = null
+    }
+    if (this.schemaTimer) {
+      clearTimeout(this.schemaTimer)
+      this.schemaTimer = null
     }
 
     await this.killProcess()
@@ -133,7 +191,7 @@ export class SkillServerManager {
    * Restart the server (stop + start). Used after schema regeneration.
    */
   async restart(): Promise<void> {
-    if (!existsSync(this.serverEntryPath)) return
+    if (!this.actualServerEntry) return
 
     console.log(`[${LOG_PREFIX}] Restarting...`)
     this._phase = 'restarting'
@@ -144,11 +202,150 @@ export class SkillServerManager {
     await this.spawnServer()
   }
 
+  /**
+   * Full regeneration pipeline:
+   * 1. Ensure package.json + bun install
+   * 2. Run shogo generate (handles prisma generate, db push, and code gen)
+   */
+  async regenerate(): Promise<boolean> {
+    this._phase = 'generating'
+    this._lastGenerateError = null
+    console.log(`[${LOG_PREFIX}] Running code generation from schema...`)
+
+    try {
+      this.ensurePackageJson()
+      this.ensureShogoConfig()
+      this.installDeps()
+      this.runShogoGenerate()
+
+      this._phase = 'idle'
+      console.log(`[${LOG_PREFIX}] Code generation complete`)
+      return true
+    } catch (err: any) {
+      this._lastGenerateError = err.message || String(err)
+      console.error(`[${LOG_PREFIX}] Code generation failed:`, this._lastGenerateError)
+      this._phase = 'crashed'
+      return false
+    }
+  }
+
+  private ensurePackageJson(): void {
+    const pkgPath = join(this.serverDir, 'package.json')
+    if (existsSync(pkgPath)) return
+
+    console.log(`[${LOG_PREFIX}] Creating package.json...`)
+    writeFileSync(pkgPath, JSON.stringify({
+      name: 'skill-server',
+      private: true,
+      dependencies: {
+        'hono': '^4.7.0',
+        'prisma': '^7.3.0',
+        '@prisma/client': '^7.3.0',
+        'prisma-adapter-bun-sqlite': '^0.6.8',
+      },
+    }, null, 2), 'utf-8')
+  }
+
+  private ensureShogoConfig(): void {
+    const configPath = join(this.serverDir, 'shogo.config.json')
+    if (!existsSync(configPath)) {
+      console.log(`[${LOG_PREFIX}] Creating shogo.config.json...`)
+      writeFileSync(configPath, JSON.stringify({
+        schema: './schema.prisma',
+        outputs: [
+          { dir: './generated', generate: ['routes', 'hooks', 'types'] },
+          {
+            dir: '.',
+            generate: ['server'],
+            serverConfig: {
+              routesPath: './generated',
+              dbPath: './db',
+              port: this._port,
+              skipStatic: true,
+            },
+          },
+          { dir: '.', generate: ['db'], dbProvider: 'sqlite' },
+        ],
+      }, null, 2), 'utf-8')
+    }
+
+    const prismaConfigPath = join(this.serverDir, 'prisma.config.ts')
+    if (!existsSync(prismaConfigPath)) {
+      console.log(`[${LOG_PREFIX}] Creating prisma.config.ts...`)
+      writeFileSync(prismaConfigPath, [
+        "import { defineConfig } from 'prisma/config'",
+        '',
+        'export default defineConfig({',
+        "  schema: './schema.prisma',",
+        '  datasource: {',
+        `    url: process.env.DATABASE_URL ?? 'file:./skill.db',`,
+        '  },',
+        '})',
+        '',
+      ].join('\n'), 'utf-8')
+    }
+  }
+
+  private installDeps(): void {
+    const nodeModules = join(this.serverDir, 'node_modules')
+    if (existsSync(nodeModules)) return
+
+    console.log(`[${LOG_PREFIX}] Installing dependencies...`)
+    execSync('bun install', {
+      cwd: this.serverDir,
+      timeout: 60_000,
+      stdio: 'pipe',
+      encoding: 'utf-8',
+    })
+    console.log(`[${LOG_PREFIX}] Dependencies installed`)
+  }
+
+  private runShogoGenerate(): void {
+    const cliPath = this.resolveSdkCli()
+    console.log(`[${LOG_PREFIX}] Running shogo generate via ${cliPath}...`)
+
+    execSync(`bun run ${cliPath} generate`, {
+      cwd: this.serverDir,
+      timeout: 60_000,
+      stdio: 'pipe',
+      encoding: 'utf-8',
+      env: {
+        ...process.env,
+        DATABASE_URL: `file:${join(this.serverDir, 'skill.db')}`,
+      },
+    })
+    console.log(`[${LOG_PREFIX}] shogo generate complete`)
+  }
+
+  /**
+   * Resolve the path to the Shogo SDK CLI.
+   * Prefers the local monorepo source, falls back to npx.
+   */
+  private resolveSdkCli(): string {
+    if (existsSync(SDK_CLI_PATH)) {
+      return SDK_CLI_PATH
+    }
+
+    const localBin = join(this.serverDir, 'node_modules', '.bin', 'shogo')
+    if (existsSync(localBin)) {
+      return localBin
+    }
+
+    return 'npx shogo'
+  }
+
   private async spawnServer(): Promise<void> {
+    const entry = this.actualServerEntry
+    if (!entry) {
+      console.error(`[${LOG_PREFIX}] No server.ts or server.tsx found after generation`)
+      this._phase = 'crashed'
+      return
+    }
+
     this._phase = 'starting'
     console.log(`[${LOG_PREFIX}] Spawning server on port ${this._port}...`)
 
-    const proc = spawn('bun', ['run', this.serverEntryPath], {
+    const proc = spawn('bun', ['run', entry], {
       cwd: this.serverDir,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
@@ -258,16 +455,54 @@ export class SkillServerManager {
   }
 
   /**
+   * Watch schema.prisma for changes. When the agent modifies the schema,
+   * auto-regenerate everything and restart the server.
+   */
+  private startSchemaWatcher(): void {
+    const schemaDir = this.serverDir
+    mkdirSync(schemaDir, { recursive: true })
+
+    try {
+      this.schemaWatcher = watch(schemaDir, (_event, filename) => {
+        if (filename !== 'schema.prisma') return
+        if (this.intentionalStop || this._phase === 'stopped' || this._phase === 'generating') return
+
+        if (this.schemaTimer) clearTimeout(this.schemaTimer)
+
+        this.schemaTimer = setTimeout(async () => {
+          this.schemaTimer = null
+          if (!existsSync(this.schemaPath)) return
+
+          console.log(`[${LOG_PREFIX}] schema.prisma changed, regenerating...`)
+          const ok = await this.regenerate()
+          if (ok) {
+            await this.restart()
+          }
+        }, SCHEMA_DEBOUNCE_MS)
+      })
+    } catch (err: any) {
+      console.error(`[${LOG_PREFIX}] Failed to watch schema dir:`, err.message)
+    }
+  }
+
+  private stopSchemaWatcher(): void {
+    if (this.schemaWatcher) {
+      this.schemaWatcher.close()
+      this.schemaWatcher = null
+    }
+  }
+
+  /**
    * Watch .shogo/server/generated/ for changes and auto-restart.
    * Debounced to avoid rapid restarts during a full regeneration.
    */
-  private startWatcher(): void {
+  private startGeneratedWatcher(): void {
     const watchDir = join(this.serverDir, 'generated')
     if (!existsSync(watchDir)) return
 
     try {
-      this.watcher = watch(watchDir, { recursive: true }, (_event, _filename) => {
-        if (this.intentionalStop || this._phase === 'stopped') return
+      this.generatedWatcher = watch(watchDir, { recursive: true }, (_event, _filename) => {
+        if (this.intentionalStop || this._phase === 'stopped' || this._phase === 'generating') return
 
         if (this.restartTimer) {
           clearTimeout(this.restartTimer)
@@ -284,10 +519,10 @@ export class SkillServerManager {
     }
   }
 
-  private stopWatcher(): void {
-    if (this.watcher) {
-      this.watcher.close()
-      this.watcher = null
+  private stopGeneratedWatcher(): void {
+    if (this.generatedWatcher) {
+      this.generatedWatcher.close()
+      this.generatedWatcher = null
     }
   }
 }

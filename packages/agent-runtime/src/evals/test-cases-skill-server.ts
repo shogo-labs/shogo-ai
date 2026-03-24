@@ -147,11 +147,10 @@ const SKILL_SERVER_PERSIST_MOCKS: ToolMockMap = {
 
 const EXISTING_TODO_SCHEMA = `datasource db {
   provider = "sqlite"
-  url      = env("DATABASE_URL")
 }
 
 generator client {
-  provider = "prisma-client-js"
+  provider = "prisma-client"
   output   = "./generated/prisma"
 }
 
@@ -174,11 +173,10 @@ const EXISTING_SHOGO_CONFIG = JSON.stringify({
 
 const EXISTING_BOOKMARK_SCHEMA = `datasource db {
   provider = "sqlite"
-  url      = env("DATABASE_URL")
 }
 
 generator client {
-  provider = "prisma-client-js"
+  provider = "prisma-client"
   output   = "./generated/prisma"
 }
 
