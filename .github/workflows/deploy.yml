@@ -44,7 +44,7 @@ on:
         type: boolean
 
 concurrency:
-  group: deploy-${{ github.ref_name }}-${{ inputs.environment || (github.ref_type == 'tag' && 'production' || 'staging') }}
+  group: deploy-v2-${{ github.ref_name }}-${{ inputs.environment || (github.ref_type == 'tag' && 'production' || 'staging') }}
   cancel-in-progress: false
 
 # =============================================================================
