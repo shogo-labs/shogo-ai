@@ -870,7 +870,8 @@ function getOpenAICompatibleHeaders(apiKey: string, modelConfig: ModelConfig): R
 async function proxyOpenAIStream(
   request: ChatCompletionRequest,
   apiKey: string,
-  modelConfig: ModelConfig
+  modelConfig: ModelConfig,
+  onComplete?: (inputTokens: number, outputTokens: number) => void
 ): Promise<Response> {
   const url = getOpenAICompatibleBaseUrl(modelConfig)
   const headers = getOpenAICompatibleHeaders(apiKey, modelConfig)
@@ -882,6 +883,8 @@ async function proxyOpenAIStream(
       ...request,
       model: modelConfig.apiModel,
       stream: true,
+      // Ask OpenAI-compatible providers to include usage in the final chunk
+      stream_options: { include_usage: true },
     }),
   })
 
@@ -890,7 +893,68 @@ async function proxyOpenAIStream(
     throw new Error(`${modelConfig.provider} API error (${response.status}): ${errorText}`)
   }
 
-  return new Response(response.body, {
+  if (!onComplete) {
+    return new Response(response.body, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Proxy-Provider': modelConfig.provider,
+        'X-Proxy-Model': modelConfig.apiModel,
+      },
+    })
+  }
+
+  // Parse SSE to extract usage from the final chunk, then call onComplete
+  const decoder = new TextDecoder()
+  let inputTokens = 0
+  let outputTokens = 0
+  let sseBuffer = ''
+
+  const transformStream = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      controller.enqueue(chunk)
+
+      sseBuffer += decoder.decode(chunk, { stream: true })
+      const lines = sseBuffer.split('\n')
+      // Keep the last (possibly incomplete) line in the buffer
+      sseBuffer = lines.pop() || ''
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const data = line.slice(6).trim()
+        if (data === '[DONE]') continue
+        try {
+          const parsed = JSON.parse(data)
+          if (parsed.usage) {
+            inputTokens = parsed.usage.prompt_tokens || 0
+            outputTokens = parsed.usage.completion_tokens || 0
+          }
+        } catch {
+          // Skip unparseable lines
+        }
+      }
+    },
+    flush() {
+      onComplete(inputTokens, outputTokens)
+    },
+  })
+
+  const reader = response.body!.getReader()
+  const readable = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const { done, value } = await reader.read()
+      if (done) {
+        controller.close()
+        return
+      }
+      controller.enqueue(value)
+    },
+  })
+
+  const transformed = readable.pipeThrough(transformStream)
+
+  return new Response(transformed, {
     headers: {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -952,10 +1016,14 @@ async function recordUsage(
   inputTokens: number,
   outputTokens: number,
 ) {
+  // For API-key auth the projectId is a sentinel ('api-key'), not a real
+  // Project row. Pass null so the UsageEvent FK constraint is satisfied.
+  const billingProjectId = tokenPayload.projectId === 'api-key' ? null : (tokenPayload.projectId || null)
+
   // If a billing session is open, accumulate — the session closer will charge
-  if (accumulateUsage(tokenPayload.projectId, model, inputTokens, outputTokens)) {
+  if (billingProjectId && accumulateUsage(billingProjectId, model, inputTokens, outputTokens)) {
     const totalTokens = inputTokens + outputTokens
-    console.log(`[AI Proxy] 📊 Accumulated ${totalTokens} tokens for session (project: ${tokenPayload.projectId})`)
+    console.log(`[AI Proxy] 📊 Accumulated ${totalTokens} tokens for session (project: ${billingProjectId})`)
     return
   }
 
@@ -973,7 +1041,7 @@ async function recordUsage(
 
     const result = await billingService.consumeCredits(
       tokenPayload.workspaceId,
-      tokenPayload.projectId || null,
+      billingProjectId,
       billingUserId,
       'ai_proxy_completion',
       creditCost,
@@ -1437,7 +1505,9 @@ export function aiProxyRoutes() {
             recordUsage(tokenPayload, request.model, inTok, outTok)
           })
         } else {
-          return await proxyOpenAIStream(request, apiKey, modelConfig)
+          return await proxyOpenAIStream(request, apiKey, modelConfig, (inTok, outTok) => {
+            recordUsage(tokenPayload, request.model, inTok, outTok)
+          })
         }
       } else {
         let result: any
