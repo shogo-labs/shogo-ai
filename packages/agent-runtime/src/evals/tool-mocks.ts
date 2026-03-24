@@ -3146,8 +3146,8 @@ export const SKILL_INSTALL_MOCKS: ToolMockMap = {
       {
         match: { name: 'skill:github-ops' },
         response: {
-          ok: true, type: 'skill', name: 'github-ops', path: 'skills/github-ops.md',
-          message: 'Skill "github-ops" installed. It will be active on the next message. Read it with read_file({ path: "skills/github-ops.md" }) to see its instructions.',
+          ok: true, type: 'skill', name: 'github-ops', path: '.shogo/skills/github-ops/SKILL.md',
+          message: 'Skill "github-ops" installed. It will be active on the next message. Read it with read_file({ path: ".shogo/skills/github-ops/SKILL.md" }) to see its instructions.',
         },
       },
     ],
@@ -3158,10 +3158,10 @@ export const SKILL_INSTALL_MOCKS: ToolMockMap = {
     paramKeys: ['path'],
     patterns: [
       {
-        match: { path: 'skills/github-ops.md' },
+        match: { path: '.shogo/skills/github-ops/SKILL.md' },
         response: {
           content: '---\nname: github-ops\nversion: 2.0.0\ndescription: Monitor GitHub repos — fetch PRs, issues, CI status via Composio and display on canvas\ntrigger: "check github|repo status|ci status|pr review|open prs|pull requests"\ntools: [tool_search, tool_install, canvas_create, canvas_update, memory_write, send_message]\n---\n\n# GitHub Ops\n\nWhen triggered, check GitHub repos and build a triage dashboard:\n\n1. **Connect** — Check if GitHub integration is installed via tool_search.\n2. **Fetch** — Once connected, call GITHUB_LIST_PULL_REQUESTS for open PRs.\n3. **Build canvas** — Create or update a GitHub ops dashboard.\n4. **Alert** — For PRs open >2 days with no reviewer.\n5. **Persist** — Log findings to memory for trend tracking.',
-          path: 'skills/github-ops.md',
+          path: '.shogo/skills/github-ops/SKILL.md',
           size: 612,
         },
       },
@@ -3207,8 +3207,8 @@ export const SKILL_LIFECYCLE_MOCKS: ToolMockMap = {
       {
         match: { name: 'skill:health-check' },
         response: {
-          ok: true, type: 'skill', name: 'health-check', path: 'skills/health-check.md',
-          message: 'Skill "health-check" installed. It will be active on the next message. Read it with read_file({ path: "skills/health-check.md" }) to see its instructions.',
+          ok: true, type: 'skill', name: 'health-check', path: '.shogo/skills/health-check/SKILL.md',
+          message: 'Skill "health-check" installed. It will be active on the next message. Read it with read_file({ path: ".shogo/skills/health-check/SKILL.md" }) to see its instructions.',
         },
       },
     ],
@@ -3219,10 +3219,10 @@ export const SKILL_LIFECYCLE_MOCKS: ToolMockMap = {
     paramKeys: ['path'],
     patterns: [
       {
-        match: { path: 'skills/health-check.md' },
+        match: { path: '.shogo/skills/health-check/SKILL.md' },
         response: {
           content: '---\nname: health-check\nversion: 2.0.0\ndescription: Run health checks on web services and APIs\ntrigger: "health check|site status|is it down|uptime"\ntools: [web, canvas_create, canvas_update, memory_write, send_message]\n---\n\n# Health Check\n\nRun health checks on configured endpoints:\n\n1. **Load config** — Read endpoint list from memory (key: health_check_endpoints)\n2. **Check** — For each endpoint, call web({ url }) and record status code and response time\n3. **Build canvas** — Dashboard with: status badge per service, response time chart, uptime percentage\n4. **Alert** — For any non-200 status: send_message with details\n5. **Persist** — Log results to memory for trend tracking',
-          path: 'skills/health-check.md',
+          path: '.shogo/skills/health-check/SKILL.md',
           size: 520,
         },
       },

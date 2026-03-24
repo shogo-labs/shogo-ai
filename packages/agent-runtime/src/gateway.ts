@@ -24,8 +24,8 @@ import type { Message, ImageContent } from '@mariozechner/pi-ai'
 import type { StreamFn, AgentTool } from '@mariozechner/pi-agent-core'
 import { Type } from '@sinclair/typebox'
 import type { ChannelAdapter, IncomingMessage, AgentStatus, ChannelStatus, StreamChunkConfig, SandboxConfig } from './types'
-import { loadSkills, matchSkill, loadAllClaudeCodeSkills, buildSkillsPromptSection, type Skill, type ClaudeCodeSkill } from './skills'
-import { setLoadedClaudeSkills, type LoadedSkillEntry } from './gateway-tools'
+import { loadAllSkills, migrateFromLegacySkills, matchSkill, buildSkillsPromptSection, type Skill } from './skills'
+import { setLoadedSkills } from './gateway-tools'
 import { runAgentLoop, type LoopDetectorConfig, type ToolContext } from './agent-loop'
 import { createTools, createHeartbeatTools, textResult, type ModeSwitchHandler } from './gateway-tools'
 import { PermissionEngine, parseSecurityPolicy } from './permission-engine'
@@ -163,7 +163,6 @@ export class AgentGateway {
   private currentUserId: string | undefined
   private channels: Map<string, ChannelAdapter> = new Map()
   private skills: Skill[] = []
-  private claudeCodeSkills: ClaudeCodeSkill[] = []
   private configSkills: Array<{ name: string; trigger?: string; description?: string }> = []
   private running = false
   private lastHeartbeatTick: Date | null = null
@@ -370,27 +369,11 @@ export class AgentGateway {
     console.log('[AgentGateway] Starting...')
     this.running = true
 
-    // Load skills from workspace skills/ directory only (bundled skills must be explicitly installed)
-    this.skills = loadSkills(join(this.workspaceDir, 'skills'))
+    migrateFromLegacySkills(this.workspaceDir)
+    this.skills = loadAllSkills(this.workspaceDir)
     this.configSkills = this.loadConfigSkills()
-
-    // Load Claude Code format skills (.claude/skills/<name>/SKILL.md)
-    this.claudeCodeSkills = loadAllClaudeCodeSkills(this.workspaceDir)
-    if (this.claudeCodeSkills.length > 0) {
-      setLoadedClaudeSkills(this.claudeCodeSkills.map(s => ({
-        name: s.name,
-        description: s.description,
-        content: s.content,
-        skillDir: s.skillDir,
-        disableModelInvocation: s.disableModelInvocation,
-        userInvocable: s.userInvocable,
-        allowedTools: s.allowedTools,
-        context: s.context,
-        agent: s.agent,
-        argumentHint: s.argumentHint,
-      })))
-    }
-    console.log(`[AgentGateway] Loaded ${this.skills.length} skills, ${this.claudeCodeSkills.length} claude-code skills, ${this.configSkills.length} config skills`)
+    setLoadedSkills(this.skills)
+    console.log(`[AgentGateway] Loaded ${this.skills.length} skills, ${this.configSkills.length} config skills`)
 
     // Load hooks
     try {
@@ -920,7 +903,8 @@ export class AgentGateway {
     images?: ImageContent[],
   ): Promise<string> {
     // Reload skills from disk so any files created/edited/deleted by file tools are picked up
-    this.skills = loadSkills(join(this.workspaceDir, 'skills'))
+    this.skills = loadAllSkills(this.workspaceDir)
+    setLoadedSkills(this.skills)
 
     if (activeSkill) {
       const skillOverride = [
@@ -1563,9 +1547,9 @@ Examples:
       'This shows a prominent toast notification that the user will not miss.',
     ].join('\n'))
 
-    // Inject available Claude Code skill descriptions
-    if (this.claudeCodeSkills.length > 0) {
-      const skillsSection = buildSkillsPromptSection(this.claudeCodeSkills)
+    // Inject available skill descriptions
+    if (this.skills.length > 0) {
+      const skillsSection = buildSkillsPromptSection(this.skills)
       if (skillsSection) {
         parts.push(skillsSection)
       }
@@ -1798,7 +1782,7 @@ Examples:
     // Merge skills from filesystem with skills declared in config.json
     const fsSkills = this.skills.map((s) => ({
       name: s.name,
-      trigger: s.trigger,
+      trigger: s.trigger || '',
       description: s.description,
     }))
     const fsSkillNames = new Set(fsSkills.map((s) => s.name))
@@ -1828,22 +1812,8 @@ Examples:
   reloadConfig(): void {
     const prevEnabled = this.config.heartbeatEnabled
     this.config = this.loadConfig()
-    this.skills = loadSkills(join(this.workspaceDir, 'skills'))
-    this.claudeCodeSkills = loadAllClaudeCodeSkills(this.workspaceDir)
-    if (this.claudeCodeSkills.length > 0) {
-      setLoadedClaudeSkills(this.claudeCodeSkills.map(s => ({
-        name: s.name,
-        description: s.description,
-        content: s.content,
-        skillDir: s.skillDir,
-        disableModelInvocation: s.disableModelInvocation,
-        userInvocable: s.userInvocable,
-        allowedTools: s.allowedTools,
-        context: s.context,
-        agent: s.agent,
-        argumentHint: s.argumentHint,
-      })))
-    }
+    this.skills = loadAllSkills(this.workspaceDir)
+    setLoadedSkills(this.skills)
     this.configSkills = this.loadConfigSkills()
 
   }
