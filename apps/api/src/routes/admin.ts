@@ -250,5 +250,183 @@ export function adminRoutes(): Hono {
     }
   })
 
+  // --------------------------------------------------------------------------
+  // User Funnel
+  // --------------------------------------------------------------------------
+
+  router.get('/analytics/funnel', async (c) => {
+    try {
+      const url = new URL(c.req.url)
+      const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
+      const excludeInternal = url.searchParams.get('excludeInternal') !== 'false'
+      const data = await analytics.getUserFunnel(period, excludeInternal)
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Funnel error:', error)
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  // --------------------------------------------------------------------------
+  // User Activity Table
+  // --------------------------------------------------------------------------
+
+  router.get('/analytics/user-activity', async (c) => {
+    try {
+      const url = new URL(c.req.url)
+      const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
+      const page = parseInt(url.searchParams.get('page') || '1', 10)
+      const limit = parseInt(url.searchParams.get('limit') || '20', 10)
+      const sort = url.searchParams.get('sort') || undefined
+      const excludeInternal = url.searchParams.get('excludeInternal') !== 'false'
+      const data = await analytics.getUserActivityTable(period, { page, limit, sort, excludeInternal })
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] User activity error:', error)
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  // --------------------------------------------------------------------------
+  // Template Engagement
+  // --------------------------------------------------------------------------
+
+  router.get('/analytics/template-engagement', async (c) => {
+    try {
+      const url = new URL(c.req.url)
+      const excludeInternal = url.searchParams.get('excludeInternal') !== 'false'
+      const data = await analytics.getTemplateEngagement(excludeInternal)
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Template engagement error:', error)
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  // --------------------------------------------------------------------------
+  // Source Breakdown
+  // --------------------------------------------------------------------------
+
+  router.get('/analytics/source-breakdown', async (c) => {
+    try {
+      const url = new URL(c.req.url)
+      const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
+      const excludeInternal = url.searchParams.get('excludeInternal') !== 'false'
+      const data = await analytics.getSourceBreakdown(period, excludeInternal)
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Source breakdown error:', error)
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  // --------------------------------------------------------------------------
+  // AI Digest
+  // --------------------------------------------------------------------------
+
+  router.get('/analytics/ai-digest', async (c) => {
+    try {
+      const url = new URL(c.req.url)
+      const dateStr = url.searchParams.get('date')
+      const where = dateStr
+        ? { date: new Date(dateStr), period: '24h' }
+        : { period: '24h' }
+      const digest = await prisma.analyticsDigest.findFirst({
+        where,
+        orderBy: { date: 'desc' },
+      })
+      return c.json({ ok: true, data: digest })
+    } catch (error: any) {
+      console.error('[Admin] AI digest error:', error)
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  router.get('/analytics/ai-digest/list', async (c) => {
+    try {
+      const url = new URL(c.req.url)
+      const limit = parseInt(url.searchParams.get('limit') || '7', 10)
+      const digests = await prisma.analyticsDigest.findMany({
+        where: { period: '24h' },
+        orderBy: { date: 'desc' },
+        take: Math.min(limit, 90),
+        select: {
+          id: true,
+          date: true,
+          funnelSignups: true,
+          funnelEngaged: true,
+          activeUsers: true,
+          totalMessages: true,
+          messagesAnalyzed: true,
+          createdAt: true,
+        },
+      })
+      return c.json({ ok: true, data: digests })
+    } catch (error: any) {
+      console.error('[Admin] AI digest list error:', error)
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  router.post('/analytics/ai-digest/generate', async (c) => {
+    try {
+      const { generateDigest } = await import('../lib/analytics-digest-collector')
+      const digest = await generateDigest(prisma)
+      return c.json({ ok: true, data: digest })
+    } catch (error: any) {
+      console.error('[Admin] AI digest generate error:', error)
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  return router
+}
+
+// ============================================================================
+// User Attribution Route (separate from admin — authenticated users only)
+// ============================================================================
+
+export function userAttributionRoute(): Hono {
+  const router = new Hono()
+  router.use('*', authMiddleware)
+  router.use('*', requireAuth)
+
+  router.post('/users/me/attribution', async (c) => {
+    try {
+      const user = (c as any).get('user')
+      if (!user?.id) return c.json({ error: 'unauthorized' }, 401)
+
+      const body = await c.req.json()
+      const sourceTag = analytics.deriveSourceTag({
+        utmSource: body.utmSource,
+        utmMedium: body.utmMedium,
+        referrer: body.referrer,
+        method: body.method,
+      })
+
+      await prisma.signupAttribution.upsert({
+        where: { userId: user.id },
+        create: {
+          userId: user.id,
+          utmSource: body.utmSource || null,
+          utmMedium: body.utmMedium || null,
+          utmCampaign: body.utmCampaign || null,
+          utmContent: body.utmContent || null,
+          utmTerm: body.utmTerm || null,
+          referrer: body.referrer || null,
+          landingPage: body.landingPage || null,
+          signupMethod: body.method || null,
+          sourceTag,
+        },
+        update: {},
+      })
+
+      return c.json({ ok: true })
+    } catch (error: any) {
+      console.error('[Attribution] Error:', error)
+      return c.json({ error: { code: 'attribution_failed', message: error.message } }, 500)
+    }
+  })
+
   return router
 }

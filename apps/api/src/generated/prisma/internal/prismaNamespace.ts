@@ -425,7 +425,9 @@ export const ModelName = {
   Composition: 'Composition',
   ComponentSpec: 'ComponentSpec',
   PlatformSetting: 'PlatformSetting',
-  InfraSnapshot: 'InfraSnapshot'
+  InfraSnapshot: 'InfraSnapshot',
+  AnalyticsDigest: 'AnalyticsDigest',
+  SignupAttribution: 'SignupAttribution'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -441,7 +443,7 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
     omit: GlobalOmitOptions
   }
   meta: {
-    modelProps: "user" | "session" | "account" | "verification" | "workspace" | "project" | "agentConfig" | "projectCheckpoint" | "gitHubConnection" | "starredProject" | "member" | "billingAccount" | "invitation" | "inviteLink" | "folder" | "notification" | "subscription" | "creditLedger" | "usageEvent" | "chatSession" | "chatMessage" | "toolCallLog" | "featureSession" | "requirement" | "designDecision" | "classificationDecision" | "analysisFinding" | "integrationPoint" | "testCase" | "implementationTask" | "taskDependency" | "testSpecification" | "implementationRun" | "taskExecution" | "componentDefinition" | "registry" | "rendererBinding" | "layoutTemplate" | "composition" | "componentSpec" | "platformSetting" | "infraSnapshot"
+    modelProps: "user" | "session" | "account" | "verification" | "workspace" | "project" | "agentConfig" | "projectCheckpoint" | "gitHubConnection" | "starredProject" | "member" | "billingAccount" | "invitation" | "inviteLink" | "folder" | "notification" | "subscription" | "creditLedger" | "usageEvent" | "chatSession" | "chatMessage" | "toolCallLog" | "featureSession" | "requirement" | "designDecision" | "classificationDecision" | "analysisFinding" | "integrationPoint" | "testCase" | "implementationTask" | "taskDependency" | "testSpecification" | "implementationRun" | "taskExecution" | "componentDefinition" | "registry" | "rendererBinding" | "layoutTemplate" | "composition" | "componentSpec" | "platformSetting" | "infraSnapshot" | "analyticsDigest" | "signupAttribution"
     txIsolationLevel: TransactionIsolationLevel
   }
   model: {
@@ -3553,6 +3555,154 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
         }
       }
     }
+    AnalyticsDigest: {
+      payload: Prisma.$AnalyticsDigestPayload<ExtArgs>
+      fields: Prisma.AnalyticsDigestFieldRefs
+      operations: {
+        findUnique: {
+          args: Prisma.AnalyticsDigestFindUniqueArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AnalyticsDigestPayload> | null
+        }
+        findUniqueOrThrow: {
+          args: Prisma.AnalyticsDigestFindUniqueOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AnalyticsDigestPayload>
+        }
+        findFirst: {
+          args: Prisma.AnalyticsDigestFindFirstArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AnalyticsDigestPayload> | null
+        }
+        findFirstOrThrow: {
+          args: Prisma.AnalyticsDigestFindFirstOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AnalyticsDigestPayload>
+        }
+        findMany: {
+          args: Prisma.AnalyticsDigestFindManyArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AnalyticsDigestPayload>[]
+        }
+        create: {
+          args: Prisma.AnalyticsDigestCreateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AnalyticsDigestPayload>
+        }
+        createMany: {
+          args: Prisma.AnalyticsDigestCreateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        createManyAndReturn: {
+          args: Prisma.AnalyticsDigestCreateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AnalyticsDigestPayload>[]
+        }
+        delete: {
+          args: Prisma.AnalyticsDigestDeleteArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AnalyticsDigestPayload>
+        }
+        update: {
+          args: Prisma.AnalyticsDigestUpdateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AnalyticsDigestPayload>
+        }
+        deleteMany: {
+          args: Prisma.AnalyticsDigestDeleteManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateMany: {
+          args: Prisma.AnalyticsDigestUpdateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateManyAndReturn: {
+          args: Prisma.AnalyticsDigestUpdateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AnalyticsDigestPayload>[]
+        }
+        upsert: {
+          args: Prisma.AnalyticsDigestUpsertArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AnalyticsDigestPayload>
+        }
+        aggregate: {
+          args: Prisma.AnalyticsDigestAggregateArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AggregateAnalyticsDigest>
+        }
+        groupBy: {
+          args: Prisma.AnalyticsDigestGroupByArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AnalyticsDigestGroupByOutputType>[]
+        }
+        count: {
+          args: Prisma.AnalyticsDigestCountArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AnalyticsDigestCountAggregateOutputType> | number
+        }
+      }
+    }
+    SignupAttribution: {
+      payload: Prisma.$SignupAttributionPayload<ExtArgs>
+      fields: Prisma.SignupAttributionFieldRefs
+      operations: {
+        findUnique: {
+          args: Prisma.SignupAttributionFindUniqueArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$SignupAttributionPayload> | null
+        }
+        findUniqueOrThrow: {
+          args: Prisma.SignupAttributionFindUniqueOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$SignupAttributionPayload>
+        }
+        findFirst: {
+          args: Prisma.SignupAttributionFindFirstArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$SignupAttributionPayload> | null
+        }
+        findFirstOrThrow: {
+          args: Prisma.SignupAttributionFindFirstOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$SignupAttributionPayload>
+        }
+        findMany: {
+          args: Prisma.SignupAttributionFindManyArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$SignupAttributionPayload>[]
+        }
+        create: {
+          args: Prisma.SignupAttributionCreateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$SignupAttributionPayload>
+        }
+        createMany: {
+          args: Prisma.SignupAttributionCreateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        createManyAndReturn: {
+          args: Prisma.SignupAttributionCreateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$SignupAttributionPayload>[]
+        }
+        delete: {
+          args: Prisma.SignupAttributionDeleteArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$SignupAttributionPayload>
+        }
+        update: {
+          args: Prisma.SignupAttributionUpdateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$SignupAttributionPayload>
+        }
+        deleteMany: {
+          args: Prisma.SignupAttributionDeleteManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateMany: {
+          args: Prisma.SignupAttributionUpdateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateManyAndReturn: {
+          args: Prisma.SignupAttributionUpdateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$SignupAttributionPayload>[]
+        }
+        upsert: {
+          args: Prisma.SignupAttributionUpsertArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$SignupAttributionPayload>
+        }
+        aggregate: {
+          args: Prisma.SignupAttributionAggregateArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AggregateSignupAttribution>
+        }
+        groupBy: {
+          args: Prisma.SignupAttributionGroupByArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.SignupAttributionGroupByOutputType>[]
+        }
+        count: {
+          args: Prisma.SignupAttributionCountArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.SignupAttributionCountAggregateOutputType> | number
+        }
+      }
+    }
   }
 } & {
   other: {
@@ -4264,6 +4414,50 @@ export const InfraSnapshotScalarFieldEnum = {
 export type InfraSnapshotScalarFieldEnum = (typeof InfraSnapshotScalarFieldEnum)[keyof typeof InfraSnapshotScalarFieldEnum]
 
 
+export const AnalyticsDigestScalarFieldEnum = {
+  id: 'id',
+  date: 'date',
+  period: 'period',
+  funnelSignups: 'funnelSignups',
+  funnelOnboarded: 'funnelOnboarded',
+  funnelCreatedProject: 'funnelCreatedProject',
+  funnelSentMessage: 'funnelSentMessage',
+  funnelEngaged: 'funnelEngaged',
+  avgMinToFirstProject: 'avgMinToFirstProject',
+  avgMinToFirstMessage: 'avgMinToFirstMessage',
+  activeUsers: 'activeUsers',
+  totalMessages: 'totalMessages',
+  totalSessions: 'totalSessions',
+  totalToolCalls: 'totalToolCalls',
+  totalCreditsUsed: 'totalCreditsUsed',
+  templateStats: 'templateStats',
+  chunksProcessed: 'chunksProcessed',
+  messagesAnalyzed: 'messagesAnalyzed',
+  aiInsights: 'aiInsights',
+  createdAt: 'createdAt'
+} as const
+
+export type AnalyticsDigestScalarFieldEnum = (typeof AnalyticsDigestScalarFieldEnum)[keyof typeof AnalyticsDigestScalarFieldEnum]
+
+
+export const SignupAttributionScalarFieldEnum = {
+  id: 'id',
+  userId: 'userId',
+  utmSource: 'utmSource',
+  utmMedium: 'utmMedium',
+  utmCampaign: 'utmCampaign',
+  utmContent: 'utmContent',
+  utmTerm: 'utmTerm',
+  referrer: 'referrer',
+  landingPage: 'landingPage',
+  signupMethod: 'signupMethod',
+  sourceTag: 'sourceTag',
+  createdAt: 'createdAt'
+} as const
+
+export type SignupAttributionScalarFieldEnum = (typeof SignupAttributionScalarFieldEnum)[keyof typeof SignupAttributionScalarFieldEnum]
+
+
 export const SortOrder = {
   asc: 'asc',
   desc: 'desc'
@@ -4965,6 +5159,8 @@ export type GlobalOmitConfig = {
   componentSpec?: Prisma.ComponentSpecOmit
   platformSetting?: Prisma.PlatformSettingOmit
   infraSnapshot?: Prisma.InfraSnapshotOmit
+  analyticsDigest?: Prisma.AnalyticsDigestOmit
+  signupAttribution?: Prisma.SignupAttributionOmit
 }
 
 /* Types for Logging */

@@ -35,6 +35,7 @@ import { useAuth } from '../../contexts/auth'
 import { usePlatformConfig, invalidatePlatformConfigCache } from '../../lib/platform-config'
 import { API_URL, api, createHttpClient } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
+import { getStoredAttribution, clearStoredAttribution } from '../../lib/attribution'
 import { SecurityPreferenceSelector } from '../../components/security/SecurityPreferenceSelector'
 
 // =============================================================================
@@ -171,7 +172,16 @@ export default function OnboardingPage() {
     try {
       await signUp(name, email, password)
       invalidatePlatformConfigCache()
-      // In local mode, proceed to security preference step before redirecting
+      try {
+        const attribution = getStoredAttribution()
+        await fetch(`${API_URL}/api/users/me/attribution`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ ...attribution, method: 'email' }),
+        })
+        clearStoredAttribution()
+      } catch {}
       goNext()
     } catch (e: any) {
       setAuthError(e.message || 'Failed to create account')

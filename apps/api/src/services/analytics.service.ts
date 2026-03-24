@@ -10,6 +10,7 @@
  */
 
 import { prisma } from '../lib/prisma'
+import { Prisma } from '../generated/prisma/client'
 
 // ============================================================================
 // Types
@@ -805,4 +806,438 @@ export async function getBillingAnalytics(scope: AnalyticsScope = {}) {
     freeWorkspaces,
     paidWorkspaces,
   }
+}
+
+// ============================================================================
+// Internal User Exclusion
+// ============================================================================
+
+const EXCLUDED_EMAIL_PATTERNS = ['%@test.shogo.ai', '%@shogo.ai', '%@getodin.ai']
+
+export function realUserWhere(): Prisma.UserWhereInput {
+  return {
+    AND: [
+      { role: { not: 'super_admin' } },
+      ...EXCLUDED_EMAIL_PATTERNS.map(pattern => ({
+        NOT: { email: { contains: pattern.replace('%', ''), mode: 'insensitive' as const } },
+      })),
+    ],
+  }
+}
+
+function realUserEmailNotLike(): string {
+  return EXCLUDED_EMAIL_PATTERNS
+    .map(p => `u."email" NOT ILIKE '${p}'`)
+    .concat([`u."role" != 'super_admin'`])
+    .join(' AND ')
+}
+
+// ============================================================================
+// User Funnel
+// ============================================================================
+
+export interface FunnelResult {
+  signups: number
+  onboarded: number
+  createdProject: number
+  sentMessage: number
+  engaged: number
+  avgMinToFirstProject: number | null
+  avgMinToFirstMessage: number | null
+}
+
+export async function getUserFunnel(
+  period: AnalyticsPeriod = '30d',
+  excludeInternal = true
+): Promise<FunnelResult> {
+  const since = periodToDate(period)
+  const filter = excludeInternal ? `AND ${realUserEmailNotLike()}` : ''
+
+  const result = await prisma.$queryRawUnsafe<FunnelResult[]>(`
+    WITH real_users AS (
+      SELECT u."id", u."email", u."onboardingCompleted", u."createdAt"
+      FROM "users" u
+      WHERE u."createdAt" >= $1 ${filter}
+    ),
+    user_projects AS (
+      SELECT p."createdBy" AS "userId", MIN(p."createdAt") AS "firstProjectAt"
+      FROM "projects" p
+      WHERE p."createdBy" IS NOT NULL
+      GROUP BY p."createdBy"
+    ),
+    user_messages AS (
+      SELECT cs."contextId" AS "projectId", p."createdBy" AS "userId",
+             COUNT(*) AS "msgCount", MIN(cm."createdAt") AS "firstMessageAt"
+      FROM "chat_messages" cm
+      JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
+      JOIN "projects" p ON p."id" = cs."contextId"
+      WHERE cm."role" = 'user' AND p."createdBy" IS NOT NULL
+      GROUP BY cs."contextId", p."createdBy"
+    ),
+    user_msg_totals AS (
+      SELECT "userId", SUM("msgCount")::int AS "totalMessages",
+             MIN("firstMessageAt") AS "firstMessageAt"
+      FROM user_messages
+      GROUP BY "userId"
+    )
+    SELECT
+      COUNT(ru."id")::int AS "signups",
+      COUNT(CASE WHEN ru."onboardingCompleted" THEN 1 END)::int AS "onboarded",
+      COUNT(up."userId")::int AS "createdProject",
+      COUNT(CASE WHEN umt."totalMessages" > 0 THEN 1 END)::int AS "sentMessage",
+      COUNT(CASE WHEN umt."totalMessages" >= 5 THEN 1 END)::int AS "engaged",
+      ROUND(AVG(EXTRACT(EPOCH FROM (up."firstProjectAt" - ru."createdAt")) / 60.0)::numeric, 1)::float AS "avgMinToFirstProject",
+      ROUND(AVG(EXTRACT(EPOCH FROM (umt."firstMessageAt" - ru."createdAt")) / 60.0)::numeric, 1)::float AS "avgMinToFirstMessage"
+    FROM real_users ru
+    LEFT JOIN user_projects up ON up."userId" = ru."id"
+    LEFT JOIN user_msg_totals umt ON umt."userId" = ru."id"
+  `, since)
+
+  return result[0] ?? {
+    signups: 0, onboarded: 0, createdProject: 0, sentMessage: 0, engaged: 0,
+    avgMinToFirstProject: null, avgMinToFirstMessage: null,
+  }
+}
+
+// ============================================================================
+// User Activity Table
+// ============================================================================
+
+export interface UserActivity {
+  id: string
+  name: string | null
+  email: string
+  sourceTag: string | null
+  signupAt: string
+  lastActiveAt: string | null
+  projects: number
+  messages: number
+  sessions: number
+  toolCalls: number
+  creditsUsed: number
+}
+
+export async function getUserActivityTable(
+  period: AnalyticsPeriod = '30d',
+  options: { page?: number; limit?: number; sort?: string; excludeInternal?: boolean } = {}
+): Promise<{ users: UserActivity[]; total: number }> {
+  const since = periodToDate(period)
+  const page = options.page ?? 1
+  const limit = Math.min(options.limit ?? 20, 100)
+  const excludeInternal = options.excludeInternal ?? true
+
+  const userWhere: Prisma.UserWhereInput = {
+    createdAt: { gte: since },
+    ...(excludeInternal ? realUserWhere() : {}),
+  }
+
+  const [users, total] = await Promise.all([
+    prisma.user.findMany({
+      where: userWhere,
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        createdAt: true,
+        signupAttribution: { select: { sourceTag: true } },
+        sessions: {
+          select: { updatedAt: true },
+          orderBy: { updatedAt: 'desc' },
+          take: 1,
+        },
+        _count: {
+          select: {
+            members: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * limit,
+      take: limit,
+    }),
+    prisma.user.count({ where: userWhere }),
+  ])
+
+  const userIds = users.map(u => u.id)
+
+  const [projectCounts, messageCounts, sessionCounts, toolCallCounts, creditSums] =
+    await Promise.all([
+      prisma.project.groupBy({
+        by: ['createdBy'],
+        where: { createdBy: { in: userIds } },
+        _count: true,
+      }),
+      prisma.$queryRawUnsafe<{ userId: string; count: number }[]>(`
+        SELECT p."createdBy" AS "userId", COUNT(cm."id")::int AS "count"
+        FROM "chat_messages" cm
+        JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
+        JOIN "projects" p ON p."id" = cs."contextId"
+        WHERE cm."role" = 'user' AND p."createdBy" = ANY($1::text[])
+        GROUP BY p."createdBy"
+      `, userIds),
+      prisma.$queryRawUnsafe<{ userId: string; count: number }[]>(`
+        SELECT p."createdBy" AS "userId", COUNT(DISTINCT cs."id")::int AS "count"
+        FROM "chat_sessions" cs
+        JOIN "projects" p ON p."id" = cs."contextId"
+        WHERE p."createdBy" = ANY($1::text[])
+        GROUP BY p."createdBy"
+      `, userIds),
+      prisma.$queryRawUnsafe<{ userId: string; count: number }[]>(`
+        SELECT p."createdBy" AS "userId", COUNT(tcl."id")::int AS "count"
+        FROM "tool_call_logs" tcl
+        JOIN "chat_sessions" cs ON cs."id" = tcl."chatSessionId"
+        JOIN "projects" p ON p."id" = cs."contextId"
+        WHERE p."createdBy" = ANY($1::text[])
+        GROUP BY p."createdBy"
+      `, userIds),
+      prisma.usageEvent.groupBy({
+        by: ['memberId'],
+        where: { memberId: { in: userIds } },
+        _sum: { creditCost: true },
+      }),
+    ])
+
+  const projectMap = new Map(projectCounts.map(r => [r.createdBy!, r._count]))
+  const messageMap = new Map(messageCounts.map(r => [r.userId, r.count]))
+  const sessionMap = new Map(sessionCounts.map(r => [r.userId, r.count]))
+  const toolCallMap = new Map(toolCallCounts.map(r => [r.userId, r.count]))
+  const creditMap = new Map(creditSums.map(r => [r.memberId, r._sum.creditCost ?? 0]))
+
+  const result: UserActivity[] = users.map(u => ({
+    id: u.id,
+    name: u.name,
+    email: u.email,
+    sourceTag: u.signupAttribution?.sourceTag ?? null,
+    signupAt: u.createdAt.toISOString(),
+    lastActiveAt: u.sessions[0]?.updatedAt?.toISOString() ?? null,
+    projects: projectMap.get(u.id) ?? 0,
+    messages: messageMap.get(u.id) ?? 0,
+    sessions: sessionMap.get(u.id) ?? 0,
+    toolCalls: toolCallMap.get(u.id) ?? 0,
+    creditsUsed: creditMap.get(u.id) ?? 0,
+  }))
+
+  return { users: result, total }
+}
+
+// ============================================================================
+// Template Engagement
+// ============================================================================
+
+export interface TemplateStats {
+  templateId: string
+  projects: number
+  avgMessages: number
+  totalToolCalls: number
+  engagementRate: number
+}
+
+export async function getTemplateEngagement(
+  excludeInternal = true
+): Promise<{ templates: TemplateStats[] }> {
+  const filter = excludeInternal ? `AND ${realUserEmailNotLike()}` : ''
+
+  const rows = await prisma.$queryRawUnsafe<{
+    templateId: string
+    projects: number
+    avgMessages: number
+    totalToolCalls: number
+    engagedUsers: number
+    totalUsers: number
+  }[]>(`
+    WITH template_projects AS (
+      SELECT p."templateId", p."id" AS "projectId", p."createdBy"
+      FROM "projects" p
+      JOIN "users" u ON u."id" = p."createdBy"
+      WHERE p."templateId" IS NOT NULL ${filter}
+    ),
+    project_msgs AS (
+      SELECT tp."templateId", tp."projectId", tp."createdBy",
+             COUNT(cm."id")::int AS "msgCount"
+      FROM template_projects tp
+      LEFT JOIN "chat_sessions" cs ON cs."contextId" = tp."projectId"
+      LEFT JOIN "chat_messages" cm ON cm."sessionId" = cs."id" AND cm."role" = 'user'
+      GROUP BY tp."templateId", tp."projectId", tp."createdBy"
+    ),
+    project_tools AS (
+      SELECT tp."templateId", COUNT(tcl."id")::int AS "toolCalls"
+      FROM template_projects tp
+      LEFT JOIN "chat_sessions" cs ON cs."contextId" = tp."projectId"
+      LEFT JOIN "tool_call_logs" tcl ON tcl."chatSessionId" = cs."id"
+      GROUP BY tp."templateId"
+    )
+    SELECT
+      pm."templateId" AS "templateId",
+      COUNT(DISTINCT pm."projectId")::int AS "projects",
+      ROUND(AVG(pm."msgCount")::numeric, 1)::float AS "avgMessages",
+      COALESCE(MAX(pt."toolCalls"), 0)::int AS "totalToolCalls",
+      COUNT(DISTINCT CASE WHEN pm."msgCount" >= 2 THEN pm."createdBy" END)::int AS "engagedUsers",
+      COUNT(DISTINCT pm."createdBy")::int AS "totalUsers"
+    FROM project_msgs pm
+    LEFT JOIN project_tools pt ON pt."templateId" = pm."templateId"
+    GROUP BY pm."templateId"
+    ORDER BY "projects" DESC
+  `)
+
+  return {
+    templates: rows.map(r => ({
+      templateId: r.templateId,
+      projects: r.projects,
+      avgMessages: r.avgMessages,
+      totalToolCalls: r.totalToolCalls,
+      engagementRate: r.totalUsers > 0
+        ? Math.round((r.engagedUsers / r.totalUsers) * 100)
+        : 0,
+    })),
+  }
+}
+
+// ============================================================================
+// Chat Conversations (for AI Digest)
+// ============================================================================
+
+export interface ConversationThread {
+  userName: string | null
+  projectName: string
+  templateId: string | null
+  messages: { role: string; content: string; sentAt: string }[]
+}
+
+const ASSISTANT_TRUNCATE_LENGTH = 1000
+
+export async function getChatConversations(
+  since: Date,
+  excludeInternal = true
+): Promise<{ conversations: ConversationThread[] }> {
+  const filter = excludeInternal ? `AND ${realUserEmailNotLike()}` : ''
+
+  const rows = await prisma.$queryRawUnsafe<{
+    sessionId: string
+    userName: string | null
+    projectName: string
+    templateId: string | null
+    role: string
+    content: string
+    sentAt: Date
+  }[]>(`
+    SELECT
+      cs."id" AS "sessionId",
+      u."name" AS "userName",
+      p."name" AS "projectName",
+      p."templateId",
+      cm."role",
+      CASE
+        WHEN cm."role" = 'assistant' AND LENGTH(cm."content") > ${ASSISTANT_TRUNCATE_LENGTH}
+        THEN RIGHT(cm."content", ${ASSISTANT_TRUNCATE_LENGTH})
+        ELSE cm."content"
+      END AS "content",
+      cm."createdAt" AS "sentAt"
+    FROM "chat_messages" cm
+    JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
+    JOIN "projects" p ON p."id" = cs."contextId"
+    JOIN "users" u ON u."id" = p."createdBy"
+    WHERE cm."createdAt" >= $1 ${filter}
+    ORDER BY cs."id", cm."createdAt" ASC
+  `, since)
+
+  const grouped = new Map<string, ConversationThread>()
+  for (const row of rows) {
+    if (!grouped.has(row.sessionId)) {
+      grouped.set(row.sessionId, {
+        userName: row.userName,
+        projectName: row.projectName,
+        templateId: row.templateId,
+        messages: [],
+      })
+    }
+    grouped.get(row.sessionId)!.messages.push({
+      role: row.role,
+      content: row.content,
+      sentAt: row.sentAt.toISOString(),
+    })
+  }
+
+  return { conversations: Array.from(grouped.values()) }
+}
+
+// ============================================================================
+// Source Breakdown
+// ============================================================================
+
+export interface SourceBreakdownEntry {
+  tag: string
+  count: number
+  projectRate: number
+  messageRate: number
+}
+
+export async function getSourceBreakdown(
+  period: AnalyticsPeriod = '30d',
+  excludeInternal = true
+): Promise<{ sources: SourceBreakdownEntry[] }> {
+  const since = periodToDate(period)
+  const filter = excludeInternal ? `AND ${realUserEmailNotLike()}` : ''
+
+  const rows = await prisma.$queryRawUnsafe<{
+    tag: string
+    count: number
+    withProject: number
+    withMessage: number
+  }[]>(`
+    SELECT
+      COALESCE(sa."sourceTag", 'unknown') AS "tag",
+      COUNT(DISTINCT u."id")::int AS "count",
+      COUNT(DISTINCT CASE WHEN p."id" IS NOT NULL THEN u."id" END)::int AS "withProject",
+      COUNT(DISTINCT CASE WHEN cm."id" IS NOT NULL THEN u."id" END)::int AS "withMessage"
+    FROM "users" u
+    LEFT JOIN "signup_attributions" sa ON sa."userId" = u."id"
+    LEFT JOIN "projects" p ON p."createdBy" = u."id"
+    LEFT JOIN "chat_sessions" cs ON cs."contextId" = p."id"
+    LEFT JOIN "chat_messages" cm ON cm."sessionId" = cs."id" AND cm."role" = 'user'
+    WHERE u."createdAt" >= $1 ${filter}
+    GROUP BY COALESCE(sa."sourceTag", 'unknown')
+    ORDER BY "count" DESC
+  `, since)
+
+  return {
+    sources: rows.map(r => ({
+      tag: r.tag,
+      count: r.count,
+      projectRate: r.count > 0 ? Math.round((r.withProject / r.count) * 100) : 0,
+      messageRate: r.count > 0 ? Math.round((r.withMessage / r.count) * 100) : 0,
+    })),
+  }
+}
+
+// ============================================================================
+// Source Tag Derivation
+// ============================================================================
+
+export function deriveSourceTag(data: {
+  utmSource?: string | null
+  utmMedium?: string | null
+  referrer?: string | null
+  method?: string | null
+}): string {
+  const src = data.utmSource?.toLowerCase()
+  const med = data.utmMedium?.toLowerCase()
+
+  if (src && med === 'cpc') {
+    return `${src}-ads`
+  }
+  if (src) {
+    return src
+  }
+  if (data.referrer) {
+    try {
+      const host = new URL(data.referrer).hostname.replace('www.', '')
+      if (host.includes('google')) return 'organic:google'
+      if (host.includes('bing')) return 'organic:bing'
+      return `referral:${host}`
+    } catch {
+      return 'referral'
+    }
+  }
+  if (data.method === 'google') return 'google-oauth'
+  return 'direct'
 }

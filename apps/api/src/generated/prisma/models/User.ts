@@ -219,6 +219,7 @@ export type UserWhereInput = {
   members?: Prisma.MemberListRelationFilter
   notifications?: Prisma.NotificationListRelationFilter
   starredProjects?: Prisma.StarredProjectListRelationFilter
+  signupAttribution?: Prisma.XOR<Prisma.SignupAttributionNullableScalarRelationFilter, Prisma.SignupAttributionWhereInput> | null
 }
 
 export type UserOrderByWithRelationInput = {
@@ -236,6 +237,7 @@ export type UserOrderByWithRelationInput = {
   members?: Prisma.MemberOrderByRelationAggregateInput
   notifications?: Prisma.NotificationOrderByRelationAggregateInput
   starredProjects?: Prisma.StarredProjectOrderByRelationAggregateInput
+  signupAttribution?: Prisma.SignupAttributionOrderByWithRelationInput
 }
 
 export type UserWhereUniqueInput = Prisma.AtLeast<{
@@ -256,6 +258,7 @@ export type UserWhereUniqueInput = Prisma.AtLeast<{
   members?: Prisma.MemberListRelationFilter
   notifications?: Prisma.NotificationListRelationFilter
   starredProjects?: Prisma.StarredProjectListRelationFilter
+  signupAttribution?: Prisma.XOR<Prisma.SignupAttributionNullableScalarRelationFilter, Prisma.SignupAttributionWhereInput> | null
 }, "id" | "email">
 
 export type UserOrderByWithAggregationInput = {
@@ -303,6 +306,7 @@ export type UserCreateInput = {
   members?: Prisma.MemberCreateNestedManyWithoutUserInput
   notifications?: Prisma.NotificationCreateNestedManyWithoutUserInput
   starredProjects?: Prisma.StarredProjectCreateNestedManyWithoutUserInput
+  signupAttribution?: Prisma.SignupAttributionCreateNestedOneWithoutUserInput
 }
 
 export type UserUncheckedCreateInput = {
@@ -320,6 +324,7 @@ export type UserUncheckedCreateInput = {
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutUserInput
   notifications?: Prisma.NotificationUncheckedCreateNestedManyWithoutUserInput
   starredProjects?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutUserInput
+  signupAttribution?: Prisma.SignupAttributionUncheckedCreateNestedOneWithoutUserInput
 }
 
 export type UserUpdateInput = {
@@ -337,6 +342,7 @@ export type UserUpdateInput = {
   members?: Prisma.MemberUpdateManyWithoutUserNestedInput
   notifications?: Prisma.NotificationUpdateManyWithoutUserNestedInput
   starredProjects?: Prisma.StarredProjectUpdateManyWithoutUserNestedInput
+  signupAttribution?: Prisma.SignupAttributionUpdateOneWithoutUserNestedInput
 }
 
 export type UserUncheckedUpdateInput = {
@@ -354,6 +360,7 @@ export type UserUncheckedUpdateInput = {
   members?: Prisma.MemberUncheckedUpdateManyWithoutUserNestedInput
   notifications?: Prisma.NotificationUncheckedUpdateManyWithoutUserNestedInput
   starredProjects?: Prisma.StarredProjectUncheckedUpdateManyWithoutUserNestedInput
+  signupAttribution?: Prisma.SignupAttributionUncheckedUpdateOneWithoutUserNestedInput
 }
 
 export type UserCreateManyInput = {
@@ -523,6 +530,20 @@ export type UserUpdateOneRequiredWithoutNotificationsNestedInput = {
   update?: Prisma.XOR<Prisma.XOR<Prisma.UserUpdateToOneWithWhereWithoutNotificationsInput, Prisma.UserUpdateWithoutNotificationsInput>, Prisma.UserUncheckedUpdateWithoutNotificationsInput>
 }
 
+export type UserCreateNestedOneWithoutSignupAttributionInput = {
+  create?: Prisma.XOR<Prisma.UserCreateWithoutSignupAttributionInput, Prisma.UserUncheckedCreateWithoutSignupAttributionInput>
+  connectOrCreate?: Prisma.UserCreateOrConnectWithoutSignupAttributionInput
+  connect?: Prisma.UserWhereUniqueInput
+}
+
+export type UserUpdateOneRequiredWithoutSignupAttributionNestedInput = {
+  create?: Prisma.XOR<Prisma.UserCreateWithoutSignupAttributionInput, Prisma.UserUncheckedCreateWithoutSignupAttributionInput>
+  connectOrCreate?: Prisma.UserCreateOrConnectWithoutSignupAttributionInput
+  upsert?: Prisma.UserUpsertWithoutSignupAttributionInput
+  connect?: Prisma.UserWhereUniqueInput
+  update?: Prisma.XOR<Prisma.XOR<Prisma.UserUpdateToOneWithWhereWithoutSignupAttributionInput, Prisma.UserUpdateWithoutSignupAttributionInput>, Prisma.UserUncheckedUpdateWithoutSignupAttributionInput>
+}
+
 export type UserCreateWithoutSessionsInput = {
   id?: string
   name?: string | null
@@ -537,6 +558,7 @@ export type UserCreateWithoutSessionsInput = {
   members?: Prisma.MemberCreateNestedManyWithoutUserInput
   notifications?: Prisma.NotificationCreateNestedManyWithoutUserInput
   starredProjects?: Prisma.StarredProjectCreateNestedManyWithoutUserInput
+  signupAttribution?: Prisma.SignupAttributionCreateNestedOneWithoutUserInput
 }
 
 export type UserUncheckedCreateWithoutSessionsInput = {
@@ -553,6 +575,7 @@ export type UserUncheckedCreateWithoutSessionsInput = {
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutUserInput
   notifications?: Prisma.NotificationUncheckedCreateNestedManyWithoutUserInput
   starredProjects?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutUserInput
+  signupAttribution?: Prisma.SignupAttributionUncheckedCreateNestedOneWithoutUserInput
 }
 
 export type UserCreateOrConnectWithoutSessionsInput = {
@@ -585,6 +608,7 @@ export type UserUpdateWithoutSessionsInput = {
   members?: Prisma.MemberUpdateManyWithoutUserNestedInput
   notifications?: Prisma.NotificationUpdateManyWithoutUserNestedInput
   starredProjects?: Prisma.StarredProjectUpdateManyWithoutUserNestedInput
+  signupAttribution?: Prisma.SignupAttributionUpdateOneWithoutUserNestedInput
 }
 
 export type UserUncheckedUpdateWithoutSessionsInput = {
@@ -601,6 +625,7 @@ export type UserUncheckedUpdateWithoutSessionsInput = {
   members?: Prisma.MemberUncheckedUpdateManyWithoutUserNestedInput
   notifications?: Prisma.NotificationUncheckedUpdateManyWithoutUserNestedInput
   starredProjects?: Prisma.StarredProjectUncheckedUpdateManyWithoutUserNestedInput
+  signupAttribution?: Prisma.SignupAttributionUncheckedUpdateOneWithoutUserNestedInput
 }
 
 export type UserCreateWithoutAccountsInput = {
@@ -617,6 +642,7 @@ export type UserCreateWithoutAccountsInput = {
   members?: Prisma.MemberCreateNestedManyWithoutUserInput
   notifications?: Prisma.NotificationCreateNestedManyWithoutUserInput
   starredProjects?: Prisma.StarredProjectCreateNestedManyWithoutUserInput
+  signupAttribution?: Prisma.SignupAttributionCreateNestedOneWithoutUserInput
 }
 
 export type UserUncheckedCreateWithoutAccountsInput = {
@@ -633,6 +659,7 @@ export type UserUncheckedCreateWithoutAccountsInput = {
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutUserInput
   notifications?: Prisma.NotificationUncheckedCreateNestedManyWithoutUserInput
   starredProjects?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutUserInput
+  signupAttribution?: Prisma.SignupAttributionUncheckedCreateNestedOneWithoutUserInput
 }
 
 export type UserCreateOrConnectWithoutAccountsInput = {
@@ -665,6 +692,7 @@ export type UserUpdateWithoutAccountsInput = {
   members?: Prisma.MemberUpdateManyWithoutUserNestedInput
   notifications?: Prisma.NotificationUpdateManyWithoutUserNestedInput
   starredProjects?: Prisma.StarredProjectUpdateManyWithoutUserNestedInput
+  signupAttribution?: Prisma.SignupAttributionUpdateOneWithoutUserNestedInput
 }
 
 export type UserUncheckedUpdateWithoutAccountsInput = {
@@ -681,6 +709,7 @@ export type UserUncheckedUpdateWithoutAccountsInput = {
   members?: Prisma.MemberUncheckedUpdateManyWithoutUserNestedInput
   notifications?: Prisma.NotificationUncheckedUpdateManyWithoutUserNestedInput
   starredProjects?: Prisma.StarredProjectUncheckedUpdateManyWithoutUserNestedInput
+  signupAttribution?: Prisma.SignupAttributionUncheckedUpdateOneWithoutUserNestedInput
 }
 
 export type UserCreateWithoutStarredProjectsInput = {
@@ -697,6 +726,7 @@ export type UserCreateWithoutStarredProjectsInput = {
   accounts?: Prisma.AccountCreateNestedManyWithoutUserInput
   members?: Prisma.MemberCreateNestedManyWithoutUserInput
   notifications?: Prisma.NotificationCreateNestedManyWithoutUserInput
+  signupAttribution?: Prisma.SignupAttributionCreateNestedOneWithoutUserInput
 }
 
 export type UserUncheckedCreateWithoutStarredProjectsInput = {
@@ -713,6 +743,7 @@ export type UserUncheckedCreateWithoutStarredProjectsInput = {
   accounts?: Prisma.AccountUncheckedCreateNestedManyWithoutUserInput
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutUserInput
   notifications?: Prisma.NotificationUncheckedCreateNestedManyWithoutUserInput
+  signupAttribution?: Prisma.SignupAttributionUncheckedCreateNestedOneWithoutUserInput
 }
 
 export type UserCreateOrConnectWithoutStarredProjectsInput = {
@@ -745,6 +776,7 @@ export type UserUpdateWithoutStarredProjectsInput = {
   accounts?: Prisma.AccountUpdateManyWithoutUserNestedInput
   members?: Prisma.MemberUpdateManyWithoutUserNestedInput
   notifications?: Prisma.NotificationUpdateManyWithoutUserNestedInput
+  signupAttribution?: Prisma.SignupAttributionUpdateOneWithoutUserNestedInput
 }
 
 export type UserUncheckedUpdateWithoutStarredProjectsInput = {
@@ -761,6 +793,7 @@ export type UserUncheckedUpdateWithoutStarredProjectsInput = {
   accounts?: Prisma.AccountUncheckedUpdateManyWithoutUserNestedInput
   members?: Prisma.MemberUncheckedUpdateManyWithoutUserNestedInput
   notifications?: Prisma.NotificationUncheckedUpdateManyWithoutUserNestedInput
+  signupAttribution?: Prisma.SignupAttributionUncheckedUpdateOneWithoutUserNestedInput
 }
 
 export type UserCreateWithoutMembersInput = {
@@ -777,6 +810,7 @@ export type UserCreateWithoutMembersInput = {
   accounts?: Prisma.AccountCreateNestedManyWithoutUserInput
   notifications?: Prisma.NotificationCreateNestedManyWithoutUserInput
   starredProjects?: Prisma.StarredProjectCreateNestedManyWithoutUserInput
+  signupAttribution?: Prisma.SignupAttributionCreateNestedOneWithoutUserInput
 }
 
 export type UserUncheckedCreateWithoutMembersInput = {
@@ -793,6 +827,7 @@ export type UserUncheckedCreateWithoutMembersInput = {
   accounts?: Prisma.AccountUncheckedCreateNestedManyWithoutUserInput
   notifications?: Prisma.NotificationUncheckedCreateNestedManyWithoutUserInput
   starredProjects?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutUserInput
+  signupAttribution?: Prisma.SignupAttributionUncheckedCreateNestedOneWithoutUserInput
 }
 
 export type UserCreateOrConnectWithoutMembersInput = {
@@ -825,6 +860,7 @@ export type UserUpdateWithoutMembersInput = {
   accounts?: Prisma.AccountUpdateManyWithoutUserNestedInput
   notifications?: Prisma.NotificationUpdateManyWithoutUserNestedInput
   starredProjects?: Prisma.StarredProjectUpdateManyWithoutUserNestedInput
+  signupAttribution?: Prisma.SignupAttributionUpdateOneWithoutUserNestedInput
 }
 
 export type UserUncheckedUpdateWithoutMembersInput = {
@@ -841,6 +877,7 @@ export type UserUncheckedUpdateWithoutMembersInput = {
   accounts?: Prisma.AccountUncheckedUpdateManyWithoutUserNestedInput
   notifications?: Prisma.NotificationUncheckedUpdateManyWithoutUserNestedInput
   starredProjects?: Prisma.StarredProjectUncheckedUpdateManyWithoutUserNestedInput
+  signupAttribution?: Prisma.SignupAttributionUncheckedUpdateOneWithoutUserNestedInput
 }
 
 export type UserCreateWithoutNotificationsInput = {
@@ -857,6 +894,7 @@ export type UserCreateWithoutNotificationsInput = {
   accounts?: Prisma.AccountCreateNestedManyWithoutUserInput
   members?: Prisma.MemberCreateNestedManyWithoutUserInput
   starredProjects?: Prisma.StarredProjectCreateNestedManyWithoutUserInput
+  signupAttribution?: Prisma.SignupAttributionCreateNestedOneWithoutUserInput
 }
 
 export type UserUncheckedCreateWithoutNotificationsInput = {
@@ -873,6 +911,7 @@ export type UserUncheckedCreateWithoutNotificationsInput = {
   accounts?: Prisma.AccountUncheckedCreateNestedManyWithoutUserInput
   members?: Prisma.MemberUncheckedCreateNestedManyWithoutUserInput
   starredProjects?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutUserInput
+  signupAttribution?: Prisma.SignupAttributionUncheckedCreateNestedOneWithoutUserInput
 }
 
 export type UserCreateOrConnectWithoutNotificationsInput = {
@@ -905,6 +944,7 @@ export type UserUpdateWithoutNotificationsInput = {
   accounts?: Prisma.AccountUpdateManyWithoutUserNestedInput
   members?: Prisma.MemberUpdateManyWithoutUserNestedInput
   starredProjects?: Prisma.StarredProjectUpdateManyWithoutUserNestedInput
+  signupAttribution?: Prisma.SignupAttributionUpdateOneWithoutUserNestedInput
 }
 
 export type UserUncheckedUpdateWithoutNotificationsInput = {
@@ -920,6 +960,91 @@ export type UserUncheckedUpdateWithoutNotificationsInput = {
   sessions?: Prisma.SessionUncheckedUpdateManyWithoutUserNestedInput
   accounts?: Prisma.AccountUncheckedUpdateManyWithoutUserNestedInput
   members?: Prisma.MemberUncheckedUpdateManyWithoutUserNestedInput
+  starredProjects?: Prisma.StarredProjectUncheckedUpdateManyWithoutUserNestedInput
+  signupAttribution?: Prisma.SignupAttributionUncheckedUpdateOneWithoutUserNestedInput
+}
+
+export type UserCreateWithoutSignupAttributionInput = {
+  id?: string
+  name?: string | null
+  email: string
+  emailVerified?: boolean
+  image?: string | null
+  role?: $Enums.UserRole
+  onboardingCompleted?: boolean
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  sessions?: Prisma.SessionCreateNestedManyWithoutUserInput
+  accounts?: Prisma.AccountCreateNestedManyWithoutUserInput
+  members?: Prisma.MemberCreateNestedManyWithoutUserInput
+  notifications?: Prisma.NotificationCreateNestedManyWithoutUserInput
+  starredProjects?: Prisma.StarredProjectCreateNestedManyWithoutUserInput
+}
+
+export type UserUncheckedCreateWithoutSignupAttributionInput = {
+  id?: string
+  name?: string | null
+  email: string
+  emailVerified?: boolean
+  image?: string | null
+  role?: $Enums.UserRole
+  onboardingCompleted?: boolean
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  sessions?: Prisma.SessionUncheckedCreateNestedManyWithoutUserInput
+  accounts?: Prisma.AccountUncheckedCreateNestedManyWithoutUserInput
+  members?: Prisma.MemberUncheckedCreateNestedManyWithoutUserInput
+  notifications?: Prisma.NotificationUncheckedCreateNestedManyWithoutUserInput
+  starredProjects?: Prisma.StarredProjectUncheckedCreateNestedManyWithoutUserInput
+}
+
+export type UserCreateOrConnectWithoutSignupAttributionInput = {
+  where: Prisma.UserWhereUniqueInput
+  create: Prisma.XOR<Prisma.UserCreateWithoutSignupAttributionInput, Prisma.UserUncheckedCreateWithoutSignupAttributionInput>
+}
+
+export type UserUpsertWithoutSignupAttributionInput = {
+  update: Prisma.XOR<Prisma.UserUpdateWithoutSignupAttributionInput, Prisma.UserUncheckedUpdateWithoutSignupAttributionInput>
+  create: Prisma.XOR<Prisma.UserCreateWithoutSignupAttributionInput, Prisma.UserUncheckedCreateWithoutSignupAttributionInput>
+  where?: Prisma.UserWhereInput
+}
+
+export type UserUpdateToOneWithWhereWithoutSignupAttributionInput = {
+  where?: Prisma.UserWhereInput
+  data: Prisma.XOR<Prisma.UserUpdateWithoutSignupAttributionInput, Prisma.UserUncheckedUpdateWithoutSignupAttributionInput>
+}
+
+export type UserUpdateWithoutSignupAttributionInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  email?: Prisma.StringFieldUpdateOperationsInput | string
+  emailVerified?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  image?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  role?: Prisma.EnumUserRoleFieldUpdateOperationsInput | $Enums.UserRole
+  onboardingCompleted?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  sessions?: Prisma.SessionUpdateManyWithoutUserNestedInput
+  accounts?: Prisma.AccountUpdateManyWithoutUserNestedInput
+  members?: Prisma.MemberUpdateManyWithoutUserNestedInput
+  notifications?: Prisma.NotificationUpdateManyWithoutUserNestedInput
+  starredProjects?: Prisma.StarredProjectUpdateManyWithoutUserNestedInput
+}
+
+export type UserUncheckedUpdateWithoutSignupAttributionInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  email?: Prisma.StringFieldUpdateOperationsInput | string
+  emailVerified?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  image?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  role?: Prisma.EnumUserRoleFieldUpdateOperationsInput | $Enums.UserRole
+  onboardingCompleted?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  sessions?: Prisma.SessionUncheckedUpdateManyWithoutUserNestedInput
+  accounts?: Prisma.AccountUncheckedUpdateManyWithoutUserNestedInput
+  members?: Prisma.MemberUncheckedUpdateManyWithoutUserNestedInput
+  notifications?: Prisma.NotificationUncheckedUpdateManyWithoutUserNestedInput
   starredProjects?: Prisma.StarredProjectUncheckedUpdateManyWithoutUserNestedInput
 }
 
@@ -1005,6 +1130,7 @@ export type UserSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs = r
   members?: boolean | Prisma.User$membersArgs<ExtArgs>
   notifications?: boolean | Prisma.User$notificationsArgs<ExtArgs>
   starredProjects?: boolean | Prisma.User$starredProjectsArgs<ExtArgs>
+  signupAttribution?: boolean | Prisma.User$signupAttributionArgs<ExtArgs>
   _count?: boolean | Prisma.UserCountOutputTypeDefaultArgs<ExtArgs>
 }, ExtArgs["result"]["user"]>
 
@@ -1051,6 +1177,7 @@ export type UserInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs = 
   members?: boolean | Prisma.User$membersArgs<ExtArgs>
   notifications?: boolean | Prisma.User$notificationsArgs<ExtArgs>
   starredProjects?: boolean | Prisma.User$starredProjectsArgs<ExtArgs>
+  signupAttribution?: boolean | Prisma.User$signupAttributionArgs<ExtArgs>
   _count?: boolean | Prisma.UserCountOutputTypeDefaultArgs<ExtArgs>
 }
 export type UserIncludeCreateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {}
@@ -1064,6 +1191,7 @@ export type $UserPayload<ExtArgs extends runtime.Types.Extensions.InternalArgs =
     members: Prisma.$MemberPayload<ExtArgs>[]
     notifications: Prisma.$NotificationPayload<ExtArgs>[]
     starredProjects: Prisma.$StarredProjectPayload<ExtArgs>[]
+    signupAttribution: Prisma.$SignupAttributionPayload<ExtArgs> | null
   }
   scalars: runtime.Types.Extensions.GetPayloadResult<{
     id: string
@@ -1474,6 +1602,7 @@ export interface Prisma__UserClient<T, Null = never, ExtArgs extends runtime.Typ
   members<T extends Prisma.User$membersArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.User$membersArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$MemberPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   notifications<T extends Prisma.User$notificationsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.User$notificationsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$NotificationPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   starredProjects<T extends Prisma.User$starredProjectsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.User$starredProjectsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$StarredProjectPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
+  signupAttribution<T extends Prisma.User$signupAttributionArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.User$signupAttributionArgs<ExtArgs>>): Prisma.Prisma__SignupAttributionClient<runtime.Types.Result.GetResult<Prisma.$SignupAttributionPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions> | null, null, ExtArgs, GlobalOmitOptions>
   /**
    * Attaches callbacks for the resolution and/or rejection of the Promise.
    * @param onfulfilled The callback to execute when the Promise is resolved.
@@ -2017,6 +2146,25 @@ export type User$starredProjectsArgs<ExtArgs extends runtime.Types.Extensions.In
   take?: number
   skip?: number
   distinct?: Prisma.StarredProjectScalarFieldEnum | Prisma.StarredProjectScalarFieldEnum[]
+}
+
+/**
+ * User.signupAttribution
+ */
+export type User$signupAttributionArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  /**
+   * Select specific fields to fetch from the SignupAttribution
+   */
+  select?: Prisma.SignupAttributionSelect<ExtArgs> | null
+  /**
+   * Omit specific fields from the SignupAttribution
+   */
+  omit?: Prisma.SignupAttributionOmit<ExtArgs> | null
+  /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.SignupAttributionInclude<ExtArgs> | null
+  where?: Prisma.SignupAttributionWhereInput
 }
 
 /**

@@ -7,6 +7,8 @@ import { useAuth } from '../../contexts/auth'
 import { useTheme } from '../../contexts/theme'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { trackSignUp, trackLogin } from '../../lib/tracking'
+import { getStoredAttribution, clearStoredAttribution } from '../../lib/attribution'
+import { API_URL } from '../../lib/api'
 import { LoginScreen } from '@shogo/shared-ui/screens'
 
 export default function SignInScreen() {
@@ -27,10 +29,24 @@ export default function SignInScreen() {
     } catch {}
   }
 
+  const sendAttribution = async (method: 'email' | 'google') => {
+    try {
+      const attribution = getStoredAttribution()
+      await fetch(`${API_URL}/api/users/me/attribution`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ ...attribution, method }),
+      })
+      clearStoredAttribution()
+    } catch {}
+  }
+
   const handleSignUp = async (name: string, email: string, password: string) => {
     try {
       await signUp(name, email, password)
       trackSignUp('email')
+      sendAttribution('email')
       router.replace('/')
     } catch {}
   }

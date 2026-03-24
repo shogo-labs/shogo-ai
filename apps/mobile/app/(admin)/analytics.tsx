@@ -13,6 +13,7 @@ import {
   Text,
   ScrollView,
   RefreshControl,
+  Switch,
   useWindowDimensions,
 } from 'react-native'
 import {
@@ -31,11 +32,22 @@ import {
   type UsageLogData,
   type ChatAnalyticsData,
   type UsageBreakdownData,
+  type FunnelData,
+  type UserActivityData,
+  type TemplateEngagementData,
+  type SourceBreakdownData,
+  type AIDigestData,
+  type AIDigestListItem,
   PeriodSelector,
   StatCard,
   UsageTableSection,
   ChatAnalyticsSection,
   UsageBreakdownSection,
+  FunnelSection,
+  UserActivityTable,
+  TemplateEngagementPanel,
+  SourceBreakdownPanel,
+  AIInsightsPanel,
 } from '../../components/analytics/SharedAnalytics'
 
 const API_BASE = `${API_URL}/api/admin`
@@ -224,7 +236,10 @@ export default function AdminAnalyticsPage() {
 
   const [period, setPeriod] = useState<AnalyticsPeriod>('30d')
   const [logPage, setLogPage] = useState(1)
+  const [userPage, setUserPage] = useState(1)
   const [refreshing, setRefreshing] = useState(false)
+  const [excludeInternal, setExcludeInternal] = useState(true)
+  const [generating, setGenerating] = useState(false)
 
   const [overview, setOverview] = useState<{ data: OverviewData | null; loading: boolean }>({ data: null, loading: true })
   const [activeUsers, setActiveUsers] = useState<{ data: ActiveUsersData | null; loading: boolean }>({ data: null, loading: true })
@@ -233,9 +248,17 @@ export default function AdminAnalyticsPage() {
   const [usageSummary, setUsageSummary] = useState<{ data: UsageSummaryData | null; loading: boolean }>({ data: null, loading: true })
   const [usageLog, setUsageLog] = useState<{ data: UsageLogData | null; loading: boolean }>({ data: null, loading: true })
   const [chatStats, setChatStats] = useState<{ data: ChatAnalyticsData | null; loading: boolean }>({ data: null, loading: true })
+  const [funnel, setFunnel] = useState<{ data: FunnelData | null; loading: boolean }>({ data: null, loading: true })
+  const [userActivity, setUserActivity] = useState<{ data: UserActivityData | null; loading: boolean }>({ data: null, loading: true })
+  const [templateEng, setTemplateEng] = useState<{ data: TemplateEngagementData | null; loading: boolean }>({ data: null, loading: true })
+  const [sourceBreakdown, setSourceBreakdown] = useState<{ data: SourceBreakdownData | null; loading: boolean }>({ data: null, loading: true })
+  const [aiDigest, setAiDigest] = useState<{ data: AIDigestData | null; loading: boolean }>({ data: null, loading: true })
+  const [digestList, setDigestList] = useState<{ data: AIDigestListItem[] | null; loading: boolean }>({ data: null, loading: true })
+
+  const internalParam = excludeInternal ? 'true' : 'false'
 
   const loadAll = useCallback(async () => {
-    const pParams = { period }
+    const pParams = { period, excludeInternal: internalParam }
 
     setOverview((s) => ({ ...s, loading: true }))
     setActiveUsers((s) => ({ ...s, loading: true }))
@@ -244,8 +267,14 @@ export default function AdminAnalyticsPage() {
     setUsageSummary((s) => ({ ...s, loading: true }))
     setUsageLog((s) => ({ ...s, loading: true }))
     setChatStats((s) => ({ ...s, loading: true }))
+    setFunnel((s) => ({ ...s, loading: true }))
+    setUserActivity((s) => ({ ...s, loading: true }))
+    setTemplateEng((s) => ({ ...s, loading: true }))
+    setSourceBreakdown((s) => ({ ...s, loading: true }))
+    setAiDigest((s) => ({ ...s, loading: true }))
+    setDigestList((s) => ({ ...s, loading: true }))
 
-    const [ov, au, gr, us, uSum, uLog, ch] = await Promise.all([
+    const [ov, au, gr, us, uSum, uLog, ch, fn, ua, te, sb, dig, dl] = await Promise.all([
       fetchAdminJson<OverviewData>('/analytics/overview'),
       fetchAdminJson<ActiveUsersData>('/analytics/active-users', pParams),
       fetchAdminJson<GrowthDataPoint[]>('/analytics/growth', pParams),
@@ -253,6 +282,12 @@ export default function AdminAnalyticsPage() {
       fetchAdminJson<UsageSummaryData>('/analytics/usage-summary', pParams),
       fetchAdminJson<UsageLogData>('/analytics/usage-log', { ...pParams, page: String(logPage), limit: '50' }),
       fetchAdminJson<ChatAnalyticsData>('/analytics/chat', pParams),
+      fetchAdminJson<FunnelData>('/analytics/funnel', pParams),
+      fetchAdminJson<UserActivityData>('/analytics/user-activity', { ...pParams, page: String(userPage), limit: '20' }),
+      fetchAdminJson<TemplateEngagementData>('/analytics/template-engagement', { excludeInternal: internalParam }),
+      fetchAdminJson<SourceBreakdownData>('/analytics/source-breakdown', pParams),
+      fetchAdminJson<AIDigestData>('/analytics/ai-digest'),
+      fetchAdminJson<AIDigestListItem[]>('/analytics/ai-digest/list', { limit: '14' }),
     ])
 
     setOverview({ data: ov, loading: false })
@@ -262,7 +297,37 @@ export default function AdminAnalyticsPage() {
     setUsageSummary({ data: uSum, loading: false })
     setUsageLog({ data: uLog, loading: false })
     setChatStats({ data: ch, loading: false })
-  }, [period, logPage])
+    setFunnel({ data: fn, loading: false })
+    setUserActivity({ data: ua, loading: false })
+    setTemplateEng({ data: te, loading: false })
+    setSourceBreakdown({ data: sb, loading: false })
+    setAiDigest({ data: dig, loading: false })
+    setDigestList({ data: dl, loading: false })
+  }, [period, logPage, userPage, internalParam])
+
+  const handleGenerateDigest = useCallback(async () => {
+    setGenerating(true)
+    try {
+      const res = await fetch(`${API_BASE}/analytics/ai-digest/generate`, {
+        method: 'POST',
+        credentials: 'include',
+      })
+      if (res.ok) {
+        const json = await res.json()
+        if (json.data) setAiDigest({ data: json.data, loading: false })
+        const dl = await fetchAdminJson<AIDigestListItem[]>('/analytics/ai-digest/list', { limit: '14' })
+        setDigestList({ data: dl, loading: false })
+      }
+    } finally {
+      setGenerating(false)
+    }
+  }, [])
+
+  const handleDigestDateSelect = useCallback(async (date: string) => {
+    setAiDigest(s => ({ ...s, loading: true }))
+    const dig = await fetchAdminJson<AIDigestData>('/analytics/ai-digest', { date })
+    setAiDigest({ data: dig, loading: false })
+  }, [])
 
   useEffect(() => {
     loadAll()
@@ -299,9 +364,17 @@ export default function AdminAnalyticsPage() {
         </View>
       </View>
 
-      {/* Period selector */}
-      <View className="mb-4">
+      {/* Period selector + Internal toggle */}
+      <View className="flex-row items-center justify-between mb-4">
         <PeriodSelector value={period} onChange={setPeriod} />
+        <View className="flex-row items-center gap-2">
+          <Text className="text-[10px] text-muted-foreground">Exclude internal</Text>
+          <Switch
+            value={excludeInternal}
+            onValueChange={setExcludeInternal}
+            trackColor={{ false: '#767577', true: '#6366f1' }}
+          />
+        </View>
       </View>
 
       {/* Overview cards */}
@@ -309,9 +382,46 @@ export default function AdminAnalyticsPage() {
         <OverviewCards data={overview.data} loading={overview.loading} />
       </View>
 
+      {/* User Funnel */}
+      <View className="mb-4">
+        <FunnelSection data={funnel.data} loading={funnel.loading} />
+      </View>
+
       {/* Active users */}
       <View className="mb-4">
         <ActiveUsersSection data={activeUsers.data} loading={activeUsers.loading} />
+      </View>
+
+      {/* User Activity Table */}
+      <View className="mb-4">
+        <UserActivityTable
+          data={userActivity.data}
+          loading={userActivity.loading}
+          page={userPage}
+          onPageChange={setUserPage}
+        />
+      </View>
+
+      {/* Template + Source: side-by-side on desktop */}
+      <View className={cn('gap-4 mb-4', isWide && 'flex-row')}>
+        <View className={cn(isWide && 'flex-1')}>
+          <TemplateEngagementPanel data={templateEng.data} loading={templateEng.loading} />
+        </View>
+        <View className={cn(isWide && 'flex-1')}>
+          <SourceBreakdownPanel data={sourceBreakdown.data} loading={sourceBreakdown.loading} />
+        </View>
+      </View>
+
+      {/* AI Insights */}
+      <View className="mb-4">
+        <AIInsightsPanel
+          data={aiDigest.data}
+          digestList={digestList.data}
+          loading={aiDigest.loading}
+          onDateSelect={handleDigestDateSelect}
+          onGenerate={handleGenerateDigest}
+          generating={generating}
+        />
       </View>
 
       {/* Usage table (summary + event log) */}

@@ -249,3 +249,13 @@ export type PlatformSetting = Prisma.PlatformSettingModel
  * 
  */
 export type InfraSnapshot = Prisma.InfraSnapshotModel
+/**
+ * Model AnalyticsDigest
+ * 
+ */
+export type AnalyticsDigest = Prisma.AnalyticsDigestModel
+/**
+ * Model SignupAttribution
+ * 
+ */
+export type SignupAttribution = Prisma.SignupAttributionModel
