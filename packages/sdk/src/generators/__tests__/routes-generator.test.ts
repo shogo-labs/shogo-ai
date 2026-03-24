@@ -48,7 +48,7 @@ describe('Routes Generator', () => {
 
       expect(result).not.toBeNull()
       expect(result!.modelName).toBe('Project')
-      expect(result!.fileName).toBe('project.routes.ts')
+      expect(result!.fileName).toBe('project.routes.tsx')
       expect(result!.code).toContain('export function createProjectRoutes(): Hono')
     })
 
@@ -303,7 +303,7 @@ describe('Routes Generator', () => {
       const result = generateModelHooks(mockProjectModel)
 
       expect(result.modelName).toBe('Project')
-      expect(result.fileName).toBe('project.hooks.ts')
+      expect(result.fileName).toBe('project.hooks.tsx')
       expect(result.code).toContain('export interface ProjectHooks')
     })
 
