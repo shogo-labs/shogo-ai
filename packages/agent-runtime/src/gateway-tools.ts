@@ -28,7 +28,7 @@ import { FileIndexEngine } from './file-index-engine'
 import { MCP_CATALOG, isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPackages } from './mcp-catalog'
 import { initComposioSession, isComposioEnabled, isComposioInitialized, searchComposioToolkits, findComposioToolkit, registerToolkitProxyTools, checkComposioAuth } from './composio'
 import { autoBindPrimaryEntity } from './composio-auto-bind'
-import { loadSkills, loadBundledSkills, searchSkills } from './skills'
+import { loadAllSkills, loadBundledSkills, searchSkills } from './skills'
 import { getDynamicAppManager, getByPointer } from './dynamic-app-manager'
 import { CanvasStreamParser } from './canvas-stream-parser'
 import { withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, type PermissionEngine } from './permission-engine'
@@ -2809,7 +2809,7 @@ function createToolSearchTool(ctx: ToolContext): AgentTool {
 
       // 2. Search skills (bundled + installed)
       try {
-        const installed = loadSkills(join(ctx.workspaceDir, 'skills'))
+        const installed = loadAllSkills(ctx.workspaceDir)
         const bundled = loadBundledSkills(new Set(installed.map(s => s.name)))
         const skillResults = searchSkills(query, installed, bundled, limit)
         for (const skill of skillResults) {
@@ -2968,25 +2968,36 @@ For MCP protocol servers (databases, file systems, custom tool servers), use mcp
       // Skill install path: "skill:<name>" copies a bundled skill into the workspace
       if (name.startsWith('skill:')) {
         const skillName = name.slice(6)
-        const installed = loadSkills(join(ctx.workspaceDir, 'skills'))
+        const installed = loadAllSkills(ctx.workspaceDir)
         const bundled = loadBundledSkills(new Set(installed.map(s => s.name)))
         const bundledSkill = bundled.find(s => s.name === skillName)
         if (!bundledSkill) {
-          const destPath = join(ctx.workspaceDir, 'skills', `${skillName}.md`)
-          if (existsSync(destPath)) {
-            return textResult({ error: `Skill "${skillName}" is already installed`, path: `skills/${skillName}.md` })
+          const destDir = join(ctx.workspaceDir, '.shogo', 'skills', skillName)
+          if (existsSync(destDir)) {
+            return textResult({ error: `Skill "${skillName}" is already installed`, path: `.shogo/skills/${skillName}/SKILL.md` })
           }
           return textResult({ error: `Bundled skill "${skillName}" not found. Use tool_search to find available skills.` })
         }
-        const skillsDir = join(ctx.workspaceDir, 'skills')
-        mkdirSync(skillsDir, { recursive: true })
-        copyFileSync(bundledSkill.filePath, join(skillsDir, `${skillName}.md`))
+        const destDir = join(ctx.workspaceDir, '.shogo', 'skills', skillName)
+        mkdirSync(destDir, { recursive: true })
+        // Copy the entire bundled skill directory
+        const srcDir = bundledSkill.skillDir
+        for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
+          const srcPath = join(srcDir, entry.name)
+          const destPath = join(destDir, entry.name)
+          if (entry.isDirectory()) {
+            const { cpSync } = require('fs')
+            cpSync(srcPath, destPath, { recursive: true })
+          } else {
+            writeFileSync(destPath, readFileSync(srcPath))
+          }
+        }
         return textResult({
           ok: true,
           type: 'skill',
           name: skillName,
-          path: `skills/${skillName}.md`,
-          message: `Skill "${skillName}" installed. It will be active on the next message. Read it with read_file({ path: "skills/${skillName}.md" }) to see its instructions.`,
+          path: `.shogo/skills/${skillName}/SKILL.md`,
+          message: `Skill "${skillName}" installed. It will be active on the next message. Read it with read_file({ path: ".shogo/skills/${skillName}/SKILL.md" }) to see its instructions.`,
         })
       }
 
@@ -3453,30 +3464,38 @@ function createTaskTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): Ag
 }
 
 // ---------------------------------------------------------------------------
-// Skill Tool (Claude Code skill format)
+// Skill Tool (unified .shogo/skills/ format)
 // ---------------------------------------------------------------------------
 
-export interface LoadedSkillEntry {
-  name: string
-  description: string
-  content: string
-  skillDir: string
-  disableModelInvocation: boolean
-  userInvocable: boolean
-  allowedTools?: string[]
-  context?: 'fork'
-  agent?: string
-  argumentHint?: string
+import type { Skill } from './skills'
+
+let loadedSkillsList: Skill[] | null = null
+
+export function setLoadedSkills(skills: Skill[]): void {
+  loadedSkillsList = skills
 }
 
-let loadedClaudeSkills: LoadedSkillEntry[] | null = null
-
-export function setLoadedClaudeSkills(skills: LoadedSkillEntry[]): void {
-  loadedClaudeSkills = skills
+export function getLoadedSkills(): Skill[] {
+  return loadedSkillsList || []
 }
 
-export function getLoadedClaudeSkills(): LoadedSkillEntry[] {
-  return loadedClaudeSkills || []
+/** @deprecated Use setLoadedSkills instead */
+export function setLoadedClaudeSkills(skills: Skill[]): void {
+  setLoadedSkills(skills)
+}
+
+/** @deprecated Use getLoadedSkills instead */
+export function getLoadedClaudeSkills(): Skill[] {
+  return getLoadedSkills()
+}
+
+/** @deprecated Use Skill from ./skills instead */
+export type LoadedSkillEntry = Skill
+
+function inferRuntime(filename: string): string {
+  const ext = filename.split('.').pop()?.toLowerCase()
+  const map: Record<string, string> = { py: 'python3', js: 'node', ts: 'bun', mjs: 'node', cjs: 'node', sh: 'bash' }
+  return map[ext || ''] || 'bash'
 }
 
 function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): AgentTool {
@@ -3485,19 +3504,21 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
     description:
       'Manage and invoke skills. Default action is "invoke" — runs a skill by name. ' +
       'Use action "search" to find skills in the registry (CRO, SEO, copywriting, automation, dev tools, and 800+ more). ' +
-      'Use action "install" to install a registry skill into the workspace so it can be invoked.',
+      'Use action "install" to install a registry skill into the workspace. ' +
+      'Use action "run_script" to execute a script from a skill\'s scripts/ directory.',
     label: 'Skill',
     parameters: Type.Object({
-      action: Type.Optional(Type.String({ description: 'Action: "invoke" (default), "search", or "install"' })),
-      skill: Type.Optional(Type.String({ description: 'Skill name to invoke (for invoke action)' })),
-      args: Type.Optional(Type.String({ description: 'Arguments to pass to the skill (for invoke action)' })),
+      action: Type.Optional(Type.String({ description: 'Action: "invoke" (default), "search", "install", or "run_script"' })),
+      skill: Type.Optional(Type.String({ description: 'Skill name (for invoke/run_script action)' })),
+      args: Type.Optional(Type.String({ description: 'Arguments to pass to the skill or script' })),
+      script: Type.Optional(Type.String({ description: 'Script filename to execute (for run_script action, e.g. "score.py")' })),
       query: Type.Optional(Type.String({ description: 'Search query (for search action)' })),
       source: Type.Optional(Type.String({ description: 'Source id (for install action, from search results)' })),
       dir_name: Type.Optional(Type.String({ description: 'Directory name (for install action, from search results)' })),
     }),
     execute: async (_toolCallId, params, context) => {
-      const { action = 'invoke', skill: skillName, args, query, source, dir_name: dirName } = params as {
-        action?: string; skill?: string; args?: string; query?: string; source?: string; dir_name?: string
+      const { action = 'invoke', skill: skillName, args, script, query, source, dir_name: dirName } = params as {
+        action?: string; skill?: string; args?: string; script?: string; query?: string; source?: string; dir_name?: string
       }
 
       // --- Search: find skills in the registry ---
@@ -3543,7 +3564,7 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
           return textResult({ error: `Skill "${dirName}" not found in source "${source}".` })
         }
 
-        const destDir = join(ctx.workspaceDir, '.claude', 'skills', skill.name)
+        const destDir = join(ctx.workspaceDir, '.shogo', 'skills', skill.name)
         mkdirSync(destDir, { recursive: true })
         const srcDir = skill.skillDir
         for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
@@ -3565,18 +3586,87 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
         })
       }
 
+      // --- Run Script: execute a script from a skill's scripts/ directory ---
+      if (action === 'run_script') {
+        if (!skillName || !script) {
+          return textResult({ error: 'skill and script parameters are required for run_script action.' })
+        }
+
+        if (script.includes('..') || script.includes('/')) {
+          return textResult({ error: 'Invalid script filename.' })
+        }
+
+        const skills = getLoadedSkills()
+        const found = skills.find(s => s.name === skillName)
+        if (!found) {
+          return textResult({ error: `Skill not found: ${skillName}` })
+        }
+
+        const scriptPath = join(found.skillDir, 'scripts', script)
+        if (!existsSync(scriptPath)) {
+          return textResult({
+            error: `Script "${script}" not found in skill "${skillName}".`,
+            available: found.scripts || [],
+          })
+        }
+
+        const runtime = found.runtime || inferRuntime(script)
+        const command = args ? `${runtime} ${scriptPath} ${args}` : `${runtime} ${scriptPath}`
+
+        try {
+          const { sandboxExec } = require('./sandbox-exec') as typeof import('./sandbox-exec')
+          const result = sandboxExec({
+            command,
+            workspaceDir: ctx.workspaceDir,
+            timeout: 30000,
+            sandboxConfig: ctx.sandbox,
+            sessionId: ctx.sessionId,
+            mainSessionIds: ctx.mainSessionIds,
+          })
+
+          return textResult({
+            skill: skillName,
+            script,
+            runtime,
+            exitCode: result.exitCode,
+            stdout: result.stdout?.substring(0, 8000) || '',
+            stderr: result.stderr?.substring(0, 4000) || '',
+          })
+        } catch (err: any) {
+          return textResult({ error: `Script execution failed: ${err.message}` })
+        }
+      }
+
       // --- Invoke (default): run a skill by name ---
       if (!skillName) {
         return textResult({ error: 'skill name is required for invoke action.' })
       }
 
-      const skills = getLoadedClaudeSkills()
+      const skills = getLoadedSkills()
       const found = skills.find(s => s.name === skillName)
       if (!found) {
         return textResult({
           error: `Skill not found: ${skillName}. Available: ${skills.map(s => s.name).join(', ')}`,
           hint: 'Use skill({ action: "search", query: "..." }) to find and install new skills.',
         })
+      }
+
+      // Run setup on first invoke if configured
+      if (found.setup && !existsSync(join(found.skillDir, '.setup-done'))) {
+        try {
+          const { sandboxExec } = require('./sandbox-exec') as typeof import('./sandbox-exec')
+          const setupResult = sandboxExec({
+            command: found.setup,
+            workspaceDir: found.skillDir,
+            timeout: 60000,
+            sandboxConfig: ctx.sandbox,
+            sessionId: ctx.sessionId,
+            mainSessionIds: ctx.mainSessionIds,
+          })
+          if (setupResult.exitCode === 0) {
+            writeFileSync(join(found.skillDir, '.setup-done'), new Date().toISOString(), 'utf-8')
+          }
+        } catch { /* setup is best-effort */ }
       }
 
       let content = found.content
@@ -3593,8 +3683,9 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
         content = content.replace(/\$ARGUMENTS/g, '')
       }
 
-      // ${CLAUDE_SKILL_DIR} substitution
+      // ${CLAUDE_SKILL_DIR} and ${SKILL_DIR} substitution
       content = content.replace(/\$\{CLAUDE_SKILL_DIR\}/g, found.skillDir)
+      content = content.replace(/\$\{SKILL_DIR\}/g, found.skillDir)
 
       // If context: fork, run in a subagent
       if (found.context === 'fork') {
@@ -3607,7 +3698,6 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
           disallowedTools: ['task', 'code_agent'],
         }
 
-        // Try to resolve as a built-in agent type for tool scoping
         const builtIn = getBuiltinSubagentConfig(agentType, ctx, allToolsGetter())
         if (builtIn) {
           subConfig.toolNames = builtIn.toolNames

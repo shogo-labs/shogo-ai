@@ -228,8 +228,8 @@ system: Heartbeat ch...
 
 export const OPTIMIZED_SKILL_MATCHING_GUIDE = `### Skill Matching
 
-Skills are Markdown files with YAML frontmatter in the \`skills/\` directory.
-They automatically activate when a user message matches their trigger phrases.
+Skills live in \`.shogo/skills/<name>/SKILL.md\` directories.
+Skills with a \`trigger\` field automatically activate when a user message matches their trigger phrases.
 
 **Match examples:**
 - "git summary" → skill: \`git-summary\` (confidence: 0.95)
@@ -248,26 +248,36 @@ When a user asks for something not covered by installed skills, proactively sear
 
 ### Managing Skills
 
-Skills are just files. Use your existing file tools:
-- \`read_file({ path: "skills/my-skill.md" })\` — view a skill
-- \`write_file({ path: "skills/my-skill.md", content: "..." })\` — create or edit
-- \`delete_file({ path: "skills/my-skill.md" })\` — remove
-- \`list_files({ path: "skills" })\` — list installed skills
+Skills are directories under \`.shogo/skills/\`. Use your existing file tools:
+- \`read_file({ path: ".shogo/skills/my-skill/SKILL.md" })\` — view a skill
+- \`write_file({ path: ".shogo/skills/my-skill/SKILL.md", content: "..." })\` — create or edit
+- \`list_files({ path: ".shogo/skills" })\` — list installed skills
 
-**Skill file format:**
+Or use the skill MCP tools: \`skill_list\`, \`skill_create\`, \`skill_edit\`, \`skill_delete\`, \`skill_write_script\`, \`skill_list_scripts\`.
+
+**Skill directory layout:**
+\`\`\`
+.shogo/skills/my-skill/
+  SKILL.md              # instructions + YAML frontmatter
+  scripts/              # optional executable code
+    process.py
+\`\`\`
+
+**SKILL.md format:**
 \`\`\`
 ---
 name: my-skill
-version: 1.0.0
 description: What the skill does
 trigger: "phrase one|phrase two|/regex pattern/"
-tools: [web, memory_read, memory_write, send_message]
+tools: [web, memory_read, memory_write]
+setup: pip install -r requirements.txt
+runtime: python3
 ---
 
 # Skill instructions here (Markdown)
 \`\`\`
 
-Required frontmatter fields: \`name\` and \`trigger\`.
+Required frontmatter: \`name\` and \`description\`. \`trigger\` enables auto-matching.
 Trigger supports pipe-separated phrases and /regex/ patterns.
 Skills reload automatically — changes take effect on the next message.`
 

@@ -89,7 +89,7 @@ Long-lived facts and learnings are stored here.
 export function seedWorkspaceDefaults(dir: string): void {
   mkdirSync(dir, { recursive: true })
   mkdirSync(join(dir, 'memory'), { recursive: true })
-  mkdirSync(join(dir, 'skills'), { recursive: true })
+  mkdirSync(join(dir, '.shogo', 'skills'), { recursive: true })
 
   for (const [filename, content] of Object.entries(DEFAULT_WORKSPACE_FILES)) {
     const filepath = join(dir, filename)
@@ -106,7 +106,7 @@ export function seedWorkspaceDefaults(dir: string): void {
 export function resetWorkspaceDefaults(dir: string): void {
   mkdirSync(dir, { recursive: true })
   mkdirSync(join(dir, 'memory'), { recursive: true })
-  mkdirSync(join(dir, 'skills'), { recursive: true })
+  mkdirSync(join(dir, '.shogo', 'skills'), { recursive: true })
 
   for (const [filename, content] of Object.entries(DEFAULT_WORKSPACE_FILES)) {
     writeFileSync(join(dir, filename), content, 'utf-8')
@@ -125,7 +125,7 @@ export function seedWorkspaceFromTemplate(dir: string, templateId: string, agent
 
   mkdirSync(dir, { recursive: true })
   mkdirSync(join(dir, 'memory'), { recursive: true })
-  mkdirSync(join(dir, 'skills'), { recursive: true })
+  mkdirSync(join(dir, '.shogo', 'skills'), { recursive: true })
 
   for (const [filename, rawContent] of Object.entries(template.files)) {
     const filepath = join(dir, filename)
@@ -140,10 +140,28 @@ export function seedWorkspaceFromTemplate(dir: string, templateId: string, agent
   const bundledDir = join(__dirname, 'bundled-skills')
   if (existsSync(bundledDir)) {
     for (const skillName of template.skills) {
-      const src = join(bundledDir, `${skillName}.md`)
-      const dest = join(dir, 'skills', `${skillName}.md`)
-      if (existsSync(src) && !existsSync(dest)) {
-        copyFileSync(src, dest)
+      const srcDir = join(bundledDir, skillName)
+      const srcFile = join(srcDir, 'SKILL.md')
+      const destDir = join(dir, '.shogo', 'skills', skillName)
+      if (existsSync(srcFile) && !existsSync(destDir)) {
+        mkdirSync(destDir, { recursive: true })
+        copyFileSync(srcFile, join(destDir, 'SKILL.md'))
+        // Copy any additional files (scripts/, requirements.txt, etc.)
+        try {
+          for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
+            if (entry.name === 'SKILL.md') continue
+            if (entry.isDirectory()) {
+              const subSrc = join(srcDir, entry.name)
+              const subDest = join(destDir, entry.name)
+              mkdirSync(subDest, { recursive: true })
+              for (const subFile of readdirSync(subSrc)) {
+                copyFileSync(join(subSrc, subFile), join(subDest, subFile))
+              }
+            } else {
+              copyFileSync(join(srcDir, entry.name), join(destDir, entry.name))
+            }
+          }
+        } catch { /* extra files are optional */ }
       }
     }
   }
