@@ -105,6 +105,8 @@ async function trackUsageFromStream(
   // Index into orderedParts by toolCallId so we can back-fill output later
   const toolPartIndex = new Map<string, any>()
   let currentTextPart: { type: 'text'; text: string } | null = null
+  let currentReasoningPart: { type: 'reasoning'; text: string; durationMs?: number } | null = null
+  let reasoningStartedAt: number | null = null
   let streamInterrupted = false
 
   const PER_CHUNK_IDLE_TIMEOUT_MS = 45_000
@@ -162,8 +164,27 @@ async function trackUsageFromStream(
         // UI Message Stream protocol uses { type: "..." } format
         const type = data.type
 
+        // server-side-persistence: Accumulate reasoning/thinking content
+        if (type === 'reasoning-start') {
+          currentTextPart = null
+          reasoningStartedAt = Date.now()
+          currentReasoningPart = { type: 'reasoning', text: '' }
+          orderedParts.push(currentReasoningPart)
+        }
+        if (type === 'reasoning-delta' && data.delta && currentReasoningPart) {
+          currentReasoningPart.text += data.delta
+        }
+        if (type === 'reasoning-end') {
+          if (currentReasoningPart && reasoningStartedAt) {
+            currentReasoningPart.durationMs = Date.now() - reasoningStartedAt
+          }
+          currentReasoningPart = null
+          reasoningStartedAt = null
+        }
+
         // server-side-persistence: Accumulate text content from stream
         if (type === 'text-delta' && data.delta) {
+          currentReasoningPart = null
           accumulatedText += data.delta
           if (!currentTextPart) {
             currentTextPart = { type: 'text', text: '' }
@@ -205,6 +226,7 @@ async function trackUsageFromStream(
           }
 
           currentTextPart = null
+          currentReasoningPart = null
           const part = {
             type: 'dynamic-tool',
             toolCallId,
@@ -313,9 +335,9 @@ async function trackUsageFromStream(
       if (session) {
         // Use orderedParts which preserves the natural interleaving of
         // text and tool calls as they appeared in the stream.
-        // Filter out empty text parts that can accumulate from keepalive pings.
+        // Filter out empty text/reasoning parts that can accumulate from keepalive pings.
         const parts = orderedParts.filter(
-          (p) => !(p.type === 'text' && (!p.text || !p.text.trim()))
+          (p) => !((p.type === 'text' || p.type === 'reasoning') && (!p.text || !p.text.trim()))
         )
 
         const message = await prisma.chatMessage.create({

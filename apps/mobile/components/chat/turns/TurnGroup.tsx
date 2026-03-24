@@ -9,6 +9,7 @@
 
 import { useState, useCallback } from "react"
 import { View, Text, Pressable } from "react-native"
+import { Motion } from "@legendapp/motion"
 import * as Clipboard from "expo-clipboard"
 import { Copy, Check } from "lucide-react-native"
 import { cn } from "@shogo/shared-ui/primitives"
@@ -61,6 +62,36 @@ function CopyButton({ text, className }: { text: string; className?: string }) {
   )
 }
 
+const DOT_DURATION = 600
+
+function LoadingDots() {
+  return (
+    <View
+      testID="loading-indicator"
+      accessibilityLabel="Loading response"
+      accessibilityState={{ busy: true }}
+      className="flex-row items-center gap-1.5 p-2"
+    >
+      {[0, 1, 2].map((i) => (
+        <Motion.View
+          key={i}
+          initial={{ y: 0 }}
+          animate={{ y: -4 }}
+          transition={{
+            type: "timing",
+            duration: DOT_DURATION,
+            easing: "easeInOut",
+            delay: i * 150,
+            repeat: Infinity,
+            repeatReverse: true,
+          }}
+          className="w-2 h-2 rounded-full bg-muted-foreground/60"
+        />
+      ))}
+    </View>
+  )
+}
+
 export function TurnGroup({
   turn,
   phase,
@@ -72,7 +103,10 @@ export function TurnGroup({
   const colors = usePhaseColor(phase || "")
 
   return (
-    <View
+    <Motion.View
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ type: "timing", duration: 300, easing: "easeOut" }}
       className={cn(
         "gap-2",
         turn.assistantMessage ? colors.border : "border-primary/30",
@@ -128,18 +162,9 @@ export function TurnGroup({
 
       {/* Loading indicator when streaming but no assistant message yet */}
       {turn.isStreaming && !turn.assistantMessage && (
-        <View
-          testID="loading-indicator"
-          accessibilityLabel="Loading response"
-          accessibilityState={{ busy: true }}
-          className="flex-row items-center gap-1 p-2"
-        >
-          <View className="w-2 h-2 rounded-full bg-muted-foreground opacity-60" />
-          <View className="w-2 h-2 rounded-full bg-muted-foreground opacity-40" />
-          <View className="w-2 h-2 rounded-full bg-muted-foreground opacity-20" />
-        </View>
+        <LoadingDots />
       )}
-    </View>
+    </Motion.View>
   )
 }
 
