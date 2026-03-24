@@ -21,6 +21,7 @@ export interface BillingDataState {
   } | undefined
   usageEvents: any[]
   hasActiveSubscription: boolean
+  hasAdvancedModelAccess: boolean
   daysRemaining: number | undefined
   isLoading: boolean
   error: Error | null
@@ -114,12 +115,16 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
     } catch { return [] }
   }, [workspaceId, store, isLoadingUsageEvents])
 
+  const hasActiveSubscription = subscription?.status === 'active' || subscription?.status === 'trialing'
+  const hasAdvancedModelAccess = hasActiveSubscription && subscription?.planId !== 'basic'
+
   return {
     subscription,
     creditLedger,
     effectiveBalance,
     usageEvents,
-    hasActiveSubscription: subscription?.status === 'active' || subscription?.status === 'trialing',
+    hasActiveSubscription,
+    hasAdvancedModelAccess,
     daysRemaining: subscription?.daysRemaining,
     isLoading: isLoadingSubscription || isLoadingCreditLedger || isLoadingUsageEvents,
     error,

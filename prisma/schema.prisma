@@ -467,6 +467,7 @@ model Subscription {
 }
 
 enum PlanId {
+  basic
   pro
   business
   enterprise

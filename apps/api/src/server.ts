@@ -4033,10 +4033,10 @@ app.post('/api/chat', async (c) => {
       if (!workspaceId) workspaceId = verifiedWsId
     }
 
-    // Enforce basic agent mode for free-plan workspaces (server-side guard)
+    // Enforce basic agent mode for free/basic-plan workspaces (server-side guard)
     if (workspaceId && agentMode && agentMode !== 'basic') {
-      const isPaid = await billingService.hasPaidSubscription(workspaceId)
-      if (!isPaid) {
+      const hasAdvanced = await billingService.hasAdvancedModelAccess(workspaceId)
+      if (!hasAdvanced) {
         agentMode = 'basic'
       }
     }
@@ -4850,7 +4850,7 @@ app.post('/api/billing/verify-checkout', async (c) => {
       ? stripeSubscription.current_period_end * 1000
       : now + (30 * 24 * 60 * 60 * 1000)
 
-    const basePlanId = planId.split('_')[0] as 'pro' | 'business' | 'enterprise'
+    const basePlanId = planId.split('_')[0] as 'basic' | 'pro' | 'business' | 'enterprise'
 
     await billingService.syncFromStripe({
       stripeSubscriptionId: stripeSubscription.id,
@@ -4992,7 +4992,7 @@ app.post('/api/webhooks/stripe', async (c) => {
               ? stripeSubscription.current_period_end * 1000
               : now + (30 * 24 * 60 * 60 * 1000)
 
-            const basePlanId = planId.split('_')[0] as 'pro' | 'business' | 'enterprise'
+            const basePlanId = planId.split('_')[0] as 'basic' | 'pro' | 'business' | 'enterprise'
 
             await billingService.syncFromStripe({
               stripeSubscriptionId: stripeSubscription.id,

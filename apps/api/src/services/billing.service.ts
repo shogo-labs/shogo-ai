@@ -113,6 +113,24 @@ export async function hasPaidSubscription(workspaceId: string): Promise<boolean>
 }
 
 /**
+ * Check if workspace has a plan that grants access to advanced (non-economy) models.
+ * Returns true for Pro, Business, Enterprise. Returns false for Basic and free.
+ * In local mode returns true so all features are accessible during development.
+ */
+export async function hasAdvancedModelAccess(workspaceId: string): Promise<boolean> {
+  if (isLocalMode) return true
+  const sub = await prisma.subscription.findFirst({
+    where: {
+      workspaceId,
+      status: { in: ['active', 'trialing'] },
+    },
+    select: { planId: true },
+  });
+  if (!sub) return false
+  return sub.planId !== 'basic'
+}
+
+/**
  * Check if workspace has a Business or Enterprise plan (active/trialing).
  * Returns false for Pro, free, or no subscription.
  * In local mode returns true so all features are accessible during development.
