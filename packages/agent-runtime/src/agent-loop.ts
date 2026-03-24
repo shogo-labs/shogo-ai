@@ -243,11 +243,12 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     }
   })
 
+  let promptError: Error | undefined
   try {
     await agent.prompt(prompt, images && images.length > 0 ? images : undefined)
   } catch (err: any) {
     if (!abortTriggered) {
-      throw err
+      promptError = err
     }
   }
 
@@ -255,6 +256,12 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   const newMessages = allMessages.slice(history.length)
   const finalText = extractFinalText(newMessages)
   const usage = sumUsage(newMessages)
+
+  // If we got an error and no output was produced, propagate the error
+  // so callers can display a meaningful message instead of a silent failure.
+  if (promptError && usage.output === 0 && toolCalls.length === 0) {
+    throw promptError
+  }
 
   const result: AgentLoopResult = {
     text: loopBreak
