@@ -52,13 +52,22 @@ ALTER TABLE "signup_attributions" ADD CONSTRAINT "signup_attributions_userId_fke
     FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- Backfill: create signup_attributions for existing users from accounts table
+-- Uses DISTINCT ON to handle users with multiple accounts (e.g. email + google)
 INSERT INTO "signup_attributions" ("id", "userId", "signupMethod", "sourceTag", "createdAt")
 SELECT
     gen_random_uuid(),
-    u."id",
-    CASE WHEN a."providerId" = 'google' THEN 'google' ELSE 'email' END,
-    CASE WHEN a."providerId" = 'google' THEN 'google-oauth' ELSE 'unknown' END,
-    u."createdAt"
-FROM "users" u
-LEFT JOIN "accounts" a ON a."userId" = u."id"
-WHERE NOT EXISTS (SELECT 1 FROM "signup_attributions" sa WHERE sa."userId" = u."id");
+    sub."userId",
+    sub."signupMethod",
+    sub."sourceTag",
+    sub."createdAt"
+FROM (
+    SELECT DISTINCT ON (u."id")
+        u."id" AS "userId",
+        CASE WHEN a."providerId" = 'google' THEN 'google' ELSE 'email' END AS "signupMethod",
+        CASE WHEN a."providerId" = 'google' THEN 'google-oauth' ELSE 'direct' END AS "sourceTag",
+        u."createdAt"
+    FROM "users" u
+    LEFT JOIN "accounts" a ON a."userId" = u."id"
+    ORDER BY u."id", CASE WHEN a."providerId" = 'google' THEN 0 ELSE 1 END
+) sub
+WHERE NOT EXISTS (SELECT 1 FROM "signup_attributions" sa WHERE sa."userId" = sub."userId");
