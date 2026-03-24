@@ -624,6 +624,23 @@ jobs:
         run: |
           kubectl apply -k k8s/overlays/${{ env.ENVIRONMENT }}/ || true
 
+      - name: Ensure docs DomainMapping
+        run: |
+          if [ -n "${{ env.DOCS_DOMAIN }}" ]; then
+            kubectl apply -f - <<'EOF' || true
+          apiVersion: serving.knative.dev/v1beta1
+          kind: DomainMapping
+          metadata:
+            name: ${{ env.DOCS_DOMAIN }}
+            namespace: ${{ env.NS_SYSTEM }}
+          spec:
+            ref:
+              name: docs
+              kind: Service
+              apiVersion: serving.knative.dev/v1
+          EOF
+          fi
+
       - name: Ensure Kourier TLS configuration
         run: |
           kubectl set env deployment/net-kourier-controller -n knative-serving \
@@ -879,6 +896,22 @@ jobs:
           kubectl patch configmap config-kourier -n knative-serving --type merge \
             -p '{"data":{"drain-time-seconds":"15"}}' || true
 
+      - name: Ensure docs DomainMapping
+        if: env.DOCS_DOMAIN != ''
+        run: |
+          kubectl apply -f - <<EOF || true
+          apiVersion: serving.knative.dev/v1beta1
+          kind: DomainMapping
+          metadata:
+            name: ${{ env.DOCS_DOMAIN }}
+            namespace: ${{ env.NS_SYSTEM }}
+          spec:
+            ref:
+              name: docs
+              kind: Service
+              apiVersion: serving.knative.dev/v1
+          EOF
+
       - name: Deploy Cluster Autoscaler
         run: |
           NODE_POOL_OCID="${{ vars.NODE_POOL_OCID }}"
@@ -979,6 +1012,7 @@ jobs:
       NS_SYSTEM: ${{ vars.NAMESPACE_SYSTEM }}
       NS_WORKSPACES: ${{ vars.NAMESPACE_WORKSPACES }}
       DOMAIN: ${{ vars.DOMAIN }}
+      DOCS_DOMAIN: ${{ vars.DOCS_DOMAIN }}
       IMAGE_TAG: production-${{ github.sha }}
       REGION_KEY: eu
 
@@ -1088,6 +1122,22 @@ jobs:
           kubectl patch configmap config-kourier -n knative-serving --type merge \
             -p '{"data":{"drain-time-seconds":"15"}}' || true
 
+      - name: Ensure docs DomainMapping
+        if: env.DOCS_DOMAIN != ''
+        run: |
+          kubectl apply -f - <<EOF || true
+          apiVersion: serving.knative.dev/v1beta1
+          kind: DomainMapping
+          metadata:
+            name: ${{ env.DOCS_DOMAIN }}
+            namespace: ${{ env.NS_SYSTEM }}
+          spec:
+            ref:
+              name: docs
+              kind: Service
+              apiVersion: serving.knative.dev/v1
+          EOF
+
       - name: Run Prisma migrations
         if: needs.detect-changes.outputs.api_changed == 'true'
         run: |
@@ -1179,6 +1229,7 @@ jobs:
       NS_SYSTEM: ${{ vars.NAMESPACE_SYSTEM }}
       NS_WORKSPACES: ${{ vars.NAMESPACE_WORKSPACES }}
       DOMAIN: ${{ vars.DOMAIN }}
+      DOCS_DOMAIN: ${{ vars.DOCS_DOMAIN }}
       IMAGE_TAG: production-${{ github.sha }}
       REGION_KEY: india
 
@@ -1287,6 +1338,22 @@ jobs:
         run: |
           kubectl patch configmap config-kourier -n knative-serving --type merge \
             -p '{"data":{"drain-time-seconds":"15"}}' || true
+
+      - name: Ensure docs DomainMapping
+        if: env.DOCS_DOMAIN != ''
+        run: |
+          kubectl apply -f - <<EOF || true
+          apiVersion: serving.knative.dev/v1beta1
+          kind: DomainMapping
+          metadata:
+            name: ${{ env.DOCS_DOMAIN }}
+            namespace: ${{ env.NS_SYSTEM }}
+          spec:
+            ref:
+              name: docs
+              kind: Service
+              apiVersion: serving.knative.dev/v1
+          EOF
 
       - name: Run Prisma migrations
         if: needs.detect-changes.outputs.api_changed == 'true'
