@@ -18,6 +18,8 @@ import {
   TextInput,
   Platform,
   Modal,
+  type StyleProp,
+  type ViewStyle,
 } from 'react-native'
 import {
   Popover,
@@ -66,6 +68,10 @@ import { useTheme, type ThemePreference } from '../../contexts/theme'
 import { formatCredits } from '../../lib/billing-config'
 import { PublishDropdown } from './PublishDropdown'
 import { usePlatformConfig } from '../../lib/platform-config'
+import { isNativePhoneIntegrationsLayout } from '../../lib/native-phone-layout'
+
+/** Native narrow bar: Popover trigger often ignores Tailwind `max-w`; cap width in dp (slightly above 120). */
+const nativeNarrowTitleMaxWidth = 132
 
 const AGENT_TABS: { id: string; label: string; icon: React.ElementType }[] = [
   { id: 'chat-fullscreen', label: 'Chat', icon: MessageSquare },
@@ -219,8 +225,9 @@ export function ProjectTopBar({
   canvasThemePicker,
 }: ProjectTopBarProps) {
   const router = useRouter()
-  const { width } = useWindowDimensions()
+  const { width, height } = useWindowDimensions()
   const isWide = width >= 768
+  const isNativePhone = isNativePhoneIntegrationsLayout(width, height)
   const [showDropdown, setShowDropdown] = useState(false)
   const [dropdownKey, setDropdownKey] = useState(0)
   const [showNarrowMore, setShowNarrowMore] = useState(false)
@@ -299,10 +306,22 @@ export function ProjectTopBar({
             trigger={(triggerProps) => (
               <Pressable
                 {...triggerProps}
-                className="flex-row items-center gap-1 px-1.5 py-0.5 rounded-md active:bg-muted max-w-[120px]"
+                className={cn(
+                  'flex-row items-center gap-1 px-1.5 py-0.5 rounded-md active:bg-muted',
+                  !isNativePhone && 'max-w-[120px]',
+                )}
+                style={[
+                  (triggerProps as { style?: StyleProp<ViewStyle> }).style,
+                  isNativePhone ? { maxWidth: nativeNarrowTitleMaxWidth } : undefined,
+                ]}
                 accessibilityLabel="Switch project"
               >
-                <Text className="text-xs font-semibold text-foreground" numberOfLines={1}>
+                <Text
+                  className="text-xs font-semibold text-foreground"
+                  style={isNativePhone ? { flex: 1, minWidth: 0 } : undefined}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                >
                   {projectName}
                 </Text>
                 <ChevronDown size={10} className="text-muted-foreground flex-shrink-0" />
@@ -338,7 +357,7 @@ export function ProjectTopBar({
           </Popover>
         </View>
 
-        <View className="w-px h-5 bg-border mx-1" />
+        <View className="w-px h-5 bg-border mx-1 flex-shrink-0" />
 
         <View className="flex-row items-center gap-0.5" accessibilityRole="tablist">
           {narrowPrimaryTabs.map((tab) => (
@@ -443,10 +462,22 @@ export function ProjectTopBar({
             trigger={(triggerProps) => (
               <Pressable
                 {...triggerProps}
-                className="flex-row items-center gap-1 px-1.5 py-0.5 rounded-md active:bg-muted max-w-[180px]"
+                className={cn(
+                  'flex-row items-center gap-1 px-1.5 py-0.5 rounded-md active:bg-muted',
+                  !isNativePhone && 'max-w-[180px]',
+                )}
+                style={[
+                  (triggerProps as { style?: StyleProp<ViewStyle> }).style,
+                  isNativePhone ? { maxWidth: 180 } : undefined,
+                ]}
                 accessibilityLabel="Switch project"
               >
-                <Text className="text-xs font-semibold text-foreground" numberOfLines={1}>
+                <Text
+                  className="text-xs font-semibold text-foreground"
+                  style={isNativePhone ? { flex: 1, minWidth: 0 } : undefined}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                >
                   {projectName}
                 </Text>
                 <ChevronDown size={10} className="text-muted-foreground flex-shrink-0" />
