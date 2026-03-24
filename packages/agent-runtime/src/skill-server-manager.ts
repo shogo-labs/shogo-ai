@@ -162,7 +162,7 @@ export class SkillServerManager {
     }
     this.startSchemaWatcher()
 
-    return { started: this._phase === 'healthy', port: this._phase === 'healthy' ? this._port : null }
+    return { started: this.isRunning, port: this.isRunning ? this._port : null }
   }
 
   /**

@@ -507,7 +507,7 @@ app.post('/agent/chat', async (c) => {
         savedPaths.push(baseName)
         console.log(`[AgentChat] Saved uploaded file to files/${baseName}`)
 
-        try { getFileIndexEngine().indexFile(resolved) } catch { /* best-effort */ }
+        try { (getFileIndexEngine() as any).indexFile(resolved) } catch { /* best-effort */ }
       } catch (err: any) {
         console.error(`[AgentChat] Failed to save uploaded file:`, err.message)
       }
@@ -1016,7 +1016,7 @@ app.post('/agent/heartbeat/trigger', async (c) => {
   }
 
   // Fire-and-forget: run heartbeat asynchronously
-  const projectId = state.currentProjectId
+  const projectId = state.currentProjectId!
   agentGateway.triggerHeartbeat().then(async () => {
     try {
       await reportHeartbeatComplete(projectId)
@@ -2045,10 +2045,10 @@ app.post('/agent/dynamic-app/test-setup', async (c) => {
       } } },
     ] as any)
     manager.registerHooks(surfaceId, 'Expense', {
-      afterCreate: [{ action: 'recompute', source: 'Expense', operation: 'count', target: '/expenseCount' },
-                     { action: 'recompute', source: 'Expense', operation: 'sum', field: 'amount', target: '/expenseTotal' }],
-      afterDelete: [{ action: 'recompute', source: 'Expense', operation: 'count', target: '/expenseCount' },
-                     { action: 'recompute', source: 'Expense', operation: 'sum', field: 'amount', target: '/expenseTotal' }],
+      afterCreate: [{ action: 'recompute', source: 'Expense', aggregate: 'count', target: '/expenseCount' },
+                     { action: 'recompute', source: 'Expense', aggregate: 'sum', field: 'amount', target: '/expenseTotal' }],
+      afterDelete: [{ action: 'recompute', source: 'Expense', aggregate: 'count', target: '/expenseCount' },
+                     { action: 'recompute', source: 'Expense', aggregate: 'sum', field: 'amount', target: '/expenseTotal' }],
     })
     return c.json({ ok: true, surfaceId })
 

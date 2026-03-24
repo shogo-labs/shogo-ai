@@ -112,7 +112,7 @@ function validateCanvas(input: Record<string, unknown>): ValidationResult {
       // Seed data
       for (const [modelName, records] of Object.entries(apiSeed)) {
         if (Array.isArray(records) && records.length > 0) {
-          const seedResult = manager.seedApiData(surfaceId, modelName, records) as Record<string, unknown>
+          const seedResult = manager.seedApiData(surfaceId, modelName, records as Record<string, unknown>[]) as Record<string, unknown>
           checks.push({
             name: `canvas_api_seed_${modelName}`,
             pass: seedResult.ok === true,
@@ -294,7 +294,7 @@ async function validateCanvasInteraction(input: Record<string, unknown>): Promis
     if (schemaResult.ok) {
       for (const [modelName, records] of Object.entries(apiSeed)) {
         if (Array.isArray(records) && records.length > 0) {
-          const seedResult = manager.seedApiData(surfaceId, modelName, records) as Record<string, unknown>
+          const seedResult = manager.seedApiData(surfaceId, modelName, records as Record<string, unknown>[]) as Record<string, unknown>
           checks.push({ name: `seed_${modelName}`, pass: seedResult.ok === true })
         }
       }

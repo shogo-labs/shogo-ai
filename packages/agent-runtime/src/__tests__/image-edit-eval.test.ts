@@ -135,7 +135,7 @@ async function editImageDirect(params: {
   const apiKey = process.env.OPENAI_API_KEY!
 
   const form = new FormData()
-  form.append('image', new Blob([params.imageBuffer], { type: 'image/png' }), 'reference.png')
+  form.append('image', new Blob([new Uint8Array(params.imageBuffer)], { type: 'image/png' }), 'reference.png')
   form.append('prompt', params.prompt)
   form.append('model', params.model || 'dall-e-2')
   form.append('size', params.size || '256x256')
