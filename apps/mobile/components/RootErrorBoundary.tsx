@@ -13,6 +13,59 @@ interface State {
   error: Error | null
 }
 
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#09090b',
+    padding: 24,
+  },
+  card: {
+    maxWidth: 400,
+    width: '100%',
+    backgroundColor: '#18181b',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#27272a',
+    padding: 32,
+    alignItems: 'center',
+  },
+  title: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#fafafa',
+    textAlign: 'center',
+    marginBottom: 12,
+  },
+  message: {
+    fontSize: 14,
+    color: '#a1a1aa',
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 8,
+  },
+  detail: {
+    fontSize: 12,
+    color: '#71717a',
+    textAlign: 'center',
+    lineHeight: 18,
+    marginBottom: 12,
+  },
+  button: {
+    marginTop: 8,
+    backgroundColor: '#3b82f6',
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 24,
+  },
+  buttonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#ffffff',
+  },
+})
+
 /**
  * Top-level error boundary wrapping the entire React tree.
  * Prevents unhandled render errors from leaving the user with a blank
@@ -42,9 +95,9 @@ export class RootErrorBoundary extends Component<Props, State> {
     if (!this.state.hasError) return this.props.children
 
     return (
-      <View style={styles.container} accessibilityRole="alert">
+      <View style={styles.container}>
         <View style={styles.card}>
-          <Text style={styles.title} accessibilityRole="header">Something went wrong</Text>
+          <Text style={styles.title}>Something went wrong</Text>
           <Text style={styles.message}>
             An unexpected error occurred. Please reload the page.
           </Text>
@@ -56,7 +109,6 @@ export class RootErrorBoundary extends Component<Props, State> {
           <Pressable
             style={styles.button}
             onPress={this.handleReload}
-            accessibilityRole="button"
             accessibilityLabel="Reload the application"
           >
             <Text style={styles.buttonText}>Reload</Text>
@@ -66,55 +118,3 @@ export class RootErrorBoundary extends Component<Props, State> {
     )
   }
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#09090b',
-    padding: 24,
-  },
-  card: {
-    maxWidth: 400,
-    width: '100%',
-    backgroundColor: '#18181b',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#27272a',
-    padding: 32,
-    alignItems: 'center',
-    gap: 12,
-  },
-  title: {
-    fontSize: 20,
-    fontWeight: '600',
-    color: '#fafafa',
-    textAlign: 'center',
-  },
-  message: {
-    fontSize: 14,
-    color: '#a1a1aa',
-    textAlign: 'center',
-    lineHeight: 20,
-  },
-  detail: {
-    fontSize: 12,
-    color: '#71717a',
-    textAlign: 'center',
-    fontFamily: 'monospace',
-    lineHeight: 18,
-  },
-  button: {
-    marginTop: 8,
-    backgroundColor: '#3b82f6',
-    borderRadius: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 24,
-  },
-  buttonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#ffffff',
-  },
-})
