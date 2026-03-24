@@ -11,6 +11,8 @@ config.resolver.blockList = [
   new RegExp(path.resolve(monorepoRoot, 'packages/sdk/examples').replace(/[/\\]/g, '[/\\\\]') + '.*'),
   /\.old-[A-F0-9]+/,
   new RegExp(path.resolve(monorepoRoot, 'tests').replace(/[/\\]/g, '[/\\\\]') + '.*'),
+  new RegExp(path.resolve(monorepoRoot, 'workspaces').replace(/[/\\]/g, '[/\\\\]') + '.*'),
+  new RegExp(path.resolve(monorepoRoot, 'templates/runtime-template/node_modules').replace(/[/\\]/g, '[/\\\\]') + '.*'),
 ]
 
 const SINGLETON_PACKAGES = [

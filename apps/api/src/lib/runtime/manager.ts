@@ -383,10 +383,24 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     if (!existsSync(nodeModulesDir)) {
       console.log(`[RuntimeManager] Installing dependencies for ${projectId}...`)
       try {
-        execSync('bun install', {
-          cwd: projectDir,
-          stdio: 'pipe',
-          timeout: 60000,
+        await new Promise<void>((resolve, reject) => {
+          const proc = spawn('bun', ['install'], {
+            cwd: projectDir,
+            stdio: 'pipe',
+          })
+          const timeout = setTimeout(() => {
+            proc.kill()
+            reject(new Error('bun install timed out after 60s'))
+          }, 60000)
+          proc.on('exit', (code) => {
+            clearTimeout(timeout)
+            if (code === 0) resolve()
+            else reject(new Error(`bun install exited with code ${code}`))
+          })
+          proc.on('error', (err) => {
+            clearTimeout(timeout)
+            reject(err)
+          })
         })
         console.log(`[RuntimeManager] Dependencies installed for ${projectId}`)
       } catch (err: any) {

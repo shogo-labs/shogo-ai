@@ -65,10 +65,12 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
       const hasContent = part.text?.trim().length > 0
       const isPartStreaming = "state" in part && part.state === "streaming"
       if (hasContent || isPartStreaming) {
+        const durationMs = part.durationMs as number | undefined
         result.push({
           type: "reasoning",
           text: part.text || "",
           isStreaming: isPartStreaming,
+          durationSeconds: durationMs ? Math.ceil(durationMs / 1000) : undefined,
           id: `reasoning-${index}`,
         })
       }
@@ -279,7 +281,7 @@ export function AssistantContent({
   }
 
   return (
-    <View className={cn("gap-1.5", className)}>
+    <View className={className}>
       {groupedParts.map((part, index) => {
         if (part.type === "reasoning") {
           return (
@@ -287,13 +289,14 @@ export function AssistantContent({
               key={part.id}
               text={part.text}
               isStreaming={part.isStreaming}
+              durationSeconds={part.durationSeconds}
             />
           )
         }
 
         if (part.type === "text") {
           return (
-            <View key={part.id} className="px-3 py-1.5">
+            <View key={part.id}>
               <MarkdownText
                 className="text-foreground text-xs prose-sm"
                 isStreaming={isStreaming}

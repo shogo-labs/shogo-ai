@@ -8,25 +8,35 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from "react"
-import { View, Text, Pressable, ScrollView } from "react-native"
+import { View, Text, Pressable, ScrollView, Platform, useColorScheme } from "react-native"
+import { Motion, AnimatePresence } from "@legendapp/motion"
+import { LinearGradient } from "expo-linear-gradient"
 import { cn } from "@shogo/shared-ui/primitives"
 import { ChevronDown } from "lucide-react-native"
+
+const ANIM_DURATION = 250
+const STREAM_MAX_HEIGHT = 200
+const FADE_HEIGHT = 16
 
 export interface ThinkingWidgetProps {
   text: string
   isStreaming?: boolean
+  durationSeconds?: number
   className?: string
 }
 
 export function ThinkingWidget({
   text,
   isStreaming = false,
+  durationSeconds,
   className,
 }: ThinkingWidgetProps) {
   const [isOpen, setIsOpen] = useState(isStreaming)
   const userClosedRef = useRef(false)
   const startTimeRef = useRef<number | null>(null)
-  const [duration, setDuration] = useState<number | undefined>(undefined)
+  const [duration, setDuration] = useState<number | undefined>(durationSeconds)
+  const [measuredHeight, setMeasuredHeight] = useState(0)
+  const colorScheme = useColorScheme()
 
   useEffect(() => {
     if (isStreaming) {
@@ -61,34 +71,127 @@ export function ThinkingWidget({
       ? `Thought for ${duration}s`
       : "Thought"
 
+  const hasText = text.length > 0
+  const capHeight = isStreaming
+  const targetHeight = capHeight
+    ? Math.min(measuredHeight, STREAM_MAX_HEIGHT)
+    : measuredHeight
+
+  // Composite bg color for gradient fades (muted/30 over page background)
+  const fadeColor =
+    colorScheme === "dark"
+      ? "rgb(25, 25, 25)"
+      : "rgb(252, 252, 252)"
+  const fadeColorTransparent =
+    colorScheme === "dark"
+      ? "rgba(25, 25, 25, 0)"
+      : "rgba(252, 252, 252, 0)"
+
+  const webFadeMask =
+    Platform.OS === "web"
+      ? ({
+          WebkitMaskImage: `linear-gradient(to bottom, transparent, black ${FADE_HEIGHT}px, black calc(100% - ${FADE_HEIGHT}px), transparent)`,
+          maskImage: `linear-gradient(to bottom, transparent, black ${FADE_HEIGHT}px, black calc(100% - ${FADE_HEIGHT}px), transparent)`,
+        } as any)
+      : undefined
+
   return (
-    <View className={cn("my-1", className)}>
+    <View className={cn("", className)}>
       <Pressable
         onPress={toggleOpen}
-        className="flex-row items-center gap-1.5 rounded-md px-1.5 py-1"
+        className="flex-row items-center gap-1.5 rounded-md"
         accessibilityRole="button"
         accessibilityLabel={label}
       >
         <Text className="text-[11px] text-muted-foreground">{label}</Text>
-        <ChevronDown
-          size={10}
-          className={cn(
-            "text-muted-foreground",
-            isOpen ? "rotate-180" : "rotate-0"
-          )}
-        />
+        <Motion.View
+          animate={{ rotateZ: isOpen ? "180deg" : "0deg" }}
+          transition={{ type: "timing", duration: ANIM_DURATION, easing: "easeInOut" }}
+        >
+          <ChevronDown size={10} className="text-muted-foreground" />
+        </Motion.View>
       </Pressable>
 
-      {isOpen && text.length > 0 && (
-        <ScrollView
-          className="mt-1 max-h-[200px] rounded-md border border-border/50 bg-muted/30 p-2.5"
-          nestedScrollEnabled
+      {hasText && measuredHeight === 0 && (
+        <View
+          style={{ position: "absolute", opacity: 0, pointerEvents: "none" }}
+          onLayout={(e) => {
+            const h = e.nativeEvent.layout.height
+            if (h > 0) setMeasuredHeight(h)
+          }}
         >
-          <Text className="text-[11px] leading-relaxed text-muted-foreground">
-            {text}
-          </Text>
-        </ScrollView>
+          <View className="rounded-md border border-border/50 bg-muted/30 p-2.5">
+            <Text className="text-[11px] leading-relaxed text-muted-foreground">
+              {text}
+            </Text>
+          </View>
+        </View>
       )}
+
+      <AnimatePresence>
+        {isOpen && hasText && (
+          <Motion.View
+            key="thinking-content"
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: targetHeight || STREAM_MAX_HEIGHT }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ type: "timing", duration: ANIM_DURATION, easing: "easeInOut" }}
+            style={{ overflow: "hidden" }}
+          >
+            <View style={{ position: "relative" }}>
+              <ScrollView
+                className="rounded-md border border-border/50 bg-muted/30 p-2.5"
+                style={[
+                  capHeight ? { maxHeight: STREAM_MAX_HEIGHT } : undefined,
+                  webFadeMask,
+                ]}
+                scrollEnabled={capHeight}
+                nestedScrollEnabled
+                onContentSizeChange={(_w, h) => {
+                  const next = Math.ceil(h + 20)
+                  if (next !== measuredHeight) setMeasuredHeight(next)
+                }}
+              >
+                <Text className="text-[11px] leading-relaxed text-muted-foreground">
+                  {text}
+                </Text>
+              </ScrollView>
+
+              {/* Native fade overlays (web uses CSS mask instead) */}
+              {Platform.OS !== "web" && (
+                <>
+                  <LinearGradient
+                    colors={[fadeColor, fadeColorTransparent]}
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      height: FADE_HEIGHT,
+                      borderTopLeftRadius: 6,
+                      borderTopRightRadius: 6,
+                      pointerEvents: "none",
+                    }}
+                  />
+                  <LinearGradient
+                    colors={[fadeColorTransparent, fadeColor]}
+                    style={{
+                      position: "absolute",
+                      bottom: 0,
+                      left: 0,
+                      right: 0,
+                      height: FADE_HEIGHT,
+                      borderBottomLeftRadius: 6,
+                      borderBottomRightRadius: 6,
+                      pointerEvents: "none",
+                    }}
+                  />
+                </>
+              )}
+            </View>
+          </Motion.View>
+        )}
+      </AnimatePresence>
     </View>
   )
 }
