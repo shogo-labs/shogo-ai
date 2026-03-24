@@ -69,7 +69,7 @@
     "@types/nodemailer": "^7.0.11",
     "@types/react": "^19.0.0",
     "mobx": "^6.13.5",
-    "nodemailer": "^6.9.16",
+    "nodemailer": "^8.0.3",
     "tsup": "^8.0.0",
     "typescript": "^6.0.2"
   },

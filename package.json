@@ -82,6 +82,6 @@
   "dependencies": {
     "@prisma/client": "^7.3.0",
     "@react-native-async-storage/async-storage": "^3.0.1",
-    "prisma-adapter-bun-sqlite": "^0.6.8"
+    "prisma-adapter-bun-sqlite": "^0.7.1"
   }
 }
