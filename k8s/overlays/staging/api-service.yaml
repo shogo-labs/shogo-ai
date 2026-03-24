@@ -247,6 +247,28 @@ spec:
                   name: api-secrets
                   key: LOAD_TEST_SECRET
                   optional: true
+            - name: EMAIL_PROVIDER
+              value: "smtp"
+            - name: SMTP_HOST
+              value: "smtp.resend.com"
+            - name: SMTP_PORT
+              value: "465"
+            - name: SMTP_USER
+              value: "resend"
+            - name: SMTP_SECURE
+              value: "true"
+            - name: SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: SMTP_PASSWORD
+                  optional: true
+            - name: EMAIL_FROM
+              value: "noreply@updates.shogo.ai"
+            - name: SMTP_FROM_EMAIL
+              value: "noreply@updates.shogo.ai"
+            - name: SMTP_FROM_NAME
+              value: "Shogo"
           lifecycle:
             preStop:
               exec:
