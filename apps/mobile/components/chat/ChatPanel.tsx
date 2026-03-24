@@ -199,6 +199,7 @@ export interface ChatPanelProps {
   /** Billing data — optional on mobile; if not provided, defaults to basic mode */
   billingData?: {
     hasActiveSubscription: boolean
+    hasAdvancedModelAccess?: boolean
     refetchCreditLedger: () => void
   }
   /** Called whenever the streaming messages array changes (for TerminalPanel etc.) */
@@ -536,6 +537,7 @@ export const ChatPanel = observer(function ChatPanel({
   const router = useRouter()
 
   const hasActiveSubscription = billingData?.hasActiveSubscription ?? false
+  const hasAdvancedModelAccess = billingData?.hasAdvancedModelAccess ?? hasActiveSubscription
   const refetchCreditLedger = billingData?.refetchCreditLedger ?? (() => {})
 
   const handleUpgradeClick = useCallback(() => {
@@ -581,11 +583,11 @@ export const ChatPanel = observer(function ChatPanel({
     loadAgentMode().then((stored) => {
       if (stored) {
         setAgentMode(stored)
-      } else if (hasActiveSubscription) {
+      } else if (hasAdvancedModelAccess) {
         setAgentMode("advanced")
       }
     })
-  }, [hasActiveSubscription])
+  }, [hasAdvancedModelAccess])
 
   const handleAgentModeChange = useCallback((mode: AgentMode) => {
     setAgentMode(mode)
@@ -2378,7 +2380,7 @@ export const ChatPanel = observer(function ChatPanel({
               onStop={handleStop}
               agentMode={agentMode}
               onAgentModeChange={handleAgentModeChange}
-              isPro={hasActiveSubscription}
+              isPro={hasAdvancedModelAccess}
               onUpgradeClick={handleUpgradeClick}
               queuedMessages={messageQueue}
               onRemoveQueuedMessage={handleRemoveQueuedMessage}

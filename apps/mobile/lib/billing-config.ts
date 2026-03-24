@@ -14,6 +14,15 @@ export interface PriceTier {
 /** The base credit amount that maps 1:1 to a plan name (no suffix needed in planId). */
 export const BASE_TIER_CREDITS = 100
 
+export const BASIC_TIER: PriceTier = { credits: 50, monthly: 8, annual: 80 }
+
+export const BASIC_FEATURES = [
+  '50 monthly credits',
+  '5 daily credits (up to 200/month)',
+  'Basic AI model (fast responses)',
+  'Unlimited domains',
+]
+
 export const PRO_TIERS: PriceTier[] = [
   { credits: 100, monthly: 25, annual: 250 },
   { credits: 200, monthly: 50, annual: 500 },
@@ -73,6 +82,7 @@ export const ENTERPRISE_FEATURES = [
 
 export const PLAN_CREDITS: Record<string, number> = {
   free: 0,
+  basic: 50,
   pro: 100,
   business: 100,
   enterprise: 10000,
@@ -87,7 +97,7 @@ export function getTotalCreditsForPlan(planId: string | undefined): number {
     return PLAN_CREDITS[planId] + DAILY_CREDITS
   }
 
-  const match = planId.match(/^(free|pro|business|enterprise)_(\d+)$/)
+  const match = planId.match(/^(free|basic|pro|business|enterprise)_(\d+)$/)
   if (match) {
     return parseInt(match[2], 10) + DAILY_CREDITS
   }
