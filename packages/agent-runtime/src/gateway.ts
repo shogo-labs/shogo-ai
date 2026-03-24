@@ -1378,7 +1378,7 @@ export class AgentGateway {
 
       if (result.outputTokens === 0 && result.toolCalls.length === 0 && !isHeartbeat) {
         console.error(
-          `[AgentGateway] Agent returned 0 tokens for session ${sessionId} — possible context corruption (${session.compactionCount} compactions, ${session.messages.length} messages)`
+          `[AgentGateway] Agent returned 0 tokens for session ${sessionId} — possible context corruption (${session.compactionCount} compactions, ${session.messages.length} messages, model: ${modelId}, provider: ${provider})`
         )
         if (uiWriter) {
           uiWriter.write({
@@ -1405,8 +1405,18 @@ export class AgentGateway {
 
       return result.text || 'HEARTBEAT_OK'
     } catch (error: any) {
-      console.error('[AgentGateway] Agent turn failed:', error.message)
+      console.error('[AgentGateway] Agent turn failed:', error.message, error.stack?.split('\n').slice(0, 3).join('\n'))
       chunker?.dispose()
+      if (uiWriter) {
+        const msg = error.message || 'An unexpected error occurred'
+        const isProviderError = /api error|api key|auth|unauthorized|forbidden|rate.limit|overloaded|timeout/i.test(msg)
+        uiWriter.write({
+          type: 'error',
+          errorText: isProviderError
+            ? `AI provider error: ${msg}`
+            : 'I encountered an issue processing your message. Please try starting a new conversation.',
+        } as any)
+      }
       return 'HEARTBEAT_OK'
     } finally {
       if (typingInterval) clearInterval(typingInterval)
