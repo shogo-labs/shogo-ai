@@ -56,7 +56,7 @@ spec:
       owner: shogo
 
   storage:
-    size: 50Gi
+    size: 100Gi
     storageClass: oci-bv
 
   externalClusters:
