@@ -27,6 +27,8 @@ import {
   Zap,
   BrainCircuit,
   ChevronDown,
+  Cloud,
+  Unplug,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../lib/api'
@@ -68,6 +70,14 @@ export default function AdminSettingsPage() {
   const [anthropicMask, setAnthropicMask] = useState('')
   const [openaiMask, setOpenaiMask] = useState('')
 
+  const [shogoKeyInput, setShogoKeyInput] = useState('')
+  const [shogoKeyConnected, setShogoKeyConnected] = useState(false)
+  const [shogoKeyMask, setShogoKeyMask] = useState('')
+  const [shogoWorkspaceName, setShogoWorkspaceName] = useState('')
+  const [shogoKeyStatus, setShogoKeyStatus] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle')
+  const [shogoKeyError, setShogoKeyError] = useState('')
+  const [isDisconnecting, setIsDisconnecting] = useState(false)
+
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [isTestingConnection, setIsTestingConnection] = useState(false)
@@ -77,12 +87,14 @@ export default function AdminSettingsPage() {
 
   const fetchConfig = useCallback(async () => {
     try {
-      const [llmRes, keysRes] = await Promise.all([
+      const [llmRes, keysRes, shogoKeyRes] = await Promise.all([
         fetch(`${API_URL}/api/local/llm-config`, { credentials: 'include' }),
         fetch(`${API_URL}/api/local/api-keys`, { credentials: 'include' }),
+        fetch(`${API_URL}/api/local/shogo-key`, { credentials: 'include' }),
       ])
       const llmData = await llmRes.json() as { config: LlmConfig }
       const keysData = await keysRes.json() as { keys: Record<string, string> }
+      const shogoData = await shogoKeyRes.json() as { connected: boolean; keyMask?: string; workspace?: { name: string } | null }
 
       setConfig(llmData.config || {})
       setApiKeys(keysData.keys || {})
@@ -96,6 +108,11 @@ export default function AdminSettingsPage() {
 
       if (keysData.keys?.ANTHROPIC_API_KEY) setAnthropicMask(keysData.keys.ANTHROPIC_API_KEY)
       if (keysData.keys?.OPENAI_API_KEY) setOpenaiMask(keysData.keys.OPENAI_API_KEY)
+
+      setShogoKeyConnected(shogoData.connected)
+      if (shogoData.keyMask) setShogoKeyMask(shogoData.keyMask)
+      if (shogoData.workspace?.name) setShogoWorkspaceName(shogoData.workspace.name)
+      if (shogoData.connected) setShogoKeyStatus('connected')
 
       if (cfg.LOCAL_LLM_BASE_URL) {
         fetchModels(cfg.LOCAL_LLM_BASE_URL)
@@ -190,6 +207,53 @@ export default function AdminSettingsPage() {
     }
   }
 
+  const handleConnectShogoKey = async () => {
+    if (!shogoKeyInput.trim()) return
+    setShogoKeyStatus('connecting')
+    setShogoKeyError('')
+    try {
+      const res = await fetch(`${API_URL}/api/local/shogo-key`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ key: shogoKeyInput.trim() }),
+      })
+      const data = await res.json() as { ok: boolean; error?: string; workspace?: { name: string } }
+      if (data.ok) {
+        setShogoKeyConnected(true)
+        setShogoKeyMask(shogoKeyInput.trim().slice(0, 17) + '...' + shogoKeyInput.trim().slice(-4))
+        setShogoWorkspaceName(data.workspace?.name || '')
+        setShogoKeyStatus('connected')
+        setShogoKeyInput('')
+      } else {
+        setShogoKeyError(data.error || 'Failed to validate key')
+        setShogoKeyStatus('error')
+      }
+    } catch (err: any) {
+      setShogoKeyError(err.message || 'Connection failed')
+      setShogoKeyStatus('error')
+    }
+  }
+
+  const handleDisconnectShogoKey = async () => {
+    setIsDisconnecting(true)
+    try {
+      await fetch(`${API_URL}/api/local/shogo-key`, {
+        method: 'DELETE',
+        credentials: 'include',
+      })
+      setShogoKeyConnected(false)
+      setShogoKeyMask('')
+      setShogoWorkspaceName('')
+      setShogoKeyStatus('idle')
+      setShogoKeyInput('')
+    } catch (err) {
+      console.error('[AdminSettings] Failed to disconnect Shogo key:', err)
+    } finally {
+      setIsDisconnecting(false)
+    }
+  }
+
   if (isLoading) {
     return (
       <View className="flex-1 items-center justify-center">
@@ -207,6 +271,93 @@ export default function AdminSettingsPage() {
             Configure your local LLM provider and models. Changes take effect immediately.
           </Text>
         </View>
+
+        {/* Shogo Cloud Section */}
+        <SectionCard
+          icon={Cloud}
+          title="Shogo Cloud"
+          description="Connect your Shogo account to use our cloud LLMs"
+        >
+          {shogoKeyConnected ? (
+            <View className="gap-3">
+              <View className="flex-row items-center gap-2 bg-green-500/10 rounded-lg p-3">
+                <CheckCircle size={16} className="text-green-500" />
+                <View className="flex-1">
+                  <Text className="text-sm font-medium text-foreground">Connected</Text>
+                  {shogoWorkspaceName ? (
+                    <Text className="text-xs text-muted-foreground">
+                      Workspace: {shogoWorkspaceName}
+                    </Text>
+                  ) : null}
+                </View>
+              </View>
+              <View className="flex-row items-center gap-2">
+                <Text className="text-xs text-muted-foreground font-mono flex-1">
+                  {shogoKeyMask}
+                </Text>
+                <Pressable
+                  onPress={handleDisconnectShogoKey}
+                  disabled={isDisconnecting}
+                  className={cn(
+                    'flex-row items-center gap-1.5 px-3 py-1.5 rounded-lg border border-destructive/30',
+                    isDisconnecting && 'opacity-50'
+                  )}
+                >
+                  <Unplug size={14} className="text-destructive" />
+                  <Text className="text-sm text-destructive">
+                    {isDisconnecting ? 'Disconnecting...' : 'Disconnect'}
+                  </Text>
+                </Pressable>
+              </View>
+              <Text className="text-xs text-muted-foreground">
+                LLM usage will be billed to your Shogo cloud account. You can still
+                configure your own API keys below as optional overrides.
+              </Text>
+            </View>
+          ) : (
+            <View className="gap-3">
+              <Text className="text-sm text-muted-foreground">
+                Enter your Shogo API key to use our cloud LLMs without managing
+                provider API keys. Get your key from the{' '}
+                <Text className="text-primary font-medium">Shogo Cloud dashboard</Text>.
+              </Text>
+              <View className="flex-row gap-2">
+                <View className="flex-1">
+                  <TextInput
+                    value={shogoKeyInput}
+                    onChangeText={(t) => { setShogoKeyInput(t); setShogoKeyError(''); setShogoKeyStatus('idle') }}
+                    placeholder="shogo_sk_..."
+                    secureTextEntry
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    className="border border-border rounded-lg px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground web:outline-none"
+                  />
+                </View>
+                <Pressable
+                  onPress={handleConnectShogoKey}
+                  disabled={!shogoKeyInput.trim() || shogoKeyStatus === 'connecting'}
+                  className={cn(
+                    'px-4 py-2.5 rounded-lg items-center justify-center',
+                    shogoKeyInput.trim() && shogoKeyStatus !== 'connecting' ? 'bg-primary' : 'bg-muted'
+                  )}
+                >
+                  <Text className={cn(
+                    'text-sm font-medium',
+                    shogoKeyInput.trim() && shogoKeyStatus !== 'connecting' ? 'text-primary-foreground' : 'text-muted-foreground'
+                  )}>
+                    {shogoKeyStatus === 'connecting' ? 'Connecting...' : 'Connect'}
+                  </Text>
+                </Pressable>
+              </View>
+              {shogoKeyError ? (
+                <View className="flex-row items-center gap-1.5">
+                  <AlertTriangle size={14} className="text-destructive" />
+                  <Text className="text-sm text-destructive">{shogoKeyError}</Text>
+                </View>
+              ) : null}
+            </View>
+          )}
+        </SectionCard>
 
         {/* LLM Provider Section */}
         <SectionCard

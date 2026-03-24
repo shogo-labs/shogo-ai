@@ -259,3 +259,8 @@ export type AnalyticsDigest = Prisma.AnalyticsDigestModel
  * 
  */
 export type SignupAttribution = Prisma.SignupAttributionModel
+/**
+ * Model ApiKey
+ * 
+ */
+export type ApiKey = Prisma.ApiKeyModel
