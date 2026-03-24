@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useRouter } from 'expo-router'
-import { useColorScheme } from 'react-native'
+import { useColorScheme, Alert } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useAuth } from '../../contexts/auth'
 import { useTheme } from '../../contexts/theme'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { trackSignUp, trackLogin } from '../../lib/tracking'
 import { getStoredAttribution, clearStoredAttribution } from '../../lib/attribution'
-import { API_URL } from '../../lib/api'
+import { api, createHttpClient } from '../../lib/api'
+import { getPasswordResetRedirectUrl } from '../../lib/password-reset-redirect'
 import { LoginScreen } from '@shogo/shared-ui/screens'
 
 export default function SignInScreen() {
@@ -32,12 +33,8 @@ export default function SignInScreen() {
   const sendAttribution = async (method: 'email' | 'google') => {
     try {
       const attribution = getStoredAttribution()
-      await fetch(`${API_URL}/api/users/me/attribution`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ ...attribution, method }),
-      })
+      const http = createHttpClient()
+      await api.postSignupAttribution(http, { ...attribution, method })
       clearStoredAttribution()
     } catch {}
   }
@@ -56,11 +53,29 @@ export default function SignInScreen() {
     signInWithGoogle()
   }
 
+  const handleForgotPassword = async (email: string) => {
+    try {
+      const http = createHttpClient()
+      await api.authRequestPasswordReset(http, {
+        email,
+        redirectTo: getPasswordResetRedirectUrl(),
+      })
+      Alert.alert(
+        'Check your email',
+        'If an account exists for that address, we sent a link to reset your password.',
+      )
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Could not send reset email'
+      Alert.alert('Something went wrong', msg)
+    }
+  }
+
   return (
     <SafeAreaView className="flex-1 bg-background">
       <LoginScreen
         onSignIn={handleSignIn}
         onSignUp={handleSignUp}
+        onForgotPassword={handleForgotPassword}
         onGoogleSignIn={features.oauth ? handleGoogleSignIn : undefined}
         isLoading={isLoading}
         error={error}
