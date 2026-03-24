@@ -28,7 +28,17 @@
  */
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react"
-import { View, Text, Pressable, ScrollView, Platform, ActivityIndicator, KeyboardAvoidingView, Keyboard } from "react-native"
+import {
+  View,
+  Text,
+  Pressable,
+  ScrollView,
+  Platform,
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Keyboard,
+  useWindowDimensions,
+} from "react-native"
 import * as SecureStore from "expo-secure-store"
 import { observer } from "mobx-react-lite"
 import { useChat, type UIMessage } from "@ai-sdk/react"
@@ -46,6 +56,7 @@ import { useChatTransportConfig } from "@shogo/shared-app/chat"
 import { useSDKDomains, useDomainActions } from "@shogo/shared-app/domain"
 import { cn } from "@shogo/shared-ui/primitives"
 import { API_URL, api, createHttpClient } from "../../lib/api"
+import { isNativePhoneIntegrationsLayout } from "../../lib/native-phone-layout"
 import { authClient } from "../../lib/auth-client"
 import { ChatHeader } from "./ChatHeader"
 import { MessageList } from "./MessageList"
@@ -527,6 +538,9 @@ export const ChatPanel = observer(function ChatPanel({
   billingData,
   onMessagesChange,
 }: ChatPanelProps) {
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions()
+  const isNativePhoneLayout = isNativePhoneIntegrationsLayout(windowWidth, windowHeight)
+
   const { studioChat } = useSDKDomains()
   const actions = useDomainActions()
 
@@ -2119,7 +2133,10 @@ export const ChatPanel = observer(function ChatPanel({
           {/* Messages with Turn Grouping */}
           <ScrollView
             ref={scrollViewRef}
-            className="flex-1 p-2"
+            className="flex-1"
+            contentContainerClassName={
+              isNativePhoneLayout ? "px-2 pt-2 pb-28" : "p-2"
+            }
             keyboardShouldPersistTaps="handled"
             onScroll={(e) => {
               const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent
