@@ -529,7 +529,7 @@ function MobileLoginPanel({
                     resizeMode="contain"
                   />
                 )}
-                <Text className="text-2xl font-bold text-foreground">Shogo AI Studio</Text>
+                <Text className="text-2xl font-bold text-foreground">Shogo</Text>
                 <Text className="text-sm text-muted-foreground mt-1">
                   Sign in to your account or create a new one
                 </Text>
