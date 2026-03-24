@@ -9,6 +9,7 @@
  */
 
 import type { TemplateIntegrationRef } from './integration-catalog'
+import { loadDirTemplates } from './template-loader'
 
 export interface AgentTemplate {
   id: string
@@ -74,7 +75,7 @@ export function getOnboardingMessage(templateName: string): string {
   return `The "${templateName}" template has been installed. Can you describe what's been set up and walk me through how to customize it or connect my own tools? Keep it brief.`
 }
 
-export const AGENT_TEMPLATES: AgentTemplate[] = [
+const HAND_AUTHORED_TEMPLATES: AgentTemplate[] = [
   // ── Marketing Command Center ────────────────────────────────────────
   {
     id: 'marketing-command-center',
@@ -1052,6 +1053,11 @@ Use the HEARTBEAT.md file to define what I should check periodically.
       'config.json': configJson({ heartbeatInterval: 3600, heartbeatEnabled: false }),
     },
   },
+]
+
+export const AGENT_TEMPLATES: AgentTemplate[] = [
+  ...HAND_AUTHORED_TEMPLATES,
+  ...loadDirTemplates(),
 ]
 
 export function getAgentTemplateById(id: string): AgentTemplate | undefined {

@@ -62,6 +62,15 @@ export {
 } from './logger'
 
 export {
+  sendMessage,
+  sendMessages,
+  sendMessageJSON,
+  type Message as AIMessage,
+  type SendMessageOptions,
+  type MessageResponse,
+} from './ai-client'
+
+export {
   checkSelfAssign,
   type SelfAssignConfig,
 } from './self-assign'

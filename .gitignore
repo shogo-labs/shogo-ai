@@ -116,6 +116,7 @@ shogo-chats/
 packages/agent-runtime/src/evals/dspy/__pycache__/
 packages/agent-runtime/src/evals/dspy/results/
 packages/agent-runtime/src/bundled-claude-skills/
+packages/agent-runtime/templates/.cache.db
 
 
 

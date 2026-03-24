@@ -1,0 +1,21 @@
+{
+  "id": "revenue-finance",
+  "name": "Revenue & Finance Ops",
+  "description": "Keep your financial health visible and your invoices under control. Pulls live Stripe metrics into a dashboard and automates invoice tracking and overdue follow-ups.",
+  "category": "business",
+  "icon": "💰",
+  "tags": [
+    "revenue",
+    "stripe",
+    "invoices",
+    "finance",
+    "dashboard",
+    "payments"
+  ],
+  "settings": {
+    "heartbeatInterval": 3600,
+    "heartbeatEnabled": true,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-5"
+  }
+}

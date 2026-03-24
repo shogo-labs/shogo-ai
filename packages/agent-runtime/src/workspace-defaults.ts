@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { existsSync, mkdirSync, writeFileSync, copyFileSync, readdirSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync, copyFileSync, cpSync, readdirSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getAgentTemplateById } from './agent-templates'
+import { getTemplateShogoDir } from './template-loader'
 import { TEMPLATE_CANVAS_STATES } from './template-canvas-states'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -118,6 +119,10 @@ export function resetWorkspaceDefaults(dir: string): void {
  * copies referenced bundled skills into the workspace skills/ directory.
  * Only writes files that don't already exist (preserves customizations).
  * Also writes a .template marker file so the runtime knows which template was used.
+ *
+ * For directory-based templates (generated from bundled skills), this is
+ * a simple directory copy. For hand-authored templates, files are constructed
+ * from the AgentTemplate object.
  */
 export function seedWorkspaceFromTemplate(dir: string, templateId: string, agentName?: string): boolean {
   const template = getAgentTemplateById(templateId)
@@ -125,6 +130,31 @@ export function seedWorkspaceFromTemplate(dir: string, templateId: string, agent
 
   mkdirSync(dir, { recursive: true })
   mkdirSync(join(dir, 'memory'), { recursive: true })
+
+  // Fast path: directory-based template — just copy .shogo/
+  const shogoSrc = getTemplateShogoDir(templateId)
+  if (shogoSrc) {
+    const destShogo = join(dir, '.shogo')
+    if (!existsSync(destShogo)) {
+      cpSync(shogoSrc, destShogo, { recursive: true })
+      // Apply {{AGENT_NAME}} replacement to markdown files
+      if (agentName) {
+        for (const fname of ['IDENTITY.md', 'SOUL.md', 'AGENTS.md', 'USER.md']) {
+          const fp = join(destShogo, fname)
+          if (existsSync(fp)) {
+            const content = readFileSync(fp, 'utf-8')
+            if (content.includes('{{AGENT_NAME}}')) {
+              writeFileSync(fp, content.replace(/\{\{AGENT_NAME\}\}/g, agentName), 'utf-8')
+            }
+          }
+        }
+      }
+    }
+    writeFileSync(join(dir, '.template'), templateId, 'utf-8')
+    return true
+  }
+
+  // Hand-authored templates: construct files from AgentTemplate object
   mkdirSync(join(dir, '.shogo', 'skills'), { recursive: true })
 
   for (const [filename, rawContent] of Object.entries(template.files)) {
@@ -146,7 +176,6 @@ export function seedWorkspaceFromTemplate(dir: string, templateId: string, agent
       if (existsSync(srcFile) && !existsSync(destDir)) {
         mkdirSync(destDir, { recursive: true })
         copyFileSync(srcFile, join(destDir, 'SKILL.md'))
-        // Copy any additional files (scripts/, requirements.txt, etc.)
         try {
           for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
             if (entry.name === 'SKILL.md') continue

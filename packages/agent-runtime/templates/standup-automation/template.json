@@ -1,0 +1,21 @@
+{
+  "id": "standup-automation",
+  "name": "Standup Automation",
+  "description": "Eliminate manual standup overhead by auto-generating summaries from GitHub and Slack activity, and compiling team updates into a single digest.",
+  "category": "operations",
+  "icon": "📋",
+  "tags": [
+    "standup",
+    "async",
+    "team",
+    "github",
+    "slack",
+    "automation"
+  ],
+  "settings": {
+    "heartbeatInterval": 3600,
+    "heartbeatEnabled": true,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-5"
+  }
+}
