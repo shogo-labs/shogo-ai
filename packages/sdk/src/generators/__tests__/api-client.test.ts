@@ -116,7 +116,7 @@ describe('API Client Generator', () => {
       const code = generateApiClient([mockProjectModel])
 
       expect(code).toContain('const query = params.toString() ? `?${params.toString()}` : \'\'')
-      expect(code).toContain('const result = await request<ProjectType>(\'GET\', `/projects${query}`)')
+      expect(code).toContain('return request<ProjectType>(\'GET\', `/projects${query}`) as Promise<ApiListResponse<ProjectType>>')
     })
   })
 

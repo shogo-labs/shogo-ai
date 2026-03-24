@@ -160,4 +160,4 @@ test-results/
 load-tests/results/
 load-tests/reports/
 load-tests/.env
-load-tests/venv/cursor_pull_request_*.md
+load-tests/venv
