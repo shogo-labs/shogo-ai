@@ -25,6 +25,7 @@ import type { StreamFn, AgentTool } from '@mariozechner/pi-agent-core'
 import { Type } from '@sinclair/typebox'
 import type { ChannelAdapter, IncomingMessage, AgentStatus, ChannelStatus, StreamChunkConfig, SandboxConfig } from './types'
 import { loadAllSkills, migrateFromLegacySkills, matchSkill, buildSkillsPromptSection, type Skill } from './skills'
+import { SkillServerManager } from './skill-server-manager'
 import { setLoadedSkills } from './gateway-tools'
 import { runAgentLoop, type LoopDetectorConfig, type ToolContext } from './agent-loop'
 import { createTools, createHeartbeatTools, textResult, type ModeSwitchHandler } from './gateway-tools'
@@ -200,6 +201,8 @@ export class AgentGateway {
     iterations: number
     toolCallCount: number
   } | null = null
+  /** Manages the per-workspace skill server process (.shogo/server/) */
+  private skillServerManager: SkillServerManager
 
   constructor(workspaceDir: string, projectId: string) {
     this.workspaceDir = workspaceDir
@@ -207,6 +210,7 @@ export class AgentGateway {
     this.config = this.loadConfig()
     this.sessionManager = new SessionManager(this.config.session)
     this.mcpClientManager.setWorkspaceDir(workspaceDir)
+    this.skillServerManager = new SkillServerManager({ workspaceDir })
 
     // Initialize permission engine in local mode
     if (process.env.SHOGO_LOCAL_MODE === 'true') {
@@ -419,6 +423,16 @@ export class AgentGateway {
       }
     }
 
+    // Start the skill server if .shogo/server/ exists
+    try {
+      const { started, port } = await this.skillServerManager.start()
+      if (started) {
+        console.log(`[AgentGateway] Skill server running on port ${port}`)
+      }
+    } catch (error: any) {
+      console.error('[AgentGateway] Skill server startup error:', error.message)
+    }
+
     // Composio session init is deferred to per-request (processChatMessageStream)
     // so it uses the real authenticated user ID, not a static default.
     if (isComposioEnabled()) {
@@ -454,6 +468,7 @@ export class AgentGateway {
 
     this.sessionManager.destroy()
     this.sessionPersistence?.close()
+    await this.skillServerManager.stop()
     await this.mcpClientManager.stopAll()
 
     for (const [name, adapter] of this.channels) {
@@ -905,6 +920,11 @@ export class AgentGateway {
     // Reload skills from disk so any files created/edited/deleted by file tools are picked up
     this.skills = loadAllSkills(this.workspaceDir)
     setLoadedSkills(this.skills)
+
+    // Start the skill server if it was just created (no-op if already running)
+    if (!this.skillServerManager.isRunning) {
+      this.skillServerManager.start().catch(() => {})
+    }
 
     if (activeSkill) {
       const skillOverride = [
@@ -1555,7 +1575,63 @@ Examples:
       }
     }
 
+    // Inject skill server context
+    const skillServerSection = this.buildSkillServerPromptSection()
+    if (skillServerSection) {
+      parts.push(skillServerSection)
+    }
+
     return parts.join('\n\n---\n\n')
+  }
+
+  /**
+   * Build a system prompt section describing the skill server.
+   * If the server is running, tells the agent the base URL.
+   * If not, tells the agent how to create one.
+   */
+  private buildSkillServerPromptSection(): string | null {
+    if (this.config.shellEnabled === false) return null
+
+    if (this.skillServerManager.isRunning) {
+      return [
+        '## Skill Server',
+        '',
+        `A skill server is running at **${this.skillServerManager.url}**.`,
+        '',
+        'This is a Hono API backed by SQLite that you built. To see what endpoints exist,',
+        'read `.shogo/server/schema.prisma` — each Prisma model has CRUD routes at',
+        '`/api/{model-name-plural}` (GET list, GET /:id, POST, PATCH /:id, DELETE /:id).',
+        '',
+        'Use the `web` tool with the full URL (e.g. `web({ url: "' + this.skillServerManager.url + '/api/leads" })`) to interact with it.',
+        '',
+        'To add new endpoints: edit `.shogo/server/schema.prisma`, then run:',
+        '```',
+        'cd .shogo/server && bunx shogo generate && bunx prisma db push',
+        '```',
+        'The server auto-restarts when generated files change.',
+        '',
+        'Custom business logic goes in `.shogo/server/hooks/{model}.hooks.ts` (beforeCreate, afterUpdate, etc.).',
+      ].join('\n')
+    }
+
+    return [
+      '## Skill Server (Available)',
+      '',
+      'You can create a persistent REST API for skills that need structured data, deterministic logic,',
+      'or custom computation. Use this instead of doing everything in-context when:',
+      '- A skill needs to remember data across conversations (leads, tickets, bookmarks, etc.)',
+      '- Logic should be deterministic and not burn LLM tokens every time (scoring, classification)',
+      '- You need CRUD operations on structured data',
+      '',
+      'To set up the skill server:',
+      '1. Create `.shogo/server/schema.prisma` with a SQLite datasource and your models',
+      '2. Create `.shogo/server/shogo.config.json` to configure code generation',
+      '3. Run `cd .shogo/server && bunx shogo generate && bunx prisma db push`',
+      '4. The server starts automatically and listens on `http://localhost:' + this.skillServerManager.port + '`',
+      '',
+      'Each Prisma model gets full CRUD routes at `/api/{model-name-plural}`.',
+      'Custom logic goes in hook files (`.shogo/server/hooks/{model}.hooks.ts`).',
+    ].join('\n')
   }
 
   /**
