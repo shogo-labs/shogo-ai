@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useRouter } from 'expo-router'
-import { useColorScheme, Alert } from 'react-native'
+import { useColorScheme, Alert, Platform } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useAuth } from '../../contexts/auth'
 import { useTheme } from '../../contexts/theme'
@@ -11,6 +11,10 @@ import { getStoredAttribution, clearStoredAttribution } from '../../lib/attribut
 import { api, createHttpClient } from '../../lib/api'
 import { getPasswordResetRedirectUrl } from '../../lib/password-reset-redirect'
 import { LoginScreen } from '@shogo/shared-ui/screens'
+
+/** App-root `require` so Metro web emits valid image URLs (shared-ui `require` can fail on web). */
+const LOGIN_HERO_LIGHT = require('../../assets/login/shogo-login1.webp')
+const LOGIN_HERO_DARK = require('../../assets/login/shogo-login2.webp')
 
 export default function SignInScreen() {
   const router = useRouter()
@@ -71,8 +75,12 @@ export default function SignInScreen() {
   }
 
   return (
-    <SafeAreaView className="flex-1 bg-background">
+    <SafeAreaView
+      className={Platform.OS === 'web' ? 'flex-1 bg-transparent' : 'flex-1 bg-background'}
+    >
       <LoginScreen
+        loginHeroImage={LOGIN_HERO_LIGHT}
+        loginHeroImageDark={LOGIN_HERO_DARK}
         onSignIn={handleSignIn}
         onSignUp={handleSignUp}
         onForgotPassword={handleForgotPassword}
