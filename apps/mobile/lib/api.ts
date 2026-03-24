@@ -358,22 +358,6 @@ export const api = {
     return res.data
   },
 
-  async getLocalModels(http: HttpClient, baseUrl: string) {
-    const res = await http.get<{ ok: boolean; models: Array<{ id: string; name: string }> }>(
-      '/api/local/models',
-      { baseUrl },
-    )
-    return res.data
-  },
-
-  async putLocalApiKeys(http: HttpClient, body: Record<string, string>) {
-    await http.request('/api/local/api-keys', { method: 'PUT', body })
-  },
-
-  async putLocalLlmConfig(http: HttpClient, body: Record<string, string | null>) {
-    await http.request('/api/local/llm-config', { method: 'PUT', body })
-  },
-
   // ─── Local Security Preferences ───────────────────────────
 
   async getSecurityPrefs(http: HttpClient) {

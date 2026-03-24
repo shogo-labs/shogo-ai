@@ -62,6 +62,18 @@ export {
   isBrowser,
 } from './storage/adapter.js'
 
+// Platform API (API keys, local config, feature flags)
+export {
+  PlatformApi,
+  type PlatformConfig,
+  type ApiKeyInfo,
+  type ApiKeyCreateResult,
+  type ApiKeyValidation,
+  type ShogoKeyStatus,
+  type ShogoKeyConnectResult,
+  type LlmConfig,
+} from './platform/index.js'
+
 // Errors
 export {
   ShogoError,

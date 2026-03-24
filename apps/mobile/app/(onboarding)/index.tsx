@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   View,
   Text,
@@ -34,6 +34,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { usePostHogSafe } from '../../contexts/posthog'
 import { useAuth } from '../../contexts/auth'
 import { usePlatformConfig, invalidatePlatformConfigCache } from '../../lib/platform-config'
+import { PlatformApi } from '@shogo-ai/sdk'
 import { API_URL, api, createHttpClient } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { getStoredAttribution, clearStoredAttribution } from '../../lib/attribution'
@@ -91,6 +92,8 @@ export default function OnboardingPage() {
   const { localMode, needsSetup, features } = usePlatformConfig()
   const { width } = useWindowDimensions()
   const isWide = width >= 768
+
+  const platform = useMemo(() => new PlatformApi(createHttpClient()), [])
 
   const steps = getSteps(localMode, needsSetup ?? false)
   const [currentStepIdx, setCurrentStepIdx] = useState(0)
@@ -218,11 +221,7 @@ export default function OnboardingPage() {
     setIsTesting(true)
     setConnectionStatus('idle')
     try {
-      const res = await fetch(
-        `${API_URL}/api/local/models?baseUrl=${encodeURIComponent(llmBaseUrl)}`,
-        { credentials: 'include' }
-      )
-      const data = await res.json() as { ok: boolean; models: ModelInfo[] }
+      const data = await platform.getLocalModels(llmBaseUrl)
       if (data.ok) {
         setModels(data.models)
         setConnectionStatus('connected')
@@ -234,7 +233,7 @@ export default function OnboardingPage() {
     } finally {
       setIsTesting(false)
     }
-  }, [llmBaseUrl])
+  }, [llmBaseUrl, platform])
 
   // -- Save AI config
   const handleSaveAIConfig = useCallback(async () => {
@@ -242,13 +241,7 @@ export default function OnboardingPage() {
     setShogoKeyError('')
     try {
       if (aiMode === 'shogo-cloud') {
-        const res = await fetch(`${API_URL}/api/local/shogo-key`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({ key: shogoApiKey }),
-        })
-        const data = await res.json() as { ok: boolean; error?: string }
+        const data = await platform.connectShogoKey(shogoApiKey)
         if (!data.ok) {
           setShogoKeyError(data.error || 'Failed to validate key')
           setIsSavingAI(false)
@@ -258,26 +251,13 @@ export default function OnboardingPage() {
         const body: Record<string, string> = {}
         if (anthropicKey) body.anthropicApiKey = anthropicKey
         if (openaiKey) body.openaiApiKey = openaiKey
-        const res = await fetch(`${API_URL}/api/local/api-keys`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify(body),
-        })
-        if (!res.ok) throw new Error('Failed to save API keys')
+        await platform.putProviderKeys(body)
       } else if (aiMode === 'local-llm') {
-        const llmBody: Record<string, string | null> = {
+        await platform.putLlmConfig({
           LOCAL_LLM_BASE_URL: llmBaseUrl || null,
           LOCAL_LLM_BASIC_MODEL: basicModel || null,
           LOCAL_LLM_ADVANCED_MODEL: advancedModel || null,
-        }
-        const res = await fetch(`${API_URL}/api/local/llm-config`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify(llmBody),
         })
-        if (!res.ok) throw new Error('Failed to save LLM config')
       }
       setAiSaved(true)
       goNext()
@@ -286,7 +266,7 @@ export default function OnboardingPage() {
     } finally {
       setIsSavingAI(false)
     }
-  }, [aiMode, shogoApiKey, anthropicKey, openaiKey, llmBaseUrl, basicModel, advancedModel, goNext])
+  }, [aiMode, shogoApiKey, anthropicKey, openaiKey, llmBaseUrl, basicModel, advancedModel, goNext, platform])
 
   // -- Complete onboarding
   const handleComplete = useCallback(async () => {

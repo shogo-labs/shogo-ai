@@ -7,7 +7,7 @@
  * authenticating Shogo Local instances against the cloud proxy.
  */
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   View,
   Text,
@@ -30,9 +30,10 @@ import {
   AlertTriangle,
   Monitor,
 } from 'lucide-react-native'
+import { PlatformApi, type ApiKeyInfo } from '@shogo-ai/sdk'
 import { useAuth } from '../../contexts/auth'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
-import { API_URL } from '../../lib/api'
+import { createHttpClient } from '../../lib/api'
 import {
   Card,
   CardContent,
@@ -42,21 +43,12 @@ import {
   cn,
 } from '@shogo/shared-ui/primitives'
 
-interface ApiKeyInfo {
-  id: string
-  name: string
-  keyPrefix: string
-  lastUsedAt: string | null
-  expiresAt: string | null
-  createdAt: string
-  userId: string
-  user: { name: string | null; email: string }
-}
-
 export default function ApiKeysPage() {
   const router = useRouter()
   const { user } = useAuth()
   const workspace = useActiveWorkspace()
+
+  const platform = useMemo(() => new PlatformApi(createHttpClient()), [])
 
   const [keys, setKeys] = useState<ApiKeyInfo[]>([])
   const [isLoading, setIsLoading] = useState(true)
@@ -72,19 +64,13 @@ export default function ApiKeysPage() {
     if (!workspace?.id) return
     setIsLoading(true)
     try {
-      const res = await fetch(`${API_URL}/api/api-keys?workspaceId=${workspace.id}`, {
-        credentials: 'include',
-      })
-      if (res.ok) {
-        const data = await res.json()
-        setKeys(data.keys || [])
-      }
+      setKeys(await platform.listApiKeys(workspace.id))
     } catch (err) {
       console.error('[ApiKeys] Failed to load:', err)
     } finally {
       setIsLoading(false)
     }
-  }, [workspace?.id])
+  }, [workspace?.id, platform])
 
   useEffect(() => { loadKeys() }, [loadKeys])
 
@@ -92,17 +78,9 @@ export default function ApiKeysPage() {
     if (!workspace?.id || !newKeyName.trim()) return
     setIsCreating(true)
     try {
-      const res = await fetch(`${API_URL}/api/api-keys`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ name: newKeyName.trim(), workspaceId: workspace.id }),
-      })
-      if (res.ok) {
-        const data = await res.json()
-        setCreatedKey(data.key)
-        await loadKeys()
-      }
+      const data = await platform.createApiKey(newKeyName.trim(), workspace.id)
+      setCreatedKey(data.key)
+      await loadKeys()
     } catch (err) {
       console.error('[ApiKeys] Failed to create:', err)
     } finally {
@@ -114,10 +92,7 @@ export default function ApiKeysPage() {
     if (!revokeTarget) return
     setIsRevoking(true)
     try {
-      await fetch(`${API_URL}/api/api-keys/${revokeTarget.id}`, {
-        method: 'DELETE',
-        credentials: 'include',
-      })
+      await platform.revokeApiKey(revokeTarget.id)
       setRevokeTarget(null)
       await loadKeys()
     } catch (err) {

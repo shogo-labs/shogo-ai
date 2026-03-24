@@ -7,7 +7,7 @@
  * Changes take effect immediately without server restart.
  */
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   View,
   Text,
@@ -31,19 +31,12 @@ import {
   Unplug,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { API_URL } from '../../lib/api'
+import { PlatformApi, type LlmConfig } from '@shogo-ai/sdk'
+import { createHttpClient } from '../../lib/api'
 
 // =============================================================================
 // Types
 // =============================================================================
-
-interface LlmConfig {
-  LOCAL_LLM_BASE_URL?: string
-  LOCAL_LLM_BASIC_MODEL?: string
-  LOCAL_LLM_ADVANCED_MODEL?: string
-  LOCAL_EMBEDDING_MODEL?: string
-  LOCAL_EMBEDDING_DIMENSIONS?: string
-}
 
 interface ModelInfo {
   id: string
@@ -85,44 +78,42 @@ export default function AdminSettingsPage() {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
   const [modelsLoading, setModelsLoading] = useState(false)
 
+  const platform = useMemo(() => new PlatformApi(createHttpClient()), [])
+
   const fetchConfig = useCallback(async () => {
     try {
-      const [llmRes, keysRes, shogoKeyRes] = await Promise.all([
-        fetch(`${API_URL}/api/local/llm-config`, { credentials: 'include' }),
-        fetch(`${API_URL}/api/local/api-keys`, { credentials: 'include' }),
-        fetch(`${API_URL}/api/local/shogo-key`, { credentials: 'include' }),
+      const [llmCfg, keyMasks, shogoData] = await Promise.all([
+        platform.getLlmConfig(),
+        platform.getProviderKeyMasks(),
+        platform.getShogoKeyStatus(),
       ])
-      const llmData = await llmRes.json() as { config: LlmConfig }
-      const keysData = await keysRes.json() as { keys: Record<string, string> }
-      const shogoData = await shogoKeyRes.json() as { connected: boolean; keyMask?: string; workspace?: { name: string } | null }
 
-      setConfig(llmData.config || {})
-      setApiKeys(keysData.keys || {})
+      setConfig(llmCfg)
+      setApiKeys(keyMasks)
 
-      const cfg = llmData.config || {}
-      setBaseUrl(cfg.LOCAL_LLM_BASE_URL || '')
-      setBasicModel(cfg.LOCAL_LLM_BASIC_MODEL || '')
-      setAdvancedModel(cfg.LOCAL_LLM_ADVANCED_MODEL || '')
-      setEmbeddingModel(cfg.LOCAL_EMBEDDING_MODEL || '')
-      setEmbeddingDims(cfg.LOCAL_EMBEDDING_DIMENSIONS || '')
+      setBaseUrl(llmCfg.LOCAL_LLM_BASE_URL || '')
+      setBasicModel(llmCfg.LOCAL_LLM_BASIC_MODEL || '')
+      setAdvancedModel(llmCfg.LOCAL_LLM_ADVANCED_MODEL || '')
+      setEmbeddingModel(llmCfg.LOCAL_EMBEDDING_MODEL || '')
+      setEmbeddingDims(llmCfg.LOCAL_EMBEDDING_DIMENSIONS || '')
 
-      if (keysData.keys?.ANTHROPIC_API_KEY) setAnthropicMask(keysData.keys.ANTHROPIC_API_KEY)
-      if (keysData.keys?.OPENAI_API_KEY) setOpenaiMask(keysData.keys.OPENAI_API_KEY)
+      if (keyMasks.ANTHROPIC_API_KEY) setAnthropicMask(keyMasks.ANTHROPIC_API_KEY)
+      if (keyMasks.OPENAI_API_KEY) setOpenaiMask(keyMasks.OPENAI_API_KEY)
 
       setShogoKeyConnected(shogoData.connected)
       if (shogoData.keyMask) setShogoKeyMask(shogoData.keyMask)
       if (shogoData.workspace?.name) setShogoWorkspaceName(shogoData.workspace.name)
       if (shogoData.connected) setShogoKeyStatus('connected')
 
-      if (cfg.LOCAL_LLM_BASE_URL) {
-        fetchModels(cfg.LOCAL_LLM_BASE_URL)
+      if (llmCfg.LOCAL_LLM_BASE_URL) {
+        fetchModels(llmCfg.LOCAL_LLM_BASE_URL)
       }
     } catch (err) {
       console.error('[AdminSettings] Failed to load config:', err)
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }, [platform])
 
   useEffect(() => { fetchConfig() }, [fetchConfig])
 
@@ -131,11 +122,7 @@ export default function AdminSettingsPage() {
     if (!targetUrl) return
     setModelsLoading(true)
     try {
-      const res = await fetch(
-        `${API_URL}/api/local/models?baseUrl=${encodeURIComponent(targetUrl)}`,
-        { credentials: 'include' }
-      )
-      const data = await res.json() as { ok: boolean; models: ModelInfo[]; error?: string }
+      const data = await platform.getLocalModels(targetUrl)
       if (data.ok) {
         setModels(data.models)
         setConnectionStatus('connected')
@@ -149,7 +136,7 @@ export default function AdminSettingsPage() {
     } finally {
       setModelsLoading(false)
     }
-  }, [baseUrl])
+  }, [baseUrl, platform])
 
   const handleTestConnection = async () => {
     setIsTestingConnection(true)
@@ -162,32 +149,19 @@ export default function AdminSettingsPage() {
     setIsSaving(true)
     setSaveStatus('idle')
     try {
-      const llmBody: Record<string, string | null> = {
+      await platform.putLlmConfig({
         LOCAL_LLM_BASE_URL: baseUrl || null,
         LOCAL_LLM_BASIC_MODEL: basicModel || null,
         LOCAL_LLM_ADVANCED_MODEL: advancedModel || null,
         LOCAL_EMBEDDING_MODEL: embeddingModel || null,
         LOCAL_EMBEDDING_DIMENSIONS: embeddingDims || null,
-      }
-      const llmRes = await fetch(`${API_URL}/api/local/llm-config`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(llmBody),
       })
-      if (!llmRes.ok) throw new Error('Failed to save LLM config')
 
       if (anthropicKey || openaiKey) {
         const keysBody: Record<string, string> = {}
         if (anthropicKey) keysBody.anthropicApiKey = anthropicKey
         if (openaiKey) keysBody.openaiApiKey = openaiKey
-        const keysRes = await fetch(`${API_URL}/api/local/api-keys`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify(keysBody),
-        })
-        if (!keysRes.ok) throw new Error('Failed to save API keys')
+        await platform.putProviderKeys(keysBody)
         if (anthropicKey) {
           setAnthropicMask(anthropicKey.slice(0, 8) + '...' + anthropicKey.slice(-4))
           setAnthropicKey('')
@@ -212,13 +186,7 @@ export default function AdminSettingsPage() {
     setShogoKeyStatus('connecting')
     setShogoKeyError('')
     try {
-      const res = await fetch(`${API_URL}/api/local/shogo-key`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ key: shogoKeyInput.trim() }),
-      })
-      const data = await res.json() as { ok: boolean; error?: string; workspace?: { name: string } }
+      const data = await platform.connectShogoKey(shogoKeyInput.trim())
       if (data.ok) {
         setShogoKeyConnected(true)
         setShogoKeyMask(shogoKeyInput.trim().slice(0, 17) + '...' + shogoKeyInput.trim().slice(-4))
@@ -238,10 +206,7 @@ export default function AdminSettingsPage() {
   const handleDisconnectShogoKey = async () => {
     setIsDisconnecting(true)
     try {
-      await fetch(`${API_URL}/api/local/shogo-key`, {
-        method: 'DELETE',
-        credentials: 'include',
-      })
+      await platform.disconnectShogoKey()
       setShogoKeyConnected(false)
       setShogoKeyMask('')
       setShogoWorkspaceName('')
