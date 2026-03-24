@@ -7,7 +7,7 @@
  * Changes take effect immediately without server restart.
  */
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   View,
   Text,
@@ -27,21 +27,16 @@ import {
   Zap,
   BrainCircuit,
   ChevronDown,
+  Cloud,
+  Unplug,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { API_URL } from '../../lib/api'
+import { PlatformApi, type LlmConfig } from '@shogo-ai/sdk'
+import { createHttpClient } from '../../lib/api'
 
 // =============================================================================
 // Types
 // =============================================================================
-
-interface LlmConfig {
-  LOCAL_LLM_BASE_URL?: string
-  LOCAL_LLM_BASIC_MODEL?: string
-  LOCAL_LLM_ADVANCED_MODEL?: string
-  LOCAL_EMBEDDING_MODEL?: string
-  LOCAL_EMBEDDING_DIMENSIONS?: string
-}
 
 interface ModelInfo {
   id: string
@@ -68,6 +63,14 @@ export default function AdminSettingsPage() {
   const [anthropicMask, setAnthropicMask] = useState('')
   const [openaiMask, setOpenaiMask] = useState('')
 
+  const [shogoKeyInput, setShogoKeyInput] = useState('')
+  const [shogoKeyConnected, setShogoKeyConnected] = useState(false)
+  const [shogoKeyMask, setShogoKeyMask] = useState('')
+  const [shogoWorkspaceName, setShogoWorkspaceName] = useState('')
+  const [shogoKeyStatus, setShogoKeyStatus] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle')
+  const [shogoKeyError, setShogoKeyError] = useState('')
+  const [isDisconnecting, setIsDisconnecting] = useState(false)
+
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [isTestingConnection, setIsTestingConnection] = useState(false)
@@ -75,37 +78,42 @@ export default function AdminSettingsPage() {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
   const [modelsLoading, setModelsLoading] = useState(false)
 
+  const platform = useMemo(() => new PlatformApi(createHttpClient()), [])
+
   const fetchConfig = useCallback(async () => {
     try {
-      const [llmRes, keysRes] = await Promise.all([
-        fetch(`${API_URL}/api/local/llm-config`, { credentials: 'include' }),
-        fetch(`${API_URL}/api/local/api-keys`, { credentials: 'include' }),
+      const [llmCfg, keyMasks, shogoData] = await Promise.all([
+        platform.getLlmConfig(),
+        platform.getProviderKeyMasks(),
+        platform.getShogoKeyStatus(),
       ])
-      const llmData = await llmRes.json() as { config: LlmConfig }
-      const keysData = await keysRes.json() as { keys: Record<string, string> }
 
-      setConfig(llmData.config || {})
-      setApiKeys(keysData.keys || {})
+      setConfig(llmCfg)
+      setApiKeys(keyMasks)
 
-      const cfg = llmData.config || {}
-      setBaseUrl(cfg.LOCAL_LLM_BASE_URL || '')
-      setBasicModel(cfg.LOCAL_LLM_BASIC_MODEL || '')
-      setAdvancedModel(cfg.LOCAL_LLM_ADVANCED_MODEL || '')
-      setEmbeddingModel(cfg.LOCAL_EMBEDDING_MODEL || '')
-      setEmbeddingDims(cfg.LOCAL_EMBEDDING_DIMENSIONS || '')
+      setBaseUrl(llmCfg.LOCAL_LLM_BASE_URL || '')
+      setBasicModel(llmCfg.LOCAL_LLM_BASIC_MODEL || '')
+      setAdvancedModel(llmCfg.LOCAL_LLM_ADVANCED_MODEL || '')
+      setEmbeddingModel(llmCfg.LOCAL_EMBEDDING_MODEL || '')
+      setEmbeddingDims(llmCfg.LOCAL_EMBEDDING_DIMENSIONS || '')
 
-      if (keysData.keys?.ANTHROPIC_API_KEY) setAnthropicMask(keysData.keys.ANTHROPIC_API_KEY)
-      if (keysData.keys?.OPENAI_API_KEY) setOpenaiMask(keysData.keys.OPENAI_API_KEY)
+      if (keyMasks.ANTHROPIC_API_KEY) setAnthropicMask(keyMasks.ANTHROPIC_API_KEY)
+      if (keyMasks.OPENAI_API_KEY) setOpenaiMask(keyMasks.OPENAI_API_KEY)
 
-      if (cfg.LOCAL_LLM_BASE_URL) {
-        fetchModels(cfg.LOCAL_LLM_BASE_URL)
+      setShogoKeyConnected(shogoData.connected)
+      if (shogoData.keyMask) setShogoKeyMask(shogoData.keyMask)
+      if (shogoData.workspace?.name) setShogoWorkspaceName(shogoData.workspace.name)
+      if (shogoData.connected) setShogoKeyStatus('connected')
+
+      if (llmCfg.LOCAL_LLM_BASE_URL) {
+        fetchModels(llmCfg.LOCAL_LLM_BASE_URL)
       }
     } catch (err) {
       console.error('[AdminSettings] Failed to load config:', err)
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }, [platform])
 
   useEffect(() => { fetchConfig() }, [fetchConfig])
 
@@ -114,11 +122,7 @@ export default function AdminSettingsPage() {
     if (!targetUrl) return
     setModelsLoading(true)
     try {
-      const res = await fetch(
-        `${API_URL}/api/local/models?baseUrl=${encodeURIComponent(targetUrl)}`,
-        { credentials: 'include' }
-      )
-      const data = await res.json() as { ok: boolean; models: ModelInfo[]; error?: string }
+      const data = await platform.getLocalModels(targetUrl)
       if (data.ok) {
         setModels(data.models)
         setConnectionStatus('connected')
@@ -132,7 +136,7 @@ export default function AdminSettingsPage() {
     } finally {
       setModelsLoading(false)
     }
-  }, [baseUrl])
+  }, [baseUrl, platform])
 
   const handleTestConnection = async () => {
     setIsTestingConnection(true)
@@ -145,32 +149,19 @@ export default function AdminSettingsPage() {
     setIsSaving(true)
     setSaveStatus('idle')
     try {
-      const llmBody: Record<string, string | null> = {
+      await platform.putLlmConfig({
         LOCAL_LLM_BASE_URL: baseUrl || null,
         LOCAL_LLM_BASIC_MODEL: basicModel || null,
         LOCAL_LLM_ADVANCED_MODEL: advancedModel || null,
         LOCAL_EMBEDDING_MODEL: embeddingModel || null,
         LOCAL_EMBEDDING_DIMENSIONS: embeddingDims || null,
-      }
-      const llmRes = await fetch(`${API_URL}/api/local/llm-config`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(llmBody),
       })
-      if (!llmRes.ok) throw new Error('Failed to save LLM config')
 
       if (anthropicKey || openaiKey) {
         const keysBody: Record<string, string> = {}
         if (anthropicKey) keysBody.anthropicApiKey = anthropicKey
         if (openaiKey) keysBody.openaiApiKey = openaiKey
-        const keysRes = await fetch(`${API_URL}/api/local/api-keys`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify(keysBody),
-        })
-        if (!keysRes.ok) throw new Error('Failed to save API keys')
+        await platform.putProviderKeys(keysBody)
         if (anthropicKey) {
           setAnthropicMask(anthropicKey.slice(0, 8) + '...' + anthropicKey.slice(-4))
           setAnthropicKey('')
@@ -187,6 +178,44 @@ export default function AdminSettingsPage() {
       setSaveStatus('error')
     } finally {
       setIsSaving(false)
+    }
+  }
+
+  const handleConnectShogoKey = async () => {
+    if (!shogoKeyInput.trim()) return
+    setShogoKeyStatus('connecting')
+    setShogoKeyError('')
+    try {
+      const data = await platform.connectShogoKey(shogoKeyInput.trim())
+      if (data.ok) {
+        setShogoKeyConnected(true)
+        setShogoKeyMask(shogoKeyInput.trim().slice(0, 17) + '...' + shogoKeyInput.trim().slice(-4))
+        setShogoWorkspaceName(data.workspace?.name || '')
+        setShogoKeyStatus('connected')
+        setShogoKeyInput('')
+      } else {
+        setShogoKeyError(data.error || 'Failed to validate key')
+        setShogoKeyStatus('error')
+      }
+    } catch (err: any) {
+      setShogoKeyError(err.message || 'Connection failed')
+      setShogoKeyStatus('error')
+    }
+  }
+
+  const handleDisconnectShogoKey = async () => {
+    setIsDisconnecting(true)
+    try {
+      await platform.disconnectShogoKey()
+      setShogoKeyConnected(false)
+      setShogoKeyMask('')
+      setShogoWorkspaceName('')
+      setShogoKeyStatus('idle')
+      setShogoKeyInput('')
+    } catch (err) {
+      console.error('[AdminSettings] Failed to disconnect Shogo key:', err)
+    } finally {
+      setIsDisconnecting(false)
     }
   }
 
@@ -207,6 +236,93 @@ export default function AdminSettingsPage() {
             Configure your local LLM provider and models. Changes take effect immediately.
           </Text>
         </View>
+
+        {/* Shogo Cloud Section */}
+        <SectionCard
+          icon={Cloud}
+          title="Shogo Cloud"
+          description="Connect your Shogo account to use our cloud LLMs"
+        >
+          {shogoKeyConnected ? (
+            <View className="gap-3">
+              <View className="flex-row items-center gap-2 bg-green-500/10 rounded-lg p-3">
+                <CheckCircle size={16} className="text-green-500" />
+                <View className="flex-1">
+                  <Text className="text-sm font-medium text-foreground">Connected</Text>
+                  {shogoWorkspaceName ? (
+                    <Text className="text-xs text-muted-foreground">
+                      Workspace: {shogoWorkspaceName}
+                    </Text>
+                  ) : null}
+                </View>
+              </View>
+              <View className="flex-row items-center gap-2">
+                <Text className="text-xs text-muted-foreground font-mono flex-1">
+                  {shogoKeyMask}
+                </Text>
+                <Pressable
+                  onPress={handleDisconnectShogoKey}
+                  disabled={isDisconnecting}
+                  className={cn(
+                    'flex-row items-center gap-1.5 px-3 py-1.5 rounded-lg border border-destructive/30',
+                    isDisconnecting && 'opacity-50'
+                  )}
+                >
+                  <Unplug size={14} className="text-destructive" />
+                  <Text className="text-sm text-destructive">
+                    {isDisconnecting ? 'Disconnecting...' : 'Disconnect'}
+                  </Text>
+                </Pressable>
+              </View>
+              <Text className="text-xs text-muted-foreground">
+                LLM usage will be billed to your Shogo cloud account. You can still
+                configure your own API keys below as optional overrides.
+              </Text>
+            </View>
+          ) : (
+            <View className="gap-3">
+              <Text className="text-sm text-muted-foreground">
+                Enter your Shogo API key to use our cloud LLMs without managing
+                provider API keys. Get your key from the{' '}
+                <Text className="text-primary font-medium">Shogo Cloud dashboard</Text>.
+              </Text>
+              <View className="flex-row gap-2">
+                <View className="flex-1">
+                  <TextInput
+                    value={shogoKeyInput}
+                    onChangeText={(t) => { setShogoKeyInput(t); setShogoKeyError(''); setShogoKeyStatus('idle') }}
+                    placeholder="shogo_sk_..."
+                    secureTextEntry
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    className="border border-border rounded-lg px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground web:outline-none"
+                  />
+                </View>
+                <Pressable
+                  onPress={handleConnectShogoKey}
+                  disabled={!shogoKeyInput.trim() || shogoKeyStatus === 'connecting'}
+                  className={cn(
+                    'px-4 py-2.5 rounded-lg items-center justify-center',
+                    shogoKeyInput.trim() && shogoKeyStatus !== 'connecting' ? 'bg-primary' : 'bg-muted'
+                  )}
+                >
+                  <Text className={cn(
+                    'text-sm font-medium',
+                    shogoKeyInput.trim() && shogoKeyStatus !== 'connecting' ? 'text-primary-foreground' : 'text-muted-foreground'
+                  )}>
+                    {shogoKeyStatus === 'connecting' ? 'Connecting...' : 'Connect'}
+                  </Text>
+                </Pressable>
+              </View>
+              {shogoKeyError ? (
+                <View className="flex-row items-center gap-1.5">
+                  <AlertTriangle size={14} className="text-destructive" />
+                  <Text className="text-sm text-destructive">{shogoKeyError}</Text>
+                </View>
+              ) : null}
+            </View>
+          )}
+        </SectionCard>
 
         {/* LLM Provider Section */}
         <SectionCard

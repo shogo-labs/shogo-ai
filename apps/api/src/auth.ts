@@ -145,11 +145,21 @@ export const auth = betterAuth({
     enabled: true,
     requireEmailVerification: process.env.REQUIRE_EMAIL_VERIFICATION === 'true',
     sendResetPassword: async ({ user, url }: { user: { email: string; name?: string | null }; url: string }) => {
-      await sendPasswordResetEmail({
+      const result = await sendPasswordResetEmail({
         to: user.email,
         name: user.name ?? undefined,
         resetUrl: url,
       })
+      const logResetLinkInConsole =
+        !result.success &&
+        (process.env.NODE_ENV !== 'production' || process.env.SHOGO_LOG_PASSWORD_RESET_URL === 'true')
+      if (logResetLinkInConsole) {
+        console.warn(
+          `[Auth] Password reset email was not sent (${result.error ?? 'unknown'}). ` +
+            'Configure email in .env (see EMAIL_PROVIDER / SMTP_* or SES). Dev-only reset link:\n' +
+            url,
+        )
+      }
     },
     sendVerificationEmail: async ({ user, url }: { user: { email: string; name?: string | null }; url: string }) => {
       await sendEmailVerificationEmail({

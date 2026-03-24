@@ -8,7 +8,7 @@
  */
 
 import React, { useState, useEffect, useMemo, useRef } from 'react'
-import { View, Text, TextInput, ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform, Pressable, useWindowDimensions, Image, useColorScheme } from 'react-native'
+import { View, Text, TextInput, ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform, Pressable, useWindowDimensions, Image, useColorScheme, Alert as RNAlert } from 'react-native'
 import Svg, { G, Path, Rect } from 'react-native-svg'
 import { Eye, EyeOff } from 'lucide-react-native'
 import { Button } from '../primitives/Button'
@@ -142,6 +142,8 @@ export interface LoginScreenProps {
   onSignIn: (email: string, password: string) => Promise<void>
   onSignUp: (name: string, email: string, password: string) => Promise<void>
   onGoogleSignIn?: () => void
+  /** Called when the user taps "Forgot password?" with the current email field value (may be empty). */
+  onForgotPassword?: (email: string) => void | Promise<void>
   isLoading?: boolean
   error?: string | null
   onClearError?: () => void
@@ -188,10 +190,18 @@ function getPasswordStrength(password: string): { score: number; label: string; 
   return { score, ...levels[score] }
 }
 
-function SignInForm({ onSignIn, isLoading, error, onClearError, onScrollToBottom }: Pick<LoginScreenProps, 'onSignIn' | 'isLoading' | 'error' | 'onClearError'> & { onScrollToBottom?: () => void }) {
+function SignInForm({
+  onSignIn,
+  onForgotPassword,
+  isLoading,
+  error,
+  onClearError,
+  onScrollToBottom,
+}: Pick<LoginScreenProps, 'onSignIn' | 'onForgotPassword' | 'isLoading' | 'error' | 'onClearError'> & { onScrollToBottom?: () => void }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
+  const [forgotSending, setForgotSending] = useState(false)
   const passwordRef = useRef<TextInput>(null)
 
   const focusPassword = () => {
@@ -202,6 +212,21 @@ function SignInForm({ onSignIn, isLoading, error, onClearError, onScrollToBottom
   const handleSubmit = async () => {
     if (!email || !password) return
     await onSignIn(email, password)
+  }
+
+  const handleForgotPassword = async () => {
+    if (!onForgotPassword || forgotSending || isLoading) return
+    const trimmed = email.trim()
+    if (!trimmed) {
+      RNAlert.alert('Email required', 'Enter your email address, then tap Forgot password again.')
+      return
+    }
+    setForgotSending(true)
+    try {
+      await onForgotPassword(trimmed)
+    } finally {
+      setForgotSending(false)
+    }
   }
 
   return (
@@ -225,8 +250,21 @@ function SignInForm({ onSignIn, isLoading, error, onClearError, onScrollToBottom
       <View className="gap-1.5">
         <View className="flex-row justify-between items-center">
           <Text className="text-sm font-medium text-foreground">Password</Text>
-          <Pressable>
-            <Text className="text-sm text-brand-landing">Forgot password?</Text>
+          <Pressable
+            onPress={handleForgotPassword}
+            disabled={!onForgotPassword || forgotSending || isLoading}
+            accessibilityRole="link"
+            accessibilityLabel="Forgot password"
+            accessibilityState={{ disabled: !onForgotPassword || forgotSending || isLoading }}
+          >
+            <Text
+              className={cn(
+                'text-sm text-brand-landing',
+                (!onForgotPassword || forgotSending || isLoading) && 'opacity-50',
+              )}
+            >
+              {forgotSending ? 'Sending…' : 'Forgot password?'}
+            </Text>
           </Pressable>
         </View>
         <View className="relative">
@@ -391,7 +429,7 @@ function SignUpForm({ onSignUp, isLoading, error, onClearError, onScrollToBottom
   )
 }
 
-function MobileLoginPanel({ onSignIn, onSignUp, onGoogleSignIn, isLoading, error, onClearError, colorScheme }: LoginScreenProps) {
+function MobileLoginPanel({ onSignIn, onSignUp, onGoogleSignIn, onForgotPassword, isLoading, error, onClearError, colorScheme }: LoginScreenProps) {
   const [activeTab, setActiveTab] = useState<Tab>('signin')
   const [dismissed, setDismissed] = useState(false)
   const { height: windowHeight } = useWindowDimensions()
@@ -464,7 +502,16 @@ function MobileLoginPanel({ onSignIn, onSignUp, onGoogleSignIn, isLoading, error
             </View>
 
             {activeTab === 'signin'
-              ? <SignInForm onSignIn={onSignIn} isLoading={isLoading} error={displayError} onClearError={dismissError} onScrollToBottom={scrollToBottom} />
+              ? (
+                <SignInForm
+                  onSignIn={onSignIn}
+                  onForgotPassword={onForgotPassword}
+                  isLoading={isLoading}
+                  error={displayError}
+                  onClearError={dismissError}
+                  onScrollToBottom={scrollToBottom}
+                />
+              )
               : <SignUpForm onSignUp={onSignUp} isLoading={isLoading} error={displayError} onClearError={dismissError} onScrollToBottom={scrollToBottom} />
             }
 
@@ -491,7 +538,7 @@ const loginHeroLight = require('../../../../apps/mobile/assets/login/shogo-login
 const loginHeroDark = require('../../../../apps/mobile/assets/login/shogo-login3.jpg')
 const loginHeroWordmarkWhite = require('../../../../apps/mobile/assets/login/shogo-logo-white.svg')
 
-function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, isLoading, error, onClearError, colorScheme }: LoginScreenProps) {
+function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, onForgotPassword, isLoading, error, onClearError, colorScheme }: LoginScreenProps) {
   const [activeTab, setActiveTab] = useState<Tab>('signin')
   const [dismissed, setDismissed] = useState(false)
   const scrollRef = useRef<ScrollView>(null)
@@ -567,7 +614,16 @@ function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, isLoading, error
           </View>
 
           {activeTab === 'signin'
-            ? <SignInForm onSignIn={onSignIn} isLoading={isLoading} error={displayError} onClearError={dismissError} onScrollToBottom={scrollToBottom} />
+            ? (
+              <SignInForm
+                onSignIn={onSignIn}
+                onForgotPassword={onForgotPassword}
+                isLoading={isLoading}
+                error={displayError}
+                onClearError={dismissError}
+                onScrollToBottom={scrollToBottom}
+              />
+            )
             : <SignUpForm onSignUp={onSignUp} isLoading={isLoading} error={displayError} onClearError={dismissError} onScrollToBottom={scrollToBottom} />
           }
 

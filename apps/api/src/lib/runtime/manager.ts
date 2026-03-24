@@ -749,6 +749,24 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         delete runtimeEnv.ANTHROPIC_API_KEY
         delete runtimeEnv.ANTHROPIC_BASE_URL
 
+        // When Shogo Cloud API key is active, route all providers through the local proxy.
+        // The local proxy will forward requests to the Shogo Cloud proxy.
+        if (process.env.SHOGO_API_KEY) {
+          const proxyToken = runtimeEnv.AI_PROXY_TOKEN
+          if (proxyToken) {
+            runtimeEnv.OPENAI_BASE_URL = proxyUrl
+            runtimeEnv.OPENAI_API_KEY = proxyToken
+            runtimeEnv.GOOGLE_BASE_URL = proxyUrl
+            runtimeEnv.GOOGLE_API_KEY = proxyToken
+          }
+          delete runtimeEnv.XAI_API_KEY
+          delete runtimeEnv.GROQ_API_KEY
+          delete runtimeEnv.CEREBRAS_API_KEY
+          delete runtimeEnv.OPENROUTER_API_KEY
+          delete runtimeEnv.MISTRAL_API_KEY
+          console.log(`[RuntimeManager] Shogo Cloud mode: all providers routed through proxy for ${projectId}`)
+        }
+
         // Security policy — read user prefs + project overrides, merge, and pass to runtime
         if (process.env.SHOGO_LOCAL_MODE === 'true') {
           try {
