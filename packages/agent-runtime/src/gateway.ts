@@ -1418,7 +1418,10 @@ export class AgentGateway {
 
       this.sessionManager.touch(sessionId)
 
-      return result.text || 'HEARTBEAT_OK'
+      if (result.text) return result.text
+      if (isHeartbeat) return 'HEARTBEAT_OK'
+      console.warn(`[AgentGateway] Empty model response for session ${sessionId} (${result.iterations} iterations, ${result.toolCalls.length} tool calls, ${result.outputTokens} output tokens)`)
+      return 'Sorry, I was unable to generate a response. Please try again.'
     } catch (error: any) {
       console.error('[AgentGateway] Agent turn failed:', error.message, error.stack?.split('\n').slice(0, 3).join('\n'))
       chunker?.dispose()
@@ -1432,7 +1435,8 @@ export class AgentGateway {
             : 'I encountered an issue processing your message. Please try starting a new conversation.',
         } as any)
       }
-      return 'HEARTBEAT_OK'
+      if (isHeartbeat) return 'HEARTBEAT_OK'
+      return `Sorry, I encountered an error processing your message. Please try again.`
     } finally {
       if (typingInterval) clearInterval(typingInterval)
     }

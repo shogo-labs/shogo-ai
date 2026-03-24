@@ -41,6 +41,10 @@ import { userMessage } from './pi-adapter'
 import { getDynamicAppManager, initDynamicAppManager } from './dynamic-app-manager'
 import type { ActionEvent } from './dynamic-app-types'
 import { fileURLToPath } from 'url'
+import { WebChatAdapter } from './channels/webchat'
+import { WebhookAdapter } from './channels/webhook'
+import { WhatsAppAdapter } from './channels/whatsapp'
+import { TeamsAdapter } from './channels/teams'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -265,18 +269,14 @@ function wrapStreamWithKeepalive(
 // provided by createRuntimeApp(). Agent-specific routes follow below.
 
 // Register WhatsApp webhook routes (must be before any auth middleware)
-import('./channels/whatsapp').then(({ WhatsAppAdapter }) => {
-  WhatsAppAdapter.registerWebhookRoutes(app)
-}).catch(() => { /* WhatsApp adapter not available */ })
+WhatsAppAdapter.registerWebhookRoutes(app)
 
 // Register Webhook/HTTP channel routes
-import('./channels/webhook').then(({ WebhookAdapter }) => {
-  WebhookAdapter.registerRoutes(app, () => {
-    if (!agentGateway) return null
-    const adapter = agentGateway.getChannel('webhook')
-    return adapter && adapter.getStatus().connected ? adapter as any : null
-  })
-}).catch(() => { /* Webhook adapter not available */ })
+WebhookAdapter.registerRoutes(app, () => {
+  if (!agentGateway) return null
+  const adapter = agentGateway.getChannel('webhook')
+  return adapter && adapter.getStatus().connected ? adapter as any : null
+})
 
 // Hot-connect a channel at runtime (called by MCP tool after writing config.json)
 app.post('/agent/channels/connect', async (c) => {
@@ -301,21 +301,17 @@ app.post('/agent/channels/connect', async (c) => {
 })
 
 // Register Microsoft Teams messaging endpoint
-import('./channels/teams').then(({ TeamsAdapter }) => {
-  TeamsAdapter.registerRoutes(app, () => {
-    if (!agentGateway) return undefined
-    return agentGateway.getChannel('teams') as any
-  })
-}).catch(() => { /* Teams adapter not available */ })
+TeamsAdapter.registerRoutes(app, () => {
+  if (!agentGateway) return undefined
+  return agentGateway.getChannel('teams') as any
+})
 
 // Register WebChat embeddable widget routes
-import('./channels/webchat').then(({ WebChatAdapter }) => {
-  WebChatAdapter.registerRoutes(app, () => {
-    if (!agentGateway) return null
-    const adapter = agentGateway.getChannel('webchat')
-    return adapter && adapter.getStatus().connected ? adapter as any : null
-  })
-}).catch(() => { /* WebChat adapter not available */ })
+WebChatAdapter.registerRoutes(app, () => {
+  if (!agentGateway) return null
+  const adapter = agentGateway.getChannel('webchat')
+  return adapter && adapter.getStatus().connected ? adapter as any : null
+})
 
 // /health, /ready, /pool/activity, /pool/assign are provided by createRuntimeApp()
 
