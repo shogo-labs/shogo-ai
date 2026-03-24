@@ -28,6 +28,7 @@ import {
   Building2,
   CheckCircle2,
   Info,
+  Sparkles,
   Zap,
   Crown,
 } from 'lucide-react-native'
@@ -40,6 +41,8 @@ import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useDomainActions } from '@shogo/shared-app/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import {
+  BASIC_TIER,
+  BASIC_FEATURES,
   PRO_TIERS,
   BUSINESS_TIERS,
   PRO_FEATURES,
@@ -368,8 +371,57 @@ export default observer(function BillingPage() {
         </View>
       </View>
 
-      {/* Plan Cards — 3 columns on md+, stacked on mobile */}
+      {/* Plan Cards */}
       <View className="gap-6 md:flex-row md:items-start">
+        {/* Basic Plan */}
+        <View className="md:flex-1 md:w-0">
+          <Card>
+            <CardContent className="p-5 gap-5">
+              <View className="flex-row items-center gap-2">
+                <Sparkles size={20} className="text-green-500" />
+                <Text className="text-lg font-semibold text-foreground">Basic</Text>
+              </View>
+              <Text className="text-sm text-muted-foreground">
+                More credits with the fast AI model for individuals getting started.
+              </Text>
+
+              <View>
+                <View className="flex-row items-baseline gap-1">
+                  <Text className="text-4xl font-bold text-foreground">
+                    ${billingInterval === 'monthly' ? BASIC_TIER.monthly : Math.round(BASIC_TIER.annual / 12)}
+                  </Text>
+                  <Text className="text-sm text-muted-foreground">per month</Text>
+                </View>
+                {billingInterval === 'annual' && (
+                  <Text className="text-sm text-muted-foreground">
+                    ${BASIC_TIER.annual}/year (save ~17%)
+                  </Text>
+                )}
+              </View>
+
+              <Pressable
+                onPress={() => handleCheckout('basic' as any, BASIC_TIER.credits)}
+                disabled={isCheckoutLoading}
+                className="w-full items-center justify-center py-3 rounded-md bg-primary active:bg-primary/80"
+              >
+                <Text className="text-sm font-medium text-primary-foreground">
+                  {subscription?.planId === 'basic' ? 'Current Plan' : 'Get Basic'}
+                </Text>
+              </Pressable>
+
+              <View className="gap-2">
+                <Text className="text-sm font-medium text-foreground">
+                  {BASIC_TIER.credits} credits / month
+                </Text>
+                <Text className="text-sm text-muted-foreground">
+                  All features in Free, plus:
+                </Text>
+                <FeatureList features={BASIC_FEATURES} />
+              </View>
+            </CardContent>
+          </Card>
+        </View>
+
         {/* Pro Plan */}
         <View className="md:flex-1 md:w-0">
           <Card>

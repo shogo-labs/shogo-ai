@@ -569,10 +569,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       let parsedBody: any = {}
       try { parsedBody = JSON.parse(body) } catch { /* not JSON, that's fine */ }
 
-      // Enforce basic agent mode for free-plan workspaces (server-side guard)
+      // Enforce basic agent mode for free/basic-plan workspaces (server-side guard)
       if (parsedBody.agentMode && parsedBody.agentMode !== 'basic') {
-        const isPaid = await billingService.hasPaidSubscription(project.workspaceId)
-        if (!isPaid) {
+        const hasAdvanced = await billingService.hasAdvancedModelAccess(project.workspaceId)
+        if (!hasAdvanced) {
           parsedBody.agentMode = 'basic'
           body = JSON.stringify(parsedBody)
         }

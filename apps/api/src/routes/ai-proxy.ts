@@ -1459,16 +1459,16 @@ export function aiProxyRoutes() {
         )
       }
 
-      // Enforce model tier: free users can only use economy-tier models
+      // Enforce model tier: free/basic users can only use economy-tier models
       if (modelConfig.provider !== 'local') {
         const tier = getModelTier(request.model)
         if (tier !== 'economy') {
-          const isPaid = await billingService.hasPaidSubscription(tokenPayload.workspaceId)
-          if (!isPaid) {
+          const hasAdvanced = await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
+          if (!hasAdvanced) {
             return c.json(
               {
                 error: {
-                  message: `Model '${request.model}' requires a Pro subscription. Free users can use economy-tier models (e.g. claude-haiku-4-5, gpt-5-nano).`,
+                  message: `Model '${request.model}' requires a Pro or higher subscription. Free and Basic plan users can use economy-tier models (e.g. claude-haiku-4-5, gpt-5-nano).`,
                   type: 'billing_error',
                   code: 'model_tier_restricted',
                 },
@@ -1720,14 +1720,14 @@ export function aiProxyRoutes() {
       const { resolvedModel, isLocal } = resolveAgentModel(requestModel)
       console.log(`[AI Proxy] Anthropic pass-through: ${tokenPayload.projectId} → ${requestModel} resolved to ${resolvedModel} (local: ${isLocal}, stream: ${isStream})`)
 
-      // Enforce model tier: free users can only use economy-tier models
+      // Enforce model tier: free/basic users can only use economy-tier models
       if (!isLocal) {
         const tier = getModelTier(resolvedModel)
         if (tier !== 'economy') {
-          const isPaid = await billingService.hasPaidSubscription(tokenPayload.workspaceId)
-          if (!isPaid) {
+          const hasAdvanced = await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
+          if (!hasAdvanced) {
             return c.json(
-              { type: 'error', error: { type: 'billing_error', message: `Model '${resolvedModel}' requires a Pro subscription. Free users can use economy-tier models (e.g. claude-haiku-4-5, gpt-5-nano).` } },
+              { type: 'error', error: { type: 'billing_error', message: `Model '${resolvedModel}' requires a Pro or higher subscription. Free and Basic plan users can use economy-tier models (e.g. claude-haiku-4-5, gpt-5-nano).` } },
               403
             )
           }

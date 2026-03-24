@@ -1376,7 +1376,22 @@ export class AgentGateway {
         )
       }
 
-      if (result.outputTokens === 0 && result.toolCalls.length === 0 && !isHeartbeat) {
+      if (result.error) {
+        const msg = result.error.message || 'An unexpected error occurred'
+        const isProviderError = /api error|api key|auth|unauthorized|forbidden|rate.limit|overloaded|timeout/i.test(msg)
+        console.error(
+          `[AgentGateway] Agent error for session ${sessionId}: ${msg} (${result.toolCalls.length} tool calls, ${result.outputTokens} output tokens)`
+        )
+        chunker?.dispose()
+        if (uiWriter) {
+          uiWriter.write({
+            type: 'error',
+            errorText: isProviderError
+              ? `AI provider error: ${msg}`
+              : `I encountered an issue processing your message: ${msg}`,
+          } as any)
+        }
+      } else if (result.outputTokens === 0 && result.toolCalls.length === 0 && !isHeartbeat) {
         console.error(
           `[AgentGateway] Agent returned 0 tokens for session ${sessionId} — possible context corruption (${session.compactionCount} compactions, ${session.messages.length} messages, model: ${modelId}, provider: ${provider})`
         )

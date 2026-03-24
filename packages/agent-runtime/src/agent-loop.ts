@@ -108,6 +108,8 @@ export interface AgentLoopResult {
   newMessages: Message[]
   /** Set if the loop was terminated by the circuit breaker */
   loopBreak?: LoopDetectorResult
+  /** Set if the agent encountered an error (provider failure, etc.). Partial results are still available. */
+  error?: Error
 }
 
 export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoopResult> {
@@ -257,11 +259,14 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   const finalText = extractFinalText(newMessages)
   const usage = sumUsage(newMessages)
 
-  // If we got an error and no output was produced, propagate the error
-  // so callers can display a meaningful message instead of a silent failure.
-  if (promptError && usage.output === 0 && toolCalls.length === 0) {
-    throw promptError
-  }
+  // Determine the error to surface. promptError is set when agent.prompt()
+  // throws directly. When the provider fails but pi-agent-core swallows the
+  // error (e.g. stream function throws), agent.prompt() resolves with 0
+  // output — detect that as an implicit error so callers can show a message.
+  const implicitError =
+    !promptError && usage.output === 0 && toolCalls.length === 0 && !abortTriggered
+      ? new Error('Agent produced no output — possible provider error')
+      : undefined
 
   const result: AgentLoopResult = {
     text: loopBreak
@@ -275,6 +280,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     cacheWriteTokens: usage.cacheWrite,
     newMessages,
     loopBreak,
+    error: promptError || implicitError,
   }
 
   await onAgentEnd?.(result)

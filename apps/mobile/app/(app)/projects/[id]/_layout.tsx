@@ -708,7 +708,7 @@ export default observer(function ProjectLayout() {
       projectType="unified"
       initialMessage={capturedInitialMessage}
       initialFiles={capturedInitialFiles}
-      billingData={features.billing ? billingData : { hasActiveSubscription: true, refetchCreditLedger: () => {} }}
+      billingData={features.billing ? billingData : { hasActiveSubscription: true, hasAdvancedModelAccess: true, refetchCreditLedger: () => {} }}
       onCanvasPreview={handleCanvasPreview}
       onModeSwitch={handleModeSwitch}
       onMessagesChange={setChatMessages}
