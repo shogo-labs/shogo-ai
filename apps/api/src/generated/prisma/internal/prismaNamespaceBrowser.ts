@@ -92,7 +92,9 @@ export const ModelName = {
   Composition: 'Composition',
   ComponentSpec: 'ComponentSpec',
   PlatformSetting: 'PlatformSetting',
-  InfraSnapshot: 'InfraSnapshot'
+  InfraSnapshot: 'InfraSnapshot',
+  AnalyticsDigest: 'AnalyticsDigest',
+  SignupAttribution: 'SignupAttribution'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -781,6 +783,50 @@ export const InfraSnapshotScalarFieldEnum = {
 } as const
 
 export type InfraSnapshotScalarFieldEnum = (typeof InfraSnapshotScalarFieldEnum)[keyof typeof InfraSnapshotScalarFieldEnum]
+
+
+export const AnalyticsDigestScalarFieldEnum = {
+  id: 'id',
+  date: 'date',
+  period: 'period',
+  funnelSignups: 'funnelSignups',
+  funnelOnboarded: 'funnelOnboarded',
+  funnelCreatedProject: 'funnelCreatedProject',
+  funnelSentMessage: 'funnelSentMessage',
+  funnelEngaged: 'funnelEngaged',
+  avgMinToFirstProject: 'avgMinToFirstProject',
+  avgMinToFirstMessage: 'avgMinToFirstMessage',
+  activeUsers: 'activeUsers',
+  totalMessages: 'totalMessages',
+  totalSessions: 'totalSessions',
+  totalToolCalls: 'totalToolCalls',
+  totalCreditsUsed: 'totalCreditsUsed',
+  templateStats: 'templateStats',
+  chunksProcessed: 'chunksProcessed',
+  messagesAnalyzed: 'messagesAnalyzed',
+  aiInsights: 'aiInsights',
+  createdAt: 'createdAt'
+} as const
+
+export type AnalyticsDigestScalarFieldEnum = (typeof AnalyticsDigestScalarFieldEnum)[keyof typeof AnalyticsDigestScalarFieldEnum]
+
+
+export const SignupAttributionScalarFieldEnum = {
+  id: 'id',
+  userId: 'userId',
+  utmSource: 'utmSource',
+  utmMedium: 'utmMedium',
+  utmCampaign: 'utmCampaign',
+  utmContent: 'utmContent',
+  utmTerm: 'utmTerm',
+  referrer: 'referrer',
+  landingPage: 'landingPage',
+  signupMethod: 'signupMethod',
+  sourceTag: 'sourceTag',
+  createdAt: 'createdAt'
+} as const
+
+export type SignupAttributionScalarFieldEnum = (typeof SignupAttributionScalarFieldEnum)[keyof typeof SignupAttributionScalarFieldEnum]
 
 
 export const SortOrder = {

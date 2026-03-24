@@ -39,11 +39,12 @@ model User {
   updatedAt           DateTime  @updatedAt
 
   // Relations
-  sessions      Session[]
-  accounts      Account[]
-  members       Member[]
-  notifications Notification[]
-  starredProjects StarredProject[]
+  sessions            Session[]
+  accounts            Account[]
+  members             Member[]
+  notifications       Notification[]
+  starredProjects     StarredProject[]
+  signupAttribution   SignupAttribution?
 
   @@map("users")
 }
@@ -1144,4 +1145,59 @@ model InfraSnapshot {
 
   @@index([timestamp])
   @@map("infra_snapshots")
+}
+
+// =============================================================================
+// ANALYTICS (Daily Digests & Attribution)
+// =============================================================================
+
+model AnalyticsDigest {
+  id                   String   @id @default(uuid())
+  date                 DateTime @db.Date
+  period               String   @default("24h")
+
+  funnelSignups        Int      @default(0)
+  funnelOnboarded      Int      @default(0)
+  funnelCreatedProject Int      @default(0)
+  funnelSentMessage    Int      @default(0)
+  funnelEngaged        Int      @default(0)
+  avgMinToFirstProject Float?
+  avgMinToFirstMessage Float?
+
+  activeUsers          Int      @default(0)
+  totalMessages        Int      @default(0)
+  totalSessions        Int      @default(0)
+  totalToolCalls       Int      @default(0)
+  totalCreditsUsed     Float    @default(0)
+
+  templateStats        Json?
+  chunksProcessed      Int      @default(1)
+  messagesAnalyzed     Int      @default(0)
+  aiInsights           Json?
+
+  createdAt            DateTime @default(now())
+
+  @@unique([date, period])
+  @@map("analytics_digests")
+}
+
+model SignupAttribution {
+  id           String   @id @default(uuid())
+  userId       String   @unique
+  utmSource    String?
+  utmMedium    String?
+  utmCampaign  String?
+  utmContent   String?
+  utmTerm      String?
+  referrer     String?
+  landingPage  String?
+  signupMethod String?
+  sourceTag    String?
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([sourceTag])
+  @@index([createdAt])
+  @@map("signup_attributions")
 }

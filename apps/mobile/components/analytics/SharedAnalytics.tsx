@@ -24,6 +24,11 @@ import {
   ChevronUp,
   ChevronDown,
   ArrowUpDown,
+  TrendingDown,
+  Globe,
+  Sparkles,
+  LayoutTemplate,
+  RefreshCw,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 
@@ -646,6 +651,549 @@ export function UsageTableSection({
       ) : (
         <View className="py-8 items-center">
           <Text className="text-sm text-muted-foreground">No usage events available</Text>
+        </View>
+      )}
+    </View>
+  )
+}
+
+// =============================================================================
+// Funnel Section
+// =============================================================================
+
+export interface FunnelData {
+  signups: number
+  onboarded: number
+  createdProject: number
+  sentMessage: number
+  engaged: number
+  avgMinToFirstProject: number | null
+  avgMinToFirstMessage: number | null
+}
+
+export function FunnelSection({ data, loading }: { data: FunnelData | null; loading: boolean }) {
+  if (loading) {
+    return (
+      <View className="rounded-xl border border-border bg-card p-4">
+        <View className="h-4 w-28 bg-muted rounded mb-3" />
+        <View className="flex-row gap-2">
+          {[1, 2, 3, 4, 5].map(i => <View key={i} className="flex-1 h-16 bg-muted/50 rounded-lg" />)}
+        </View>
+      </View>
+    )
+  }
+
+  if (!data) return null
+
+  const stages = [
+    { label: 'Signed Up', value: data.signups },
+    { label: 'Onboarded', value: data.onboarded },
+    { label: 'Created Project', value: data.createdProject },
+    { label: 'Sent Message', value: data.sentMessage },
+    { label: 'Engaged (5+)', value: data.engaged },
+  ]
+
+  return (
+    <View className="rounded-xl border border-border bg-card p-4">
+      <Text className="text-sm font-semibold text-foreground mb-3">User Funnel</Text>
+      <View className="flex-row gap-2 flex-wrap">
+        {stages.map((stage, i) => {
+          const pct = data.signups > 0 ? Math.round((stage.value / data.signups) * 100) : 0
+          const prev = i > 0 ? stages[i - 1].value : stage.value
+          const dropoff = prev > 0 ? Math.round(((prev - stage.value) / prev) * 100) : 0
+
+          return (
+            <View key={stage.label} className="flex-1 min-w-[100px] p-2 rounded-lg bg-muted/50">
+              <Text className="text-lg font-bold text-foreground">{stage.value.toLocaleString()}</Text>
+              <Text className="text-[10px] text-muted-foreground">{stage.label}</Text>
+              <View className="flex-row items-center gap-1 mt-0.5">
+                <Text className="text-[10px] text-muted-foreground">{pct}%</Text>
+                {i > 0 && dropoff > 0 && (
+                  <Text className="text-[10px] text-red-400">-{dropoff}%</Text>
+                )}
+              </View>
+            </View>
+          )
+        })}
+      </View>
+      {(data.avgMinToFirstProject !== null || data.avgMinToFirstMessage !== null) && (
+        <View className="flex-row gap-4 mt-3">
+          {data.avgMinToFirstProject !== null && (
+            <Text className="text-[10px] text-muted-foreground">
+              Avg time to first project: {data.avgMinToFirstProject.toFixed(0)}m
+            </Text>
+          )}
+          {data.avgMinToFirstMessage !== null && (
+            <Text className="text-[10px] text-muted-foreground">
+              Avg time to first message: {data.avgMinToFirstMessage.toFixed(0)}m
+            </Text>
+          )}
+        </View>
+      )}
+    </View>
+  )
+}
+
+// =============================================================================
+// User Activity Table
+// =============================================================================
+
+export interface UserActivityEntry {
+  id: string
+  name: string | null
+  email: string
+  sourceTag: string | null
+  signupAt: string
+  lastActiveAt: string | null
+  projects: number
+  messages: number
+  sessions: number
+  toolCalls: number
+  creditsUsed: number
+}
+
+export interface UserActivityData {
+  users: UserActivityEntry[]
+  total: number
+}
+
+const SOURCE_COLORS: Record<string, string> = {
+  'google-ads': 'bg-blue-500/20 text-blue-600',
+  'facebook-ads': 'bg-indigo-500/20 text-indigo-600',
+  'organic:google': 'bg-green-500/20 text-green-600',
+  'direct': 'bg-gray-500/20 text-gray-500',
+  'google-oauth': 'bg-orange-500/20 text-orange-600',
+  'referral': 'bg-purple-500/20 text-purple-600',
+  'unknown': 'bg-gray-400/20 text-gray-400',
+}
+
+function SourceBadge({ tag }: { tag: string | null }) {
+  const label = tag || 'unknown'
+  const colorClass = SOURCE_COLORS[label]
+    || (label.startsWith('referral:') ? SOURCE_COLORS.referral
+    : label.startsWith('organic:') ? SOURCE_COLORS['organic:google']
+    : SOURCE_COLORS.unknown)
+  return (
+    <View className={cn('px-1.5 py-0.5 rounded', colorClass)}>
+      <Text className="text-[9px] font-medium">{label}</Text>
+    </View>
+  )
+}
+
+export function UserActivityTable({
+  data,
+  loading,
+  page = 1,
+  onPageChange,
+}: {
+  data: UserActivityData | null
+  loading: boolean
+  page?: number
+  onPageChange?: (page: number) => void
+}) {
+  if (loading) {
+    return (
+      <View className="rounded-xl border border-border bg-card p-4">
+        <View className="h-4 w-28 bg-muted rounded mb-3" />
+        <View className="h-40 bg-muted/50 rounded" />
+      </View>
+    )
+  }
+
+  if (!data || data.users.length === 0) {
+    return (
+      <View className="rounded-xl border border-border bg-card p-4">
+        <Text className="text-sm font-semibold text-foreground mb-3">User Activity</Text>
+        <View className="py-8 items-center">
+          <Text className="text-sm text-muted-foreground">No user data</Text>
+        </View>
+      </View>
+    )
+  }
+
+  return (
+    <View className="rounded-xl border border-border bg-card p-4">
+      <View className="flex-row items-center justify-between mb-3">
+        <Text className="text-sm font-semibold text-foreground">User Activity</Text>
+        <Text className="text-[10px] text-muted-foreground">{data.total} users</Text>
+      </View>
+
+      {/* Header */}
+      <View className="flex-row items-center py-1.5 border-b border-border">
+        <Text className="flex-[2] text-[10px] font-medium text-muted-foreground">User</Text>
+        <Text className="flex-1 text-[10px] font-medium text-muted-foreground">Source</Text>
+        <Text className="w-14 text-[10px] font-medium text-muted-foreground text-right">Projects</Text>
+        <Text className="w-14 text-[10px] font-medium text-muted-foreground text-right">Msgs</Text>
+        <Text className="w-16 text-[10px] font-medium text-muted-foreground text-right">Credits</Text>
+      </View>
+
+      {/* Rows */}
+      {data.users.map(u => (
+        <View key={u.id} className="flex-row items-center py-2 border-b border-border/50">
+          <View className="flex-[2]">
+            <Text className="text-xs font-medium text-foreground" numberOfLines={1}>{u.name || '—'}</Text>
+            <Text className="text-[10px] text-muted-foreground" numberOfLines={1}>{u.email}</Text>
+          </View>
+          <View className="flex-1">
+            <SourceBadge tag={u.sourceTag} />
+          </View>
+          <Text className="w-14 text-xs text-foreground text-right">{u.projects}</Text>
+          <Text className="w-14 text-xs text-foreground text-right">{u.messages}</Text>
+          <Text className="w-16 text-xs text-foreground text-right">{u.creditsUsed.toFixed(1)}</Text>
+        </View>
+      ))}
+
+      {/* Pagination */}
+      {onPageChange && data.total > 20 && (
+        <View className="flex-row items-center justify-center gap-4 mt-3">
+          <Pressable onPress={() => onPageChange(Math.max(1, page - 1))} disabled={page <= 1}>
+            <ChevronLeft size={16} className={page <= 1 ? 'text-muted' : 'text-foreground'} />
+          </Pressable>
+          <Text className="text-xs text-muted-foreground">Page {page}</Text>
+          <Pressable
+            onPress={() => onPageChange(page + 1)}
+            disabled={page * 20 >= data.total}
+          >
+            <ChevronRight size={16} className={page * 20 >= data.total ? 'text-muted' : 'text-foreground'} />
+          </Pressable>
+        </View>
+      )}
+    </View>
+  )
+}
+
+// =============================================================================
+// Template Engagement Panel
+// =============================================================================
+
+export interface TemplateStatsEntry {
+  templateId: string
+  projects: number
+  avgMessages: number
+  totalToolCalls: number
+  engagementRate: number
+}
+
+export interface TemplateEngagementData {
+  templates: TemplateStatsEntry[]
+}
+
+export function TemplateEngagementPanel({
+  data,
+  loading,
+}: {
+  data: TemplateEngagementData | null
+  loading: boolean
+}) {
+  if (loading) {
+    return (
+      <View className="rounded-xl border border-border bg-card p-4">
+        <View className="h-4 w-36 bg-muted rounded mb-3" />
+        <View className="gap-2">
+          {[1, 2, 3].map(i => <View key={i} className="h-14 bg-muted/50 rounded-lg" />)}
+        </View>
+      </View>
+    )
+  }
+
+  if (!data || data.templates.length === 0) {
+    return (
+      <View className="rounded-xl border border-border bg-card p-4">
+        <Text className="text-sm font-semibold text-foreground mb-3">Template Engagement</Text>
+        <View className="py-4 items-center">
+          <Text className="text-sm text-muted-foreground">No template data</Text>
+        </View>
+      </View>
+    )
+  }
+
+  const sorted = [...data.templates].sort((a, b) => b.engagementRate - a.engagementRate)
+
+  return (
+    <View className="rounded-xl border border-border bg-card p-4">
+      <View className="flex-row items-center gap-2 mb-3">
+        <LayoutTemplate size={14} className="text-muted-foreground" />
+        <Text className="text-sm font-semibold text-foreground">Template Engagement</Text>
+      </View>
+      <View className="gap-2">
+        {sorted.map(t => (
+          <View key={t.templateId} className="flex-row items-center p-2 rounded-lg bg-muted/50 gap-3">
+            <View className="flex-1">
+              <Text className="text-xs font-medium text-foreground" numberOfLines={1}>{t.templateId}</Text>
+              <Text className="text-[10px] text-muted-foreground">
+                {t.projects} projects · {t.avgMessages.toFixed(1)} avg msgs · {t.totalToolCalls} tools
+              </Text>
+            </View>
+            <View className="items-end">
+              <Text className="text-sm font-bold text-foreground">{t.engagementRate}%</Text>
+              <Text className="text-[10px] text-muted-foreground">engaged</Text>
+            </View>
+          </View>
+        ))}
+      </View>
+    </View>
+  )
+}
+
+// =============================================================================
+// Source Breakdown Panel
+// =============================================================================
+
+export interface SourceBreakdownEntry {
+  tag: string
+  count: number
+  projectRate: number
+  messageRate: number
+}
+
+export interface SourceBreakdownData {
+  sources: SourceBreakdownEntry[]
+}
+
+export function SourceBreakdownPanel({
+  data,
+  loading,
+}: {
+  data: SourceBreakdownData | null
+  loading: boolean
+}) {
+  if (loading) {
+    return (
+      <View className="rounded-xl border border-border bg-card p-4">
+        <View className="h-4 w-36 bg-muted rounded mb-3" />
+        <View className="gap-2">
+          {[1, 2, 3].map(i => <View key={i} className="h-12 bg-muted/50 rounded-lg" />)}
+        </View>
+      </View>
+    )
+  }
+
+  if (!data || data.sources.length === 0) {
+    return (
+      <View className="rounded-xl border border-border bg-card p-4">
+        <Text className="text-sm font-semibold text-foreground mb-3">Acquisition Sources</Text>
+        <View className="py-4 items-center">
+          <Text className="text-sm text-muted-foreground">No attribution data</Text>
+        </View>
+      </View>
+    )
+  }
+
+  const total = data.sources.reduce((s, r) => s + r.count, 0)
+
+  return (
+    <View className="rounded-xl border border-border bg-card p-4">
+      <View className="flex-row items-center gap-2 mb-3">
+        <Globe size={14} className="text-muted-foreground" />
+        <Text className="text-sm font-semibold text-foreground">Acquisition Sources</Text>
+        <Text className="text-[10px] text-muted-foreground ml-auto">{total} total</Text>
+      </View>
+      <View className="gap-2">
+        {data.sources.map(s => {
+          const pct = total > 0 ? Math.round((s.count / total) * 100) : 0
+          return (
+            <View key={s.tag} className="flex-row items-center p-2 rounded-lg bg-muted/50 gap-3">
+              <View className="flex-1">
+                <View className="flex-row items-center gap-2">
+                  <SourceBadge tag={s.tag} />
+                  <Text className="text-xs font-bold text-foreground">{s.count}</Text>
+                  <Text className="text-[10px] text-muted-foreground">({pct}%)</Text>
+                </View>
+              </View>
+              <View className="flex-row gap-3">
+                <View className="items-end">
+                  <Text className="text-[10px] font-medium text-foreground">{s.projectRate}%</Text>
+                  <Text className="text-[9px] text-muted-foreground">project</Text>
+                </View>
+                <View className="items-end">
+                  <Text className="text-[10px] font-medium text-foreground">{s.messageRate}%</Text>
+                  <Text className="text-[9px] text-muted-foreground">message</Text>
+                </View>
+              </View>
+            </View>
+          )
+        })}
+      </View>
+    </View>
+  )
+}
+
+// =============================================================================
+// AI Insights Panel
+// =============================================================================
+
+export interface AIDigestData {
+  id: string
+  date: string
+  funnelSignups: number
+  funnelEngaged: number
+  activeUsers: number
+  totalMessages: number
+  messagesAnalyzed: number
+  chunksProcessed: number
+  aiInsights: {
+    takeaways: string[]
+    intents: { category: string; count: number; examples: string[] }[]
+    painPoints: string[]
+    securityFlags: string[]
+  } | null
+}
+
+export interface AIDigestListItem {
+  id: string
+  date: string
+  funnelSignups: number
+  funnelEngaged: number
+  activeUsers: number
+  totalMessages: number
+  messagesAnalyzed: number
+  createdAt: string
+}
+
+export function AIInsightsPanel({
+  data,
+  digestList,
+  loading,
+  onDateSelect,
+  onGenerate,
+  generating,
+}: {
+  data: AIDigestData | null
+  digestList: AIDigestListItem[] | null
+  loading: boolean
+  onDateSelect?: (date: string) => void
+  onGenerate?: () => void
+  generating?: boolean
+}) {
+  const [showHistory, setShowHistory] = useState(false)
+
+  if (loading) {
+    return (
+      <View className="rounded-xl border border-border bg-card p-4">
+        <View className="h-4 w-28 bg-muted rounded mb-3" />
+        <View className="h-40 bg-muted/50 rounded" />
+      </View>
+    )
+  }
+
+  return (
+    <View className="rounded-xl border border-border bg-card p-4">
+      <View className="flex-row items-center justify-between mb-3">
+        <View className="flex-row items-center gap-2">
+          <Sparkles size={14} className="text-muted-foreground" />
+          <Text className="text-sm font-semibold text-foreground">AI Insights</Text>
+          {data && (
+            <Text className="text-[10px] text-muted-foreground">
+              {new Date(data.date).toLocaleDateString()} · {data.messagesAnalyzed} msgs analyzed
+            </Text>
+          )}
+        </View>
+        <View className="flex-row gap-2">
+          {onGenerate && (
+            <Pressable
+              onPress={onGenerate}
+              disabled={generating}
+              className="flex-row items-center gap-1 px-2 py-1 rounded bg-primary/10"
+            >
+              <RefreshCw size={10} className={generating ? 'text-muted' : 'text-primary'} />
+              <Text className="text-[10px] text-primary">{generating ? 'Generating...' : 'Generate Now'}</Text>
+            </Pressable>
+          )}
+          {digestList && digestList.length > 1 && (
+            <Pressable
+              onPress={() => setShowHistory(!showHistory)}
+              className="px-2 py-1 rounded bg-muted"
+            >
+              <Text className="text-[10px] text-muted-foreground">{showHistory ? 'Hide' : 'History'}</Text>
+            </Pressable>
+          )}
+        </View>
+      </View>
+
+      {showHistory && digestList && (
+        <View className="mb-3 gap-1">
+          {digestList.map(d => (
+            <Pressable
+              key={d.id}
+              onPress={() => onDateSelect?.(d.date)}
+              className="flex-row items-center justify-between p-2 rounded bg-muted/50"
+            >
+              <Text className="text-[10px] text-foreground">{new Date(d.date).toLocaleDateString()}</Text>
+              <Text className="text-[10px] text-muted-foreground">
+                {d.funnelSignups} signups · {d.activeUsers} active · {d.messagesAnalyzed} msgs
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+
+      {!data ? (
+        <View className="py-8 items-center">
+          <Text className="text-sm text-muted-foreground">No digest available</Text>
+          {onGenerate && (
+            <Text className="text-[10px] text-muted-foreground mt-1">Click "Generate Now" to create one</Text>
+          )}
+        </View>
+      ) : !data.aiInsights ? (
+        <View className="py-4 items-center">
+          <Text className="text-sm text-muted-foreground">Digest has no AI analysis</Text>
+        </View>
+      ) : (
+        <View className="gap-3">
+          {data.aiInsights.takeaways.length > 0 && (
+            <View>
+              <Text className="text-xs font-semibold text-foreground mb-1.5">Key Takeaways</Text>
+              {data.aiInsights.takeaways.map((t, i) => (
+                <View key={i} className="flex-row gap-2 mb-1">
+                  <Text className="text-[10px] text-muted-foreground">•</Text>
+                  <Text className="text-[10px] text-foreground flex-1">{t}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+
+          {data.aiInsights.intents.length > 0 && (
+            <View>
+              <Text className="text-xs font-semibold text-foreground mb-1.5">User Intents</Text>
+              <View className="gap-1">
+                {data.aiInsights.intents.map((intent, i) => (
+                  <View key={i} className="flex-row items-center gap-2 p-1.5 rounded bg-muted/30">
+                    <Text className="text-xs font-medium text-foreground">{intent.category}</Text>
+                    <Text className="text-[10px] text-muted-foreground">×{intent.count}</Text>
+                    {intent.examples[0] && (
+                      <Text className="text-[10px] text-muted-foreground flex-1" numberOfLines={1}>
+                        e.g. {intent.examples[0]}
+                      </Text>
+                    )}
+                  </View>
+                ))}
+              </View>
+            </View>
+          )}
+
+          {data.aiInsights.painPoints.length > 0 && (
+            <View>
+              <Text className="text-xs font-semibold text-red-400 mb-1.5">Pain Points</Text>
+              {data.aiInsights.painPoints.map((p, i) => (
+                <View key={i} className="flex-row gap-2 mb-1">
+                  <Text className="text-[10px] text-red-400">!</Text>
+                  <Text className="text-[10px] text-foreground flex-1">{p}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+
+          {data.aiInsights.securityFlags.length > 0 && (
+            <View>
+              <Text className="text-xs font-semibold text-orange-400 mb-1.5">Security Flags</Text>
+              {data.aiInsights.securityFlags.map((f, i) => (
+                <View key={i} className="flex-row gap-2 mb-1">
+                  <Text className="text-[10px] text-orange-400">⚠</Text>
+                  <Text className="text-[10px] text-foreground flex-1">{f}</Text>
+                </View>
+              ))}
+            </View>
+          )}
         </View>
       )}
     </View>

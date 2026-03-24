@@ -14,6 +14,7 @@ import { AuthProvider } from '../contexts/auth'
 import { PostHogProvider } from '../contexts/posthog'
 import { ThemeProvider, useTheme } from '../contexts/theme'
 import { RootErrorBoundary } from '../components/RootErrorBoundary'
+import { captureAttribution } from '../lib/attribution'
 
 const PENDING_TEMPLATE_KEY = 'pending_template_id'
 const PENDING_APP_TEMPLATE_KEY = 'pending_app_template'
@@ -41,6 +42,7 @@ function useCaptureTemplateDeepLink() {
 }
 
 function RootLayoutInner() {
+  useEffect(() => { captureAttribution() }, [])
   useCaptureTemplateDeepLink()
   const systemColorScheme = useColorScheme()
   const { theme, isLoaded } = useTheme()

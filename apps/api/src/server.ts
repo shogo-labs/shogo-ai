@@ -40,7 +40,7 @@ import { aiProxyRoutes } from './routes/ai-proxy'
 import { toolsProxyRoutes } from './routes/tools-proxy'
 import { calculateCreditCost } from './lib/credit-cost'
 import { openSession as openBillingSession, closeSession as closeBillingSession } from './lib/proxy-billing-session'
-import { adminRoutes } from './routes/admin'
+import { adminRoutes, userAttributionRoute } from './routes/admin'
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
 import { integrationRoutes } from './routes/integrations'
 import { agentTemplateRoutes } from './routes/agent-templates'
@@ -5065,6 +5065,9 @@ app.route('/api/admin', createAdminRoutes({
 // Hand-written admin routes for custom analytics endpoints
 app.route('/api/admin', adminRoutes())
 
+// User attribution endpoint (authenticated users, not admin-only)
+app.route('/api', userAttributionRoute())
+
 // Scoped analytics routes handle their own auth (workspace/project membership checks)
 app.route('/api', scopedAnalyticsRoutes())
 
@@ -5601,6 +5604,13 @@ if (isKubernetes()) {
       console.log('[HeartbeatScheduler] Heartbeat scheduler started')
     } catch (err: any) {
       console.error('[HeartbeatScheduler] Failed to start heartbeat scheduler (non-fatal):', err.message)
+    }
+
+    try {
+      const { startAnalyticsDigestCollector } = await import('./lib/analytics-digest-collector')
+      startAnalyticsDigestCollector(prisma)
+    } catch (err: any) {
+      console.error('[AnalyticsDigest] Failed to start (non-fatal):', err.message)
     }
   }, 2000)
 }
