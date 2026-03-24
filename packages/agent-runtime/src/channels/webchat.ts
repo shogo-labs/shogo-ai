@@ -451,12 +451,22 @@ export class WebChatAdapter implements ChannelAdapter {
 // ---------------------------------------------------------------------------
 
 function generateWidgetScript(agentBaseUrl: string): string {
+  const fallbackUrl = agentBaseUrl.replace(/'/g, "\\'")
   return `(function() {
   "use strict";
   if (window.__shogoWebChat) return;
   window.__shogoWebChat = true;
 
-  var AGENT_URL = "${agentBaseUrl}";
+  var AGENT_URL = (function() {
+    try {
+      var s = document.currentScript;
+      var marker = "/agent/channels/webchat/widget.js";
+      if (s && s.src && s.src.indexOf(marker) !== -1) {
+        return s.src.split(marker)[0];
+      }
+    } catch(e) {}
+    return '${fallbackUrl}';
+  })();
   var SESSION_KEY = "shogo_webchat_session";
   var HISTORY_KEY = "shogo_webchat_history";
 
