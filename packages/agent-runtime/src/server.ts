@@ -507,7 +507,7 @@ app.post('/agent/chat', async (c) => {
         savedPaths.push(baseName)
         console.log(`[AgentChat] Saved uploaded file to files/${baseName}`)
 
-        try { getFileIndexEngine().indexFile(resolved) } catch { /* best-effort */ }
+        try { (getFileIndexEngine() as any).indexFile(resolved) } catch { /* best-effort */ }
       } catch (err: any) {
         console.error(`[AgentChat] Failed to save uploaded file:`, err.message)
       }
@@ -1016,7 +1016,7 @@ app.post('/agent/heartbeat/trigger', async (c) => {
   }
 
   // Fire-and-forget: run heartbeat asynchronously
-  const projectId = state.currentProjectId
+  const projectId = state.currentProjectId!
   agentGateway.triggerHeartbeat().then(async () => {
     try {
       await reportHeartbeatComplete(projectId)
@@ -1355,10 +1355,10 @@ app.get('/agent/bundled-skills', (c) => {
   return c.json({
     skills: bundled.map((s: any) => ({
       name: s.name,
-      version: s.version,
+      version: s.version || '',
       description: s.description,
-      trigger: s.trigger,
-      tools: s.tools,
+      trigger: s.trigger || '',
+      tools: s.tools || [],
       content: s.content,
     })),
   })
@@ -1374,14 +1374,22 @@ app.post('/agent/bundled-skills/install', async (c) => {
     return c.json({ error: `Bundled skill "${name}" not found` }, 404)
   }
 
-  const skillsDir = join(WORKSPACE_DIR, 'skills')
-  mkdirSync(skillsDir, { recursive: true })
-  const destPath = join(skillsDir, `${name}.md`)
+  const destDir = join(WORKSPACE_DIR, '.shogo', 'skills', name)
+  mkdirSync(destDir, { recursive: true })
 
-  const { readFileSync: rfs } = require('fs')
-  const content = rfs(skill.filePath, 'utf-8')
-  writeFileSync(destPath, content, 'utf-8')
+  const srcDir = skill.skillDir
+  const { readdirSync: rds, readFileSync: rfs, cpSync: cps } = require('fs')
+  for (const entry of rds(srcDir, { withFileTypes: true })) {
+    const srcPath = join(srcDir, entry.name)
+    const destPath = join(destDir, entry.name)
+    if (entry.isDirectory()) {
+      cps(srcPath, destPath, { recursive: true })
+    } else {
+      writeFileSync(destPath, rfs(srcPath))
+    }
+  }
 
+  agentGateway?.reloadConfig()
   return c.json({ ok: true, installed: name })
 })
 
@@ -1391,7 +1399,7 @@ app.get('/agent/skills/:name', (c) => {
     return c.json({ error: 'Invalid skill name' }, 400)
   }
 
-  const filePath = join(WORKSPACE_DIR, 'skills', `${name}.md`)
+  const filePath = join(WORKSPACE_DIR, '.shogo', 'skills', name, 'SKILL.md')
   if (!existsSync(filePath)) {
     return c.json({ error: `Skill "${name}" not found` }, 404)
   }
@@ -1406,17 +1414,57 @@ app.delete('/agent/skills/:name', (c) => {
     return c.json({ error: 'Invalid skill name' }, 400)
   }
 
-  const filePath = join(WORKSPACE_DIR, 'skills', `${name}.md`)
-  if (!existsSync(filePath)) {
+  const skillDir = join(WORKSPACE_DIR, '.shogo', 'skills', name)
+  if (!existsSync(skillDir)) {
     return c.json({ error: `Skill "${name}" not found` }, 404)
   }
 
-  unlinkSync(filePath)
+  rmSync(skillDir, { recursive: true, force: true })
+  agentGateway?.reloadConfig()
   return c.json({ ok: true, removed: name })
 })
 
+app.get('/agent/skills/:name/scripts', (c) => {
+  const name = c.req.param('name')
+  if (!name || name.includes('/') || name.includes('..')) {
+    return c.json({ error: 'Invalid skill name' }, 400)
+  }
+
+  const scriptsDir = join(WORKSPACE_DIR, '.shogo', 'skills', name, 'scripts')
+  if (!existsSync(scriptsDir)) {
+    return c.json({ scripts: [] })
+  }
+
+  const { statSync: ss } = require('fs')
+  const scripts = readdirSync(scriptsDir)
+    .filter((f: string) => !f.startsWith('.'))
+    .map((f: string) => {
+      const ext = f.split('.').pop()?.toLowerCase() || ''
+      const runtimeMap: Record<string, string> = { py: 'python3', js: 'node', ts: 'bun', mjs: 'node', sh: 'bash' }
+      return { filename: f, runtime: runtimeMap[ext] || ext, size: ss(join(scriptsDir, f)).size }
+    })
+
+  return c.json({ skill: name, scripts })
+})
+
+app.get('/agent/skills/:name/scripts/:filename', (c) => {
+  const name = c.req.param('name')
+  const filename = c.req.param('filename')
+  if (!name || !filename || name.includes('..') || filename.includes('..') || filename.includes('/')) {
+    return c.json({ error: 'Invalid parameters' }, 400)
+  }
+
+  const filePath = join(WORKSPACE_DIR, '.shogo', 'skills', name, 'scripts', filename)
+  if (!existsSync(filePath)) {
+    return c.json({ error: `Script "${filename}" not found` }, 404)
+  }
+
+  const content = readFileSync(filePath, 'utf-8')
+  return c.json({ skill: name, filename, content })
+})
+
 // ---------------------------------------------------------------------------
-// External Skill Registry (Claude Code format skills from external repos)
+// External Skill Registry
 // ---------------------------------------------------------------------------
 
 app.get('/agent/skill-registry', (c) => {
@@ -1445,11 +1493,11 @@ app.post('/agent/skill-registry/install', async (c) => {
     return c.json({ error: `Skill "${dirName}" not found in source "${source}"` }, 404)
   }
 
-  const destDir = join(WORKSPACE_DIR, '.claude', 'skills', skill.name)
+  const destDir = join(WORKSPACE_DIR, '.shogo', 'skills', skill.name)
   mkdirSync(destDir, { recursive: true })
 
   const srcDir = skill.skillDir
-  const { readdirSync: rds, readFileSync: rfs, statSync: ss, cpSync: cps } = require('fs')
+  const { readdirSync: rds, readFileSync: rfs, cpSync: cps } = require('fs')
   for (const entry of rds(srcDir, { withFileTypes: true })) {
     const srcPath = join(srcDir, entry.name)
     const destPath = join(destDir, entry.name)
@@ -1997,10 +2045,10 @@ app.post('/agent/dynamic-app/test-setup', async (c) => {
       } } },
     ] as any)
     manager.registerHooks(surfaceId, 'Expense', {
-      afterCreate: [{ action: 'recompute', source: 'Expense', operation: 'count', target: '/expenseCount' },
-                     { action: 'recompute', source: 'Expense', operation: 'sum', field: 'amount', target: '/expenseTotal' }],
-      afterDelete: [{ action: 'recompute', source: 'Expense', operation: 'count', target: '/expenseCount' },
-                     { action: 'recompute', source: 'Expense', operation: 'sum', field: 'amount', target: '/expenseTotal' }],
+      afterCreate: [{ action: 'recompute', source: 'Expense', aggregate: 'count', target: '/expenseCount' },
+                     { action: 'recompute', source: 'Expense', aggregate: 'sum', field: 'amount', target: '/expenseTotal' }],
+      afterDelete: [{ action: 'recompute', source: 'Expense', aggregate: 'count', target: '/expenseCount' },
+                     { action: 'recompute', source: 'Expense', aggregate: 'sum', field: 'amount', target: '/expenseTotal' }],
     })
     return c.json({ ok: true, surfaceId })
 

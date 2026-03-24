@@ -17,7 +17,7 @@ import { generateStores, generateStoresIndex } from './stores-generator'
 import { generateMSTModels } from './mst-model-generator'
 import { generateMSTCollections } from './mst-collection-generator'
 import { generateMSTDomain } from './mst-domain-generator'
-import { generateServer, generateDbModule } from './server-generator'
+import { generateServer, generateDbModule, generateSqliteDbModule } from './server-generator'
 import { generateApiClient } from './api-client'
 import { generateAuthStore, getUserModel, hasUserModel } from './auth-store-generator'
 import { generateDocs } from './docs-generator'
@@ -37,6 +37,10 @@ export interface OutputConfig {
   perModel?: boolean
   /** File extension for generated files: 'ts' or 'tsx' (default: 'tsx') */
   fileExtension?: 'ts' | 'tsx'
+  /** Override server generator config (port, import paths, etc.) */
+  serverConfig?: import('./server-generator').ServerGeneratorConfig
+  /** Database provider for db module generation: 'postgresql' (default) or 'sqlite' */
+  dbProvider?: 'postgresql' | 'sqlite'
 }
 
 export interface GenerateOptions {
@@ -369,6 +373,7 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
           content: generateServer({
             routesPath: './src/generated',
             dbPath: './src/lib/db',
+            ...output.serverConfig,
           }),
           skipIfExists: true, // Don't overwrite user customizations
         })
@@ -378,7 +383,7 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
       if (output.generate.includes('db')) {
         files.push({
           path: `${dir}/db.${ext}`,
-          content: generateDbModule(),
+          content: output.dbProvider === 'sqlite' ? generateSqliteDbModule() : generateDbModule(),
           skipIfExists: true, // Don't overwrite user customizations
         })
       }

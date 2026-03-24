@@ -1,6 +1,6 @@
+#!/usr/bin/env bun
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Shogo Technologies, Inc.
-#!/usr/bin/env bun
 /**
  * Shogo SDK CLI
  *

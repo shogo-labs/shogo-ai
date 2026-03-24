@@ -17,11 +17,11 @@ import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, realpathSyn
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import {
-  loadClaudeCodeSkills,
-  loadAllClaudeCodeSkills,
+  loadSkillsFromDir,
+  loadAllSkills,
   loadSkillRegistryManifest,
   loadBundledClaudeCodeSkill,
-  type ClaudeCodeSkill,
+  type Skill,
   type SkillRegistryEntry,
 } from '../skills'
 
@@ -58,14 +58,14 @@ description: When the user wants to optimize conversions on any marketing page
 
 Analyze the page for conversion optimization opportunities.
 `)
-      const skills = loadClaudeCodeSkills(TEST_DIR, '.agents/skills')
+      const skills = loadSkillsFromDir(TEST_DIR, '.agents/skills')
       expect(skills).toHaveLength(1)
       expect(skills[0].name).toBe('page-cro')
       expect(skills[0].description).toContain('optimize conversions')
       expect(skills[0].content).toContain('Page CRO')
     })
 
-    test('loadAllClaudeCodeSkills includes .agents/skills/', () => {
+    test('loadAllSkills includes .agents/skills/', () => {
       const agentsSkillDir = join(TEST_DIR, '.agents', 'skills', 'seo-audit')
       mkdirSync(agentsSkillDir, { recursive: true })
       writeFileSync(join(agentsSkillDir, 'SKILL.md'), `---
@@ -75,7 +75,7 @@ description: SEO audit skill
 
 Perform an SEO audit.
 `)
-      const all = loadAllClaudeCodeSkills(TEST_DIR)
+      const all = loadAllSkills(TEST_DIR)
       expect(all).toHaveLength(1)
       expect(all[0].name).toBe('seo-audit')
     })
@@ -101,7 +101,7 @@ description: Agents version of copywriting skill
 Agents version.
 `)
 
-      const all = loadAllClaudeCodeSkills(TEST_DIR)
+      const all = loadAllSkills(TEST_DIR)
       expect(all).toHaveLength(1)
       expect(all[0].description).toBe('Claude version of copywriting skill')
     })
@@ -127,14 +127,14 @@ description: From .agents
 Content B.
 `)
 
-      const all = loadAllClaudeCodeSkills(TEST_DIR)
+      const all = loadAllSkills(TEST_DIR)
       expect(all).toHaveLength(2)
       const names = all.map(s => s.name).sort()
       expect(names).toEqual(['skill-a', 'skill-b'])
     })
 
-    test('returns empty when neither .claude/skills/ nor .agents/skills/ exist', () => {
-      const all = loadAllClaudeCodeSkills(TEST_DIR)
+    test('returns empty when no skill directories exist', () => {
+      const all = loadAllSkills(TEST_DIR)
       expect(all).toHaveLength(0)
     })
   })
@@ -158,7 +158,7 @@ metadata:
 
 You are a conversion rate optimization expert.
 `)
-      const skills = loadClaudeCodeSkills(TEST_DIR)
+      const skills = loadSkillsFromDir(TEST_DIR, '.claude/skills')
       expect(skills).toHaveLength(1)
       expect(skills[0].name).toBe('page-cro')
       expect(skills[0].description).toContain('optimize, improve, or increase conversions')
@@ -178,7 +178,7 @@ license: Complete terms in LICENSE.txt
 
 To test local web applications, write native Python Playwright scripts.
 `)
-      const skills = loadClaudeCodeSkills(TEST_DIR)
+      const skills = loadSkillsFromDir(TEST_DIR, '.claude/skills')
       expect(skills).toHaveLength(1)
       expect(skills[0].name).toBe('webapp-testing')
       expect(skills[0].description).toContain('Playwright')
@@ -192,7 +192,7 @@ To test local web applications, write native Python Playwright scripts.
 
 Do something useful without frontmatter.
 `)
-      const skills = loadClaudeCodeSkills(TEST_DIR)
+      const skills = loadSkillsFromDir(TEST_DIR, '.claude/skills')
       expect(skills).toHaveLength(1)
       expect(skills[0].name).toBe('simple-skill')
       expect(skills[0].description).toBe('# Simple Skill')
@@ -209,7 +209,7 @@ allowed-tools: Read, Grep, Bash
 
 Content.
 `)
-      const skills = loadClaudeCodeSkills(TEST_DIR)
+      const skills = loadSkillsFromDir(TEST_DIR, '.claude/skills')
       expect(skills[0].allowedTools).toEqual(['Read', 'Grep', 'Bash'])
     })
 
@@ -224,7 +224,7 @@ allowed-tools: [Read, Grep, Bash]
 
 Content.
 `)
-      const skills = loadClaudeCodeSkills(TEST_DIR)
+      const skills = loadSkillsFromDir(TEST_DIR, '.claude/skills')
       expect(skills[0].allowedTools).toEqual(['Read', 'Grep', 'Bash'])
     })
   })
@@ -318,8 +318,8 @@ Follow these instructions for testing.
   // -----------------------------------------------------------------------
 
   describe('skill installation flow', () => {
-    test('installed skill is discoverable by loadAllClaudeCodeSkills', () => {
-      const destDir = join(TEST_DIR, '.claude', 'skills', 'installed-skill')
+    test('installed skill is discoverable by loadAllSkills', () => {
+      const destDir = join(TEST_DIR, '.shogo', 'skills', 'installed-skill')
       mkdirSync(destDir, { recursive: true })
       writeFileSync(join(destDir, 'SKILL.md'), `---
 name: installed-skill
@@ -330,14 +330,14 @@ description: Skill installed from registry
 
 This skill was installed from the external registry.
 `)
-      const skills = loadAllClaudeCodeSkills(TEST_DIR)
+      const skills = loadAllSkills(TEST_DIR)
       expect(skills).toHaveLength(1)
       expect(skills[0].name).toBe('installed-skill')
       expect(skills[0].content).toContain('installed from the external registry')
     })
 
-    test('installed skill with resources directory is fully copied', () => {
-      const destDir = join(TEST_DIR, '.claude', 'skills', 'rich-skill')
+    test('installed skill with resources and scripts is fully discoverable', () => {
+      const destDir = join(TEST_DIR, '.shogo', 'skills', 'rich-skill')
       mkdirSync(join(destDir, 'references'), { recursive: true })
       mkdirSync(join(destDir, 'scripts'), { recursive: true })
       writeFileSync(join(destDir, 'SKILL.md'), `---
@@ -350,11 +350,11 @@ See references/experiments.md for details.
       writeFileSync(join(destDir, 'references', 'experiments.md'), '# Experiments\n\nA/B test ideas.')
       writeFileSync(join(destDir, 'scripts', 'analyze.py'), 'print("analysis")')
 
-      const skills = loadAllClaudeCodeSkills(TEST_DIR)
+      const skills = loadAllSkills(TEST_DIR)
       expect(skills).toHaveLength(1)
       expect(skills[0].name).toBe('rich-skill')
+      expect(skills[0].scripts).toEqual(['analyze.py'])
       expect(existsSync(join(destDir, 'references', 'experiments.md'))).toBe(true)
-      expect(existsSync(join(destDir, 'scripts', 'analyze.py'))).toBe(true)
     })
   })
 

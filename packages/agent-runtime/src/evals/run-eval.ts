@@ -57,6 +57,8 @@ import { CODE_AGENT_EVALS } from './test-cases-code-agent'
 import { CODE_AGENT_V2_EVALS } from './test-cases-code-agent-v2'
 import { CLI_ROUTING_EVALS } from './test-cases-cli-routing'
 import { SKILL_SYSTEM_EVALS } from './test-cases-skill-system'
+import { SKILL_SERVER_EVALS } from './test-cases-skill-server'
+import { SKILL_SERVER_TEMPLATE_EVALS } from './test-cases-skill-server-templates'
 import { buildMockPayload } from './tool-mocks'
 import type { AgentEval, EvalResult, EvalSuiteResult, CategorySummary } from './types'
 
@@ -118,9 +120,11 @@ function getEvals(track: string): AgentEval[] {
     case 'code-agent-v2': return CODE_AGENT_V2_EVALS
     case 'cli-routing': return CLI_ROUTING_EVALS
     case 'skill-system': return SKILL_SYSTEM_EVALS
-    case 'all': return [...CANVAS_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...RESPONSE_TRANSFORM_EVALS, ...modeSwitchingEvals, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS]
+    case 'skill-server': return SKILL_SERVER_EVALS
+    case 'skill-server-templates': return SKILL_SERVER_TEMPLATE_EVALS
+    case 'all': return [...CANVAS_EVALS, ...COMPLEX_EVALS, ...MEMORY_EVALS, ...PERSONALITY_EVALS, ...MULTITURN_EVALS, ...MCP_DISCOVERY_EVALS, ...MCP_ORCHESTRATION_EVALS, ...MCP_VACATION_PLANNER_EVALS, ...COMPOSIO_EVALS, ...TOOL_SYSTEM_EVALS, ...FILE_UPLOAD_EVALS, ...REAL_DATA_EVALS, ...TRIP_PLANNER_EVALS, ...TEMPLATE_EVALS, ...RESPONSE_TRANSFORM_EVALS, ...modeSwitchingEvals, ...CLI_ROUTING_EVALS, ...SKILL_SYSTEM_EVALS, ...SKILL_SERVER_EVALS, ...SKILL_SERVER_TEMPLATE_EVALS]
     default:
-      console.error(`Unknown track: ${track}. Valid: canvas, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, response-transform, mode-switching, code-agent, code-agent-v2, cli-routing, skill-system, all`)
+      console.error(`Unknown track: ${track}. Valid: canvas, complex, memory, personality, multiturn, mcp-discovery, mcp-orchestration, vacation-planner, composio, tool-system, file-upload, real-data, trip-planner, template, response-transform, mode-switching, code-agent, code-agent-v2, cli-routing, skill-system, skill-server, skill-server-templates, all`)
       process.exit(1)
   }
 }

@@ -57,7 +57,7 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test src/",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui"
   },

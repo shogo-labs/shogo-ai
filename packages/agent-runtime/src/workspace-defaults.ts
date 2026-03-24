@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { existsSync, mkdirSync, writeFileSync, copyFileSync, readdirSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync, copyFileSync, cpSync, readdirSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getAgentTemplateById } from './agent-templates'
+import { getTemplateShogoDir } from './template-loader'
 import { TEMPLATE_CANVAS_STATES } from './template-canvas-states'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -89,7 +90,7 @@ Long-lived facts and learnings are stored here.
 export function seedWorkspaceDefaults(dir: string): void {
   mkdirSync(dir, { recursive: true })
   mkdirSync(join(dir, 'memory'), { recursive: true })
-  mkdirSync(join(dir, 'skills'), { recursive: true })
+  mkdirSync(join(dir, '.shogo', 'skills'), { recursive: true })
 
   for (const [filename, content] of Object.entries(DEFAULT_WORKSPACE_FILES)) {
     const filepath = join(dir, filename)
@@ -106,7 +107,7 @@ export function seedWorkspaceDefaults(dir: string): void {
 export function resetWorkspaceDefaults(dir: string): void {
   mkdirSync(dir, { recursive: true })
   mkdirSync(join(dir, 'memory'), { recursive: true })
-  mkdirSync(join(dir, 'skills'), { recursive: true })
+  mkdirSync(join(dir, '.shogo', 'skills'), { recursive: true })
 
   for (const [filename, content] of Object.entries(DEFAULT_WORKSPACE_FILES)) {
     writeFileSync(join(dir, filename), content, 'utf-8')
@@ -118,6 +119,10 @@ export function resetWorkspaceDefaults(dir: string): void {
  * copies referenced bundled skills into the workspace skills/ directory.
  * Only writes files that don't already exist (preserves customizations).
  * Also writes a .template marker file so the runtime knows which template was used.
+ *
+ * For directory-based templates (generated from bundled skills), this is
+ * a simple directory copy. For hand-authored templates, files are constructed
+ * from the AgentTemplate object.
  */
 export function seedWorkspaceFromTemplate(dir: string, templateId: string, agentName?: string): boolean {
   const template = getAgentTemplateById(templateId)
@@ -125,7 +130,32 @@ export function seedWorkspaceFromTemplate(dir: string, templateId: string, agent
 
   mkdirSync(dir, { recursive: true })
   mkdirSync(join(dir, 'memory'), { recursive: true })
-  mkdirSync(join(dir, 'skills'), { recursive: true })
+
+  // Fast path: directory-based template — just copy .shogo/
+  const shogoSrc = getTemplateShogoDir(templateId)
+  if (shogoSrc) {
+    const destShogo = join(dir, '.shogo')
+    if (!existsSync(destShogo)) {
+      cpSync(shogoSrc, destShogo, { recursive: true })
+      // Apply {{AGENT_NAME}} replacement to markdown files
+      if (agentName) {
+        for (const fname of ['IDENTITY.md', 'SOUL.md', 'AGENTS.md', 'USER.md']) {
+          const fp = join(destShogo, fname)
+          if (existsSync(fp)) {
+            const content = readFileSync(fp, 'utf-8')
+            if (content.includes('{{AGENT_NAME}}')) {
+              writeFileSync(fp, content.replace(/\{\{AGENT_NAME\}\}/g, agentName), 'utf-8')
+            }
+          }
+        }
+      }
+    }
+    writeFileSync(join(dir, '.template'), templateId, 'utf-8')
+    return true
+  }
+
+  // Hand-authored templates: construct files from AgentTemplate object
+  mkdirSync(join(dir, '.shogo', 'skills'), { recursive: true })
 
   for (const [filename, rawContent] of Object.entries(template.files)) {
     const filepath = join(dir, filename)
@@ -140,10 +170,27 @@ export function seedWorkspaceFromTemplate(dir: string, templateId: string, agent
   const bundledDir = join(__dirname, 'bundled-skills')
   if (existsSync(bundledDir)) {
     for (const skillName of template.skills) {
-      const src = join(bundledDir, `${skillName}.md`)
-      const dest = join(dir, 'skills', `${skillName}.md`)
-      if (existsSync(src) && !existsSync(dest)) {
-        copyFileSync(src, dest)
+      const srcDir = join(bundledDir, skillName)
+      const srcFile = join(srcDir, 'SKILL.md')
+      const destDir = join(dir, '.shogo', 'skills', skillName)
+      if (existsSync(srcFile) && !existsSync(destDir)) {
+        mkdirSync(destDir, { recursive: true })
+        copyFileSync(srcFile, join(destDir, 'SKILL.md'))
+        try {
+          for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
+            if (entry.name === 'SKILL.md') continue
+            if (entry.isDirectory()) {
+              const subSrc = join(srcDir, entry.name)
+              const subDest = join(destDir, entry.name)
+              mkdirSync(subDest, { recursive: true })
+              for (const subFile of readdirSync(subSrc)) {
+                copyFileSync(join(subSrc, subFile), join(subDest, subFile))
+              }
+            } else {
+              copyFileSync(join(srcDir, entry.name), join(destDir, entry.name))
+            }
+          }
+        } catch { /* extra files are optional */ }
       }
     }
   }
@@ -159,4 +206,84 @@ export function seedWorkspaceFromTemplate(dir: string, templateId: string, agent
   writeFileSync(join(dir, '.template'), templateId, 'utf-8')
 
   return true
+}
+
+// ---------------------------------------------------------------------------
+// Skill Server Seed
+// ---------------------------------------------------------------------------
+
+const SKILL_SERVER_SCHEMA = `datasource db {
+  provider = "sqlite"
+}
+
+generator client {
+  provider = "prisma-client"
+  output   = "./generated/prisma"
+}
+
+// Add your models below. Each model gets CRUD routes at /api/{model-name-plural}.
+// The skill server auto-regenerates when you save this file.
+`
+
+const SKILL_SERVER_PRISMA_CONFIG = `import { defineConfig } from 'prisma/config'
+
+export default defineConfig({
+  schema: './schema.prisma',
+  datasource: {
+    url: process.env.DATABASE_URL ?? 'file:./skill.db',
+  },
+})
+`
+
+const SKILL_SERVER_CONFIG = JSON.stringify(
+  {
+    schema: './schema.prisma',
+    outputs: [
+      {
+        dir: './generated',
+        generate: ['routes', 'hooks', 'types'],
+      },
+      {
+        dir: '.',
+        generate: ['server'],
+        serverConfig: {
+          routesPath: './generated',
+          dbPath: './db',
+          port: 4100,
+          skipStatic: true,
+        },
+      },
+      {
+        dir: '.',
+        generate: ['db'],
+        dbProvider: 'sqlite',
+      },
+    ],
+  },
+  null,
+  2,
+)
+
+/**
+ * Seed the skill server skeleton in .shogo/server/.
+ * Creates schema.prisma, shogo.config.json, and necessary directories.
+ * Only writes files that don't already exist.
+ */
+export function seedSkillServer(workspaceDir: string): { created: boolean; serverDir: string } {
+  const serverDir = join(workspaceDir, '.shogo', 'server')
+  const schemaPath = join(serverDir, 'schema.prisma')
+
+  if (existsSync(schemaPath)) {
+    return { created: false, serverDir }
+  }
+
+  mkdirSync(serverDir, { recursive: true })
+  mkdirSync(join(serverDir, 'generated'), { recursive: true })
+  mkdirSync(join(serverDir, 'hooks'), { recursive: true })
+
+  writeFileSync(schemaPath, SKILL_SERVER_SCHEMA, 'utf-8')
+  writeFileSync(join(serverDir, 'shogo.config.json'), SKILL_SERVER_CONFIG, 'utf-8')
+  writeFileSync(join(serverDir, 'prisma.config.ts'), SKILL_SERVER_PRISMA_CONFIG, 'utf-8')
+
+  return { created: true, serverDir }
 }

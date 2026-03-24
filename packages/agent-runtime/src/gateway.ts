@@ -24,8 +24,9 @@ import type { Message, ImageContent } from '@mariozechner/pi-ai'
 import type { StreamFn, AgentTool } from '@mariozechner/pi-agent-core'
 import { Type } from '@sinclair/typebox'
 import type { ChannelAdapter, IncomingMessage, AgentStatus, ChannelStatus, StreamChunkConfig, SandboxConfig } from './types'
-import { loadSkills, matchSkill, loadAllClaudeCodeSkills, buildSkillsPromptSection, type Skill, type ClaudeCodeSkill } from './skills'
-import { setLoadedClaudeSkills, type LoadedSkillEntry } from './gateway-tools'
+import { loadAllSkills, migrateFromLegacySkills, matchSkill, buildSkillsPromptSection, type Skill } from './skills'
+import { SkillServerManager } from './skill-server-manager'
+import { setLoadedSkills } from './gateway-tools'
 import { runAgentLoop, type LoopDetectorConfig, type ToolContext } from './agent-loop'
 import { createTools, createHeartbeatTools, textResult, type ModeSwitchHandler } from './gateway-tools'
 import { PermissionEngine, parseSecurityPolicy } from './permission-engine'
@@ -163,7 +164,6 @@ export class AgentGateway {
   private currentUserId: string | undefined
   private channels: Map<string, ChannelAdapter> = new Map()
   private skills: Skill[] = []
-  private claudeCodeSkills: ClaudeCodeSkill[] = []
   private configSkills: Array<{ name: string; trigger?: string; description?: string }> = []
   private running = false
   private lastHeartbeatTick: Date | null = null
@@ -201,6 +201,8 @@ export class AgentGateway {
     iterations: number
     toolCallCount: number
   } | null = null
+  /** Manages the per-workspace skill server process (.shogo/server/) */
+  private skillServerManager: SkillServerManager
 
   constructor(workspaceDir: string, projectId: string) {
     this.workspaceDir = workspaceDir
@@ -208,6 +210,7 @@ export class AgentGateway {
     this.config = this.loadConfig()
     this.sessionManager = new SessionManager(this.config.session)
     this.mcpClientManager.setWorkspaceDir(workspaceDir)
+    this.skillServerManager = new SkillServerManager({ workspaceDir })
 
     // Initialize permission engine in local mode
     if (process.env.SHOGO_LOCAL_MODE === 'true') {
@@ -370,27 +373,11 @@ export class AgentGateway {
     console.log('[AgentGateway] Starting...')
     this.running = true
 
-    // Load skills from workspace skills/ directory only (bundled skills must be explicitly installed)
-    this.skills = loadSkills(join(this.workspaceDir, 'skills'))
+    migrateFromLegacySkills(this.workspaceDir)
+    this.skills = loadAllSkills(this.workspaceDir)
     this.configSkills = this.loadConfigSkills()
-
-    // Load Claude Code format skills (.claude/skills/<name>/SKILL.md)
-    this.claudeCodeSkills = loadAllClaudeCodeSkills(this.workspaceDir)
-    if (this.claudeCodeSkills.length > 0) {
-      setLoadedClaudeSkills(this.claudeCodeSkills.map(s => ({
-        name: s.name,
-        description: s.description,
-        content: s.content,
-        skillDir: s.skillDir,
-        disableModelInvocation: s.disableModelInvocation,
-        userInvocable: s.userInvocable,
-        allowedTools: s.allowedTools,
-        context: s.context,
-        agent: s.agent,
-        argumentHint: s.argumentHint,
-      })))
-    }
-    console.log(`[AgentGateway] Loaded ${this.skills.length} skills, ${this.claudeCodeSkills.length} claude-code skills, ${this.configSkills.length} config skills`)
+    setLoadedSkills(this.skills)
+    console.log(`[AgentGateway] Loaded ${this.skills.length} skills, ${this.configSkills.length} config skills`)
 
     // Load hooks
     try {
@@ -436,6 +423,16 @@ export class AgentGateway {
       }
     }
 
+    // Start the skill server if .shogo/server/ exists
+    try {
+      const { started, port } = await this.skillServerManager.start()
+      if (started) {
+        console.log(`[AgentGateway] Skill server running on port ${port}`)
+      }
+    } catch (error: any) {
+      console.error('[AgentGateway] Skill server startup error:', error.message)
+    }
+
     // Composio session init is deferred to per-request (processChatMessageStream)
     // so it uses the real authenticated user ID, not a static default.
     if (isComposioEnabled()) {
@@ -471,6 +468,7 @@ export class AgentGateway {
 
     this.sessionManager.destroy()
     this.sessionPersistence?.close()
+    await this.skillServerManager.stop()
     await this.mcpClientManager.stopAll()
 
     for (const [name, adapter] of this.channels) {
@@ -920,7 +918,13 @@ export class AgentGateway {
     images?: ImageContent[],
   ): Promise<string> {
     // Reload skills from disk so any files created/edited/deleted by file tools are picked up
-    this.skills = loadSkills(join(this.workspaceDir, 'skills'))
+    this.skills = loadAllSkills(this.workspaceDir)
+    setLoadedSkills(this.skills)
+
+    // Start the skill server if it was just created (no-op if already running)
+    if (!this.skillServerManager.isRunning) {
+      this.skillServerManager.start().catch(() => {})
+    }
 
     if (activeSkill) {
       const skillOverride = [
@@ -1563,15 +1567,108 @@ Examples:
       'This shows a prominent toast notification that the user will not miss.',
     ].join('\n'))
 
-    // Inject available Claude Code skill descriptions
-    if (this.claudeCodeSkills.length > 0) {
-      const skillsSection = buildSkillsPromptSection(this.claudeCodeSkills)
+    // Inject available skill descriptions
+    if (this.skills.length > 0) {
+      const skillsSection = buildSkillsPromptSection(this.skills)
       if (skillsSection) {
         parts.push(skillsSection)
       }
     }
 
+    // Inject skill server context
+    const skillServerSection = this.buildSkillServerPromptSection()
+    if (skillServerSection) {
+      parts.push(skillServerSection)
+    }
+
     return parts.join('\n\n---\n\n')
+  }
+
+  /**
+   * Build a system prompt section describing the skill server.
+   * If the server is running, tells the agent the base URL.
+   * If not, tells the agent how to create one.
+   */
+  private buildSkillServerPromptSection(): string | null {
+    if (this.config.shellEnabled === false) return null
+
+    if (this.skillServerManager.isRunning) {
+      return [
+        '## Skill Server',
+        '',
+        `A skill server is running at **${this.skillServerManager.url}**.`,
+        '',
+        'This is a Hono API backed by SQLite. To see what endpoints exist,',
+        'read `.shogo/server/schema.prisma` — each Prisma model has CRUD routes at',
+        '`/api/{model-name-plural}` (GET list, GET /:id, POST, PATCH /:id, DELETE /:id).',
+        '',
+        'Use the `web` tool with the full URL (e.g. `web({ url: "' + this.skillServerManager.url + '/api/leads" })`) to interact with it.',
+        '',
+        'To add new models or change the schema, just edit `.shogo/server/schema.prisma`.',
+        'Code generation, database migration, and server restart happen **automatically** when the schema file changes.',
+        '',
+        'Custom business logic goes in `.shogo/server/generated/{model}.hooks.ts` (beforeCreate, afterUpdate, etc.).',
+      ].join('\n')
+    }
+
+    const phase = this.skillServerManager.phase
+    const genError = this.skillServerManager.lastGenerateError
+
+    if (phase === 'generating') {
+      return [
+        '## Skill Server (Generating...)',
+        '',
+        'The skill server is currently regenerating from your schema changes.',
+        'It will be available shortly at `http://localhost:' + this.skillServerManager.port + '`.',
+      ].join('\n')
+    }
+
+    if (phase === 'crashed' && genError) {
+      return [
+        '## Skill Server (Error)',
+        '',
+        'The last code generation failed:',
+        '```',
+        genError,
+        '```',
+        'Fix the issue in `.shogo/server/schema.prisma` and save — it will auto-retry.',
+      ].join('\n')
+    }
+
+    return [
+      '## Skill Server (Available)',
+      '',
+      'You can create a persistent REST API backed by SQLite for skills that need structured data.',
+      'Use this when a skill needs to remember data across conversations (leads, tickets, etc.),',
+      'or logic should be deterministic and not burn tokens every time.',
+      '',
+      'To create the skill server, just write `.shogo/server/schema.prisma` with your models:',
+      '```prisma',
+      'datasource db {',
+      '  provider = "sqlite"',
+      '}',
+      '',
+      'generator client {',
+      '  provider = "prisma-client"',
+      '  output   = "./generated/prisma"',
+      '}',
+      '',
+      'model Lead {',
+      '  id        String   @id @default(cuid())',
+      '  name      String',
+      '  email     String',
+      '  status    String   @default("new")',
+      '  createdAt DateTime @default(now())',
+      '  updatedAt DateTime @updatedAt',
+      '}',
+      '```',
+      '',
+      'That\'s it — **everything else is automatic**: dependency install, code generation,',
+      'database creation, and server startup on `http://localhost:' + this.skillServerManager.port + '`.',
+      'Each model gets full CRUD at `/api/{model-name-plural}`.',
+      '',
+      'Custom logic goes in `.shogo/server/generated/{model}.hooks.ts`.',
+    ].join('\n')
   }
 
   /**
@@ -1798,7 +1895,7 @@ Examples:
     // Merge skills from filesystem with skills declared in config.json
     const fsSkills = this.skills.map((s) => ({
       name: s.name,
-      trigger: s.trigger,
+      trigger: s.trigger || '',
       description: s.description,
     }))
     const fsSkillNames = new Set(fsSkills.map((s) => s.name))
@@ -1828,22 +1925,8 @@ Examples:
   reloadConfig(): void {
     const prevEnabled = this.config.heartbeatEnabled
     this.config = this.loadConfig()
-    this.skills = loadSkills(join(this.workspaceDir, 'skills'))
-    this.claudeCodeSkills = loadAllClaudeCodeSkills(this.workspaceDir)
-    if (this.claudeCodeSkills.length > 0) {
-      setLoadedClaudeSkills(this.claudeCodeSkills.map(s => ({
-        name: s.name,
-        description: s.description,
-        content: s.content,
-        skillDir: s.skillDir,
-        disableModelInvocation: s.disableModelInvocation,
-        userInvocable: s.userInvocable,
-        allowedTools: s.allowedTools,
-        context: s.context,
-        agent: s.agent,
-        argumentHint: s.argumentHint,
-      })))
-    }
+    this.skills = loadAllSkills(this.workspaceDir)
+    setLoadedSkills(this.skills)
     this.configSkills = this.loadConfigSkills()
 
   }
