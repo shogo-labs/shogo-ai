@@ -724,6 +724,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         const proxyUrl = `http://localhost:${apiPort}/api/ai/v1`
         runtimeEnv.AI_PROXY_URL = proxyUrl
 
+        let proxyConfigured = false
         try {
           const { generateProxyToken } = await import('../ai-proxy-token')
           const { getProjectOwnerUserId } = await import('../project-user-context')
@@ -731,9 +732,11 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           const ownerUserId = await getProjectOwnerUserId(projectId)
           runtimeEnv.AI_PROXY_TOKEN = await generateProxyToken(projectId, workspaceId, ownerUserId, 7 * 24 * 60 * 60 * 1000)
           console.log(`[RuntimeManager] Generated AI proxy token for ${projectId} (workspace: ${workspaceId}, owner: ${ownerUserId})`)
+          proxyConfigured = true
         } catch (err: any) {
           console.error(`[RuntimeManager] Failed to generate proxy token for ${projectId}: ${err.message}`)
-          console.error(`[RuntimeManager] Runtime will start without AI proxy — LLM calls will fail`)
+          console.error(`[RuntimeManager] Falling back to direct ANTHROPIC_API_KEY`)
+          delete runtimeEnv.AI_PROXY_URL
         }
 
         // Tools proxy URL — enables file-index-engine embeddings and other tool
@@ -745,9 +748,12 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         runtimeEnv.RUNTIME_AUTH_SECRET = deriveRuntimeToken(projectId)
         runtimeEnv.WEBHOOK_TOKEN = deriveWebhookToken(projectId)
 
-        // Strip the raw platform API key so the child process cannot bypass the proxy.
-        delete runtimeEnv.ANTHROPIC_API_KEY
-        delete runtimeEnv.ANTHROPIC_BASE_URL
+        // Strip the raw platform API key only when proxy is active,
+        // so the child process cannot bypass billing/usage tracking.
+        if (proxyConfigured) {
+          delete runtimeEnv.ANTHROPIC_API_KEY
+          delete runtimeEnv.ANTHROPIC_BASE_URL
+        }
 
         // Security policy — read user prefs + project overrides, merge, and pass to runtime
         if (process.env.SHOGO_LOCAL_MODE === 'true') {

@@ -220,6 +220,7 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       if (!origin) return '*'
       if (allowed.length > 0 && allowed.includes(origin)) return origin
       if (origin.startsWith('http://localhost:') || origin.startsWith('https://localhost:')) return origin
+      if (origin.startsWith('http://127.0.0.1:') || origin.startsWith('https://127.0.0.1:')) return origin
       return allowed[0] || origin
     },
     allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -251,6 +252,24 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
     return c.json({ error: 'Unauthorized — missing or invalid runtime token' }, 401)
   }
 
+  const publicPaths = new Set([
+    '/agent/channels/webchat/widget.js',
+    '/agent/channels/webchat/config',
+    '/agent/channels/webchat/health',
+    '/agent/channels/webchat/session',
+    '/agent/channels/webchat/message',
+    '/agent/channels/webhook/incoming',
+    '/agent/channels/webhook/health',
+  ])
+
+  function isPublicChannelPath(path: string): boolean {
+    if (publicPaths.has(path)) return true
+    if (path.startsWith('/agent/channels/webchat/events/')) return true
+    if (path.startsWith('/agent/channels/whatsapp/')) return true
+    if (path.startsWith('/agent/channels/teams/')) return true
+    return false
+  }
+
   const authPrefixes = config.authPrefixes ?? [`/${config.runtimeType === 'project' ? 'preview' : 'agent'}`, '/pool']
   for (const prefix of authPrefixes) {
     if (prefix === '/pool') {
@@ -265,6 +284,10 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       })
     } else {
       app.use(`${prefix}/*`, async (c, next) => {
+        if (isPublicChannelPath(c.req.path)) {
+          await next()
+          return
+        }
         const denied = checkRuntimeAuth(c)
         if (denied) return denied
         await next()
