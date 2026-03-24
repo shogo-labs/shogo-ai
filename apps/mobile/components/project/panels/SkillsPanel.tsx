@@ -2,15 +2,20 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { View, Text, Pressable, ScrollView, ActivityIndicator, TextInput } from 'react-native'
-import { Zap, RefreshCw, BookOpen, Download, Check, Trash2, Plus, ChevronDown, ChevronRight, Search, Globe } from 'lucide-react-native'
+import { Zap, RefreshCw, BookOpen, Download, Check, Trash2, Plus, ChevronDown, ChevronRight, Search, Globe, FileCode } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { agentFetch } from '../../../lib/agent-fetch'
 
 interface Skill {
-  file: string
   name: string
   description: string
   trigger: string
+}
+
+interface SkillScript {
+  filename: string
+  runtime: string
+  size: number
 }
 
 interface BundledSkill {
@@ -46,6 +51,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
   const [removing, setRemoving] = useState<string | null>(null)
   const [expandedSkill, setExpandedSkill] = useState<string | null>(null)
   const [skillContent, setSkillContent] = useState<Record<string, string>>({})
+  const [skillScripts, setSkillScripts] = useState<Record<string, SkillScript[]>>({})
   const [loadingContent, setLoadingContent] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [libraryTab, setLibraryTab] = useState<'bundled' | 'community'>('community')
@@ -60,12 +66,19 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
       if (skillContent[skillName] || !agentUrl) return
       setLoadingContent(skillName)
       try {
-        const res = await agentFetch(
-          `${agentUrl}/agent/skills/${encodeURIComponent(skillName)}`,
-        )
-        if (res.ok) {
-          const data = await res.json()
+        const [contentRes, scriptsRes] = await Promise.all([
+          agentFetch(`${agentUrl}/agent/skills/${encodeURIComponent(skillName)}`),
+          agentFetch(`${agentUrl}/agent/skills/${encodeURIComponent(skillName)}/scripts`).catch(() => null),
+        ])
+        if (contentRes.ok) {
+          const data = await contentRes.json()
           setSkillContent((prev) => ({ ...prev, [skillName]: data.content }))
+        }
+        if (scriptsRes?.ok) {
+          const data = await scriptsRes.json()
+          if (data.scripts?.length > 0) {
+            setSkillScripts((prev) => ({ ...prev, [skillName]: data.scripts }))
+          }
         }
       } catch {
         // silently fail — card just won't show content
@@ -90,7 +103,6 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
       const status = await statusRes.json()
       setSkills(
         (status.skills || []).map((s: any) => ({
-          file: `${s.name}.md`,
           name: s.name,
           description: s.description || '',
           trigger: s.trigger || '',
@@ -549,7 +561,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
               const isLoadingThis = loadingContent === skill.name
 
               return (
-                <View key={skill.file} className="border border-border rounded-lg">
+                <View key={skill.name} className="border border-border rounded-lg">
                   <Pressable
                     onPress={() => toggleSkillDetail(skill.name)}
                     accessibilityRole="button"
@@ -607,14 +619,33 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                           <ActivityIndicator size="small" />
                         </View>
                       ) : content ? (
-                        <ScrollView
-                          className="mt-2 bg-muted/30 rounded-md p-3"
-                          style={{ maxHeight: 300 }}
-                        >
-                          <Text className="text-xs text-foreground font-mono" selectable>
-                            {content}
-                          </Text>
-                        </ScrollView>
+                        <>
+                          <ScrollView
+                            className="mt-2 bg-muted/30 rounded-md p-3"
+                            style={{ maxHeight: 300 }}
+                          >
+                            <Text className="text-xs text-foreground font-mono" selectable>
+                              {content}
+                            </Text>
+                          </ScrollView>
+                          {skillScripts[skill.name]?.length > 0 && (
+                            <View className="mt-2">
+                              <Text className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-1">
+                                Scripts
+                              </Text>
+                              <View className="gap-1">
+                                {skillScripts[skill.name].map((s) => (
+                                  <View key={s.filename} className="flex-row items-center gap-2 px-2 py-1 bg-muted/30 rounded">
+                                    <FileCode size={10} className="text-muted-foreground" />
+                                    <Text className="text-xs text-foreground flex-1">{s.filename}</Text>
+                                    <Text className="text-[10px] text-muted-foreground">{s.runtime}</Text>
+                                    <Text className="text-[10px] text-muted-foreground">{(s.size / 1024).toFixed(1)}KB</Text>
+                                  </View>
+                                ))}
+                              </View>
+                            </View>
+                          )}
+                        </>
                       ) : (
                         <Text className="text-xs text-muted-foreground mt-2">
                           Could not load skill content.

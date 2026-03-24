@@ -139,7 +139,7 @@ export const SKILL_SYSTEM_EVALS: AgentEval[] = [
         description: 'Agent read the skill file after install',
         points: 20,
         phase: 'execution',
-        validate: (r) => toolCallArgsContain(r, 'read_file', 'skills/github-ops'),
+        validate: (r) => toolCallArgsContain(r, 'read_file', 'github-ops'),
       },
       {
         id: 'response-confirms-install',
@@ -174,7 +174,7 @@ export const SKILL_SYSTEM_EVALS: AgentEval[] = [
     input: 'Create a skill that monitors our Slack mentions every hour. It should check for mentions of our company name and send me a summary.',
     maxScore: 100,
     workspaceFiles: {
-      'skills/standup-collect.md': `---
+      '.shogo/skills/standup-collect/SKILL.md': `---
 name: standup-collect
 version: 2.0.0
 description: Collect and compile daily standup updates from the team
@@ -194,14 +194,14 @@ Facilitate daily standup updates:
     validationCriteria: [
       {
         id: 'used-write-file',
-        description: 'Used write_file targeting skills/ directory',
+        description: 'Used write_file targeting .shogo/skills/ directory',
         points: 25,
         phase: 'intention',
         validate: (r) => r.toolCalls
           .filter(t => t.name === 'write_file')
           .some(t => {
             const input = t.input as Record<string, any>
-            return typeof input.path === 'string' && input.path.startsWith('skills/') && input.path.endsWith('.md')
+            return typeof input.path === 'string' && (input.path.includes('.shogo/skills/') || input.path.includes('skills/')) && input.path.endsWith('.md')
           }),
       },
       {
@@ -246,14 +246,14 @@ Facilitate daily standup updates:
       },
       {
         id: 'path-in-skills-dir',
-        description: 'File written to skills/ directory',
+        description: 'File written to .shogo/skills/ directory',
         points: 15,
         phase: 'execution',
         validate: (r) => r.toolCalls
           .filter(t => t.name === 'write_file')
           .some(t => {
             const input = t.input as Record<string, any>
-            return typeof input.path === 'string' && input.path.startsWith('skills/')
+            return typeof input.path === 'string' && (input.path.includes('.shogo/skills/') || input.path.includes('skills/'))
           }),
       },
       {
@@ -282,12 +282,12 @@ Facilitate daily standup updates:
     level: 2,
     conversationHistory: [
       { role: 'user', content: 'I have a standup collection skill installed.' },
-      { role: 'assistant', content: 'I can see your standup-collect skill in the skills/ directory. It collects daily standup updates from the team with triggers for "standup", "daily update", and related phrases. What would you like to change?' },
+      { role: 'assistant', content: 'I can see your standup-collect skill in the .shogo/skills/ directory. It collects daily standup updates from the team with triggers for "standup", "daily update", and related phrases. What would you like to change?' },
     ],
     input: 'Add a trigger for \'morning update\' to my standup skill and make it also post to the #general channel.',
     maxScore: 100,
     workspaceFiles: {
-      'skills/standup-collect.md': `---
+      '.shogo/skills/standup-collect/SKILL.md': `---
 name: standup-collect
 version: 2.0.0
 description: Collect and compile daily standup updates from the team
@@ -444,7 +444,7 @@ Facilitate daily standup updates:
     input: 'Remove the reminder-manage skill, I don\'t use it anymore.',
     maxScore: 100,
     workspaceFiles: {
-      'skills/reminder-manage.md': `---
+      '.shogo/skills/reminder-manage/SKILL.md': `---
 name: reminder-manage
 version: 2.0.0
 description: Set and manage reminders — store in memory, check on heartbeat, notify when due
@@ -455,7 +455,7 @@ tools: [memory_read, memory_write, send_message]
 # Reminder Management
 
 Manage reminders stored in agent memory.`,
-      'skills/standup-collect.md': `---
+      '.shogo/skills/standup-collect/SKILL.md': `---
 name: standup-collect
 version: 2.0.0
 description: Collect and compile daily standup updates from the team

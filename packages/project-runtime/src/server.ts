@@ -4422,7 +4422,7 @@ app.all('/*', async (c, next) => {
         
         // Monitor for crashes — reset serverProcess to null so next request can retry
         const proc = serverProcess
-        proc.exited.then((exitCode) => {
+        proc.exited.then((exitCode: number) => {
           if (serverProcess === proc) {
             console.error(`[project-runtime] ⚠️ Backend API server exited with code ${exitCode}`)
             serverProcess = null
@@ -4718,7 +4718,7 @@ app.all('/*', async (c, next) => {
     
     // Monitor for crashes — reset serverProcess to null so next request can retry
     const proc = serverProcess
-    proc.exited.then((exitCode) => {
+    proc.exited.then((exitCode: number) => {
       if (serverProcess === proc) {
         console.error(`[project-runtime] ⚠️ Backend API server exited with code ${exitCode}`)
         serverProcess = null
@@ -5104,7 +5104,7 @@ app.get('/download', async (c) => {
     const archiveBuffer = result.stdout
     console.log(`[project-runtime] Created download archive for project ${state.currentProjectId} (${(archiveBuffer.byteLength / 1024).toFixed(1)} KB)`)
 
-    return new Response(archiveBuffer, {
+    return new Response(new Uint8Array(archiveBuffer) as any, {
       status: 200,
       headers: {
         'Content-Type': 'application/gzip',

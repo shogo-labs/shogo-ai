@@ -275,7 +275,7 @@ describe('File Management Agent Tools', () => {
     expect(listTool).toBeDefined()
 
     const result = await listTool!.execute('test-call', {})
-    const data = JSON.parse(result.content[0].text)
+    const data = JSON.parse((result.content[0] as any).text)
     expect(data.entries.length).toBeGreaterThanOrEqual(3)
     expect(data.entries.some((e: any) => e.name === 'doc.md')).toBe(true)
     expect(data.entries.some((e: any) => e.type === 'directory')).toBe(true)
@@ -293,7 +293,7 @@ describe('File Management Agent Tools', () => {
     const listTool = tools.find(t => t.name === 'list_files')!
 
     const result = await listTool.execute('test-call', { recursive: true })
-    const data = JSON.parse(result.content[0].text)
+    const data = JSON.parse((result.content[0] as any).text)
     const paths = data.entries.map((e: any) => e.path)
     expect(paths.some((p: string) => p.includes('sub/'))).toBe(true)
   })
@@ -313,7 +313,7 @@ describe('File Management Agent Tools', () => {
     const deleteTool = tools.find(t => t.name === 'delete_file')!
 
     const result = await deleteTool.execute('test-call', { path: 'to-delete.txt' })
-    const data = JSON.parse(result.content[0].text)
+    const data = JSON.parse((result.content[0] as any).text)
     expect(data.ok).toBe(true)
     expect(existsSync(join(FILES_DIR, 'to-delete.txt'))).toBe(false)
   })
@@ -330,7 +330,7 @@ describe('File Management Agent Tools', () => {
     const deleteTool = tools.find(t => t.name === 'delete_file')!
 
     const result = await deleteTool.execute('test-call', { path: '../../etc/passwd' })
-    const data = JSON.parse(result.content[0].text)
+    const data = JSON.parse((result.content[0] as any).text)
     expect(data.error).toBeDefined()
   })
 
@@ -348,7 +348,7 @@ describe('File Management Agent Tools', () => {
     const searchTool = tools.find(t => t.name === 'search_files')!
 
     const result = await searchTool.execute('test-call', { query: 'sqlite vector RAG' })
-    const data = JSON.parse(result.content[0].text)
+    const data = JSON.parse((result.content[0] as any).text)
     expect(data.results.length).toBeGreaterThan(0)
     expect(data.stats).toBeDefined()
     expect(data.stats.totalFiles).toBeGreaterThan(0)
@@ -369,7 +369,7 @@ describe('File Management Agent Tools', () => {
       query: 'content',
       path_filter: 'sub',
     })
-    const data = JSON.parse(result.content[0].text)
+    const data = JSON.parse((result.content[0] as any).text)
     const allFiltered = data.results.every((r: any) => r.path.includes('sub'))
     expect(allFiltered).toBe(true)
   })

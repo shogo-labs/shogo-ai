@@ -40,6 +40,7 @@ async function saveThumbnail(projectId: string, pngBuffer: Buffer): Promise<stri
 
 async function launchPlaywright(): Promise<any> {
   try {
+    // @ts-expect-error — playwright-core is optionally available at runtime
     const pw = await import('playwright-core')
     return pw.chromium
   } catch {}
@@ -95,14 +96,14 @@ export function thumbnailRoutes() {
     try {
       const project = await prisma.project.findUnique({
         where: { id: projectId },
-        select: { id: true, publishedSubdomain: true, type: true },
+        select: { id: true, publishedSubdomain: true, type: true } as any,
       })
       if (!project) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
 
       let targetUrl: string | null = null
 
       try {
-        const body = await c.req.json<{ url?: string }>().catch(() => ({}))
+        const body = await c.req.json<{ url?: string }>().catch(() => ({} as { url?: string }))
         if (body.url) {
           const urlError = validateOutboundUrl(body.url)
           if (urlError) {

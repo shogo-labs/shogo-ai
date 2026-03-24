@@ -9,7 +9,7 @@
  * Runs as a subprocess spawned by the Claude Code SDK via .mcp.json.
  */
 
-import { existsSync, readFileSync, writeFileSync, readdirSync, unlinkSync, mkdirSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, readdirSync, unlinkSync, mkdirSync, rmSync, statSync } from 'fs'
 import { join, resolve, extname, dirname } from 'path'
 import { isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPackages, getCatalogEntry } from '../mcp-catalog'
 
@@ -137,34 +137,51 @@ defineTool({
 // Skill Tools
 // =============================================================================
 
+const SHOGO_SKILLS_DIR = join(AGENT_DIR, '.shogo', 'skills')
+
+function getSkillDir(name: string): string {
+  const sanitized = name.replace(/[^a-z0-9-]/gi, '-').toLowerCase()
+  if (sanitized.includes('..') || sanitized.includes('/')) throw new Error('Invalid skill name')
+  return join(SHOGO_SKILLS_DIR, sanitized)
+}
+
 defineTool({
   name: 'skill_list',
-  description: 'List all installed agent skills',
+  description: 'List all installed agent skills from .shogo/skills/',
   inputSchema: { type: 'object', properties: {} },
   handler: async () => {
-    const skillsDir = join(AGENT_DIR, 'skills')
-    if (!existsSync(skillsDir)) return { skills: [] }
+    if (!existsSync(SHOGO_SKILLS_DIR)) return { skills: [] }
 
-    const files = readdirSync(skillsDir).filter((f) => extname(f) === '.md')
-    const skills = files.map((file) => {
-      const content = readFileSync(join(skillsDir, file), 'utf-8')
-      const match = content.match(/^---\n([\s\S]*?)\n---/)
-      const metadata: Record<string, string> = {}
-      if (match) {
-        for (const line of match[1].split('\n')) {
-          const idx = line.indexOf(':')
-          if (idx !== -1) {
-            metadata[line.substring(0, idx).trim()] = line.substring(idx + 1).trim()
+    const skills: Array<{ name: string; description: string; trigger: string; hasScripts: boolean }> = []
+    try {
+      for (const entry of readdirSync(SHOGO_SKILLS_DIR, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue
+        const skillMd = join(SHOGO_SKILLS_DIR, entry.name, 'SKILL.md')
+        if (!existsSync(skillMd)) continue
+
+        const content = readFileSync(skillMd, 'utf-8')
+        const match = content.match(/^---\n([\s\S]*?)\n---/)
+        const metadata: Record<string, string> = {}
+        if (match) {
+          for (const line of match[1].split('\n')) {
+            const idx = line.indexOf(':')
+            if (idx !== -1) {
+              metadata[line.substring(0, idx).trim()] = line.substring(idx + 1).trim()
+            }
           }
         }
+
+        const scriptsDir = join(SHOGO_SKILLS_DIR, entry.name, 'scripts')
+        const hasScripts = existsSync(scriptsDir) && readdirSync(scriptsDir).length > 0
+
+        skills.push({
+          name: metadata.name || entry.name,
+          description: metadata.description || '',
+          trigger: metadata.trigger || '',
+          hasScripts,
+        })
       }
-      return {
-        file,
-        name: metadata.name || file.replace('.md', ''),
-        description: metadata.description || '',
-        trigger: metadata.trigger || '',
-      }
-    })
+    } catch { /* */ }
 
     return { skills }
   },
@@ -198,11 +215,11 @@ function normalizeToolRefs(refs: string[]): string[] {
 
 defineTool({
   name: 'skill_create',
-  description: 'Create a new agent skill as a Markdown file with YAML frontmatter',
+  description: 'Create a new agent skill as .shogo/skills/<name>/SKILL.md with YAML frontmatter',
   inputSchema: {
     type: 'object',
     properties: {
-      name: { type: 'string', description: 'Skill name (used as filename)' },
+      name: { type: 'string', description: 'Skill name (used as directory name)' },
       trigger: { type: 'string', description: 'Pipe-separated trigger keywords' },
       description: { type: 'string', description: 'What the skill does' },
       tools: {
@@ -211,19 +228,34 @@ defineTool({
         description: `Tool names or groups. Groups: ${VALID_TOOL_GROUPS.join(', ')}. Individual: ${VALID_TOOL_NAMES.join(', ')}`,
       },
       content: { type: 'string', description: 'Skill instructions (Markdown body)' },
+      scripts: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            filename: { type: 'string' },
+            content: { type: 'string' },
+          },
+          required: ['filename', 'content'],
+        },
+        description: 'Optional scripts to create in the skill scripts/ directory',
+      },
     },
     required: ['name', 'trigger', 'content'],
   },
   handler: async (input) => {
-    const skillsDir = join(AGENT_DIR, 'skills')
-    mkdirSync(skillsDir, { recursive: true })
+    let skillDir: string
+    try {
+      skillDir = getSkillDir(input.name as string)
+    } catch {
+      return { error: `Invalid skill name: "${input.name}"` }
+    }
 
-    const filename = `${(input.name as string).replace(/[^a-z0-9-]/gi, '-').toLowerCase()}.md`
-    const filepath = join(skillsDir, filename)
-
-    if (existsSync(filepath)) {
+    if (existsSync(join(skillDir, 'SKILL.md'))) {
       return { error: `Skill "${input.name}" already exists. Use skill_edit to modify it.` }
     }
+
+    mkdirSync(skillDir, { recursive: true })
 
     const rawTools = Array.isArray(input.tools) ? input.tools : []
     const resolvedTools = normalizeToolRefs(rawTools)
@@ -238,69 +270,159 @@ tools: [${resolvedTools.join(', ')}]
 ${input.content}
 `
 
-    writeFileSync(filepath, skillContent, 'utf-8')
-    return { ok: true, file: filename, tools: resolvedTools }
+    writeFileSync(join(skillDir, 'SKILL.md'), skillContent, 'utf-8')
+
+    const scriptFiles: string[] = []
+    if (Array.isArray(input.scripts)) {
+      const scriptsDir = join(skillDir, 'scripts')
+      mkdirSync(scriptsDir, { recursive: true })
+      for (const s of input.scripts as Array<{ filename: string; content: string }>) {
+        if (s.filename.includes('..') || s.filename.includes('/')) continue
+        writeFileSync(join(scriptsDir, s.filename), s.content, 'utf-8')
+        scriptFiles.push(s.filename)
+      }
+    }
+
+    return { ok: true, dir: `.shogo/skills/${(input.name as string).replace(/[^a-z0-9-]/gi, '-').toLowerCase()}`, tools: resolvedTools, scripts: scriptFiles }
   },
 })
 
 defineTool({
   name: 'skill_edit',
-  description: 'Edit an existing agent skill file',
+  description: 'Edit an existing agent skill SKILL.md file',
   inputSchema: {
     type: 'object',
     properties: {
-      name: { type: 'string', description: 'Skill name or filename' },
-      content: { type: 'string', description: 'Complete new file content (including frontmatter)' },
+      name: { type: 'string', description: 'Skill name' },
+      content: { type: 'string', description: 'Complete new SKILL.md content (including frontmatter)' },
     },
     required: ['name', 'content'],
   },
   handler: async (input) => {
-    const skillsDir = join(AGENT_DIR, 'skills')
     const name = input.name as string
-    const filename = name.endsWith('.md') ? name : `${name}.md`
-    let filepath: string
+    let skillDir: string
     try {
-      filepath = safePath(skillsDir, filename)
+      skillDir = getSkillDir(name)
     } catch {
       return { error: `Invalid skill name: "${name}"` }
     }
 
+    const filepath = join(skillDir, 'SKILL.md')
     if (!existsSync(filepath)) {
       return { error: `Skill "${name}" not found` }
     }
 
     writeFileSync(filepath, input.content as string, 'utf-8')
-    return { ok: true, file: filename }
+    return { ok: true, skill: name }
   },
 })
 
 defineTool({
   name: 'skill_delete',
-  description: 'Delete an agent skill',
+  description: 'Delete an agent skill and its entire directory',
   inputSchema: {
     type: 'object',
     properties: {
-      name: { type: 'string', description: 'Skill name or filename' },
+      name: { type: 'string', description: 'Skill name' },
     },
     required: ['name'],
   },
   handler: async (input) => {
-    const skillsDir = join(AGENT_DIR, 'skills')
     const name = input.name as string
-    const filename = name.endsWith('.md') ? name : `${name}.md`
-    let filepath: string
+    let skillDir: string
     try {
-      filepath = safePath(skillsDir, filename)
+      skillDir = getSkillDir(name)
     } catch {
       return { error: `Invalid skill name: "${name}"` }
     }
 
-    if (!existsSync(filepath)) {
+    if (!existsSync(skillDir)) {
       return { error: `Skill "${name}" not found` }
     }
 
-    unlinkSync(filepath)
-    return { ok: true, deleted: filename }
+    rmSync(skillDir, { recursive: true, force: true })
+    return { ok: true, deleted: name }
+  },
+})
+
+defineTool({
+  name: 'skill_write_script',
+  description: 'Write a script file into a skill\'s scripts/ directory',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      skill_name: { type: 'string', description: 'Name of the skill' },
+      filename: { type: 'string', description: 'Script filename (e.g. "score.py", "transform.js")' },
+      content: { type: 'string', description: 'Script file content' },
+    },
+    required: ['skill_name', 'filename', 'content'],
+  },
+  handler: async (input) => {
+    const skillName = input.skill_name as string
+    const filename = input.filename as string
+    const content = input.content as string
+
+    if (filename.includes('..') || filename.includes('/')) {
+      return { error: 'Invalid filename' }
+    }
+    if (content.length > 102400) {
+      return { error: 'Script exceeds 100KB limit' }
+    }
+
+    let skillDir: string
+    try {
+      skillDir = getSkillDir(skillName)
+    } catch {
+      return { error: `Invalid skill name: "${skillName}"` }
+    }
+
+    if (!existsSync(join(skillDir, 'SKILL.md'))) {
+      return { error: `Skill "${skillName}" not found. Create it first with skill_create.` }
+    }
+
+    const scriptsDir = join(skillDir, 'scripts')
+    mkdirSync(scriptsDir, { recursive: true })
+    writeFileSync(join(scriptsDir, filename), content, 'utf-8')
+
+    return { ok: true, skill: skillName, script: filename, size: content.length }
+  },
+})
+
+defineTool({
+  name: 'skill_list_scripts',
+  description: 'List scripts in a skill\'s scripts/ directory',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      skill_name: { type: 'string', description: 'Name of the skill' },
+    },
+    required: ['skill_name'],
+  },
+  handler: async (input) => {
+    const skillName = input.skill_name as string
+
+    let skillDir: string
+    try {
+      skillDir = getSkillDir(skillName)
+    } catch {
+      return { error: `Invalid skill name: "${skillName}"` }
+    }
+
+    const scriptsDir = join(skillDir, 'scripts')
+    if (!existsSync(scriptsDir)) {
+      return { scripts: [] }
+    }
+
+    const scripts = readdirSync(scriptsDir)
+      .filter(f => !f.startsWith('.'))
+      .map(f => {
+        const ext = extname(f).slice(1)
+        const runtimeMap: Record<string, string> = { py: 'python3', js: 'node', ts: 'bun', mjs: 'node', sh: 'bash' }
+        const size = statSync(join(scriptsDir, f)).size
+        return { filename: f, runtime: runtimeMap[ext] || ext, size }
+      })
+
+    return { skill: skillName, scripts }
   },
 })
 

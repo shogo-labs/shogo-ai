@@ -1007,7 +1007,7 @@ export async function getUserActivityTable(
     id: u.id,
     name: u.name,
     email: u.email,
-    sourceTag: u.signupAttribution?.sourceTag ?? null,
+    sourceTag: (u as any).signupAttribution?.sourceTag ?? null,
     signupAt: u.createdAt.toISOString(),
     lastActiveAt: u.sessions[0]?.updatedAt?.toISOString() ?? null,
     projects: projectMap.get(u.id) ?? 0,

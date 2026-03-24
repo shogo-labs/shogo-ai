@@ -187,7 +187,21 @@ Available templates:
 
 export const SKILL_DEVELOPMENT_GUIDE = `## Skill Development
 
-Skills are Markdown files with YAML frontmatter in the \`skills/\` directory:
+Skills live in \`.shogo/skills/<name>/SKILL.md\` — each skill is a directory containing a SKILL.md with YAML frontmatter and optional scripts:
+
+\`\`\`
+.shogo/skills/
+  git-summary/
+    SKILL.md              # instructions + metadata
+  lead-scorer/
+    SKILL.md              # instructions + metadata
+    scripts/
+      score.py            # custom executable code
+      utils.py
+    requirements.txt      # optional dependencies
+\`\`\`
+
+### SKILL.md Format
 
 \`\`\`markdown
 ---
@@ -214,52 +228,63 @@ When triggered, analyze recent git history and provide a summary.
 | Field | Required | Description |
 |-------|----------|-------------|
 | \`name\` | Yes | Unique skill identifier |
-| \`version\` | Yes | Semver version |
 | \`description\` | Yes | What the skill does |
-| \`trigger\` | Yes | Pipe-separated keywords or regex pattern |
+| \`trigger\` | No | Pipe-separated keywords or regex pattern for auto-matching |
+| \`version\` | No | Semver version |
 | \`tools\` | No | Required tools (see table below) |
+| \`allowed-tools\` | No | Tools the skill is allowed to use (comma-separated) |
+| \`argument-hint\` | No | Hint for arguments when invoking via skill tool |
+| \`context\` | No | Set to "fork" to run in a subagent |
+| \`setup\` | No | Command to run before first invocation (e.g. "pip install -r requirements.txt") |
+| \`runtime\` | No | Default runtime for scripts (python3, node, bash) |
 
 ### Available Gateway Tool Names
 
-Use these **exact names** in the \`tools\` field of skill frontmatter:
+Use these **exact names** in the \`tools\` field:
 
 | Tool Name | Description |
 |-----------|-------------|
 | \`exec\` | Run shell commands |
 | \`read_file\` | Read a workspace file |
 | \`write_file\` | Write a workspace file |
-| \`web\` | Fetch a URL or search the web (Google Maps, Flights, Shopping auto-routed to search API) |
-| \`browser\` | Control a headless browser (navigate, click, fill, extract, screenshot, evaluate, select, scroll, wait_for, close) |
+| \`web\` | Fetch a URL or search the web |
+| \`browser\` | Control a headless browser |
 | \`memory_read\` | Read from MEMORY.md or daily logs |
 | \`memory_write\` | Write to MEMORY.md or daily logs |
 | \`send_message\` | Send a message through a channel |
-| \`channel_connect\` | Connect a messaging channel (telegram, discord, email, slack, whatsapp, webhook, teams, webchat) |
+| \`channel_connect\` | Connect a messaging channel |
 | \`cron\` | Manage scheduled jobs |
 
-**Group aliases** (resolved automatically): \`shell\` → exec, \`filesystem\` → read_file + write_file + edit_file, \`search\` → glob + grep, \`planning\` → todo_write, \`memory\` → memory_read + memory_write, \`browser\` → browser + web, \`web_fetch\` → web, \`web_search\` → web
+**Group aliases**: \`shell\` → exec, \`filesystem\` → read_file + write_file + edit_file, \`search\` → glob + grep, \`planning\` → todo_write, \`memory\` → memory_read + memory_write, \`browser\` → browser + web, \`web_fetch\` → web, \`web_search\` → web
 
-### Claude Code Skill Format
+### Skills with Scripts
 
-Skills can also be defined in \`.claude/skills/<name>/SKILL.md\` format:
-
-\`\`\`markdown
----
-name: my-skill
-description: What this skill does
-allowed-tools: Read, Grep, Glob
-argument-hint: <file-path>
----
-
-Skill instructions here. Use $ARGUMENTS for user-provided arguments.
+Skills can include custom scripts in a \`scripts/\` subdirectory. Use the \`skill\` tool with \`action: "run_script"\`:
+\`\`\`
+skill({ action: "run_script", skill: "lead-scorer", script: "score.py", args: "input.csv" })
 \`\`\`
 
-These skills are invoked via the \`skill\` tool: \`skill({ skill: "my-skill", args: "some args" })\`
+Scripts execute in the sandbox with the skill's configured runtime. If a skill has a \`setup\` field, the setup command runs automatically on first invocation.
+
+### Invoking Skills
+
+Skills with \`trigger\` patterns activate automatically when a user message matches. Skills can also be invoked explicitly:
+\`\`\`
+skill({ skill: "my-skill", args: "some args" })
+\`\`\`
+
+Use \`$ARGUMENTS\` in SKILL.md content for argument substitution. Use \`\${SKILL_DIR}\` to reference the skill's directory.
 
 ### Creating Skills
 
-Create skills by writing Markdown files directly to the \`skills/\` directory:
+Use the skill_create MCP tool or write files directly:
 \`\`\`
-write_file({ path: "skills/daily-digest.md", content: "---\\nname: daily-digest\\nversion: 1.0.0\\ndescription: Morning briefing with key updates\\ntrigger: \\"daily digest|morning briefing\\"\\ntools: [web, memory_read, memory_write]\\n---\\n\\n# Daily Digest\\n\\nGather and summarize key updates...\\n" })
+skill_create({ name: "daily-digest", trigger: "daily digest|morning briefing", description: "Morning briefing", tools: ["web", "memory"], content: "# Daily Digest\\n\\nGather and summarize..." })
+\`\`\`
+
+Or write to the filesystem:
+\`\`\`
+write_file({ path: ".shogo/skills/daily-digest/SKILL.md", content: "---\\nname: daily-digest\\nversion: 1.0.0\\ndescription: Morning briefing with key updates\\ntrigger: \\"daily digest|morning briefing\\"\\ntools: [web, memory_read, memory_write]\\n---\\n\\n# Daily Digest\\n\\nGather and summarize key updates...\\n" })
 \`\`\`
 
 Skills reload automatically — new skills activate on the next message.`

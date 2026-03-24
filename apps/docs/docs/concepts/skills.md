@@ -6,11 +6,11 @@ slug: /concepts/skills
 
 # How Skills Work
 
-Skills are modular, reusable capabilities that teach your agent how to perform specific tasks. Each skill is a Markdown file with instructions and metadata. When the AI adds a skill, it creates this file in your agent's `skills/` directory and the agent loads it on startup.
+Skills are modular, reusable capabilities that teach your agent how to perform specific tasks. Each skill is a directory containing a `SKILL.md` file with instructions and metadata, plus optional scripts. When the AI adds a skill, it creates this directory in your agent's `.shogo/skills/` directory and the agent loads it on startup.
 
 ## What a skill is
 
-A skill file has two parts:
+A skill's `SKILL.md` has two parts:
 
 1. **Frontmatter** (YAML) — metadata: name, description, what tools it needs
 2. **Body** (Markdown) — instructions that tell the agent how to execute the skill
@@ -47,10 +47,12 @@ When triggered, compile a morning briefing and send it to the configured Slack c
 | Field | Required | Description |
 |-------|----------|-------------|
 | `name` | Yes | Unique identifier for the skill |
-| `version` | Yes | Version number (semver) |
 | `description` | Yes | One-line description of what the skill does |
-| `trigger` | Yes | Pipe-separated keywords that activate the skill |
+| `trigger` | No | Pipe-separated keywords that activate the skill |
+| `version` | No | Version number (semver) |
 | `tools` | No | Tools the skill needs access to |
+| `setup` | No | Command to run before first invocation (e.g. `pip install -r requirements.txt`) |
+| `runtime` | No | Default runtime for scripts (`python3`, `node`, `bash`) |
 
 ## Available tools in skills
 
@@ -68,22 +70,31 @@ When triggered, compile a morning briefing and send it to the configured Slack c
 
 ## The skills directory
 
-Skills live in your agent's workspace `skills/` directory:
+Skills live in your agent's workspace `.shogo/skills/` directory:
 
 ```
 workspace/
-└── skills/
-    ├── daily-digest.md
-    ├── ticket-triage.md
-    ├── github-ops.md
-    └── health-check.md
+└── .shogo/
+    └── skills/
+        ├── daily-digest/
+        │   └── SKILL.md
+        ├── ticket-triage/
+        │   └── SKILL.md
+        ├── lead-scorer/
+        │   ├── SKILL.md
+        │   └── scripts/
+        │       └── score.py
+        └── health-check/
+            └── SKILL.md
 ```
+
+Skills can optionally include a `scripts/` subdirectory with custom executable code. These scripts can be run via the `skill` tool's `run_script` action.
 
 You can view all installed skills in the **Capabilities > Skills** tab of your agent.
 
 ## How skills are created
 
-Skills are created through chat — you don't write them by hand. The AI generates the skill file based on your description and writes it into `skills/`.
+Skills are created through chat — you don't write them by hand. The AI generates the skill file based on your description and writes it into `.shogo/skills/`.
 
 **Examples:**
 
@@ -96,7 +107,7 @@ Skills are created through chat — you don't write them by hand. The AI generat
 After you describe what you want, the AI:
 1. Determines the right skill name, triggers, and tools
 2. Writes the instruction body
-3. Creates the file in `skills/`
+3. Creates the file in `.shogo/skills/`
 4. Confirms what was created
 
 ## Modifying skills
@@ -143,4 +154,4 @@ The heartbeat checklist delegates work to skills. A good heartbeat item reads: _
 
 - [Capabilities panel](/getting-started/quick-start#step-5-connect-tools-and-channels) — where you browse installed skills
 - [Heartbeat](/concepts/heartbeat) — how skills are triggered on a schedule
-- [Workspace Files](/concepts/workspace-files) — the `skills/` directory in context
+- [Workspace Files](/concepts/workspace-files) — the `.shogo/skills/` directory in context

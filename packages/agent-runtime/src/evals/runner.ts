@@ -24,6 +24,7 @@ export interface EvalRunnerConfig {
   timeoutMs: number
   verbose: boolean
   workspaceDir: string
+  agentMode?: string
 }
 
 const DEFAULT_CONFIG: EvalRunnerConfig = {

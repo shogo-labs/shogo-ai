@@ -2246,7 +2246,7 @@ app.get('/api/projects/:projectId/download', async (c) => {
     }
     
     const archiveBuffer = result.stdout
-    return new Response(archiveBuffer, {
+    return new Response(new Uint8Array(archiveBuffer) as any, {
       status: 200,
       headers: {
         'Content-Type': 'application/gzip',

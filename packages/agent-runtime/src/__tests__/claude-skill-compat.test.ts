@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Integration tests for Claude Code skill compatibility.
+ * Integration tests for the unified skill system.
  *
  * Tests:
- * - loadClaudeCodeSkills() filesystem discovery
+ * - loadSkillsFromDir() filesystem discovery
+ * - loadAllSkills() multi-source loading
+ * - migrateFromLegacySkills() migration
  * - SKILL.md frontmatter parsing
- * - $ARGUMENTS / $0 / $1 / ${CLAUDE_SKILL_DIR} substitution
- * - buildSkillsPromptSection() budget enforcement
- * - skill tool execution (inline + fork modes)
+ * - $ARGUMENTS / $0 / $1 / ${CLAUDE_SKILL_DIR} / ${SKILL_DIR} substitution
+ * - buildSkillsPromptSection() budget enforcement + script annotations
+ * - skill tool execution (inline + fork + run_script modes)
  * - edit_file, glob, grep, ls, todo_write, ask_user tools
  * - read_file offset/limit support
  * - subagent config resolution
@@ -18,16 +20,18 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, realpathSync } from 'fs'
 import { join } from 'path'
 import {
-  loadClaudeCodeSkills,
-  loadAllClaudeCodeSkills,
+  loadSkillsFromDir,
+  loadAllSkills,
+  migrateFromLegacySkills,
   buildSkillsPromptSection,
-  type ClaudeCodeSkill,
+  matchSkill,
+  type Skill,
 } from '../skills'
 import {
   createTools,
   type ToolContext,
-  setLoadedClaudeSkills,
-  getLoadedClaudeSkills,
+  setLoadedSkills,
+  getLoadedSkills,
 } from '../gateway-tools'
 import {
   getBuiltinSubagentConfig,
@@ -68,7 +72,7 @@ async function exec(ctx: ToolContext, name: string, params: Record<string, any>)
   return result.details
 }
 
-describe('Claude Code Skill Compatibility', () => {
+describe('Unified Skill System', () => {
   beforeEach(() => {
     rmSync(TEST_DIR, { recursive: true, force: true })
     mkdirSync(TEST_DIR, { recursive: true })
@@ -79,18 +83,19 @@ describe('Claude Code Skill Compatibility', () => {
   })
 
   // -----------------------------------------------------------------------
-  // Skill Loading
+  // Skill Loading (.shogo/skills/ primary path)
   // -----------------------------------------------------------------------
 
-  describe('loadClaudeCodeSkills', () => {
-    test('discovers skills from .claude/skills/<name>/SKILL.md', () => {
-      const skillDir = join(TEST_DIR, '.claude', 'skills', 'deploy-helper')
+  describe('loadSkillsFromDir', () => {
+    test('discovers skills from .shogo/skills/<name>/SKILL.md', () => {
+      const skillDir = join(TEST_DIR, '.shogo', 'skills', 'deploy-helper')
       mkdirSync(skillDir, { recursive: true })
       writeFileSync(join(skillDir, 'SKILL.md'), `---
 name: deploy-helper
 description: Helps deploy applications
 allowed-tools: Read, Grep, Bash
 argument-hint: <environment>
+trigger: "deploy|ship it"
 ---
 
 Deploy the application to $ARGUMENTS environment.
@@ -98,17 +103,18 @@ Deploy the application to $ARGUMENTS environment.
 1. Read the deploy config
 2. Run the deploy script
 `)
-      const skills = loadClaudeCodeSkills(TEST_DIR)
+      const skills = loadSkillsFromDir(TEST_DIR, '.shogo/skills')
       expect(skills).toHaveLength(1)
       expect(skills[0].name).toBe('deploy-helper')
       expect(skills[0].description).toBe('Helps deploy applications')
       expect(skills[0].allowedTools).toEqual(['Read', 'Grep', 'Bash'])
       expect(skills[0].argumentHint).toBe('<environment>')
+      expect(skills[0].trigger).toBe('deploy|ship it')
       expect(skills[0].content).toContain('Deploy the application')
     })
 
     test('uses directory name as fallback for missing name', () => {
-      const skillDir = join(TEST_DIR, '.claude', 'skills', 'my-skill')
+      const skillDir = join(TEST_DIR, '.shogo', 'skills', 'my-skill')
       mkdirSync(skillDir, { recursive: true })
       writeFileSync(join(skillDir, 'SKILL.md'), `---
 description: A skill without a name field
@@ -116,13 +122,13 @@ description: A skill without a name field
 
 Do something useful.
 `)
-      const skills = loadClaudeCodeSkills(TEST_DIR)
+      const skills = loadSkillsFromDir(TEST_DIR, '.shogo/skills')
       expect(skills).toHaveLength(1)
       expect(skills[0].name).toBe('my-skill')
     })
 
     test('parses disable-model-invocation and user-invocable flags', () => {
-      const skillDir = join(TEST_DIR, '.claude', 'skills', 'internal')
+      const skillDir = join(TEST_DIR, '.shogo', 'skills', 'internal')
       mkdirSync(skillDir, { recursive: true })
       writeFileSync(join(skillDir, 'SKILL.md'), `---
 name: internal-only
@@ -133,13 +139,13 @@ user-invocable: false
 
 Internal instructions.
 `)
-      const skills = loadClaudeCodeSkills(TEST_DIR)
+      const skills = loadSkillsFromDir(TEST_DIR, '.shogo/skills')
       expect(skills[0].disableModelInvocation).toBe(true)
       expect(skills[0].userInvocable).toBe(false)
     })
 
     test('parses context: fork and agent fields', () => {
-      const skillDir = join(TEST_DIR, '.claude', 'skills', 'forked')
+      const skillDir = join(TEST_DIR, '.shogo', 'skills', 'forked')
       mkdirSync(skillDir, { recursive: true })
       writeFileSync(join(skillDir, 'SKILL.md'), `---
 name: forked-skill
@@ -150,28 +156,61 @@ agent: explore
 
 Search for patterns.
 `)
-      const skills = loadClaudeCodeSkills(TEST_DIR)
+      const skills = loadSkillsFromDir(TEST_DIR, '.shogo/skills')
       expect(skills[0].context).toBe('fork')
       expect(skills[0].agent).toBe('explore')
     })
 
-    test('returns empty array when .claude/skills/ does not exist', () => {
-      const skills = loadClaudeCodeSkills(TEST_DIR)
+    test('parses setup and runtime fields', () => {
+      const skillDir = join(TEST_DIR, '.shogo', 'skills', 'scripted')
+      mkdirSync(skillDir, { recursive: true })
+      writeFileSync(join(skillDir, 'SKILL.md'), `---
+name: scripted
+description: Skill with scripts
+setup: pip install -r requirements.txt
+runtime: python3
+---
+
+Run scripts.
+`)
+      const skills = loadSkillsFromDir(TEST_DIR, '.shogo/skills')
+      expect(skills[0].setup).toBe('pip install -r requirements.txt')
+      expect(skills[0].runtime).toBe('python3')
+    })
+
+    test('auto-discovers scripts in scripts/ subdirectory', () => {
+      const skillDir = join(TEST_DIR, '.shogo', 'skills', 'with-scripts')
+      mkdirSync(join(skillDir, 'scripts'), { recursive: true })
+      writeFileSync(join(skillDir, 'SKILL.md'), `---
+name: with-scripts
+description: Skill with scripts
+---
+
+Instructions.
+`)
+      writeFileSync(join(skillDir, 'scripts', 'score.py'), 'print("hello")')
+      writeFileSync(join(skillDir, 'scripts', 'utils.js'), 'module.exports = {}')
+      const skills = loadSkillsFromDir(TEST_DIR, '.shogo/skills')
+      expect(skills[0].scripts).toEqual(['score.py', 'utils.js'])
+    })
+
+    test('returns empty array when directory does not exist', () => {
+      const skills = loadSkillsFromDir(TEST_DIR, '.shogo/skills')
       expect(skills).toHaveLength(0)
     })
 
     test('skips directories without SKILL.md', () => {
-      const skillDir = join(TEST_DIR, '.claude', 'skills', 'incomplete')
+      const skillDir = join(TEST_DIR, '.shogo', 'skills', 'incomplete')
       mkdirSync(skillDir, { recursive: true })
       writeFileSync(join(skillDir, 'README.md'), '# Not a skill')
 
-      const skills = loadClaudeCodeSkills(TEST_DIR)
+      const skills = loadSkillsFromDir(TEST_DIR, '.shogo/skills')
       expect(skills).toHaveLength(0)
     })
 
     test('loads multiple skills', () => {
       for (const name of ['alpha', 'beta', 'gamma']) {
-        const dir = join(TEST_DIR, '.claude', 'skills', name)
+        const dir = join(TEST_DIR, '.shogo', 'skills', name)
         mkdirSync(dir, { recursive: true })
         writeFileSync(join(dir, 'SKILL.md'), `---
 name: ${name}
@@ -181,10 +220,131 @@ description: Skill ${name}
 Instructions for ${name}.
 `)
       }
-      const skills = loadClaudeCodeSkills(TEST_DIR)
+      const skills = loadSkillsFromDir(TEST_DIR, '.shogo/skills')
       expect(skills).toHaveLength(3)
       const names = skills.map(s => s.name).sort()
       expect(names).toEqual(['alpha', 'beta', 'gamma'])
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // loadAllSkills (multi-source with priority)
+  // -----------------------------------------------------------------------
+
+  describe('loadAllSkills', () => {
+    test('.shogo/skills/ takes priority over .claude/skills/', () => {
+      const shogoDir = join(TEST_DIR, '.shogo', 'skills', 'dup')
+      mkdirSync(shogoDir, { recursive: true })
+      writeFileSync(join(shogoDir, 'SKILL.md'), `---
+name: dup
+description: Shogo version
+---
+
+Shogo.
+`)
+      const claudeDir = join(TEST_DIR, '.claude', 'skills', 'dup')
+      mkdirSync(claudeDir, { recursive: true })
+      writeFileSync(join(claudeDir, 'SKILL.md'), `---
+name: dup
+description: Claude version
+---
+
+Claude.
+`)
+      const all = loadAllSkills(TEST_DIR)
+      expect(all).toHaveLength(1)
+      expect(all[0].description).toBe('Shogo version')
+    })
+
+    test('merges skills from all sources', () => {
+      for (const [path, name] of [
+        ['.shogo/skills/s1', 's1'],
+        ['.claude/skills/s2', 's2'],
+        ['.agents/skills/s3', 's3'],
+      ] as const) {
+        const dir = join(TEST_DIR, path)
+        mkdirSync(dir, { recursive: true })
+        writeFileSync(join(dir, 'SKILL.md'), `---
+name: ${name}
+description: Skill ${name}
+---
+
+Content.
+`)
+      }
+      const all = loadAllSkills(TEST_DIR)
+      expect(all).toHaveLength(3)
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Legacy Migration
+  // -----------------------------------------------------------------------
+
+  describe('migrateFromLegacySkills', () => {
+    test('migrates skills/*.md to .shogo/skills/<name>/SKILL.md', () => {
+      const legacyDir = join(TEST_DIR, 'skills')
+      mkdirSync(legacyDir, { recursive: true })
+      writeFileSync(join(legacyDir, 'old-skill.md'), `---
+name: old-skill
+trigger: "old|legacy"
+description: A legacy skill
+---
+
+Old instructions.
+`)
+      migrateFromLegacySkills(TEST_DIR)
+
+      expect(existsSync(join(TEST_DIR, '.shogo', 'skills', 'old-skill', 'SKILL.md'))).toBe(true)
+      const content = readFileSync(join(TEST_DIR, '.shogo', 'skills', 'old-skill', 'SKILL.md'), 'utf-8')
+      expect(content).toContain('old-skill')
+    })
+
+    test('does not migrate if .shogo/skills/ already exists', () => {
+      mkdirSync(join(TEST_DIR, '.shogo', 'skills'), { recursive: true })
+      mkdirSync(join(TEST_DIR, 'skills'), { recursive: true })
+      writeFileSync(join(TEST_DIR, 'skills', 'should-skip.md'), 'content')
+
+      migrateFromLegacySkills(TEST_DIR)
+      expect(existsSync(join(TEST_DIR, '.shogo', 'skills', 'should-skip'))).toBe(false)
+    })
+
+    test('does nothing when skills/ does not exist', () => {
+      migrateFromLegacySkills(TEST_DIR)
+      expect(existsSync(join(TEST_DIR, '.shogo', 'skills'))).toBe(false)
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Trigger Matching
+  // -----------------------------------------------------------------------
+
+  describe('matchSkill', () => {
+    test('matches skill by trigger phrase', () => {
+      const skills: Skill[] = [{
+        name: 'test',
+        description: 'Test',
+        content: '',
+        skillDir: '',
+        trigger: 'hello|hi there',
+        disableModelInvocation: false,
+        userInvocable: true,
+      }]
+      expect(matchSkill(skills, 'say hello to me')).not.toBeNull()
+      expect(matchSkill(skills, 'hi there friend')).not.toBeNull()
+      expect(matchSkill(skills, 'goodbye')).toBeNull()
+    })
+
+    test('skips skills without trigger', () => {
+      const skills: Skill[] = [{
+        name: 'no-trigger',
+        description: 'No trigger',
+        content: '',
+        skillDir: '',
+        disableModelInvocation: false,
+        userInvocable: true,
+      }]
+      expect(matchSkill(skills, 'anything')).toBeNull()
     })
   })
 
@@ -194,7 +354,7 @@ Instructions for ${name}.
 
   describe('buildSkillsPromptSection', () => {
     test('generates markdown listing of invocable skills', () => {
-      const skills: ClaudeCodeSkill[] = [
+      const skills: Skill[] = [
         {
           name: 'test-skill',
           description: 'Does testing',
@@ -213,7 +373,7 @@ Instructions for ${name}.
     })
 
     test('excludes skills with disable-model-invocation: true', () => {
-      const skills: ClaudeCodeSkill[] = [
+      const skills: Skill[] = [
         {
           name: 'visible',
           description: 'Visible',
@@ -237,7 +397,7 @@ Instructions for ${name}.
     })
 
     test('returns empty string when no invocable skills', () => {
-      const skills: ClaudeCodeSkill[] = [
+      const skills: Skill[] = [
         {
           name: 'hidden',
           description: 'Hidden',
@@ -252,7 +412,7 @@ Instructions for ${name}.
     })
 
     test('respects character budget', () => {
-      const skills: ClaudeCodeSkill[] = Array.from({ length: 100 }, (_, i) => ({
+      const skills: Skill[] = Array.from({ length: 100 }, (_, i) => ({
         name: `skill-${i}`,
         description: 'A'.repeat(200),
         content: '',
@@ -261,7 +421,23 @@ Instructions for ${name}.
         userInvocable: true,
       }))
       const section = buildSkillsPromptSection(skills, 500)
-      expect(section.length).toBeLessThanOrEqual(550) // some margin for header
+      expect(section.length).toBeLessThanOrEqual(550)
+    })
+
+    test('annotates skills with scripts', () => {
+      const skills: Skill[] = [
+        {
+          name: 'scripted-skill',
+          description: 'Has scripts',
+          content: '',
+          skillDir: '',
+          disableModelInvocation: false,
+          userInvocable: true,
+          scripts: ['score.py', 'utils.js'],
+        },
+      ]
+      const section = buildSkillsPromptSection(skills)
+      expect(section).toContain('[scripts: score.py, utils.js]')
     })
   })
 
@@ -271,14 +447,14 @@ Instructions for ${name}.
 
   describe('skill tool', () => {
     test('returns error for unknown skill', async () => {
-      setLoadedClaudeSkills([])
+      setLoadedSkills([])
       const ctx = createCtx()
       const result = await exec(ctx, 'skill', { skill: 'nonexistent' })
       expect(result.error).toContain('not found')
     })
 
     test('returns content for inline skill', async () => {
-      setLoadedClaudeSkills([{
+      setLoadedSkills([{
         name: 'inline-test',
         description: 'Test skill',
         content: 'Follow these instructions carefully.',
@@ -293,7 +469,7 @@ Instructions for ${name}.
     })
 
     test('substitutes $ARGUMENTS in skill content', async () => {
-      setLoadedClaudeSkills([{
+      setLoadedSkills([{
         name: 'greet',
         description: 'Greeting skill',
         content: 'Say hello to $ARGUMENTS in a friendly way.',
@@ -307,7 +483,7 @@ Instructions for ${name}.
     })
 
     test('substitutes positional $0, $1 arguments', async () => {
-      setLoadedClaudeSkills([{
+      setLoadedSkills([{
         name: 'refactor',
         description: 'Refactoring skill',
         content: 'Rename $0 to $1 across the codebase.',
@@ -320,11 +496,11 @@ Instructions for ${name}.
       expect(result.content).toContain('Rename oldName to newName')
     })
 
-    test('substitutes ${CLAUDE_SKILL_DIR}', async () => {
-      setLoadedClaudeSkills([{
+    test('substitutes ${CLAUDE_SKILL_DIR} and ${SKILL_DIR}', async () => {
+      setLoadedSkills([{
         name: 'templates',
         description: 'Template skill',
-        content: 'Copy templates from ${CLAUDE_SKILL_DIR}/templates/ to the project.',
+        content: 'Copy templates from ${SKILL_DIR}/templates/ to the project.',
         skillDir: '/tmp/test-skills/templates',
         disableModelInvocation: false,
         userInvocable: true,
@@ -335,7 +511,7 @@ Instructions for ${name}.
     })
 
     test('clears unmatched $ARGUMENTS when no args provided', async () => {
-      setLoadedClaudeSkills([{
+      setLoadedSkills([{
         name: 'optional-args',
         description: 'Skill with optional args',
         content: 'Do work on $ARGUMENTS files.',

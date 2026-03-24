@@ -509,7 +509,7 @@ describe('Warm Pool + Knative Integration', () => {
         projectPoolSize: 5,
         agentPoolSize: 3,
         reconcileIntervalMs: 1000,
-      })
+      } as any)
 
       mockK8sCustomApi.listNamespacedCustomObject.mockResolvedValue({ items: [] })
 
@@ -519,11 +519,11 @@ describe('Warm Pool + Knative Integration', () => {
       // Should create 5 project + 3 agent = 8 total pods
       expect(mockK8sCustomApi.createNamespacedCustomObject).toHaveBeenCalledTimes(8)
 
-      const projectPods = mockK8sCustomApi.createNamespacedCustomObject.mock.calls.filter(
-        call => call[0].body.metadata.labels['shogo.io/warm-pool-type'] === 'project'
+      const projectPods = (mockK8sCustomApi.createNamespacedCustomObject.mock.calls as any[]).filter(
+        (call: any) => call[0].body.metadata.labels['shogo.io/warm-pool-type'] === 'project'
       )
-      const agentPods = mockK8sCustomApi.createNamespacedCustomObject.mock.calls.filter(
-        call => call[0].body.metadata.labels['shogo.io/warm-pool-type'] === 'agent'
+      const agentPods = (mockK8sCustomApi.createNamespacedCustomObject.mock.calls as any[]).filter(
+        (call: any) => call[0].body.metadata.labels['shogo.io/warm-pool-type'] === 'agent'
       )
 
       expect(projectPods).toHaveLength(5)

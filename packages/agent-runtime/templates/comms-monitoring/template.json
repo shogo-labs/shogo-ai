@@ -1,0 +1,21 @@
+{
+  "id": "comms-monitoring",
+  "name": "Communications Monitoring",
+  "description": "Stay on top of critical signals across email and Slack without constant manual checking. Monitors mentions, keywords, and key senders, then forwards alerts with rich formatting.",
+  "category": "operations",
+  "icon": "📡",
+  "tags": [
+    "slack",
+    "email",
+    "monitoring",
+    "alerts",
+    "notifications",
+    "automation"
+  ],
+  "settings": {
+    "heartbeatInterval": 3600,
+    "heartbeatEnabled": true,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-5"
+  }
+}
