@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { Component, type ReactNode } from 'react'
 import { Platform, View, Text, Pressable, StyleSheet } from 'react-native'
+import * as Sentry from '@sentry/react-native'
 
 interface Props {
   children: ReactNode
@@ -25,6 +26,7 @@ export class RootErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: { componentStack: string }) {
+    Sentry.captureException(error, { contexts: { react: { componentStack: info.componentStack } } })
     console.error('[RootErrorBoundary] Unhandled render error:', error.message, info.componentStack)
   }
 

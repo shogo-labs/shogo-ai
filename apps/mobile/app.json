@@ -33,7 +33,11 @@
       "expo-router",
       "expo-secure-store",
       "expo-web-browser",
-      "expo-localization"
+      "expo-localization",
+      ["@sentry/react-native/expo", {
+        "organization": "shogo",
+        "project": "shogo-mobile"
+      }]
     ],
     "extra": {
       "router": {},

@@ -9,12 +9,20 @@ import { Platform } from 'react-native'
 import { Stack } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
 import { useColorScheme } from 'react-native'
+import * as Sentry from '@sentry/react-native'
 import { GluestackUIProvider } from '@/components/ui/gluestack-ui-provider'
 import { AuthProvider } from '../contexts/auth'
 import { PostHogProvider } from '../contexts/posthog'
 import { ThemeProvider, useTheme } from '../contexts/theme'
 import { RootErrorBoundary } from '../components/RootErrorBoundary'
 import { captureAttribution } from '../lib/attribution'
+
+Sentry.init({
+  dsn: process.env.EXPO_PUBLIC_SENTRY_DSN,
+  environment: process.env.EXPO_PUBLIC_APP_ENV || 'development',
+  tracesSampleRate: 0.2,
+  enabled: !!process.env.EXPO_PUBLIC_SENTRY_DSN,
+})
 
 const PENDING_TEMPLATE_KEY = 'pending_template_id'
 const PENDING_APP_TEMPLATE_KEY = 'pending_app_template'
@@ -71,7 +79,7 @@ function RootLayoutInner() {
   )
 }
 
-export default function RootLayout() {
+function RootLayout() {
   return (
     <RootErrorBoundary>
       <ThemeProvider>
@@ -80,3 +88,5 @@ export default function RootLayout() {
     </RootErrorBoundary>
   )
 }
+
+export default Sentry.wrap(RootLayout)
