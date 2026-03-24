@@ -394,6 +394,10 @@ export interface SecurityPrefs {
   approvalTimeoutSeconds?: number
 }
 
+export function getOnboardingMessage(templateName: string): string {
+  return `The "${templateName}" template has been installed. Give me a short summary of what's ready and how to customize it or connect tools. Be concise — a few bullet points max, no walls of text.`
+}
+
 export interface AgentTemplateSummary {
   id: string
   name: string

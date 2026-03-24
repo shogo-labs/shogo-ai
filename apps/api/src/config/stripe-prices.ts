@@ -13,6 +13,7 @@ export interface PriceTier {
 }
 
 export interface StripePriceConfig {
+  basic: Record<string, PriceTier>
   pro: Record<string, PriceTier>
   business: Record<string, PriceTier>
 }
@@ -21,6 +22,12 @@ export interface StripePriceConfig {
  * Staging (Test) environment Stripe price IDs
  */
 export const STRIPE_PRICES_STAGING: StripePriceConfig = {
+  basic: {
+    "50": {
+      monthly: "price_1TEdhNAp5PDuxitpqtb0329O",
+      annual: "price_1TEdhPAp5PDuxitpUFOWqjLl",
+    },
+  },
   pro: {
     "100": {
       monthly: "price_1SpirrAp5PDuxitpm9Pm4z1X",
@@ -111,6 +118,12 @@ export const STRIPE_PRICES_STAGING: StripePriceConfig = {
  * Production (Live) environment Stripe price IDs
  */
 export const STRIPE_PRICES_PRODUCTION: StripePriceConfig = {
+  basic: {
+    "50": {
+      monthly: "price_1TEdi4ADDMNd95Ggym2MWpEQ",
+      annual: "price_1TEdi6ADDMNd95GgYZaoUHiQ",
+    },
+  },
   pro: {
     "100": {
       monthly: "price_1T6Ht1ADDMNd95GgzAqhbIJN",
@@ -219,13 +232,15 @@ export function getPriceId(
   const prices = getStripePrices()
 
   // Parse planId to get type and credits
-  // Format: "pro", "pro_200", "business", "business_1200"
+  // Format: "basic", "pro", "pro_200", "business", "business_1200"
+  const isBasicPlan = planId.startsWith("basic")
   const isBusinessPlan = planId.startsWith("business")
-  const planType = isBusinessPlan ? "business" : "pro"
+  const planType = isBasicPlan ? "basic" : isBusinessPlan ? "business" : "pro"
 
-  // Extract credits from planId (e.g., "pro_200" -> "200", "pro" -> "100")
+  // Extract credits from planId (e.g., "pro_200" -> "200", "pro" -> "100", "basic" -> "50")
   const parts = planId.split("_")
-  const credits = parts.length > 1 ? parts[1] : "100"
+  const defaultCredits = isBasicPlan ? "50" : "100"
+  const credits = parts.length > 1 ? parts[1] : defaultCredits
 
   const tierPrices = prices[planType]?.[credits]
   if (!tierPrices) {

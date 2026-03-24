@@ -97,6 +97,7 @@ export type NotificationType = (typeof NotificationType)[keyof typeof Notificati
 
 
 export const PlanId = {
+  basic: 'basic',
   pro: 'pro',
   business: 'business',
   enterprise: 'enterprise'
