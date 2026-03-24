@@ -1598,39 +1598,76 @@ Examples:
         '',
         `A skill server is running at **${this.skillServerManager.url}**.`,
         '',
-        'This is a Hono API backed by SQLite that you built. To see what endpoints exist,',
+        'This is a Hono API backed by SQLite. To see what endpoints exist,',
         'read `.shogo/server/schema.prisma` — each Prisma model has CRUD routes at',
         '`/api/{model-name-plural}` (GET list, GET /:id, POST, PATCH /:id, DELETE /:id).',
         '',
         'Use the `web` tool with the full URL (e.g. `web({ url: "' + this.skillServerManager.url + '/api/leads" })`) to interact with it.',
         '',
-        'To add new endpoints: edit `.shogo/server/schema.prisma`, then run:',
-        '```',
-        'cd .shogo/server && bunx shogo generate && bunx prisma db push',
-        '```',
-        'The server auto-restarts when generated files change.',
+        'To add new models or change the schema, just edit `.shogo/server/schema.prisma`.',
+        'Code generation, database migration, and server restart happen **automatically** when the schema file changes.',
         '',
-        'Custom business logic goes in `.shogo/server/hooks/{model}.hooks.ts` (beforeCreate, afterUpdate, etc.).',
+        'Custom business logic goes in `.shogo/server/generated/{model}.hooks.ts` (beforeCreate, afterUpdate, etc.).',
+      ].join('\n')
+    }
+
+    const phase = this.skillServerManager.phase
+    const genError = this.skillServerManager.lastGenerateError
+
+    if (phase === 'generating') {
+      return [
+        '## Skill Server (Generating...)',
+        '',
+        'The skill server is currently regenerating from your schema changes.',
+        'It will be available shortly at `http://localhost:' + this.skillServerManager.port + '`.',
+      ].join('\n')
+    }
+
+    if (phase === 'crashed' && genError) {
+      return [
+        '## Skill Server (Error)',
+        '',
+        'The last code generation failed:',
+        '```',
+        genError,
+        '```',
+        'Fix the issue in `.shogo/server/schema.prisma` and save — it will auto-retry.',
       ].join('\n')
     }
 
     return [
       '## Skill Server (Available)',
       '',
-      'You can create a persistent REST API for skills that need structured data, deterministic logic,',
-      'or custom computation. Use this instead of doing everything in-context when:',
-      '- A skill needs to remember data across conversations (leads, tickets, bookmarks, etc.)',
-      '- Logic should be deterministic and not burn LLM tokens every time (scoring, classification)',
-      '- You need CRUD operations on structured data',
+      'You can create a persistent REST API backed by SQLite for skills that need structured data.',
+      'Use this when a skill needs to remember data across conversations (leads, tickets, etc.),',
+      'or logic should be deterministic and not burn tokens every time.',
       '',
-      'To set up the skill server:',
-      '1. Create `.shogo/server/schema.prisma` with a SQLite datasource and your models',
-      '2. Create `.shogo/server/shogo.config.json` to configure code generation',
-      '3. Run `cd .shogo/server && bunx shogo generate && bunx prisma db push`',
-      '4. The server starts automatically and listens on `http://localhost:' + this.skillServerManager.port + '`',
+      'To create the skill server, just write `.shogo/server/schema.prisma` with your models:',
+      '```prisma',
+      'datasource db {',
+      '  provider = "sqlite"',
+      '}',
       '',
-      'Each Prisma model gets full CRUD routes at `/api/{model-name-plural}`.',
-      'Custom logic goes in hook files (`.shogo/server/hooks/{model}.hooks.ts`).',
+      'generator client {',
+      '  provider = "prisma-client"',
+      '  output   = "./generated/prisma"',
+      '}',
+      '',
+      'model Lead {',
+      '  id        String   @id @default(cuid())',
+      '  name      String',
+      '  email     String',
+      '  status    String   @default("new")',
+      '  createdAt DateTime @default(now())',
+      '  updatedAt DateTime @updatedAt',
+      '}',
+      '```',
+      '',
+      'That\'s it — **everything else is automatic**: dependency install, code generation,',
+      'database creation, and server startup on `http://localhost:' + this.skillServerManager.port + '`.',
+      'Each model gets full CRUD at `/api/{model-name-plural}`.',
+      '',
+      'Custom logic goes in `.shogo/server/generated/{model}.hooks.ts`.',
     ].join('\n')
   }
 

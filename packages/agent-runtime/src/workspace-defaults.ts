@@ -185,16 +185,25 @@ export function seedWorkspaceFromTemplate(dir: string, templateId: string, agent
 
 const SKILL_SERVER_SCHEMA = `datasource db {
   provider = "sqlite"
-  url      = env("DATABASE_URL")
 }
 
 generator client {
-  provider = "prisma-client-js"
+  provider = "prisma-client"
   output   = "./generated/prisma"
 }
 
 // Add your models below. Each model gets CRUD routes at /api/{model-name-plural}.
-// After editing, run: bunx shogo generate && bunx prisma db push
+// The skill server auto-regenerates when you save this file.
+`
+
+const SKILL_SERVER_PRISMA_CONFIG = `import { defineConfig } from 'prisma/config'
+
+export default defineConfig({
+  schema: './schema.prisma',
+  datasource: {
+    url: process.env.DATABASE_URL ?? 'file:./skill.db',
+  },
+})
 `
 
 const SKILL_SERVER_CONFIG = JSON.stringify(
@@ -208,10 +217,17 @@ const SKILL_SERVER_CONFIG = JSON.stringify(
       {
         dir: '.',
         generate: ['server'],
+        serverConfig: {
+          routesPath: './generated',
+          dbPath: './db',
+          port: 4100,
+          skipStatic: true,
+        },
       },
       {
         dir: '.',
         generate: ['db'],
+        dbProvider: 'sqlite',
       },
     ],
   },
@@ -238,6 +254,7 @@ export function seedSkillServer(workspaceDir: string): { created: boolean; serve
 
   writeFileSync(schemaPath, SKILL_SERVER_SCHEMA, 'utf-8')
   writeFileSync(join(serverDir, 'shogo.config.json'), SKILL_SERVER_CONFIG, 'utf-8')
+  writeFileSync(join(serverDir, 'prisma.config.ts'), SKILL_SERVER_PRISMA_CONFIG, 'utf-8')
 
   return { created: true, serverDir }
 }
