@@ -10,6 +10,7 @@ resources:
   - namespace.yaml
   - api-service.yaml
   - web-service.yaml
+  - docs-service.yaml
   - ../../base/redis.yaml
 
 labels:

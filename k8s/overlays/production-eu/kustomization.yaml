@@ -5,6 +5,7 @@ resources:
   - namespace.yaml
   - api-service.yaml
   - web-service.yaml
+  - docs-service.yaml
 
 labels:
   - pairs:
