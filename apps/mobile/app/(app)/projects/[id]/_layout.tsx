@@ -24,6 +24,7 @@ import {
   useWindowDimensions,
   ScrollView,
   Platform,
+  BackHandler,
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useLocalSearchParams, useRouter, Stack } from 'expo-router'
@@ -480,17 +481,41 @@ export default observer(function ProjectLayout() {
   const [chatMessages, setChatMessages] = useState<any[]>([])
 
   // Keep previewTab consistent with agent mode.
+  // Standalone panels (files, terminal, capabilities, channels, monitor) are
+  // independent of canvas — they must remain reachable even when canvas is off.
+  const STANDALONE_PANELS = ['files', 'terminal', 'capabilities', 'channels', 'monitor']
   useEffect(() => {
     if (!canvasEnabled) {
       if (previewTab === 'dynamic-app' || previewTab === 'app-preview') {
         setPreviewTab('chat-fullscreen')
       }
-      if (activeTab === 'canvas' && previewTab !== 'app-preview') setActiveTab('chat')
+      if (
+        activeTab === 'canvas' &&
+        previewTab !== 'app-preview' &&
+        !STANDALONE_PANELS.includes(previewTab)
+      ) {
+        setActiveTab('chat')
+      }
     } else if (canvasEnabled) {
       if (previewTab === 'chat-fullscreen') setPreviewTab('dynamic-app')
       if (previewTab === 'app-preview') setPreviewTab('dynamic-app')
     }
   }, [canvasEnabled, activeMode, previewTab, activeTab])
+
+  // Narrow + Android: back from Capabilities → chat column, with Canvas preview selected when canvas is on.
+  useEffect(() => {
+    if (Platform.OS !== 'android' || isWide) return
+
+    const onBack = () => {
+      if (previewTab !== 'capabilities') return false
+      setActiveTab('chat')
+      setPreviewTab(canvasEnabled ? 'dynamic-app' : 'chat-fullscreen')
+      return true
+    }
+
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBack)
+    return () => sub.remove()
+  }, [isWide, previewTab, canvasEnabled])
 
   const handlePreviewTabChange = useCallback((tabId: string) => {
     if (Platform.OS === 'web') {
@@ -545,7 +570,24 @@ export default observer(function ProjectLayout() {
         console.error('[ProjectLayout] Failed to push mode switch config to runtime:', err)
       }
     }
-  }, [isWide, updateProjectSettings, agentUrl, nativeHeaders])
+
+    // Chat-only agent: return to the chat column on narrow layouts (Capabilities used to rely on
+    // the previewTab effect for this; standalone-panel fix needs an explicit navigation).
+    if (!enableCanvas) {
+      setActiveTab('chat')
+      setPreviewTab('chat-fullscreen')
+    } else if (
+      !isWide &&
+      previewTab === 'capabilities' &&
+      enableCanvas &&
+      activeMode === 'none'
+    ) {
+      // Chat-only → Canvas from Capabilities: show chat with Canvas (dynamic-app) selected next.
+      // (Skip if already canvas — avoids kicking out on a redundant Canvas tap.)
+      setActiveTab('chat')
+      setPreviewTab('dynamic-app')
+    }
+  }, [isWide, updateProjectSettings, agentUrl, nativeHeaders, previewTab, activeMode])
 
   const handleManualModeChange = useCallback((mode: 'canvas' | 'none') => {
     handleModeSwitch(mode, 'User selected agent type')
@@ -802,6 +844,10 @@ export default observer(function ProjectLayout() {
                   setActiveTab(tab)
                   if (tab === 'canvas') {
                     setPreviewTab('dynamic-app')
+                  } else {
+                    // Clear standalone preview (files, capabilities, …) so the chat column shows
+                    // and the next “canvas” visit doesn’t reopen the old panel on top.
+                    setPreviewTab(!canvasEnabled ? 'chat-fullscreen' : 'dynamic-app')
                   }
                 }}
                 onTabChange={(tabId: string) => {
@@ -877,7 +923,10 @@ export default observer(function ProjectLayout() {
                 pointerEvents="box-none"
               >
                 <Pressable
-                  onPress={() => setActiveTab('chat')}
+                  onPress={() => {
+                    setActiveTab('chat')
+                    setPreviewTab(!canvasEnabled ? 'chat-fullscreen' : 'dynamic-app')
+                  }}
                   className="flex-row items-center gap-1.5 rounded-full bg-primary px-4 py-2.5 shadow-lg"
                 >
                   <MessageSquare size={16} className="text-primary-foreground" />
