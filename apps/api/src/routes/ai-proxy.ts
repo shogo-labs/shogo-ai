@@ -34,6 +34,7 @@ import {
   verifyProxyToken,
   type ProxyTokenPayload,
 } from '../lib/ai-proxy-token'
+import { resolveApiKey } from './api-keys'
 
 // =============================================================================
 // Types
@@ -1201,6 +1202,7 @@ export function aiProxyRoutes() {
 
   /**
    * Middleware: Validate proxy token on all /ai/v1/* routes.
+   * Accepts both project-scoped JWTs and Shogo API keys (shogo_sk_*).
    */
   async function validateProxyAuth(c: any): Promise<ProxyTokenPayload | null> {
     const authHeader = c.req.header('Authorization')
@@ -1208,7 +1210,109 @@ export function aiProxyRoutes() {
       return null
     }
     const token = authHeader.slice(7)
+
+    if (token.startsWith('shogo_sk_')) {
+      const resolved = await resolveApiKey(token)
+      if (!resolved) return null
+      return {
+        projectId: 'api-key',
+        workspaceId: resolved.workspaceId,
+        userId: resolved.userId,
+        type: 'ai-proxy',
+        iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + 3600,
+      }
+    }
+
     return verifyProxyToken(token)
+  }
+
+  /**
+   * Check if Shogo Cloud forwarding is active (local mode with SHOGO_API_KEY set).
+   */
+  function isShogoCloudForwarding(): boolean {
+    return process.env.SHOGO_LOCAL_MODE === 'true' && !!process.env.SHOGO_API_KEY
+  }
+
+  function getShogoCloudUrl(): string {
+    return (process.env.SHOGO_CLOUD_URL || 'https://studio.shogo.ai').replace(/\/$/, '')
+  }
+
+  /**
+   * Forward an OpenAI-compatible chat completions request to the Shogo Cloud proxy.
+   */
+  async function forwardChatCompletionsToCloud(c: any, request: ChatCompletionRequest): Promise<Response> {
+    const cloudUrl = getShogoCloudUrl()
+    const shogoKey = process.env.SHOGO_API_KEY!
+
+    const response = await fetch(`${cloudUrl}/api/ai/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${shogoKey}`,
+      },
+      body: JSON.stringify(request),
+    })
+
+    if (request.stream) {
+      if (!response.body) {
+        return c.json({ error: { message: 'Cloud proxy returned no stream body', type: 'server_error' } }, 502)
+      }
+      return new Response(response.body, {
+        status: response.status,
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'X-Proxy-Provider': 'shogo-cloud',
+        },
+      })
+    }
+
+    const data = await response.json()
+    return c.json(data, response.status as any)
+  }
+
+  /**
+   * Forward an Anthropic-native request to the Shogo Cloud proxy.
+   */
+  async function forwardAnthropicToCloud(c: any, body: string, headers: Record<string, string>): Promise<Response> {
+    const cloudUrl = getShogoCloudUrl()
+    const shogoKey = process.env.SHOGO_API_KEY!
+    const parsed = JSON.parse(body)
+    const isStream = !!parsed.stream
+
+    const forwardHeaders: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'x-api-key': shogoKey,
+    }
+    for (const [key, value] of Object.entries(headers)) {
+      if (key.toLowerCase().startsWith('anthropic-')) {
+        forwardHeaders[key] = value
+      }
+    }
+
+    const response = await fetch(`${cloudUrl}/api/ai/anthropic/v1/messages`, {
+      method: 'POST',
+      headers: forwardHeaders,
+      body,
+    })
+
+    if (isStream) {
+      if (!response.body) {
+        return c.json({ type: 'error', error: { type: 'api_error', message: 'Cloud proxy returned no stream body' } }, 502)
+      }
+      return new Response(response.body, {
+        status: response.status,
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'X-Proxy-Provider': 'shogo-cloud',
+        },
+      })
+    }
+
+    const data = await response.json()
+    return c.json(data, response.status as any)
   }
 
   // =========================================================================
@@ -1228,6 +1332,18 @@ export function aiProxyRoutes() {
         },
         401
       )
+    }
+
+    // When Shogo Cloud key is configured, forward everything to the cloud
+    if (isShogoCloudForwarding()) {
+      try {
+        const request: ChatCompletionRequest = await c.req.json()
+        console.log(`[AI Proxy] Forwarding to Shogo Cloud: ${request.model} (stream: ${!!request.stream})`)
+        return await forwardChatCompletionsToCloud(c, request)
+      } catch (error: any) {
+        console.error('[AI Proxy] Cloud forwarding error:', error.message)
+        return c.json({ error: { message: `Cloud proxy error: ${error.message}`, type: 'server_error', code: 'cloud_proxy_error' } }, 502)
+      }
     }
 
     // Pre-check: reject if workspace has no credits
@@ -1458,12 +1574,27 @@ export function aiProxyRoutes() {
 
   /**
    * Validate Anthropic-style auth (x-api-key header contains proxy token).
+   * Accepts both project-scoped JWTs and Shogo API keys (shogo_sk_*).
    */
   async function validateAnthropicAuth(c: any): Promise<ProxyTokenPayload | null> {
     const apiKey = c.req.header('x-api-key')
     if (!apiKey) {
       return null
     }
+
+    if (apiKey.startsWith('shogo_sk_')) {
+      const resolved = await resolveApiKey(apiKey)
+      if (!resolved) return null
+      return {
+        projectId: 'api-key',
+        workspaceId: resolved.workspaceId,
+        userId: resolved.userId,
+        type: 'ai-proxy',
+        iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + 3600,
+      }
+    }
+
     return verifyProxyToken(apiKey)
   }
 
@@ -1482,6 +1613,23 @@ export function aiProxyRoutes() {
         { type: 'error', error: { type: 'authentication_error', message: 'Invalid or missing proxy token in x-api-key header.' } },
         401
       )
+    }
+
+    // When Shogo Cloud key is configured, forward everything to the cloud
+    if (isShogoCloudForwarding()) {
+      try {
+        const body = await c.req.text()
+        const headers: Record<string, string> = {}
+        for (const [key, value] of Object.entries(c.req.header())) {
+          if (value) headers[key] = value as string
+        }
+        const parsed = JSON.parse(body)
+        console.log(`[AI Proxy] Forwarding Anthropic to Shogo Cloud: ${parsed.model || 'unknown'} (stream: ${!!parsed.stream})`)
+        return await forwardAnthropicToCloud(c, body, headers)
+      } catch (error: any) {
+        console.error('[AI Proxy] Cloud forwarding error:', error.message)
+        return c.json({ type: 'error', error: { type: 'api_error', message: `Cloud proxy error: ${error.message}` } }, 502)
+      }
     }
 
     // Pre-check credits
@@ -1677,6 +1825,26 @@ export function aiProxyRoutes() {
         { type: 'error', error: { type: 'authentication_error', message: 'Invalid proxy token.' } },
         401
       )
+    }
+
+    // Forward to Shogo Cloud when configured
+    if (isShogoCloudForwarding()) {
+      const cloudUrl = getShogoCloudUrl()
+      const body = await c.req.text()
+      const response = await fetch(`${cloudUrl}/api/ai/anthropic/v1/messages/count_tokens`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.SHOGO_API_KEY!,
+          'anthropic-version': c.req.header('anthropic-version') || '2023-06-01',
+        },
+        body,
+      })
+      const responseBody = await response.text()
+      return new Response(responseBody, {
+        status: response.status,
+        headers: { 'Content-Type': response.headers.get('Content-Type') || 'application/json' },
+      })
     }
 
     const anthropicApiKey = process.env.ANTHROPIC_API_KEY

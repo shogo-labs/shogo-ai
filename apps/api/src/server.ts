@@ -48,6 +48,7 @@ import { adminRoutes, userAttributionRoute } from './routes/admin'
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
 import { integrationRoutes } from './routes/integrations'
 import { agentTemplateRoutes } from './routes/agent-templates'
+import { apiKeyRoutes } from './routes/api-keys'
 import internalRoutes from './routes/internal'
 import { requireSuperAdmin } from './middleware/super-admin'
 // Generated admin CRUD routes (unrestricted, middleware-protected)
@@ -784,6 +785,7 @@ app.use(
       '/api/local/',
       '/api/ai/',
       '/api/tools/',
+      '/api/api-keys/validate',
     ]
     if (publicPrefixes.some((p) => path.startsWith(p))) return next()
     return requireAuth(c, next)
@@ -842,15 +844,17 @@ app.get('/api/integrations/callback', (c) => {
 app.get('/api/config', async (c) => {
   const localMode = process.env.SHOGO_LOCAL_MODE === 'true'
   let needsSetup = false
+  const hasShogоApiKey = !!process.env.SHOGO_API_KEY
   if (localMode) {
     const userCount = await prisma.user.count()
     const hasAnthropicKey = !!process.env.ANTHROPIC_API_KEY
     const hasLocalLlm = !!process.env.LOCAL_LLM_BASE_URL
-    needsSetup = userCount === 0 || (!hasAnthropicKey && !hasLocalLlm)
+    needsSetup = userCount === 0 || (!hasAnthropicKey && !hasLocalLlm && !hasShogоApiKey)
   }
   return c.json({
     localMode,
     needsSetup,
+    shogoKeyConnected: hasShogоApiKey,
     features: {
       billing: !localMode,
       admin: !localMode,
@@ -1047,10 +1051,100 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
       return c.json({ error: err.message }, 500)
     }
   })
+
+  // ── Local mode: Shogo Cloud API key ──────────────────────────────────────
+  const SHOGO_CLOUD_URL_DEFAULT = 'https://studio.shogo.ai'
+
+  app.get('/api/local/shogo-key', async (c) => {
+    try {
+      const row = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_API_KEY' } })
+      const urlRow = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_CLOUD_URL' } })
+      const infoRow = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_KEY_INFO' } })
+      if (!row) {
+        return c.json({ connected: false })
+      }
+      const keyMask = row.value.slice(0, 17) + '...' + row.value.slice(-4)
+      let info: any = null
+      try { info = infoRow ? JSON.parse(infoRow.value) : null } catch {}
+      return c.json({
+        connected: true,
+        keyMask,
+        cloudUrl: urlRow?.value || SHOGO_CLOUD_URL_DEFAULT,
+        workspace: info?.workspace || null,
+      })
+    } catch {
+      return c.json({ connected: false })
+    }
+  })
+
+  app.put('/api/local/shogo-key', async (c) => {
+    const body = await c.req.json<{ key: string; cloudUrl?: string }>()
+    if (!body.key || !body.key.startsWith('shogo_sk_')) {
+      return c.json({ ok: false, error: 'Invalid key format. Keys start with shogo_sk_' }, 400)
+    }
+
+    const cloudUrl = (body.cloudUrl || SHOGO_CLOUD_URL_DEFAULT).replace(/\/$/, '')
+
+    try {
+      const validateRes = await fetch(`${cloudUrl}/api/api-keys/validate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: body.key }),
+        signal: AbortSignal.timeout(10000),
+      })
+      const validateData = await validateRes.json() as { valid: boolean; workspace?: any; error?: string }
+      if (!validateData.valid) {
+        return c.json({ ok: false, error: validateData.error || 'Key validation failed' }, 400)
+      }
+
+      await Promise.all([
+        localDb.localConfig.upsert({
+          where: { key: 'SHOGO_API_KEY' },
+          update: { value: body.key },
+          create: { key: 'SHOGO_API_KEY', value: body.key },
+        }),
+        localDb.localConfig.upsert({
+          where: { key: 'SHOGO_CLOUD_URL' },
+          update: { value: cloudUrl },
+          create: { key: 'SHOGO_CLOUD_URL', value: cloudUrl },
+        }),
+        localDb.localConfig.upsert({
+          where: { key: 'SHOGO_KEY_INFO' },
+          update: { value: JSON.stringify({ workspace: validateData.workspace }) },
+          create: { key: 'SHOGO_KEY_INFO', value: JSON.stringify({ workspace: validateData.workspace }) },
+        }),
+      ])
+
+      process.env.SHOGO_API_KEY = body.key
+      process.env.SHOGO_CLOUD_URL = cloudUrl
+
+      return c.json({ ok: true, workspace: validateData.workspace })
+    } catch (err: any) {
+      return c.json({ ok: false, error: `Cannot reach Shogo Cloud: ${err.message}` }, 502)
+    }
+  })
+
+  app.delete('/api/local/shogo-key', async (c) => {
+    try {
+      await Promise.all([
+        localDb.localConfig.deleteMany({ where: { key: 'SHOGO_API_KEY' } }),
+        localDb.localConfig.deleteMany({ where: { key: 'SHOGO_CLOUD_URL' } }),
+        localDb.localConfig.deleteMany({ where: { key: 'SHOGO_KEY_INFO' } }),
+      ])
+      delete process.env.SHOGO_API_KEY
+      delete process.env.SHOGO_CLOUD_URL
+      return c.json({ ok: true })
+    } catch (err: any) {
+      return c.json({ ok: false, error: err.message }, 500)
+    }
+  })
 }
 
 // Agent template catalog — public, no auth required
 app.route('/api', agentTemplateRoutes())
+
+// API key management (for Shogo Local → Cloud authentication)
+app.route('/api', apiKeyRoutes())
 
 // Warm pool + cluster capacity status (for operational dashboards and load testing)
 app.get('/api/warm-pool/status', async (c) => {

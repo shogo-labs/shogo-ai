@@ -45,6 +45,7 @@ model User {
   notifications       Notification[]
   starredProjects     StarredProject[]
   signupAttribution   SignupAttribution?
+  apiKeys             ApiKey[]
 
   @@map("users")
 }
@@ -125,6 +126,7 @@ model Workspace {
   creditLedgers   CreditLedger[]
   usageEvents     UsageEvent[]
   starredProjects StarredProject[]
+  apiKeys         ApiKey[]
 
   @@map("workspaces")
 }
@@ -1200,4 +1202,28 @@ model SignupAttribution {
   @@index([sourceTag])
   @@index([createdAt])
   @@map("signup_attributions")
+}
+
+// =============================================================================
+// API KEYS (for Shogo Local → Cloud proxy authentication)
+// =============================================================================
+
+model ApiKey {
+  id          String    @id @default(cuid())
+  name        String
+  keyHash     String    @unique
+  keyPrefix   String
+  workspaceId String
+  userId      String
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  createdAt   DateTime  @default(now())
+  revokedAt   DateTime?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([userId])
+  @@map("api_keys")
 }

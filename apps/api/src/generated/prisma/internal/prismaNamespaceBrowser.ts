@@ -94,7 +94,8 @@ export const ModelName = {
   PlatformSetting: 'PlatformSetting',
   InfraSnapshot: 'InfraSnapshot',
   AnalyticsDigest: 'AnalyticsDigest',
-  SignupAttribution: 'SignupAttribution'
+  SignupAttribution: 'SignupAttribution',
+  ApiKey: 'ApiKey'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -827,6 +828,22 @@ export const SignupAttributionScalarFieldEnum = {
 } as const
 
 export type SignupAttributionScalarFieldEnum = (typeof SignupAttributionScalarFieldEnum)[keyof typeof SignupAttributionScalarFieldEnum]
+
+
+export const ApiKeyScalarFieldEnum = {
+  id: 'id',
+  name: 'name',
+  keyHash: 'keyHash',
+  keyPrefix: 'keyPrefix',
+  workspaceId: 'workspaceId',
+  userId: 'userId',
+  lastUsedAt: 'lastUsedAt',
+  expiresAt: 'expiresAt',
+  createdAt: 'createdAt',
+  revokedAt: 'revokedAt'
+} as const
+
+export type ApiKeyScalarFieldEnum = (typeof ApiKeyScalarFieldEnum)[keyof typeof ApiKeyScalarFieldEnum]
 
 
 export const SortOrder = {

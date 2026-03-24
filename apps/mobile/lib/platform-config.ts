@@ -7,6 +7,7 @@ import { API_URL } from './api'
 export interface PlatformConfig {
   localMode: boolean
   needsSetup?: boolean
+  shogoKeyConnected?: boolean
   configLoaded: boolean
   features: {
     billing: boolean

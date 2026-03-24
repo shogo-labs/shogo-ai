@@ -427,7 +427,8 @@ export const ModelName = {
   PlatformSetting: 'PlatformSetting',
   InfraSnapshot: 'InfraSnapshot',
   AnalyticsDigest: 'AnalyticsDigest',
-  SignupAttribution: 'SignupAttribution'
+  SignupAttribution: 'SignupAttribution',
+  ApiKey: 'ApiKey'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -443,7 +444,7 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
     omit: GlobalOmitOptions
   }
   meta: {
-    modelProps: "user" | "session" | "account" | "verification" | "workspace" | "project" | "agentConfig" | "projectCheckpoint" | "gitHubConnection" | "starredProject" | "member" | "billingAccount" | "invitation" | "inviteLink" | "folder" | "notification" | "subscription" | "creditLedger" | "usageEvent" | "chatSession" | "chatMessage" | "toolCallLog" | "featureSession" | "requirement" | "designDecision" | "classificationDecision" | "analysisFinding" | "integrationPoint" | "testCase" | "implementationTask" | "taskDependency" | "testSpecification" | "implementationRun" | "taskExecution" | "componentDefinition" | "registry" | "rendererBinding" | "layoutTemplate" | "composition" | "componentSpec" | "platformSetting" | "infraSnapshot" | "analyticsDigest" | "signupAttribution"
+    modelProps: "user" | "session" | "account" | "verification" | "workspace" | "project" | "agentConfig" | "projectCheckpoint" | "gitHubConnection" | "starredProject" | "member" | "billingAccount" | "invitation" | "inviteLink" | "folder" | "notification" | "subscription" | "creditLedger" | "usageEvent" | "chatSession" | "chatMessage" | "toolCallLog" | "featureSession" | "requirement" | "designDecision" | "classificationDecision" | "analysisFinding" | "integrationPoint" | "testCase" | "implementationTask" | "taskDependency" | "testSpecification" | "implementationRun" | "taskExecution" | "componentDefinition" | "registry" | "rendererBinding" | "layoutTemplate" | "composition" | "componentSpec" | "platformSetting" | "infraSnapshot" | "analyticsDigest" | "signupAttribution" | "apiKey"
     txIsolationLevel: TransactionIsolationLevel
   }
   model: {
@@ -3703,6 +3704,80 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
         }
       }
     }
+    ApiKey: {
+      payload: Prisma.$ApiKeyPayload<ExtArgs>
+      fields: Prisma.ApiKeyFieldRefs
+      operations: {
+        findUnique: {
+          args: Prisma.ApiKeyFindUniqueArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ApiKeyPayload> | null
+        }
+        findUniqueOrThrow: {
+          args: Prisma.ApiKeyFindUniqueOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ApiKeyPayload>
+        }
+        findFirst: {
+          args: Prisma.ApiKeyFindFirstArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ApiKeyPayload> | null
+        }
+        findFirstOrThrow: {
+          args: Prisma.ApiKeyFindFirstOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ApiKeyPayload>
+        }
+        findMany: {
+          args: Prisma.ApiKeyFindManyArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ApiKeyPayload>[]
+        }
+        create: {
+          args: Prisma.ApiKeyCreateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ApiKeyPayload>
+        }
+        createMany: {
+          args: Prisma.ApiKeyCreateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        createManyAndReturn: {
+          args: Prisma.ApiKeyCreateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ApiKeyPayload>[]
+        }
+        delete: {
+          args: Prisma.ApiKeyDeleteArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ApiKeyPayload>
+        }
+        update: {
+          args: Prisma.ApiKeyUpdateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ApiKeyPayload>
+        }
+        deleteMany: {
+          args: Prisma.ApiKeyDeleteManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateMany: {
+          args: Prisma.ApiKeyUpdateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateManyAndReturn: {
+          args: Prisma.ApiKeyUpdateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ApiKeyPayload>[]
+        }
+        upsert: {
+          args: Prisma.ApiKeyUpsertArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ApiKeyPayload>
+        }
+        aggregate: {
+          args: Prisma.ApiKeyAggregateArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AggregateApiKey>
+        }
+        groupBy: {
+          args: Prisma.ApiKeyGroupByArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.ApiKeyGroupByOutputType>[]
+        }
+        count: {
+          args: Prisma.ApiKeyCountArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.ApiKeyCountAggregateOutputType> | number
+        }
+      }
+    }
   }
 } & {
   other: {
@@ -4458,6 +4533,22 @@ export const SignupAttributionScalarFieldEnum = {
 export type SignupAttributionScalarFieldEnum = (typeof SignupAttributionScalarFieldEnum)[keyof typeof SignupAttributionScalarFieldEnum]
 
 
+export const ApiKeyScalarFieldEnum = {
+  id: 'id',
+  name: 'name',
+  keyHash: 'keyHash',
+  keyPrefix: 'keyPrefix',
+  workspaceId: 'workspaceId',
+  userId: 'userId',
+  lastUsedAt: 'lastUsedAt',
+  expiresAt: 'expiresAt',
+  createdAt: 'createdAt',
+  revokedAt: 'revokedAt'
+} as const
+
+export type ApiKeyScalarFieldEnum = (typeof ApiKeyScalarFieldEnum)[keyof typeof ApiKeyScalarFieldEnum]
+
+
 export const SortOrder = {
   asc: 'asc',
   desc: 'desc'
@@ -5161,6 +5252,7 @@ export type GlobalOmitConfig = {
   infraSnapshot?: Prisma.InfraSnapshotOmit
   analyticsDigest?: Prisma.AnalyticsDigestOmit
   signupAttribution?: Prisma.SignupAttributionOmit
+  apiKey?: Prisma.ApiKeyOmit
 }
 
 /* Types for Logging */
