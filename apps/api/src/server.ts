@@ -22,7 +22,11 @@ import { auth } from './auth'
 import { getPriceId } from './config/stripe-prices'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
 import * as billingService from './services/billing.service'
-import { sendPlanUpgradedEmail, sendPaymentReceiptEmail, sendPaymentFailedEmail } from './services/email.service'
+import {
+  sendPlanUpgradedEmail, sendPaymentReceiptEmail, sendPaymentFailedEmail,
+  sendInvitationEmail, sendProjectInviteEmail, sendInviteAcceptedEmail,
+  sendMemberJoinedEmail, sendMemberRemovedEmail, sendAccountDeletedEmail,
+} from './services/email.service'
 import * as workspaceService from './services/workspace.service'
 import { publishRoutes } from './routes/publish'
 import { runtimeRoutes } from './routes/runtime'
@@ -5051,7 +5055,13 @@ app.delete('/api/admin/users/:id', authMiddleware, requireAuth, requireSuperAdmi
       },
     }, 400)
   }
+  const userToDelete = await prisma.user.findUnique({ where: { id }, select: { email: true, name: true } })
   await prisma.user.delete({ where: { id } })
+
+  if (userToDelete?.email) {
+    await sendAccountDeletedEmail({ to: userToDelete.email, name: userToDelete.name || undefined })
+  }
+
   return c.json({ ok: true })
 })
 
@@ -5247,6 +5257,17 @@ app.post('/api/workspaces/:id/leave', async (c) => {
 
   await prisma.member.deleteMany({ where: { userId, workspaceId } })
 
+  const [leavingUser, workspace] = await Promise.all([
+    prisma.user.findUnique({ where: { id: userId }, select: { email: true } }),
+    prisma.workspace.findUnique({ where: { id: workspaceId }, select: { name: true } }),
+  ])
+  if (leavingUser?.email) {
+    await sendMemberRemovedEmail({
+      to: leavingUser.email,
+      workspaceName: workspace?.name || 'the workspace',
+    })
+  }
+
   return c.json({ ok: true })
 })
 
@@ -5286,6 +5307,38 @@ app.post('/api/invite-links', async (c) => {
   const link = await prisma.inviteLink.create({
     data: { projectId, workspaceId: resolvedWorkspaceId, role, createdBy: userId },
   })
+
+  const inviteeEmail = body.email as string | undefined
+  if (inviteeEmail) {
+    const baseUrl = process.env.BETTER_AUTH_URL || process.env.APP_URL || ''
+    const acceptUrl = `${baseUrl}/invite/${link.token}`
+    const [inviter, workspace] = await Promise.all([
+      prisma.user.findUnique({ where: { id: userId }, select: { name: true } }),
+      prisma.workspace.findUnique({ where: { id: resolvedWorkspaceId }, select: { name: true } }),
+    ])
+    const inviterName = inviter?.name || 'A teammate'
+    const workspaceName = workspace?.name || 'your workspace'
+
+    if (projectId) {
+      const project = await prisma.project.findUnique({ where: { id: projectId }, select: { name: true } })
+      await sendProjectInviteEmail({
+        to: inviteeEmail,
+        inviterName,
+        projectName: project?.name || 'a project',
+        workspaceName,
+        role,
+        acceptUrl,
+      })
+    } else {
+      await sendInvitationEmail({
+        to: inviteeEmail,
+        inviterName,
+        workspaceName,
+        role,
+        acceptUrl,
+      })
+    }
+  }
 
   return c.json({ ok: true, data: link })
 })
@@ -5402,6 +5455,53 @@ app.post('/api/invite-links/:token/accept', async (c) => {
 
   // Increment use count
   await prisma.inviteLink.update({ where: { id: link.id }, data: { useCount: { increment: 1 } } })
+
+  // Send notification emails (non-blocking — errors are logged internally)
+  const baseUrl = process.env.BETTER_AUTH_URL || process.env.APP_URL || ''
+  const resolvedWorkspaceId = memberData.workspaceId
+  const [acceptingUser, workspace, project] = await Promise.all([
+    prisma.user.findUnique({ where: { id: userId }, select: { name: true, email: true } }),
+    resolvedWorkspaceId ? prisma.workspace.findUnique({ where: { id: resolvedWorkspaceId }, select: { name: true } }) : null,
+    link.projectId ? prisma.project.findUnique({ where: { id: link.projectId }, select: { name: true } }) : null,
+  ])
+  const acceptingName = acceptingUser?.name || acceptingUser?.email || 'Someone'
+  const acceptingEmail = acceptingUser?.email || ''
+  const resourceName = project?.name || workspace?.name || 'your workspace'
+  const resourceType = link.projectId ? 'project' : 'workspace'
+  const workspaceName = workspace?.name || 'your workspace'
+
+  if (link.createdBy) {
+    const creator = await prisma.user.findUnique({ where: { id: link.createdBy }, select: { email: true } })
+    if (creator?.email) {
+      await sendInviteAcceptedEmail({
+        to: creator.email,
+        inviteeName: acceptingName,
+        inviteeEmail: acceptingEmail,
+        resourceName,
+        resourceType,
+        dashboardUrl: baseUrl,
+      })
+    }
+  }
+
+  if (resolvedWorkspaceId) {
+    const owners = await prisma.member.findMany({
+      where: { workspaceId: resolvedWorkspaceId, role: 'owner', userId: { not: userId } },
+      include: { user: { select: { email: true } } },
+    })
+    for (const owner of owners) {
+      if (owner.user?.email) {
+        await sendMemberJoinedEmail({
+          to: owner.user.email,
+          memberName: acceptingName,
+          memberEmail: acceptingEmail,
+          workspaceName,
+          role: link.role,
+          dashboardUrl: baseUrl,
+        })
+      }
+    }
+  }
 
   return c.json({ ok: true, data: member })
 })
