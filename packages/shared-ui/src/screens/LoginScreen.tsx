@@ -475,23 +475,23 @@ function MobileLoginPanel({
         style={
           Platform.OS === 'web'
             ? {
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                width: windowWidth,
-                height: windowHeight,
-                zIndex: 0,
-              }
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: windowWidth,
+              height: windowHeight,
+              zIndex: 0,
+            }
             : {
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                right: 0,
-                bottom: 0,
-                width: '100%',
-                height: '100%',
-                zIndex: 0,
-              }
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              width: '100%',
+              height: '100%',
+              zIndex: 0,
+            }
         }
         resizeMode="cover"
         accessibilityIgnoresInvertColors
@@ -521,74 +521,74 @@ function MobileLoginPanel({
         >
           <Card className="w-full max-w-md self-center border-border bg-card shadow-lg">
             <CardContent className="p-6">
-            <View className="items-center mb-6">
-              {Platform.OS === 'web' && (
-                <Image
-                  source={require('../../../../apps/mobile/assets/shogo-logo.svg')}
-                  style={{ width: 80, height: 80, marginBottom: 16 }}
-                  resizeMode="contain"
-                />
-              )}
-              <Text className="text-2xl font-bold text-foreground">Shogo AI Studio</Text>
-              <Text className="text-sm text-muted-foreground mt-1">
-                Sign in to your account or create a new one
-              </Text>
-            </View>
+              <View className="items-center mb-6">
+                {Platform.OS === 'web' && (
+                  <Image
+                    source={require('../../../../apps/mobile/assets/shogo-logo.svg')}
+                    style={{ width: 80, height: 80, marginBottom: 16 }}
+                    resizeMode="contain"
+                  />
+                )}
+                <Text className="text-2xl font-bold text-foreground">Shogo AI Studio</Text>
+                <Text className="text-sm text-muted-foreground mt-1">
+                  Sign in to your account or create a new one
+                </Text>
+              </View>
 
-            <View className="flex-row bg-secondary rounded-lg p-1 mb-5" accessibilityRole="tablist">
-              {(['signin', 'signup'] as Tab[]).map((tab) => (
-                <Pressable
-                  key={tab}
-                  onPress={() => switchTab(tab)}
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected: activeTab === tab }}
-                  accessibilityLabel={tab === 'signin' ? 'Sign In' : 'Sign Up'}
-                  className={cn(
-                    'flex-1 py-2 rounded-md items-center',
-                    activeTab === tab ? 'bg-card' : '',
-                  )}
-                  style={activeTab === tab ? {
-                    shadowColor: '#000',
-                    shadowOffset: { width: 0, height: 1 },
-                    shadowOpacity: 0.05,
-                    shadowRadius: 2,
-                    elevation: 1,
-                  } : undefined}
-                >
-                  <Text className={cn(
-                    'text-sm font-medium',
-                    activeTab === tab ? 'text-foreground' : 'text-muted-foreground',
-                  )}>
-                    {tab === 'signin' ? 'Sign In' : 'Sign Up'}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
+              <View className="flex-row bg-secondary rounded-lg p-1 mb-5" accessibilityRole="tablist">
+                {(['signin', 'signup'] as Tab[]).map((tab) => (
+                  <Pressable
+                    key={tab}
+                    onPress={() => switchTab(tab)}
+                    accessibilityRole="tab"
+                    accessibilityState={{ selected: activeTab === tab }}
+                    accessibilityLabel={tab === 'signin' ? 'Sign In' : 'Sign Up'}
+                    className={cn(
+                      'flex-1 py-2 rounded-md items-center',
+                      activeTab === tab ? 'bg-card' : '',
+                    )}
+                    style={activeTab === tab ? {
+                      shadowColor: '#000',
+                      shadowOffset: { width: 0, height: 1 },
+                      shadowOpacity: 0.05,
+                      shadowRadius: 2,
+                      elevation: 1,
+                    } : undefined}
+                  >
+                    <Text className={cn(
+                      'text-sm font-medium',
+                      activeTab === tab ? 'text-foreground' : 'text-muted-foreground',
+                    )}>
+                      {tab === 'signin' ? 'Sign In' : 'Sign Up'}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
 
-            {activeTab === 'signin'
-              ? (
-                <SignInForm
-                  onSignIn={onSignIn}
-                  onForgotPassword={onForgotPassword}
-                  isLoading={isLoading}
-                  error={displayError}
-                  onClearError={dismissError}
-                  onScrollToBottom={scrollToBottom}
-                />
-              )
-              : <SignUpForm onSignUp={onSignUp} isLoading={isLoading} error={displayError} onClearError={dismissError} onScrollToBottom={scrollToBottom} />
-            }
+              {activeTab === 'signin'
+                ? (
+                  <SignInForm
+                    onSignIn={onSignIn}
+                    onForgotPassword={onForgotPassword}
+                    isLoading={isLoading}
+                    error={displayError}
+                    onClearError={dismissError}
+                    onScrollToBottom={scrollToBottom}
+                  />
+                )
+                : <SignUpForm onSignUp={onSignUp} isLoading={isLoading} error={displayError} onClearError={dismissError} onScrollToBottom={scrollToBottom} />
+              }
 
-            {onGoogleSignIn ? (
-              <>
-                <View className="flex-row items-center my-5">
-                  <View className="flex-1"><Separator /></View>
-                  <Text className="px-3 text-xs text-muted-foreground uppercase">or</Text>
-                  <View className="flex-1"><Separator /></View>
-                </View>
-                <GoogleContinueButton onPress={onGoogleSignIn} colorScheme={colorScheme} />
-              </>
-            ) : null}
+              {onGoogleSignIn ? (
+                <>
+                  <View className="flex-row items-center my-5">
+                    <View className="flex-1"><Separator /></View>
+                    <Text className="px-3 text-xs text-muted-foreground uppercase">or</Text>
+                    <View className="flex-1"><Separator /></View>
+                  </View>
+                  <GoogleContinueButton onPress={onGoogleSignIn} colorScheme={colorScheme} />
+                </>
+              ) : null}
             </CardContent>
           </Card>
         </ScrollView>
@@ -645,13 +645,8 @@ function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, onForgotPassword
         keyboardShouldPersistTaps="handled"
       >
         <View style={{ maxWidth: 400, width: '100%' }}>
-          <Text className="text-2xl font-bold text-foreground" style={{ marginBottom: 4 }}>
-            {activeTab === 'signin' ? 'Sign in to your account' : 'Create your account'}
-          </Text>
-          <Text className="text-sm text-muted-foreground" style={{ marginBottom: 28 }}>
-            {activeTab === 'signin'
-              ? 'Welcome back to Shogo AI Studio'
-              : 'Get started with Shogo AI Studio'}
+          <Text className="text-2xl font-bold text-foreground" style={{ marginBottom: 16 }}>
+            {activeTab === 'signin' ? 'Log in to your account' : 'Create a Shogo account'}
           </Text>
 
           <View className="flex-row bg-secondary rounded-lg p-1 mb-5" accessibilityRole="tablist">
