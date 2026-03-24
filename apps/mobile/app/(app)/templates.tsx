@@ -19,7 +19,7 @@ import {
   useDomainActions,
   useDomainHttp,
 } from '../../contexts/domain'
-import { api, type AgentTemplateSummary } from '../../lib/api'
+import { api, getOnboardingMessage, type AgentTemplateSummary } from '../../lib/api'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { usePostHogSafe } from '../../contexts/posthog'
@@ -117,7 +117,7 @@ export default observer(function TemplatesPage() {
             template_id: template.id,
             template_name: template.name,
           })
-          const onboardingMessage = `The "${template.name}" template has been installed. Can you describe what's been set up and walk me through how to customize it or connect my own tools?`
+          const onboardingMessage = getOnboardingMessage(template.name)
           const hasIntegrations = template.integrations && template.integrations.length > 0
           router.push({
             pathname: '/(app)/projects/[id]',

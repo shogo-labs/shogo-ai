@@ -32,7 +32,7 @@ import { CompactChatInput } from '../../components/chat/CompactChatInput'
 import type { FileAttachment } from '../../components/chat/ChatInput'
 import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
-import { api, type AgentTemplateSummary } from '../../lib/api'
+import { api, getOnboardingMessage, type AgentTemplateSummary } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { AgentTemplateGalleryCard } from '../../components/templates/agent-template-card'
 // APP_MODE_DISABLED: import { AppTemplateGalleryCard } from '../../components/templates/app-template-card'
@@ -381,7 +381,7 @@ const HomeScreen = observer(function HomeScreen() {
         template_name: template.name,
       })
 
-      const onboardingMessage = `The "${template.name}" template has been installed. Can you describe what's been set up and walk me through how to customize it or connect my own tools?`
+      const onboardingMessage = getOnboardingMessage(template.name)
       const hasIntegrations = template.integrations && template.integrations.length > 0
       projects.loadAll()
       router.push({
