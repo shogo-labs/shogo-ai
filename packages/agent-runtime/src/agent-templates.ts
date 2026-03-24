@@ -71,7 +71,7 @@ function configJson(overrides: Record<string, any> = {}): string {
 
 /** Universal onboarding message sent as the first chat message for all templates */
 export function getOnboardingMessage(templateName: string): string {
-  return `The "${templateName}" template has been installed. Can you describe what's been set up and walk me through how to customize it or connect my own tools?`
+  return `The "${templateName}" template has been installed. Can you describe what's been set up and walk me through how to customize it or connect my own tools? Keep it brief.`
 }
 
 export const AGENT_TEMPLATES: AgentTemplate[] = [

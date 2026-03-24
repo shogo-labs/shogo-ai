@@ -159,3 +159,4 @@ test-results/
 load-tests/results/
 load-tests/reports/
 load-tests/.env
+load-tests/venv/
