@@ -95,7 +95,7 @@
         "@gluestack-ui/utils": "^3.0.11",
         "@legendapp/motion": "^2.3.0",
         "@react-native-async-storage/async-storage": "2.2.0",
-        "@shogo-ai/sdk": "^0.3.1",
+        "@shogo-ai/sdk": "workspace:*",
         "@shogo/domain-stores": "workspace:*",
         "@shogo/shared-app": "workspace:*",
         "@shogo/shared-ui": "workspace:*",
@@ -3717,8 +3717,6 @@
     "@shogo/agent-runtime/nodemailer": ["nodemailer@8.0.1", "", {}, "sha512-5kcldIXmaEjZcHR6F28IKGSgpmZHaF1IXLWFTG+Xh3S+Cce4MiakLtWY+PlBU69fLbRa8HlaGIrC/QolUpHkhg=="],
 
     "@shogo/mobile/@react-native-async-storage/async-storage": ["@react-native-async-storage/async-storage@2.2.0", "", { "dependencies": { "merge-options": "^3.0.4" }, "peerDependencies": { "react-native": "^0.0.0-0 || >=0.65 <1.0" } }, "sha512-gvRvjR5JAaUZF8tv2Kcq/Gbt3JHwbKFYfmb445rhOj6NUMx3qPLixmDx5pZAyb9at1bYvJ4/eTUipU5aki45xw=="],
-
-    "@shogo/mobile/@shogo-ai/sdk": ["@shogo-ai/sdk@0.3.1", "", { "peerDependencies": { "@aws-sdk/client-ses": ">=3.0.0", "@prisma/adapter-libsql": "", "@prisma/adapter-pg": "^7.3.0", "nodemailer": ">=6.0.0", "react": ">=18.0.0" }, "optionalPeers": ["@aws-sdk/client-ses", "@prisma/adapter-libsql", "@prisma/adapter-pg", "nodemailer", "react"], "bin": { "shogo": "bin/cli.mjs" } }, "sha512-fNQELZvBD65ohykkdUmh/QFULx/en/qP3ZVFEuHna3iHPLVQV6DMgg58e+k+kR37X8VuUGjVf6xESdQT9rR7bQ=="],
 
     "@shogo/mobile/@types/react": ["@types/react@19.1.17", "", { "dependencies": { "csstype": "^3.0.2" } }, "sha512-Qec1E3mhALmaspIrhWt9jkQMNdw6bReVu64mjvhbhq2NFPftLPVr+l1SZgmw/66WwBNpDh7ao5AT6gF5v41PFA=="],
 
