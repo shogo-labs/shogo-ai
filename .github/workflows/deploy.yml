@@ -20,6 +20,7 @@ name: Build, Test, and Deploy
 
 permissions:
   contents: read
+  actions: read
 
 on:
   push:
@@ -163,15 +164,27 @@ jobs:
               echo "No previous tag found — treating all files as changed"
               CHANGED=$(git ls-tree --name-only -r HEAD)
             fi
-          elif [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$BEFORE_SHA" 2>/dev/null; then
-            CHANGED=$(git diff --name-only "$BEFORE_SHA" HEAD)
-            echo "Comparing $BEFORE_SHA..HEAD (push event)"
-          elif git rev-parse HEAD~1 >/dev/null 2>&1; then
-            CHANGED=$(git diff --name-only HEAD~1 HEAD)
-            echo "Comparing HEAD~1..HEAD (fallback)"
           else
-            echo "Single-commit repo — treating all files as changed"
-            CHANGED=$(git ls-tree --name-only -r HEAD)
+            # Staging: diff against the last successful build on main
+            LAST_SUCCESS_SHA=$(gh api \
+              "repos/${{ github.repository }}/actions/workflows/deploy.yml/runs?branch=main&status=success&per_page=1&event=push" \
+              --jq '.workflow_runs[0].head_sha' 2>/dev/null || echo "")
+
+            if [ -n "$LAST_SUCCESS_SHA" ] && [ "$LAST_SUCCESS_SHA" != "null" ] && git cat-file -e "$LAST_SUCCESS_SHA" 2>/dev/null; then
+              if [ "$LAST_SUCCESS_SHA" = "${{ github.sha }}" ]; then
+                echo "Last successful build is current commit -- using BEFORE_SHA as fallback"
+                CHANGED=$(git diff --name-only "$BEFORE_SHA" HEAD)
+              else
+                CHANGED=$(git diff --name-only "$LAST_SUCCESS_SHA" HEAD)
+                echo "Comparing $LAST_SUCCESS_SHA..HEAD (since last successful build)"
+              fi
+            elif [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$BEFORE_SHA" 2>/dev/null; then
+              CHANGED=$(git diff --name-only "$BEFORE_SHA" HEAD)
+              echo "Comparing $BEFORE_SHA..HEAD (push event fallback)"
+            else
+              echo "No successful build or before SHA found -- treating all files as changed"
+              CHANGED=$(git ls-tree --name-only -r HEAD)
+            fi
           fi
 
           echo ""
