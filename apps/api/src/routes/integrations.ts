@@ -90,9 +90,25 @@ export function integrationRoutes() {
 
   const router = new Hono()
 
-  router.get('/integrations/providers', (c) => {
+  router.get('/integrations/providers', async (c) => {
     const composio = getComposio()
-    return c.json({ ok: true, data: [], enabled: !!composio })
+    if (!composio) {
+      return c.json({ ok: true, data: [], enabled: false })
+    }
+
+    try {
+      const toolkits = await composio.toolkits.get()
+      const providers = toolkits.map((toolkit: any) => ({
+        toolkit: toolkit.slug,
+        name: toolkit.name,
+        whiteLabeled: !!TOOLKIT_AUTH_CONFIG_OVERRIDES[toolkit.slug],
+        available: true,
+      }))
+      return c.json({ ok: true, data: providers, enabled: true })
+    } catch (err: any) {
+      console.error('[Integrations] Failed to list providers:', err.message)
+      return c.json({ ok: true, data: [], enabled: true })
+    }
   })
 
   router.post('/integrations/connect', async (c) => {
