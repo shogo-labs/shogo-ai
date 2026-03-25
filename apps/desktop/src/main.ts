@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { app, BrowserWindow, protocol, net, session } from 'electron'
+import { app, BrowserWindow, protocol, net, session, ipcMain, Menu } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import { startLocalServer, stopLocalServer, getApiUrl } from './local-server'
 import { getWebDir } from './paths'
+import { readConfig, writeConfig } from './config'
+import { initAutoUpdater } from './updater'
 
 // Must be called before app 'ready' — gives shogo:// a real origin instead of "null"
 protocol.registerSchemesAsPrivileged([
@@ -22,6 +24,95 @@ protocol.registerSchemesAsPrivileged([
 const IS_DEV = !app.isPackaged
 
 let mainWindow: BrowserWindow | null = null
+let isCloudMode = false
+
+function buildAppMenu(): void {
+  const config = readConfig()
+  const template: Electron.MenuItemConstructorOptions[] = [
+    ...(process.platform === 'darwin' ? [{
+      label: app.name,
+      submenu: [
+        { role: 'about' as const },
+        { type: 'separator' as const },
+        { role: 'services' as const },
+        { type: 'separator' as const },
+        { role: 'hide' as const },
+        { role: 'hideOthers' as const },
+        { role: 'unhide' as const },
+        { type: 'separator' as const },
+        { role: 'quit' as const },
+      ],
+    }] : []),
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: config.mode === 'cloud' ? 'Switch to Local Mode' : 'Switch to Cloud Mode',
+          click: () => {
+            const newMode = config.mode === 'cloud' ? 'local' : 'cloud'
+            writeConfig({ mode: newMode })
+            app.relaunch()
+            app.exit(0)
+          },
+        },
+        { type: 'separator' },
+        process.platform === 'darwin'
+          ? { role: 'close' as const }
+          : { role: 'quit' as const },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'selectAll' },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' },
+        { role: 'forceReload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+      ],
+    },
+    {
+      label: 'Window',
+      submenu: [
+        { role: 'minimize' },
+        { role: 'zoom' },
+        ...(process.platform === 'darwin' ? [
+          { type: 'separator' as const },
+          { role: 'front' as const },
+        ] : [
+          { role: 'close' as const },
+        ]),
+      ],
+    },
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+
+function registerIpcHandlers(): void {
+  ipcMain.handle('get-app-mode', () => readConfig().mode)
+  ipcMain.handle('get-app-config', () => readConfig())
+  ipcMain.handle('set-app-mode', (_event, mode: 'local' | 'cloud') => {
+    writeConfig({ mode })
+    app.relaunch()
+    app.exit(0)
+  })
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -47,11 +138,12 @@ function createWindow(): void {
     mainWindow = null
   })
 
-  if (IS_DEV) {
-    // In dev, load from the Expo dev server or the built web files
+  if (isCloudMode) {
+    const config = readConfig()
+    mainWindow.loadURL(config.cloudUrl)
+  } else if (IS_DEV) {
     const devUrl = process.env.DESKTOP_DEV_URL || `http://localhost:8081`
     mainWindow.loadURL(devUrl).catch(() => {
-      // Fall back to built files if dev server isn't running
       loadProductionWeb()
     })
   } else {
@@ -71,9 +163,6 @@ function loadProductionWeb(): void {
     return
   }
 
-  // Use a custom protocol to serve the SPA with proper route handling.
-  // file:// doesn't support SPA routing (History API), so we register
-  // a custom scheme that falls back to index.html for all unknown paths.
   mainWindow.loadURL('shogo://app/')
 }
 
@@ -82,18 +171,15 @@ function registerProtocol(): void {
     const webDir = getWebDir()
     let urlPath = new URL(request.url).pathname
 
-    // Remove leading slash for file resolution
     if (urlPath.startsWith('/')) {
       urlPath = urlPath.substring(1)
     }
 
-    // Try to serve the exact file first
     const filePath = path.join(webDir, urlPath)
     if (urlPath && fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
       return net.fetch(`file://${filePath}`)
     }
 
-    // SPA fallback: serve index.html for all routes
     const indexPath = path.join(webDir, 'index.html')
     return net.fetch(`file://${indexPath}`)
   })
@@ -104,9 +190,6 @@ function setupSessionHandlers(): void {
   const appOrigin = 'shogo://app'
   const ses = session.defaultSession
 
-  // Attach cookies from the jar to outgoing API requests.
-  // Cookies set by localhost:8002 won't auto-attach on requests from shogo://
-  // because they're cross-origin with SameSite=Lax.
   ses.webRequest.onBeforeSendHeaders(
     { urls: [`${apiOrigin}/*`] },
     (details, callback) => {
@@ -123,7 +206,6 @@ function setupSessionHandlers(): void {
     }
   )
 
-  // Override CORS + cookie headers on API responses, and set CSP on all responses.
   ses.webRequest.onHeadersReceived((details, callback) => {
     const headers = { ...details.responseHeaders }
 
@@ -133,8 +215,6 @@ function setupSessionHandlers(): void {
       headers['Access-Control-Allow-Methods'] = ['GET,POST,PUT,PATCH,DELETE,OPTIONS']
       headers['Access-Control-Allow-Headers'] = ['Content-Type,Authorization,X-Requested-With']
 
-      // Rewrite Set-Cookie to SameSite=None;Secure so the browser stores
-      // them for cross-origin requests from shogo:// → localhost
       const setCookies = headers['Set-Cookie'] || headers['set-cookie']
       if (setCookies) {
         const rewritten = setCookies.map((cookie: string) => {
@@ -147,35 +227,50 @@ function setupSessionHandlers(): void {
       }
     }
 
-    headers['Content-Security-Policy'] = [
-      [
-        "default-src 'self' shogo:",
-        `connect-src 'self' shogo: ${apiOrigin} http://localhost:* ws://localhost:*`,
-        "script-src 'self' shogo: 'unsafe-inline' 'unsafe-eval'",
-        "style-src 'self' shogo: 'unsafe-inline'",
-        "img-src 'self' shogo: data: blob: https:",
-        "font-src 'self' shogo: data:",
-      ].join('; ')
-    ]
+    if (!isCloudMode) {
+      headers['Content-Security-Policy'] = [
+        [
+          "default-src 'self' shogo:",
+          `connect-src 'self' shogo: ${apiOrigin} http://localhost:* ws://localhost:*`,
+          "script-src 'self' shogo: 'unsafe-inline' 'unsafe-eval'",
+          "style-src 'self' shogo: 'unsafe-inline'",
+          "img-src 'self' shogo: data: blob: https:",
+          "font-src 'self' shogo: data:",
+        ].join('; ')
+      ]
+    }
 
     callback({ responseHeaders: headers })
   })
 }
 
 app.whenReady().then(async () => {
-  registerProtocol()
+  const config = readConfig()
+  isCloudMode = config.mode === 'cloud'
 
-  console.log('[Desktop] Starting local server...')
-  try {
-    await startLocalServer()
-  } catch (err) {
-    console.error('[Desktop] Failed to start local server:', err)
-    app.quit()
-    return
+  console.log(`[Desktop] Starting in ${isCloudMode ? 'cloud' : 'local'} mode`)
+
+  registerProtocol()
+  registerIpcHandlers()
+  buildAppMenu()
+
+  if (!isCloudMode) {
+    console.log('[Desktop] Starting local server...')
+    try {
+      await startLocalServer()
+    } catch (err) {
+      console.error('[Desktop] Failed to start local server:', err)
+      app.quit()
+      return
+    }
+    setupSessionHandlers()
   }
 
-  setupSessionHandlers()
   createWindow()
+
+  if (app.isPackaged && mainWindow) {
+    initAutoUpdater(mainWindow)
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -191,5 +286,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', async () => {
-  await stopLocalServer()
+  if (!isCloudMode) {
+    await stopLocalServer()
+  }
 })
