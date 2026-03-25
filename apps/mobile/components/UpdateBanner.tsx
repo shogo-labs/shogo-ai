@@ -10,22 +10,20 @@ export function UpdateBanner() {
   if (!updateAvailable || Platform.OS !== 'web') return null
 
   return (
-    <View className="flex-row items-center justify-center gap-3 bg-primary px-4 py-2.5">
-      <Text className="text-sm font-medium text-primary-foreground">
+    <View className="relative flex-row items-center justify-center bg-brand-landing px-8 py-1.5">
+      <Text className="text-xs font-medium text-white">
         A new version is available.
       </Text>
       <Pressable
         onPress={() => {
           if (typeof window !== 'undefined') window.location.reload()
         }}
-        className="rounded-md bg-primary-foreground/20 px-3 py-1"
+        className="ml-2 rounded bg-white/20 px-2 py-0.5"
       >
-        <Text className="text-sm font-semibold text-primary-foreground">
-          Refresh
-        </Text>
+        <Text className="text-xs font-semibold text-white">Refresh</Text>
       </Pressable>
-      <Pressable onPress={dismiss} className="ml-auto p-1">
-        <X size={16} className="text-primary-foreground" />
+      <Pressable onPress={dismiss} className="absolute right-2 p-1">
+        <X size={12} className="text-white" />
       </Pressable>
     </View>
   )
