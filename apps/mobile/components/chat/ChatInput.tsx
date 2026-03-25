@@ -11,7 +11,7 @@
  * - Agent mode selector via popover dropdown
  *
  * Supports image attachments via file picker, drag-and-drop, and paste (web).
- * Mobile uses file picker stub.
+ * Native: Expo ImagePicker + DocumentPicker (AttachSourceSheet + native-attachment-picker).
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
@@ -31,6 +31,7 @@ import {
   PopoverContent,
 } from "@/components/ui/popover"
 import { usePlatformConfig } from "../../lib/platform-config"
+import { AttachSourceSheet } from "./AttachSourceSheet"
 import {
   ArrowUp,
   Plus,
@@ -152,6 +153,7 @@ export function ChatInput({
   const [isDragOver, setIsDragOver] = useState(false)
   const [queueExpanded, setQueueExpanded] = useState(true)
   const [agentModeOpen, setAgentModeOpen] = useState(false)
+  const [attachSheetOpen, setAttachSheetOpen] = useState(false)
 
   const [internalAgentMode, setInternalAgentMode] = useState<AgentMode>(
     effectiveIsPro ? "advanced" : "basic"
@@ -212,7 +214,9 @@ export function ChatInput({
   const handleAttachClick = useCallback(() => {
     if (Platform.OS === "web") {
       fileInputRef.current?.click()
+      return
     }
+    setAttachSheetOpen(true)
   }, [])
 
   const processFiles = useCallback((files: FileList | File[]) => {
@@ -582,15 +586,18 @@ export function ChatInput({
           </View>
         )}
 
-        {/* Hidden file input for web */}
+        {/* Hidden file input for web (including mobile-web on Android/iOS browsers) */}
         {Platform.OS === "web" && (
           <input
             ref={fileInputRef as any}
             type="file"
             multiple
             accept="image/*,.pdf,.txt,.md,.csv,.json"
+            capture={undefined}
             onChange={handleWebFileChange}
-            style={{ display: "none" }}
+            tabIndex={-1}
+            aria-hidden="true"
+            className="sr-only"
           />
         )}
 
@@ -615,10 +622,10 @@ export function ChatInput({
             "min-h-[60px] max-h-[200px] w-full",
             "bg-transparent",
             "px-4 pt-4 pb-2 text-xs text-foreground",
-            disabled && "opacity-50"
+            disabled && "opacity-50",
+            Platform.OS === "web" && "outline-none"
           )}
           textAlignVertical="top"
-          style={Platform.OS === "web" ? { outlineStyle: "none" } as any : undefined}
         />
 
         {/* Bottom toolbar */}
@@ -629,7 +636,8 @@ export function ChatInput({
             <Pressable
               onPress={handleAttachClick}
               disabled={disabled || isProcessingFiles || pendingFiles.length >= MAX_FILES}
-              className="h-8 w-8 rounded-full items-center justify-center"
+              className="min-h-11 min-w-11 rounded-full items-center justify-center active:opacity-70"
+              android_ripple={{ color: "rgba(128,128,128,0.25)" }}
             >
               <Plus
                 className={cn(
@@ -770,6 +778,36 @@ export function ChatInput({
           </View>
         </View>
       </View>
+
+      {Platform.OS !== "web" && (
+        <AttachSourceSheet
+          open={attachSheetOpen}
+          onOpenChange={setAttachSheetOpen}
+          currentCount={pendingFiles.length}
+          maxFiles={MAX_FILES}
+          maxFileSizeBytes={MAX_FILE_SIZE}
+          onFiles={(picked) => {
+            setPendingFiles((prev) => {
+              const room = MAX_FILES - prev.length
+              if (room <= 0) return prev
+              const added = picked.slice(0, room).map((f) => ({
+                id: f.id,
+                dataUrl: f.dataUrl,
+                name: f.name,
+                type: f.type,
+                size: f.size,
+              }))
+              if (picked.length > room) {
+                setFileError(`Maximum ${MAX_FILES} files allowed`)
+              } else {
+                setFileError(null)
+              }
+              return [...prev, ...added]
+            })
+          }}
+          onError={(message) => setFileError(message)}
+        />
+      )}
     </View>
   )
 }
