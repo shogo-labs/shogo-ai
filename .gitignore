@@ -161,3 +161,7 @@ load-tests/results/
 load-tests/reports/
 load-tests/.env
 load-tests/venv/
+
+# Code signing certificates
+*.p12
+*.pfx
