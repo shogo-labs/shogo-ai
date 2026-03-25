@@ -361,8 +361,9 @@ export class MCPClientManager {
               arguments: args,
             })
 
-            const texts = (result.content as any[])
-              ?.filter((c: any) => c.type === 'text')
+            const contentArray = (result.content as any[]) || []
+            const texts = contentArray
+              .filter((c: any) => c.type === 'text')
               .map((c: any) => c.text)
               .join('\n') || ''
 
@@ -498,8 +499,9 @@ export class MCPClientManager {
               arguments: args,
             })
 
-            const texts = (result.content as any[])
-              ?.filter((c: any) => c.type === 'text')
+            const contentArray = (result.content as any[]) || []
+            const texts = contentArray
+              .filter((c: any) => c.type === 'text')
               .map((c: any) => c.text)
               .join('\n') || ''
 

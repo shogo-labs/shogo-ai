@@ -67,11 +67,14 @@ export const MCP_CATALOG: MCPCatalogEntry[] = [
   {
     id: 'playwright',
     name: 'Playwright Browser',
-    description: 'Full browser automation — navigate pages, click elements, fill forms, take screenshots, and scrape dynamic content.',
+    description: 'Full browser automation — navigate pages, click elements, fill forms, take screenshots, and scrape dynamic content. In local mode, connects to the Playwright browser extension for real-browser control.',
     category: 'browse',
     package: '@playwright/mcp@latest',
     defaultArgs: [],
     requiredEnv: {},
+    optionalEnv: {
+      PLAYWRIGHT_MCP_EXTENSION_TOKEN: 'Playwright browser extension token (for --extension mode in local/desktop). Get this from the Playwright MCP extension in your browser.',
+    },
     providedTools: ['browser_navigate', 'browser_click', 'browser_fill', 'browser_screenshot', 'browser_evaluate'],
     icon: '🎭',
     cloudCompatible: true,

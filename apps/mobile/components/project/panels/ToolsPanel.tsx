@@ -24,6 +24,8 @@ import {
   AlertTriangle,
   ExternalLink,
   Loader2,
+  Monitor,
+  Globe,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Tooltip, TooltipContent, TooltipText } from '@/components/ui/tooltip'
@@ -52,8 +54,10 @@ interface SearchResult {
   installed: boolean
   authType: 'oauth' | 'api_key' | 'none'
   requiredEnv?: Record<string, string>
+  optionalEnv?: Record<string, string>
   composioToolkit?: string
   icon?: string
+  isLocalMode?: boolean
 }
 
 interface ComposioConnectionInfo {
@@ -85,6 +89,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
   const [disconnecting, setDisconnecting] = useState<string | null>(null)
   const [reconnectingToolkit, setReconnectingToolkit] = useState<string | null>(null)
   const [composioConnections, setComposioConnections] = useState<Record<string, ComposioConnectionInfo>>({})
+  const [playwrightMode, setPlaywrightMode] = useState<'extension' | 'headless'>('extension')
 
   const loadInstalledTools = useCallback(async () => {
     if (!agentUrl) return
@@ -163,12 +168,14 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
       setError(null)
       try {
         const env = envInputs[result.id] || {}
+        const isPlaywrightExtension = result.id === 'playwright' && result.isLocalMode && playwrightMode === 'extension'
         const res = await agentFetch(`${agentUrl}/agent/tools/install`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             id: result.id,
             env: Object.keys(env).length > 0 ? env : undefined,
+            extraArgs: isPlaywrightExtension ? ['--extension'] : undefined,
           }),
         })
         if (!res.ok) {
@@ -449,6 +456,76 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
                                 <Text className="text-[10px] text-muted-foreground">
                                   Requires: {Object.keys(result.requiredEnv).join(', ')}
                                 </Text>
+                              </View>
+                            )}
+                            {result.id === 'playwright' && result.isLocalMode && !result.installed && (
+                              <View className="mt-2 gap-1.5">
+                                <Text className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+                                  Browser mode
+                                </Text>
+                                <View className="flex-row gap-1.5">
+                                  <Pressable
+                                    onPress={() => setPlaywrightMode('extension')}
+                                    className={cn(
+                                      'flex-1 flex-row items-center gap-1.5 px-2.5 py-2 rounded-md border',
+                                      playwrightMode === 'extension'
+                                        ? 'border-primary bg-primary/10'
+                                        : 'border-border bg-background active:bg-muted',
+                                    )}
+                                  >
+                                    <Monitor size={12} className={playwrightMode === 'extension' ? 'text-primary' : 'text-muted-foreground'} />
+                                    <View className="flex-1">
+                                      <Text className={cn('text-[11px] font-medium', playwrightMode === 'extension' ? 'text-primary' : 'text-foreground')}>
+                                        Extension
+                                      </Text>
+                                      <Text className="text-[9px] text-muted-foreground">
+                                        Your real browser
+                                      </Text>
+                                    </View>
+                                  </Pressable>
+                                  <Pressable
+                                    onPress={() => setPlaywrightMode('headless')}
+                                    className={cn(
+                                      'flex-1 flex-row items-center gap-1.5 px-2.5 py-2 rounded-md border',
+                                      playwrightMode === 'headless'
+                                        ? 'border-primary bg-primary/10'
+                                        : 'border-border bg-background active:bg-muted',
+                                    )}
+                                  >
+                                    <Globe size={12} className={playwrightMode === 'headless' ? 'text-primary' : 'text-muted-foreground'} />
+                                    <View className="flex-1">
+                                      <Text className={cn('text-[11px] font-medium', playwrightMode === 'headless' ? 'text-primary' : 'text-foreground')}>
+                                        Headless
+                                      </Text>
+                                      <Text className="text-[9px] text-muted-foreground">
+                                        Background browser
+                                      </Text>
+                                    </View>
+                                  </Pressable>
+                                </View>
+                                {playwrightMode === 'extension' && (
+                                  <View className="gap-1">
+                                    <Text className="text-[10px] text-muted-foreground">
+                                      Extension token (optional)
+                                    </Text>
+                                    <TextInput
+                                      // secureTextEntry
+                                      placeholder="Paste token from Playwright browser extension"
+                                      placeholderTextColor="#666"
+                                      value={envInputs[result.id]?.PLAYWRIGHT_MCP_EXTENSION_TOKEN || ''}
+                                      onChangeText={(text) =>
+                                        setEnvInputs((prev) => ({
+                                          ...prev,
+                                          [result.id]: { ...prev[result.id], PLAYWRIGHT_MCP_EXTENSION_TOKEN: text },
+                                        }))
+                                      }
+                                      className="px-2 py-1 text-xs border border-border rounded bg-background text-foreground"
+                                    />
+                                    <Text className="text-[9px] text-muted-foreground">
+                                      Leave blank if your extension doesn't use a token.
+                                    </Text>
+                                  </View>
+                                )}
                               </View>
                             )}
                           </View>

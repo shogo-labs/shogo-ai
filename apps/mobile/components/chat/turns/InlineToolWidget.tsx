@@ -8,7 +8,7 @@
  * Expands to show full args and result.
  */
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useCallback } from "react"
 import { View, Text, Pressable, ScrollView, Image } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { CheckCircle2, XCircle, Loader2, AlertTriangle, ChevronRight } from "lucide-react-native"
@@ -66,6 +66,11 @@ export function InlineToolWidget({
   const displayName = formatToolName(tool.toolName)
   const keyArg = getToolKeyArg(tool.toolName, tool.args)
   const isAuthErr = detectAuthError(tool)
+  const [failedImages, setFailedImages] = useState<Set<string>>(new Set())
+
+  const handleImageError = useCallback((uri: string) => {
+    setFailedImages(prev => new Set(prev).add(uri))
+  }, [])
 
   const resultImageUrls = useMemo(() => {
     const urls: string[] = []
@@ -88,17 +93,6 @@ export function InlineToolWidget({
         urls.push(`${agentUrl}/agent/workspace/download/${filePath}`)
       } else {
         urls.push(filePath)
-      }
-    }
-
-    if (typeof tool.result === 'object') {
-      const r = tool.result as Record<string, unknown>
-      if (Array.isArray(r._images)) {
-        for (const img of r._images as Array<{ data: string; mimeType: string }>) {
-          if (img.data && img.mimeType) {
-            urls.push(`data:${img.mimeType};base64,${img.data}`)
-          }
-        }
       }
     }
 
@@ -187,12 +181,14 @@ export function InlineToolWidget({
             <View className="gap-1">
               {resultImageUrls.length > 0 && (
                 <View className="gap-1">
-                  {resultImageUrls.map((uri, i) => (
+                  {resultImageUrls.filter(uri => !failedImages.has(uri)).map((uri, i) => (
                     <Image
-                      key={i}
+                      key={uri}
                       source={{ uri }}
-                      style={{ width: '100%' as any, aspectRatio: 16 / 10, borderRadius: 6, borderWidth: 1, borderColor: '#e5e7eb' }}
+                      style={{ width: '100%' as any, aspectRatio: 16 / 10, borderRadius: 6 }}
+                      className="border border-border"
                       resizeMode="contain"
+                      onError={() => handleImageError(uri)}
                     />
                   ))}
                 </View>

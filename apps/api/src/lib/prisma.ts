@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { PrismaClient } from '../generated/prisma/client';
 
-const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
+const dbUrl = process.env.DATABASE_URL || ''
+const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true' && !dbUrl.startsWith('postgres')
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;

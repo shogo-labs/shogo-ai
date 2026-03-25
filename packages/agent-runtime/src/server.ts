@@ -1277,9 +1277,17 @@ app.get('/agent/workspace/download/*', (c) => {
   const subPath = c.req.path.replace('/agent/workspace/download/', '')
   if (!subPath) return c.json({ error: 'Path required' }, 400)
 
-  const resolved = resolveFilesPath(subPath)
+  let resolved = resolveFilesPath(subPath)
   if (!resolved) return c.json({ error: 'Path outside files directory' }, 400)
-  if (!existsSync(resolved)) return c.json({ error: 'File not found' }, 404)
+
+  if (!existsSync(resolved)) {
+    const wsRoot = resolve(WORKSPACE_DIR, subPath)
+    if (wsRoot.startsWith(resolve(WORKSPACE_DIR)) && existsSync(wsRoot) && /\.(png|jpe?g|gif|webp|svg|pdf)$/i.test(subPath)) {
+      resolved = wsRoot
+    } else {
+      return c.json({ error: 'File not found' }, 404)
+    }
+  }
 
   const content = readFileSync(resolved)
   const fileName = subPath.split('/').pop() || 'download'
@@ -1292,6 +1300,8 @@ app.get('/agent/workspace/download/*', (c) => {
       'Content-Type': contentType,
       'Content-Disposition': `${isInline ? 'inline' : 'attachment'}; filename="${fileName}"`,
       'Content-Length': String(content.length),
+      'Cross-Origin-Resource-Policy': 'cross-origin',
+      'Access-Control-Allow-Origin': '*',
     },
   })
 })
@@ -1540,10 +1550,23 @@ app.post('/agent/mcp-servers/toggle', async (c) => {
   config.mcpServers = config.mcpServers || {}
 
   if (enabled) {
+    const args = [entry.package, ...entry.defaultArgs]
+    const mergedEnv: Record<string, string> = { ...env }
+
+    if (entry.id === 'playwright' && process.env.SHOGO_LOCAL_MODE === 'true') {
+      if (!args.includes('--extension')) {
+        args.push('--extension')
+      }
+      const token = env?.PLAYWRIGHT_MCP_EXTENSION_TOKEN || process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN
+      if (token) {
+        mergedEnv.PLAYWRIGHT_MCP_EXTENSION_TOKEN = token
+      }
+    }
+
     config.mcpServers[entry.id] = {
       command: 'npx',
-      args: [entry.package, ...entry.defaultArgs],
-      ...(env && Object.keys(env).length > 0 ? { env } : {}),
+      args,
+      ...(Object.keys(mergedEnv).length > 0 ? { env: mergedEnv } : {}),
     }
   } else {
     delete config.mcpServers[entry.id]
@@ -1611,6 +1634,7 @@ app.get('/agent/tools/search', async (c) => {
     if (score > 0) scored.push({ entry, score })
   }
   scored.sort((a, b) => b.score - a.score)
+  const isLocal = process.env.SHOGO_LOCAL_MODE === 'true'
   for (const { entry } of scored.slice(0, 5)) {
     const entryNorm = entry.id.toLowerCase().replace(/[-_\s]/g, '')
     if (seenSlugs.has(entryNorm)) continue
@@ -1623,7 +1647,9 @@ app.get('/agent/tools/search', async (c) => {
       installed: installedNames.has(entry.id),
       authType: Object.keys(entry.requiredEnv).length > 0 ? 'api_key' : 'none',
       requiredEnv: Object.keys(entry.requiredEnv).length > 0 ? entry.requiredEnv : undefined,
+      optionalEnv: entry.optionalEnv && Object.keys(entry.optionalEnv).length > 0 ? entry.optionalEnv : undefined,
       icon: entry.icon,
+      isLocalMode: isLocal,
     })
   }
 
@@ -1635,9 +1661,10 @@ app.post('/agent/tools/install', async (c) => {
     return c.json({ error: 'Agent gateway not running' }, 503)
   }
 
-  const { id, env } = await c.req.json() as {
+  const { id, env, extraArgs } = await c.req.json() as {
     id: string
     env?: Record<string, string>
+    extraArgs?: string[]
   }
 
   const mcpMgr = agentGateway.getMcpClientManager()
@@ -1670,11 +1697,27 @@ app.post('/agent/tools/install', async (c) => {
   }
 
   try {
-    const serverEnv = env || {}
+    const args = [catalogEntry.package, ...catalogEntry.defaultArgs]
+    const mergedEnv: Record<string, string> = { ...env }
+
+    if (id === 'playwright' && process.env.SHOGO_LOCAL_MODE === 'true' && extraArgs?.includes('--extension')) {
+      if (!args.includes('--extension')) {
+        args.push('--extension')
+      }
+      const token = env?.PLAYWRIGHT_MCP_EXTENSION_TOKEN || process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN
+      if (token) {
+        mergedEnv.PLAYWRIGHT_MCP_EXTENSION_TOKEN = token
+      }
+    }
+
+    const serverCwd = id === 'playwright' ? FILES_DIR : undefined
+    if (serverCwd) mkdirSync(serverCwd, { recursive: true })
+
     await mcpMgr.hotAddServer(id, {
       command: 'npx',
-      args: [catalogEntry.package, ...catalogEntry.defaultArgs],
-      env: Object.keys(serverEnv).length > 0 ? serverEnv : undefined,
+      args,
+      env: Object.keys(mergedEnv).length > 0 ? mergedEnv : undefined,
+      cwd: serverCwd,
     })
     return c.json({ ok: true, id, source: 'catalog' })
   } catch (err: any) {
