@@ -3971,10 +3971,11 @@ Examples:
     // Track credit usage (fire-and-forget, small cost for Haiku)
     if (workspaceId) {
       const usage = result.usage as any
-      const totalTokens = (usage?.inputTokens || usage?.promptTokens || 0) + (usage?.outputTokens || usage?.completionTokens || 0)
-      if (totalTokens > 0) {
-        const creditCost = calculateCreditCost(totalTokens, 'haiku')
-        billingService.consumeCredits(workspaceId, null, authUserId || 'system', 'project_name_generation', creditCost, { totalTokens }).catch(() => {})
+      const inTok = usage?.inputTokens || usage?.promptTokens || 0
+      const outTok = usage?.outputTokens || usage?.completionTokens || 0
+      if (inTok + outTok > 0) {
+        const creditCost = calculateCreditCost(inTok, outTok, 'haiku')
+        billingService.consumeCredits(workspaceId, null, authUserId || 'system', 'project_name_generation', creditCost, { inputTokens: inTok, outputTokens: outTok, totalTokens: inTok + outTok }).catch(() => {})
       }
     }
 
@@ -4043,24 +4044,13 @@ app.post('/api/chat', async (c) => {
 
     // credit-limit-enforcement: Pre-check credits BEFORE calling AI
     if (workspaceId) {
-      let ledger = await billingService.getCreditLedger(workspaceId)
-      if (!ledger) {
-        ledger = await billingService.allocateFreeCredits(workspaceId)
-      }
-      if (ledger) {
-        const now = Date.now()
-        const lastResetDay = new Date(ledger.lastDailyReset).setUTCHours(0, 0, 0, 0)
-        const todayStart = new Date(now).setUTCHours(0, 0, 0, 0)
-        const needsReset = lastResetDay !== todayStart
-        const dailyCredits = needsReset ? 5 : ledger.dailyCredits
-        const total = dailyCredits + ledger.monthlyCredits + ledger.rolloverCredits
-        if (total < 0.5) {
-          return c.json({
-            error: 'Insufficient credits',
-            message: 'You have run out of daily credits. Credits reset at midnight UTC.',
-            creditsRemaining: total,
-          }, 402)
-        }
+      const sufficient = await billingService.hasCredits(workspaceId, 0.5)
+      if (!sufficient) {
+        return c.json({
+          error: 'Insufficient credits',
+          message: 'You have run out of credits. Daily credits reset at midnight UTC.',
+          creditsRemaining: 0,
+        }, 402)
       }
     }
 

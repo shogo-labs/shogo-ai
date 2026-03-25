@@ -6,7 +6,7 @@
  */
 
 import { prisma, type Prisma, CreditSource, SubscriptionStatus, BillingInterval, PlanId } from '../lib/prisma';
-import { DAILY_CREDITS, PLAN_CREDITS, getMonthlyCreditsForPlan } from '../config/credit-plans';
+import { DAILY_CREDITS, MONTHLY_DAILY_CAP, PLAN_CREDITS, getMonthlyCreditsForPlan } from '../config/credit-plans';
 
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 
@@ -151,7 +151,8 @@ export async function isBusinessOrHigherPlan(workspaceId: string): Promise<boole
 
 /**
  * Check if workspace has sufficient credits (without deducting).
- * Uses lazy daily reset logic for accurate balance.
+ * Uses lazy daily reset logic for accurate balance, including the monthly
+ * cap on daily credit dispensing (MONTHLY_DAILY_CAP).
  */
 export async function hasCredits(workspaceId: string, minimumRequired = 0.5): Promise<boolean> {
   if (isLocalMode) return true
@@ -163,9 +164,20 @@ export async function hasCredits(workspaceId: string, minimumRequired = 0.5): Pr
   if (!ledger) return false;
 
   const now = new Date();
-  const needsReset = now.toDateString() !== new Date(ledger.lastDailyReset).toDateString();
-  const daily = needsReset ? DAILY_CREDITS : ledger.dailyCredits;
+  const needsDailyReset = now.toDateString() !== new Date(ledger.lastDailyReset).toDateString();
+
+  let daily = ledger.dailyCredits;
+  if (needsDailyReset) {
+    const dispensed = isNewMonth(now, ledger.lastMonthlyReset) ? 0 : ledger.dailyCreditsDispensedThisMonth;
+    daily = dispensed + DAILY_CREDITS <= MONTHLY_DAILY_CAP ? DAILY_CREDITS : 0;
+  }
+
   return (daily + ledger.monthlyCredits + ledger.rolloverCredits) >= minimumRequired;
+}
+
+function isNewMonth(now: Date, lastMonthlyReset: Date): boolean {
+  return now.getUTCMonth() !== lastMonthlyReset.getUTCMonth() ||
+         now.getUTCFullYear() !== lastMonthlyReset.getUTCFullYear()
 }
 
 const FK_RETRY_DELAYS = [1000, 2000, 4000]
@@ -233,11 +245,25 @@ async function _consumeCreditsTransaction(
       }
     }
 
-    // Lazy daily reset
+    // Lazy daily + monthly reset
     const now = new Date();
     const needsDailyReset = now.toDateString() !== new Date(ledger.lastDailyReset).toDateString();
+    const needsMonthlyReset = isNewMonth(now, ledger.lastMonthlyReset);
 
-    let dailyCredits = needsDailyReset ? DAILY_CREDITS : ledger.dailyCredits;
+    let dailyCreditsDispensed = needsMonthlyReset ? 0 : ledger.dailyCreditsDispensedThisMonth;
+    let dailyCredits: number;
+
+    if (needsDailyReset) {
+      if (dailyCreditsDispensed + DAILY_CREDITS <= MONTHLY_DAILY_CAP) {
+        dailyCredits = DAILY_CREDITS;
+        dailyCreditsDispensed += DAILY_CREDITS;
+      } else {
+        dailyCredits = 0;
+      }
+    } else {
+      dailyCredits = ledger.dailyCredits;
+    }
+
     let monthlyCredits = ledger.monthlyCredits;
     let rolloverCredits = ledger.rolloverCredits;
 
@@ -257,7 +283,6 @@ async function _consumeCreditsTransaction(
       monthlyCredits -= creditCost;
       balanceAfter = monthlyCredits;
     } else if (rolloverCredits >= creditCost) {
-      // Rollover credits (tracked as 'monthly' source since they originate from unused monthly)
       creditSource = 'monthly';
       balanceBefore = rolloverCredits;
       rolloverCredits -= creditCost;
@@ -277,7 +302,9 @@ async function _consumeCreditsTransaction(
         dailyCredits,
         monthlyCredits,
         rolloverCredits,
+        dailyCreditsDispensedThisMonth: dailyCreditsDispensed,
         ...(needsDailyReset ? { lastDailyReset: now } : {}),
+        ...(needsMonthlyReset ? { lastMonthlyReset: now } : {}),
       },
     });
 

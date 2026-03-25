@@ -6,35 +6,24 @@
  * Shared module for computing credit costs from token usage.
  * Used by both the AI chat endpoint and the AI proxy.
  *
- * Pricing is based on Anthropic's model costs:
- * - Haiku: ~$0.80/$4 per 1M tokens (input/output) - cheapest
- * - Sonnet: ~$3/$15 per 1M tokens (input/output) - 4x more than Haiku
- * - Opus: ~$15/$75 per 1M tokens (input/output) - 5x more than Sonnet
+ * 1 credit = $0.10 of raw LLM cost. Credits are calculated from actual
+ * dollar cost using separate input/output token pricing per model tier.
  *
- * Credit rates (per 5000 tokens):
- * - Haiku (basic): 0.025 credits
- * - Sonnet (advanced): 0.1 credits
- * - Opus: 0.5 credits
+ * Model costs (per 1M tokens):
+ * - Haiku:  $0.80 input / $4.00 output
+ * - Sonnet: $3.00 input / $15.00 output
+ * - Opus:   $15.00 input / $75.00 output
  */
 
-export const CREDIT_MARKUP_FACTOR = 1.3
+export const CREDIT_DOLLAR_VALUE = 0.10
 
-export const MODEL_CREDIT_CONFIG = {
-  haiku: {
-    creditsPerTokenBatch: 0.025,
-    tokenBatchSize: 5000,
-  },
-  sonnet: {
-    creditsPerTokenBatch: 0.1,
-    tokenBatchSize: 5000,
-  },
-  opus: {
-    creditsPerTokenBatch: 0.5,
-    tokenBatchSize: 5000,
-  },
+export const MODEL_DOLLAR_COSTS = {
+  haiku:  { inputPerMillion: 0.80, outputPerMillion: 4.00 },
+  sonnet: { inputPerMillion: 3.00, outputPerMillion: 15.00 },
+  opus:   { inputPerMillion: 15.00, outputPerMillion: 75.00 },
 } as const
 
-export type ModelName = keyof typeof MODEL_CREDIT_CONFIG
+export type ModelName = keyof typeof MODEL_DOLLAR_COSTS
 export type AgentMode = 'basic' | 'advanced'
 export type ModelTier = 'economy' | 'standard' | 'premium'
 
@@ -90,7 +79,7 @@ export function getModelTier(model: string): ModelTier {
  */
 export function agentModeToModel(agentMode?: AgentMode): ModelName {
   if (agentMode === 'basic') return 'haiku'
-  return 'sonnet' // default for 'advanced' or undefined
+  return 'sonnet'
 }
 
 /**
@@ -103,44 +92,47 @@ export function proxyModelToBillingModel(proxyModel: string): ModelName {
   return 'sonnet'
 }
 
+function resolveModel(modelOrAgentMode?: ModelName | AgentMode): ModelName {
+  if (modelOrAgentMode === 'basic' || modelOrAgentMode === 'advanced') {
+    return agentModeToModel(modelOrAgentMode as AgentMode)
+  }
+  if (modelOrAgentMode && modelOrAgentMode in MODEL_DOLLAR_COSTS) {
+    return modelOrAgentMode as ModelName
+  }
+  return 'sonnet'
+}
+
 /**
- * Calculate credit cost based on total tokens consumed and model used.
- *
- * @param totalTokens - Combined input + output tokens
- * @param modelOrAgentMode - Model name ('haiku', 'sonnet', 'opus') or agent mode ('basic', 'advanced')
- * @returns Credits to charge
+ * Calculate credit cost from separate input/output token counts.
+ * 1 credit = $0.10 of raw LLM cost.
  */
 export function calculateCreditCost(
-  totalTokens: number,
+  inputTokens: number,
+  outputTokens: number,
   modelOrAgentMode?: ModelName | AgentMode
 ): number {
-  // Determine the model from input
-  let model: ModelName = 'sonnet' // default
-  if (modelOrAgentMode === 'basic' || modelOrAgentMode === 'advanced') {
-    model = agentModeToModel(modelOrAgentMode as AgentMode)
-  } else if (modelOrAgentMode && modelOrAgentMode in MODEL_CREDIT_CONFIG) {
-    model = modelOrAgentMode as ModelName
-  }
+  const model = resolveModel(modelOrAgentMode)
+  const costs = MODEL_DOLLAR_COSTS[model]
+  const dollarCost =
+    (inputTokens * costs.inputPerMillion / 1_000_000) +
+    (outputTokens * costs.outputPerMillion / 1_000_000)
 
-  const config = MODEL_CREDIT_CONFIG[model]
-
-  const rawCredits = (totalTokens / config.tokenBatchSize) * config.creditsPerTokenBatch * CREDIT_MARKUP_FACTOR
-
-  return Math.ceil(rawCredits * 10) / 10
+  return Math.ceil((dollarCost / CREDIT_DOLLAR_VALUE) * 10) / 10
 }
 
 // =============================================================================
 // Image Generation Credit Costs
 // =============================================================================
 
+// Base costs are expressed directly in credits (1 credit = $0.10).
 export const IMAGE_CREDIT_CONFIG: Record<string, { base: number; hdMultiplier: number; largeSizeMultiplier: number }> = {
-  'dall-e-3':       { base: 2.0, hdMultiplier: 2.0, largeSizeMultiplier: 1.5 },
-  'dall-e-2':       { base: 1.0, hdMultiplier: 1.0, largeSizeMultiplier: 1.0 },
-  'gpt-image-1':    { base: 3.0, hdMultiplier: 1.5, largeSizeMultiplier: 1.5 },
-  'gpt-image-1.5':  { base: 3.0, hdMultiplier: 1.5, largeSizeMultiplier: 1.5 },
-  'imagen-4':       { base: 1.5, hdMultiplier: 1.0, largeSizeMultiplier: 1.5 },
-  'imagen-4-ultra': { base: 3.0, hdMultiplier: 1.0, largeSizeMultiplier: 1.5 },
-  'imagen-4-fast':  { base: 1.0, hdMultiplier: 1.0, largeSizeMultiplier: 1.5 },
+  'dall-e-3':       { base: 2.6, hdMultiplier: 2.0, largeSizeMultiplier: 1.5 },
+  'dall-e-2':       { base: 1.3, hdMultiplier: 1.0, largeSizeMultiplier: 1.0 },
+  'gpt-image-1':    { base: 3.9, hdMultiplier: 1.5, largeSizeMultiplier: 1.5 },
+  'gpt-image-1.5':  { base: 3.9, hdMultiplier: 1.5, largeSizeMultiplier: 1.5 },
+  'imagen-4':       { base: 2.0, hdMultiplier: 1.0, largeSizeMultiplier: 1.5 },
+  'imagen-4-ultra': { base: 3.9, hdMultiplier: 1.0, largeSizeMultiplier: 1.5 },
+  'imagen-4-fast':  { base: 1.3, hdMultiplier: 1.0, largeSizeMultiplier: 1.5 },
 }
 
 const LARGE_IMAGE_SIZES = new Set(['1792x1024', '1024x1792', '1536x1024', '1024x1536'])
@@ -164,5 +156,5 @@ export function calculateImageCreditCost(
     cost *= config.largeSizeMultiplier
   }
 
-  return Math.ceil(cost * CREDIT_MARKUP_FACTOR * 10) / 10
+  return Math.ceil(cost * 10) / 10
 }

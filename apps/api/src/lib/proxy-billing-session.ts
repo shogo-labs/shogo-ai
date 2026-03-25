@@ -128,7 +128,7 @@ export async function closeSession(
   }
 
   const billingModel = proxyModelToBillingModel(session.model)
-  const creditCost = calculateCreditCost(totalTokens, billingModel)
+  const creditCost = calculateCreditCost(session.inputTokens, session.outputTokens, billingModel)
   const durationMs = Date.now() - session.openedAt
 
   try {

@@ -492,6 +492,7 @@ model CreditLedger {
   monthlyCredits   Float    @default(0)
   dailyCredits     Float    @default(0)
   rolloverCredits  Float    @default(0)
+  dailyCreditsDispensedThisMonth Float @default(0)
   anniversaryDay   Int
   lastDailyReset   DateTime
   lastMonthlyReset DateTime
