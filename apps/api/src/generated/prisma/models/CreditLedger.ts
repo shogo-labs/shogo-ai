@@ -30,6 +30,7 @@ export type CreditLedgerAvgAggregateOutputType = {
   monthlyCredits: number | null
   dailyCredits: number | null
   rolloverCredits: number | null
+  dailyCreditsDispensedThisMonth: number | null
   anniversaryDay: number | null
 }
 
@@ -37,6 +38,7 @@ export type CreditLedgerSumAggregateOutputType = {
   monthlyCredits: number | null
   dailyCredits: number | null
   rolloverCredits: number | null
+  dailyCreditsDispensedThisMonth: number | null
   anniversaryDay: number | null
 }
 
@@ -46,6 +48,7 @@ export type CreditLedgerMinAggregateOutputType = {
   monthlyCredits: number | null
   dailyCredits: number | null
   rolloverCredits: number | null
+  dailyCreditsDispensedThisMonth: number | null
   anniversaryDay: number | null
   lastDailyReset: Date | null
   lastMonthlyReset: Date | null
@@ -59,6 +62,7 @@ export type CreditLedgerMaxAggregateOutputType = {
   monthlyCredits: number | null
   dailyCredits: number | null
   rolloverCredits: number | null
+  dailyCreditsDispensedThisMonth: number | null
   anniversaryDay: number | null
   lastDailyReset: Date | null
   lastMonthlyReset: Date | null
@@ -72,6 +76,7 @@ export type CreditLedgerCountAggregateOutputType = {
   monthlyCredits: number
   dailyCredits: number
   rolloverCredits: number
+  dailyCreditsDispensedThisMonth: number
   anniversaryDay: number
   lastDailyReset: number
   lastMonthlyReset: number
@@ -85,6 +90,7 @@ export type CreditLedgerAvgAggregateInputType = {
   monthlyCredits?: true
   dailyCredits?: true
   rolloverCredits?: true
+  dailyCreditsDispensedThisMonth?: true
   anniversaryDay?: true
 }
 
@@ -92,6 +98,7 @@ export type CreditLedgerSumAggregateInputType = {
   monthlyCredits?: true
   dailyCredits?: true
   rolloverCredits?: true
+  dailyCreditsDispensedThisMonth?: true
   anniversaryDay?: true
 }
 
@@ -101,6 +108,7 @@ export type CreditLedgerMinAggregateInputType = {
   monthlyCredits?: true
   dailyCredits?: true
   rolloverCredits?: true
+  dailyCreditsDispensedThisMonth?: true
   anniversaryDay?: true
   lastDailyReset?: true
   lastMonthlyReset?: true
@@ -114,6 +122,7 @@ export type CreditLedgerMaxAggregateInputType = {
   monthlyCredits?: true
   dailyCredits?: true
   rolloverCredits?: true
+  dailyCreditsDispensedThisMonth?: true
   anniversaryDay?: true
   lastDailyReset?: true
   lastMonthlyReset?: true
@@ -127,6 +136,7 @@ export type CreditLedgerCountAggregateInputType = {
   monthlyCredits?: true
   dailyCredits?: true
   rolloverCredits?: true
+  dailyCreditsDispensedThisMonth?: true
   anniversaryDay?: true
   lastDailyReset?: true
   lastMonthlyReset?: true
@@ -227,6 +237,7 @@ export type CreditLedgerGroupByOutputType = {
   monthlyCredits: number
   dailyCredits: number
   rolloverCredits: number
+  dailyCreditsDispensedThisMonth: number
   anniversaryDay: number
   lastDailyReset: Date
   lastMonthlyReset: Date
@@ -263,6 +274,7 @@ export type CreditLedgerWhereInput = {
   monthlyCredits?: Prisma.FloatFilter<"CreditLedger"> | number
   dailyCredits?: Prisma.FloatFilter<"CreditLedger"> | number
   rolloverCredits?: Prisma.FloatFilter<"CreditLedger"> | number
+  dailyCreditsDispensedThisMonth?: Prisma.FloatFilter<"CreditLedger"> | number
   anniversaryDay?: Prisma.IntFilter<"CreditLedger"> | number
   lastDailyReset?: Prisma.DateTimeFilter<"CreditLedger"> | Date | string
   lastMonthlyReset?: Prisma.DateTimeFilter<"CreditLedger"> | Date | string
@@ -277,6 +289,7 @@ export type CreditLedgerOrderByWithRelationInput = {
   monthlyCredits?: Prisma.SortOrder
   dailyCredits?: Prisma.SortOrder
   rolloverCredits?: Prisma.SortOrder
+  dailyCreditsDispensedThisMonth?: Prisma.SortOrder
   anniversaryDay?: Prisma.SortOrder
   lastDailyReset?: Prisma.SortOrder
   lastMonthlyReset?: Prisma.SortOrder
@@ -294,6 +307,7 @@ export type CreditLedgerWhereUniqueInput = Prisma.AtLeast<{
   monthlyCredits?: Prisma.FloatFilter<"CreditLedger"> | number
   dailyCredits?: Prisma.FloatFilter<"CreditLedger"> | number
   rolloverCredits?: Prisma.FloatFilter<"CreditLedger"> | number
+  dailyCreditsDispensedThisMonth?: Prisma.FloatFilter<"CreditLedger"> | number
   anniversaryDay?: Prisma.IntFilter<"CreditLedger"> | number
   lastDailyReset?: Prisma.DateTimeFilter<"CreditLedger"> | Date | string
   lastMonthlyReset?: Prisma.DateTimeFilter<"CreditLedger"> | Date | string
@@ -308,6 +322,7 @@ export type CreditLedgerOrderByWithAggregationInput = {
   monthlyCredits?: Prisma.SortOrder
   dailyCredits?: Prisma.SortOrder
   rolloverCredits?: Prisma.SortOrder
+  dailyCreditsDispensedThisMonth?: Prisma.SortOrder
   anniversaryDay?: Prisma.SortOrder
   lastDailyReset?: Prisma.SortOrder
   lastMonthlyReset?: Prisma.SortOrder
@@ -329,6 +344,7 @@ export type CreditLedgerScalarWhereWithAggregatesInput = {
   monthlyCredits?: Prisma.FloatWithAggregatesFilter<"CreditLedger"> | number
   dailyCredits?: Prisma.FloatWithAggregatesFilter<"CreditLedger"> | number
   rolloverCredits?: Prisma.FloatWithAggregatesFilter<"CreditLedger"> | number
+  dailyCreditsDispensedThisMonth?: Prisma.FloatWithAggregatesFilter<"CreditLedger"> | number
   anniversaryDay?: Prisma.IntWithAggregatesFilter<"CreditLedger"> | number
   lastDailyReset?: Prisma.DateTimeWithAggregatesFilter<"CreditLedger"> | Date | string
   lastMonthlyReset?: Prisma.DateTimeWithAggregatesFilter<"CreditLedger"> | Date | string
@@ -341,6 +357,7 @@ export type CreditLedgerCreateInput = {
   monthlyCredits?: number
   dailyCredits?: number
   rolloverCredits?: number
+  dailyCreditsDispensedThisMonth?: number
   anniversaryDay: number
   lastDailyReset: Date | string
   lastMonthlyReset: Date | string
@@ -355,6 +372,7 @@ export type CreditLedgerUncheckedCreateInput = {
   monthlyCredits?: number
   dailyCredits?: number
   rolloverCredits?: number
+  dailyCreditsDispensedThisMonth?: number
   anniversaryDay: number
   lastDailyReset: Date | string
   lastMonthlyReset: Date | string
@@ -367,6 +385,7 @@ export type CreditLedgerUpdateInput = {
   monthlyCredits?: Prisma.FloatFieldUpdateOperationsInput | number
   dailyCredits?: Prisma.FloatFieldUpdateOperationsInput | number
   rolloverCredits?: Prisma.FloatFieldUpdateOperationsInput | number
+  dailyCreditsDispensedThisMonth?: Prisma.FloatFieldUpdateOperationsInput | number
   anniversaryDay?: Prisma.IntFieldUpdateOperationsInput | number
   lastDailyReset?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   lastMonthlyReset?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -381,6 +400,7 @@ export type CreditLedgerUncheckedUpdateInput = {
   monthlyCredits?: Prisma.FloatFieldUpdateOperationsInput | number
   dailyCredits?: Prisma.FloatFieldUpdateOperationsInput | number
   rolloverCredits?: Prisma.FloatFieldUpdateOperationsInput | number
+  dailyCreditsDispensedThisMonth?: Prisma.FloatFieldUpdateOperationsInput | number
   anniversaryDay?: Prisma.IntFieldUpdateOperationsInput | number
   lastDailyReset?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   lastMonthlyReset?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -394,6 +414,7 @@ export type CreditLedgerCreateManyInput = {
   monthlyCredits?: number
   dailyCredits?: number
   rolloverCredits?: number
+  dailyCreditsDispensedThisMonth?: number
   anniversaryDay: number
   lastDailyReset: Date | string
   lastMonthlyReset: Date | string
@@ -406,6 +427,7 @@ export type CreditLedgerUpdateManyMutationInput = {
   monthlyCredits?: Prisma.FloatFieldUpdateOperationsInput | number
   dailyCredits?: Prisma.FloatFieldUpdateOperationsInput | number
   rolloverCredits?: Prisma.FloatFieldUpdateOperationsInput | number
+  dailyCreditsDispensedThisMonth?: Prisma.FloatFieldUpdateOperationsInput | number
   anniversaryDay?: Prisma.IntFieldUpdateOperationsInput | number
   lastDailyReset?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   lastMonthlyReset?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -419,6 +441,7 @@ export type CreditLedgerUncheckedUpdateManyInput = {
   monthlyCredits?: Prisma.FloatFieldUpdateOperationsInput | number
   dailyCredits?: Prisma.FloatFieldUpdateOperationsInput | number
   rolloverCredits?: Prisma.FloatFieldUpdateOperationsInput | number
+  dailyCreditsDispensedThisMonth?: Prisma.FloatFieldUpdateOperationsInput | number
   anniversaryDay?: Prisma.IntFieldUpdateOperationsInput | number
   lastDailyReset?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   lastMonthlyReset?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -442,6 +465,7 @@ export type CreditLedgerCountOrderByAggregateInput = {
   monthlyCredits?: Prisma.SortOrder
   dailyCredits?: Prisma.SortOrder
   rolloverCredits?: Prisma.SortOrder
+  dailyCreditsDispensedThisMonth?: Prisma.SortOrder
   anniversaryDay?: Prisma.SortOrder
   lastDailyReset?: Prisma.SortOrder
   lastMonthlyReset?: Prisma.SortOrder
@@ -453,6 +477,7 @@ export type CreditLedgerAvgOrderByAggregateInput = {
   monthlyCredits?: Prisma.SortOrder
   dailyCredits?: Prisma.SortOrder
   rolloverCredits?: Prisma.SortOrder
+  dailyCreditsDispensedThisMonth?: Prisma.SortOrder
   anniversaryDay?: Prisma.SortOrder
 }
 
@@ -462,6 +487,7 @@ export type CreditLedgerMaxOrderByAggregateInput = {
   monthlyCredits?: Prisma.SortOrder
   dailyCredits?: Prisma.SortOrder
   rolloverCredits?: Prisma.SortOrder
+  dailyCreditsDispensedThisMonth?: Prisma.SortOrder
   anniversaryDay?: Prisma.SortOrder
   lastDailyReset?: Prisma.SortOrder
   lastMonthlyReset?: Prisma.SortOrder
@@ -475,6 +501,7 @@ export type CreditLedgerMinOrderByAggregateInput = {
   monthlyCredits?: Prisma.SortOrder
   dailyCredits?: Prisma.SortOrder
   rolloverCredits?: Prisma.SortOrder
+  dailyCreditsDispensedThisMonth?: Prisma.SortOrder
   anniversaryDay?: Prisma.SortOrder
   lastDailyReset?: Prisma.SortOrder
   lastMonthlyReset?: Prisma.SortOrder
@@ -486,6 +513,7 @@ export type CreditLedgerSumOrderByAggregateInput = {
   monthlyCredits?: Prisma.SortOrder
   dailyCredits?: Prisma.SortOrder
   rolloverCredits?: Prisma.SortOrder
+  dailyCreditsDispensedThisMonth?: Prisma.SortOrder
   anniversaryDay?: Prisma.SortOrder
 }
 
@@ -536,6 +564,7 @@ export type CreditLedgerCreateWithoutWorkspaceInput = {
   monthlyCredits?: number
   dailyCredits?: number
   rolloverCredits?: number
+  dailyCreditsDispensedThisMonth?: number
   anniversaryDay: number
   lastDailyReset: Date | string
   lastMonthlyReset: Date | string
@@ -548,6 +577,7 @@ export type CreditLedgerUncheckedCreateWithoutWorkspaceInput = {
   monthlyCredits?: number
   dailyCredits?: number
   rolloverCredits?: number
+  dailyCreditsDispensedThisMonth?: number
   anniversaryDay: number
   lastDailyReset: Date | string
   lastMonthlyReset: Date | string
@@ -590,6 +620,7 @@ export type CreditLedgerScalarWhereInput = {
   monthlyCredits?: Prisma.FloatFilter<"CreditLedger"> | number
   dailyCredits?: Prisma.FloatFilter<"CreditLedger"> | number
   rolloverCredits?: Prisma.FloatFilter<"CreditLedger"> | number
+  dailyCreditsDispensedThisMonth?: Prisma.FloatFilter<"CreditLedger"> | number
   anniversaryDay?: Prisma.IntFilter<"CreditLedger"> | number
   lastDailyReset?: Prisma.DateTimeFilter<"CreditLedger"> | Date | string
   lastMonthlyReset?: Prisma.DateTimeFilter<"CreditLedger"> | Date | string
@@ -602,6 +633,7 @@ export type CreditLedgerCreateManyWorkspaceInput = {
   monthlyCredits?: number
   dailyCredits?: number
   rolloverCredits?: number
+  dailyCreditsDispensedThisMonth?: number
   anniversaryDay: number
   lastDailyReset: Date | string
   lastMonthlyReset: Date | string
@@ -614,6 +646,7 @@ export type CreditLedgerUpdateWithoutWorkspaceInput = {
   monthlyCredits?: Prisma.FloatFieldUpdateOperationsInput | number
   dailyCredits?: Prisma.FloatFieldUpdateOperationsInput | number
   rolloverCredits?: Prisma.FloatFieldUpdateOperationsInput | number
+  dailyCreditsDispensedThisMonth?: Prisma.FloatFieldUpdateOperationsInput | number
   anniversaryDay?: Prisma.IntFieldUpdateOperationsInput | number
   lastDailyReset?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   lastMonthlyReset?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -626,6 +659,7 @@ export type CreditLedgerUncheckedUpdateWithoutWorkspaceInput = {
   monthlyCredits?: Prisma.FloatFieldUpdateOperationsInput | number
   dailyCredits?: Prisma.FloatFieldUpdateOperationsInput | number
   rolloverCredits?: Prisma.FloatFieldUpdateOperationsInput | number
+  dailyCreditsDispensedThisMonth?: Prisma.FloatFieldUpdateOperationsInput | number
   anniversaryDay?: Prisma.IntFieldUpdateOperationsInput | number
   lastDailyReset?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   lastMonthlyReset?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -638,6 +672,7 @@ export type CreditLedgerUncheckedUpdateManyWithoutWorkspaceInput = {
   monthlyCredits?: Prisma.FloatFieldUpdateOperationsInput | number
   dailyCredits?: Prisma.FloatFieldUpdateOperationsInput | number
   rolloverCredits?: Prisma.FloatFieldUpdateOperationsInput | number
+  dailyCreditsDispensedThisMonth?: Prisma.FloatFieldUpdateOperationsInput | number
   anniversaryDay?: Prisma.IntFieldUpdateOperationsInput | number
   lastDailyReset?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   lastMonthlyReset?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -653,6 +688,7 @@ export type CreditLedgerSelect<ExtArgs extends runtime.Types.Extensions.Internal
   monthlyCredits?: boolean
   dailyCredits?: boolean
   rolloverCredits?: boolean
+  dailyCreditsDispensedThisMonth?: boolean
   anniversaryDay?: boolean
   lastDailyReset?: boolean
   lastMonthlyReset?: boolean
@@ -667,6 +703,7 @@ export type CreditLedgerSelectCreateManyAndReturn<ExtArgs extends runtime.Types.
   monthlyCredits?: boolean
   dailyCredits?: boolean
   rolloverCredits?: boolean
+  dailyCreditsDispensedThisMonth?: boolean
   anniversaryDay?: boolean
   lastDailyReset?: boolean
   lastMonthlyReset?: boolean
@@ -681,6 +718,7 @@ export type CreditLedgerSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.
   monthlyCredits?: boolean
   dailyCredits?: boolean
   rolloverCredits?: boolean
+  dailyCreditsDispensedThisMonth?: boolean
   anniversaryDay?: boolean
   lastDailyReset?: boolean
   lastMonthlyReset?: boolean
@@ -695,6 +733,7 @@ export type CreditLedgerSelectScalar = {
   monthlyCredits?: boolean
   dailyCredits?: boolean
   rolloverCredits?: boolean
+  dailyCreditsDispensedThisMonth?: boolean
   anniversaryDay?: boolean
   lastDailyReset?: boolean
   lastMonthlyReset?: boolean
@@ -702,7 +741,7 @@ export type CreditLedgerSelectScalar = {
   updatedAt?: boolean
 }
 
-export type CreditLedgerOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "workspaceId" | "monthlyCredits" | "dailyCredits" | "rolloverCredits" | "anniversaryDay" | "lastDailyReset" | "lastMonthlyReset" | "createdAt" | "updatedAt", ExtArgs["result"]["creditLedger"]>
+export type CreditLedgerOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "workspaceId" | "monthlyCredits" | "dailyCredits" | "rolloverCredits" | "dailyCreditsDispensedThisMonth" | "anniversaryDay" | "lastDailyReset" | "lastMonthlyReset" | "createdAt" | "updatedAt", ExtArgs["result"]["creditLedger"]>
 export type CreditLedgerInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   workspace?: boolean | Prisma.WorkspaceDefaultArgs<ExtArgs>
 }
@@ -724,6 +763,7 @@ export type $CreditLedgerPayload<ExtArgs extends runtime.Types.Extensions.Intern
     monthlyCredits: number
     dailyCredits: number
     rolloverCredits: number
+    dailyCreditsDispensedThisMonth: number
     anniversaryDay: number
     lastDailyReset: Date
     lastMonthlyReset: Date
@@ -1158,6 +1198,7 @@ export interface CreditLedgerFieldRefs {
   readonly monthlyCredits: Prisma.FieldRef<"CreditLedger", 'Float'>
   readonly dailyCredits: Prisma.FieldRef<"CreditLedger", 'Float'>
   readonly rolloverCredits: Prisma.FieldRef<"CreditLedger", 'Float'>
+  readonly dailyCreditsDispensedThisMonth: Prisma.FieldRef<"CreditLedger", 'Float'>
   readonly anniversaryDay: Prisma.FieldRef<"CreditLedger", 'Int'>
   readonly lastDailyReset: Prisma.FieldRef<"CreditLedger", 'DateTime'>
   readonly lastMonthlyReset: Prisma.FieldRef<"CreditLedger", 'DateTime'>
