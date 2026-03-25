@@ -25,6 +25,8 @@ export class EmailAdapter implements ChannelAdapter {
   private config: Record<string, string> = {}
   private idleController: AbortController | null = null
   private polling = false
+  /** Tracks the last email subject and messageId per sender for reply threading */
+  private lastEmailContext = new Map<string, { subject: string; messageId?: string }>()
 
   async connect(config: Record<string, string>): Promise<void> {
     this.config = config
@@ -104,12 +106,35 @@ export class EmailAdapter implements ChannelAdapter {
 
     const fromAddress = this.config.fromAddress || this.config.username
 
-    await this.smtpTransport.sendMail({
+    // Extract subject from content if the agent included one (e.g. "Subject: ...\n\n...")
+    let subject: string | undefined
+    let body = content
+    const subjectMatch = content.match(/^Subject:\s*(.+)\n\n?([\s\S]*)$/i)
+    if (subjectMatch) {
+      subject = subjectMatch[1].trim()
+      body = subjectMatch[2].trim()
+    }
+
+    // Fall back to the last known subject from this email thread
+    const ctx = this.lastEmailContext.get(channelId)
+    if (!subject && ctx?.subject) {
+      subject = ctx.subject.startsWith('Re:') ? ctx.subject : `Re: ${ctx.subject}`
+    }
+
+    const mailOptions: Record<string, any> = {
       from: fromAddress,
       to: channelId,
-      subject: `Re: Agent Response`,
-      text: content,
-    })
+      subject: subject || 'Agent Response',
+      text: body,
+    }
+
+    // Thread replies using In-Reply-To header
+    if (ctx?.messageId) {
+      mailOptions.inReplyTo = ctx.messageId
+      mailOptions.references = ctx.messageId
+    }
+
+    await this.smtpTransport.sendMail(mailOptions)
   }
 
   onMessage(handler: (msg: IncomingMessage) => void): void {
@@ -172,7 +197,13 @@ export class EmailAdapter implements ChannelAdapter {
             }
           }
 
-          const text = `Subject: ${subject}\n\n${body}`
+          // Store context for reply threading
+          this.lastEmailContext.set(senderEmail, {
+            subject,
+            messageId: envelope.messageId || undefined,
+          })
+
+          const text = `[Email] Subject: ${subject}\nFrom: ${senderName} <${senderEmail}>\n\n${body}`
 
           if (this.messageHandler) {
             this.messageHandler({
