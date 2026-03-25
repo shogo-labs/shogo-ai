@@ -14,7 +14,6 @@ import {
   ScrollView,
   Pressable,
   ActivityIndicator,
-  Alert,
   Image,
   RefreshControl,
   useWindowDimensions,
@@ -30,8 +29,20 @@ import {
   Calendar,
   Mail,
   CheckCircle,
+  ChevronRight,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import {
+  AlertDialog,
+  AlertDialogBackdrop,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogBody,
+  AlertDialogFooter,
+} from '@/components/ui/alert-dialog'
+import { Heading } from '@/components/ui/heading'
+import { Text as UIText } from '@/components/ui/text'
+import { Button, ButtonText } from '@/components/ui/button'
 import { API_URL } from '../../../lib/api'
 import { usePlatformConfig } from '../../../lib/platform-config'
 
@@ -51,6 +62,7 @@ interface UserDetail {
     role: string
     workspaceId: string
     userId: string
+    workspace?: { id: string; name: string; slug: string }
   }>
   sessions: Array<{
     id: string
@@ -109,6 +121,9 @@ export default function AdminUserDetailPage() {
   const [user, setUser] = useState<UserDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  const [showRoleDialog, setShowRoleDialog] = useState(false)
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [workspaceNames, setWorkspaceNames] = useState<Record<string, string>>({})
 
   const loadUser = useCallback(async () => {
     if (!userId) return
@@ -116,50 +131,47 @@ export default function AdminUserDetailPage() {
     setUser(data)
     setLoading(false)
     setRefreshing(false)
+
+    if (data?.members?.length) {
+      const names: Record<string, string> = {}
+      await Promise.all(
+        data.members.map(async (m) => {
+          if (m.workspace?.name) {
+            names[m.workspaceId] = m.workspace.name
+            return
+          }
+          const ws = await fetchAdminJson<{ name: string; slug: string }>(`/workspaces/${m.workspaceId}`)
+          if (ws) names[m.workspaceId] = ws.name
+        })
+      )
+      setWorkspaceNames(names)
+    }
   }, [userId])
 
   useEffect(() => {
     loadUser()
   }, [loadUser])
 
-  const handleToggleRole = () => {
+  const confirmToggleRole = async () => {
     if (!user) return
     const newRole = user.role === 'super_admin' ? 'user' : 'super_admin'
-    const label = newRole === 'super_admin' ? 'Make Admin' : 'Remove Admin'
-    Alert.alert(label, `Change role for ${user.email}?`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: label,
-        onPress: async () => {
-          const result = await adminUpdateUser(user.id, { role: newRole })
-          if (result.ok) loadUser()
-        },
-      },
-    ])
+    const result = await adminUpdateUser(user.id, { role: newRole })
+    setShowRoleDialog(false)
+    if (result.ok) loadUser()
   }
 
-  const handleDelete = () => {
+  const confirmDelete = async () => {
     if (!user) return
-    Alert.alert(
-      'Delete User',
-      `Are you sure you want to delete ${user.email}? This action cannot be undone.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            const result = await adminDeleteUser(user.id)
-            if (result.ok) {
-              router.replace('/(admin)/users' as any)
-            } else if (result.error) {
-              Alert.alert('Cannot Delete User', result.error.message)
-            }
-          },
-        },
-      ]
-    )
+    const result = await adminDeleteUser(user.id)
+    setShowDeleteDialog(false)
+    if (result.ok) {
+      router.replace('/(admin)/users' as any)
+    } else if (result.error) {
+      // Re-open won't happen; user sees the page still
+    }
   }
+
+  const isPromoting = user?.role !== 'super_admin'
 
   if (loading) {
     return (
@@ -204,7 +216,6 @@ export default function AdminUserDetailPage() {
       }
     >
       <View style={isWide ? { maxWidth: 900, width: '100%' } : undefined}>
-        {/* Back button */}
         <Pressable
           onPress={() => router.replace('/(admin)/users' as any)}
           className={cn(
@@ -219,7 +230,6 @@ export default function AdminUserDetailPage() {
         {/* User header card */}
         <View className="rounded-xl border border-border bg-card p-5 mb-4">
           <View className={cn('items-start', isWide ? 'flex-row' : 'flex-row')}>
-            {/* Avatar */}
             <View
               className={cn(
                 'rounded-full bg-primary/10 items-center justify-center mr-4',
@@ -238,7 +248,6 @@ export default function AdminUserDetailPage() {
               )}
             </View>
 
-            {/* Info */}
             <View className="flex-1">
               <Text className={cn('font-bold text-foreground', isWide ? 'text-xl' : 'text-lg')}>
                 {user.name || 'Unnamed'}
@@ -279,39 +288,33 @@ export default function AdminUserDetailPage() {
               </View>
             </View>
 
-            {/* Desktop inline actions */}
-            {isWide && (
+            {isWide && !localMode && (
               <View className="flex-row gap-2 ml-4">
-                {!localMode && (
-                  <Pressable
-                    onPress={handleToggleRole}
-                    className="items-center px-4 py-2 rounded-lg border border-border active:bg-muted/50"
-                  >
-                    <Text className="text-sm font-medium text-foreground">
-                      {user.role === 'super_admin' ? 'Remove Admin' : 'Make Admin'}
-                    </Text>
-                  </Pressable>
-                )}
-                {!localMode && (
-                  <Pressable
-                    onPress={handleDelete}
-                    className="flex-row items-center gap-1.5 px-4 py-2 rounded-lg bg-destructive active:opacity-90"
-                  >
-                    <Trash2 size={14} className="text-destructive-foreground" />
-                    <Text className="text-sm font-medium text-destructive-foreground">
-                      Delete
-                    </Text>
-                  </Pressable>
-                )}
+                <Pressable
+                  onPress={() => setShowRoleDialog(true)}
+                  className="items-center px-4 py-2 rounded-lg border border-border active:bg-muted/50"
+                >
+                  <Text className="text-sm font-medium text-foreground">
+                    {user.role === 'super_admin' ? 'Remove Admin' : 'Make Admin'}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => setShowDeleteDialog(true)}
+                  className="flex-row items-center gap-1.5 px-4 py-2 rounded-lg bg-destructive active:opacity-90"
+                >
+                  <Trash2 size={14} className="text-destructive-foreground" />
+                  <Text className="text-sm font-medium text-destructive-foreground">
+                    Delete
+                  </Text>
+                </Pressable>
               </View>
             )}
           </View>
 
-          {/* Mobile actions */}
           {!isWide && !localMode && (
             <View className="flex-row gap-2 mt-4">
               <Pressable
-                onPress={handleToggleRole}
+                onPress={() => setShowRoleDialog(true)}
                 className="flex-1 items-center py-2.5 rounded-lg border border-border"
               >
                 <Text className="text-sm font-medium text-foreground">
@@ -319,7 +322,7 @@ export default function AdminUserDetailPage() {
                 </Text>
               </Pressable>
               <Pressable
-                onPress={handleDelete}
+                onPress={() => setShowDeleteDialog(true)}
                 className="flex-row items-center justify-center gap-1.5 py-2.5 px-4 rounded-lg bg-destructive"
               >
                 <Trash2 size={14} className="text-destructive-foreground" />
@@ -330,7 +333,6 @@ export default function AdminUserDetailPage() {
             </View>
           )}
 
-          {/* Dates */}
           <View className="flex-row gap-4 mt-4 pt-3 border-t border-border">
             <View className="flex-row items-center gap-1.5 flex-1">
               <Calendar size={12} className="text-muted-foreground" />
@@ -353,9 +355,8 @@ export default function AdminUserDetailPage() {
           </View>
         </View>
 
-        {/* Workspaces + Sessions — side by side on desktop */}
+        {/* Workspaces + Sessions */}
         <View className={cn(isWide ? 'flex-row gap-4' : 'gap-4')}>
-          {/* Workspace memberships */}
           <View className={cn('rounded-xl border border-border bg-card p-4', isWide ? 'flex-1' : '')}>
             <View className="flex-row items-center gap-2 mb-3">
               <Building2 size={16} className="text-foreground" />
@@ -368,22 +369,30 @@ export default function AdminUserDetailPage() {
             ) : (
               <View className="gap-2">
                 {user.members.map((m) => (
-                  <View key={m.id} className="flex-row items-center justify-between p-3 rounded-lg bg-muted/50">
-                    <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
-                      Workspace {m.workspaceId.slice(0, 8)}...
-                    </Text>
-                    <View className="bg-muted px-2 py-0.5 rounded-full">
-                      <Text className="text-xs font-medium text-muted-foreground capitalize">
-                        {m.role}
+                  <Pressable
+                    key={m.id}
+                    onPress={() => router.push(`/(admin)/workspaces/${m.workspaceId}` as any)}
+                    className="flex-row items-center justify-between p-3 rounded-lg bg-muted/50 active:bg-muted"
+                  >
+                    <View className="flex-1 min-w-0 mr-2">
+                      <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
+                        {workspaceNames[m.workspaceId] || `Workspace ${m.workspaceId.slice(0, 8)}...`}
                       </Text>
                     </View>
-                  </View>
+                    <View className="flex-row items-center gap-2">
+                      <View className="bg-muted px-2 py-0.5 rounded-full">
+                        <Text className="text-xs font-medium text-muted-foreground capitalize">
+                          {m.role}
+                        </Text>
+                      </View>
+                      <ChevronRight size={14} className="text-muted-foreground" />
+                    </View>
+                  </Pressable>
                 ))}
               </View>
             )}
           </View>
 
-          {/* Recent sessions */}
           <View className={cn('rounded-xl border border-border bg-card p-4', isWide ? 'flex-1' : '')}>
             <View className="flex-row items-center gap-2 mb-3">
               <MessageSquare size={16} className="text-foreground" />
@@ -413,6 +422,58 @@ export default function AdminUserDetailPage() {
           </View>
         </View>
       </View>
+
+      {/* Role toggle dialog */}
+      <AlertDialog isOpen={showRoleDialog} onClose={() => setShowRoleDialog(false)} size="sm">
+        <AlertDialogBackdrop />
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <Heading size="md" className="text-typography-950">
+              {isPromoting ? 'Promote to Super Admin' : 'Remove Super Admin'}
+            </Heading>
+          </AlertDialogHeader>
+          <AlertDialogBody className="mt-3 mb-4">
+            <UIText size="sm" className="text-typography-700">
+              {isPromoting
+                ? `Are you sure you want to make ${user?.email} a super admin? They will have full platform access.`
+                : `Are you sure you want to remove admin privileges from ${user?.email}?`}
+            </UIText>
+          </AlertDialogBody>
+          <AlertDialogFooter>
+            <Button variant="outline" action="secondary" onPress={() => setShowRoleDialog(false)}>
+              <ButtonText>Cancel</ButtonText>
+            </Button>
+            <Button action={isPromoting ? 'primary' : 'negative'} onPress={confirmToggleRole}>
+              <ButtonText>{isPromoting ? 'Make Admin' : 'Remove Admin'}</ButtonText>
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Delete confirmation dialog */}
+      <AlertDialog isOpen={showDeleteDialog} onClose={() => setShowDeleteDialog(false)} size="sm">
+        <AlertDialogBackdrop />
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <Heading size="md" className="text-typography-950">
+              Delete User
+            </Heading>
+          </AlertDialogHeader>
+          <AlertDialogBody className="mt-3 mb-4">
+            <UIText size="sm" className="text-typography-700">
+              Are you sure you want to delete {user?.email}? This action cannot be undone.
+            </UIText>
+          </AlertDialogBody>
+          <AlertDialogFooter>
+            <Button variant="outline" action="secondary" onPress={() => setShowDeleteDialog(false)}>
+              <ButtonText>Cancel</ButtonText>
+            </Button>
+            <Button action="negative" onPress={confirmDelete}>
+              <ButtonText>Delete User</ButtonText>
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </ScrollView>
   )
 }

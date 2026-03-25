@@ -18,6 +18,7 @@ import {
   LayoutDashboard,
   Users,
   Building2,
+  FolderKanban,
   BarChart3,
   Server,
   Settings,
@@ -38,6 +39,7 @@ const BASE_NAV_ITEMS = [
   { href: '/(admin)', icon: LayoutDashboard, label: 'Dashboard' },
   { href: '/(admin)/users', icon: Users, label: 'Users' },
   { href: '/(admin)/workspaces', icon: Building2, label: 'Workspaces' },
+  { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
   { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics' },
   { href: '/(admin)/infrastructure', icon: Server, label: 'Infrastructure' },
 ] as const
@@ -48,6 +50,7 @@ const LOCAL_NAV_ITEMS = [
   { href: '/(admin)', icon: LayoutDashboard, label: 'Dashboard' },
   { href: '/(admin)/users', icon: Users, label: 'Users' },
   { href: '/(admin)/workspaces', icon: Building2, label: 'Workspaces' },
+  { href: '/(admin)/projects', icon: FolderKanban, label: 'Projects' },
   { href: '/(admin)/analytics', icon: BarChart3, label: 'Analytics' },
   { href: '/(admin)/settings' as const, icon: Settings, label: 'AI Settings' },
 ] as const
@@ -284,7 +287,10 @@ function MobileHeader({ onMenuPress, title }: { onMenuPress: () => void; title: 
 function getPageTitle(pathname: string): string {
   if (pathname.startsWith('/users/')) return 'User Detail'
   if (pathname.startsWith('/users') || pathname === '/users') return 'Users'
+  if (pathname.startsWith('/workspaces/')) return 'Workspace Detail'
   if (pathname.includes('workspaces')) return 'Workspaces'
+  if (pathname.startsWith('/projects/')) return 'Project Detail'
+  if (pathname.includes('projects')) return 'Projects'
   if (pathname.includes('analytics')) return 'Analytics'
   if (pathname.includes('infrastructure')) return 'Infrastructure'
   return 'Dashboard'

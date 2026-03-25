@@ -15,7 +15,6 @@ import {
   Pressable,
   TextInput,
   ActivityIndicator,
-  Alert,
   Image,
   RefreshControl,
   useWindowDimensions,
@@ -28,10 +27,21 @@ import {
   Users,
   ChevronLeft,
   ChevronRight,
-  Star,
-  Monitor,
+  ShieldCheck,
+  ShieldOff,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import {
+  AlertDialog,
+  AlertDialogBackdrop,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogBody,
+  AlertDialogFooter,
+} from '@/components/ui/alert-dialog'
+import { Heading } from '@/components/ui/heading'
+import { Text as UIText } from '@/components/ui/text'
+import { Button, ButtonText } from '@/components/ui/button'
 import { API_URL } from '../../../lib/api'
 
 const API_BASE = `${API_URL}/api/admin`
@@ -101,25 +111,9 @@ function UserRow({
   onToggleRole: () => void
   isWide: boolean
 }) {
-  const handleLongPress = () => {
-    Alert.alert(
-      user.name || user.email,
-      undefined,
-      [
-        { text: 'View Details', onPress },
-        {
-          text: user.role === 'super_admin' ? 'Remove Admin' : 'Make Admin',
-          onPress: onToggleRole,
-        },
-        { text: 'Cancel', style: 'cancel' },
-      ]
-    )
-  }
-
   return (
     <Pressable
       onPress={onPress}
-      onLongPress={handleLongPress}
       className={cn(
         'flex-row items-center border-b border-border active:bg-muted/30',
         isWide ? 'px-4 py-3' : 'p-3',
@@ -182,13 +176,33 @@ function UserRow({
         </Text>
       )}
 
-      <Text className={cn('text-xs text-muted-foreground', isWide && 'w-[100px] text-right')}>
+      <Text className={cn('text-xs text-muted-foreground', isWide ? 'w-[80px] text-right' : 'flex-shrink-0')}>
         {new Date(user.createdAt).toLocaleDateString(undefined, {
           month: 'short',
           day: 'numeric',
           ...(isWide ? { year: 'numeric' } : {}),
         })}
       </Text>
+
+      <Pressable
+        onPress={(e) => {
+          e.stopPropagation()
+          onToggleRole()
+        }}
+        className={cn(
+          'ml-2 p-1.5 rounded-md',
+          user.role === 'super_admin'
+            ? 'active:bg-destructive/10'
+            : 'active:bg-primary/10',
+        )}
+        hitSlop={4}
+      >
+        {user.role === 'super_admin' ? (
+          <ShieldOff size={14} className="text-muted-foreground" />
+        ) : (
+          <ShieldCheck size={14} className="text-muted-foreground" />
+        )}
+      </Pressable>
     </Pressable>
   )
 }
@@ -204,6 +218,7 @@ export default function AdminUsersPage() {
   const [data, setData] = useState<UsersResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  const [roleDialog, setRoleDialog] = useState<{ userId: string; name: string; currentRole: string } | null>(null)
 
   const loadUsers = useCallback(async () => {
     const params: Record<string, string> = {
@@ -224,28 +239,13 @@ export default function AdminUsersPage() {
     loadUsers()
   }, [loadUsers])
 
-  const handleToggleRole = useCallback(
-    async (userId: string, currentRole: string) => {
-      const newRole = currentRole === 'super_admin' ? 'user' : 'super_admin'
-      const label = newRole === 'super_admin' ? 'Make Admin' : 'Remove Admin'
-      Alert.alert(
-        label,
-        `Are you sure you want to ${label.toLowerCase()} for this user?`,
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: label,
-            style: newRole === 'user' ? 'destructive' : 'default',
-            onPress: async () => {
-              const result = await adminUpdateUser(userId, { role: newRole })
-              if (result.ok) loadUsers()
-            },
-          },
-        ]
-      )
-    },
-    [loadUsers]
-  )
+  const confirmToggleRole = useCallback(async () => {
+    if (!roleDialog) return
+    const newRole = roleDialog.currentRole === 'super_admin' ? 'user' : 'super_admin'
+    const result = await adminUpdateUser(roleDialog.userId, { role: newRole })
+    setRoleDialog(null)
+    if (result.ok) loadUsers()
+  }, [roleDialog, loadUsers])
 
   const totalPages = data ? Math.ceil(data.total / data.limit) : 1
 
@@ -254,9 +254,10 @@ export default function AdminUsersPage() {
     loadUsers()
   }
 
+  const isPromoting = roleDialog?.currentRole !== 'super_admin'
+
   const ListHeader = () => (
     <View className="gap-3 mb-2">
-      {/* Search + Role filter — side by side on desktop */}
       <View className={cn(isWide ? 'flex-row items-center gap-3' : 'gap-3')}>
         <View
           className={cn(
@@ -314,7 +315,6 @@ export default function AdminUsersPage() {
         </View>
       </View>
 
-      {/* Summary */}
       {isWide && data && (
         <Text className="text-xs text-muted-foreground">
           {data.total} user{data.total !== 1 ? 's' : ''} total
@@ -322,7 +322,6 @@ export default function AdminUsersPage() {
         </Text>
       )}
 
-      {/* Table header */}
       <View
         className={cn(
           'flex-row items-center bg-muted/50 rounded-t-lg border-b border-border',
@@ -347,9 +346,10 @@ export default function AdminUsersPage() {
             Starred
           </Text>
         )}
-        <Text className={cn('text-xs font-medium text-muted-foreground', isWide && 'w-[100px] text-right')}>
+        <Text className={cn('text-xs font-medium text-muted-foreground', isWide ? 'w-[80px] text-right' : 'flex-shrink-0')}>
           Joined
         </Text>
+        <View className="ml-2 w-[26px]" />
       </View>
     </View>
   )
@@ -417,7 +417,9 @@ export default function AdminUsersPage() {
               user={item}
               isWide={isWide}
               onPress={() => router.push(`/(admin)/users/${item.id}`)}
-              onToggleRole={() => handleToggleRole(item.id, item.role)}
+              onToggleRole={() =>
+                setRoleDialog({ userId: item.id, name: item.name || item.email, currentRole: item.role })
+              }
             />
           )}
           contentContainerStyle={{ paddingBottom: 20 }}
@@ -429,6 +431,32 @@ export default function AdminUsersPage() {
           </View>
         )}
       </View>
+
+      <AlertDialog isOpen={!!roleDialog} onClose={() => setRoleDialog(null)} size="sm">
+        <AlertDialogBackdrop />
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <Heading size="md" className="text-typography-950">
+              {isPromoting ? 'Promote to Super Admin' : 'Remove Super Admin'}
+            </Heading>
+          </AlertDialogHeader>
+          <AlertDialogBody className="mt-3 mb-4">
+            <UIText size="sm" className="text-typography-700">
+              {isPromoting
+                ? `Are you sure you want to make ${roleDialog?.name} a super admin? They will have full platform access.`
+                : `Are you sure you want to remove admin privileges from ${roleDialog?.name}?`}
+            </UIText>
+          </AlertDialogBody>
+          <AlertDialogFooter>
+            <Button variant="outline" action="secondary" onPress={() => setRoleDialog(null)}>
+              <ButtonText>Cancel</ButtonText>
+            </Button>
+            <Button action={isPromoting ? 'primary' : 'negative'} onPress={confirmToggleRole}>
+              <ButtonText>{isPromoting ? 'Make Admin' : 'Remove Admin'}</ButtonText>
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </View>
   )
 }

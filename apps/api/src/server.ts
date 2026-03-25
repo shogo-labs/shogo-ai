@@ -3522,47 +3522,47 @@ app.post('/api/projects/:projectId/permission-response', async (c) => {
 // Require super_admin role for all project admin endpoints
 // =============================================================================
 
-app.use('/api/admin/projects/*', authMiddleware, requireAuth, requireSuperAdmin)
-app.use('/api/admin/projects', authMiddleware, requireAuth, requireSuperAdmin)
-app.use('/api/admin/stats', authMiddleware, requireAuth, requireSuperAdmin)
+app.use('/api/admin/pods/*', authMiddleware, requireAuth, requireSuperAdmin)
+app.use('/api/admin/pods', authMiddleware, requireAuth, requireSuperAdmin)
+app.use('/api/admin/pod-stats', authMiddleware, requireAuth, requireSuperAdmin)
 app.use('/api/admin/warm-pool', authMiddleware, requireAuth, requireSuperAdmin)
 app.use('/api/admin/warm-pool/*', authMiddleware, requireAuth, requireSuperAdmin)
 app.use('/api/admin/settings/*', authMiddleware, requireAuth, requireSuperAdmin)
 app.use('/api/admin/regions', authMiddleware, requireAuth, requireSuperAdmin)
 app.use('/api/admin/regions/*', authMiddleware, requireAuth, requireSuperAdmin)
 
-// GET /api/admin/projects - List all project pods
-app.get('/api/admin/projects', async (c) => {
+// GET /api/admin/pods - List all project pods
+app.get('/api/admin/pods', async (c) => {
   const router = projectAdminRoutes()
   const url = new URL(c.req.url)
-  url.pathname = '/admin/projects'
+  url.pathname = '/admin/pods'
   const newReq = new Request(url.toString(), { method: 'GET' })
   return router.fetch(newReq)
 })
 
-// GET /api/admin/stats - Get aggregate stats
-app.get('/api/admin/stats', async (c) => {
+// GET /api/admin/pod-stats - Get aggregate pod stats
+app.get('/api/admin/pod-stats', async (c) => {
   const router = projectAdminRoutes()
   const url = new URL(c.req.url)
-  url.pathname = '/admin/stats'
+  url.pathname = '/admin/pod-stats'
   const newReq = new Request(url.toString(), { method: 'GET' })
   return router.fetch(newReq)
 })
 
-// GET /api/admin/projects/:projectId - Get project pod status
-app.get('/api/admin/projects/:projectId', async (c) => {
+// GET /api/admin/pods/:projectId - Get project pod status
+app.get('/api/admin/pods/:projectId', async (c) => {
   const router = projectAdminRoutes()
   const url = new URL(c.req.url)
-  url.pathname = `/admin/projects/${c.req.param('projectId')}`
+  url.pathname = `/admin/pods/${c.req.param('projectId')}`
   const newReq = new Request(url.toString(), { method: 'GET' })
   return router.fetch(newReq)
 })
 
-// POST /api/admin/projects/:projectId/scale - Scale project pod
-app.post('/api/admin/projects/:projectId/scale', async (c) => {
+// POST /api/admin/pods/:projectId/scale - Scale project pod
+app.post('/api/admin/pods/:projectId/scale', async (c) => {
   const router = projectAdminRoutes()
   const url = new URL(c.req.url)
-  url.pathname = `/admin/projects/${c.req.param('projectId')}/scale`
+  url.pathname = `/admin/pods/${c.req.param('projectId')}/scale`
   const newReq = new Request(url.toString(), {
     method: 'POST',
     headers: c.req.raw.headers,
@@ -3571,11 +3571,11 @@ app.post('/api/admin/projects/:projectId/scale', async (c) => {
   return router.fetch(newReq)
 })
 
-// POST /api/admin/projects/:projectId/warmup - Warm up a project pod
-app.post('/api/admin/projects/:projectId/warmup', async (c) => {
+// POST /api/admin/pods/:projectId/warmup - Warm up a project pod
+app.post('/api/admin/pods/:projectId/warmup', async (c) => {
   const router = projectAdminRoutes()
   const url = new URL(c.req.url)
-  url.pathname = `/admin/projects/${c.req.param('projectId')}/warmup`
+  url.pathname = `/admin/pods/${c.req.param('projectId')}/warmup`
   const newReq = new Request(url.toString(), { method: 'POST' })
   return router.fetch(newReq)
 })
@@ -3848,11 +3848,11 @@ app.patch('/api/admin/settings/infrastructure', async (c) => {
   }
 })
 
-// DELETE /api/admin/projects/:projectId - Delete project pod
-app.delete('/api/admin/projects/:projectId', async (c) => {
+// DELETE /api/admin/pods/:projectId - Delete project pod
+app.delete('/api/admin/pods/:projectId', async (c) => {
   const router = projectAdminRoutes()
   const url = new URL(c.req.url)
-  url.pathname = `/admin/projects/${c.req.param('projectId')}`
+  url.pathname = `/admin/pods/${c.req.param('projectId')}`
   const newReq = new Request(url.toString(), { method: 'DELETE' })
   return router.fetch(newReq)
 })
