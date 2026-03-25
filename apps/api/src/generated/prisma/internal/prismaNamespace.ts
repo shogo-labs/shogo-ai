@@ -4104,6 +4104,7 @@ export const CreditLedgerScalarFieldEnum = {
   monthlyCredits: 'monthlyCredits',
   dailyCredits: 'dailyCredits',
   rolloverCredits: 'rolloverCredits',
+  dailyCreditsDispensedThisMonth: 'dailyCreditsDispensedThisMonth',
   anniversaryDay: 'anniversaryDay',
   lastDailyReset: 'lastDailyReset',
   lastMonthlyReset: 'lastMonthlyReset',

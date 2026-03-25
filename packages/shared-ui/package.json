@@ -28,6 +28,6 @@
     "@types/react": "^19.0.0",
     "lucide-react-native": "^0.461.0",
     "react-native-svg": "^15.13.0",
-    "typescript": "^6.0.2"
+    "typescript": "^5.7.2"
   }
 }
