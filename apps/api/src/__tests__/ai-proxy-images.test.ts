@@ -18,7 +18,6 @@ import { describe, test, expect } from 'bun:test'
 import {
   calculateImageCreditCost,
   IMAGE_CREDIT_CONFIG,
-  CREDIT_MARKUP_FACTOR,
 } from '../lib/credit-cost'
 
 // =============================================================================
@@ -28,7 +27,7 @@ import {
 describe('Image Credit Cost', () => {
   test('dall-e-3 standard 1024x1024', () => {
     const cost = calculateImageCreditCost('dall-e-3', 'standard', '1024x1024')
-    const expected = Math.ceil(IMAGE_CREDIT_CONFIG['dall-e-3'].base * CREDIT_MARKUP_FACTOR * 10) / 10
+    const expected = Math.ceil(IMAGE_CREDIT_CONFIG['dall-e-3'].base * 10) / 10
     expect(cost).toBe(expected)
   })
 
@@ -53,14 +52,14 @@ describe('Image Credit Cost', () => {
   test('gpt-image-1 standard', () => {
     const cost = calculateImageCreditCost('gpt-image-1', 'standard', '1024x1024')
     expect(cost).toBeGreaterThan(0)
-    const expected = Math.ceil(IMAGE_CREDIT_CONFIG['gpt-image-1'].base * CREDIT_MARKUP_FACTOR * 10) / 10
+    const expected = Math.ceil(IMAGE_CREDIT_CONFIG['gpt-image-1'].base * 10) / 10
     expect(cost).toBe(expected)
   })
 
   test('imagen-4 standard', () => {
     const cost = calculateImageCreditCost('imagen-4', 'standard', '1024x1024')
     expect(cost).toBeGreaterThan(0)
-    const expected = Math.ceil(IMAGE_CREDIT_CONFIG['imagen-4'].base * CREDIT_MARKUP_FACTOR * 10) / 10
+    const expected = Math.ceil(IMAGE_CREDIT_CONFIG['imagen-4'].base * 10) / 10
     expect(cost).toBe(expected)
   })
 
@@ -88,10 +87,10 @@ describe('Image Credit Cost', () => {
     expect(unknown).toBe(dalle3)
   })
 
-  test('markup factor is applied', () => {
+  test('base cost matches config directly (no separate markup)', () => {
     const cost = calculateImageCreditCost('dall-e-3', 'standard', '1024x1024')
-    const rawBase = IMAGE_CREDIT_CONFIG['dall-e-3'].base
-    expect(cost).toBeGreaterThan(rawBase)
+    const base = IMAGE_CREDIT_CONFIG['dall-e-3'].base
+    expect(cost).toBe(Math.ceil(base * 10) / 10)
   })
 
   test('all registered models have positive base cost', () => {
