@@ -1085,19 +1085,6 @@ const BillingTab = observer(function BillingTab() {
                 <Text className="text-xs text-muted-foreground">Daily credits used first</Text>
               </View>
               <View className="flex-row items-center gap-2">
-                {subscription ? (
-                  <>
-                    <Check size={12} className="text-foreground" />
-                    <Text className="text-xs text-muted-foreground">Credits will rollover</Text>
-                  </>
-                ) : (
-                  <>
-                    <X size={12} className="text-muted-foreground" />
-                    <Text className="text-xs text-muted-foreground">No credits will rollover</Text>
-                  </>
-                )}
-              </View>
-              <View className="flex-row items-center gap-2">
                 <Check size={12} className="text-foreground" />
                 <Text className="text-xs text-muted-foreground">
                   Daily credits reset at midnight UTC

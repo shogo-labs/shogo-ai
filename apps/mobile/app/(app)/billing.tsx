@@ -318,14 +318,6 @@ export default observer(function BillingPage() {
               <View className="flex-row items-center gap-2">
                 <Info size={16} className="text-muted-foreground" />
                 <Text className="text-sm text-muted-foreground">
-                  {subscription
-                    ? 'Credits will rollover'
-                    : 'No credits will rollover'}
-                </Text>
-              </View>
-              <View className="flex-row items-center gap-2">
-                <Info size={16} className="text-muted-foreground" />
-                <Text className="text-sm text-muted-foreground">
                   Daily credits reset at midnight UTC
                 </Text>
               </View>

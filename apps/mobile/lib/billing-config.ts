@@ -52,7 +52,6 @@ export const BUSINESS_TIERS: PriceTier[] = [
 export const PRO_FEATURES = [
   '5 daily credits (up to 30/month)',
   'Usage-based Cloud + AI',
-  'Credit rollovers',
   'Unlimited domains',
   'Custom domains',
   'Remove branding',

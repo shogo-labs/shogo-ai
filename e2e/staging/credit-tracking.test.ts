@@ -31,17 +31,16 @@ test.describe("Credit Tracking", () => {
     await page.close()
   })
 
-  test("billing page shows initial Pro credits (105 of 105)", async () => {
+  test("billing page shows initial Pro credits (200 monthly + 5 daily)", async () => {
     await page.goto("/billing")
     await page.waitForSelector("text=Billing", { timeout: 10_000 })
 
     await expect(page.getByText("You're on Pro Plan")).toBeVisible()
-    await expect(page.getByText(/105 of 105/)).toBeVisible()
+    await expect(page.getByText(/of 205/)).toBeVisible()
   })
 
   test("credits display includes daily and monthly breakdown info", async () => {
     await expect(page.getByText("Daily credits used first")).toBeVisible()
-    await expect(page.getByText("Credits will rollover")).toBeVisible()
     await expect(page.getByText("Daily credits reset at midnight UTC")).toBeVisible()
   })
 

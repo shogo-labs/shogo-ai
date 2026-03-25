@@ -11,7 +11,6 @@ export interface CreditLedgerType {
   workspaceId: string
   monthlyCredits: number
   dailyCredits: number
-  rolloverCredits: number
   anniversaryDay: number
   lastDailyReset: Date
   lastMonthlyReset: Date
@@ -23,7 +22,6 @@ export interface CreditLedgerCreateInput {
   workspaceId: string
   monthlyCredits?: number
   dailyCredits?: number
-  rolloverCredits?: number
   anniversaryDay: number
   lastDailyReset: Date
   lastMonthlyReset: Date
@@ -33,7 +31,6 @@ export interface CreditLedgerUpdateInput {
   workspaceId?: string
   monthlyCredits?: number
   dailyCredits?: number
-  rolloverCredits?: number
   anniversaryDay?: number
   lastDailyReset?: Date
   lastMonthlyReset?: Date

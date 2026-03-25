@@ -16,7 +16,6 @@ export interface BillingDataState {
   effectiveBalance: {
     dailyCredits: number
     monthlyCredits: number
-    rolloverCredits: number
     total: number
   } | undefined
   usageEvents: any[]
@@ -100,8 +99,7 @@ export function useBillingData(workspaceId: string | undefined): BillingDataStat
       const needsReset = lastReset !== new Date().toDateString()
       const daily = needsReset ? 5 : (creditLedger.dailyCredits ?? 0)
       const monthly = creditLedger.monthlyCredits ?? 0
-      const rollover = creditLedger.rolloverCredits ?? 0
-      return { dailyCredits: daily, monthlyCredits: monthly, rolloverCredits: rollover, total: daily + monthly + rollover }
+      return { dailyCredits: daily, monthlyCredits: monthly, total: daily + monthly }
     } catch { return undefined }
   }, [creditLedger])
 
