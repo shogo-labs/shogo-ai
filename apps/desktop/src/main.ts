@@ -268,8 +268,8 @@ app.whenReady().then(async () => {
 
   createWindow()
 
-  if (app.isPackaged && mainWindow) {
-    initAutoUpdater(mainWindow)
+  if (app.isPackaged) {
+    initAutoUpdater()
   }
 
   app.on('activate', () => {

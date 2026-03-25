@@ -23,15 +23,6 @@
     "typescript": "^5.7.0"
   },
   "dependencies": {
-    "electron-updater": "^6.3.0"
-  },
-  "build": {
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "shogo-labs",
-        "repo": "shogo-ai"
-      }
-    ]
+    "update-electron-app": "^3.1.2"
   }
 }
