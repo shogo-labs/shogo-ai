@@ -1265,7 +1265,7 @@ async function recordImageUsage(
 // Routes
 // =============================================================================
 
-const isLocalDev = process.env.NODE_ENV !== 'production' && !process.env.K_SERVICE
+const isLocalDev = process.env.SHOGO_LOCAL_MODE === 'true'
 
 export function aiProxyRoutes() {
   const router = new Hono()
