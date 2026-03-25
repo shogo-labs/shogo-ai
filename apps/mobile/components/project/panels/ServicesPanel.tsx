@@ -19,8 +19,10 @@ import {
   X,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { openAuthFlow } from '@shogo/ui-kit/platform'
+import { openAuthFlow, preCreateAuthWindow, isMobileWeb } from '@shogo/ui-kit/platform'
 import { API_URL, api } from '../../../lib/api'
+
+const LOG_PREFIX = '[ServicesPanel]'
 import { useDomainHttp } from '../../../contexts/domain'
 
 interface Connection {
@@ -93,26 +95,47 @@ export function ServicesPanel({ projectId, agentUrl, visible }: ServicesPanelPro
   const handleReconnect = useCallback(async (toolkit: string) => {
     setReconnecting(toolkit)
     setError(null)
+
+    const preWindow = Platform.OS === 'web' ? preCreateAuthWindow() : null
+    console.info(LOG_PREFIX, `Reconnecting ${toolkit}`)
+
     try {
       const isNative = Platform.OS !== 'web'
-      const redirect = isNative ? ExpoLinking.createURL('integrations-callback') : undefined
+      let redirect: string | undefined
+      if (isNative) {
+        redirect = ExpoLinking.createURL('integrations-callback')
+      } else if (isMobileWeb()) {
+        const returnUrl = new URL(window.location.href)
+        returnUrl.searchParams.set('fromOAuth', '1')
+        redirect = returnUrl.toString()
+      }
+
       const callbackUrl = redirect
         ? `${API_URL}/api/integrations/callback?redirect=${encodeURIComponent(redirect)}`
         : `${API_URL}/api/integrations/callback`
       const result = await api.connectIntegration(http, toolkit, projectId, callbackUrl)
       const redirectUrl = result.data?.redirectUrl
       if (!redirectUrl) {
+        console.warn(LOG_PREFIX, `No redirectUrl for ${toolkit}`)
         setError('No redirect URL received')
         setReconnecting(null)
         return
       }
 
-      await openAuthFlow(redirectUrl)
+      await openAuthFlow(redirectUrl, { preCreatedWindow: preWindow })
       setReconnecting(null)
       await loadConnections()
     } catch (err: any) {
+      console.error(LOG_PREFIX, `Reconnect error for ${toolkit}:`, err)
       setError(err.message)
       setReconnecting(null)
+    } finally {
+      try {
+        if (preWindow && !preWindow.closed) {
+          const loc = preWindow.location.href
+          if (loc === 'about:blank' || loc === '') preWindow.close()
+        }
+      } catch { /* COOP */ }
     }
   }, [http, projectId, loadConnections])
 

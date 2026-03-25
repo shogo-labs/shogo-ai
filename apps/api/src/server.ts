@@ -815,12 +815,52 @@ app.get('/api/integrations/callback', (c) => {
   const redirectParam = c.req.query('redirect')
   const ok = callbackStatus === 'success'
 
-  // Must use JavaScript redirect (not HTTP 302) for custom schemes so that
+  console.info('[OAuth callback]', { status: callbackStatus, redirect: redirectParam ? '(present)' : '(none)' })
+
+  // --- Determine redirect strategy ---
+  // Custom schemes (shogo://, exp://) must use a JavaScript redirect so that
   // openAuthSessionAsync can intercept the navigation within the Custom Tab.
   // A 302 causes the OS to open the app via intent, bypassing the auth session.
-  const isAllowedRedirect = redirectParam
+  const isNativeRedirect = redirectParam
     && (redirectParam.startsWith('shogo://') || redirectParam.startsWith('exp://'))
-  const redirectScript = ok && isAllowedRedirect
+
+  // Web redirect: validate same-origin to prevent open-redirect attacks.
+  // Allowed origins: BETTER_AUTH_URL / API_URL / APP_URL env vars.
+  let isWebRedirect = false
+  if (redirectParam && !isNativeRedirect && (redirectParam.startsWith('http://') || redirectParam.startsWith('https://'))) {
+    try {
+      const redirectOrigin = new URL(redirectParam).origin
+      const allowedOrigins = [
+        process.env.BETTER_AUTH_URL,
+        process.env.API_URL,
+        process.env.APP_URL,
+        process.env.EXPO_PUBLIC_API_URL,
+      ]
+        .filter(Boolean)
+        .map((u) => { try { return new URL(u!).origin } catch { return null } })
+        .filter(Boolean)
+      // In production, API and app share the same origin (nginx proxy).
+      // Also allow the request's own origin as a fallback.
+      const requestOrigin = `${c.req.header('x-forwarded-proto') || 'https'}://${c.req.header('host')}`
+      allowedOrigins.push(requestOrigin)
+      isWebRedirect = allowedOrigins.includes(redirectOrigin)
+      if (!isWebRedirect) {
+        console.warn('[OAuth callback] Rejected web redirect to untrusted origin:', redirectOrigin)
+      }
+    } catch {
+      console.warn('[OAuth callback] Invalid redirect URL:', redirectParam)
+    }
+  }
+
+  const isAllowedRedirect = isNativeRedirect || isWebRedirect
+
+  // For web redirects, use HTTP 302 (works in all browsers, no JS required).
+  // For native redirects, use JS so openAuthSessionAsync can intercept.
+  if (ok && isWebRedirect) {
+    return c.redirect(redirectParam!, 302)
+  }
+
+  const redirectScript = ok && isNativeRedirect
     ? `window.location.href = ${JSON.stringify(redirectParam)};`
     : ''
 

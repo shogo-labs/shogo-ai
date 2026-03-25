@@ -17,7 +17,7 @@ import { useState, useEffect, useCallback, useRef } from "react"
 import { View, Text, Pressable, Platform } from "react-native"
 import * as ExpoLinking from "expo-linking"
 import { cn } from "@shogo/shared-ui/primitives"
-import { openAuthFlow } from "@shogo/ui-kit/platform"
+import { openAuthFlow, preCreateAuthWindow, isMobileWeb } from "@shogo/ui-kit/platform"
 import {
   CheckCircle2,
   Loader2,
@@ -29,6 +29,8 @@ import { useLocalSearchParams } from "expo-router"
 import { API_URL, api } from "../../../lib/api"
 import { useChatContextSafe } from "../ChatContext"
 import { useDomainHttp } from "../../../contexts/domain"
+
+const LOG_PREFIX = "[ConnectToolWidget]"
 
 export interface ConnectToolWidgetProps {
   toolkitName: string
@@ -99,16 +101,32 @@ export function ConnectToolWidget({
   // On mount: check if already connected (handles page reload after OAuth).
   // If we're returning from a native OAuth flow (tracked by pendingOAuthToolkits
   // or the fromOAuth query param), also send the confirmation message so the
-  // agent continues.
+  // agent continues. If not yet connected but returning from OAuth, start
+  // polling by setting status to "connecting" so the polling effect kicks in.
   useEffect(() => {
     let cancelled = false
+    const returningFromOAuth =
+      pendingOAuthToolkits.has(toolkitName) || fromOAuth === "1"
+
+    if (returningFromOAuth) {
+      console.info(LOG_PREFIX, `Returning from OAuth for ${toolkitName}, checking connection…`)
+    }
+
     checkConnection().then((connected) => {
-      if (!cancelled && connected) {
+      if (cancelled) return
+      if (connected) {
+        console.info(LOG_PREFIX, `${toolkitName} is connected on mount`)
         setStatus("connected")
-        if (pendingOAuthToolkits.has(toolkitName) || fromOAuth === "1") {
+        if (returningFromOAuth) {
           pendingOAuthToolkits.delete(toolkitName)
           sendConfirmation()
         }
+      } else if (returningFromOAuth) {
+        // Connection not yet registered (race condition). Start polling so we
+        // don't stay stuck at "idle" after returning from the OAuth redirect.
+        console.info(LOG_PREFIX, `${toolkitName} not connected yet after OAuth — starting poll`)
+        pendingOAuthToolkits.delete(toolkitName)
+        setStatus("connecting")
       }
     })
     return () => {
@@ -162,20 +180,38 @@ export function ConnectToolWidget({
     const isNative = Platform.OS !== "web"
     if (isNative) pendingOAuthToolkits.add(toolkitName)
 
+    // Pre-create the popup/tab synchronously while we still have user-gesture
+    // context. Mobile browsers block window.open after an async gap.
+    const preWindow = Platform.OS === "web" ? preCreateAuthWindow() : null
+    console.info(LOG_PREFIX, `Starting OAuth for ${toolkitName}`, {
+      isNative,
+      preWindowCreated: !!preWindow,
+    })
+
     try {
       // Create a fresh connection via the API so the callback redirect uses the
       // correct scheme for the current environment (exp:// in Expo Go,
       // shogo:// in standalone builds) instead of the hardcoded agent URL.
       if (projectId && http) {
         try {
-          const redirect = isNative
-            ? ExpoLinking.createURL(
-                `integrations-callback?projectId=${encodeURIComponent(projectId)}`
-              )
-            : undefined
+          let redirect: string | undefined
+          if (isNative) {
+            redirect = ExpoLinking.createURL(
+              `integrations-callback?projectId=${encodeURIComponent(projectId)}`,
+            )
+          } else if (isMobileWeb()) {
+            // Mobile web: tell the server callback to redirect back to our page
+            const returnUrl = new URL(window.location.href)
+            returnUrl.searchParams.set("fromOAuth", "1")
+            redirect = returnUrl.toString()
+          }
+
           const callbackUrl = redirect
             ? `${API_URL}/api/integrations/callback?redirect=${encodeURIComponent(redirect)}`
             : `${API_URL}/api/integrations/callback`
+
+          console.info(LOG_PREFIX, `Calling connectIntegration API`, { toolkit: toolkitName, callbackUrl })
+
           const data = await api.connectIntegration(
             http,
             toolkitName,
@@ -184,31 +220,44 @@ export function ConnectToolWidget({
           )
           const redirectUrl = data.data?.redirectUrl
           if (redirectUrl) {
-            const result = await openAuthFlow(redirectUrl)
+            console.info(LOG_PREFIX, `Got redirectUrl, opening auth flow`)
+            const result = await openAuthFlow(redirectUrl, {
+              preCreatedWindow: preWindow,
+            })
+            console.info(LOG_PREFIX, `openAuthFlow resolved`, { type: result?.type })
             await checkAndConfirm()
-            // On web, popup close means user closed/cancelled; if still not connected, show error immediately instead of waiting for 90s timeout
-            if (Platform.OS === "web" && result?.type === "success") {
-              const connected = await checkConnection()
-              if (!connected) setStatus("error")
-            }
+            // Don't set error here — let the polling effect (which fires while
+            // status === "connecting") handle timeout and error states.
+            // Premature error-setting kills the polling on mobile where popup
+            // close detection is unreliable (COOP, mobile tabs).
             return
           }
-        } catch {
+          console.warn(LOG_PREFIX, `No redirectUrl from API`)
+        } catch (err) {
+          console.warn(LOG_PREFIX, `connectIntegration API failed, falling back to authUrl`, err)
           // Fall back to agent-provided authUrl
         }
       }
 
-      const result = await openAuthFlow(authUrl)
+      console.info(LOG_PREFIX, `Using fallback authUrl`)
+      const result = await openAuthFlow(authUrl, { preCreatedWindow: preWindow })
+      console.info(LOG_PREFIX, `Fallback openAuthFlow resolved`, { type: result?.type })
       await checkAndConfirm()
-      if (Platform.OS === "web" && result?.type === "success") {
-        const connected = await checkConnection()
-        if (!connected) setStatus("error")
-      }
-    } catch {
+    } catch (err) {
+      console.error(LOG_PREFIX, `handleConnect error`, err)
       setStatus("error")
       if (isNative) pendingOAuthToolkits.delete(toolkitName)
+    } finally {
+      // If the pre-created window was never navigated (e.g. API failed and
+      // fallback also failed), close it to avoid a lingering blank tab.
+      try {
+        if (preWindow && !preWindow.closed) {
+          const loc = preWindow.location.href
+          if (loc === "about:blank" || loc === "") preWindow.close()
+        }
+      } catch { /* COOP — ignore */ }
     }
-  }, [authUrl, http, toolkitName, projectId, checkAndConfirm])
+  }, [authUrl, http, toolkitName, projectId, checkAndConfirm, checkConnection])
 
   const displayName =
     toolkitName.charAt(0).toUpperCase() + toolkitName.slice(1)

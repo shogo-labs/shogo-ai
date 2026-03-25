@@ -78,7 +78,7 @@ import {
 } from "./tools/types"
 import * as ExpoLinking from "expo-linking"
 import { AlertCircle, RefreshCw, X } from "lucide-react-native"
-import { openAuthFlow } from "@shogo/ui-kit/platform"
+import { openAuthFlow, preCreateAuthWindow, isMobileWeb } from "@shogo/ui-kit/platform"
 import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
 
 // ============================================================
@@ -2271,23 +2271,42 @@ export const ChatPanel = observer(function ChatPanel({
                       onPress={async () => {
                         const toolkit = toolErrorBanner.toolkitName.toLowerCase()
                         setReconnecting(true)
+
+                        const preWindow = Platform.OS === 'web' ? preCreateAuthWindow() : null
+                        console.info('[ChatPanel] Reconnecting', toolkit)
+
                         try {
                           const http = createHttpClient()
                           const isNative = Platform.OS !== 'web'
-                          const redirect = isNative ? ExpoLinking.createURL('integrations-callback') : undefined
+                          let redirect: string | undefined
+                          if (isNative) {
+                            redirect = ExpoLinking.createURL('integrations-callback')
+                          } else if (isMobileWeb()) {
+                            const returnUrl = new URL(window.location.href)
+                            returnUrl.searchParams.set('fromOAuth', '1')
+                            redirect = returnUrl.toString()
+                          }
+
                           const callbackUrl = redirect
                             ? `${API_URL}/api/integrations/callback?redirect=${encodeURIComponent(redirect)}`
                             : `${API_URL}/api/integrations/callback`
                           const data = await api.connectIntegration(http, toolkit, projectId, callbackUrl)
                           const redirectUrl = data.data?.redirectUrl
                           if (redirectUrl) {
-                            await openAuthFlow(redirectUrl)
+                            await openAuthFlow(redirectUrl, { preCreatedWindow: preWindow })
                             setToolErrorBanner(null)
                           }
-                        } catch {
+                        } catch (err) {
+                          console.error('[ChatPanel] Reconnect error:', err)
                           // Connection attempt failed — banner stays visible
                         } finally {
                           setReconnecting(false)
+                          try {
+                            if (preWindow && !preWindow.closed) {
+                              const loc = preWindow.location.href
+                              if (loc === 'about:blank' || loc === '') preWindow.close()
+                            }
+                          } catch { /* COOP */ }
                         }
                       }}
                       disabled={reconnecting}
