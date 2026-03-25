@@ -27,8 +27,10 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Tooltip, TooltipContent, TooltipText } from '@/components/ui/tooltip'
-import { openAuthFlow } from '@shogo/ui-kit/platform'
+import { openAuthFlow, preCreateAuthWindow, isMobileWeb } from '@shogo/ui-kit/platform'
 import { API_URL, api } from '../../../lib/api'
+
+const LOG_PREFIX = '[ToolsPanel]'
 import { useDomainHttp } from '../../../contexts/domain'
 import { agentFetch } from '../../../lib/agent-fetch'
 
@@ -214,22 +216,44 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
       if (!result.composioToolkit) return
       setConnecting(result.id)
       setError(null)
+
+      const preWindow = Platform.OS === 'web' ? preCreateAuthWindow() : null
+      console.info(LOG_PREFIX, `Starting OAuth for ${result.composioToolkit}`)
+
       try {
         const isNative = Platform.OS !== 'web'
-        const redirect = isNative ? ExpoLinking.createURL('integrations-callback') : undefined
+        let redirect: string | undefined
+        if (isNative) {
+          redirect = ExpoLinking.createURL('integrations-callback')
+        } else if (isMobileWeb()) {
+          const returnUrl = new URL(window.location.href)
+          returnUrl.searchParams.set('fromOAuth', '1')
+          redirect = returnUrl.toString()
+        }
+
         const callbackUrl = redirect
           ? `${API_URL}/api/integrations/callback?redirect=${encodeURIComponent(redirect)}`
           : `${API_URL}/api/integrations/callback`
         const data = await api.connectIntegration(http, result.composioToolkit, projectId, callbackUrl)
         const redirectUrl = data.data?.redirectUrl
         if (redirectUrl) {
-          await openAuthFlow(redirectUrl)
+          await openAuthFlow(redirectUrl, { preCreatedWindow: preWindow })
           setConnecting(null)
           await loadInstalledTools()
+        } else {
+          console.warn(LOG_PREFIX, `No redirectUrl for ${result.composioToolkit}`)
         }
       } catch (err: any) {
+        console.error(LOG_PREFIX, `OAuth error for ${result.composioToolkit}:`, err)
         setError(err.message)
         setConnecting(null)
+      } finally {
+        try {
+          if (preWindow && !preWindow.closed) {
+            const loc = preWindow.location.href
+            if (loc === 'about:blank' || loc === '') preWindow.close()
+          }
+        } catch { /* COOP */ }
       }
     },
     [http, projectId, loadInstalledTools],
@@ -238,22 +262,41 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
   const handleReconnect = useCallback(async (toolkit: string) => {
     setReconnectingToolkit(toolkit)
     setError(null)
+
+    const preWindow = Platform.OS === 'web' ? preCreateAuthWindow() : null
+    console.info(LOG_PREFIX, `Reconnecting ${toolkit}`)
+
     try {
       const isNative = Platform.OS !== 'web'
-      const redirect = isNative ? ExpoLinking.createURL('integrations-callback') : undefined
+      let redirect: string | undefined
+      if (isNative) {
+        redirect = ExpoLinking.createURL('integrations-callback')
+      } else if (isMobileWeb()) {
+        const returnUrl = new URL(window.location.href)
+        returnUrl.searchParams.set('fromOAuth', '1')
+        redirect = returnUrl.toString()
+      }
+
       const callbackUrl = redirect
         ? `${API_URL}/api/integrations/callback?redirect=${encodeURIComponent(redirect)}`
         : `${API_URL}/api/integrations/callback`
       const data = await api.connectIntegration(http, toolkit, projectId, callbackUrl)
       const redirectUrl = data.data?.redirectUrl
       if (redirectUrl) {
-        await openAuthFlow(redirectUrl)
+        await openAuthFlow(redirectUrl, { preCreatedWindow: preWindow })
         await loadInstalledTools()
       }
     } catch (err: any) {
+      console.error(LOG_PREFIX, `Reconnect error for ${toolkit}:`, err)
       setError(err.message)
     } finally {
       setReconnectingToolkit(null)
+      try {
+        if (preWindow && !preWindow.closed) {
+          const loc = preWindow.location.href
+          if (loc === 'about:blank' || loc === '') preWindow.close()
+        }
+      } catch { /* COOP */ }
     }
   }, [http, projectId, loadInstalledTools])
 

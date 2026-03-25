@@ -4,10 +4,11 @@
  * CompactChatInput Component (React Native)
  *
  * Chat input card with attach button and send button.
- * Supports file attachments via image picker.
+ * Supports file attachments.
  *
  * Note: ThemeSelector is omitted for mobile (web-only feature).
- * File handling uses expo-image-picker instead of HTML file input.
+ * Web (including mobile-web): hidden <input type="file" /> triggered by button click.
+ * Native (Android/iOS dev-client): AttachSourceSheet + ImagePicker + DocumentPicker.
  * Drag-and-drop is omitted (not available on mobile).
  */
 
@@ -16,6 +17,7 @@ import { View, Text, TextInput, Pressable, Image, ScrollView, Platform } from "r
 import { cn } from "@shogo/shared-ui/primitives"
 import { Paperclip, Send, Loader2, X, File, FileText, ImageIcon } from "lucide-react-native"
 import type { FileAttachment } from "./ChatInput"
+import { AttachSourceSheet } from "./AttachSourceSheet"
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024
 const MAX_FILES = 10
@@ -56,6 +58,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
 
     const [pendingFiles, setPendingFiles] = useState<AttachedFile[]>([])
     const [fileError, setFileError] = useState<string | null>(null)
+    const [attachSheetOpen, setAttachSheetOpen] = useState(false)
     const fileInputRef = useRef<HTMLInputElement | null>(null)
     const dropZoneRef = useRef<View>(null)
 
@@ -91,24 +94,27 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     const handleAttachClick = useCallback(() => {
       if (Platform.OS === "web") {
         fileInputRef.current?.click()
+        return
       }
+      setAttachSheetOpen(true)
     }, [])
 
-    const processFiles = useCallback(
-      (files: FileList | File[]) => {
-        Array.from(files).forEach((file: File) => {
-          if (file.size > MAX_FILE_SIZE) {
-            setFileError(`File "${file.name}" exceeds ${MAX_FILE_SIZE / (1024 * 1024)}MB limit`)
-            return
-          }
-          if (pendingFiles.length >= MAX_FILES) {
-            setFileError(`Maximum ${MAX_FILES} files allowed`)
-            return
-          }
-          const reader = new FileReader()
-          reader.onload = () => {
-            const dataUrl = reader.result as string
-            setPendingFiles((prev) => [
+    const processFiles = useCallback((files: FileList | File[]) => {
+      Array.from(files).forEach((file: File) => {
+        if (file.size > MAX_FILE_SIZE) {
+          setFileError(`File "${file.name}" exceeds ${MAX_FILE_SIZE / (1024 * 1024)}MB limit`)
+          return
+        }
+        const reader = new FileReader()
+        reader.onload = () => {
+          const dataUrl = reader.result as string
+          setPendingFiles((prev) => {
+            if (prev.length >= MAX_FILES) {
+              setFileError(`Maximum ${MAX_FILES} files allowed`)
+              return prev
+            }
+            setFileError(null)
+            return [
               ...prev,
               {
                 id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -117,14 +123,12 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 type: file.type,
                 size: file.size,
               },
-            ])
-            setFileError(null)
-          }
-          reader.readAsDataURL(file)
-        })
-      },
-      [pendingFiles]
-    )
+            ]
+          })
+        }
+        reader.readAsDataURL(file)
+      })
+    }, [])
 
     const handleWebFileChange = useCallback(
       (e: any) => {
@@ -178,15 +182,18 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     return (
       <View ref={ref} className={cn("w-full", className)}>
         <View ref={dropZoneRef as any} className="bg-white/80 dark:bg-gray-900/80 border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
-          {/* Hidden file input for web */}
+          {/* Hidden file input for web (including mobile-web on Android/iOS browsers) */}
           {Platform.OS === "web" && (
             <input
               ref={fileInputRef as any}
               type="file"
               multiple
               accept="image/*,.pdf,.txt,.md,.csv,.json"
+              capture={undefined}
               onChange={handleWebFileChange}
-              style={{ display: "none" }}
+              tabIndex={-1}
+              aria-hidden="true"
+              className="sr-only"
             />
           )}
 
@@ -263,9 +270,11 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
               }}
               editable={!disabled && !isLoading}
               multiline
-              className="min-h-[80px] text-base text-foreground"
+              className={cn(
+                "min-h-[80px] text-base text-foreground",
+                Platform.OS === "web" && "outline-none"
+              )}
               textAlignVertical="top"
-              style={Platform.OS === 'web' ? { outlineStyle: 'none', caretColor: 'auto' } as any : undefined}
             />
           </View>
 
@@ -274,8 +283,9 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             <View className="flex-row items-center gap-1">
               <Pressable
                 onPress={handleAttachClick}
-                className="h-8 flex-row items-center gap-1.5 px-2"
                 disabled={disabled || isLoading || pendingFiles.length >= MAX_FILES}
+                className="min-h-11 min-w-11 flex-row items-center gap-1.5 rounded-lg px-3 py-2 active:opacity-70"
+                android_ripple={{ color: "rgba(128,128,128,0.25)" }}
               >
                 <Paperclip className="h-4 w-4 text-gray-400" size={16} />
                 <Text className="text-xs text-gray-400">Attach</Text>
@@ -301,6 +311,36 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             </Pressable>
           </View>
         </View>
+
+        {Platform.OS !== "web" && (
+          <AttachSourceSheet
+            open={attachSheetOpen}
+            onOpenChange={setAttachSheetOpen}
+            currentCount={pendingFiles.length}
+            maxFiles={MAX_FILES}
+            maxFileSizeBytes={MAX_FILE_SIZE}
+            onFiles={(picked) => {
+              setPendingFiles((prev) => {
+                const room = MAX_FILES - prev.length
+                if (room <= 0) return prev
+                const added = picked.slice(0, room).map((f) => ({
+                  id: f.id,
+                  dataUrl: f.dataUrl,
+                  name: f.name,
+                  type: f.type,
+                  size: f.size,
+                }))
+                if (picked.length > room) {
+                  setFileError(`Maximum ${MAX_FILES} files allowed`)
+                } else {
+                  setFileError(null)
+                }
+                return [...prev, ...added]
+              })
+            }}
+            onError={(message) => setFileError(message)}
+          />
+        )}
       </View>
     )
   }
