@@ -8,11 +8,11 @@
  * automated systems for monitoring and managing project resources.
  *
  * Endpoints:
- * - GET /admin/projects - List all project pods
- * - GET /admin/projects/:projectId - Get specific project pod status
- * - POST /admin/projects/:projectId/scale - Scale project pod
- * - DELETE /admin/projects/:projectId - Delete project pod
- * - POST /admin/projects/:projectId/warmup - Warm up a project pod
+ * - GET /admin/pods - List all project pods
+ * - GET /admin/pods/:projectId - Get specific project pod status
+ * - POST /admin/pods/:projectId/scale - Scale project pod
+ * - DELETE /admin/pods/:projectId - Delete project pod
+ * - POST /admin/pods/:projectId/warmup - Warm up a project pod
  */
 
 import { Hono } from "hono"
@@ -67,11 +67,11 @@ export function projectAdminRoutes() {
   }
 
   /**
-   * GET /admin/projects - List all project pods
+   * GET /admin/pods - List all project pods
    *
    * Returns a list of all project runtime pods in the namespace.
    */
-  router.get("/admin/projects", async (c) => {
+  router.get("/admin/pods", async (c) => {
     const k8sError = requireKubernetes(c)
     if (k8sError) {
       return c.json(k8sError, 400)
@@ -101,11 +101,11 @@ export function projectAdminRoutes() {
   })
 
   /**
-   * GET /admin/projects/:projectId - Get project pod status
+   * GET /admin/pods/:projectId - Get project pod status
    *
    * Returns detailed status for a specific project pod.
    */
-  router.get("/admin/projects/:projectId", async (c) => {
+  router.get("/admin/pods/:projectId", async (c) => {
     const k8sError = requireKubernetes(c)
     if (k8sError) {
       return c.json(k8sError, 400)
@@ -151,13 +151,13 @@ export function projectAdminRoutes() {
   })
 
   /**
-   * POST /admin/projects/:projectId/scale - Scale project pod
+   * POST /admin/pods/:projectId/scale - Scale project pod
    *
    * Scales a project pod to a specific number of replicas.
    * Set replicas to 0 to scale to zero (but keep the service).
    * Set replicas to 1 to warm up the pod.
    */
-  router.post("/admin/projects/:projectId/scale", async (c) => {
+  router.post("/admin/pods/:projectId/scale", async (c) => {
     const k8sError = requireKubernetes(c)
     if (k8sError) {
       return c.json(k8sError, 400)
@@ -217,11 +217,11 @@ export function projectAdminRoutes() {
   })
 
   /**
-   * POST /admin/projects/:projectId/warmup - Warm up a project pod
+   * POST /admin/pods/:projectId/warmup - Warm up a project pod
    *
    * Warms up a project pod by scaling it to 1 and waiting for it to be ready.
    */
-  router.post("/admin/projects/:projectId/warmup", async (c) => {
+  router.post("/admin/pods/:projectId/warmup", async (c) => {
     const k8sError = requireKubernetes(c)
     if (k8sError) {
       return c.json(k8sError, 400)
@@ -266,12 +266,12 @@ export function projectAdminRoutes() {
   })
 
   /**
-   * DELETE /admin/projects/:projectId - Delete project pod
+   * DELETE /admin/pods/:projectId - Delete project pod
    *
    * Deletes a project's Knative Service and PVC.
    * This is a destructive operation that removes all project data.
    */
-  router.delete("/admin/projects/:projectId", async (c) => {
+  router.delete("/admin/pods/:projectId", async (c) => {
     const k8sError = requireKubernetes(c)
     if (k8sError) {
       return c.json(k8sError, 400)
@@ -303,11 +303,11 @@ export function projectAdminRoutes() {
   })
 
   /**
-   * GET /admin/stats - Get aggregate stats
+   * GET /admin/pod-stats - Get aggregate stats
    *
    * Returns aggregate statistics about project pods.
    */
-  router.get("/admin/stats", async (c) => {
+  router.get("/admin/pod-stats", async (c) => {
     const k8sError = requireKubernetes(c)
     if (k8sError) {
       return c.json(k8sError, 400)

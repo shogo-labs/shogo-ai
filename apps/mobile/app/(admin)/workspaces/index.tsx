@@ -30,7 +30,7 @@ import {
   Folder,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { API_URL } from '../../lib/api'
+import { API_URL } from '../../../lib/api'
 
 const API_BASE = `${API_URL}/api/admin`
 
@@ -302,7 +302,7 @@ export default function AdminWorkspacesPage() {
               <WorkspaceCard
                 workspace={item}
                 isWide={isWide}
-                onPress={() => {}}
+                onPress={() => router.push(`/(admin)/workspaces/${item.id}` as any)}
               />
             </View>
           )}
@@ -333,7 +333,7 @@ export default function AdminWorkspacesPage() {
           <WorkspaceCard
             workspace={item}
             isWide={isWide}
-            onPress={() => {}}
+            onPress={() => router.push(`/(admin)/workspaces/${item.id}` as any)}
           />
         )}
         contentContainerStyle={{ paddingBottom: 20 }}

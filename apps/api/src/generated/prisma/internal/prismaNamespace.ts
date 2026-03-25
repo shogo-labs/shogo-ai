@@ -4103,7 +4103,6 @@ export const CreditLedgerScalarFieldEnum = {
   workspaceId: 'workspaceId',
   monthlyCredits: 'monthlyCredits',
   dailyCredits: 'dailyCredits',
-  rolloverCredits: 'rolloverCredits',
   dailyCreditsDispensedThisMonth: 'dailyCreditsDispensedThisMonth',
   anniversaryDay: 'anniversaryDay',
   lastDailyReset: 'lastDailyReset',
