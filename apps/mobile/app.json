@@ -31,6 +31,14 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Shogo to access your photos so you can attach them to messages.",
+          "cameraPermission": "Allow Shogo to use the camera so you can attach photos to messages."
+        }
+      ],
+      "expo-document-picker",
       "expo-secure-store",
       "expo-web-browser",
       "expo-localization",

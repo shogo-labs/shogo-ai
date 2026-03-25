@@ -9,6 +9,7 @@ import {
   Platform,
   ActivityIndicator,
   useWindowDimensions,
+  Alert,
 } from 'react-native'
 import * as ExpoLinking from 'expo-linking'
 import {
@@ -33,8 +34,10 @@ import {
   Plug,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { openAuthFlow } from '@shogo/ui-kit/platform'
+import { openAuthFlow, preCreateAuthWindow, isMobileWeb } from '@shogo/ui-kit/platform'
 import { API_URL, api } from '../../lib/api'
+
+const LOG_PREFIX = '[IntegrationsCard]'
 import { useDomainHttp } from '../../contexts/domain'
 import { isNativePhoneIntegrationsLayout } from '../../lib/native-phone-layout'
 
@@ -309,13 +312,27 @@ export function IntegrationsCard({
     async (toolkit: string) => {
       setStatuses((prev) => ({ ...prev, [toolkit]: 'connecting' }))
 
+      // Pre-create popup synchronously to avoid mobile popup blockers
+      const preWindow = Platform.OS === 'web' ? preCreateAuthWindow() : null
+      console.info(LOG_PREFIX, `Starting OAuth for ${toolkit}`)
+
+      // Start polling immediately — don't wait for openAuthFlow to resolve.
+      // This ensures we detect the connection even if popup detection fails.
+      pollUntilConnected(toolkit)
+
       try {
         const isNative = Platform.OS !== 'web'
-        const redirect = isNative
-          ? ExpoLinking.createURL(
-              `integrations-callback?projectId=${encodeURIComponent(projectId)}`,
-            )
-          : undefined
+        let redirect: string | undefined
+        if (isNative) {
+          redirect = ExpoLinking.createURL(
+            `integrations-callback?projectId=${encodeURIComponent(projectId)}`,
+          )
+        } else if (isMobileWeb()) {
+          const returnUrl = new URL(window.location.href)
+          returnUrl.searchParams.set('fromOAuth', '1')
+          redirect = returnUrl.toString()
+        }
+
         const callbackUrl = redirect
           ? `${API_URL}/api/integrations/callback?redirect=${encodeURIComponent(redirect)}`
           : `${API_URL}/api/integrations/callback`
@@ -323,14 +340,27 @@ export function IntegrationsCard({
         const data = await api.connectIntegration(http, toolkit, projectId, callbackUrl)
         const redirectUrl = data.data?.redirectUrl
         if (redirectUrl) {
-          await openAuthFlow(redirectUrl)
+          await openAuthFlow(redirectUrl, { preCreatedWindow: preWindow })
+        } else {
+          console.warn(LOG_PREFIX, `No redirectUrl for ${toolkit}`)
         }
-      } catch {
+      } catch (err: any) {
+        console.error(LOG_PREFIX, `OAuth error for ${toolkit}:`, err)
+        pollingRef.current[toolkit] = false
         setStatuses((prev) => ({ ...prev, [toolkit]: 'idle' }))
-        return
+        const msg =
+          typeof err?.message === 'string'
+            ? err.message
+            : 'Could not start connect. Check network and API configuration.'
+        Alert.alert('Connect failed', msg)
+      } finally {
+        try {
+          if (preWindow && !preWindow.closed) {
+            const loc = preWindow.location.href
+            if (loc === 'about:blank' || loc === '') preWindow.close()
+          }
+        } catch { /* COOP — ignore */ }
       }
-
-      pollUntilConnected(toolkit)
     },
     [http, projectId, pollUntilConnected],
   )

@@ -56,18 +56,18 @@ function RootLayoutInner() {
   const systemColorScheme = useColorScheme()
   const { theme, isLoaded } = useTheme()
 
-  const resolvedMode = theme === 'system'
+  const statusBarScheme = theme === 'system'
     ? (systemColorScheme === 'dark' ? 'dark' : 'light')
     : theme
 
   if (!isLoaded) return null
 
   return (
-    <GluestackUIProvider mode={resolvedMode}>
+    <GluestackUIProvider mode={theme}>
       <PostHogProvider>
         <AuthProvider>
           <UpdateBanner />
-          <StatusBar style={resolvedMode === 'dark' ? 'light' : 'dark'} />
+          <StatusBar style={statusBarScheme === 'dark' ? 'light' : 'dark'} />
           <Stack screenOptions={{ headerShown: false, lazy: true }}>
             <Stack.Screen name="index" />
             <Stack.Screen name="(auth)" />

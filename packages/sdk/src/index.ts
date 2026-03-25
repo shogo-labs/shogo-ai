@@ -44,6 +44,9 @@ export { ShogoAuth } from './auth/index.js'
 // HTTP client
 export { HttpClient, type HttpClientConfig } from './http/client.js'
 
+// Attachments (data URLs for multimodal chat, etc.)
+export { buildDataUrlFromBase64 } from './attachments/data-url.js'
+
 // Stores
 export {
   OptimisticStore,

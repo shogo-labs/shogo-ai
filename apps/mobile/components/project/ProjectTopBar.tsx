@@ -73,6 +73,11 @@ import { isNativePhoneIntegrationsLayout } from '../../lib/native-phone-layout'
 /** Native narrow bar: Popover trigger often ignores Tailwind `max-w`; cap width in dp (slightly above 120). */
 const nativeNarrowTitleMaxWidth = 132
 
+/** Native narrow top bar only (not web): slimmer than 320px desktop popover, capped to screen width. */
+function narrowProjectDropdownWidth(screenWidth: number): number {
+  return Math.max(232, Math.min(276, screenWidth - 20))
+}
+
 const AGENT_TABS: { id: string; label: string; icon: React.ElementType }[] = [
   { id: 'chat-fullscreen', label: 'Chat', icon: MessageSquare },
   { id: 'dynamic-app', label: 'Canvas', icon: LayoutDashboard },
@@ -284,6 +289,7 @@ export function ProjectTopBar({
   // Wide layout: two-zone top bar aligned with the chat (480px) and canvas (flex-1) panels below.
   // Narrow layout: single flat bar with icon tabs and overflow menu.
   const chatPanelWidth = 480
+  const narrowNativeMenuW = Platform.OS !== 'web' ? narrowProjectDropdownWidth(width) : null
 
   if (!isWide) {
     return (
@@ -329,7 +335,18 @@ export function ProjectTopBar({
             )}
           >
             <PopoverBackdrop />
-            <PopoverContent className="max-w-[340px] w-[320px] p-0">
+            <PopoverContent
+              className={
+                Platform.OS === 'web'
+                  ? 'max-w-[340px] w-[320px] p-0'
+                  : 'p-0'
+              }
+              style={
+                narrowNativeMenuW != null
+                  ? { width: narrowNativeMenuW, maxWidth: narrowNativeMenuW }
+                  : undefined
+              }
+            >
               <PopoverBody>
                 <ProjectDropdownContent
                   key={dropdownKey}
@@ -868,22 +885,49 @@ function ProjectMenuView({
         {showBilling && (
           <View className="px-4 pb-3">
             <View className="bg-card border border-border rounded-lg p-3 gap-2">
-              <View className="flex-row items-center justify-between">
-                <Text className="text-sm font-medium text-foreground">Credits</Text>
-                <Pressable
-                  onPress={() => { onClose(); router.push({ pathname: '/(app)/settings', params: { tab: 'billing' } } as any) }}
-                  className="flex-row items-center gap-1"
-                >
-                  <Text className="text-sm font-medium text-foreground">
-                    {formatCredits(creditsRemaining)} left
-                  </Text>
-                  <ChevronRight size={14} className="text-muted-foreground" />
-                </Pressable>
-              </View>
-              <Progress
-                value={creditsPercent}
-                className="h-1.5"
-              />
+              {Platform.OS === 'web' ? (
+                <>
+                  <View className="flex-row items-center justify-between">
+                    <Text className="text-sm font-medium text-foreground">Credits</Text>
+                    <Pressable
+                      onPress={() => { onClose(); router.push({ pathname: '/(app)/settings', params: { tab: 'billing' } } as any) }}
+                      className="flex-row items-center gap-1"
+                    >
+                      <Text className="text-sm font-medium text-foreground">
+                        {formatCredits(creditsRemaining)} left
+                      </Text>
+                      <ChevronRight size={14} className="text-muted-foreground" />
+                    </Pressable>
+                  </View>
+                  <Progress
+                    value={creditsPercent}
+                    className="h-1.5"
+                  />
+                </>
+              ) : (
+                <>
+                  <View className="flex-row items-center justify-between gap-2">
+                    <Text className="text-sm font-medium text-foreground shrink-0">Credits</Text>
+                    <Pressable
+                      onPress={() => { onClose(); router.push({ pathname: '/(app)/settings', params: { tab: 'billing' } } as any) }}
+                      className="flex-row items-center gap-1 min-w-0 flex-1 justify-end"
+                    >
+                      <Text
+                        className="text-sm font-medium text-foreground text-right"
+                        numberOfLines={1}
+                        ellipsizeMode="tail"
+                      >
+                        {formatCredits(creditsRemaining)} left
+                      </Text>
+                      <ChevronRight size={14} className="text-muted-foreground flex-shrink-0" />
+                    </Pressable>
+                  </View>
+                  <Progress
+                    value={creditsPercent}
+                    className="h-1.5 w-full"
+                  />
+                </>
+              )}
               <View className="flex-row items-center gap-1.5">
                 <View className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />
                 <Text className="text-xs text-muted-foreground">
@@ -1094,14 +1138,14 @@ const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
 
 function AppearanceMenu() {
   const { theme, setTheme } = useTheme()
-  const [open, setOpen] = useState(false)
+  const [popoverOpen, setPopoverOpen] = useState(false)
 
   return (
     <Popover
       placement="right"
-      isOpen={open}
-      onOpen={() => setOpen(true)}
-      onClose={() => setOpen(false)}
+      isOpen={popoverOpen}
+      onOpen={() => setPopoverOpen(true)}
+      onClose={() => setPopoverOpen(false)}
       trigger={(triggerProps) => (
         <Pressable
           {...triggerProps}
@@ -1114,23 +1158,36 @@ function AppearanceMenu() {
       )}
     >
       <PopoverBackdrop />
-      <PopoverContent className="min-w-[160px] p-0">
+      <PopoverContent
+        className={cn(
+          'p-0',
+          Platform.OS === 'web'
+            ? 'min-w-[160px]'
+            : 'min-w-0 w-[122px] max-w-[122px] shrink-0',
+        )}
+      >
         <PopoverBody>
           {THEME_OPTIONS.map(({ value, label }) => (
             <Pressable
               key={value}
-              onPress={() => { setTheme(value); setOpen(false) }}
-              className="flex-row items-center gap-3 px-4 py-3 active:bg-muted"
+              onPress={() => { setTheme(value); setPopoverOpen(false) }}
+              className={cn(
+                'flex-row items-center active:bg-muted',
+                Platform.OS === 'web' ? 'gap-3 px-4 py-3' : 'gap-2 px-2.5 py-2.5',
+              )}
             >
               <Text
                 className={cn(
                   'text-sm flex-1',
                   theme === value ? 'text-foreground font-medium' : 'text-foreground',
                 )}
+                numberOfLines={1}
               >
                 {label}
               </Text>
-              {theme === value && <Check size={16} className="text-foreground" />}
+              {theme === value && (
+                <Check size={Platform.OS === 'web' ? 16 : 14} className="text-foreground flex-shrink-0" />
+              )}
             </Pressable>
           ))}
         </PopoverBody>
@@ -1322,7 +1379,8 @@ function ProjectSwitcherView({
                   <View className={cn(
                     'h-8 w-8 rounded-md items-center justify-center',
                     'bg-primary/10',
-                  )}>
+                  )}
+                  >
                     <Bot
                       size={15}
                       className="text-primary"

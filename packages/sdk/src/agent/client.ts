@@ -3,6 +3,8 @@
 
 import type {
   AgentClientConfig,
+  AgentExportBundle,
+  AgentImportResult,
   AgentStatus,
   ChatMessage,
   ChatOptions,
@@ -30,10 +32,12 @@ import type {
 export class AgentClient {
   private baseUrl: string
   private headers: Record<string, string>
+  private doFetch: typeof fetch
 
   constructor(config?: AgentClientConfig) {
     this.baseUrl = config?.baseUrl?.replace(/\/$/, '') ?? ''
     this.headers = config?.headers ?? {}
+    this.doFetch = config?.fetch ?? globalThis.fetch.bind(globalThis)
   }
 
   private url(path: string): string {
@@ -41,7 +45,7 @@ export class AgentClient {
   }
 
   private async fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-    const res = await fetch(this.url(path), {
+    const res = await this.doFetch(this.url(path), {
       ...init,
       headers: { ...this.headers, ...init?.headers },
     })
@@ -79,7 +83,7 @@ export class AgentClient {
     if (options?.userId) body.userId = options.userId
     if (options?.timezone) body.timezone = options.timezone
 
-    const res = await fetch(this.url('/agent/chat'), {
+    const res = await this.doFetch(this.url('/agent/chat'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.headers },
       body: JSON.stringify(body),
@@ -129,30 +133,28 @@ export class AgentClient {
   // ---------------------------------------------------------------------------
 
   async getWorkspaceTree(): Promise<FileNode[]> {
-    return this.fetchJson<FileNode[]>('/agent/workspace/tree')
+    const data = await this.fetchJson<{ tree: FileNode[] }>('/agent/workspace/tree')
+    return data.tree ?? []
   }
 
   async readFile(path: string): Promise<string> {
-    const res = await fetch(this.url(`/agent/workspace/files/${encodeURIComponent(path)}`), {
+    const res = await this.doFetch(this.url(`/agent/workspace/files/${encodeURIComponent(path)}`), {
       headers: this.headers,
     })
     if (!res.ok) {
       const text = await res.text().catch(() => res.statusText)
       throw new Error(`Agent readFile ${res.status}: ${text}`)
     }
-    return res.text()
+    const data = (await res.json()) as { content: string }
+    return data.content ?? ''
   }
 
   async writeFile(path: string, content: string): Promise<void> {
-    const res = await fetch(this.url(`/agent/workspace/files/${encodeURIComponent(path)}`), {
+    await this.fetchJson(`/agent/workspace/files/${encodeURIComponent(path)}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'text/plain', ...this.headers },
-      body: content,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
     })
-    if (!res.ok) {
-      const text = await res.text().catch(() => res.statusText)
-      throw new Error(`Agent writeFile ${res.status}: ${text}`)
-    }
   }
 
   async deleteFile(path: string): Promise<void> {
@@ -161,11 +163,71 @@ export class AgentClient {
     })
   }
 
-  async searchFiles(query: string): Promise<SearchResult[]> {
-    return this.fetchJson<SearchResult[]>('/agent/workspace/search', {
+  async searchFiles(
+    query: string,
+    options?: { limit?: number; pathFilter?: string },
+  ): Promise<SearchResult[]> {
+    const body: Record<string, unknown> = { query }
+    if (options?.limit != null) body.limit = options.limit
+    if (options?.pathFilter != null) body.path_filter = options.pathFilter
+    const data = await this.fetchJson<{ results: SearchResult[] }>('/agent/workspace/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify(body),
+    })
+    return data.results ?? []
+  }
+
+  /** Allowed workspace root files (AGENTS.md, SOUL.md, …). */
+  async readWorkspaceConfigFile(filename: string): Promise<string> {
+    const data = await this.fetchJson<{ content: string }>(`/agent/files/${encodeURIComponent(filename)}`)
+    return data.content ?? ''
+  }
+
+  async writeWorkspaceConfigFile(filename: string, content: string): Promise<void> {
+    await this.fetchJson(`/agent/files/${encodeURIComponent(filename)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    })
+  }
+
+  async mkdirWorkspace(relativePath: string): Promise<void> {
+    await this.fetchJson('/agent/workspace/mkdir', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: relativePath }),
+    })
+  }
+
+  async uploadWorkspaceFiles(formData: FormData): Promise<{ uploaded: string[]; count: number }> {
+    const res = await this.doFetch(this.url('/agent/workspace/upload'), {
+      method: 'POST',
+      headers: this.headers,
+      body: formData,
+    })
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText)
+      throw new Error(`Agent upload ${res.status}: ${text}`)
+    }
+    const data = (await res.json()) as { uploaded?: string[]; count?: number }
+    return { uploaded: data.uploaded ?? [], count: data.count ?? 0 }
+  }
+
+  /** Absolute URL for browser download / native WebView (GET returns raw bytes). */
+  workspaceFileDownloadUrl(relativePath: string): string {
+    return this.url(`/agent/workspace/download/${encodeURIComponent(relativePath)}`)
+  }
+
+  async exportAgentBundle(): Promise<AgentExportBundle> {
+    return this.fetchJson<AgentExportBundle>('/agent/export')
+  }
+
+  async importAgentBundle(bundle: AgentExportBundle | Record<string, unknown>): Promise<AgentImportResult> {
+    return this.fetchJson<AgentImportResult>('/agent/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(bundle),
     })
   }
 

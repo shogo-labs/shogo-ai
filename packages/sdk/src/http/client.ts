@@ -227,10 +227,14 @@ export class HttpClient {
           const d = data as Record<string, unknown>
           if ('message' in d && d.message) {
             errorMessage = String(d.message)
-          } else if ('error' in d && typeof d.error === 'object' && d.error !== null) {
-            const err = d.error as Record<string, unknown>
-            if ('message' in err && err.message) {
-              errorMessage = String(err.message)
+          } else if ('error' in d && d.error !== null && d.error !== undefined) {
+            if (typeof d.error === 'string') {
+              errorMessage = d.error
+            } else if (typeof d.error === 'object') {
+              const err = d.error as Record<string, unknown>
+              if ('message' in err && err.message) {
+                errorMessage = String(err.message)
+              }
             }
           }
         }
