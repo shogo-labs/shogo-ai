@@ -124,6 +124,7 @@
         "expo-network": "~8.0.8",
         "expo-router": "~6.0.0",
         "expo-secure-store": "~15.0.8",
+        "expo-sharing": "~14.0.8",
         "expo-splash-screen": "~31.0.13",
         "expo-status-bar": "~3.0.0",
         "expo-updates": "~29.0.16",
@@ -2210,6 +2211,8 @@
     "expo-secure-store": ["expo-secure-store@15.0.8", "", { "peerDependencies": { "expo": "*" } }, "sha512-lHnzvRajBu4u+P99+0GEMijQMFCOYpWRO4dWsXSuMt77+THPIGjzNvVKrGSl6mMrLsfVaKL8BpwYZLGlgA+zAw=="],
 
     "expo-server": ["expo-server@1.0.5", "", {}, "sha512-IGR++flYH70rhLyeXF0Phle56/k4cee87WeQ4mamS+MkVAVP+dDlOHf2nN06Z9Y2KhU0Gp1k+y61KkghF7HdhA=="],
+
+    "expo-sharing": ["expo-sharing@14.0.8", "", { "peerDependencies": { "expo": "*" } }, "sha512-A1pPr2iBrxypFDCWVAESk532HK+db7MFXbvO2sCV9ienaFXAk7lIBm6bkqgE6vzRd9O3RGdEGzYx80cYlc089Q=="],
 
     "expo-splash-screen": ["expo-splash-screen@31.0.13", "", { "dependencies": { "@expo/prebuild-config": "^54.0.8" }, "peerDependencies": { "expo": "*" } }, "sha512-1epJLC1cDlwwj089R2h8cxaU5uk4ONVAC+vzGiTZH4YARQhL4Stlz1MbR6yAS173GMosvkE6CAeihR7oIbCkDA=="],
 

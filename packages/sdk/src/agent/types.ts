@@ -79,12 +79,35 @@ export interface FileNode {
 
 export interface SearchResult {
   path: string
-  content: string
+  /** Text snippet from the RAG index (agent-runtime field name). */
+  chunk: string
   score: number
+  lines: string
+  matchType: string
   highlights?: string[]
+}
+
+/** Response body from `GET /agent/export`. */
+export interface AgentExportBundle {
+  version: string
+  exportedAt: string
+  projectId: string
+  files: Record<string, string>
+}
+
+/** Response body from `POST /agent/import`. */
+export interface AgentImportResult {
+  ok: boolean
+  imported: number
+  files: string[]
 }
 
 export interface AgentClientConfig {
   baseUrl?: string
   headers?: Record<string, string>
+  /**
+   * Custom fetch (e.g. inject cookies on React Native via `Cookie` header).
+   * Defaults to global `fetch`.
+   */
+  fetch?: typeof fetch
 }
