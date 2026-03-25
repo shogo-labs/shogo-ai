@@ -16,6 +16,13 @@ const config: Config = {
   onBrokenLinks: "throw",
   onBrokenMarkdownLinks: "warn",
 
+  stylesheets: [
+    {
+      href: "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap",
+      type: "text/css",
+    },
+  ],
+
   plugins: [
     [
       "@docusaurus/plugin-client-redirects",
@@ -83,6 +90,7 @@ const config: Config = {
           href: "https://shogo.dev",
           label: "Go to Shogo",
           position: "right",
+          className: "navbar-cta",
         },
       ],
     },
@@ -109,7 +117,8 @@ const config: Config = {
         {
           title: "Product",
           items: [
-            { label: "Shogo", href: "https://shogo.dev" },
+            { label: "Website", href: "https://shogo.ai" },
+            { label: "App", href: "https://shogo.dev" },
             { label: "Plans & Pricing", to: "/getting-started/plans-and-credits" },
             { label: "FAQ", to: "/getting-started/faq" },
           ],
