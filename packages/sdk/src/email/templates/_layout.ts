@@ -11,6 +11,7 @@ export const EMAIL_CONSTANTS = {
   APP_URL: 'https://shogo.ai',
   SUPPORT_EMAIL: 'support@shogo.ai',
   LOGO_URL: 'https://shogo.ai/assets/images/shogo-logo-email.png',
+  LOGO_DARK_URL: 'https://shogo.ai/assets/images/shogo-logo-dark-email.png',
   FOOTER_TEXT: '&copy; {{currentYear}} Shogo. All rights reserved',
 } as const
 
@@ -135,7 +136,8 @@ const LIGHT_STYLES = `
     font-size: 13px;
     font-weight: 600;
     color: #2a2929;
-  }`
+  }
+  .email-logo-dark { display: none !important; }`
 
 const DARK_STYLES = `
   @media (prefers-color-scheme: dark) {
@@ -154,6 +156,8 @@ const DARK_STYLES = `
     .email-detail-row { border-bottom-color: #3f3f46; }
     .email-detail-label { color: #a1a1aa; }
     .email-detail-value { color: #fafafa; }
+    .email-logo-light { display: none !important; }
+    .email-logo-dark { display: block !important; }
   }`
 
 const STYLES = `\n<style>${LIGHT_STYLES}\n${DARK_STYLES}\n</style>`
@@ -177,7 +181,8 @@ export function wrapInLayout(content: string): string {
     <div class="email-container">
       <div class="email-header">
         <a href="${EMAIL_CONSTANTS.APP_URL}" style="display:inline-block;text-decoration:none;">
-          <img src="${EMAIL_CONSTANTS.LOGO_URL}" alt="${EMAIL_CONSTANTS.APP_NAME}" width="169" height="58" style="display:block;height:40px;width:auto;" />
+          <img class="email-logo-light" src="${EMAIL_CONSTANTS.LOGO_URL}" alt="${EMAIL_CONSTANTS.APP_NAME}" width="169" height="58" style="display:block;height:40px;width:auto;" />
+          <img class="email-logo-dark" src="${EMAIL_CONSTANTS.LOGO_DARK_URL}" alt="${EMAIL_CONSTANTS.APP_NAME}" width="169" height="58" style="display:none;height:40px;width:auto;" />
         </a>
       </div>
       <div class="email-content">
