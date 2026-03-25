@@ -66,12 +66,12 @@
     "@aws-sdk/client-ses": "^3.700.0",
     "@playwright/test": "^1.40.0",
     "@prisma/internals": "^7.3.0",
-    "@types/nodemailer": "^6.4.17",
+    "@types/nodemailer": "^7.0.11",
     "@types/react": "^19.0.0",
     "mobx": "^6.13.5",
-    "nodemailer": "^6.9.16",
+    "nodemailer": "^8.0.3",
     "tsup": "^8.0.0",
-    "typescript": "^5.0.0"
+    "typescript": "^6.0.2"
   },
   "peerDependencies": {
     "nodemailer": ">=6.0.0",
