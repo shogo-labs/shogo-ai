@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   View,
   Text,
@@ -9,8 +9,12 @@ import {
   TextInput,
   ActivityIndicator,
   Platform,
+  InteractionManager,
+  Share,
   useWindowDimensions,
 } from 'react-native'
+import { AgentClient, type FileNode, type SearchResult } from '@shogo-ai/sdk/agent'
+import { agentFetch } from '../../../lib/agent-fetch'
 import {
   FileText,
   Folder,
@@ -35,23 +39,6 @@ import { cn } from '@shogo/shared-ui/primitives'
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-interface FileEntry {
-  name: string
-  path: string
-  type: 'file' | 'directory'
-  size?: number
-  modified?: number
-  children?: FileEntry[]
-}
-
-interface SearchResult {
-  path: string
-  chunk: string
-  score: number
-  lines: string
-  matchType: string
-}
 
 interface FilesBrowserPanelProps {
   projectId: string
@@ -81,7 +68,7 @@ function FileTreeItem({
   onSelect,
   onToggleDir,
 }: {
-  entry: FileEntry
+  entry: FileNode
   depth: number
   selectedPath: string | null
   expandedDirs: Set<string>
@@ -180,7 +167,12 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
   const isNarrow = width < NARROW_BREAKPOINT
   const [showEditorOnNarrow, setShowEditorOnNarrow] = useState(false)
 
-  const [tree, setTree] = useState<FileEntry[]>([])
+  const client = useMemo(
+    () => (agentUrl ? new AgentClient({ baseUrl: agentUrl, fetch: agentFetch }) : null),
+    [agentUrl],
+  )
+
+  const [tree, setTree] = useState<FileNode[]>([])
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [isWorkspaceFile, setIsWorkspaceFile] = useState(false)
   const [content, setContent] = useState('')
@@ -209,89 +201,78 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
   // -------------------------------------------------------------------------
 
   const loadTree = useCallback(async () => {
-    if (!agentUrl) return
+    if (!client) return
     setIsLoadingTree(true)
     setError(null)
     try {
-      const res = await fetch(`${agentUrl}/agent/workspace/tree`)
-      if (!res.ok) throw new Error('Failed to load files')
-      const data = await res.json()
-      setTree(data.tree || [])
+      setTree(await client.getWorkspaceTree())
     } catch (err: any) {
       setError(err.message)
     } finally {
       setIsLoadingTree(false)
     }
-  }, [agentUrl])
+  }, [client])
 
   const loadFile = useCallback(async (path: string) => {
-    if (!agentUrl) return
+    if (!client) return
     setIsLoadingFile(true)
     setError(null)
     setIsWorkspaceFile(false)
     setShowEditorOnNarrow(true)
     try {
-      const res = await fetch(`${agentUrl}/agent/workspace/files/${encodeURIComponent(path)}`)
-      if (!res.ok) throw new Error('Failed to load file')
-      const data = await res.json()
-      setContent(data.content || '')
-      setSavedContent(data.content || '')
+      const text = await client.readFile(path)
+      setContent(text)
+      setSavedContent(text)
       setSelectedPath(path)
     } catch (err: any) {
       setError(err.message)
     } finally {
       setIsLoadingFile(false)
     }
-  }, [agentUrl])
+  }, [client])
 
   const loadWorkspaceFile = useCallback(async (filename: string) => {
-    if (!agentUrl) return
+    if (!client) return
     setIsLoadingFile(true)
     setError(null)
     setIsWorkspaceFile(true)
     setShowEditorOnNarrow(true)
     try {
-      const res = await fetch(`${agentUrl}/agent/files/${filename}`)
-      if (!res.ok) throw new Error('Failed to load file')
-      const data = await res.json()
-      setContent(data.content || '')
-      setSavedContent(data.content || '')
+      const text = await client.readWorkspaceConfigFile(filename)
+      setContent(text)
+      setSavedContent(text)
       setSelectedPath(filename)
     } catch (err: any) {
       setError(err.message)
     } finally {
       setIsLoadingFile(false)
     }
-  }, [agentUrl])
+  }, [client])
 
   useEffect(() => {
     if (visible) loadTree()
   }, [visible, loadTree])
 
   useEffect(() => {
-    if (!visible || !agentUrl) return
+    if (!visible || !client) return
     const id = setInterval(loadTree, 5000)
     return () => clearInterval(id)
-  }, [visible, agentUrl, loadTree])
+  }, [visible, client, loadTree])
 
   // -------------------------------------------------------------------------
   // Actions
   // -------------------------------------------------------------------------
 
   const handleSave = async () => {
-    if (!agentUrl || !selectedPath) return
+    if (!client || !selectedPath) return
     setIsSaving(true)
     setError(null)
     try {
-      const url = isWorkspaceFile
-        ? `${agentUrl}/agent/files/${selectedPath}`
-        : `${agentUrl}/agent/workspace/files/${encodeURIComponent(selectedPath)}`
-      const res = await fetch(url, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content }),
-      })
-      if (!res.ok) throw new Error('Failed to save')
+      if (isWorkspaceFile) {
+        await client.writeWorkspaceConfigFile(selectedPath, content)
+      } else {
+        await client.writeFile(selectedPath, content)
+      }
       setSavedContent(content)
       if (!isWorkspaceFile) loadTree()
     } catch (err: any) {
@@ -302,12 +283,9 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
   }
 
   const handleDelete = async () => {
-    if (!agentUrl || !selectedPath) return
+    if (!client || !selectedPath) return
     try {
-      const res = await fetch(`${agentUrl}/agent/workspace/files/${encodeURIComponent(selectedPath)}`, {
-        method: 'DELETE',
-      })
-      if (!res.ok) throw new Error('Failed to delete')
+      await client.deleteFile(selectedPath)
       setSelectedPath(null)
       setContent('')
       setSavedContent('')
@@ -318,60 +296,85 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
   }
 
   const handleUpload = useCallback(() => {
-    if (!agentUrl) return
-    if (Platform.OS !== 'web' || typeof document === 'undefined') return
+    if (!client) return
 
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.accept = '.txt,.csv,.md'
-    input.multiple = true
-    input.onchange = async (e: any) => {
-      const files = e.target?.files
-      if (!files?.length) return
-      try {
-        const formData = new FormData()
-        for (const file of files) {
-          formData.append('files', file)
+    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+      const input = document.createElement('input')
+      input.type = 'file'
+      input.accept = '.txt,.csv,.md'
+      input.multiple = true
+      input.onchange = async (e: any) => {
+        const files = e.target?.files
+        if (!files?.length) return
+        try {
+          const formData = new FormData()
+          for (const file of files) {
+            formData.append('files', file)
+          }
+          await client.uploadWorkspaceFiles(formData)
+          loadTree()
+          setError(null)
+        } catch (err: any) {
+          setError(err.message)
         }
-        const res = await fetch(`${agentUrl}/agent/workspace/upload`, {
-          method: 'POST',
-          body: formData,
+      }
+      input.click()
+      return
+    }
+
+    if (Platform.OS === 'web') return
+
+    void (async () => {
+      try {
+        const { getDocumentAsync } = await import('expo-document-picker')
+        const result = await getDocumentAsync({
+          type: ['text/plain', 'text/csv', 'text/markdown', 'text/x-markdown'],
+          multiple: true,
+          copyToCacheDirectory: true,
         })
-        if (!res.ok) throw new Error('Upload failed')
+        if (result.canceled || !result.assets?.length) return
+
+        const formData = new FormData()
+        for (const doc of result.assets) {
+          const lower = doc.name.toLowerCase()
+          if (!lower.endsWith('.txt') && !lower.endsWith('.csv') && !lower.endsWith('.md')) {
+            setError(`Unsupported file: ${doc.name} (use .txt, .csv, or .md)`)
+            return
+          }
+          const mime = doc.mimeType ?? 'text/plain'
+          formData.append('files', {
+            uri: doc.uri,
+            name: doc.name,
+            type: mime,
+          } as unknown as Blob)
+        }
+        await client.uploadWorkspaceFiles(formData)
         loadTree()
         setError(null)
       } catch (err: any) {
-        setError(err.message)
+        setError(err.message ?? 'Upload failed')
       }
-    }
-    input.click()
-  }, [agentUrl, loadTree])
+    })()
+  }, [client, loadTree])
 
   const handleDownload = useCallback(() => {
-    if (!agentUrl || !selectedPath) return
+    if (!client || !selectedPath) return
     if (Platform.OS !== 'web' || typeof document === 'undefined') return
 
     const a = document.createElement('a')
-    a.href = `${agentUrl}/agent/workspace/download/${encodeURIComponent(selectedPath)}`
+    a.href = client.workspaceFileDownloadUrl(selectedPath)
     a.download = selectedPath.split('/').pop() || 'download'
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
-  }, [agentUrl, selectedPath])
+  }, [client, selectedPath])
 
   const handleSearch = async () => {
-    if (!agentUrl || !searchQuery.trim()) return
+    if (!client || !searchQuery.trim()) return
     setIsSearching(true)
     setError(null)
     try {
-      const res = await fetch(`${agentUrl}/agent/workspace/search`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: searchQuery, limit: 15 }),
-      })
-      if (!res.ok) throw new Error('Search failed')
-      const data = await res.json()
-      setSearchResults(data.results || [])
+      setSearchResults(await client.searchFiles(searchQuery.trim(), { limit: 15 }))
     } catch (err: any) {
       setError(err.message)
     } finally {
@@ -380,24 +383,14 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
   }
 
   const handleCreateNew = async () => {
-    if (!agentUrl || !newName.trim() || !showNewDialog) return
+    if (!client || !newName.trim() || !showNewDialog) return
     try {
       if (showNewDialog === 'folder') {
-        const res = await fetch(`${agentUrl}/agent/workspace/mkdir`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: newName }),
-        })
-        if (!res.ok) throw new Error('Failed to create folder')
+        await client.mkdirWorkspace(newName.trim())
       } else {
         const path = newName.endsWith('.txt') || newName.endsWith('.md') || newName.endsWith('.csv')
           ? newName : `${newName}.txt`
-        const res = await fetch(`${agentUrl}/agent/workspace/files/${encodeURIComponent(path)}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: '' }),
-        })
-        if (!res.ok) throw new Error('Failed to create file')
+        await client.writeFile(path, '')
         setSelectedPath(path)
         setContent('')
         setSavedContent('')
@@ -411,12 +404,10 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
   }
 
   const handleExport = useCallback(async () => {
-    if (!agentUrl) return
+    if (!client) return
     setIsExporting(true)
     try {
-      const res = await fetch(`${agentUrl}/agent/export`)
-      if (!res.ok) throw new Error('Failed to export')
-      const bundle = await res.json()
+      const bundle = await client.exportAgentBundle()
       const jsonStr = JSON.stringify(bundle, null, 2)
 
       if (Platform.OS === 'web' && typeof document !== 'undefined') {
@@ -429,6 +420,39 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
         a.click()
         document.body.removeChild(a)
         URL.revokeObjectURL(url)
+      } else if (Platform.OS !== 'web') {
+        const { documentDirectory, writeAsStringAsync, EncodingType } = await import('expo-file-system/legacy')
+        const Sharing = await import('expo-sharing')
+        const dir = documentDirectory
+        if (!dir) throw new Error('Could not access app storage to save export')
+        const name = `agent-export-${Date.now()}.json`
+        const fileUri = `${dir}${name}`
+        await writeAsStringAsync(fileUri, jsonStr, { encoding: EncodingType.UTF8 })
+
+        // Let the active screen settle so Android/iOS can present the share sheet reliably.
+        await new Promise<void>((resolve) => {
+          InteractionManager.runAfterInteractions(() => resolve())
+        })
+
+        const shareOptions = {
+          // Android: strict application/json often yields an empty chooser; text/plain still sends the .json file.
+          mimeType: Platform.OS === 'android' ? 'text/plain' : 'application/json',
+          UTI: 'public.json' as const,
+          dialogTitle: 'Export Agent',
+        }
+
+        try {
+          await Sharing.shareAsync(fileUri, shareOptions)
+        } catch (shareErr: unknown) {
+          if (Platform.OS === 'ios') {
+            await Share.share({
+              url: fileUri,
+              title: 'Export Agent',
+            })
+          } else {
+            throw shareErr
+          }
+        }
       }
       setError(null)
     } catch (err: any) {
@@ -436,10 +460,11 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
     } finally {
       setIsExporting(false)
     }
-  }, [agentUrl])
+  }, [client])
 
   const handleImport = useCallback(() => {
-    if (!agentUrl) return
+    if (!client) return
+
     if (Platform.OS === 'web' && typeof document !== 'undefined') {
       const input = document.createElement('input')
       input.type = 'file'
@@ -450,12 +475,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
         try {
           const text = await file.text()
           const bundle = JSON.parse(text)
-          const res = await fetch(`${agentUrl}/agent/import`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(bundle),
-          })
-          if (!res.ok) throw new Error('Failed to import agent')
+          await client.importAgentBundle(bundle)
           if (isWorkspaceFile && selectedPath) {
             loadWorkspaceFile(selectedPath)
           }
@@ -465,8 +485,35 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
         }
       }
       input.click()
+      return
     }
-  }, [agentUrl, isWorkspaceFile, selectedPath, loadWorkspaceFile])
+
+    if (Platform.OS === 'web') return
+
+    void (async () => {
+      try {
+        const { getDocumentAsync } = await import('expo-document-picker')
+        const result = await getDocumentAsync({
+          type: ['application/json'],
+          copyToCacheDirectory: true,
+          multiple: false,
+        })
+        if (result.canceled || !result.assets?.[0]) return
+
+        const { readAsStringAsync } = await import('expo-file-system/legacy')
+        const text = await readAsStringAsync(result.assets[0].uri)
+        const bundle = JSON.parse(text)
+        await client.importAgentBundle(bundle)
+        if (isWorkspaceFile && selectedPath) {
+          loadWorkspaceFile(selectedPath)
+        }
+        loadTree()
+        setError(null)
+      } catch (err: any) {
+        setError(err.message || 'Failed to import agent configuration')
+      }
+    })()
+  }, [client, isWorkspaceFile, selectedPath, loadWorkspaceFile, loadTree])
 
   const toggleDir = (path: string) => {
     setExpandedDirs(prev => {
