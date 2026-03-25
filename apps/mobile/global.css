@@ -193,3 +193,9 @@
 
   --color-brand-landing: 226 121 39;
 }
+
+/* Expo web: full-height chain so auth hero (flex + CSS background) fills the viewport */
+html,
+body {
+  height: 100%;
+}
