@@ -8,6 +8,7 @@ import {
   ScrollView,
   Platform,
   ActivityIndicator,
+  useWindowDimensions,
 } from 'react-native'
 import * as ExpoLinking from 'expo-linking'
 import {
@@ -35,6 +36,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { openAuthFlow } from '@shogo/ui-kit/platform'
 import { API_URL, api } from '../../lib/api'
 import { useDomainHttp } from '../../contexts/domain'
+import { isNativePhoneIntegrationsLayout } from '../../lib/native-phone-layout'
 
 interface IntegrationOption {
   toolkit: string
@@ -186,7 +188,9 @@ export function IntegrationsCard({
   onDismiss,
 }: IntegrationsCardProps) {
   const http = useDomainHttp()
-  const [expanded, setExpanded] = useState(true)
+  const { width: winW, height: winH } = useWindowDimensions()
+  const compact = isNativePhoneIntegrationsLayout(winW, winH)
+  const [expanded, setExpanded] = useState(!compact)
 
   const [categories] = useState<ResolvedCategory[]>(() =>
     (integrations ?? [])
@@ -334,19 +338,28 @@ export function IntegrationsCard({
   const connectedCount = Object.values(statuses).filter((s) => s === 'connected').length
   const totalItems = categories.length + directToolkitNames.length
 
-  // Collapsed view: compact pill
+  // Collapsed by default on handsets so the composer stays visible.
   if (!expanded) {
     return (
       <Pressable
         onPress={() => setExpanded(true)}
-        className="flex-row items-center gap-2 rounded-xl border border-border bg-card px-3 py-2.5"
-        style={Platform.OS === 'web' ? {
-          boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
-        } as any : {}}
+        className={cn(
+          'flex-row items-center gap-2 rounded-xl border border-border bg-card',
+          compact ? 'px-3 py-2 max-w-full' : 'px-3 py-2.5',
+        )}
+        style={{
+          ...(compact ? { maxWidth: winW - 24 } : {}),
+          ...(Platform.OS === 'web'
+            ? ({ boxShadow: '0 4px 16px rgba(0,0,0,0.12)' } as any)
+            : {}),
+        }}
       >
         <Plug size={14} className="text-primary" />
-        <Text className="text-xs font-medium text-foreground">
-          Integrations
+        <Text
+          className="text-xs font-medium text-foreground shrink"
+          numberOfLines={1}
+        >
+          {compact ? 'Connect tools' : 'Integrations'}
         </Text>
         {connectedCount > 0 && (
           <View className="px-1.5 py-0.5 rounded-full bg-green-500/15">
@@ -364,19 +377,34 @@ export function IntegrationsCard({
     ? `${templateName} works best with these services`
     : 'Your agent needs access to these services'
 
+  const cardWidth = compact ? winW - 24 : 340
+  const cardMaxHeight = compact
+    ? Math.min(Math.round(winH * 0.34), 288)
+    : 420
+
   return (
     <View
-      className="rounded-xl border border-border bg-card overflow-hidden"
+      className={cn(
+        'rounded-xl border border-border bg-card overflow-hidden',
+        compact && 'flex-col',
+      )}
       style={{
-        width: 340,
-        maxHeight: 420,
+        width: cardWidth,
+        ...(compact
+          ? { height: cardMaxHeight }
+          : { maxHeight: cardMaxHeight }),
         ...(Platform.OS === 'web'
           ? { boxShadow: '0 4px 20px rgba(0,0,0,0.15)' } as any
           : {}),
       }}
     >
       {/* Header */}
-      <View className="flex-row items-center justify-between px-3.5 pt-3 pb-2">
+      <View
+        className={cn(
+          'flex-row items-center justify-between px-3.5',
+          compact ? 'pt-2 pb-1.5' : 'pt-3 pb-2',
+        )}
+      >
         <View className="flex-row items-center gap-2 flex-1 mr-2">
           <Plug size={14} className="text-primary" />
           <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
@@ -408,26 +436,34 @@ export function IntegrationsCard({
         </View>
       </View>
 
-      <Text className="text-[11px] text-muted-foreground px-3.5 mb-2" numberOfLines={1}>
+      <Text
+        className={cn(
+          'text-muted-foreground px-3.5',
+          compact ? 'text-[10px] mb-1.5' : 'text-[11px] mb-2',
+        )}
+        numberOfLines={compact ? 2 : 1}
+      >
         {subtitle}
       </Text>
 
       {/* Body */}
       <ScrollView
         className="px-3.5"
-        contentContainerStyle={{ paddingBottom: 12 }}
-        showsVerticalScrollIndicator={false}
+        style={compact ? { flex: 1 } : undefined}
+        contentContainerStyle={{ paddingBottom: compact ? 8 : 12 }}
+        showsVerticalScrollIndicator={compact}
       >
         {loadingStatuses ? (
-          <View className="items-center py-6">
+          <View className={cn('items-center', compact ? 'py-4' : 'py-6')}>
             <ActivityIndicator size="small" className="text-muted-foreground" />
           </View>
         ) : (
-          <View style={{ gap: 8 }}>
+          <View style={{ gap: compact ? 6 : 8 }}>
             {categories.map((category) => (
               <CompactCategoryRow
                 key={category.id}
                 category={category}
+                compact={compact}
                 selectedToolkit={selectedToolkits[category.id] ?? category.options[0]?.toolkit}
                 onSelectToolkit={(toolkit) =>
                   setSelectedToolkits((prev) => ({ ...prev, [category.id]: toolkit }))
@@ -443,6 +479,7 @@ export function IntegrationsCard({
                   key={dt.toolkit}
                   toolkit={dt.toolkit}
                   displayName={dt.displayName}
+                  compact={compact}
                   status={statuses[dt.toolkit] ?? 'idle'}
                   onConnect={handleConnect}
                 />
@@ -460,12 +497,14 @@ function CompactCategoryRow({
   onSelectToolkit,
   statuses,
   onConnect,
+  compact = false,
 }: {
   category: ResolvedCategory
   selectedToolkit: string
   onSelectToolkit: (toolkit: string) => void
   statuses: Record<string, ToolkitStatus>
   onConnect: (toolkit: string) => void
+  compact?: boolean
 }) {
   const IconComponent = CATEGORY_ICONS[category.icon] ?? Link2
   const hasMultipleOptions = category.options.length > 1
@@ -476,8 +515,16 @@ function CompactCategoryRow({
   if (anyConnected) {
     const connectedOption = category.options.find((o) => statuses[o.toolkit] === 'connected')
     return (
-      <View className="flex-row items-center gap-2.5 rounded-lg border border-green-500/20 bg-green-500/5 px-3 py-2.5">
-        <IconComponent size={15} className="text-green-600 dark:text-green-400" />
+      <View
+        className={cn(
+          'flex-row items-center rounded-lg border border-green-500/20 bg-green-500/5 px-3',
+          compact ? 'gap-2 py-1.5' : 'gap-2.5 py-2.5',
+        )}
+      >
+        <IconComponent
+          size={compact ? 14 : 15}
+          className="text-green-600 dark:text-green-400"
+        />
         <Text className="text-xs font-medium text-foreground flex-1" numberOfLines={1}>
           {category.label}
         </Text>
@@ -492,9 +539,12 @@ function CompactCategoryRow({
   }
 
   return (
-    <View className="rounded-lg border border-border bg-background p-2.5">
-      <View className="flex-row items-center gap-2.5 mb-2">
-        <IconComponent size={15} className="text-muted-foreground" />
+    <View className={cn('rounded-lg border border-border bg-background', compact ? 'p-2' : 'p-2.5')}>
+      <View className={cn('flex-row items-center', compact ? 'gap-2 mb-1.5' : 'gap-2.5 mb-2')}>
+        <IconComponent
+          size={compact ? 14 : 15}
+          className="text-muted-foreground"
+        />
         <Text className="text-xs font-medium text-foreground flex-1" numberOfLines={1}>
           {category.label}
         </Text>
@@ -506,7 +556,7 @@ function CompactCategoryRow({
       </View>
 
       {hasMultipleOptions && (
-        <View className="flex-row flex-wrap mb-2" style={{ gap: 4 }}>
+        <View className={cn('flex-row flex-wrap', compact ? 'mb-1.5' : 'mb-2')} style={{ gap: 4 }}>
           {category.options.map((option) => {
             const isSelected = selectedToolkit === option.toolkit
             return (
@@ -514,7 +564,8 @@ function CompactCategoryRow({
                 key={option.toolkit}
                 onPress={() => onSelectToolkit(option.toolkit)}
                 className={cn(
-                  'px-2 py-1 rounded-md border',
+                  'rounded-md border',
+                  compact ? 'px-1.5 py-0.5' : 'px-2 py-1',
                   isSelected
                     ? 'border-primary/40 bg-primary/5'
                     : 'border-border bg-muted/50',
@@ -522,7 +573,8 @@ function CompactCategoryRow({
               >
                 <Text
                   className={cn(
-                    'text-[10px] font-medium',
+                    'font-medium',
+                    compact ? 'text-[9px]' : 'text-[10px]',
                     isSelected ? 'text-foreground' : 'text-muted-foreground',
                   )}
                 >
@@ -538,21 +590,25 @@ function CompactCategoryRow({
         onPress={() => onConnect(selectedToolkit)}
         disabled={selectedStatus === 'connecting'}
         className={cn(
-          'flex-row items-center justify-center gap-1.5 py-2 rounded-md',
+          'flex-row items-center justify-center gap-1.5 rounded-md',
+          compact ? 'py-1.5' : 'py-2',
           selectedStatus === 'connecting'
             ? 'bg-primary/80'
             : 'bg-primary active:opacity-80',
         )}
       >
         {selectedStatus === 'connecting' ? (
-          <Loader2 size={12} className="text-primary-foreground" />
+          <Loader2 size={compact ? 11 : 12} className="text-primary-foreground" />
         ) : (
-          <ExternalLink size={12} className="text-primary-foreground" />
+          <ExternalLink size={compact ? 11 : 12} className="text-primary-foreground" />
         )}
-        <Text className="text-[11px] font-semibold text-primary-foreground">
-          {selectedStatus === 'connecting'
-            ? 'Waiting...'
-            : `Connect ${selectedName}`}
+        <Text
+          className={cn(
+            'font-semibold text-primary-foreground',
+            compact ? 'text-[10px]' : 'text-[11px]',
+          )}
+        >
+          {selectedStatus === 'connecting' ? 'Waiting...' : `Connect ${selectedName}`}
         </Text>
       </Pressable>
     </View>
@@ -564,16 +620,26 @@ function DirectToolkitRow({
   displayName,
   status,
   onConnect,
+  compact = false,
 }: {
   toolkit: string
   displayName: string
   status: ToolkitStatus
   onConnect: (toolkit: string) => void
+  compact?: boolean
 }) {
   if (status === 'connected') {
     return (
-      <View className="flex-row items-center gap-2.5 rounded-lg border border-green-500/20 bg-green-500/5 px-3 py-2.5">
-        <Link2 size={15} className="text-green-600 dark:text-green-400" />
+      <View
+        className={cn(
+          'flex-row items-center rounded-lg border border-green-500/20 bg-green-500/5 px-3',
+          compact ? 'gap-2 py-1.5' : 'gap-2.5 py-2.5',
+        )}
+      >
+        <Link2
+          size={compact ? 14 : 15}
+          className="text-green-600 dark:text-green-400"
+        />
         <Text className="text-xs font-medium text-foreground flex-1" numberOfLines={1}>
           {displayName}
         </Text>
@@ -588,9 +654,9 @@ function DirectToolkitRow({
   }
 
   return (
-    <View className="rounded-lg border border-border bg-background p-2.5">
-      <View className="flex-row items-center gap-2.5 mb-2">
-        <Link2 size={15} className="text-muted-foreground" />
+    <View className={cn('rounded-lg border border-border bg-background', compact ? 'p-2' : 'p-2.5')}>
+      <View className={cn('flex-row items-center', compact ? 'gap-2 mb-1.5' : 'gap-2.5 mb-2')}>
+        <Link2 size={compact ? 14 : 15} className="text-muted-foreground" />
         <Text className="text-xs font-medium text-foreground flex-1" numberOfLines={1}>
           {displayName}
         </Text>
@@ -599,21 +665,25 @@ function DirectToolkitRow({
         onPress={() => onConnect(toolkit)}
         disabled={status === 'connecting'}
         className={cn(
-          'flex-row items-center justify-center gap-1.5 py-2 rounded-md',
+          'flex-row items-center justify-center gap-1.5 rounded-md',
+          compact ? 'py-1.5' : 'py-2',
           status === 'connecting'
             ? 'bg-primary/80'
             : 'bg-primary active:opacity-80',
         )}
       >
         {status === 'connecting' ? (
-          <Loader2 size={12} className="text-primary-foreground" />
+          <Loader2 size={compact ? 11 : 12} className="text-primary-foreground" />
         ) : (
-          <ExternalLink size={12} className="text-primary-foreground" />
+          <ExternalLink size={compact ? 11 : 12} className="text-primary-foreground" />
         )}
-        <Text className="text-[11px] font-semibold text-primary-foreground">
-          {status === 'connecting'
-            ? 'Waiting...'
-            : `Connect ${displayName}`}
+        <Text
+          className={cn(
+            'font-semibold text-primary-foreground',
+            compact ? 'text-[10px]' : 'text-[11px]',
+          )}
+        >
+          {status === 'connecting' ? 'Waiting...' : `Connect ${displayName}`}
         </Text>
       </Pressable>
     </View>
