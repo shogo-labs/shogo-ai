@@ -8,16 +8,18 @@
  * Expands to show full args and result.
  */
 
-import { useState } from "react"
-import { View, Text, Pressable, ScrollView } from "react-native"
+import { useState, useMemo } from "react"
+import { View, Text, Pressable, ScrollView, Image } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { CheckCircle2, XCircle, Loader2, ChevronRight, ChevronDown, AlertTriangle } from "lucide-react-native"
+import { CheckCircle2, XCircle, Loader2, AlertTriangle, ChevronRight } from "lucide-react-native"
 import {
   type ToolCallData,
   formatToolName,
-  getToolNamespace,
   getToolKeyArg,
 } from "../tools/types"
+import { useChatContextSafe } from "../ChatContext"
+
+const MD_IMAGE_RE = /\[([^\]]*)\]\(([^)]+\.(png|jpg|jpeg|gif|webp))\)/gi
 
 const AUTH_ERROR_PATTERNS = [
   'unauthorized', 'forbidden', 'not_authed', 'invalid_auth',
@@ -60,10 +62,48 @@ export function InlineToolWidget({
     }
   }
 
+  const chatContext = useChatContextSafe()
   const displayName = formatToolName(tool.toolName)
-  const namespace = getToolNamespace(tool.toolName)
   const keyArg = getToolKeyArg(tool.toolName, tool.args)
   const isAuthErr = detectAuthError(tool)
+
+  const resultImageUrls = useMemo(() => {
+    const urls: string[] = []
+    const agentUrl = chatContext?.agentUrl
+    if (!agentUrl || !tool.result) return urls
+
+    const resultText = typeof tool.result === 'string'
+      ? tool.result
+      : typeof tool.result === 'object' && (tool.result as any)?.text
+        ? (tool.result as any).text
+        : typeof tool.result === 'object'
+          ? JSON.stringify(tool.result)
+          : ''
+
+    let match: RegExpExecArray | null
+    MD_IMAGE_RE.lastIndex = 0
+    while ((match = MD_IMAGE_RE.exec(resultText)) !== null) {
+      const filePath = match[2]
+      if (!filePath.startsWith('http')) {
+        urls.push(`${agentUrl}/agent/workspace/download/${filePath}`)
+      } else {
+        urls.push(filePath)
+      }
+    }
+
+    if (typeof tool.result === 'object') {
+      const r = tool.result as Record<string, unknown>
+      if (Array.isArray(r._images)) {
+        for (const img of r._images as Array<{ data: string; mimeType: string }>) {
+          if (img.data && img.mimeType) {
+            urls.push(`data:${img.mimeType};base64,${img.data}`)
+          }
+        }
+      }
+    }
+
+    return urls
+  }, [tool.result, chatContext?.agentUrl])
 
   const StateIcon = isAuthErr ? AlertTriangle : {
     streaming: Loader2,
@@ -101,59 +141,35 @@ export function InlineToolWidget({
   }
 
   return (
-    <View className={cn("overflow-hidden", className)}>
-      {/* Collapsed header */}
+    <View className={cn("overflow-hidden rounded-lg border border-border/60 bg-muted/50 dark:bg-muted/30", className)}>
       <Pressable
         onPress={handleToggle}
-        className="w-full flex-row items-center gap-1.5 py-1 px-2"
+        className="group w-full flex-row items-center gap-2 px-3 py-2.5"
       >
-        {isExpanded ? (
-          <ChevronDown className="w-2.5 h-2.5 text-muted-foreground" />
-        ) : (
-          <ChevronRight className="w-2.5 h-2.5 text-muted-foreground" />
-        )}
+        <View className="group-hover:hidden">
+          <StateIcon
+            className={cn(
+              "w-4 h-4",
+              tool.state === "streaming" && "text-muted-foreground/60",
+              tool.state === "success" && "text-muted-foreground/60",
+              tool.state === "error" && (isAuthErr ? "text-orange-500" : "text-red-500"),
+            )}
+          />
+        </View>
+        <View className="hidden group-hover:flex">
+          <ChevronRight className="w-4 h-4 text-muted-foreground" />
+        </View>
 
-        <View
-          className={cn(
-            "w-1 h-1 rounded-full",
-            tool.category === "mcp" && "bg-tool-mcp",
-            tool.category === "file" && "bg-tool-file",
-            tool.category === "skill" && "bg-tool-skill",
-            tool.category === "bash" && "bg-tool-bash",
-            tool.category === "other" && "bg-muted-foreground"
-          )}
-        />
-
-        <Text className="font-mono text-[10px] font-medium">
-          {namespace && (
-            <Text className="text-muted-foreground">{namespace}.</Text>
-          )}
-          <Text className="text-foreground">
-            {displayName.replace(`${namespace}.`, "")}
-          </Text>
+        <Text className="flex-1 text-[13px] text-muted-foreground" numberOfLines={1}>
+          <Text className="font-medium text-muted-foreground">{displayName}</Text>
+          {keyArg ? (
+            <Text className="text-muted-foreground/50"> {keyArg}</Text>
+          ) : null}
         </Text>
-
-        {keyArg ? (
-          <Text className="flex-1 text-[9px] text-muted-foreground/60 font-mono text-right" numberOfLines={1}>
-            {keyArg}
-          </Text>
-        ) : (
-          <View className="flex-1" />
-        )}
-
-        <StateIcon
-          className={cn(
-            "w-3 h-3",
-            tool.state === "streaming" && "text-blue-400",
-            tool.state === "success" && "text-green-500",
-            tool.state === "error" && (isAuthErr ? "text-orange-500" : "text-red-500"),
-          )}
-        />
       </Pressable>
 
-      {/* Expanded content */}
       {isExpanded && (
-        <View className="border-t border-border/50 p-2 gap-1.5">
+        <View className="border-t border-border/60 px-3 py-2 gap-1.5">
           {tool.args && Object.keys(tool.args).length > 0 && (
             <View className="gap-0.5">
               <Text className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
@@ -168,15 +184,29 @@ export function InlineToolWidget({
           )}
 
           {tool.state === "success" && tool.result !== undefined && (
-            <View className="gap-0.5">
-              <Text className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
-                Result
-              </Text>
-              <ScrollView nestedScrollEnabled className="bg-background/50 rounded p-1.5 max-h-32">
-                <Text className="text-[10px] font-mono text-foreground" selectable>
-                  {formatJson(tool.result)}
+            <View className="gap-1">
+              {resultImageUrls.length > 0 && (
+                <View className="gap-1">
+                  {resultImageUrls.map((uri, i) => (
+                    <Image
+                      key={i}
+                      source={{ uri }}
+                      style={{ width: '100%' as any, aspectRatio: 16 / 10, borderRadius: 6, borderWidth: 1, borderColor: '#e5e7eb' }}
+                      resizeMode="contain"
+                    />
+                  ))}
+                </View>
+              )}
+              <View className="gap-0.5">
+                <Text className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
+                  Result
                 </Text>
-              </ScrollView>
+                <ScrollView nestedScrollEnabled className="bg-background/50 rounded p-1.5 max-h-32">
+                  <Text className="text-[10px] font-mono text-foreground" selectable>
+                    {formatJson(tool.result)}
+                  </Text>
+                </ScrollView>
+              </View>
             </View>
           )}
 
