@@ -31,7 +31,7 @@ export function useUpdateChecker() {
           signal: AbortSignal.timeout(5000),
         })
         const data = await res.json()
-        if (data.buildHash && data.buildHash !== BUILD_HASH) {
+        if (data.buildHash && data.buildHash !== 'dev' && data.buildHash !== BUILD_HASH) {
           setUpdateAvailable(true)
         }
       } catch {
