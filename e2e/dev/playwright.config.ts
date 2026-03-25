@@ -2,6 +2,8 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { defineConfig, devices } from "@playwright/test"
 
+delete process.env.FORCE_COLOR
+
 /**
  * Playwright config for local dev environment tests.
  *

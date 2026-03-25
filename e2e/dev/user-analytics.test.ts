@@ -85,7 +85,7 @@ async function navigateToSettingsAnalytics(page: Page) {
   await page.keyboard.press("Meta+k")
   await page.waitForSelector("text=Workspace Analytics", { timeout: 5_000 })
   await page.getByText("Workspace Analytics").click()
-  await page.waitForSelector("text=Workspace Analytics", { timeout: 15_000 })
+  await page.waitForSelector("text=Team Analytics", { timeout: 15_000 })
 }
 
 test.describe("User Analytics", () => {
@@ -108,45 +108,19 @@ test.describe("User Analytics", () => {
   test("workspace analytics tab is accessible via command palette", async () => {
     await navigateToSettingsAnalytics(page)
 
-    await expect(page.getByText("Workspace Analytics").first()).toBeVisible()
+    await expect(page.getByText("Analytics", { exact: true })).toBeVisible({
+      timeout: 5_000,
+    })
+  })
+
+  test("workspace analytics shows upgrade prompt for free plan", async () => {
+    await expect(page.getByText("Team Analytics")).toBeVisible({
+      timeout: 10_000,
+    })
     await expect(
-      page.getByText("Usage metrics and credit consumption")
+      page.getByText(/available on Business plans/i)
     ).toBeVisible()
-  })
-
-  test("workspace analytics shows period selector", async () => {
-    await expect(page.getByText("7 days")).toBeVisible({ timeout: 5_000 })
-    await expect(page.getByText("30 days")).toBeVisible()
-    await expect(page.getByText("90 days")).toBeVisible()
-    await expect(page.getByText("1 year")).toBeVisible()
-  })
-
-  test("workspace analytics shows stat cards", async () => {
-    await expect(page.getByText("Members")).toBeVisible({ timeout: 10_000 })
-    await expect(page.getByText("Projects")).toBeVisible()
-    await expect(page.getByText("Sessions", { exact: true })).toBeVisible()
-    await expect(page.getByText("Usage Events")).toBeVisible()
-  })
-
-  test("workspace analytics shows AI Usage by User table", async () => {
-    await expect(page.getByText("AI Usage by User")).toBeVisible({
-      timeout: 10_000,
-    })
-    await expect(page.getByText("Summary")).toBeVisible()
-    await expect(page.getByText("Event Log")).toBeVisible()
-  })
-
-  test("workspace analytics shows chat analytics section", async () => {
-    await expect(page.getByText("Chat Analytics")).toBeVisible({
-      timeout: 10_000,
-    })
-    await expect(page.getByText("Total Sessions")).toBeVisible()
-    await expect(page.getByText("Total Messages")).toBeVisible()
-  })
-
-  test("workspace analytics has Analytics tab in sidebar", async () => {
-    const analyticsTab = page.getByText("Analytics", { exact: true })
-    await expect(analyticsTab).toBeVisible({ timeout: 5_000 })
+    await expect(page.getByText("Upgrade to Business")).toBeVisible()
   })
 
   // ── Profile: Usage & Credits ────────────────────────────────────────────

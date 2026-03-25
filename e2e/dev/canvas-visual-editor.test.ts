@@ -20,6 +20,8 @@ async function waitForDevPreview(page: Page) {
   await page.goto(DEV_PREVIEW_URL)
   await page.waitForSelector("text=Dev Preview", { timeout: 30_000 })
   await page.waitForSelector("text=Canvas Editor", { timeout: 5_000 })
+  await page.getByText("Expense Tracker").first().click()
+  await page.waitForSelector("text=Total Spent", { timeout: 5_000 })
 }
 
 async function enterEditMode(page: Page) {
