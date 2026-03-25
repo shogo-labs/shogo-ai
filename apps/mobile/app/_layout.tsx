@@ -15,6 +15,7 @@ import { AuthProvider } from '../contexts/auth'
 import { PostHogProvider } from '../contexts/posthog'
 import { ThemeProvider, useTheme } from '../contexts/theme'
 import { RootErrorBoundary } from '../components/RootErrorBoundary'
+import { UpdateBanner } from '../components/UpdateBanner'
 import { captureAttribution } from '../lib/attribution'
 
 Sentry.init({
@@ -65,6 +66,7 @@ function RootLayoutInner() {
     <GluestackUIProvider mode={resolvedMode}>
       <PostHogProvider>
         <AuthProvider>
+          <UpdateBanner />
           <StatusBar style={resolvedMode === 'dark' ? 'light' : 'dark'} />
           <Stack screenOptions={{ headerShown: false, lazy: true }}>
             <Stack.Screen name="index" />

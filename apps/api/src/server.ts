@@ -777,6 +777,7 @@ app.use(
     const publicPrefixes = [
       '/api/auth/',
       '/api/health',
+      '/api/version',
       '/api/config',
       '/api/webhooks/',
       '/api/integrations/callback',
@@ -800,6 +801,12 @@ app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
 // Health check
 app.get('/api/health', (c) => c.json({ ok: true }))
 app.get('/health', (c) => c.json({ ok: true }))
+
+// Version endpoint for frontend update detection
+app.get('/api/version', (c) => c.json({
+  version: process.env.APP_VERSION || '0.0.0',
+  buildHash: process.env.BUILD_HASH || 'dev',
+}))
 
 // OAuth callback for Composio integrations — registered before auth middleware
 // so the page is always reachable (the browser has no session cookie).

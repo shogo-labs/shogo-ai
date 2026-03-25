@@ -147,6 +147,10 @@ RUN chown -R appuser:appgroup /app/workspaces /app/.claude
 # or use matching UID via docker-compose user directive
 USER appuser
 
+# Build hash for version detection (set at build time by CI)
+ARG BUILD_HASH=dev
+ENV BUILD_HASH=$BUILD_HASH
+
 # Environment defaults
 ENV NODE_ENV=production
 ENV API_PORT=8002

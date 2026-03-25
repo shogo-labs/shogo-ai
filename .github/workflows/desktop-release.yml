@@ -175,6 +175,35 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Generate update metadata
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#desktop-v}"
+          if [ -z "$VERSION" ] || [ "$VERSION" = "$GITHUB_REF_NAME" ]; then
+            VERSION="${{ inputs.version || '0.0.0' }}"
+          fi
+          RELEASE_DATE=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+
+          for zip in apps/desktop/out/make/zip/**/*.zip; do
+            [ -f "$zip" ] || continue
+            FILENAME=$(basename "$zip")
+            SIZE=$(stat -f%z "$zip" 2>/dev/null || stat -c%s "$zip" 2>/dev/null)
+            SHA512=$(shasum -a 512 "$zip" | awk '{print $1}')
+            SHA512_BASE64=$(echo -n "$SHA512" | xxd -r -p | base64)
+
+            if [[ "${{ matrix.platform }}" == "darwin" ]]; then
+              OUTFILE="apps/desktop/out/make/zip/latest-mac.yml"
+            elif [[ "${{ matrix.platform }}" == "win32" ]]; then
+              OUTFILE="apps/desktop/out/make/zip/latest.yml"
+            else
+              continue
+            fi
+
+            printf 'version: %s\nfiles:\n  - url: %s\n    sha512: %s\n    size: %s\npath: %s\nsha512: %s\nreleaseDate: %s\n' \
+              "$VERSION" "$FILENAME" "$SHA512_BASE64" "$SIZE" "$FILENAME" "$SHA512_BASE64" "$RELEASE_DATE" \
+              > "$OUTFILE"
+          done
+
       - name: Upload artifacts
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
@@ -199,7 +228,7 @@ jobs:
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
           name: Shogo Desktop ${{ github.ref_name }}
-          draft: true
+          draft: false
           files: artifacts/**/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -405,7 +405,9 @@ jobs:
             ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/${{ matrix.image_name }}:${{ steps.tag-prefix.outputs.prefix }}-${{ github.sha }}
           build-args: |
             ${{ matrix.build_args == 'api' && format('ALLOWED_ORIGINS={0}', vars.ALLOWED_ORIGINS) || '' }}
+            ${{ matrix.build_args == 'api' && format('BUILD_HASH={0}', github.sha) || '' }}
             ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_API_URL={0}', vars.EXPO_PUBLIC_API_URL) || '' }}
+            ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_BUILD_HASH={0}', github.sha) || '' }}
             ${{ matrix.build_args == 'web' && needs.resolve-config.outputs.environment == 'production' && format('GA4_MEASUREMENT_ID={0}', secrets.GA4_MEASUREMENT_ID) || '' }}
             ${{ matrix.build_args == 'web' && needs.resolve-config.outputs.environment == 'production' && format('FB_PIXEL_ID={0}', secrets.FB_PIXEL_ID) || '' }}
             ${{ matrix.build_args == 'runtime' && format('BASE_IMAGE={0}/shogo/shogo-runtime-base:latest', needs.resolve-config.outputs.ocir_registry) || '' }}
