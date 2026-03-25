@@ -92,15 +92,15 @@ module "india" {
   placement_ad_names = [] # TODO: determine which AD has A4.Flex capacity
 
   # Active-active node with local DB — matches US sizing (A4: 6 GB/OCPU)
-  system_node_ocpus     = 8
-  system_node_memory_gb = 48
+  system_node_ocpus     = 4
+  system_node_memory_gb = 24
   system_pool_size      = 3
   system_pool_min       = 2
   system_pool_max       = 10
 
   enable_workload_pool      = true
-  workload_node_ocpus       = 8
-  workload_node_memory_gb   = 48
+  workload_node_ocpus       = 4
+  workload_node_memory_gb   = 24
   workload_pool_size        = 1
   workload_pool_min         = 1
   workload_pool_max         = 30

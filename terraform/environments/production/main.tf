@@ -128,15 +128,15 @@ module "oke" {
   image_id           = "ocid1.image.oc1.iad.aaaaaaaaxlqapo7gpvnvfndkhfnixrnvlumdgaexjvakamdmhiegulsypa5a"
   placement_ad_names = ["XYpk:US-ASHBURN-AD-1"]
 
-  node_ocpus     = 8
-  node_memory_gb = 48
+  node_ocpus     = 4
+  node_memory_gb = 24
   node_pool_size = 3
   node_pool_min  = 2
   node_pool_max  = 15
 
   enable_workload_pool      = true
-  workload_node_ocpus       = 8
-  workload_node_memory_gb   = 48
+  workload_node_ocpus       = 4
+  workload_node_memory_gb   = 24
   workload_pool_size        = 2
   workload_pool_min         = 1
   workload_pool_max         = 100
