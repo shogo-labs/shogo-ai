@@ -1,5 +1,6 @@
 {
   "compilerOptions": {
+    "ignoreDeprecations": "6.0",
     "target": "ES2020",
     "module": "ESNext",
     "moduleResolution": "bundler",
@@ -15,7 +16,8 @@
     "rootDir": "src",
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "noEmit": true
+    "noEmit": true,
+    "types": ["node", "react"]
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "examples", "tests", "src/**/__tests__/**"]
