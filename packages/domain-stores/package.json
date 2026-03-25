@@ -14,7 +14,7 @@
   "dependencies": {
     "@shogo-ai/sdk": "workspace:*",
     "mobx": "^6.13.5",
-    "mobx-state-tree": "^7.0.2"
+    "mobx-state-tree": "^6.0.1"
   },
   "peerDependencies": {
     "react": ">=18"
