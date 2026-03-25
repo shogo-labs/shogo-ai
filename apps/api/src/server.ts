@@ -789,6 +789,11 @@ app.use(
       '/api/api-keys/validate',
     ]
     if (publicPrefixes.some((p) => path.startsWith(p))) return next()
+
+    // Webchat widget endpoints must be publicly accessible — they're embedded
+    // on external websites where visitors have no Shogo credentials.
+    if (/\/api\/projects\/[^/]+\/agent-proxy\/agent\/channels\/webchat\//.test(path)) return next()
+
     return requireAuth(c, next)
   }
 )
@@ -1904,17 +1909,26 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   }
 
   const projectId = c.req.param('projectId')
-
-  const userId = await getAuthUserId(c)
-  if (!userId) {
-    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
-  }
-  const workspaceId = await verifyProjectAccess(userId, projectId)
-  if (!workspaceId) {
-    return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
-  }
-
   const path = c.req.path.replace(`/api/projects/${projectId}/agent-proxy`, '') || '/'
+
+  const isPublicWebchatPath =
+    path === '/agent/channels/webchat/widget.js' ||
+    path === '/agent/channels/webchat/config' ||
+    path === '/agent/channels/webchat/session' ||
+    path === '/agent/channels/webchat/message' ||
+    path === '/agent/channels/webchat/health' ||
+    path.startsWith('/agent/channels/webchat/events/')
+
+  if (!isPublicWebchatPath) {
+    const userId = await getAuthUserId(c)
+    if (!userId) {
+      return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+    }
+    const workspaceId = await verifyProjectAccess(userId, projectId)
+    if (!workspaceId) {
+      return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+    }
+  }
   const qs = new URL(c.req.url).search
 
   let podUrl: string

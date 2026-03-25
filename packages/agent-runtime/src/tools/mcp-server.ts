@@ -12,6 +12,7 @@
 import { existsSync, readFileSync, writeFileSync, readdirSync, unlinkSync, mkdirSync, rmSync, statSync } from 'fs'
 import { join, resolve, extname, dirname } from 'path'
 import { isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPackages, getCatalogEntry } from '../mcp-catalog'
+import { deriveApiUrl } from '../internal-api'
 
 /**
  * Resolve a path ensuring it stays within the given base directory.
@@ -474,7 +475,14 @@ defineTool({
       })
       if (res.ok) {
         if (input.type === 'webchat') {
-          const localWidgetUrl = `http://localhost:${port}/agent/channels/webchat/widget.js`
+          const widgetPath = '/agent/channels/webchat/widget.js'
+          let widgetUrl: string
+          if (process.env.KUBERNETES_SERVICE_HOST) {
+            const apiUrl = deriveApiUrl()
+            widgetUrl = `${apiUrl}/api/projects/${PROJECT_ID}/agent-proxy${widgetPath}`
+          } else {
+            widgetUrl = `http://localhost:${port}${widgetPath}`
+          }
           return {
             ok: true,
             message: [
@@ -482,14 +490,14 @@ defineTool({
               ``,
               `Tell the user to add this single script tag before the closing </body> tag on their website:`,
               ``,
-              `<script src="${localWidgetUrl}"></script>`,
+              `<script src="${widgetUrl}"></script>`,
               ``,
               `A chat bubble will appear on the page. Visitors click it to chat with the agent directly. No other setup, libraries, or accounts needed.`,
               ``,
               `The user can also find the embed snippet in the Channels panel.`,
             ].join('\n'),
-            embedSnippet: `<script src="${localWidgetUrl}"></script>`,
-            widgetUrl: localWidgetUrl,
+            embedSnippet: `<script src="${widgetUrl}"></script>`,
+            widgetUrl,
           }
         }
         return {

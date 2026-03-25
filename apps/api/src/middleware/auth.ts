@@ -138,6 +138,12 @@ export function requireRole(role: string | string[]) {
  * c.get("auth").userId is available.
  */
 export async function requireProjectAccess(c: Context, next: Next) {
+  // Webchat widget paths are public — embedded on external websites without credentials
+  const path = new URL(c.req.url).pathname
+  if (/\/api\/projects\/[^/]+\/agent-proxy\/agent\/channels\/webchat\//.test(path)) {
+    return next()
+  }
+
   const auth = c.get("auth")
   const userId = auth?.userId
   if (!userId) {
