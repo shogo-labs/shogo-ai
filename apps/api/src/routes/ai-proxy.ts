@@ -1265,6 +1265,8 @@ async function recordImageUsage(
 // Routes
 // =============================================================================
 
+const isLocalDev = process.env.NODE_ENV !== 'production' && !process.env.K_SERVICE
+
 export function aiProxyRoutes() {
   const router = new Hono()
 
@@ -1414,8 +1416,8 @@ export function aiProxyRoutes() {
       }
     }
 
-    // Pre-check: reject if workspace has no credits
-    if (!await billingService.hasCredits(tokenPayload.workspaceId)) {
+    // Pre-check: reject if workspace has no credits (skip in local dev)
+    if (!isLocalDev && !await billingService.hasCredits(tokenPayload.workspaceId)) {
       return c.json(
         {
           error: {
@@ -1460,7 +1462,7 @@ export function aiProxyRoutes() {
       }
 
       // Enforce model tier: free/basic users can only use economy-tier models
-      if (modelConfig.provider !== 'local') {
+      if (modelConfig.provider !== 'local' && !isLocalDev) {
         const tier = getModelTier(request.model)
         if (tier !== 'economy') {
           const hasAdvanced = await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
@@ -1702,8 +1704,8 @@ export function aiProxyRoutes() {
       }
     }
 
-    // Pre-check credits
-    if (!await billingService.hasCredits(tokenPayload.workspaceId)) {
+    // Pre-check credits (skip in local dev)
+    if (!isLocalDev && !await billingService.hasCredits(tokenPayload.workspaceId)) {
       return c.json(
         { type: 'error', error: { type: 'billing_error', message: 'Insufficient credits. Please upgrade your plan.' } },
         402
@@ -1721,7 +1723,7 @@ export function aiProxyRoutes() {
       console.log(`[AI Proxy] Anthropic pass-through: ${tokenPayload.projectId} → ${requestModel} resolved to ${resolvedModel} (local: ${isLocal}, stream: ${isStream})`)
 
       // Enforce model tier: free/basic users can only use economy-tier models
-      if (!isLocal) {
+      if (!isLocal && !isLocalDev) {
         const tier = getModelTier(resolvedModel)
         if (tier !== 'economy') {
           const hasAdvanced = await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
