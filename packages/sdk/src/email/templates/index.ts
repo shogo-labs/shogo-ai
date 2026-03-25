@@ -7,7 +7,7 @@
  * Uses <style> blocks with CSS classes — no inline styles.
  */
 
-export { wrapInLayout, EMAIL_CONSTANTS } from './_layout.js'
+export { wrapInLayout, EMAIL_CONSTANTS, DARK_STYLE_OVERRIDES } from './_layout.js'
 
 // Auth
 export { welcomeTemplate } from './auth/welcome.js'

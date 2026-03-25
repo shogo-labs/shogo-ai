@@ -67,3 +67,12 @@ export {
   notificationTemplate,
   builtinTemplates,
 } from './templates.js'
+
+// Shogo-branded templates (modular, layout-wrapped)
+export {
+  allTemplates as shogoTemplates,
+  createShogoTemplateRegistry,
+  wrapInLayout,
+  EMAIL_CONSTANTS,
+  DARK_STYLE_OVERRIDES,
+} from './templates/index.js'
