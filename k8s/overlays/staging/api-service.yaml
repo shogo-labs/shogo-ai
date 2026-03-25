@@ -230,7 +230,7 @@ spec:
                   key: SIGNOZ_INGESTION_KEY
                   optional: true
             - name: WARM_POOL_MIN_PODS
-              value: "10"
+              value: "5"
             - name: REGION_ID
               value: "staging"
             - name: REGION_LABEL

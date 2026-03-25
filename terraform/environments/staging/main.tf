@@ -128,13 +128,19 @@ module "oke" {
   image_id           = "ocid1.image.oc1.iad.aaaaaaaaxlqapo7gpvnvfndkhfnixrnvlumdgaexjvakamdmhiegulsypa5a"
   placement_ad_names = ["XYpk:US-ASHBURN-AD-2"]
 
+  # Match production node specs (4 OCPUs / 24GB → 93 pods/node instead of 31)
   node_ocpus     = 4
   node_memory_gb = 24
   node_pool_size = 2
   node_pool_min  = 1
   node_pool_max  = 6
 
-  enable_workload_pool = false
+  enable_workload_pool      = true
+  workload_node_ocpus       = 4
+  workload_node_memory_gb   = 24
+  workload_pool_size        = 1
+  workload_pool_min         = 1
+  workload_pool_max         = 10
 
   tags = local.tags
 }

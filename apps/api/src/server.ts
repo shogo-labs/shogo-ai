@@ -4024,7 +4024,7 @@ Examples:
  * Credit Charging (after completion):
  * - Credits are charged AFTER the response completes
  * - Cost is based on total tokens (input + output)
- * - Rate: 0.1 credits per 5,000 tokens, minimum 0.5 credits
+ * - Rate: token-based pricing per model tier, minimum 0.2 credits per message
  */
 app.post('/api/chat', async (c) => {
   try {

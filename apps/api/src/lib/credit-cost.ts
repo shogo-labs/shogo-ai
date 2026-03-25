@@ -16,6 +16,7 @@
  */
 
 export const CREDIT_DOLLAR_VALUE = 0.10
+export const MIN_CREDIT_COST = 0.2
 
 export const MODEL_DOLLAR_COSTS = {
   haiku:  { inputPerMillion: 0.80, outputPerMillion: 4.00 },
@@ -117,7 +118,8 @@ export function calculateCreditCost(
     (inputTokens * costs.inputPerMillion / 1_000_000) +
     (outputTokens * costs.outputPerMillion / 1_000_000)
 
-  return Math.ceil((dollarCost / CREDIT_DOLLAR_VALUE) * 10) / 10
+  const raw = Math.ceil((dollarCost / CREDIT_DOLLAR_VALUE) * 10) / 10
+  return raw > 0 ? Math.max(MIN_CREDIT_COST, raw) : 0
 }
 
 // =============================================================================
