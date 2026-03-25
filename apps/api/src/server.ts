@@ -669,6 +669,7 @@ app.use('*', secureHeaders({
   xContentTypeOptions: 'nosniff',
   referrerPolicy: 'strict-origin-when-cross-origin',
   crossOriginOpenerPolicy: 'same-origin-allow-popups',
+  crossOriginResourcePolicy: 'cross-origin',
 }))
 
 // Global request body size limit (10 MB default)
