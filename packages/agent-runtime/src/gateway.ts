@@ -676,6 +676,13 @@ export class AgentGateway {
     const session = this.sessionManager.getOrCreate(sessionId)
     session.stopRequested = false
 
+    // Channel sessions (Telegram, Discord, etc.) default to 'basic' model
+    // to ensure they use economy-tier models that work on all subscription plans.
+    const isMainSession = this.config.mainSessionIds?.includes(sessionId) ?? false
+    if (!isMainSession && !session.modelOverride) {
+      session.modelOverride = 'basic'
+    }
+
     while (qs.queue.length > 0 && !session.stopRequested) {
       const message = qs.queue.shift()!
 
@@ -1378,7 +1385,7 @@ export class AgentGateway {
 
       if (result.error) {
         const msg = result.error.message || 'An unexpected error occurred'
-        const isProviderError = /api error|api key|auth|unauthorized|forbidden|rate.limit|overloaded|timeout/i.test(msg)
+        const isProviderError = /api error|api key|auth|unauthorized|forbidden|rate.limit|overloaded|timeout|billing|tier/i.test(msg)
         console.error(
           `[AgentGateway] Agent error for session ${sessionId}: ${msg} (${result.toolCalls.length} tool calls, ${result.outputTokens} output tokens)`
         )
@@ -1390,6 +1397,11 @@ export class AgentGateway {
               ? `AI provider error: ${msg}`
               : `I encountered an issue processing your message: ${msg}`,
           } as any)
+        }
+        if (!result.text && streamTarget) {
+          return isProviderError
+            ? `AI provider error: ${msg}`
+            : `I encountered an issue: ${msg}`
         }
       } else if (result.outputTokens === 0 && result.toolCalls.length === 0 && !isHeartbeat) {
         console.error(
