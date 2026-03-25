@@ -22,7 +22,7 @@ You can build agents that monitor GitHub repos, triage support tickets, research
 
 ### Is Shogo free?
 
-Yes, there is a free plan that gives you 5 credits per day (up to 150/month). Paid plans are available for users who need more credits. See [Plans and Credits](./plans-and-credits) for details.
+Yes, there is a free plan that gives you 5 credits per day (up to 30/month). Paid plans are available for users who need more credits. See [Plans and Credits](./plans-and-credits) for details.
 
 ## Building agents
 

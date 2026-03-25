@@ -10,10 +10,10 @@ Shogo uses a credit-based system. Credits are consumed when you interact with th
 
 ## How credits work
 
-- Credits are charged **per token** based on the AI model used, not a flat rate per message.
+- Credits are charged **per token** based on the AI model used, not a flat rate per message. Input and output tokens are priced separately to accurately reflect model costs.
 - Simpler interactions cost fewer credits (~0.2), while longer conversations cost more (~0.5–1+).
 - The chat input shows an estimated credit cost before you send.
-- Free plan credits reset daily. Paid plan credits are allocated monthly.
+- Free plan credits reset daily (capped at 30 per month). Paid plan credits are allocated monthly.
 - You can check your remaining credits in the sidebar or in **Settings > Billing**.
 
 :::tip
@@ -24,10 +24,17 @@ You don't use credits when browsing the dashboard, viewing the canvas, or naviga
 
 ### Free
 
-- **5 credits per day** (up to 150 per month)
+- **5 credits per day** (up to 30 per month)
 - Create unlimited agents
 - Access to all templates
 - Perfect for exploring Shogo and building your first agents
+
+### Basic
+
+- **50 credits per month** + 5 daily credits (up to 30/month)
+- Fast AI model (economy tier)
+- Unlimited domains
+- $8/month (or $80/year)
 
 ### Pro
 
@@ -35,16 +42,16 @@ Designed for individuals and creators who build regularly.
 
 | Tier | Credits per month | Price (monthly) |
 |------|------------------|-----------------|
-| Pro 100 | 100 | $25/month |
-| Pro 200 | 200 | $50/month |
-| Pro 400 | 400 | $98/month |
-| Pro 800 | 800 | $190/month |
-| Pro 1,200 | 1,200 | $280/month |
-| Pro 2,000 | 2,000 | $460/month |
-| Pro 3,000 | 3,000 | $680/month |
-| Pro 5,000 | 5,000 | $1,100/month |
-| Pro 7,500 | 7,500 | $1,650/month |
-| Pro 10,000 | 10,000 | $2,200/month |
+| Pro 200 | 200 | $25/month |
+| Pro 400 | 400 | $50/month |
+| Pro 800 | 800 | $98/month |
+| Pro 1,600 | 1,600 | $190/month |
+| Pro 2,400 | 2,400 | $280/month |
+| Pro 4,000 | 4,000 | $460/month |
+| Pro 6,000 | 6,000 | $680/month |
+| Pro 10,000 | 10,000 | $1,100/month |
+| Pro 15,000 | 15,000 | $1,650/month |
+| Pro 20,000 | 20,000 | $2,200/month |
 
 ### Business
 
@@ -52,16 +59,16 @@ Designed for teams and organizations with higher usage needs. Includes everythin
 
 | Tier | Credits per month | Price (monthly) |
 |------|------------------|-----------------|
-| Business 100 | 100 | $40/month |
-| Business 200 | 200 | $65/month |
-| Business 400 | 400 | $130/month |
-| Business 800 | 800 | $250/month |
-| Business 1,200 | 1,200 | $365/month |
-| Business 2,000 | 2,000 | $600/month |
-| Business 3,000 | 3,000 | $885/month |
-| Business 5,000 | 5,000 | $1,430/month |
-| Business 7,500 | 7,500 | $2,145/month |
-| Business 10,000 | 10,000 | $2,860/month |
+| Business 200 | 200 | $40/month |
+| Business 400 | 400 | $65/month |
+| Business 800 | 800 | $130/month |
+| Business 1,600 | 1,600 | $250/month |
+| Business 2,400 | 2,400 | $365/month |
+| Business 4,000 | 4,000 | $600/month |
+| Business 6,000 | 6,000 | $885/month |
+| Business 10,000 | 10,000 | $1,430/month |
+| Business 15,000 | 15,000 | $2,145/month |
+| Business 20,000 | 20,000 | $2,860/month |
 
 Business-exclusive features include team analytics and usage reporting, SSO authentication, audit logs, personal and restricted projects, data training opt-out, per-member spending limits, and priority support.
 

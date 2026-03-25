@@ -21,7 +21,7 @@ Only workspace **owners** can manage billing settings.
 
 Your active plan is displayed at the top, showing:
 
-- Plan name and tier (e.g., Pro 500)
+- Plan name and tier (e.g., Pro 200)
 - Credits included per month
 - Monthly or annual billing cycle
 

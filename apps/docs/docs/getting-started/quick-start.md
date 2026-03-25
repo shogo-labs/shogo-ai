@@ -15,7 +15,7 @@ Create your first AI agent in Shogo in just a few minutes. This guide walks you 
 3. You'll be taken to your dashboard.
 
 :::tip Free to start
-Shogo's free plan gives you 5 credits per day (up to 150 per month) — enough to explore and build your first agent.
+Shogo's free plan gives you 5 credits per day (up to 30 per month) — enough to explore and build your first agent.
 :::
 
 ## Step 2: Create a workspace
