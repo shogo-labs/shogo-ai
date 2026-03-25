@@ -8,6 +8,7 @@
  */
 
 import React, { useState, useEffect, useMemo, useRef } from 'react'
+import type { ImageSourcePropType } from 'react-native'
 import { View, Text, TextInput, ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform, Pressable, useWindowDimensions, Image, useColorScheme, Alert as RNAlert } from 'react-native'
 import Svg, { G, Path, Rect } from 'react-native-svg'
 import { Eye, EyeOff } from 'lucide-react-native'
@@ -136,6 +137,10 @@ function GoogleContinueButton({
 
 const LOGIN_HERO_BREAKPOINT = 768
 
+/** Light veil only — form panel uses frosted bg; stack screen is transparent so photo must read clearly. */
+const MOBILE_HERO_SCRIM_LIGHT = 'rgba(255, 255, 255, 0.1)'
+const MOBILE_HERO_SCRIM_DARK = 'rgba(9, 9, 11, 0.28)'
+
 type Tab = 'signin' | 'signup'
 
 export interface LoginScreenProps {
@@ -148,6 +153,13 @@ export interface LoginScreenProps {
   error?: string | null
   onClearError?: () => void
   colorScheme?: 'light' | 'dark'
+  /**
+   * Pass `require('…/assets/login/….jpg')` from the **host app** (e.g. Expo) so Metro web resolves the file.
+   * A `require` inside `shared-ui` often points outside the app package and can yield broken URLs on web.
+   */
+  loginHeroImage?: ImageSourcePropType
+  /** When `colorScheme` is dark, this image is used instead of `loginHeroImage` (optional — defaults to `loginHeroImage`). */
+  loginHeroImageDark?: ImageSourcePropType
 }
 
 function isValidEmail(email: string): boolean {
@@ -429,11 +441,23 @@ function SignUpForm({ onSignUp, isLoading, error, onClearError, onScrollToBottom
   )
 }
 
-function MobileLoginPanel({ onSignIn, onSignUp, onGoogleSignIn, onForgotPassword, isLoading, error, onClearError, colorScheme }: LoginScreenProps) {
+function MobileLoginPanel({
+  onSignIn,
+  onSignUp,
+  onGoogleSignIn,
+  onForgotPassword,
+  isLoading,
+  error,
+  onClearError,
+  colorScheme,
+  heroSource,
+}: LoginScreenProps & { heroSource: ImageSourcePropType }) {
   const [activeTab, setActiveTab] = useState<Tab>('signin')
   const [dismissed, setDismissed] = useState(false)
-  const { height: windowHeight } = useWindowDimensions()
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions()
   const scrollRef = useRef<ScrollView>(null)
+  const scheme = colorScheme ?? 'light'
+  const scrimColor = scheme === 'dark' ? MOBILE_HERO_SCRIM_DARK : MOBILE_HERO_SCRIM_LIGHT
 
   useEffect(() => { if (error) setDismissed(false) }, [error])
 
@@ -444,98 +468,145 @@ function MobileLoginPanel({ onSignIn, onSignUp, onGoogleSignIn, onForgotPassword
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 150)
   }
 
-  return (
-    <KeyboardAvoidingView
-      className="flex-1 bg-background"
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    >
-      <ScrollView
-        ref={scrollRef}
-        contentContainerStyle={{ minHeight: windowHeight, justifyContent: 'center', padding: 16 }}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="interactive"
-      >
-        <Card className="w-full max-w-md self-center">
-          <CardContent className="p-6">
-            <View className="items-center mb-6">
-              {Platform.OS === 'web' && (
-                <Image
-                  source={require('../../../../apps/mobile/assets/shogo-logo.svg')}
-                  style={{ width: 80, height: 80, marginBottom: 16 }}
-                  resizeMode="contain"
-                />
-              )}
-              <Text className="text-2xl font-bold text-foreground">Shogo AI Studio</Text>
-              <Text className="text-sm text-muted-foreground mt-1">
-                Sign in to your account or create a new one
-              </Text>
-            </View>
-
-            <View className="flex-row bg-secondary rounded-lg p-1 mb-5" accessibilityRole="tablist">
-              {(['signin', 'signup'] as Tab[]).map((tab) => (
-                <Pressable
-                  key={tab}
-                  onPress={() => switchTab(tab)}
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected: activeTab === tab }}
-                  accessibilityLabel={tab === 'signin' ? 'Sign In' : 'Sign Up'}
-                  className={cn(
-                    'flex-1 py-2 rounded-md items-center',
-                    activeTab === tab ? 'bg-card' : '',
-                  )}
-                  style={activeTab === tab ? {
-                    shadowColor: '#000',
-                    shadowOffset: { width: 0, height: 1 },
-                    shadowOpacity: 0.05,
-                    shadowRadius: 2,
-                    elevation: 1,
-                  } : undefined}
-                >
-                  <Text className={cn(
-                    'text-sm font-medium',
-                    activeTab === tab ? 'text-foreground' : 'text-muted-foreground',
-                  )}>
-                    {tab === 'signin' ? 'Sign In' : 'Sign Up'}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-
-            {activeTab === 'signin'
-              ? (
-                <SignInForm
-                  onSignIn={onSignIn}
-                  onForgotPassword={onForgotPassword}
-                  isLoading={isLoading}
-                  error={displayError}
-                  onClearError={dismissError}
-                  onScrollToBottom={scrollToBottom}
-                />
-              )
-              : <SignUpForm onSignUp={onSignUp} isLoading={isLoading} error={displayError} onClearError={dismissError} onScrollToBottom={scrollToBottom} />
+  const panel = (
+    <>
+      <Image
+        source={heroSource}
+        style={
+          Platform.OS === 'web'
+            ? {
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: windowWidth,
+              height: windowHeight,
+              zIndex: 0,
             }
+            : {
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              width: '100%',
+              height: '100%',
+              zIndex: 0,
+            }
+        }
+        resizeMode="cover"
+        accessibilityIgnoresInvertColors
+      />
+      <View
+        pointerEvents="none"
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: scrimColor,
+          zIndex: 1,
+        }}
+      />
+      <KeyboardAvoidingView
+        style={{ flex: 1, backgroundColor: 'transparent', zIndex: 2 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
+        <ScrollView
+          ref={scrollRef}
+          style={{ flex: 1, backgroundColor: 'transparent' }}
+          contentContainerStyle={{ flexGrow: 1, minHeight: windowHeight, justifyContent: 'center', padding: 16 }}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="interactive"
+        >
+          <Card className="w-full max-w-md self-center border-border bg-card shadow-lg">
+            <CardContent className="p-6">
+              <View className="items-center mb-6">
+                {Platform.OS === 'web' && (
+                  <Image
+                    source={require('../../../../apps/mobile/assets/shogo-logo.svg')}
+                    style={{ width: 80, height: 80, marginBottom: 16 }}
+                    resizeMode="contain"
+                  />
+                )}
+                <Text className="text-2xl font-bold text-foreground">Shogo</Text>
+                <Text className="text-sm text-muted-foreground mt-1">
+                  Sign in to your account or create a new one
+                </Text>
+              </View>
 
-            {onGoogleSignIn ? (
-              <>
-                <View className="flex-row items-center my-5">
-                  <View className="flex-1"><Separator /></View>
-                  <Text className="px-3 text-xs text-muted-foreground uppercase">or</Text>
-                  <View className="flex-1"><Separator /></View>
-                </View>
-                <GoogleContinueButton onPress={onGoogleSignIn} colorScheme={colorScheme} />
-              </>
-            ) : null}
-          </CardContent>
-        </Card>
-      </ScrollView>
-    </KeyboardAvoidingView>
+              <View className="flex-row bg-secondary rounded-lg p-1 mb-5" accessibilityRole="tablist">
+                {(['signin', 'signup'] as Tab[]).map((tab) => (
+                  <Pressable
+                    key={tab}
+                    onPress={() => switchTab(tab)}
+                    accessibilityRole="tab"
+                    accessibilityState={{ selected: activeTab === tab }}
+                    accessibilityLabel={tab === 'signin' ? 'Sign In' : 'Sign Up'}
+                    className={cn(
+                      'flex-1 py-2 rounded-md items-center',
+                      activeTab === tab ? 'bg-card' : '',
+                    )}
+                    style={activeTab === tab ? {
+                      shadowColor: '#000',
+                      shadowOffset: { width: 0, height: 1 },
+                      shadowOpacity: 0.05,
+                      shadowRadius: 2,
+                      elevation: 1,
+                    } : undefined}
+                  >
+                    <Text className={cn(
+                      'text-sm font-medium',
+                      activeTab === tab ? 'text-foreground' : 'text-muted-foreground',
+                    )}>
+                      {tab === 'signin' ? 'Sign In' : 'Sign Up'}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+
+              {activeTab === 'signin'
+                ? (
+                  <SignInForm
+                    onSignIn={onSignIn}
+                    onForgotPassword={onForgotPassword}
+                    isLoading={isLoading}
+                    error={displayError}
+                    onClearError={dismissError}
+                    onScrollToBottom={scrollToBottom}
+                  />
+                )
+                : <SignUpForm onSignUp={onSignUp} isLoading={isLoading} error={displayError} onClearError={dismissError} onScrollToBottom={scrollToBottom} />
+              }
+
+              {onGoogleSignIn ? (
+                <>
+                  <View className="flex-row items-center my-5">
+                    <View className="flex-1"><Separator /></View>
+                    <Text className="px-3 text-xs text-muted-foreground uppercase">or</Text>
+                    <View className="flex-1"><Separator /></View>
+                  </View>
+                  <GoogleContinueButton onPress={onGoogleSignIn} colorScheme={colorScheme} />
+                </>
+              ) : null}
+            </CardContent>
+          </Card>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </>
+  )
+
+  return (
+    <View style={{ flex: 1, width: '100%', position: 'relative', overflow: 'hidden' }}>
+      {panel}
+    </View>
   )
 }
 
 const logoLight = require('../../../../apps/mobile/assets/shogo-logo-words.svg')
 const logoDark = require('../../../../apps/mobile/assets/shogo-logo-words-white.svg')
-const loginHeroLight = require('../../../../apps/mobile/assets/login/shogo-login3.jpg')
-const loginHeroDark = require('../../../../apps/mobile/assets/login/shogo-login3.jpg')
+const loginHeroLight = require('../../../../apps/mobile/assets/login/shogo-login1.webp')
+const loginHeroDark = require('../../../../apps/mobile/assets/login/shogo-login2.webp')
 const loginHeroWordmarkWhite = require('../../../../apps/mobile/assets/login/shogo-logo-white.svg')
 
 function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, onForgotPassword, isLoading, error, onClearError, colorScheme }: LoginScreenProps) {
@@ -574,13 +645,8 @@ function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, onForgotPassword
         keyboardShouldPersistTaps="handled"
       >
         <View style={{ maxWidth: 400, width: '100%' }}>
-          <Text className="text-2xl font-bold text-foreground" style={{ marginBottom: 4 }}>
-            {activeTab === 'signin' ? 'Sign in to your account' : 'Create your account'}
-          </Text>
-          <Text className="text-sm text-muted-foreground" style={{ marginBottom: 28 }}>
-            {activeTab === 'signin'
-              ? 'Welcome back to Shogo AI Studio'
-              : 'Get started with Shogo AI Studio'}
+          <Text className="text-2xl font-bold text-foreground" style={{ marginBottom: 16 }}>
+            {activeTab === 'signin' ? 'Log in to your account' : 'Create a Shogo account'}
           </Text>
 
           <View className="flex-row bg-secondary rounded-lg p-1 mb-5" accessibilityRole="tablist">
@@ -643,14 +709,25 @@ function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, onForgotPassword
   )
 }
 
+function resolveLoginHeroArtwork(
+  scheme: 'light' | 'dark',
+  props: LoginScreenProps,
+): ImageSourcePropType {
+  if (scheme === 'dark' && props.loginHeroImageDark != null)
+    return props.loginHeroImageDark
+  if (props.loginHeroImage != null)
+    return props.loginHeroImage
+  return scheme === 'dark' ? loginHeroDark : loginHeroLight
+}
+
 export function LoginScreen(props: LoginScreenProps) {
   const { width } = useWindowDimensions()
   const isDesktopWeb = Platform.OS === 'web' && width >= LOGIN_HERO_BREAKPOINT
   const scheme = props.colorScheme ?? 'light'
-  const heroArtwork = scheme === 'dark' ? loginHeroDark : loginHeroLight
+  const heroArtwork = resolveLoginHeroArtwork(scheme, props)
 
   if (!isDesktopWeb) {
-    return <MobileLoginPanel {...props} />
+    return <MobileLoginPanel {...props} heroSource={heroArtwork} />
   }
 
   return (
