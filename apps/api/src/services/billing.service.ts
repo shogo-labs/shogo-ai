@@ -59,7 +59,6 @@ export async function allocateFreeCredits(workspaceId: string) {
       workspaceId,
       monthlyCredits: PLAN_CREDITS.free,
       dailyCredits: DAILY_CREDITS,
-      rolloverCredits: 0,
       anniversaryDay: now.getDate(),
       lastDailyReset: now,
       lastMonthlyReset: now,
@@ -84,7 +83,6 @@ export async function allocateMonthlyCredits(
       workspaceId,
       monthlyCredits,
       dailyCredits: DAILY_CREDITS,
-      rolloverCredits: 0,
       anniversaryDay: now.getDate(),
       lastDailyReset: now,
       lastMonthlyReset: now,
@@ -172,7 +170,7 @@ export async function hasCredits(workspaceId: string, minimumRequired = 0.5): Pr
     daily = dispensed + DAILY_CREDITS <= MONTHLY_DAILY_CAP ? DAILY_CREDITS : 0;
   }
 
-  return (daily + ledger.monthlyCredits + ledger.rolloverCredits) >= minimumRequired;
+  return (daily + ledger.monthlyCredits) >= minimumRequired;
 }
 
 function isNewMonth(now: Date, lastMonthlyReset: Date): boolean {
@@ -192,7 +190,7 @@ function isFkConstraintError(err: unknown): boolean {
 
 /**
  * Consume credits for an action.
- * Deduction order: daily → monthly → rollover → insufficient.
+ * Deduction order: daily → monthly → insufficient.
  * Retries on projectId FK constraint violations (race with project creation).
  */
 export async function consumeCredits(
@@ -265,9 +263,8 @@ async function _consumeCreditsTransaction(
     }
 
     let monthlyCredits = ledger.monthlyCredits;
-    let rolloverCredits = ledger.rolloverCredits;
 
-    // Deduction order: daily → monthly → rollover
+    // Deduction order: daily → monthly
     let creditSource: CreditSource;
     let balanceBefore: number;
     let balanceAfter: number;
@@ -282,16 +279,11 @@ async function _consumeCreditsTransaction(
       balanceBefore = monthlyCredits;
       monthlyCredits -= creditCost;
       balanceAfter = monthlyCredits;
-    } else if (rolloverCredits >= creditCost) {
-      creditSource = 'monthly';
-      balanceBefore = rolloverCredits;
-      rolloverCredits -= creditCost;
-      balanceAfter = rolloverCredits;
     } else {
       return {
         success: false,
         error: 'Insufficient credits',
-        remainingCredits: dailyCredits + monthlyCredits + rolloverCredits,
+        remainingCredits: dailyCredits + monthlyCredits,
       };
     }
 
@@ -301,7 +293,6 @@ async function _consumeCreditsTransaction(
       data: {
         dailyCredits,
         monthlyCredits,
-        rolloverCredits,
         dailyCreditsDispensedThisMonth: dailyCreditsDispensed,
         ...(needsDailyReset ? { lastDailyReset: now } : {}),
         ...(needsMonthlyReset ? { lastMonthlyReset: now } : {}),
@@ -325,7 +316,7 @@ async function _consumeCreditsTransaction(
 
     return {
       success: true,
-      remainingCredits: dailyCredits + monthlyCredits + rolloverCredits,
+      remainingCredits: dailyCredits + monthlyCredits,
     };
   });
 }

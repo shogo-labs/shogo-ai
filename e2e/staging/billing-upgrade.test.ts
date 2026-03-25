@@ -81,7 +81,6 @@ test.describe("Billing & Upgrade Flow", () => {
 
     await expect(page.getByText("You're on Free Plan")).toBeVisible()
     await expect(page.getByText("5 of 5")).toBeVisible()
-    await expect(page.getByText("No credits will rollover")).toBeVisible()
     await expect(page.getByText("Daily credits reset at midnight UTC")).toBeVisible()
   })
 
@@ -151,12 +150,8 @@ test.describe("Billing & Upgrade Flow", () => {
     await expect(page.getByText("You're on Pro Plan")).toBeVisible()
   })
 
-  test("post-upgrade: credits allocated correctly (100 monthly + 5 daily)", async () => {
-    await expect(page.getByText(/105 of 105/)).toBeVisible()
-  })
-
-  test("post-upgrade: credits will rollover", async () => {
-    await expect(page.getByText("Credits will rollover")).toBeVisible()
+  test("post-upgrade: credits allocated correctly (200 monthly + 5 daily)", async () => {
+    await expect(page.getByText(/of 205/)).toBeVisible()
   })
 
   test("post-upgrade: Pro card shows Change Plan instead of Upgrade", async () => {

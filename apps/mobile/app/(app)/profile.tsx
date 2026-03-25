@@ -391,14 +391,6 @@ const WorkspaceCard = observer(function WorkspaceCard({
                         Monthly
                       </Text>
                     </View>
-                    <View className="flex-1 items-center p-2 bg-background rounded">
-                      <Text className="text-xs font-medium text-foreground">
-                        {effectiveBalance.rolloverCredits.toFixed(1)}
-                      </Text>
-                      <Text className="text-[10px] text-muted-foreground">
-                        Rollover
-                      </Text>
-                    </View>
                   </View>
                   <Progress
                     value={
