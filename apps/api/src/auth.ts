@@ -20,7 +20,8 @@ import { createPersonalWorkspace } from "./services/workspace.service"
 import { sendWelcomeEmail, sendPasswordResetEmail, sendEmailVerificationEmail } from "./services/email.service"
 import { prisma } from "./lib/prisma"
 
-const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
+const dbUrl = process.env.DATABASE_URL || ''
+const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true' && !dbUrl.startsWith('postgres')
 const LOAD_TEST_SECRET = process.env.LOAD_TEST_SECRET
 
 function isLoadTestBypass(request: Request): boolean {

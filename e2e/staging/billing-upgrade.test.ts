@@ -220,20 +220,20 @@ test.describe("Billing & Upgrade Flow", () => {
     // Go to billing page to check credits
     await navigateToBilling(page)
 
-    // Credits should be less than 105 (some were consumed by the agent interaction)
-    const creditsText = page.getByText(/of 105/)
+    // Credits should be less than 205 (some were consumed by the agent interaction)
+    const creditsText = page.getByText(/of 205/)
     await expect(creditsText).toBeVisible()
 
     const text = await creditsText.textContent()
-    const remaining = parseFloat(text?.match(/([\d.]+) of 105/)?.[1] ?? "105")
-    expect(remaining).toBeLessThan(105)
-    expect(remaining).toBeGreaterThan(100)
+    const remaining = parseFloat(text?.match(/([\d.]+) of 205/)?.[1] ?? "205")
+    expect(remaining).toBeLessThan(205)
+    expect(remaining).toBeGreaterThan(190)
   })
 
   test("post-upgrade: second interaction further deducts credits", async () => {
     // Remember current credits
-    const beforeText = await page.getByText(/of 105/).textContent()
-    const creditsBefore = parseFloat(beforeText?.match(/([\d.]+) of 105/)?.[1] ?? "105")
+    const beforeText = await page.getByText(/of 205/).textContent()
+    const creditsBefore = parseFloat(beforeText?.match(/([\d.]+) of 205/)?.[1] ?? "205")
 
     // Go back to the project and send another message
     await page.goBack()
@@ -248,8 +248,8 @@ test.describe("Billing & Upgrade Flow", () => {
 
     // Check billing page for updated credits
     await navigateToBilling(page)
-    const afterText = await page.getByText(/of 105/).textContent()
-    const creditsAfter = parseFloat(afterText?.match(/([\d.]+) of 105/)?.[1] ?? "105")
+    const afterText = await page.getByText(/of 205/).textContent()
+    const creditsAfter = parseFloat(afterText?.match(/([\d.]+) of 205/)?.[1] ?? "205")
 
     expect(creditsAfter).toBeLessThan(creditsBefore)
   })

@@ -2026,6 +2026,7 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
       responseHeaders.set('access-control-allow-origin', '*')
       responseHeaders.set('access-control-allow-methods', 'GET, POST, PUT, DELETE, OPTIONS')
       responseHeaders.set('access-control-allow-headers', '*')
+      responseHeaders.set('cross-origin-resource-policy', 'cross-origin')
 
       const responseContentType = response.headers.get('content-type') || ''
       if (responseContentType.includes('text/event-stream') || responseContentType.includes('text/plain')) {
