@@ -44,7 +44,12 @@ COPY apps/mobile/package.json ./apps/mobile/
 # Copy scripts needed for postinstall
 COPY scripts ./scripts
 
-# Install all dependencies
+# Copy prisma schema and config before install (postinstall runs db:generate:all)
+COPY prisma ./prisma
+COPY prisma.config.ts ./prisma.config.ts
+COPY prisma.config.local.ts ./prisma.config.local.ts
+
+# Install all dependencies (postinstall generates Prisma client)
 RUN bun install
 
 # Copy workspace packages consumed by the mobile app

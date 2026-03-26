@@ -138,7 +138,7 @@ export function InlineToolWidget({
     <View className={cn("overflow-hidden rounded-lg border border-border/60 bg-muted/50 dark:bg-muted/30", className)}>
       <Pressable
         onPress={handleToggle}
-        className="group w-full flex-row items-center gap-2 px-3 py-2.5"
+        className="group w-full flex-row items-center gap-2 px-1 py-1"
       >
         <View className="group-hover:hidden">
           <StateIcon
