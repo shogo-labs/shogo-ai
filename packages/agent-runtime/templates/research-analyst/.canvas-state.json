@@ -1,0 +1,204 @@
+{
+  "surfaces": {
+    "research_dashboard": {
+      "surfaceId": "research_dashboard",
+      "title": "Research Dashboard",
+      "components": {
+        "root": {
+          "id": "root",
+          "component": "Column",
+          "children": [
+            "header",
+            "kpis",
+            "topics_card",
+            "getting_started"
+          ],
+          "gap": "lg"
+        },
+        "header": {
+          "id": "header",
+          "component": "Row",
+          "children": [
+            "title",
+            "status_badge"
+          ],
+          "align": "center",
+          "justify": "between"
+        },
+        "title": {
+          "id": "title",
+          "component": "Text",
+          "text": "🔬 Research Dashboard",
+          "variant": "h2"
+        },
+        "status_badge": {
+          "id": "status_badge",
+          "component": "Badge",
+          "text": "Ready to research",
+          "variant": "outline"
+        },
+        "kpis": {
+          "id": "kpis",
+          "component": "Grid",
+          "columns": 3,
+          "children": [
+            "kpi_topics",
+            "kpi_sources",
+            "kpi_updated"
+          ]
+        },
+        "kpi_topics": {
+          "id": "kpi_topics",
+          "component": "Metric",
+          "label": "Tracked Topics",
+          "value": {
+            "path": "/metrics/topics"
+          }
+        },
+        "kpi_sources": {
+          "id": "kpi_sources",
+          "component": "Metric",
+          "label": "Sources Indexed",
+          "value": {
+            "path": "/metrics/sources"
+          }
+        },
+        "kpi_updated": {
+          "id": "kpi_updated",
+          "component": "Metric",
+          "label": "Last Updated",
+          "value": {
+            "path": "/metrics/updated"
+          }
+        },
+        "topics_card": {
+          "id": "topics_card",
+          "component": "Card",
+          "title": "Active Research",
+          "description": "Your research projects",
+          "child": "topics_placeholder"
+        },
+        "topics_placeholder": {
+          "id": "topics_placeholder",
+          "component": "Text",
+          "text": "Tell me a topic to research and I'll search the web, synthesize findings, and build an analysis dashboard. Try: \"Research the latest developments in AI agents\"",
+          "variant": "muted"
+        },
+        "getting_started": {
+          "id": "getting_started",
+          "component": "Card",
+          "title": "🚀 Getting Started",
+          "child": "gs_text"
+        },
+        "gs_text": {
+          "id": "gs_text",
+          "component": "Text",
+          "text": "I research from 5+ sources, distinguish facts from opinions, and always cite URLs. Ask anything.",
+          "variant": "muted"
+        }
+      },
+      "dataModel": {
+        "metrics": {
+          "topics": "0",
+          "sources": "0",
+          "updated": "Never"
+        }
+      },
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    },
+    "topic_tracker": {
+      "surfaceId": "topic_tracker",
+      "title": "Topic Tracker",
+      "components": {
+        "root": {
+          "id": "root",
+          "component": "Column",
+          "children": [
+            "header",
+            "kpis",
+            "tracked_card"
+          ],
+          "gap": "lg"
+        },
+        "header": {
+          "id": "header",
+          "component": "Row",
+          "children": [
+            "title",
+            "status_badge"
+          ],
+          "align": "center",
+          "justify": "between"
+        },
+        "title": {
+          "id": "title",
+          "component": "Text",
+          "text": "📡 Topic Tracker",
+          "variant": "h2"
+        },
+        "status_badge": {
+          "id": "status_badge",
+          "component": "Badge",
+          "text": "No topics tracked yet",
+          "variant": "outline"
+        },
+        "kpis": {
+          "id": "kpis",
+          "component": "Grid",
+          "columns": 3,
+          "children": [
+            "kpi_tracked",
+            "kpi_new",
+            "kpi_alerts"
+          ]
+        },
+        "kpi_tracked": {
+          "id": "kpi_tracked",
+          "component": "Metric",
+          "label": "Topics Tracked",
+          "value": {
+            "path": "/metrics/tracked"
+          }
+        },
+        "kpi_new": {
+          "id": "kpi_new",
+          "component": "Metric",
+          "label": "New Today",
+          "value": {
+            "path": "/metrics/newToday"
+          }
+        },
+        "kpi_alerts": {
+          "id": "kpi_alerts",
+          "component": "Metric",
+          "label": "Alerts",
+          "value": {
+            "path": "/metrics/alerts"
+          }
+        },
+        "tracked_card": {
+          "id": "tracked_card",
+          "component": "Card",
+          "title": "Monitored Topics",
+          "child": "tracked_placeholder"
+        },
+        "tracked_placeholder": {
+          "id": "tracked_placeholder",
+          "component": "Text",
+          "text": "Say \"Track AI agents\" or \"Monitor quantum computing news\" — I'll check for developments on every heartbeat and alert you.",
+          "variant": "muted"
+        }
+      },
+      "dataModel": {
+        "metrics": {
+          "tracked": "0",
+          "newToday": "0",
+          "alerts": "0"
+        }
+      },
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    }
+  }
+}

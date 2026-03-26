@@ -1,0 +1,302 @@
+{
+  "surfaces": {
+    "health_dashboard": {
+      "surfaceId": "health_dashboard",
+      "title": "Health Dashboard",
+      "components": {
+        "root": {
+          "id": "root",
+          "component": "Column",
+          "children": [
+            "header",
+            "kpis",
+            "services_card",
+            "getting_started"
+          ],
+          "gap": "lg"
+        },
+        "header": {
+          "id": "header",
+          "component": "Row",
+          "children": [
+            "title",
+            "all_ok_badge"
+          ],
+          "align": "center",
+          "justify": "between"
+        },
+        "title": {
+          "id": "title",
+          "component": "Text",
+          "text": "💓 Health Dashboard",
+          "variant": "h2"
+        },
+        "all_ok_badge": {
+          "id": "all_ok_badge",
+          "component": "Badge",
+          "text": "No endpoints configured",
+          "variant": "outline"
+        },
+        "kpis": {
+          "id": "kpis",
+          "component": "Grid",
+          "columns": 4,
+          "children": [
+            "kpi_endpoints",
+            "kpi_uptime",
+            "kpi_latency",
+            "kpi_incidents"
+          ]
+        },
+        "kpi_endpoints": {
+          "id": "kpi_endpoints",
+          "component": "Metric",
+          "label": "Endpoints",
+          "value": {
+            "path": "/metrics/endpoints"
+          }
+        },
+        "kpi_uptime": {
+          "id": "kpi_uptime",
+          "component": "Metric",
+          "label": "Uptime",
+          "value": {
+            "path": "/metrics/uptime"
+          }
+        },
+        "kpi_latency": {
+          "id": "kpi_latency",
+          "component": "Metric",
+          "label": "Avg Latency",
+          "value": {
+            "path": "/metrics/latency"
+          },
+          "unit": "ms"
+        },
+        "kpi_incidents": {
+          "id": "kpi_incidents",
+          "component": "Metric",
+          "label": "Incidents (24h)",
+          "value": {
+            "path": "/metrics/incidents"
+          }
+        },
+        "services_card": {
+          "id": "services_card",
+          "component": "Card",
+          "title": "Service Status",
+          "child": "services_content"
+        },
+        "services_content": {
+          "id": "services_content",
+          "component": "Column",
+          "children": [
+            "svc1",
+            "svc2",
+            "svc3"
+          ],
+          "gap": "sm"
+        },
+        "svc1": {
+          "id": "svc1",
+          "component": "Row",
+          "children": [
+            "svc1_badge",
+            "svc1_text",
+            "svc1_latency"
+          ],
+          "align": "center",
+          "justify": "between"
+        },
+        "svc1_badge": {
+          "id": "svc1_badge",
+          "component": "Badge",
+          "text": "●",
+          "variant": "secondary"
+        },
+        "svc1_text": {
+          "id": "svc1_text",
+          "component": "Text",
+          "text": "API Server"
+        },
+        "svc1_latency": {
+          "id": "svc1_latency",
+          "component": "Text",
+          "text": "Not configured",
+          "variant": "muted"
+        },
+        "svc2": {
+          "id": "svc2",
+          "component": "Row",
+          "children": [
+            "svc2_badge",
+            "svc2_text",
+            "svc2_latency"
+          ],
+          "align": "center",
+          "justify": "between"
+        },
+        "svc2_badge": {
+          "id": "svc2_badge",
+          "component": "Badge",
+          "text": "●",
+          "variant": "secondary"
+        },
+        "svc2_text": {
+          "id": "svc2_text",
+          "component": "Text",
+          "text": "Database"
+        },
+        "svc2_latency": {
+          "id": "svc2_latency",
+          "component": "Text",
+          "text": "Not configured",
+          "variant": "muted"
+        },
+        "svc3": {
+          "id": "svc3",
+          "component": "Row",
+          "children": [
+            "svc3_badge",
+            "svc3_text",
+            "svc3_latency"
+          ],
+          "align": "center",
+          "justify": "between"
+        },
+        "svc3_badge": {
+          "id": "svc3_badge",
+          "component": "Badge",
+          "text": "●",
+          "variant": "secondary"
+        },
+        "svc3_text": {
+          "id": "svc3_text",
+          "component": "Text",
+          "text": "CDN / Frontend"
+        },
+        "svc3_latency": {
+          "id": "svc3_latency",
+          "component": "Text",
+          "text": "Not configured",
+          "variant": "muted"
+        },
+        "getting_started": {
+          "id": "getting_started",
+          "component": "Card",
+          "title": "🚀 Getting Started",
+          "child": "gs_text"
+        },
+        "gs_text": {
+          "id": "gs_text",
+          "component": "Text",
+          "text": "Share your API health check URLs and I'll start monitoring every 5 minutes. Say \"Connect Sentry\" for error tracking.",
+          "variant": "muted"
+        }
+      },
+      "dataModel": {
+        "metrics": {
+          "endpoints": "0",
+          "uptime": "—",
+          "latency": "—",
+          "incidents": "0"
+        }
+      },
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    },
+    "alert_feed": {
+      "surfaceId": "alert_feed",
+      "title": "Alert Feed",
+      "components": {
+        "root": {
+          "id": "root",
+          "component": "Column",
+          "children": [
+            "header",
+            "kpis",
+            "alerts_card"
+          ],
+          "gap": "lg"
+        },
+        "header": {
+          "id": "header",
+          "component": "Row",
+          "children": [
+            "title",
+            "status_badge"
+          ],
+          "align": "center",
+          "justify": "between"
+        },
+        "title": {
+          "id": "title",
+          "component": "Text",
+          "text": "🔔 Alert Feed",
+          "variant": "h2"
+        },
+        "status_badge": {
+          "id": "status_badge",
+          "component": "Badge",
+          "text": "No alerts yet",
+          "variant": "outline"
+        },
+        "kpis": {
+          "id": "kpis",
+          "component": "Grid",
+          "columns": 3,
+          "children": [
+            "kpi_today",
+            "kpi_unresolved",
+            "kpi_keywords"
+          ]
+        },
+        "kpi_today": {
+          "id": "kpi_today",
+          "component": "Metric",
+          "label": "Alerts Today",
+          "value": {
+            "path": "/metrics/alertsToday"
+          }
+        },
+        "kpi_unresolved": {
+          "id": "kpi_unresolved",
+          "component": "Metric",
+          "label": "Unresolved",
+          "value": {
+            "path": "/metrics/unresolved"
+          }
+        },
+        "kpi_keywords": {
+          "id": "kpi_keywords",
+          "component": "Metric",
+          "label": "Keywords Watched",
+          "value": {
+            "path": "/metrics/keywords"
+          }
+        },
+        "alerts_card": {
+          "id": "alerts_card",
+          "component": "Card",
+          "title": "Recent Alerts",
+          "child": "alerts_placeholder"
+        },
+        "alerts_placeholder": {
+          "id": "alerts_placeholder",
+          "component": "Text",
+          "text": "Health check failures, Slack keyword matches, and escalations will be logged here chronologically.",
+          "variant": "muted"
+        }
+      },
+      "dataModel": {
+        "metrics": {
+          "alertsToday": "0",
+          "unresolved": "0",
+          "keywords": "0"
+        }
+      },
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    }
+  }
+}

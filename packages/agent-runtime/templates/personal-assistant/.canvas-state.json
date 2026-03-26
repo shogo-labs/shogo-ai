@@ -1,0 +1,249 @@
+{
+  "surfaces": {
+    "daily_planner": {
+      "surfaceId": "daily_planner",
+      "title": "Daily Planner",
+      "components": {
+        "root": {
+          "id": "root",
+          "component": "Column",
+          "children": [
+            "header",
+            "kpis",
+            "schedule_card",
+            "getting_started"
+          ],
+          "gap": "lg"
+        },
+        "header": {
+          "id": "header",
+          "component": "Row",
+          "children": [
+            "title",
+            "date_badge"
+          ],
+          "align": "center",
+          "justify": "between"
+        },
+        "title": {
+          "id": "title",
+          "component": "Text",
+          "text": "⚡ Daily Planner",
+          "variant": "h2"
+        },
+        "date_badge": {
+          "id": "date_badge",
+          "component": "Badge",
+          "text": "Ready to set up",
+          "variant": "outline"
+        },
+        "kpis": {
+          "id": "kpis",
+          "component": "Grid",
+          "columns": 4,
+          "children": [
+            "kpi_meetings",
+            "kpi_tasks",
+            "kpi_reminders",
+            "kpi_streak"
+          ]
+        },
+        "kpi_meetings": {
+          "id": "kpi_meetings",
+          "component": "Metric",
+          "label": "Meetings Today",
+          "value": {
+            "path": "/metrics/meetings"
+          }
+        },
+        "kpi_tasks": {
+          "id": "kpi_tasks",
+          "component": "Metric",
+          "label": "Open Tasks",
+          "value": {
+            "path": "/metrics/tasks"
+          }
+        },
+        "kpi_reminders": {
+          "id": "kpi_reminders",
+          "component": "Metric",
+          "label": "Reminders",
+          "value": {
+            "path": "/metrics/reminders"
+          }
+        },
+        "kpi_streak": {
+          "id": "kpi_streak",
+          "component": "Metric",
+          "label": "Habit Streak",
+          "value": {
+            "path": "/metrics/streak"
+          },
+          "unit": "days"
+        },
+        "schedule_card": {
+          "id": "schedule_card",
+          "component": "Card",
+          "title": "Today's Schedule",
+          "child": "schedule_placeholder"
+        },
+        "schedule_placeholder": {
+          "id": "schedule_placeholder",
+          "component": "Text",
+          "text": "Connect your calendar and I'll show today's meetings with prep notes. Say \"Connect Google Calendar\" to start.",
+          "variant": "muted"
+        },
+        "getting_started": {
+          "id": "getting_started",
+          "component": "Card",
+          "title": "🚀 Getting Started",
+          "child": "gs_col"
+        },
+        "gs_col": {
+          "id": "gs_col",
+          "component": "Column",
+          "children": [
+            "gs_text",
+            "gs_options"
+          ],
+          "gap": "md"
+        },
+        "gs_text": {
+          "id": "gs_text",
+          "component": "Text",
+          "text": "Set up your personal hub:",
+          "variant": "muted"
+        },
+        "gs_options": {
+          "id": "gs_options",
+          "component": "Column",
+          "children": [
+            "opt1",
+            "opt2",
+            "opt3"
+          ],
+          "gap": "sm"
+        },
+        "opt1": {
+          "id": "opt1",
+          "component": "Text",
+          "text": "• \"Connect my Google Calendar\" for daily schedule"
+        },
+        "opt2": {
+          "id": "opt2",
+          "component": "Text",
+          "text": "• \"Track exercise and reading habits\" for habit tracking"
+        },
+        "opt3": {
+          "id": "opt3",
+          "component": "Text",
+          "text": "• \"Remind me to...\" for reminders and tasks"
+        }
+      },
+      "dataModel": {
+        "metrics": {
+          "meetings": "—",
+          "tasks": "0",
+          "reminders": "0",
+          "streak": "0"
+        }
+      },
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    },
+    "journal": {
+      "surfaceId": "journal",
+      "title": "Journal",
+      "components": {
+        "root": {
+          "id": "root",
+          "component": "Column",
+          "children": [
+            "header",
+            "kpis",
+            "today_card"
+          ],
+          "gap": "lg"
+        },
+        "header": {
+          "id": "header",
+          "component": "Row",
+          "children": [
+            "title",
+            "streak_badge"
+          ],
+          "align": "center",
+          "justify": "between"
+        },
+        "title": {
+          "id": "title",
+          "component": "Text",
+          "text": "📓 Journal",
+          "variant": "h2"
+        },
+        "streak_badge": {
+          "id": "streak_badge",
+          "component": "Badge",
+          "text": "Start your first entry",
+          "variant": "outline"
+        },
+        "kpis": {
+          "id": "kpis",
+          "component": "Grid",
+          "columns": 3,
+          "children": [
+            "kpi_streak",
+            "kpi_entries",
+            "kpi_mood"
+          ]
+        },
+        "kpi_streak": {
+          "id": "kpi_streak",
+          "component": "Metric",
+          "label": "Streak",
+          "value": {
+            "path": "/metrics/streak"
+          },
+          "unit": "days"
+        },
+        "kpi_entries": {
+          "id": "kpi_entries",
+          "component": "Metric",
+          "label": "Entries",
+          "value": {
+            "path": "/metrics/entries"
+          }
+        },
+        "kpi_mood": {
+          "id": "kpi_mood",
+          "component": "Metric",
+          "label": "Avg Mood",
+          "value": {
+            "path": "/metrics/mood"
+          }
+        },
+        "today_card": {
+          "id": "today_card",
+          "component": "Card",
+          "title": "Today's Reflection",
+          "child": "prompt_text"
+        },
+        "prompt_text": {
+          "id": "prompt_text",
+          "component": "Text",
+          "text": "Just tell me how your day went — I'll track mood, gratitude, and themes over time.",
+          "variant": "muted"
+        }
+      },
+      "dataModel": {
+        "metrics": {
+          "streak": "0",
+          "entries": "0",
+          "mood": "—"
+        }
+      },
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    }
+  }
+}

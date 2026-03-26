@@ -1,0 +1,48 @@
+{
+  "id": "devops-hub",
+  "name": "DevOps Hub",
+  "description": "Engineering command center with PR triage, code review, CI/CD monitoring, release management, standup generation, and team velocity metrics across multiple dashboards.",
+  "category": "development",
+  "icon": "🐙",
+  "tags": [
+    "github",
+    "git",
+    "pr-review",
+    "ci-cd",
+    "releases",
+    "standups",
+    "code-review",
+    "velocity",
+    "engineering"
+  ],
+  "settings": {
+    "heartbeatInterval": 900,
+    "heartbeatEnabled": true,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-5",
+    "quietHours": {
+      "start": "22:00",
+      "end": "07:00",
+      "timezone": "UTC"
+    }
+  },
+  "integrations": [
+    {
+      "categoryId": "code-repository",
+      "description": "Track PRs, commits, and code reviews",
+      "required": true
+    },
+    {
+      "categoryId": "communication",
+      "description": "Deliver standups and team notifications"
+    },
+    {
+      "categoryId": "monitoring",
+      "description": "Correlate errors with deployments"
+    },
+    {
+      "categoryId": "project-management",
+      "description": "Sync issues and track sprint progress"
+    }
+  ]
+}

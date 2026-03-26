@@ -1,0 +1,20 @@
+{
+  "id": "blank-agent",
+  "name": "Blank Agent",
+  "description": "Start from scratch — no pre-configured surfaces, skills, or integrations. Build exactly the agent you need.",
+  "category": "personal",
+  "icon": "✨",
+  "tags": [
+    "blank",
+    "custom",
+    "scratch",
+    "diy",
+    "starter"
+  ],
+  "settings": {
+    "heartbeatInterval": 3600,
+    "heartbeatEnabled": false,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-5"
+  }
+}

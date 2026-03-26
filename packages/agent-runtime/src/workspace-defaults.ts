@@ -1,14 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { existsSync, mkdirSync, writeFileSync, copyFileSync, cpSync, readdirSync, readFileSync } from 'node:fs'
-import { join, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { existsSync, mkdirSync, writeFileSync, cpSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { getAgentTemplateById } from './agent-templates'
-import { getTemplateShogoDir } from './template-loader'
-import { TEMPLATE_CANVAS_STATES } from './template-canvas-states'
-
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = dirname(__filename)
+import { getTemplateShogoDir, getTemplateCanvasStatePath } from './template-loader'
 
 export const DEFAULT_WORKSPACE_FILES: Record<string, string> = {
   'AGENTS.md': `# Operating Instructions
@@ -115,14 +110,10 @@ export function resetWorkspaceDefaults(dir: string): void {
 }
 
 /**
- * Seed workspace from a template. Writes template-specific files and
- * copies referenced bundled skills into the workspace skills/ directory.
+ * Seed workspace from a template. Copies the template's .shogo/ directory
+ * and .canvas-state.json into the workspace.
  * Only writes files that don't already exist (preserves customizations).
  * Also writes a .template marker file so the runtime knows which template was used.
- *
- * For directory-based templates (generated from bundled skills), this is
- * a simple directory copy. For hand-authored templates, files are constructed
- * from the AgentTemplate object.
  */
 export function seedWorkspaceFromTemplate(dir: string, templateId: string, agentName?: string): boolean {
   const template = getAgentTemplateById(templateId)
@@ -131,13 +122,11 @@ export function seedWorkspaceFromTemplate(dir: string, templateId: string, agent
   mkdirSync(dir, { recursive: true })
   mkdirSync(join(dir, 'memory'), { recursive: true })
 
-  // Fast path: directory-based template — just copy .shogo/
   const shogoSrc = getTemplateShogoDir(templateId)
   if (shogoSrc) {
     const destShogo = join(dir, '.shogo')
     if (!existsSync(destShogo)) {
       cpSync(shogoSrc, destShogo, { recursive: true })
-      // Apply {{AGENT_NAME}} replacement to markdown files
       if (agentName) {
         for (const fname of ['IDENTITY.md', 'SOUL.md', 'AGENTS.md', 'USER.md']) {
           const fp = join(destShogo, fname)
@@ -150,61 +139,17 @@ export function seedWorkspaceFromTemplate(dir: string, templateId: string, agent
         }
       }
     }
-    writeFileSync(join(dir, '.template'), templateId, 'utf-8')
-    return true
   }
 
-  // Hand-authored templates: construct files from AgentTemplate object
-  mkdirSync(join(dir, '.shogo', 'skills'), { recursive: true })
-
-  for (const [filename, rawContent] of Object.entries(template.files)) {
-    const filepath = join(dir, filename)
-    if (!existsSync(filepath)) {
-      const parentDir = dirname(filepath)
-      if (parentDir !== dir) mkdirSync(parentDir, { recursive: true })
-      const content = agentName ? rawContent.replace(/\{\{AGENT_NAME\}\}/g, agentName) : rawContent
-      writeFileSync(filepath, content, 'utf-8')
-    }
-  }
-
-  const bundledDir = join(__dirname, 'bundled-skills')
-  if (existsSync(bundledDir)) {
-    for (const skillName of template.skills) {
-      const srcDir = join(bundledDir, skillName)
-      const srcFile = join(srcDir, 'SKILL.md')
-      const destDir = join(dir, '.shogo', 'skills', skillName)
-      if (existsSync(srcFile) && !existsSync(destDir)) {
-        mkdirSync(destDir, { recursive: true })
-        copyFileSync(srcFile, join(destDir, 'SKILL.md'))
-        try {
-          for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
-            if (entry.name === 'SKILL.md') continue
-            if (entry.isDirectory()) {
-              const subSrc = join(srcDir, entry.name)
-              const subDest = join(destDir, entry.name)
-              mkdirSync(subDest, { recursive: true })
-              for (const subFile of readdirSync(subSrc)) {
-                copyFileSync(join(subSrc, subFile), join(subDest, subFile))
-              }
-            } else {
-              copyFileSync(join(srcDir, entry.name), join(destDir, entry.name))
-            }
-          }
-        } catch { /* extra files are optional */ }
-      }
-    }
-  }
-
-  const canvasState = TEMPLATE_CANVAS_STATES[templateId]
-  if (canvasState) {
-    const canvasPath = join(dir, '.canvas-state.json')
-    if (!existsSync(canvasPath)) {
-      writeFileSync(canvasPath, JSON.stringify(canvasState, null, 2), 'utf-8')
+  const canvasSrc = getTemplateCanvasStatePath(templateId)
+  if (canvasSrc) {
+    const canvasDest = join(dir, '.canvas-state.json')
+    if (!existsSync(canvasDest)) {
+      cpSync(canvasSrc, canvasDest)
     }
   }
 
   writeFileSync(join(dir, '.template'), templateId, 'utf-8')
-
   return true
 }
 

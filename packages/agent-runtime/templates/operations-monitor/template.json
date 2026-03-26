@@ -1,0 +1,34 @@
+{
+  "id": "operations-monitor",
+  "name": "Operations Monitor",
+  "description": "API health monitoring, service status pages, Slack mention tracking, and alert management with real-time ops dashboards.",
+  "category": "operations",
+  "icon": "💓",
+  "tags": [
+    "monitoring",
+    "health",
+    "uptime",
+    "latency",
+    "alerts",
+    "slack",
+    "sentry",
+    "status-page",
+    "devops"
+  ],
+  "settings": {
+    "heartbeatInterval": 300,
+    "heartbeatEnabled": true,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-5"
+  },
+  "integrations": [
+    {
+      "categoryId": "monitoring",
+      "description": "Track errors and service health"
+    },
+    {
+      "categoryId": "communication",
+      "description": "Deliver alerts and watch for mentions"
+    }
+  ]
+}

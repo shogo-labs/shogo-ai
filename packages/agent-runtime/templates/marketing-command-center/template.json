@@ -1,0 +1,49 @@
+{
+  "id": "marketing-command-center",
+  "name": "Marketing Command Center",
+  "description": "Full-stack marketing agent with SEO audits, CRO optimization, content writing, social scheduling, competitor monitoring, and growth strategy — all in multi-surface dashboards.",
+  "category": "marketing",
+  "icon": "📣",
+  "tags": [
+    "marketing",
+    "seo",
+    "cro",
+    "copywriting",
+    "social-media",
+    "content",
+    "competitors",
+    "growth",
+    "ads",
+    "email",
+    "newsletters"
+  ],
+  "settings": {
+    "heartbeatInterval": 3600,
+    "heartbeatEnabled": true,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-5",
+    "quietHours": {
+      "start": "22:00",
+      "end": "07:00",
+      "timezone": "UTC"
+    }
+  },
+  "integrations": [
+    {
+      "categoryId": "crm",
+      "description": "Track leads, deals, and customer data"
+    },
+    {
+      "categoryId": "communication",
+      "description": "Share reports and campaign alerts"
+    },
+    {
+      "categoryId": "notes",
+      "description": "Store research, content drafts, and strategies"
+    },
+    {
+      "categoryId": "email",
+      "description": "Monitor outreach and email campaigns"
+    }
+  ]
+}
