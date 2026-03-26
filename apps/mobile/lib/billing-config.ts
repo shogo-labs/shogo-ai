@@ -110,3 +110,26 @@ export function formatCredits(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
   return n % 1 === 0 ? String(n) : n.toFixed(2)
 }
+
+export interface CurrencyDisplay {
+  code: string
+  symbol: string
+  name: string
+  symbolPosition: 'prefix' | 'suffix'
+  decimalPlaces: number
+}
+
+export function formatCurrencyPrice(amount: number, currency: CurrencyDisplay): string {
+  const rounded = currency.decimalPlaces === 0
+    ? Math.round(amount)
+    : Math.round(amount * 100) / 100
+  const formatted = currency.decimalPlaces === 0
+    ? rounded.toLocaleString('en-US')
+    : rounded.toLocaleString('en-US', {
+        minimumFractionDigits: currency.decimalPlaces,
+        maximumFractionDigits: currency.decimalPlaces,
+      })
+  return currency.symbolPosition === 'prefix'
+    ? `${currency.symbol}${formatted}`
+    : `${formatted} ${currency.symbol}`
+}

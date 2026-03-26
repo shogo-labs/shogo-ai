@@ -35,6 +35,7 @@ import {
 import { useAuth } from '../../contexts/auth'
 import { useWorkspaceCollection, useDomainHttp } from '../../contexts/domain'
 import { api } from '../../lib/api'
+import type { RegionalPricingResponse } from '../../lib/api'
 import { getRewardfulReferral } from '../../lib/rewardful'
 import { trackInitiateCheckout, trackPurchase } from '../../lib/tracking'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
@@ -51,6 +52,7 @@ import {
   BASE_TIER_CREDITS,
   getTotalCreditsForPlan,
   formatCredits,
+  formatCurrencyPrice,
 } from '../../lib/billing-config'
 import { TierSelector } from '../../components/billing/TierSelector'
 import { FeatureList } from '../../components/billing/FeatureList'
@@ -96,6 +98,17 @@ export default observer(function BillingPage() {
   const [selectedBusinessTier, setSelectedBusinessTier] = useState(4)
   const [isCheckoutLoading, setIsCheckoutLoading] = useState(false)
   const [isPortalLoading, setIsPortalLoading] = useState(false)
+  const [regionalPricing, setRegionalPricing] = useState<RegionalPricingResponse | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    api.getRegionalPricing(http).then((data) => {
+      if (!cancelled && data?.currency?.code && data.currency.code !== 'USD') {
+        setRegionalPricing(data)
+      }
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [http])
 
   const creditsTotal = getTotalCreditsForPlan(subscription?.planId)
   const creditsRemaining = effectiveBalance?.total ?? creditsTotal
@@ -106,6 +119,14 @@ export default observer(function BillingPage() {
 
   const proTier = PRO_TIERS[selectedProTier]
   const businessTier = BUSINESS_TIERS[selectedBusinessTier]
+
+  const fmtPrice = useCallback((usdAmount: number, planKey?: string) => {
+    if (!regionalPricing || !planKey) return `$${usdAmount}`
+    const localPlan = regionalPricing.plans[planKey]
+    if (!localPlan) return `$${usdAmount}`
+    const localAmount = billingInterval === 'monthly' ? localPlan.monthly : Math.round(localPlan.annual / 12)
+    return `~${formatCurrencyPrice(localAmount, regionalPricing.currency)}`
+  }, [regionalPricing, billingInterval])
 
   const handleCheckout = useCallback(async (planType: 'pro' | 'business', credits: number) => {
     if (!currentWorkspace?.id) return
@@ -326,6 +347,15 @@ export default observer(function BillingPage() {
         </CardContent>
       </Card>
 
+      {/* Regional Currency Indicator */}
+      {regionalPricing && (
+        <View className="flex-row items-center justify-center gap-2 mb-4">
+          <Text className="text-sm text-muted-foreground">
+            Prices shown in {regionalPricing.currency.name} ({regionalPricing.currency.code})
+          </Text>
+        </View>
+      )}
+
       {/* Billing Interval Toggle */}
       <View className="items-center mb-6">
         <View className="flex-row border border-border rounded-lg bg-muted/60 p-1">
@@ -380,11 +410,13 @@ export default observer(function BillingPage() {
               <View>
                 <View className="flex-row items-baseline gap-1">
                   <Text className="text-4xl font-bold text-foreground">
-                    ${billingInterval === 'monthly' ? BASIC_TIER.monthly : Math.round(BASIC_TIER.annual / 12)}
+                    {regionalPricing
+                      ? fmtPrice(billingInterval === 'monthly' ? BASIC_TIER.monthly : Math.round(BASIC_TIER.annual / 12), 'basic')
+                      : `$${billingInterval === 'monthly' ? BASIC_TIER.monthly : Math.round(BASIC_TIER.annual / 12)}`}
                   </Text>
                   <Text className="text-sm text-muted-foreground">per month</Text>
                 </View>
-                {billingInterval === 'annual' && (
+                {billingInterval === 'annual' && !regionalPricing && (
                   <Text className="text-sm text-muted-foreground">
                     ${BASIC_TIER.annual}/year (save ~17%)
                   </Text>
@@ -429,7 +461,12 @@ export default observer(function BillingPage() {
               <View>
                 <View className="flex-row items-baseline gap-1">
                   <Text className="text-4xl font-bold text-foreground">
-                    ${billingInterval === 'monthly' ? proTier.monthly : Math.round(proTier.annual / 12)}
+                    {regionalPricing
+                      ? fmtPrice(
+                          billingInterval === 'monthly' ? proTier.monthly : Math.round(proTier.annual / 12),
+                          `pro_${proTier.credits}`
+                        )
+                      : `$${billingInterval === 'monthly' ? proTier.monthly : Math.round(proTier.annual / 12)}`}
                   </Text>
                   <Text className="text-sm text-muted-foreground">per month</Text>
                 </View>
@@ -492,7 +529,12 @@ export default observer(function BillingPage() {
               <View>
                 <View className="flex-row items-baseline gap-1">
                   <Text className="text-4xl font-bold text-foreground">
-                    ${billingInterval === 'monthly' ? businessTier.monthly : Math.round(businessTier.annual / 12)}
+                    {regionalPricing
+                      ? fmtPrice(
+                          billingInterval === 'monthly' ? businessTier.monthly : Math.round(businessTier.annual / 12),
+                          `business_${businessTier.credits}`
+                        )
+                      : `$${billingInterval === 'monthly' ? businessTier.monthly : Math.round(businessTier.annual / 12)}`}
                   </Text>
                   <Text className="text-sm text-muted-foreground">per month</Text>
                 </View>
