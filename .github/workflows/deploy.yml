@@ -149,17 +149,17 @@ jobs:
           CURRENT_TAG: ${{ github.ref_name }}
         run: |
           FORCE_ALL="${{ github.event_name == 'workflow_dispatch' }}"
+          FORCE_PROD="${{ github.ref_type == 'tag' }}"
 
           if [ "$FORCE_ALL" = "true" ]; then
             echo "workflow_dispatch -- forcing all image builds"
             CHANGED=""
-          elif [ "$IS_TAG_PUSH" = "true" ]; then
-            # For tag pushes (production), diff against the previous tag to capture
-            # all changes accumulated since the last release, not just the tagged commit.
+          elif [ "$FORCE_PROD" = "true" ]; then
+            echo "Production tag push -- forcing api/web/docs, change-detecting runtime"
             PREV_TAG=$(git tag --sort=-version:refname | grep -v "^${CURRENT_TAG}$" | head -1)
             if [ -n "$PREV_TAG" ]; then
               CHANGED=$(git diff --name-only "$PREV_TAG" HEAD)
-              echo "Comparing $PREV_TAG..HEAD (tag-to-tag range)"
+              echo "Comparing $PREV_TAG..HEAD (runtime change detection only)"
             else
               echo "No previous tag found — treating all files as changed"
               CHANGED=$(git ls-tree --name-only -r HEAD)
@@ -213,12 +213,12 @@ jobs:
           fi
 
           API_CHANGED=false
-          if [ "$SHARED" = "true" ] || [ "$SDK" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$RUNTIME_PKG" = "true" ] || [ "$API_APP" = "true" ]; then
+          if [ "$FORCE_PROD" = "true" ] || [ "$SHARED" = "true" ] || [ "$SDK" = "true" ] || [ "$SHARED_RUNTIME" = "true" ] || [ "$RUNTIME_PKG" = "true" ] || [ "$API_APP" = "true" ]; then
             API_CHANGED=true
           fi
 
           WEB_CHANGED=false
-          if [ "$SHARED" = "true" ] || [ "$SDK" = "true" ] || [ "$WEB_APP" = "true" ]; then
+          if [ "$FORCE_PROD" = "true" ] || [ "$SHARED" = "true" ] || [ "$SDK" = "true" ] || [ "$WEB_APP" = "true" ]; then
             WEB_CHANGED=true
           fi
 
@@ -228,7 +228,7 @@ jobs:
           fi
 
           DOCS_CHANGED=false
-          if [ "$DOCS_APP" = "true" ]; then
+          if [ "$FORCE_PROD" = "true" ] || [ "$DOCS_APP" = "true" ]; then
             DOCS_CHANGED=true
           fi
 
