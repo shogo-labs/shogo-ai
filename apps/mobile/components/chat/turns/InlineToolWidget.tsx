@@ -143,7 +143,7 @@ export function InlineToolWidget({
         <View className="group-hover:hidden">
           <StateIcon
             className={cn(
-              "w-4 h-4",
+              "w-3 h-3",
               tool.state === "streaming" && "text-muted-foreground/60",
               tool.state === "success" && "text-muted-foreground/60",
               tool.state === "error" && (isAuthErr ? "text-orange-500" : "text-red-500"),
@@ -151,10 +151,10 @@ export function InlineToolWidget({
           />
         </View>
         <View className="hidden group-hover:flex">
-          <ChevronRight className="w-4 h-4 text-muted-foreground" />
+          <ChevronRight className="w-3 h-3 text-muted-foreground" />
         </View>
 
-        <Text className="flex-1 text-[13px] text-muted-foreground" numberOfLines={1}>
+        <Text className="flex-1 text-[11px] text-muted-foreground" numberOfLines={1}>
           <Text className="font-medium text-muted-foreground">{displayName}</Text>
           {keyArg ? (
             <Text className="text-muted-foreground/50"> {keyArg}</Text>
@@ -163,7 +163,7 @@ export function InlineToolWidget({
       </Pressable>
 
       {isExpanded && (
-        <View className="border-t border-border/60 px-3 py-2 gap-1.5">
+        <View className="border-t border-border/60 px-2 py-2 gap-1.5">
           {tool.args && Object.keys(tool.args).length > 0 && (
             <View className="gap-0.5">
               <Text className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
