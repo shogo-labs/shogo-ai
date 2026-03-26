@@ -12,7 +12,7 @@ import {
   InteractionManager,
   Share,
   useWindowDimensions,
-  Keyboard,
+  KeyboardAvoidingView,
 } from 'react-native'
 import { AgentClient, type FileNode, type SearchResult } from '@shogo-ai/sdk/agent'
 import { agentFetch } from '../../../lib/agent-fetch'
@@ -24,7 +24,6 @@ import {
   RefreshCw,
   Upload,
   Download,
-  Plus,
   Trash2,
   Search,
   ChevronRight,
@@ -57,6 +56,26 @@ const WORKSPACE_FILES = [
   { id: 'TOOLS.md', label: 'Tools', description: 'Tool notes and conventions' },
 ]
 
+/** Matches 8 + depth×16px using Tailwind padding (deep trees clamp to last step). */
+const TREE_INDENT_CLASSES = [
+  'pl-2',
+  'pl-6',
+  'pl-10',
+  'pl-14',
+  'pl-[72px]',
+  'pl-[88px]',
+  'pl-[104px]',
+  'pl-[120px]',
+  'pl-[136px]',
+  'pl-[152px]',
+  'pl-[168px]',
+  'pl-[184px]',
+] as const
+
+function treeIndentClass(depth: number): string {
+  return TREE_INDENT_CLASSES[Math.min(depth, TREE_INDENT_CLASSES.length - 1)] ?? 'pl-2'
+}
+
 // ---------------------------------------------------------------------------
 // File Tree Item
 // ---------------------------------------------------------------------------
@@ -68,6 +87,9 @@ function FileTreeItem({
   expandedDirs,
   onSelect,
   onToggleDir,
+  onNewFileInDir,
+  onNewFolderInDir,
+  onUploadToDir,
 }: {
   entry: FileNode
   depth: number
@@ -75,6 +97,9 @@ function FileTreeItem({
   expandedDirs: Set<string>
   onSelect: (path: string) => void
   onToggleDir: (path: string) => void
+  onNewFileInDir: (dirPath: string) => void
+  onNewFolderInDir: (dirPath: string) => void
+  onUploadToDir: (dirPath: string) => void
 }) {
   const isDir = entry.type === 'directory'
   const isExpanded = expandedDirs.has(entry.path)
@@ -82,71 +107,121 @@ function FileTreeItem({
 
   const ext = entry.name.split('.').pop()?.toLowerCase()
 
+  if (isDir) {
+    return (
+      <>
+        <View
+          className={cn(
+            'flex-row items-center gap-0.5 py-1 pr-2 rounded-md',
+            treeIndentClass(depth),
+          )}
+        >
+          <Pressable
+            onPress={() => onToggleDir(entry.path)}
+            className={cn(
+              'flex-row flex-1 min-w-0 items-center gap-1.5 py-0.5 pl-0 pr-1 rounded-md',
+              isSelected ? 'bg-primary/10' : 'active:bg-muted',
+            )}
+          >
+            {isExpanded ? (
+              <ChevronDown size={10} className="text-muted-foreground shrink-0" />
+            ) : (
+              <ChevronRight size={10} className="text-muted-foreground shrink-0" />
+            )}
+            {isExpanded ? (
+              <FolderOpen size={12} className="text-amber-500 shrink-0" />
+            ) : (
+              <Folder size={12} className="text-amber-500 shrink-0" />
+            )}
+            <Text
+              className={cn(
+                'text-xs flex-1 min-w-0',
+                isSelected ? 'text-primary font-medium' : 'text-foreground',
+              )}
+              numberOfLines={1}
+            >
+              {entry.name}
+            </Text>
+          </Pressable>
+          {isExpanded ? (
+            <View className="flex-row items-center shrink-0 gap-0.5">
+              <Pressable
+                onPress={() => onNewFileInDir(entry.path)}
+                className="p-1 rounded-md active:bg-muted"
+                accessibilityLabel={`New file in ${entry.name}`}
+              >
+                <FilePlus size={11} className="text-muted-foreground" />
+              </Pressable>
+              <Pressable
+                onPress={() => onNewFolderInDir(entry.path)}
+                className="p-1 rounded-md active:bg-muted"
+                accessibilityLabel={`New folder in ${entry.name}`}
+              >
+                <FolderPlus size={11} className="text-muted-foreground" />
+              </Pressable>
+              <Pressable
+                onPress={() => onUploadToDir(entry.path)}
+                className="p-1 rounded-md active:bg-muted"
+                accessibilityLabel={`Upload into ${entry.name}`}
+              >
+                <Upload size={11} className="text-muted-foreground" />
+              </Pressable>
+            </View>
+          ) : null}
+        </View>
+        {isExpanded && entry.children?.map((child) => (
+          <FileTreeItem
+            key={child.path}
+            entry={child}
+            depth={depth + 1}
+            selectedPath={selectedPath}
+            expandedDirs={expandedDirs}
+            onSelect={onSelect}
+            onToggleDir={onToggleDir}
+            onNewFileInDir={onNewFileInDir}
+            onNewFolderInDir={onNewFolderInDir}
+            onUploadToDir={onUploadToDir}
+          />
+        ))}
+      </>
+    )
+  }
+
   return (
     <>
       <Pressable
-        onPress={() => {
-          if (isDir) onToggleDir(entry.path)
-          else onSelect(entry.path)
-        }}
+        onPress={() => onSelect(entry.path)}
         className={cn(
-          'flex-row items-center gap-1.5 py-1 px-2 rounded-md',
-          isSelected ? 'bg-primary/10' : 'active:bg-muted',
+          'flex-row items-center gap-1.5 py-1 pr-2 rounded-md active:bg-muted',
+          treeIndentClass(depth),
+          isSelected ? 'bg-primary/10' : '',
         )}
-        style={{ paddingLeft: 8 + depth * 16 }}
       >
-        {isDir ? (
-          <>
-            {isExpanded ? (
-              <ChevronDown size={10} className="text-muted-foreground" />
-            ) : (
-              <ChevronRight size={10} className="text-muted-foreground" />
-            )}
-            {isExpanded ? (
-              <FolderOpen size={12} className="text-amber-500" />
-            ) : (
-              <Folder size={12} className="text-amber-500" />
-            )}
-          </>
-        ) : (
-          <>
-            <View style={{ width: 10 }} />
-            <FileText
-              size={12}
-              className={cn(
-                ext === 'md' ? 'text-blue-500' :
-                ext === 'csv' ? 'text-green-500' :
-                'text-muted-foreground',
-              )}
-            />
-          </>
-        )}
+        <View className="w-2.5 shrink-0" />
+        <FileText
+          size={12}
+          className={cn(
+            'shrink-0',
+            ext === 'md' ? 'text-blue-500' :
+            ext === 'csv' ? 'text-green-500' :
+            'text-muted-foreground',
+          )}
+        />
         <Text
           className={cn(
-            'text-xs flex-1',
+            'text-xs flex-1 min-w-0',
             isSelected ? 'text-primary font-medium' : 'text-foreground',
           )}
           numberOfLines={1}
         >
           {entry.name}
         </Text>
-        {!isDir && entry.size != null && (
-          <Text className="text-[10px] text-muted-foreground">
+        {entry.size != null && (
+          <Text className="text-[10px] text-muted-foreground shrink-0">
             {formatSize(entry.size)}
           </Text>
         )}
       </Pressable>
-      {isDir && isExpanded && entry.children?.map((child) => (
-        <FileTreeItem
-          key={child.path}
-          entry={child}
-          depth={depth + 1}
-          selectedPath={selectedPath}
-          expandedDirs={expandedDirs}
-          onSelect={onSelect}
-          onToggleDir={onToggleDir}
-        />
-      ))}
     </>
   )
 }
@@ -194,28 +269,9 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
   // New file/folder dialog
   const [showNewDialog, setShowNewDialog] = useState<'file' | 'folder' | null>(null)
   const [newName, setNewName] = useState('')
-  /** Lifts the inline new file/folder sheet above the Android soft keyboard (absolute bottom-* ignores inset resize). */
-  const [newDialogKeyboardPad, setNewDialogKeyboardPad] = useState(0)
+  const [newItemParentDir, setNewItemParentDir] = useState<string | null>(null)
 
   const hasChanges = content !== savedContent
-
-  useEffect(() => {
-    if (Platform.OS !== 'android' || !showNewDialog) {
-      setNewDialogKeyboardPad(0)
-      return
-    }
-    const showSub = Keyboard.addListener('keyboardDidShow', (e) => {
-      setNewDialogKeyboardPad(e.endCoordinates.height)
-    })
-    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
-      setNewDialogKeyboardPad(0)
-    })
-    return () => {
-      showSub.remove()
-      hideSub.remove()
-      setNewDialogKeyboardPad(0)
-    }
-  }, [showNewDialog])
 
   // -------------------------------------------------------------------------
   // Data Loading
@@ -316,7 +372,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
     }
   }
 
-  const handleUpload = useCallback(() => {
+  const handleUpload = useCallback((directory: string | null = null) => {
     if (!client) return
 
     if (Platform.OS === 'web' && typeof document !== 'undefined') {
@@ -329,6 +385,9 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
         if (!files?.length) return
         try {
           const formData = new FormData()
+          if (directory) {
+            formData.append('directory', directory)
+          }
           for (const file of files) {
             formData.append('files', file)
           }
@@ -356,6 +415,9 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
         if (result.canceled || !result.assets?.length) return
 
         const formData = new FormData()
+        if (directory) {
+          formData.append('directory', directory)
+        }
         for (const doc of result.assets) {
           const lower = doc.name.toLowerCase()
           if (!lower.endsWith('.txt') && !lower.endsWith('.csv') && !lower.endsWith('.md')) {
@@ -406,18 +468,25 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
   const handleCreateNew = async () => {
     if (!client || !newName.trim() || !showNewDialog) return
     try {
+      const prefix = newItemParentDir ? `${newItemParentDir}/` : ''
       if (showNewDialog === 'folder') {
-        await client.mkdirWorkspace(newName.trim())
+        await client.mkdirWorkspace(`${prefix}${newName.trim()}`)
       } else {
-        const path = newName.endsWith('.txt') || newName.endsWith('.md') || newName.endsWith('.csv')
-          ? newName : `${newName}.txt`
-        await client.writeFile(path, '')
-        setSelectedPath(path)
+        const name = newName.endsWith('.txt') || newName.endsWith('.md') || newName.endsWith('.csv')
+          ? newName.trim()
+          : `${newName.trim()}.txt`
+        const fullPath = `${prefix}${name}`
+        await client.writeFile(fullPath, '')
+        setSelectedPath(fullPath)
         setContent('')
         setSavedContent('')
       }
+      if (newItemParentDir) {
+        setExpandedDirs((prev) => new Set(prev).add(newItemParentDir))
+      }
       setShowNewDialog(null)
       setNewName('')
+      setNewItemParentDir(null)
       loadTree()
     } catch (err: any) {
       setError(err.message)
@@ -551,9 +620,15 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
   const showEditor = !isNarrow || showEditorOnNarrow
 
   return (
-    <View className="absolute inset-0 flex-row" style={{ display: visible ? 'flex' : 'none' }}>
+    <View className="absolute inset-0 flex-row">
       {/* Sidebar */}
-      <View className={cn('border-r border-border bg-muted/30 flex-col', isNarrow ? 'flex-1' : 'w-56')} style={!showSidebar ? { display: 'none' } : undefined}>
+      <View
+        className={cn(
+          'border-r border-border bg-muted/30 flex-col',
+          isNarrow ? 'flex-1' : 'w-56',
+          !showSidebar && 'hidden',
+        )}
+      >
         {/* Search bar */}
         <View className="p-2 border-b border-border">
           <View className="flex-row items-center bg-background border border-border rounded-md px-2">
@@ -563,8 +638,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
               onChangeText={setSearchQuery}
               onSubmitEditing={handleSearch}
               placeholder="Search files..."
-              placeholderTextColor="#666"
-              className="flex-1 text-xs py-1.5 px-1.5 text-foreground"
+              className="flex-1 text-xs py-1.5 px-1.5 text-foreground placeholder:text-muted-foreground"
               autoCapitalize="none"
               returnKeyType="search"
             />
@@ -639,10 +713,9 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
                   key={file.id}
                   onPress={() => loadWorkspaceFile(file.id)}
                   className={cn(
-                    'px-2 py-1 rounded-md',
+                    'pl-6 pr-2 py-1 rounded-md',
                     isWorkspaceFile && selectedPath === file.id ? 'bg-primary/10' : 'active:bg-muted',
                   )}
-                  style={{ paddingLeft: 24 }}
                 >
                   <View className="flex-row items-center gap-1.5">
                     <FileText
@@ -661,7 +734,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
                       {file.label}
                     </Text>
                   </View>
-                  <Text className="text-[10px] text-muted-foreground" style={{ marginLeft: 18 }} numberOfLines={1}>
+                  <Text className="text-[10px] text-muted-foreground ml-[18px]" numberOfLines={1}>
                     {file.description}
                   </Text>
                 </Pressable>
@@ -685,6 +758,19 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
                     expandedDirs={expandedDirs}
                     onSelect={loadFile}
                     onToggleDir={toggleDir}
+                    onNewFileInDir={(dirPath) => {
+                      setNewItemParentDir(dirPath)
+                      setShowNewDialog('file')
+                      setNewName('')
+                    }}
+                    onNewFolderInDir={(dirPath) => {
+                      setNewItemParentDir(dirPath)
+                      setShowNewDialog('folder')
+                      setNewName('')
+                    }}
+                    onUploadToDir={(dirPath) => {
+                      handleUpload(dirPath)
+                    }}
                   />
                 ))
               )}
@@ -696,14 +782,22 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
         <View className="p-2 border-t border-border gap-1">
           <View className="flex-row gap-1">
             <Pressable
-              onPress={() => { setShowNewDialog('file'); setNewName('') }}
+              onPress={() => {
+                setNewItemParentDir(null)
+                setShowNewDialog('file')
+                setNewName('')
+              }}
               className="flex-1 flex-row items-center justify-center gap-1 px-2 py-1.5 rounded-md active:bg-muted border border-border"
             >
               <FilePlus size={12} className="text-muted-foreground" />
               <Text className="text-[10px] text-muted-foreground">New File</Text>
             </Pressable>
             <Pressable
-              onPress={() => { setShowNewDialog('folder'); setNewName('') }}
+              onPress={() => {
+                setNewItemParentDir(null)
+                setShowNewDialog('folder')
+                setNewName('')
+              }}
               className="flex-1 flex-row items-center justify-center gap-1 px-2 py-1.5 rounded-md active:bg-muted border border-border"
             >
               <FolderPlus size={12} className="text-muted-foreground" />
@@ -711,7 +805,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
             </Pressable>
           </View>
           <Pressable
-            onPress={handleUpload}
+            onPress={() => handleUpload(null)}
             className="flex-row items-center gap-1.5 px-2 py-1.5 rounded-md active:bg-muted"
           >
             <Upload size={12} className="text-muted-foreground" />
@@ -740,30 +834,32 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
 
         {/* New file/folder dialog */}
         {showNewDialog && (
-          <View
-            className="absolute bottom-16 left-2 right-2 bg-background border border-border rounded-lg p-3 shadow-lg z-10"
-            style={
-              Platform.OS === 'android' && newDialogKeyboardPad > 0
-                ? { transform: [{ translateY: -newDialogKeyboardPad }] }
-                : undefined
-            }
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : Platform.OS === 'android' ? 'height' : undefined}
+            className="absolute bottom-16 left-2 right-2 z-10"
           >
+            <View className="bg-background border border-border rounded-lg p-3 shadow-lg">
             <Text className="text-xs font-medium text-foreground mb-2">
-              New {showNewDialog === 'file' ? 'File' : 'Folder'}
+              {newItemParentDir
+                ? `New ${showNewDialog === 'file' ? 'File' : 'Folder'} in ${newItemParentDir}/`
+                : `New ${showNewDialog === 'file' ? 'File' : 'Folder'}`}
             </Text>
             <TextInput
               value={newName}
               onChangeText={setNewName}
               placeholder={showNewDialog === 'file' ? 'filename.txt' : 'folder-name'}
-              placeholderTextColor="#666"
-              className="text-xs border border-border rounded-md px-2 py-1.5 mb-2 text-foreground bg-muted/30"
+              className="text-xs border border-border rounded-md px-2 py-1.5 mb-2 text-foreground bg-muted/30 placeholder:text-muted-foreground"
               autoCapitalize="none"
               autoFocus
               onSubmitEditing={handleCreateNew}
             />
             <View className="flex-row gap-2">
               <Pressable
-                onPress={() => setShowNewDialog(null)}
+                onPress={() => {
+                  setShowNewDialog(null)
+                  setNewItemParentDir(null)
+                  setNewName('')
+                }}
                 className="flex-1 items-center py-1.5 rounded-md border border-border active:bg-muted"
               >
                 <Text className="text-xs text-muted-foreground">Cancel</Text>
@@ -775,12 +871,13 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
                 <Text className="text-xs text-primary-foreground">Create</Text>
               </Pressable>
             </View>
-          </View>
+            </View>
+          </KeyboardAvoidingView>
         )}
       </View>
 
       {/* Editor area */}
-      <View className="flex-1 flex-col" style={!showEditor ? { display: 'none' } : undefined}>
+      <View className={cn('flex-1 flex-col', !showEditor && 'hidden')}>
         {selectedPath ? (
           <>
             {/* Toolbar */}
@@ -835,8 +932,10 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
                 <Pressable
                   onPress={handleSave}
                   disabled={!hasChanges || isSaving}
-                  className="flex-row items-center gap-1 px-2 py-1 rounded-md bg-primary active:bg-primary/80"
-                  style={!hasChanges || isSaving ? { opacity: 0.5 } : undefined}
+                  className={cn(
+                    'flex-row items-center gap-1 px-2 py-1 rounded-md bg-primary active:bg-primary/80',
+                    (!hasChanges || isSaving) && 'opacity-50',
+                  )}
                 >
                   <Save size={12} className="text-primary-foreground" />
                   <Text className="text-xs text-primary-foreground">
@@ -860,9 +959,8 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
               <TextInput
                 value={content}
                 onChangeText={setContent}
-                className="flex-1 p-4 font-mono text-sm bg-background text-foreground"
+                className="flex-1 p-4 font-mono text-sm bg-background text-foreground placeholder:text-muted-foreground"
                 placeholder="Edit file..."
-                placeholderTextColor="#666"
                 multiline
                 textAlignVertical="top"
                 autoCapitalize="none"
