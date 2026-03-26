@@ -99,7 +99,7 @@ export interface GatewayConfig {
   heartbeatInterval: number
   heartbeatEnabled: boolean
   quietHours: { start: string; end: string; timezone: string }
-  channels: Array<{ type: string; config: Record<string, string> }>
+  channels: Array<{ type: string; config: Record<string, string>; model?: string }>
   /** Model configuration: provider + name (e.g. { provider: 'anthropic', name: 'claude-sonnet-4-5' }) */
   model: { provider: string; name: string }
   maxSessionMessages?: number
@@ -678,6 +678,14 @@ export class AgentGateway {
 
     while (qs.queue.length > 0 && !session.stopRequested) {
       const message = qs.queue.shift()!
+
+      // Apply channel-configured model (defaults to 'basic' for safe billing).
+      // Only accept known values to prevent config.json tampering from bypassing tiers.
+      if (message.channelType) {
+        const channelDef = this.config.channels.find(c => c.type === message.channelType)
+        const model = channelDef?.model
+        session.modelOverride = (model === 'basic' || model === 'advanced') ? model : 'basic'
+      }
 
       try {
         const cmdResult = parseSlashCommand(message.text, this.buildSlashContext(sessionId))
@@ -1918,7 +1926,12 @@ Examples:
 
     const channelStatuses: ChannelStatus[] = []
     for (const [type, adapter] of this.channels) {
-      channelStatuses.push(adapter.getStatus())
+      const status = adapter.getStatus()
+      const channelDef = this.config.channels.find(c => c.type === type)
+      if (channelDef?.model) {
+        status.model = channelDef.model
+      }
+      channelStatuses.push(status)
     }
 
     // Merge skills from filesystem with skills declared in config.json

@@ -23,6 +23,7 @@ export interface ChannelStatus {
   type: string
   connected: boolean
   error?: string
+  model?: string
   metadata?: Record<string, unknown>
 }
 

@@ -341,6 +341,14 @@ Channels connect the agent to messaging platforms. Currently supported:
 - **Microsoft Teams** — Azure Bot app ID + app password
 - **WebChat Widget** — Embeddable chat widget for any website. No external accounts needed — just connect and paste the script tag on any webpage.
 
+### Model Selection
+All channels accept an optional \`model\` parameter:
+- **"basic"** (default) — Economy-tier model, works on all plans including free
+- **"advanced"** — Standard-tier model, requires a Pro subscription
+
+Always default to "basic" unless the user explicitly requests "advanced". Example:
+\`channel_connect({ type: "telegram", config: { botToken: "..." }, model: "basic" })\`
+
 ### Telegram Setup
 1. Create a bot via Telegram's @BotFather
 2. Copy the bot token
