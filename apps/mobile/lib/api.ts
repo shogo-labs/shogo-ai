@@ -77,6 +77,21 @@ export interface WorkspaceCheckoutParams {
   referralId?: string
 }
 
+export interface RegionalCurrencyInfo {
+  code: string
+  symbol: string
+  name: string
+  symbolPosition: 'prefix' | 'suffix'
+  decimalPlaces: number
+}
+
+export interface RegionalPricingResponse {
+  country: string
+  currency: RegionalCurrencyInfo
+  rate: number
+  plans: Record<string, { monthly: number; annual: number }>
+}
+
 function throwIfBetterAuthErrorPayload(data: unknown): void {
   if (!data || typeof data !== 'object') return
   const err = (data as { error?: { message?: unknown } | null }).error
@@ -136,6 +151,11 @@ export const api = {
       `/api/billing/portal?workspaceId=${encodeURIComponent(workspaceId)}`,
       returnUrl ? { returnUrl } : {},
     )
+    return res.data
+  },
+
+  async getRegionalPricing(http: HttpClient) {
+    const res = await http.get<RegionalPricingResponse>('/api/billing/regional-pricing')
     return res.data
   },
 
