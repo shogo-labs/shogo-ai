@@ -166,12 +166,27 @@ export const auth = betterAuth({
         )
       }
     },
+  },
+
+  emailVerification: {
+    sendOnSignUp: true,
+    autoSignInAfterVerification: true,
     sendVerificationEmail: async ({ user, url }: { user: { email: string; name?: string | null }; url: string }) => {
-      await sendEmailVerificationEmail({
+      const result = await sendEmailVerificationEmail({
         to: user.email,
         name: user.name ?? undefined,
         verifyUrl: url,
       })
+      const logVerifyLinkInConsole =
+        !result.success &&
+        (process.env.NODE_ENV !== 'production' || process.env.SHOGO_LOG_EMAIL_VERIFICATION_URL === 'true')
+      if (logVerifyLinkInConsole) {
+        console.warn(
+          `[Auth] Email verification email was not sent (${result.error ?? 'unknown'}). ` +
+            'Configure email in .env (see EMAIL_PROVIDER / SMTP_* or SES). Dev-only verify link:\n' +
+            url,
+        )
+      }
     },
   },
 

@@ -7,8 +7,9 @@ export default function AuthLayout() {
   const { isAuthenticated, isLoading } = useAuth()
   const segments = useSegments()
   const isResetPassword = segments.includes('reset-password')
+  const isVerifyEmail = segments.includes('verify-email')
 
-  if (!isLoading && isAuthenticated && !isResetPassword) {
+  if (!isLoading && isAuthenticated && !isResetPassword && !isVerifyEmail) {
     return <Redirect href="/(app)" />
   }
 
@@ -20,6 +21,7 @@ export default function AuthLayout() {
       />
       <Stack.Screen name="sign-up" />
       <Stack.Screen name="reset-password" />
+      <Stack.Screen name="verify-email" />
     </Stack>
   )
 }

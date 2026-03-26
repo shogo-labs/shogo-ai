@@ -4,6 +4,7 @@ import { useRouter } from 'expo-router'
 import { useColorScheme, Alert, Platform } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useAuth } from '../../contexts/auth'
+import { EmailNotVerifiedError } from '@shogo/shared-app/auth'
 import { useTheme } from '../../contexts/theme'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { trackSignUp, trackLogin } from '../../lib/tracking'
@@ -13,8 +14,8 @@ import { getPasswordResetRedirectUrl } from '../../lib/password-reset-redirect'
 import { LoginScreen } from '@shogo/shared-ui/screens'
 
 /** App-root `require` so Metro web emits valid image URLs (shared-ui `require` can fail on web). */
-const LOGIN_HERO_LIGHT = require('../../assets/login/shogo-login1.webp')
-const LOGIN_HERO_DARK = require('../../assets/login/shogo-login2.webp')
+const LOGIN_HERO_LIGHT = require('../../assets/login/shogo-login3.jpg')
+const LOGIN_HERO_DARK = require('../../assets/login/shogo-login3.jpg')
 
 export default function SignInScreen() {
   const router = useRouter()
@@ -31,7 +32,11 @@ export default function SignInScreen() {
       await signIn(email, password)
       trackLogin('email')
       router.replace('/')
-    } catch {}
+    } catch (e) {
+      if (e instanceof EmailNotVerifiedError) {
+        router.replace({ pathname: '/(auth)/verify-email', params: { email } })
+      }
+    }
   }
 
   const sendAttribution = async (method: 'email' | 'google') => {
@@ -45,10 +50,14 @@ export default function SignInScreen() {
 
   const handleSignUp = async (name: string, email: string, password: string) => {
     try {
-      await signUp(name, email, password)
+      const result = await signUp(name, email, password)
       trackSignUp('email')
       sendAttribution('email')
-      router.replace('/')
+      if (result.requiresVerification) {
+        router.replace({ pathname: '/(auth)/verify-email', params: { email } })
+      } else {
+        router.replace('/')
+      }
     } catch {}
   }
 
