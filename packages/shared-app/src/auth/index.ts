@@ -13,7 +13,9 @@ export {
 export {
   AuthProvider,
   useAuth,
+  EmailNotVerifiedError,
   type AuthProviderProps,
   type AuthContextValue,
   type AuthUser,
+  type SignUpResult,
 } from './AuthProvider'

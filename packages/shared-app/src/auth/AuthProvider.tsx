@@ -19,21 +19,43 @@ export interface AuthUser {
   createdAt?: string | Date
 }
 
+export interface SignUpResult {
+  requiresVerification: boolean
+}
+
+export class EmailNotVerifiedError extends Error {
+  constructor(message = 'Email is not verified') {
+    super(message)
+    this.name = 'EmailNotVerifiedError'
+  }
+}
+
 export interface AuthContextValue {
   user: AuthUser | null
   isLoading: boolean
   isAuthenticated: boolean
   error: string | null
   signIn: (email: string, password: string) => Promise<void>
-  signUp: (name: string, email: string, password: string) => Promise<void>
+  signUp: (name: string, email: string, password: string) => Promise<SignUpResult>
   signInWithGoogle: () => void
   signOut: () => Promise<void>
   updateUser: (fields: { name?: string; image?: string }) => Promise<void>
   refreshSession: () => Promise<void>
+  sendVerificationEmail: (email: string, callbackURL?: string) => Promise<void>
   clearError: () => void
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
+
+/** Derive the current frontend origin (e.g. `http://localhost:8081`) on web. Returns `/` on native. */
+function getFrontendOrigin(): string {
+  if (typeof document !== 'undefined' && window.location?.protocol?.startsWith('http')) {
+    const { protocol, hostname, port } = window.location
+    const host = /^192\.168\./.test(hostname) ? 'localhost' : hostname
+    return `${protocol}//${host}${port ? `:${port}` : ''}`
+  }
+  return ''
+}
 
 export interface AuthProviderProps {
   authClient: AuthClient
@@ -57,9 +79,15 @@ export function AuthProvider({ authClient, children }: AuthProviderProps) {
     setError(null)
     try {
       const { data, error: err } = await authClient.signIn.email({ email, password })
-      if (err) throw new Error(err.message || 'Sign in failed')
+      if (err) {
+        if (err.status === 403) {
+          throw new EmailNotVerifiedError(err.message || 'Email is not verified')
+        }
+        throw new Error(err.message || 'Sign in failed')
+      }
       if (data?.user) setUser(data.user as AuthUser)
     } catch (e: any) {
+      if (e instanceof EmailNotVerifiedError) throw e
       const msg = e.message || 'Sign in failed'
       setError(msg)
       throw e
@@ -68,13 +96,21 @@ export function AuthProvider({ authClient, children }: AuthProviderProps) {
     }
   }, [authClient])
 
-  const handleSignUp = useCallback(async (name: string, email: string, password: string) => {
+  const handleSignUp = useCallback(async (name: string, email: string, password: string): Promise<SignUpResult> => {
     setIsLoading(true)
     setError(null)
     try {
-      const { data, error: err } = await authClient.signUp.email({ name, email, password })
+      const origin = getFrontendOrigin()
+      const { data, error: err } = await authClient.signUp.email({
+        name, email, password,
+        callbackURL: origin ? `${origin}/sign-in` : '/sign-in',
+      })
       if (err) throw new Error(err.message || 'Sign up failed')
-      if (data?.user) setUser(data.user as AuthUser)
+      const hasSession = !!(data as any)?.session || !!(data as any)?.token
+      if (hasSession && data?.user) {
+        setUser(data.user as AuthUser)
+      }
+      return { requiresVerification: !hasSession }
     } catch (e: any) {
       const msg = e.message || 'Sign up failed'
       setError(msg)
@@ -86,12 +122,8 @@ export function AuthProvider({ authClient, children }: AuthProviderProps) {
 
   const handleSignInWithGoogle = useCallback(async () => {
     setError(null)
-    let callbackURL = '/'
-    if (typeof document !== 'undefined' && window.location?.protocol?.startsWith('http')) {
-      const { protocol, hostname, port } = window.location
-      const host = /^192\.168\./.test(hostname) ? 'localhost' : hostname
-      callbackURL = `${protocol}//${host}${port ? `:${port}` : ''}/`
-    }
+    const origin = getFrontendOrigin()
+    const callbackURL = origin ? `${origin}/` : '/'
     try {
       const result = await (authClient as any).signIn.social({
         provider: 'google',
@@ -136,12 +168,21 @@ export function AuthProvider({ authClient, children }: AuthProviderProps) {
     else setUser(null)
   }, [authClient])
 
+  const handleSendVerificationEmail = useCallback(async (email: string, callbackURL?: string) => {
+    const origin = getFrontendOrigin()
+    await (authClient as any).sendVerificationEmail({
+      email,
+      callbackURL: callbackURL ?? (origin ? `${origin}/sign-in` : '/sign-in'),
+    })
+  }, [authClient])
+
   return (
     <AuthContext.Provider value={{
       user, isLoading, isAuthenticated: !!user, error,
       signIn: handleSignIn, signUp: handleSignUp, signInWithGoogle: handleSignInWithGoogle, signOut: handleSignOut,
       updateUser: handleUpdateUser,
       refreshSession: handleRefreshSession,
+      sendVerificationEmail: handleSendVerificationEmail,
       clearError: () => setError(null),
     }}>
       {children}
