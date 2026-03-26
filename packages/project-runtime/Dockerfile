@@ -47,6 +47,11 @@ COPY apps/mobile/package.json ./apps/mobile/
 # Copy scripts needed for postinstall (patch-claude-sdk runs during bun install)
 COPY scripts ./scripts
 
+# Copy prisma schema and config before install (postinstall runs db:generate:all)
+COPY prisma ./prisma
+COPY prisma.config.ts ./prisma.config.ts
+COPY prisma.config.local.ts ./prisma.config.local.ts
+
 # Install all dependencies (with BuildKit cache mount for faster rebuilds)
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     bun install
@@ -92,6 +97,11 @@ COPY apps/api/package.json ./apps/api/
 COPY apps/mobile/package.json ./apps/mobile/
 
 COPY scripts ./scripts
+
+# Copy prisma schema and config before install (postinstall runs db:generate:all)
+COPY prisma ./prisma
+COPY prisma.config.ts ./prisma.config.ts
+COPY prisma.config.local.ts ./prisma.config.local.ts
 
 RUN bun install && \
     echo "Installed $(ls node_modules/ | wc -l) packages (full install, not --production)"
