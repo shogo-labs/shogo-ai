@@ -47,9 +47,7 @@ export function useDynamicAppStream(agentUrl: string | null, options?: DynamicAp
   const receivedFirstMessage = useRef(false)
 
   const applyMessage = useCallback((msg: DynamicAppMessage) => {
-    if (msg.type === 'createSurface' || msg.type === 'updateComponents' || msg.type === 'updateData') {
-      setActiveSurfaceId(msg.surfaceId)
-    } else if (msg.type === 'clearAll') {
+    if (msg.type === 'clearAll') {
       setActiveSurfaceId(null)
     }
 
@@ -60,6 +58,7 @@ export function useDynamicAppStream(agentUrl: string | null, options?: DynamicAp
       switch (msg.type) {
         case 'createSurface': {
           if (!next.has(msg.surfaceId)) {
+            setActiveSurfaceId(msg.surfaceId)
             next.set(msg.surfaceId, {
               surfaceId: msg.surfaceId,
               title: msg.title,
