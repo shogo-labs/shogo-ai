@@ -1517,13 +1517,24 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop â€
       merge: Type.Optional(Type.Boolean({ description: 'If true, merge with existing components instead of validating as a complete tree. Use for updating individual components without resending the full tree.' })),
     }),
     execute: async (_toolCallId, params) => {
-      const { surfaceId, components: rawComponents, merge } = params as { surfaceId: string; components: any[]; merge?: boolean }
+      const { surfaceId, components: rawComponents, merge: explicitMerge } = params as { surfaceId: string; components: any[]; merge?: boolean }
 
       // Auto-correct known variant/enum mismatches before validation
       const { components: normalizedComponents, corrections } = normalizeComponents(rawComponents)
       const components = normalizedComponents as typeof rawComponents
 
       const manager = getDynamicAppManager()
+
+      // Auto-default merge: true when the surface already has a built component tree.
+      // This prevents the agent from accidentally wiping the full tree when it forgets
+      // to set merge: true on subsequent updates.
+      let merge = explicitMerge
+      if (merge === undefined) {
+        const surface = manager.getSurface(surfaceId)
+        if (surface && surface.components.has('root')) {
+          merge = true
+        }
+      }
 
       // When merging, lint against the full merged component set
       let lintTarget = components

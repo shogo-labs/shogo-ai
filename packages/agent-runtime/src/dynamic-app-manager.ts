@@ -1526,7 +1526,7 @@ export class DynamicAppManager {
         theme: (surface as any).theme,
       })
 
-      const components = Object.values(surface.components) as ComponentDefinition[]
+      const components = [...surface.components.values()]
       if (components.length > 0) {
         this.broadcast({ type: 'updateComponents', surfaceId: surface.surfaceId, components })
       }
