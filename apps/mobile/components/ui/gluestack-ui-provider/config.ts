@@ -172,6 +172,12 @@ export const config = {
     '--color-background-muted': '247 248 247',
     '--color-background-info': '235 248 254',
 
+    /* Surface container progression (M3-style, mirrors global.css :root) */
+    '--color-surface-0': '255 255 255',
+    '--color-surface-1': '247 247 248',
+    '--color-surface-2': '240 240 241',
+    '--color-surface-3': '234 234 235',
+
     /* Focus Ring Indicator  */
     '--color-indicator-primary': '55 55 55',
     '--color-indicator-info': '83 153 236',
@@ -344,6 +350,12 @@ export const config = {
     '--color-background-success': '28 43 33',
     '--color-background-muted': '51 51 51',
     '--color-background-info': '26 40 46',
+
+    /* Surface container progression (M3-style, mirrors global.css .dark) */
+    '--color-surface-0': '30 30 30',
+    '--color-surface-1': '37 37 38',
+    '--color-surface-2': '44 44 45',
+    '--color-surface-3': '52 52 53',
 
     /* Focus Ring Indicator  */
     '--color-indicator-primary': '247 247 247',
