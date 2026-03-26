@@ -28,10 +28,9 @@
       },
       "autoIncrement": true,
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://studio-staging.shogo.ai",
+        "EXPO_PUBLIC_API_URL": "https://studio.staging.shogo.ai",
         "EXPO_PUBLIC_POSTHOG_API_KEY": "",
-        "EXPO_PUBLIC_APP_ENV": "staging",
-        "EXPO_PUBLIC_SENTRY_DSN": ""
+        "EXPO_PUBLIC_APP_ENV": "staging_app"
       }
     },
     "production": {
@@ -41,10 +40,9 @@
       },
       "autoIncrement": true,
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://api.example.com",
+        "EXPO_PUBLIC_API_URL": "https://studio.shogo.ai",
         "EXPO_PUBLIC_POSTHOG_API_KEY": "",
-        "EXPO_PUBLIC_APP_ENV": "production",
-        "EXPO_PUBLIC_SENTRY_DSN": ""
+        "EXPO_PUBLIC_APP_ENV": "production_app"
       }
     }
   },
