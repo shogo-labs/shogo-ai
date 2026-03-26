@@ -21,6 +21,7 @@ import { captureAttribution } from '../lib/attribution'
 Sentry.init({
   dsn: process.env.EXPO_PUBLIC_SENTRY_DSN,
   environment: process.env.EXPO_PUBLIC_APP_ENV || 'development',
+  release: process.env.EXPO_PUBLIC_BUILD_HASH || 'dev',
   tracesSampleRate: 0.2,
   enabled: !!process.env.EXPO_PUBLIC_SENTRY_DSN,
 })

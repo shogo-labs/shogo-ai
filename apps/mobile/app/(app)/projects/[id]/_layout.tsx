@@ -54,6 +54,7 @@ import { isNativePhoneIntegrationsLayout } from '../../../../lib/native-phone-la
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
 import { ChatSessionPicker, ChatSessionSidebar, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
 import { DynamicAppRenderer } from '../../../../components/dynamic-app/DynamicAppRenderer'
+import { CanvasErrorBoundary } from '../../../../components/dynamic-app/CanvasErrorBoundary'
 import { EditModeProvider, useEditModeOptional } from '../../../../components/dynamic-app/edit/EditModeContext'
 import { AddComponentDialog } from '../../../../components/dynamic-app/edit/AddComponentDialog'
 import { InspectorPanel } from '../../../../components/dynamic-app/edit/InspectorPanel'
@@ -75,6 +76,8 @@ import { parseToolInstallResult } from '../../../../components/chat/turns/Connec
 type ActiveTab = 'chat' | 'canvas'
 
 const WIDE_BREAKPOINT = 1024
+const HIDDEN_HEADER_OPTIONS = { headerShown: false } as const
+const STANDALONE_PANELS = ['files', 'terminal', 'capabilities', 'channels', 'monitor']
 
 export default observer(function ProjectLayout() {
   const params = useLocalSearchParams<{
@@ -480,10 +483,6 @@ export default observer(function ProjectLayout() {
   const [previewTab, setPreviewTab] = useState('dynamic-app')
   const [chatMessages, setChatMessages] = useState<any[]>([])
 
-  // Keep previewTab consistent with agent mode.
-  // Standalone panels (files, terminal, capabilities, channels, monitor) are
-  // independent of canvas — they must remain reachable even when canvas is off.
-  const STANDALONE_PANELS = ['files', 'terminal', 'capabilities', 'channels', 'monitor']
   useEffect(() => {
     if (!canvasEnabled) {
       if (previewTab === 'dynamic-app' || previewTab === 'app-preview') {
@@ -734,7 +733,7 @@ export default observer(function ProjectLayout() {
   if (isLoading || !project) {
     return (
       <>
-        <Stack.Screen options={{ headerShown: false }} />
+        <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
         <View className="flex-1 bg-background items-center justify-center">
           <ActivityIndicator size="large" />
           <Text className="text-muted-foreground mt-3 text-sm">Loading project...</Text>
@@ -827,7 +826,7 @@ export default observer(function ProjectLayout() {
 
   return (
     <>
-      <Stack.Screen options={{ headerShown: false }} />
+      <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
 
       <CanvasThemeProvider projectSettings={project?.settings} onUpdateSettings={handleUpdateCanvasSettings}>
         <EditModeProvider agentUrl={agentUrl}>
@@ -1186,13 +1185,15 @@ function CanvasPanel({
               contentContainerClassName={fullBleed ? 'p-0' : 'p-4'}
               {...(Platform.OS === 'web' ? { dataSet: { thumbnailTarget: '' } } as any : {})}
             >
-              <DynamicAppRenderer
-                surface={surface}
-                agentUrl={agentUrl}
-                onAction={onAction}
-                onDataChange={onDataChange}
-                authHeaders={authHeaders}
-              />
+              <CanvasErrorBoundary surfaceTitle={surface?.title}>
+                <DynamicAppRenderer
+                  surface={surface}
+                  agentUrl={agentUrl}
+                  onAction={onAction}
+                  onDataChange={onDataChange}
+                  authHeaders={authHeaders}
+                />
+              </CanvasErrorBoundary>
             </ScrollView>
           </CanvasThemedContainer>
         </View>
