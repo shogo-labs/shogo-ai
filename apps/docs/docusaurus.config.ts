@@ -87,7 +87,7 @@ const config: Config = {
           position: "left",
         },
         {
-          href: "https://shogo.dev",
+          href: "https://studio.shogo.ai",
           label: "Go to Shogo",
           position: "right",
           className: "navbar-cta",
@@ -118,7 +118,7 @@ const config: Config = {
           title: "Product",
           items: [
             { label: "Website", href: "https://shogo.ai" },
-            { label: "App", href: "https://shogo.dev" },
+            { label: "App", href: "https://studio.shogo.ai" },
             { label: "Plans & Pricing", to: "/getting-started/plans-and-credits" },
             { label: "FAQ", to: "/getting-started/faq" },
           ],
