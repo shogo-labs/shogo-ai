@@ -605,8 +605,8 @@ function MobileLoginPanel({
 
 const logoLight = require('../../../../apps/mobile/assets/shogo-logo-words.svg')
 const logoDark = require('../../../../apps/mobile/assets/shogo-logo-words-white.svg')
-const loginHeroLight = require('../../../../apps/mobile/assets/login/shogo-login1.webp')
-const loginHeroDark = require('../../../../apps/mobile/assets/login/shogo-login2.webp')
+const loginHeroLight = require('../../../../apps/mobile/assets/login/shogo-login3.jpg')
+const loginHeroDark = require('../../../../apps/mobile/assets/login/shogo-login3.jpg')
 const loginHeroWordmarkWhite = require('../../../../apps/mobile/assets/login/shogo-logo-white.svg')
 
 function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, onForgotPassword, isLoading, error, onClearError, colorScheme }: LoginScreenProps) {
