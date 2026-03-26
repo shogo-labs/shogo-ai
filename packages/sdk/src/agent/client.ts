@@ -206,9 +206,13 @@ export class AgentClient {
   }
 
   async uploadWorkspaceFiles(formData: FormData): Promise<{ uploaded: string[]; count: number }> {
+    // FormData must not include Content-Type — fetch sets multipart boundary automatically.
+    const headers = { ...this.headers }
+    delete headers['Content-Type']
+    delete headers['content-type']
     const res = await this.doFetch(this.url('/agent/workspace/upload'), {
       method: 'POST',
-      headers: this.headers,
+      headers,
       body: formData,
     })
     if (!res.ok) {
