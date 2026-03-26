@@ -27,7 +27,6 @@ import {
   Modal,
   useWindowDimensions,
   Platform,
-  Image,
   ActivityIndicator,
 } from 'react-native'
 import { usePostHogSafe } from '../../contexts/posthog'
@@ -72,6 +71,7 @@ import {
 import { cn } from '@shogo/shared-ui/primitives'
 import { Avatar } from '@shogo/shared-ui/primitives'
 import { CommandPalette, useCommandPalette } from './CommandPalette'
+import { ShogoLogoMark } from '../branding/ShogoLogoMark'
 import { useAuth } from '../../contexts/auth'
 import {
   useProjectCollection,
@@ -1178,17 +1178,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
               onPress={() => { router.push('/(app)' as any); onNavPress() }}
               className="flex-row items-center gap-2"
             >
-              {Platform.OS === 'web' ? (
-                <Image
-                  source={require('../../assets/shogo-logo.svg')}
-                  style={{ width: collapsed ? 24 : 32, height: collapsed ? 24 : 32 }}
-                  resizeMode="contain"
-                />
-              ) : (
-                <View className="h-8 w-8 rounded-lg bg-blue-500 items-center justify-center">
-                  <Text className="text-white font-bold text-sm">S</Text>
-                </View>
-              )}
+              <ShogoLogoMark />
               <Text className="font-semibold text-foreground">Shogo</Text>
             </Pressable>
             <Pressable onPress={toggleCollapse} className="h-8 w-8 items-center justify-center rounded-md active:bg-muted">
@@ -1200,19 +1190,7 @@ export const AppSidebar = observer(function AppSidebar({ isOpen, onClose }: AppS
           <Pressable
             onPress={toggleCollapse}
           >
-            {Platform.OS === 'web' ? (
-              <Image
-                source={require('../../assets/shogo-logo.svg')}
-                style={{ width: 32, height: 32 }}
-                resizeMode="contain"
-              />
-            ) : (
-              <View
-                className="h-8 w-8 rounded-lg bg-blue-500 items-center justify-center"
-              >
-                <Text className="text-white font-bold text-sm">S</Text>
-              </View>
-            )}
+            <ShogoLogoMark />
           </Pressable>
         )}
       </View>
