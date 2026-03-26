@@ -224,7 +224,7 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       return allowed[0] || origin
     },
     allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowHeaders: ['Content-Type', 'Authorization', 'X-Runtime-Token', 'X-Session-Id', 'X-User-Id', 'X-Billing-User-Id'],
+    allowHeaders: ['Content-Type', 'Authorization', 'X-Runtime-Token', 'X-Session-Id', 'X-User-Id', 'X-Billing-User-Id', 'X-WebChat-Widget-Key', 'X-WebChat-Session-Token', 'X-WebChat-Session'],
     credentials: true,
   }))
 

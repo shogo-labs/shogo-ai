@@ -725,7 +725,12 @@ const getAllowedOrigins = (): string[] => {
 // Enable CORS for development and production
 const allowedOrigins = getAllowedOrigins()
 app.use('/*', cors({
-  origin: (origin) => {
+  origin: (origin, c) => {
+    // Webchat widget requests come from external websites — allow any origin
+    const reqPath = new URL(c.req.url).pathname
+    if (/\/api\/projects\/[^/]+\/agent-proxy\/agent\/channels\/webchat\//.test(reqPath)) {
+      return origin || '*'
+    }
     // Allow requests with no origin (mobile apps, curl, React Native on Android/iOS)
     if (!origin) return `http://localhost:${VITE_PORT}`
     const isDevOrLocal = process.env.NODE_ENV !== 'production' || process.env.SHOGO_LOCAL_MODE === 'true'
@@ -747,6 +752,11 @@ app.use('/*', cors({
 // Skips webhook and internal endpoints that use their own auth (signatures, tokens).
 app.use('/api/*', csrf({
   origin: (origin, c) => {
+    // Webchat widget POST requests come from external websites
+    const csrfPath = new URL(c.req.url).pathname
+    if (/\/api\/projects\/[^/]+\/agent-proxy\/agent\/channels\/webchat\//.test(csrfPath)) {
+      return true
+    }
     // Allow requests with no origin (server-to-server, mobile apps, curl)
     if (!origin) return true
     const isDevOrLocal = process.env.NODE_ENV !== 'production' || process.env.SHOGO_LOCAL_MODE === 'true'
@@ -770,6 +780,22 @@ app.use('/api/*', rateLimiter('global', {
   skipPrefixes: ['/api/ai/', '/api/internal/', '/api/health', '/api/warm-pool/status'],
 }))
 
+function isWebchatProxyPath(path: string): boolean {
+  return /^\/api\/projects\/[^/]+\/agent-proxy\/agent\/channels\/webchat\//.test(path)
+}
+
+function isAllowedUnauthWebchatProxyPath(path: string): boolean {
+  if (!isWebchatProxyPath(path)) return false
+  const match = path.match(/^\/api\/projects\/[^/]+\/agent-proxy(\/agent\/channels\/webchat\/.*)$/)
+  const relative = match?.[1] || ''
+  return relative === '/agent/channels/webchat/widget.js' ||
+    relative === '/agent/channels/webchat/health' ||
+    relative === '/agent/channels/webchat/config' ||
+    relative === '/agent/channels/webchat/session' ||
+    relative === '/agent/channels/webchat/message' ||
+    relative.startsWith('/agent/channels/webchat/events/')
+}
+
 // Auth middleware — extract session for ALL /api/* routes so c.get('auth') is
 // always populated, then require authentication except for known public paths.
 app.use('/api/*', authMiddleware)
@@ -792,10 +818,18 @@ app.use(
       '/api/api-keys/validate',
     ]
     if (publicPrefixes.some((p) => path.startsWith(p))) return next()
+    // Webchat uses widget/session token auth in agent-runtime (not Shogo user sessions).
+    if (isAllowedUnauthWebchatProxyPath(path)) return next()
     return requireAuth(c, next)
   }
 )
-app.use('/api/projects/:projectId/*', requireProjectAccess)
+app.use('/api/projects/:projectId/*', async (c, next) => {
+  const path = new URL(c.req.url).pathname
+  if (isAllowedUnauthWebchatProxyPath(path)) {
+    return next()
+  }
+  return requireProjectAccess(c, next)
+})
 
 // Better Auth handler - mounted BEFORE other /api/* routes
 // Handles all authentication endpoints: sign-up, sign-in, sign-out, session, OAuth callbacks, etc.
@@ -1947,18 +1981,26 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   }
 
   const projectId = c.req.param('projectId')
-
-  const userId = await getAuthUserId(c)
-  if (!userId) {
-    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
-  }
-  const workspaceId = await verifyProjectAccess(userId, projectId)
-  if (!workspaceId) {
-    return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
-  }
-
   const path = c.req.path.replace(`/api/projects/${projectId}/agent-proxy`, '') || '/'
   const qs = new URL(c.req.url).search
+
+  const isWebchatPath =
+    path === '/agent/channels/webchat/widget.js' ||
+    path === '/agent/channels/webchat/health' ||
+    path === '/agent/channels/webchat/config' ||
+    path === '/agent/channels/webchat/session' ||
+    path === '/agent/channels/webchat/message' ||
+    path.startsWith('/agent/channels/webchat/events/')
+  if (!isWebchatPath) {
+    const userId = await getAuthUserId(c)
+    if (!userId) {
+      return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+    }
+    const workspaceId = await verifyProjectAccess(userId, projectId)
+    if (!workspaceId) {
+      return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+    }
+  }
 
   let podUrl: string
 
@@ -1986,6 +2028,13 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   if (contentType) headers.set('content-type', contentType)
   const accept = c.req.header('accept')
   if (accept) headers.set('accept', accept)
+  if (isWebchatPath) {
+    const fwdHeaders = ['origin', 'x-webchat-widget-key', 'x-webchat-session-token', 'x-webchat-session'] as const
+    for (const h of fwdHeaders) {
+      const v = c.req.header(h)
+      if (v) headers.set(h, v)
+    }
+  }
   const { deriveRuntimeToken } = await import('./lib/runtime-token')
   headers.set('x-runtime-token', deriveRuntimeToken(projectId))
 
