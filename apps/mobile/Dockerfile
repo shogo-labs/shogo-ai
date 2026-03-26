@@ -17,12 +17,18 @@ ARG EXPO_PUBLIC_APP_ENV=development
 ARG EXPO_PUBLIC_SENTRY_DSN=
 ARG GA4_MEASUREMENT_ID=
 ARG FB_PIXEL_ID=
+ARG SENTRY_AUTH_TOKEN=
+ARG SENTRY_ORG=shogo
+ARG SENTRY_PROJECT=shogo-mobile
 ENV EXPO_PUBLIC_API_URL=$EXPO_PUBLIC_API_URL
 ENV EXPO_PUBLIC_BUILD_HASH=$EXPO_PUBLIC_BUILD_HASH
 ENV EXPO_PUBLIC_APP_ENV=$EXPO_PUBLIC_APP_ENV
 ENV EXPO_PUBLIC_SENTRY_DSN=$EXPO_PUBLIC_SENTRY_DSN
 ENV EXPO_PUBLIC_GA4_ID=$GA4_MEASUREMENT_ID
 ENV EXPO_PUBLIC_FB_PIXEL_ID=$FB_PIXEL_ID
+ENV SENTRY_AUTH_TOKEN=$SENTRY_AUTH_TOKEN
+ENV SENTRY_ORG=$SENTRY_ORG
+ENV SENTRY_PROJECT=$SENTRY_PROJECT
 
 # Install Bun (used for fast dependency installation)
 RUN apk add --no-cache bash curl && \
@@ -77,6 +83,13 @@ RUN npx expo export --platform web
 # Inject analytics scripts into the exported HTML (Expo "single" mode strips
 # <script> tags from +html.tsx, so we inject them post-export)
 RUN node scripts/inject-analytics.js
+
+# Upload source maps to Sentry (inject debug IDs, upload, then strip maps)
+RUN if [ -n "$SENTRY_AUTH_TOKEN" ]; then \
+      npx @sentry/cli sourcemaps inject --release "$EXPO_PUBLIC_BUILD_HASH" ./dist && \
+      npx @sentry/cli sourcemaps upload --release "$EXPO_PUBLIC_BUILD_HASH" ./dist && \
+      find ./dist -name '*.map' -delete; \
+    fi
 
 # =============================================================================
 # Production image with Nginx
