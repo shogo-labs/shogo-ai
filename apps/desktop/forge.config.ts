@@ -50,7 +50,7 @@ const config: ForgeConfig = {
   makers: [
     {
       name: '@electron-forge/maker-zip',
-      platforms: ['darwin', 'win32'],
+      platforms: ['win32'],
     },
     {
       name: '@electron-forge/maker-dmg',
