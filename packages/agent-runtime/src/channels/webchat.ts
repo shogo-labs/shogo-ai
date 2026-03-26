@@ -43,12 +43,18 @@ export interface WebChatConfig {
   welcomeMessage: string
   avatarUrl: string
   allowedOrigins: string
+  widgetSecret: string
 }
 
 interface PendingResponse {
   resolve: (text: string) => void
   chunks: string[]
   timer: ReturnType<typeof setTimeout>
+}
+
+interface SessionAuthToken {
+  sessionId: string
+  expiresAt: number
 }
 
 const DEFAULT_CONFIG: WebChatConfig = {
@@ -59,6 +65,7 @@ const DEFAULT_CONFIG: WebChatConfig = {
   welcomeMessage: '',
   avatarUrl: '',
   allowedOrigins: '*',
+  widgetSecret: '',
 }
 
 export class WebChatAdapter implements ChannelAdapter {
@@ -74,6 +81,7 @@ export class WebChatAdapter implements ChannelAdapter {
 
   /** Pending responses keyed by correlationId */
   private pendingResponses = new Map<string, PendingResponse>()
+  private sessionAuthTokens = new Map<string, SessionAuthToken>()
 
   private replyTimeoutMs = 120_000
 
@@ -86,6 +94,7 @@ export class WebChatAdapter implements ChannelAdapter {
       welcomeMessage: config.welcomeMessage || DEFAULT_CONFIG.welcomeMessage,
       avatarUrl: config.avatarUrl || DEFAULT_CONFIG.avatarUrl,
       allowedOrigins: config.allowedOrigins || DEFAULT_CONFIG.allowedOrigins,
+      widgetSecret: config.widgetSecret || randomUUID(),
     }
 
     this.connected = true
@@ -104,6 +113,7 @@ export class WebChatAdapter implements ChannelAdapter {
     this.pendingResponses.clear()
     this.sseClients.clear()
     this.sessions.clear()
+    this.sessionAuthTokens.clear()
     this.connected = false
     console.log('[WebChat] Disconnected')
   }
@@ -153,6 +163,43 @@ export class WebChatAdapter implements ChannelAdapter {
 
   getConfig(): WebChatConfig {
     return { ...this.config }
+  }
+
+  getWidgetSecret(): string {
+    return this.config.widgetSecret
+  }
+
+  validateWidgetSecret(secret: string | null | undefined): boolean {
+    if (!this.config.widgetSecret) return true
+    return secret === this.config.widgetSecret
+  }
+
+  issueSessionAuthToken(sessionId: string): { token: string; expiresInSeconds: number } {
+    this.pruneExpiredTokens()
+    const token = randomUUID()
+    const expiresInSeconds = 10 * 60
+    const expiresAt = Date.now() + (expiresInSeconds * 1000)
+    this.sessionAuthTokens.set(token, { sessionId, expiresAt })
+    return { token, expiresInSeconds }
+  }
+
+  validateSessionAuthToken(token: string | null | undefined, sessionId: string): boolean {
+    if (!token) return false
+    const record = this.sessionAuthTokens.get(token)
+    if (!record) return false
+    if (record.expiresAt < Date.now()) {
+      this.sessionAuthTokens.delete(token)
+      return false
+    }
+    return record.sessionId === sessionId
+  }
+
+  private pruneExpiredTokens(): void {
+    if (this.sessionAuthTokens.size < 500) return
+    const now = Date.now()
+    for (const [token, record] of this.sessionAuthTokens) {
+      if (record.expiresAt < now) this.sessionAuthTokens.delete(token)
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -243,7 +290,8 @@ export class WebChatAdapter implements ChannelAdapter {
   // ---------------------------------------------------------------------------
 
   isOriginAllowed(origin: string | undefined): boolean {
-    if (this.config.allowedOrigins === '*') return true
+    // Even with wildcard mode, require an Origin header to block basic non-browser scraping.
+    if (this.config.allowedOrigins === '*') return !!origin
     if (!origin) return false
     const allowed = this.config.allowedOrigins.split(',').map(o => o.trim())
     return allowed.includes(origin)
@@ -268,11 +316,33 @@ export class WebChatAdapter implements ChannelAdapter {
   // ---------------------------------------------------------------------------
 
   static registerRoutes(app: any, getAdapter: () => WebChatAdapter | null): void {
+    app.use('/agent/channels/webchat/*', async (c: any, next: any) => {
+      const origin = c.req.header('origin') || '*'
+      if (c.req.method === 'OPTIONS') {
+        return new Response(null, {
+          status: 204,
+          headers: {
+            'Access-Control-Allow-Origin': origin,
+            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, X-WebChat-Widget-Key, X-WebChat-Session-Token, X-WebChat-Session',
+            'Access-Control-Max-Age': '86400',
+          },
+        })
+      }
+      await next()
+      c.res.headers.set('Access-Control-Allow-Origin', origin)
+    })
+
     // Get widget configuration (used by the embedded widget to initialize)
     app.get('/agent/channels/webchat/config', (c: any) => {
       const adapter = getAdapter()
       if (!adapter || !adapter.connected) {
         return c.json({ error: 'WebChat channel not connected' }, 503)
+      }
+
+      const widgetKey = c.req.header('x-webchat-widget-key')
+      if (!adapter.validateWidgetSecret(widgetKey)) {
+        return c.json({ error: 'Invalid or missing widget key' }, 403)
       }
 
       const origin = c.req.header('origin')
@@ -298,6 +368,11 @@ export class WebChatAdapter implements ChannelAdapter {
         return c.json({ error: 'WebChat channel not connected' }, 503)
       }
 
+      const widgetKey = c.req.header('x-webchat-widget-key')
+      if (!adapter.validateWidgetSecret(widgetKey)) {
+        return c.json({ error: 'Invalid or missing widget key' }, 403)
+      }
+
       const origin = c.req.header('origin')
       if (!adapter.isOriginAllowed(origin)) {
         return c.json({ error: 'Origin not allowed' }, 403)
@@ -305,7 +380,13 @@ export class WebChatAdapter implements ChannelAdapter {
 
       const sessionId = c.req.header('x-webchat-session')
       const session = adapter.getOrCreateSession(sessionId || undefined)
-      return c.json({ sessionId: session.id, created: !sessionId })
+      const auth = adapter.issueSessionAuthToken(session.id)
+      return c.json({
+        sessionId: session.id,
+        created: !sessionId,
+        sessionToken: auth.token,
+        sessionTokenExpiresIn: auth.expiresInSeconds,
+      })
     })
 
     // Send a message from the widget
@@ -329,11 +410,15 @@ export class WebChatAdapter implements ChannelAdapter {
 
       const message = body.message
       const sessionId = body.sessionId
+      const sessionToken = c.req.header('x-webchat-session-token')
       if (!message || typeof message !== 'string') {
         return c.json({ error: 'Missing required field: "message"' }, 400)
       }
       if (!sessionId) {
         return c.json({ error: 'Missing required field: "sessionId"' }, 400)
+      }
+      if (!adapter.validateSessionAuthToken(sessionToken, sessionId)) {
+        return c.json({ error: 'Invalid or expired session token' }, 403)
       }
 
       try {
@@ -363,6 +448,10 @@ export class WebChatAdapter implements ChannelAdapter {
       }
 
       const sessionId = c.req.param('sessionId')
+      const sessionToken = new URL(c.req.url).searchParams.get('sessionToken')
+      if (!adapter.validateSessionAuthToken(sessionToken, sessionId)) {
+        return c.json({ error: 'Invalid or expired session token' }, 403)
+      }
 
       return new Response(
         new ReadableStream({
@@ -417,7 +506,7 @@ export class WebChatAdapter implements ChannelAdapter {
       )
     })
 
-    // Serve the embeddable widget JavaScript
+    // Serve the embeddable widget JavaScript (fully public — no secret needed)
     app.get('/agent/channels/webchat/widget.js', (c: any) => {
       const adapter = getAdapter()
       const baseUrl = new URL(c.req.url)
@@ -467,7 +556,25 @@ function generateWidgetScript(agentBaseUrl: string): string {
     } catch(e) {}
     return '${fallbackUrl}';
   })();
+  var SCRIPT_WIDGET_KEY = (function() {
+    try {
+      var s = document.currentScript;
+      if (!s || !s.src) return "";
+      var url = new URL(s.src);
+      return url.searchParams.get("widgetKey") || "";
+    } catch(e) {
+      return "";
+    }
+  })();
+  function wcUrl(path, query) {
+    var url = AGENT_URL + path;
+    if (query) {
+      url += (path.indexOf("?") === -1 ? "?" : "&") + query;
+    }
+    return url;
+  }
   var SESSION_KEY = "shogo_webchat_session";
+  var SESSION_TOKEN_KEY = "shogo_webchat_session_token";
   var HISTORY_KEY = "shogo_webchat_history";
 
   var config = null;
@@ -481,6 +588,12 @@ function generateWidgetScript(agentBaseUrl: string): string {
   }
   function storeSession(id) {
     try { localStorage.setItem(SESSION_KEY, id); } catch(e) {}
+  }
+  function getStoredSessionToken() {
+    try { return localStorage.getItem(SESSION_TOKEN_KEY); } catch(e) { return null; }
+  }
+  function storeSessionToken(token) {
+    try { localStorage.setItem(SESSION_TOKEN_KEY, token); } catch(e) {}
   }
   function getStoredHistory() {
     try {
@@ -496,7 +609,15 @@ function generateWidgetScript(agentBaseUrl: string): string {
   }
 
   function init() {
-    fetch(AGENT_URL + "/agent/channels/webchat/config")
+    if (!SCRIPT_WIDGET_KEY) {
+      console.warn("[Shogo WebChat] Missing widgetKey in script URL.");
+      return;
+    }
+    fetch(wcUrl("/agent/channels/webchat/config"), {
+      headers: {
+        "X-WebChat-Widget-Key": SCRIPT_WIDGET_KEY
+      }
+    })
       .then(function(r) { return r.json(); })
       .then(function(cfg) {
         config = cfg;
@@ -510,17 +631,23 @@ function generateWidgetScript(agentBaseUrl: string): string {
 
   function initSession() {
     var existing = getStoredSession();
-    fetch(AGENT_URL + "/agent/channels/webchat/session", {
+    var headers = {
+      "Content-Type": "application/json",
+      "X-WebChat-Widget-Key": SCRIPT_WIDGET_KEY
+    };
+    if (existing) headers["X-WebChat-Session"] = existing;
+    fetch(wcUrl("/agent/channels/webchat/session"), {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(existing ? { "X-WebChat-Session": existing } : {})
-      },
+      headers: headers,
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
+      if (!data.sessionId || !data.sessionToken) {
+        throw new Error("Missing session credentials");
+      }
       sessionId = data.sessionId;
       storeSession(sessionId);
+      storeSessionToken(data.sessionToken);
       connectSSE();
     })
     .catch(function(err) {
@@ -530,7 +657,9 @@ function generateWidgetScript(agentBaseUrl: string): string {
 
   function connectSSE() {
     if (!sessionId) return;
-    var es = new EventSource(AGENT_URL + "/agent/channels/webchat/events/" + sessionId);
+    var token = getStoredSessionToken();
+    if (!token) return;
+    var es = new EventSource(wcUrl("/agent/channels/webchat/events/" + sessionId, "sessionToken=" + encodeURIComponent(token)));
 
     es.addEventListener("message", function(e) {
       try {
@@ -555,9 +684,12 @@ function generateWidgetScript(agentBaseUrl: string): string {
     addMessage("user", text);
     setLoading(true);
 
-    fetch(AGENT_URL + "/agent/channels/webchat/message", {
+    fetch(wcUrl("/agent/channels/webchat/message"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-WebChat-Session-Token": getStoredSessionToken() || ""
+      },
       body: JSON.stringify({ message: text, sessionId: sessionId })
     })
     .then(function(r) { return r.json(); })
