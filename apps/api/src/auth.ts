@@ -27,11 +27,16 @@ function isLoadTestBypass(request: Request): boolean {
   return !!(LOAD_TEST_SECRET && request?.headers?.get?.('x-load-test-key') === LOAD_TEST_SECRET)
 }
 
+function getSqliteDbPath(): string {
+  const url = process.env.DATABASE_URL
+  if (!url || url.startsWith('postgres')) return './shogo.db'
+  return url.replace(/^file:/, '')
+}
+
 function createAuthDatabase() {
   if (isLocalMode) {
     const { Database } = require('bun:sqlite')
-    const dbPath = (process.env.DATABASE_URL || 'file:./shogo.db').replace(/^file:/, '')
-    return new Database(dbPath)
+    return new Database(getSqliteDbPath())
   }
   const { Pool } = require('pg')
   return new Pool({
