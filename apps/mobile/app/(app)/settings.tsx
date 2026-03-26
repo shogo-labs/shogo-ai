@@ -1255,7 +1255,14 @@ const ROLE_COLORS: Record<string, string> = {
 type SortField = 'name' | 'role' | 'joinedDate' | 'usage' | 'totalUsage' | 'creditLimit'
 type SortDir = 'asc' | 'desc'
 
+const PEOPLE_MOBILE_BREAKPOINT = 768
+
 const PeopleTab = observer(function PeopleTab() {
+  const { width } = useWindowDimensions()
+  const isMobilePeopleLayout = width < PEOPLE_MOBILE_BREAKPOINT
+  const membersTableMinWidth = isMobilePeopleLayout ? Math.max(width + 300, 720) : undefined
+  const sentInvitationsTableMinWidth = isMobilePeopleLayout ? Math.max(width + 240, 600) : undefined
+
   const { user } = useAuth()
   const workspaces = useWorkspaceCollection()
   const members = useMemberCollection()
@@ -1445,12 +1452,226 @@ const PeopleTab = observer(function PeopleTab() {
     </View>
   )
 
+  const memberListTable = (
+    <>
+      <View className="flex-row items-center px-4 py-2.5 border-b border-border bg-muted/30">
+        <Pressable
+          onPress={() => handleSort('name')}
+          className={cn('flex-row items-center flex-[2]', isMobilePeopleLayout && 'min-w-[200px] shrink-0')}
+        >
+          <Text className="text-xs font-medium text-muted-foreground">Name</Text>
+          <SortArrow field="name" />
+        </Pressable>
+        <Pressable
+          onPress={() => handleSort('role')}
+          className={cn('flex-row items-center w-24', isMobilePeopleLayout && 'shrink-0')}
+        >
+          <Text className="text-xs font-medium text-muted-foreground">Role</Text>
+          <SortArrow field="role" />
+        </Pressable>
+        <Pressable
+          onPress={() => handleSort('joinedDate')}
+          className={cn('flex-row items-center w-28', isMobilePeopleLayout && 'shrink-0')}
+        >
+          <Text className="text-xs font-medium text-muted-foreground">Joined date</Text>
+          <SortArrow field="joinedDate" />
+        </Pressable>
+        <View className={cn('w-24', isMobilePeopleLayout && 'shrink-0')}>
+          <Text className="text-xs font-medium text-muted-foreground">{currentMonth} usage</Text>
+        </View>
+        <View className={cn('w-24', isMobilePeopleLayout && 'shrink-0')}>
+          <Text className="text-xs font-medium text-muted-foreground">Total usage</Text>
+        </View>
+        <View className={cn('w-24', isMobilePeopleLayout && 'shrink-0')}>
+          <Text className="text-xs font-medium text-muted-foreground">Credit limit</Text>
+        </View>
+        <View className={cn('w-8', isMobilePeopleLayout && 'shrink-0')} />
+      </View>
+
+      {filteredMembers.map((member: any) => {
+        const isCurrentUser = member.userId === user?.id
+        const avatarColor = ROLE_COLORS[member.role] || 'bg-primary'
+        const resolved = userMap[member.userId]
+        const mName = isCurrentUser ? (user?.name || user?.email) : (resolved?.name || resolved?.email || member.userId)
+        const mEmail = isCurrentUser ? user?.email : (resolved?.email || member.userId)
+        const initial = (mName || 'M')[0]?.toUpperCase()
+        return (
+          <View
+            key={member.id}
+            className="flex-row items-center px-4 py-3 border-b border-border overflow-visible"
+          >
+            <View
+              className={cn(
+                'flex-row items-center flex-[2] gap-3',
+                isMobilePeopleLayout && 'min-w-[200px] shrink-0'
+              )}
+            >
+              <View className={cn('h-8 w-8 rounded-full items-center justify-center shrink-0', avatarColor)}>
+                <Text className="text-xs font-semibold text-white">{initial}</Text>
+              </View>
+              <View className="min-w-0 flex-1">
+                <View className="flex-row items-center gap-1 flex-wrap">
+                  <Text className="text-sm font-medium text-foreground" numberOfLines={2}>
+                    {mName}
+                  </Text>
+                  {isCurrentUser && (
+                    <Text className="text-sm text-muted-foreground">(you)</Text>
+                  )}
+                </View>
+                <Text className="text-xs text-muted-foreground" numberOfLines={2}>
+                  {mEmail}
+                </Text>
+              </View>
+            </View>
+
+            <View className={cn('w-24', isMobilePeopleLayout && 'shrink-0')}>
+              {canManageMembers && !isCurrentUser ? (
+                <Pressable
+                  onPress={() => setMenuState(
+                    menuState?.memberId === member.id && menuState?.view === 'roles'
+                      ? null
+                      : { memberId: member.id, view: 'roles' }
+                  )}
+                  className="flex-row items-center gap-1"
+                >
+                  <Text className="text-sm text-foreground capitalize">
+                    {ROLE_DISPLAY[member.role] || member.role}
+                  </Text>
+                  <ChevronDown size={12} className="text-muted-foreground" />
+                </Pressable>
+              ) : (
+                <Text className="text-sm text-foreground capitalize">
+                  {ROLE_DISPLAY[member.role] || member.role}
+                </Text>
+              )}
+            </View>
+
+            <View className={cn('w-28', isMobilePeopleLayout && 'shrink-0')}>
+              <Text className="text-sm text-foreground">
+                {member.createdAt
+                  ? new Date(member.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                  : '—'}
+              </Text>
+            </View>
+
+            <View className={cn('w-24', isMobilePeopleLayout && 'shrink-0')}>
+              <Text className="text-sm text-foreground">0 credits</Text>
+            </View>
+
+            <View className={cn('w-24', isMobilePeopleLayout && 'shrink-0')}>
+              <Text className="text-sm text-foreground">0 credits</Text>
+            </View>
+
+            <View className={cn('w-24', isMobilePeopleLayout && 'shrink-0')}>
+              <Text className="text-sm text-foreground">—</Text>
+            </View>
+
+            <View className={cn('w-8', isMobilePeopleLayout && 'shrink-0')}>
+              {canManageMembers && !isCurrentUser ? (
+                <Pressable
+                  onPress={() => setMenuState({ memberId: member.id, view: 'actions' })}
+                  className="items-center"
+                >
+                  <Text className="text-muted-foreground">···</Text>
+                </Pressable>
+              ) : (
+                <View className="items-center">
+                  <Text className="text-muted-foreground/30">···</Text>
+                </View>
+              )}
+            </View>
+          </View>
+        )
+      })}
+
+      <View className="px-4 py-2.5">
+        <Text className="text-xs text-muted-foreground">
+          Showing 1-{filteredMembers.length} of {filteredMembers.length}
+        </Text>
+      </View>
+    </>
+  )
+
+  const sentInvitationListTable = (
+    <>
+      <View className="flex-row items-center px-4 py-2.5 border-b border-border bg-muted/30">
+        <View className={cn('flex-[2]', isMobilePeopleLayout && 'min-w-[200px] shrink-0')}>
+          <Text className="text-xs font-medium text-muted-foreground">Email</Text>
+        </View>
+        <View className={cn('w-24', isMobilePeopleLayout && 'shrink-0')}>
+          <Text className="text-xs font-medium text-muted-foreground">Role</Text>
+        </View>
+        <View className={cn('w-28', isMobilePeopleLayout && 'shrink-0')}>
+          <Text className="text-xs font-medium text-muted-foreground">Sent</Text>
+        </View>
+        <View className={cn('w-24', isMobilePeopleLayout && 'shrink-0')}>
+          <Text className="text-xs font-medium text-muted-foreground">Status</Text>
+        </View>
+        <View className={cn('w-8', isMobilePeopleLayout && 'shrink-0')} />
+      </View>
+
+      {sentInvitations.map((inv: any) => {
+        const isExpired = inv.status === 'expired' || Date.now() > inv.expiresAt
+        const status = isExpired ? 'expired' : (inv.status as string)
+        const isDimmed = status === 'expired' || status === 'declined'
+        const badgeVariant = status === 'accepted' ? 'default'
+          : status === 'declined' ? 'destructive'
+          : status === 'expired' ? 'outline'
+          : 'secondary'
+        const badgeLabel = status === 'accepted' ? 'Accepted'
+          : status === 'declined' ? 'Declined'
+          : status === 'expired' ? 'Expired'
+          : 'Pending'
+        return (
+          <View
+            key={inv.id}
+            className={cn('flex-row items-center px-4 py-3 border-b border-border', isDimmed && 'opacity-50')}
+          >
+            <View className={cn('flex-[2] min-w-0', isMobilePeopleLayout && 'min-w-[200px] shrink-0')}>
+              <Text className={cn('text-sm text-foreground', isDimmed && 'line-through')} numberOfLines={2}>
+                {inv.email}
+              </Text>
+            </View>
+            <View className={cn('w-24', isMobilePeopleLayout && 'shrink-0')}>
+              <Text className="text-sm text-foreground capitalize">{ROLE_DISPLAY[inv.role] || inv.role}</Text>
+            </View>
+            <View className={cn('w-28', isMobilePeopleLayout && 'shrink-0')}>
+              <Text className="text-sm text-foreground">
+                {new Date(inv.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+              </Text>
+            </View>
+            <View className={cn('w-24', isMobilePeopleLayout && 'shrink-0')}>
+              <Badge variant={badgeVariant}>{badgeLabel}</Badge>
+            </View>
+            <View className={cn('w-8 items-center', isMobilePeopleLayout && 'shrink-0')}>
+              {status === 'pending' && (
+                <Pressable
+                  onPress={() =>
+                    setRevokeInvitationTarget({ id: inv.id, email: inv.email })
+                  }
+                >
+                  <X size={14} className="text-muted-foreground" />
+                </Pressable>
+              )}
+            </View>
+          </View>
+        )
+      })}
+
+      <View className="px-4 py-2.5">
+        <Text className="text-xs text-muted-foreground">
+          Showing 1-{sentInvitations.length} of {sentInvitations.length}
+        </Text>
+      </View>
+    </>
+  )
+
   return (
     <View className="gap-0">
       {/* Header */}
-      <View className="mb-6">
+      <View className={cn('mb-6', isMobilePeopleLayout && 'mb-5')}>
         <Text className="text-xl font-semibold text-foreground">People</Text>
-        <Text className="text-sm text-muted-foreground mt-1">
+        <Text className={cn('text-sm text-muted-foreground mt-1', isMobilePeopleLayout && 'leading-5')}>
           Inviting people to{' '}
           <Text className="font-semibold text-foreground">
             {resolvedWs?.name || currentWorkspace?.name || 'your workspace'}
@@ -1492,10 +1713,20 @@ const PeopleTab = observer(function PeopleTab() {
       </View>
 
       {/* Controls row */}
-      <View className="flex-row items-center gap-2 mb-4 flex-wrap">
+      <View
+        className={cn(
+          'mb-4',
+          isMobilePeopleLayout ? 'flex-col gap-3' : 'flex-row items-center gap-2 flex-wrap'
+        )}
+      >
         {subTab === 'all' && (
           <>
-            <View className="flex-row items-center flex-1 min-w-[160px] border border-border rounded-lg px-3 h-9">
+            <View
+              className={cn(
+                'flex-row items-center border border-border rounded-lg px-3 h-9',
+                isMobilePeopleLayout ? 'w-full' : 'flex-1 min-w-[160px]'
+              )}
+            >
               <Search size={14} className="text-muted-foreground mr-2" />
               <TextInput
                 value={search}
@@ -1509,7 +1740,10 @@ const PeopleTab = observer(function PeopleTab() {
 
             <Pressable
               onPress={() => setShowRoleFilter(true)}
-              className="flex-row items-center h-9 px-3 border border-border rounded-lg gap-1.5"
+              className={cn(
+                'flex-row items-center h-9 px-3 border border-border rounded-lg gap-1.5',
+                isMobilePeopleLayout && 'w-full justify-between'
+              )}
             >
               <Text className="text-sm text-foreground">
                 {roleFilter === 'all' ? 'All roles' : ROLE_DISPLAY[roleFilter] || roleFilter}
@@ -1519,11 +1753,14 @@ const PeopleTab = observer(function PeopleTab() {
           </>
         )}
 
-        {subTab === 'invitations' && <View className="flex-1" />}
+        {subTab === 'invitations' && !isMobilePeopleLayout && <View className="flex-1" />}
 
         <Pressable
           onPress={() => setShowInviteModal(true)}
-          className="h-9 flex-row items-center gap-1.5 px-3 bg-primary rounded-lg"
+          className={cn(
+            'h-9 flex-row items-center gap-1.5 px-3 bg-primary rounded-lg',
+            isMobilePeopleLayout && 'w-full justify-center'
+          )}
         >
           <UserPlus size={14} className="text-primary-foreground" />
           <Text className="text-sm font-medium text-primary-foreground">Invite members</Text>
@@ -1548,130 +1785,18 @@ const PeopleTab = observer(function PeopleTab() {
               </View>
             ) : (
               <>
-                {/* Table header */}
-                <View className="flex-row items-center px-4 py-2.5 border-b border-border bg-muted/30">
-                  <Pressable onPress={() => handleSort('name')} className="flex-row items-center flex-[2]">
-                    <Text className="text-xs font-medium text-muted-foreground">Name</Text>
-                    <SortArrow field="name" />
-                  </Pressable>
-                  <Pressable onPress={() => handleSort('role')} className="flex-row items-center w-24">
-                    <Text className="text-xs font-medium text-muted-foreground">Role</Text>
-                    <SortArrow field="role" />
-                  </Pressable>
-                  <Pressable onPress={() => handleSort('joinedDate')} className="flex-row items-center w-28">
-                    <Text className="text-xs font-medium text-muted-foreground">Joined date</Text>
-                    <SortArrow field="joinedDate" />
-                  </Pressable>
-                  <View className="w-24">
-                    <Text className="text-xs font-medium text-muted-foreground">{currentMonth} usage</Text>
-                  </View>
-                  <View className="w-24">
-                    <Text className="text-xs font-medium text-muted-foreground">Total usage</Text>
-                  </View>
-                  <View className="w-24">
-                    <Text className="text-xs font-medium text-muted-foreground">Credit limit</Text>
-                  </View>
-                  <View className="w-8" />
-                </View>
-
-                {/* Table rows */}
-                {filteredMembers.map((member: any) => {
-                  const isCurrentUser = member.userId === user?.id
-                  const avatarColor = ROLE_COLORS[member.role] || 'bg-primary'
-                  const resolved = userMap[member.userId]
-                  const mName = isCurrentUser ? (user?.name || user?.email) : (resolved?.name || resolved?.email || member.userId)
-                  const mEmail = isCurrentUser ? user?.email : (resolved?.email || member.userId)
-                  const initial = (mName || 'M')[0]?.toUpperCase()
-                  return (
-                    <View
-                      key={member.id}
-                      className="flex-row items-center px-4 py-3 border-b border-border overflow-visible"
-                    >
-                      <View className="flex-row items-center flex-[2] gap-3">
-                        <View className={cn('h-8 w-8 rounded-full items-center justify-center', avatarColor)}>
-                          <Text className="text-xs font-semibold text-white">{initial}</Text>
-                        </View>
-                        <View>
-                          <View className="flex-row items-center gap-1">
-                            <Text className="text-sm font-medium text-foreground">
-                              {mName}
-                            </Text>
-                            {isCurrentUser && (
-                              <Text className="text-sm text-muted-foreground">(you)</Text>
-                            )}
-                          </View>
-                          <Text className="text-xs text-muted-foreground">
-                            {mEmail}
-                          </Text>
-                        </View>
-                      </View>
-
-                      <View className="w-24">
-                        {canManageMembers && !isCurrentUser ? (
-                          <Pressable
-                            onPress={() => setMenuState(
-                              menuState?.memberId === member.id && menuState?.view === 'roles'
-                                ? null
-                                : { memberId: member.id, view: 'roles' }
-                            )}
-                            className="flex-row items-center gap-1"
-                          >
-                            <Text className="text-sm text-foreground capitalize">
-                              {ROLE_DISPLAY[member.role] || member.role}
-                            </Text>
-                            <ChevronDown size={12} className="text-muted-foreground" />
-                          </Pressable>
-                        ) : (
-                          <Text className="text-sm text-foreground capitalize">
-                            {ROLE_DISPLAY[member.role] || member.role}
-                          </Text>
-                        )}
-                      </View>
-
-                      <View className="w-28">
-                        <Text className="text-sm text-foreground">
-                          {member.createdAt
-                            ? new Date(member.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-                            : '—'}
-                        </Text>
-                      </View>
-
-                      <View className="w-24">
-                        <Text className="text-sm text-foreground">0 credits</Text>
-                      </View>
-
-                      <View className="w-24">
-                        <Text className="text-sm text-foreground">0 credits</Text>
-                      </View>
-
-                      <View className="w-24">
-                        <Text className="text-sm text-foreground">—</Text>
-                      </View>
-
-                      <View className="w-8">
-                        {canManageMembers && !isCurrentUser ? (
-                          <Pressable
-                            onPress={() => setMenuState({ memberId: member.id, view: 'actions' })}
-                            className="items-center"
-                          >
-                            <Text className="text-muted-foreground">···</Text>
-                          </Pressable>
-                        ) : (
-                          <View className="items-center">
-                            <Text className="text-muted-foreground/30">···</Text>
-                          </View>
-                        )}
-                      </View>
-                    </View>
-                  )
-                })}
-
-                {/* Footer */}
-                <View className="px-4 py-2.5">
-                  <Text className="text-xs text-muted-foreground">
-                    Showing 1-{filteredMembers.length} of {filteredMembers.length}
-                  </Text>
-                </View>
+                {isMobilePeopleLayout ? (
+                  <ScrollView
+                    horizontal
+                    nestedScrollEnabled
+                    showsHorizontalScrollIndicator={Platform.OS !== 'web'}
+                    style={{ flexGrow: 0 }}
+                  >
+                    <View style={{ minWidth: membersTableMinWidth }}>{memberListTable}</View>
+                  </ScrollView>
+                ) : (
+                  memberListTable
+                )}
               </>
             )}
           </CardContent>
@@ -1776,74 +1901,18 @@ const PeopleTab = observer(function PeopleTab() {
               </View>
             ) : (
               <>
-                {/* Table header */}
-                <View className="flex-row items-center px-4 py-2.5 border-b border-border bg-muted/30">
-                  <View className="flex-[2]">
-                    <Text className="text-xs font-medium text-muted-foreground">Email</Text>
-                  </View>
-                  <View className="w-24">
-                    <Text className="text-xs font-medium text-muted-foreground">Role</Text>
-                  </View>
-                  <View className="w-28">
-                    <Text className="text-xs font-medium text-muted-foreground">Sent</Text>
-                  </View>
-                  <View className="w-24">
-                    <Text className="text-xs font-medium text-muted-foreground">Status</Text>
-                  </View>
-                  <View className="w-8" />
-                </View>
-
-                {sentInvitations.map((inv: any) => {
-                  const isExpired = inv.status === 'expired' || Date.now() > inv.expiresAt
-                  const status = isExpired ? 'expired' : (inv.status as string)
-                  const isDimmed = status === 'expired' || status === 'declined'
-                  const badgeVariant = status === 'accepted' ? 'default'
-                    : status === 'declined' ? 'destructive'
-                    : status === 'expired' ? 'outline'
-                    : 'secondary'
-                  const badgeLabel = status === 'accepted' ? 'Accepted'
-                    : status === 'declined' ? 'Declined'
-                    : status === 'expired' ? 'Expired'
-                    : 'Pending'
-                  return (
-                    <View
-                      key={inv.id}
-                      className={cn('flex-row items-center px-4 py-3 border-b border-border', isDimmed && 'opacity-50')}
-                    >
-                      <View className="flex-[2]">
-                        <Text className={cn('text-sm text-foreground', isDimmed && 'line-through')}>{inv.email}</Text>
-                      </View>
-                      <View className="w-24">
-                        <Text className="text-sm text-foreground capitalize">{ROLE_DISPLAY[inv.role] || inv.role}</Text>
-                      </View>
-                      <View className="w-28">
-                        <Text className="text-sm text-foreground">
-                          {new Date(inv.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                        </Text>
-                      </View>
-                      <View className="w-24">
-                        <Badge variant={badgeVariant}>{badgeLabel}</Badge>
-                      </View>
-                      <View className="w-8 items-center">
-                        {status === 'pending' && (
-                          <Pressable
-                            onPress={() =>
-                              setRevokeInvitationTarget({ id: inv.id, email: inv.email })
-                            }
-                          >
-                            <X size={14} className="text-muted-foreground" />
-                          </Pressable>
-                        )}
-                      </View>
-                    </View>
-                  )
-                })}
-
-                <View className="px-4 py-2.5">
-                  <Text className="text-xs text-muted-foreground">
-                    Showing 1-{sentInvitations.length} of {sentInvitations.length}
-                  </Text>
-                </View>
+                {isMobilePeopleLayout ? (
+                  <ScrollView
+                    horizontal
+                    nestedScrollEnabled
+                    showsHorizontalScrollIndicator={Platform.OS !== 'web'}
+                    style={{ flexGrow: 0 }}
+                  >
+                    <View style={{ minWidth: sentInvitationsTableMinWidth }}>{sentInvitationListTable}</View>
+                  </ScrollView>
+                ) : (
+                  sentInvitationListTable
+                )}
               </>
             )}
           </CardContent>
@@ -2041,6 +2110,9 @@ function InviteMembersModal({
   workspaceName: string
   actions: ReturnType<typeof useDomainActions>
 }) {
+  const { width, height } = useWindowDimensions()
+  const compactInviteModal = width < PEOPLE_MOBILE_BREAKPOINT
+
   const workspaces = useWorkspaceCollection()
   const [emailInput, setEmailInput] = useState('')
   const [role, setRole] = useState<string>('member')
@@ -2101,97 +2173,129 @@ function InviteMembersModal({
     onClose()
   }
 
+  const inviteFormFields = (
+    <>
+      <View className="flex-row items-center justify-between mb-1">
+        <Text className="text-lg font-semibold text-foreground">Invite members</Text>
+        <Pressable onPress={handleClose} className="p-1 -mr-1">
+          <X size={20} className="text-muted-foreground" />
+        </Pressable>
+      </View>
+
+      <Text className="text-sm text-muted-foreground mb-5">
+        Invite members to your workspace by email
+      </Text>
+
+      {error && (
+        <View className="bg-destructive/10 border border-destructive/30 rounded-lg p-3 mb-4">
+          <Text className="text-destructive text-sm">{error}</Text>
+        </View>
+      )}
+
+      <Text className="text-sm font-medium text-foreground mb-1.5">Email</Text>
+      <View className="border border-border rounded-lg mb-4">
+        <TextInput
+          value={emailInput}
+          onChangeText={(t) => { setEmailInput(t); setError(null) }}
+          placeholder="example1@example.com, example2@example.com"
+          autoCapitalize="none"
+          autoCorrect={false}
+          editable={!isSubmitting}
+          className="px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground web:outline-none"
+        />
+      </View>
+
+      <Text className="text-sm font-medium text-foreground mb-1.5">Role</Text>
+      <View className={cn('relative', compactInviteModal ? 'mb-4' : 'mb-6')} style={{ zIndex: 50 }}>
+        <Pressable
+          onPress={() => setShowRolePicker(!showRolePicker)}
+          className="flex-row items-center justify-between h-10 px-3 rounded-lg border border-border"
+        >
+          <Text className="text-sm text-foreground">{selectedRoleLabel}</Text>
+          <ChevronDown size={14} className="text-muted-foreground" />
+        </Pressable>
+        {showRolePicker && (
+          <View className="absolute top-11 left-0 right-0 z-50 bg-background border border-border rounded-lg shadow-lg overflow-hidden">
+            {INVITE_ROLES.map((r) => (
+              <Pressable
+                key={r.value}
+                onPress={() => { setRole(r.value); setShowRolePicker(false) }}
+                className={cn('px-3 py-2.5', role === r.value && 'bg-accent')}
+              >
+                <Text className={cn('text-sm', role === r.value ? 'text-foreground font-medium' : 'text-foreground')}>
+                  {r.label}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        )}
+      </View>
+    </>
+  )
+
+  const inviteFormActions = (
+    <View className="flex-row gap-3">
+      <Pressable
+        onPress={handleClose}
+        disabled={isSubmitting}
+        className="flex-1 h-10 rounded-lg border border-border items-center justify-center"
+      >
+        <Text className="text-sm font-medium text-foreground">Cancel</Text>
+      </Pressable>
+      <Pressable
+        onPress={handleSubmit}
+        disabled={!canSubmit}
+        className={cn(
+          'flex-1 h-10 rounded-lg items-center justify-center',
+          canSubmit ? 'bg-primary' : 'bg-muted'
+        )}
+      >
+        {isSubmitting ? (
+          <ActivityIndicator size="small" color="white" />
+        ) : (
+          <Text className={cn('text-sm font-medium', canSubmit ? 'text-primary-foreground' : 'text-muted-foreground')}>
+            Invite
+          </Text>
+        )}
+      </Pressable>
+    </View>
+  )
+
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={handleClose}>
       <Pressable
         onPress={handleClose}
-        className="flex-1 bg-black/50 items-center justify-center px-6"
+        className={cn(
+          'flex-1 bg-black/50 justify-center',
+          compactInviteModal ? 'px-4 py-6' : 'items-center justify-center px-6'
+        )}
       >
         <Pressable
           onPress={(e) => e.stopPropagation()}
-          className="bg-background rounded-xl p-6 w-full max-w-md shadow-xl overflow-visible"
-        >
-          <View className="flex-row items-center justify-between mb-1">
-            <Text className="text-lg font-semibold text-foreground">Invite members</Text>
-            <Pressable onPress={handleClose} className="p-1 -mr-1">
-              <X size={20} className="text-muted-foreground" />
-            </Pressable>
-          </View>
-
-          <Text className="text-sm text-muted-foreground mb-5">
-            Invite members to your workspace by email
-          </Text>
-
-          {error && (
-            <View className="bg-destructive/10 border border-destructive/30 rounded-lg p-3 mb-4">
-              <Text className="text-destructive text-sm">{error}</Text>
-            </View>
+          className={cn(
+            'bg-background rounded-xl w-full max-w-md shadow-xl overflow-visible',
+            compactInviteModal ? 'p-5' : 'p-6'
           )}
-
-          <Text className="text-sm font-medium text-foreground mb-1.5">Email</Text>
-          <View className="border border-border rounded-lg mb-4">
-            <TextInput
-              value={emailInput}
-              onChangeText={(t) => { setEmailInput(t); setError(null) }}
-              placeholder="example1@example.com, example2@example.com"
-              autoCapitalize="none"
-              autoCorrect={false}
-              editable={!isSubmitting}
-              className="px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground web:outline-none"
-            />
-          </View>
-
-          <Text className="text-sm font-medium text-foreground mb-1.5">Role</Text>
-          <View className="relative mb-6" style={{ zIndex: 50 }}>
-            <Pressable
-              onPress={() => setShowRolePicker(!showRolePicker)}
-              className="flex-row items-center justify-between h-10 px-3 rounded-lg border border-border"
-            >
-              <Text className="text-sm text-foreground">{selectedRoleLabel}</Text>
-              <ChevronDown size={14} className="text-muted-foreground" />
-            </Pressable>
-            {showRolePicker && (
-              <View className="absolute top-11 left-0 right-0 z-50 bg-background border border-border rounded-lg shadow-lg overflow-hidden">
-                {INVITE_ROLES.map((r) => (
-                  <Pressable
-                    key={r.value}
-                    onPress={() => { setRole(r.value); setShowRolePicker(false) }}
-                    className={cn('px-3 py-2.5', role === r.value && 'bg-accent')}
-                  >
-                    <Text className={cn('text-sm', role === r.value ? 'text-foreground font-medium' : 'text-foreground')}>
-                      {r.label}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-            )}
-          </View>
-
-          <View className="flex-row gap-3">
-            <Pressable
-              onPress={handleClose}
-              disabled={isSubmitting}
-              className="flex-1 h-10 rounded-lg border border-border items-center justify-center"
-            >
-              <Text className="text-sm font-medium text-foreground">Cancel</Text>
-            </Pressable>
-            <Pressable
-              onPress={handleSubmit}
-              disabled={!canSubmit}
-              className={cn(
-                'flex-1 h-10 rounded-lg items-center justify-center',
-                canSubmit ? 'bg-primary' : 'bg-muted'
-              )}
-            >
-              {isSubmitting ? (
-                <ActivityIndicator size="small" color="white" />
-              ) : (
-                <Text className={cn('text-sm font-medium', canSubmit ? 'text-primary-foreground' : 'text-muted-foreground')}>
-                  Invite
-                </Text>
-              )}
-            </Pressable>
-          </View>
+          style={compactInviteModal ? { maxHeight: height * 0.92 } : undefined}
+        >
+          {compactInviteModal ? (
+            <>
+              <ScrollView
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator={false}
+                nestedScrollEnabled
+                style={{ maxHeight: Math.min(height * 0.58, 420) }}
+              >
+                {inviteFormFields}
+              </ScrollView>
+              {inviteFormActions}
+            </>
+          ) : (
+            <>
+              {inviteFormFields}
+              {inviteFormActions}
+            </>
+          )}
         </Pressable>
       </Pressable>
     </Modal>
@@ -2410,12 +2514,14 @@ export default observer(function SettingsPage() {
         <Text className="text-xl font-bold text-foreground">Settings</Text>
       </View>
 
-      <TabBar 
-        activeTab={activeTab} 
-        onTabChange={setActiveTab} 
-        showBilling={features.billing} 
-        localMode={localMode || !features.billing} 
-      />
+      <View className="z-10 bg-background">
+        <TabBar
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          showBilling={features.billing}
+          localMode={localMode || !features.billing}
+        />
+      </View>
 
       <ScrollView
         className="flex-1"
