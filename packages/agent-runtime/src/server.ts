@@ -366,9 +366,14 @@ app.post('/agent/channels/connect', async (c) => {
     return c.json({ error: 'type and config are required' }, 400)
   }
 
-  const validTypes = ['telegram', 'discord', 'slack', 'whatsapp', 'email']
+  const validTypes = ['telegram', 'discord', 'slack', 'whatsapp', 'email', 'webhook', 'teams', 'webchat']
   if (!validTypes.includes(type)) {
     return c.json({ error: `Invalid channel type: ${type}. Must be one of: ${validTypes.join(', ')}` }, 400)
+  }
+
+  if (type === 'webchat' && !channelConfig.widgetSecret) {
+    const { randomUUID } = await import('crypto')
+    channelConfig.widgetSecret = randomUUID()
   }
 
   try {

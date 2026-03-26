@@ -32,6 +32,7 @@ import { loadAllSkills, loadBundledSkills, searchSkills } from './skills'
 import { getDynamicAppManager, getByPointer } from './dynamic-app-manager'
 import { CanvasStreamParser } from './canvas-stream-parser'
 import { withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, type PermissionEngine } from './permission-engine'
+import { deriveApiUrl } from './internal-api'
 import {
   CANVAS_COMPONENT_SCHEMA,
   BASIC_CANVAS_COMPONENT_SCHEMA,
@@ -4142,6 +4143,11 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
         return textResult({ error: `Invalid channel type: ${type}. Must be one of: ${validTypes.join(', ')}` })
       }
 
+      if (type === 'webchat' && !channelConfig.widgetSecret) {
+        const { randomUUID } = await import('crypto')
+        channelConfig.widgetSecret = randomUUID()
+      }
+
       try {
         const { existsSync, readFileSync, writeFileSync } = await import('fs')
         const { join } = await import('path')
@@ -4167,8 +4173,15 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
           await ctx.connectChannel(type, channelConfig)
 
           if (type === 'webchat') {
-            const port = process.env.PORT || '8080'
-            const widgetUrl = `http://localhost:${port}/agent/channels/webchat/widget.js`
+            const widgetKey = encodeURIComponent(channelConfig.widgetSecret || '')
+            const widgetPath = `/agent/channels/webchat/widget.js?widgetKey=${widgetKey}`
+            let widgetUrl: string
+            if (process.env.KUBERNETES_SERVICE_HOST) {
+              const apiUrl = deriveApiUrl()
+              widgetUrl = `${apiUrl}/api/projects/${ctx.projectId}/agent-proxy${widgetPath}`
+            } else {
+              widgetUrl = `http://localhost:${process.env.PORT || '8080'}${widgetPath}`
+            }
             return textResult({
               ok: true,
               message: [
