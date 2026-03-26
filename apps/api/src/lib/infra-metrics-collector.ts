@@ -12,7 +12,7 @@
  * where the warm pool controller and Knative manager are available.
  */
 
-import type { PrismaClient } from '../generated/prisma/client'
+import type { PrismaClient } from './prisma'
 
 const SNAPSHOT_INTERVAL_MS = 60_000
 const PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000

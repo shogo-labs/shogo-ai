@@ -10,7 +10,7 @@
  * Follows the same in-process setInterval pattern as infra-metrics-collector.ts.
  */
 
-import type { PrismaClient } from '../generated/prisma/client'
+import type { PrismaClient } from './prisma'
 import {
   getUserFunnel,
   getUserActivityTable,

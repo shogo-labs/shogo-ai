@@ -129,12 +129,9 @@ jobs:
         run: |
           cd packages/sdk && bun run build && cd ../..
 
-      - name: Generate Prisma client (SQLite)
+      - name: Generate Prisma clients (PG + SQLite)
         shell: bash
-        run: |
-          SHOGO_LOCAL_MODE=true \
-          DATABASE_URL="file:./placeholder.db" \
-            bunx prisma generate --schema=prisma/schema.local.prisma
+        run: bun run db:generate:all
 
       - name: Copy web build into resources
         shell: bash
