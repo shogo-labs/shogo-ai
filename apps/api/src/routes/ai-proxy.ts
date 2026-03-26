@@ -2161,6 +2161,22 @@ export function aiProxyRoutes() {
   })
 
   // =========================================================================
+  // GET /ai/v1/access - Check model tier access for the authenticated workspace
+  // =========================================================================
+  router.get('/ai/v1/access', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json({ error: { message: 'Invalid or missing proxy token', code: 'auth_error' } }, 401)
+    }
+
+    const hasAdvanced = isLocalDev || await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
+
+    return c.json({
+      hasAdvancedModelAccess: hasAdvanced,
+    })
+  })
+
+  // =========================================================================
   // GET /ai/proxy/health - Health check for the AI proxy
   // =========================================================================
   router.get('/ai/proxy/health', (c) => {
