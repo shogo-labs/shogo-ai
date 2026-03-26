@@ -140,18 +140,21 @@ export class DynamicAppManager {
     }
   }
 
-  updateComponents(surfaceId: string, components: ComponentDefinition[]): Record<string, unknown> {
+  updateComponents(surfaceId: string, components: ComponentDefinition[], merge?: boolean): Record<string, unknown> {
     const surface = this.surfaces.get(surfaceId)
     if (!surface) {
       return { ok: false, error: `Surface "${surfaceId}" does not exist. Create it with canvas_create first.` }
     }
 
+    if (!merge) {
+      surface.components.clear()
+    }
     for (const comp of components) {
       surface.components.set(comp.id, comp)
     }
     surface.updatedAt = new Date().toISOString()
 
-    this.broadcast({ type: 'updateComponents', surfaceId, components })
+    this.broadcast({ type: 'updateComponents', surfaceId, components, merge: !!merge })
     this.scheduleSave()
 
     return {
@@ -192,7 +195,7 @@ export class DynamicAppManager {
     }
     surface.updatedAt = new Date().toISOString()
 
-    this.broadcast({ type: 'updateComponents', surfaceId, components })
+    this.broadcast({ type: 'updateComponents', surfaceId, components, merge: true })
   }
 
   updateData(surfaceId: string, path: string | undefined, value: unknown): Record<string, unknown> {
