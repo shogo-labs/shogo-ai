@@ -38,6 +38,8 @@ import {
   KeyboardAvoidingView,
   Keyboard,
   useWindowDimensions,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
 } from "react-native"
 import * as SecureStore from "expo-secure-store"
 import { observer } from "mobx-react-lite"
@@ -575,18 +577,46 @@ export const ChatPanel = observer(function ChatPanel({
   // Auto-scroll refs
   const scrollViewRef = useRef<ScrollView>(null)
   const isUserAtBottomRef = useRef(true)
+  /** Native only: true = follow new content; set false the instant the user drags */
+  const stickToBottomRef = useRef(true)
   const isLoadingOlderRef = useRef(false)
   const contentHeightBeforeLoadRef = useRef(0)
+  const prevDisplayLengthRef = useRef(0)
   const MESSAGE_PAGE_SIZE = 10
+  const isNative = Platform.OS !== "web"
+  const STICK_BOTTOM_PX = 16
+
+  const shouldFollowBottom = useCallback(
+    () => (isNative ? stickToBottomRef.current : isUserAtBottomRef.current),
+    [isNative]
+  )
+
+  const scrollToBottomIfFollowing = useCallback(
+    (animated = false) => {
+      if (shouldFollowBottom()) {
+        scrollViewRef.current?.scrollToEnd({ animated })
+      }
+    },
+    [shouldFollowBottom]
+  )
+
+  const syncStickFromNativeEvent = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      if (!isNative) return
+      const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent
+      const fromBottom =
+        contentSize.height - contentOffset.y - layoutMeasurement.height
+      stickToBottomRef.current = fromBottom <= STICK_BOTTOM_PX
+    },
+    [isNative]
+  )
 
   useEffect(() => {
     const sub = Keyboard.addListener("keyboardDidShow", () => {
-      if (isUserAtBottomRef.current) {
-        scrollViewRef.current?.scrollToEnd({ animated: true })
-      }
+      scrollToBottomIfFollowing(true)
     })
     return () => sub.remove()
-  }, [])
+  }, [scrollToBottomIfFollowing])
 
   // Chat session state
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(chatSessionId ?? null)
@@ -1612,9 +1642,6 @@ export const ChatPanel = observer(function ChatPanel({
                 "messages to AI SDK"
               )
               setMessages(aiMessages)
-              setTimeout(() => {
-                scrollViewRef.current?.scrollToEnd({ animated: false })
-              }, 50)
             }
           }
         })
@@ -1735,9 +1762,6 @@ export const ChatPanel = observer(function ChatPanel({
         return baseMessage
       })
       setMessages(aiMessages)
-      setTimeout(() => {
-        scrollViewRef.current?.scrollToEnd({ animated: false })
-      }, 50)
     } else if (currentSessionId) {
       if (initialMessageRef.current?.trim()) {
         return
@@ -1751,33 +1775,44 @@ export const ChatPanel = observer(function ChatPanel({
     onStreamingChange?.(isStreaming)
   }, [isStreaming, onStreamingChange])
 
-  // Auto-scroll to bottom when messages change or streaming updates
+  // Auto-scroll to bottom when messages change
+  // On native, streaming follow is handled entirely by onContentSizeChange
+  // so this effect only fires for discrete events (new message added, first load).
+  // On web, messages ref changes are still used for follow (existing behaviour).
   const isFirstLoadRef = useRef(true)
 
   useEffect(() => {
     isFirstLoadRef.current = true
     isUserAtBottomRef.current = true
+    stickToBottomRef.current = true
+    prevDisplayLengthRef.current = 0
   }, [currentSessionId])
 
   useEffect(() => {
     if (displayMessages.length === 0) return
 
-    if (displayMessages.length === 1 && (isFirstLoadRef.current || isUserAtBottomRef.current)) {
-      // First message: scroll to top
+    const isNewMessage = displayMessages.length !== prevDisplayLengthRef.current
+    prevDisplayLengthRef.current = displayMessages.length
+
+    // On native, skip streaming-token updates — onContentSizeChange handles follow
+    if (isNative && !isNewMessage && !isFirstLoadRef.current) {
+      return
+    }
+
+    if (displayMessages.length === 1 && (isFirstLoadRef.current || shouldFollowBottom())) {
       scrollViewRef.current?.scrollTo({ y: 0, animated: false })
       isFirstLoadRef.current = false
       return
     }
 
-    const shouldScrollToBottom =
-      displayMessages.length > 1 && (isFirstLoadRef.current || isUserAtBottomRef.current)
+    const shouldScroll =
+      displayMessages.length > 1 && (isFirstLoadRef.current || shouldFollowBottom())
 
-    if (shouldScrollToBottom) {
-      const animated = !isFirstLoadRef.current
-      scrollViewRef.current?.scrollToEnd({ animated })
+    if (shouldScroll) {
+      scrollToBottomIfFollowing(!isFirstLoadRef.current)
       isFirstLoadRef.current = false
     }
-  }, [displayMessages.length, messages, currentSessionId])
+  }, [displayMessages.length, messages, currentSessionId, isNative, shouldFollowBottom, scrollToBottomIfFollowing])
 
   // Detect a pending ask_user tool call in the last assistant message
   const hasPendingQuestion = useMemo(() => {
@@ -1813,6 +1848,9 @@ export const ChatPanel = observer(function ChatPanel({
       }
 
       const trimmedContent = content.trim()
+      if (Platform.OS !== "web") {
+        stickToBottomRef.current = true
+      }
       lastUserInputRef.current = { content: trimmedContent, files: fileArray }
 
       const parts: Array<
@@ -2142,12 +2180,30 @@ export const ChatPanel = observer(function ChatPanel({
             keyboardShouldPersistTaps="handled"
             onScroll={(e) => {
               const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent
-              const isAtBottom =
-                contentSize.height - contentOffset.y - layoutMeasurement.height < 100
-              isUserAtBottomRef.current = isAtBottom
+
+              if (!isNative) {
+                const isAtBottom =
+                  contentSize.height - contentOffset.y - layoutMeasurement.height < 100
+                isUserAtBottomRef.current = isAtBottom
+              }
 
               if (contentOffset.y < 50 && !isLoadingOlderRef.current) {
                 handleLoadOlderMessages()
+              }
+            }}
+            onScrollBeginDrag={() => {
+              if (isNative) {
+                stickToBottomRef.current = false
+              }
+            }}
+            onScrollEndDrag={(e) => {
+              if (isNative) {
+                syncStickFromNativeEvent(e)
+              }
+            }}
+            onMomentumScrollEnd={(e) => {
+              if (isNative) {
+                syncStickFromNativeEvent(e)
               }
             }}
             onContentSizeChange={(_w, h) => {
@@ -2156,6 +2212,8 @@ export const ChatPanel = observer(function ChatPanel({
                 if (delta > 0 && contentHeightBeforeLoadRef.current > 0) {
                   scrollViewRef.current?.scrollTo({ y: delta, animated: false })
                 }
+              } else if (isNative && stickToBottomRef.current && contentHeightBeforeLoadRef.current > 0) {
+                scrollViewRef.current?.scrollToEnd({ animated: false })
               }
               contentHeightBeforeLoadRef.current = h
             }}
