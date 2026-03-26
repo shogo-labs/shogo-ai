@@ -12,7 +12,7 @@ import {
   InteractionManager,
   Share,
   useWindowDimensions,
-  KeyboardAvoidingView,
+  Keyboard,
 } from 'react-native'
 import { AgentClient, type FileNode, type SearchResult } from '@shogo-ai/sdk/agent'
 import { agentFetch } from '../../../lib/agent-fetch'
@@ -55,6 +55,9 @@ const WORKSPACE_FILES = [
   { id: 'MEMORY.md', label: 'Memory', description: 'Long-lived facts' },
   { id: 'TOOLS.md', label: 'Tools', description: 'Tool notes and conventions' },
 ]
+
+/** Equivalent to Tailwind `bottom-16` (16 × 4px = 64). Used as the base offset for the new-file dialog. */
+const NEW_DIALOG_BOTTOM = 64
 
 /** Matches 8 + depth×16px using Tailwind padding (deep trees clamp to last step). */
 const TREE_INDENT_CLASSES = [
@@ -232,6 +235,20 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}M`
 }
 
+/** WebKit/Safari (incl. iOS) often ignore `click()` on a detached file input — keep it in the document. */
+function mountWebFileInput(input: HTMLInputElement): () => void {
+  input.style.cssText = 'position:fixed;left:-9999px;opacity:0;width:1px;height:1px;pointer-events:none'
+  document.body.appendChild(input)
+  const remove = () => {
+    if (input.parentNode) input.parentNode.removeChild(input)
+  }
+  const fallback = window.setTimeout(remove, 120_000)
+  return () => {
+    window.clearTimeout(fallback)
+    remove()
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main Panel
 // ---------------------------------------------------------------------------
@@ -270,8 +287,29 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
   const [showNewDialog, setShowNewDialog] = useState<'file' | 'folder' | null>(null)
   const [newName, setNewName] = useState('')
   const [newItemParentDir, setNewItemParentDir] = useState<string | null>(null)
+  const [androidKeyboardHeight, setAndroidKeyboardHeight] = useState(0)
 
   const hasChanges = content !== savedContent
+
+  // Android's soft keyboard overlaps absolutely-positioned elements even with
+  // adjustResize, so we track the keyboard height and shift the dialog up manually.
+  // Not needed on iOS (KeyboardAvoidingView / adjustPan handle it) or web.
+  useEffect(() => {
+    if (Platform.OS !== 'android' || !showNewDialog) {
+      setAndroidKeyboardHeight(0)
+      return
+    }
+    const onShow = Keyboard.addListener('keyboardDidShow', (e) =>
+      setAndroidKeyboardHeight(e.endCoordinates.height),
+    )
+    const onHide = Keyboard.addListener('keyboardDidHide', () =>
+      setAndroidKeyboardHeight(0),
+    )
+    return () => {
+      onShow.remove()
+      onHide.remove()
+    }
+  }, [showNewDialog])
 
   // -------------------------------------------------------------------------
   // Data Loading
@@ -378,24 +416,31 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
     if (Platform.OS === 'web' && typeof document !== 'undefined') {
       const input = document.createElement('input')
       input.type = 'file'
-      input.accept = '.txt,.csv,.md'
+      input.accept = '.txt,.csv,.md,text/plain,text/csv,text/markdown'
       input.multiple = true
+      const unmount = mountWebFileInput(input)
       input.onchange = async (e: any) => {
-        const files = e.target?.files
-        if (!files?.length) return
+        const fileList = e.target?.files as FileList | undefined
         try {
+          if (!fileList?.length) return
           const formData = new FormData()
           if (directory) {
             formData.append('directory', directory)
           }
-          for (const file of files) {
-            formData.append('files', file)
+          for (let i = 0; i < fileList.length; i++) {
+            formData.append('files', fileList.item(i)!)
           }
-          await client.uploadWorkspaceFiles(formData)
+          const result = await client.uploadWorkspaceFiles(formData)
           loadTree()
-          setError(null)
+          if (result.count === 0) {
+            setError('Upload finished but no files were saved (invalid path or unsupported name).')
+          } else {
+            setError(null)
+          }
         } catch (err: any) {
           setError(err.message)
+        } finally {
+          unmount()
         }
       }
       input.click()
@@ -558,11 +603,12 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
     if (Platform.OS === 'web' && typeof document !== 'undefined') {
       const input = document.createElement('input')
       input.type = 'file'
-      input.accept = '.json'
+      input.accept = '.json,application/json'
+      const unmount = mountWebFileInput(input)
       input.onchange = async (e: any) => {
-        const file = e.target?.files?.[0]
-        if (!file) return
+        const file = e.target?.files?.[0] as File | undefined
         try {
+          if (!file) return
           const text = await file.text()
           const bundle = JSON.parse(text)
           await client.importAgentBundle(bundle)
@@ -572,6 +618,8 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
           setError(null)
         } catch (err: any) {
           setError(err.message || 'Failed to import agent configuration')
+        } finally {
+          unmount()
         }
       }
       input.click()
@@ -834,11 +882,10 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
 
         {/* New file/folder dialog */}
         {showNewDialog && (
-          <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : Platform.OS === 'android' ? 'height' : undefined}
-            className="absolute bottom-16 left-2 right-2 z-10"
+          <View
+            className="absolute left-2 right-2 bg-background border border-border rounded-lg p-3 shadow-lg z-10"
+            style={{ bottom: NEW_DIALOG_BOTTOM + androidKeyboardHeight }}
           >
-            <View className="bg-background border border-border rounded-lg p-3 shadow-lg">
             <Text className="text-xs font-medium text-foreground mb-2">
               {newItemParentDir
                 ? `New ${showNewDialog === 'file' ? 'File' : 'Folder'} in ${newItemParentDir}/`
@@ -871,8 +918,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
                 <Text className="text-xs text-primary-foreground">Create</Text>
               </Pressable>
             </View>
-            </View>
-          </KeyboardAvoidingView>
+          </View>
         )}
       </View>
 
