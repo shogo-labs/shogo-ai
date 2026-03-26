@@ -1260,8 +1260,6 @@ const PEOPLE_MOBILE_BREAKPOINT = 768
 const PeopleTab = observer(function PeopleTab() {
   const { width } = useWindowDimensions()
   const isMobilePeopleLayout = width < PEOPLE_MOBILE_BREAKPOINT
-  const membersTableMinWidth = isMobilePeopleLayout ? Math.max(width + 300, 720) : undefined
-  const sentInvitationsTableMinWidth = isMobilePeopleLayout ? Math.max(width + 240, 600) : undefined
 
   const { user } = useAuth()
   const workspaces = useWorkspaceCollection()
@@ -1723,26 +1721,30 @@ const PeopleTab = observer(function PeopleTab() {
           <>
             <View
               className={cn(
-                'flex-row items-center border border-border rounded-lg px-3 h-9',
-                isMobilePeopleLayout ? 'w-full' : 'flex-1 min-w-[160px]'
+                'flex-row items-center border border-border rounded-lg px-3',
+                isMobilePeopleLayout ? 'w-full h-11' : 'h-9 flex-1 min-w-[160px]'
               )}
             >
-              <Search size={14} className="text-muted-foreground mr-2" />
+              <Search size={14} className="text-muted-foreground mr-2 shrink-0" />
               <TextInput
                 value={search}
                 onChangeText={setSearch}
                 placeholder="Search..."
-                className="flex-1 text-sm text-foreground placeholder:text-muted-foreground web:outline-none"
+                className={cn(
+                  'flex-1 text-sm text-foreground placeholder:text-muted-foreground web:outline-none web:min-h-0',
+                  isMobilePeopleLayout && 'py-0 leading-5 web:py-1.5'
+                )}
                 autoCapitalize="none"
                 autoCorrect={false}
+                textAlignVertical={isMobilePeopleLayout ? 'center' : undefined}
               />
             </View>
 
             <Pressable
               onPress={() => setShowRoleFilter(true)}
               className={cn(
-                'flex-row items-center h-9 px-3 border border-border rounded-lg gap-1.5',
-                isMobilePeopleLayout && 'w-full justify-between'
+                'flex-row items-center px-3 border border-border rounded-lg gap-1.5',
+                isMobilePeopleLayout ? 'w-full justify-between h-11' : 'h-9'
               )}
             >
               <Text className="text-sm text-foreground">
@@ -1758,8 +1760,8 @@ const PeopleTab = observer(function PeopleTab() {
         <Pressable
           onPress={() => setShowInviteModal(true)}
           className={cn(
-            'h-9 flex-row items-center gap-1.5 px-3 bg-primary rounded-lg',
-            isMobilePeopleLayout && 'w-full justify-center'
+            'flex-row items-center gap-1.5 px-3 bg-primary rounded-lg',
+            isMobilePeopleLayout ? 'w-full justify-center h-11' : 'h-9'
           )}
         >
           <UserPlus size={14} className="text-primary-foreground" />
@@ -1790,9 +1792,10 @@ const PeopleTab = observer(function PeopleTab() {
                     horizontal
                     nestedScrollEnabled
                     showsHorizontalScrollIndicator={Platform.OS !== 'web'}
+                    className="w-full max-w-full"
                     style={{ flexGrow: 0 }}
                   >
-                    <View style={{ minWidth: membersTableMinWidth }}>{memberListTable}</View>
+                    <View>{memberListTable}</View>
                   </ScrollView>
                 ) : (
                   memberListTable
@@ -1906,9 +1909,10 @@ const PeopleTab = observer(function PeopleTab() {
                     horizontal
                     nestedScrollEnabled
                     showsHorizontalScrollIndicator={Platform.OS !== 'web'}
+                    className="w-full max-w-full"
                     style={{ flexGrow: 0 }}
                   >
-                    <View style={{ minWidth: sentInvitationsTableMinWidth }}>{sentInvitationListTable}</View>
+                    <View>{sentInvitationListTable}</View>
                   </ScrollView>
                 ) : (
                   sentInvitationListTable
