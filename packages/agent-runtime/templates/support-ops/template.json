@@ -1,0 +1,43 @@
+{
+  "id": "support-ops",
+  "name": "Support Operations",
+  "description": "Ticket triage, incident management, SLA monitoring, email-to-Slack alerting, and escalation automation with multi-surface ops dashboards.",
+  "category": "operations",
+  "icon": "🎫",
+  "tags": [
+    "support",
+    "tickets",
+    "incidents",
+    "sla",
+    "triage",
+    "escalation",
+    "email",
+    "slack",
+    "alerts"
+  ],
+  "settings": {
+    "heartbeatInterval": 300,
+    "heartbeatEnabled": true,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-5"
+  },
+  "integrations": [
+    {
+      "categoryId": "ticketing",
+      "description": "Triage and manage support tickets",
+      "required": true
+    },
+    {
+      "categoryId": "monitoring",
+      "description": "Track errors and correlate with incidents"
+    },
+    {
+      "categoryId": "communication",
+      "description": "Route alerts and escalations"
+    },
+    {
+      "categoryId": "email",
+      "description": "Monitor support email and forward alerts"
+    }
+  ]
+}

@@ -1,0 +1,414 @@
+{
+  "surfaces": {
+    "pr_queue": {
+      "surfaceId": "pr_queue",
+      "title": "PR Queue",
+      "components": {
+        "root": {
+          "id": "root",
+          "component": "Column",
+          "children": [
+            "header",
+            "kpis",
+            "prs_card",
+            "getting_started"
+          ],
+          "gap": "lg"
+        },
+        "header": {
+          "id": "header",
+          "component": "Row",
+          "children": [
+            "title",
+            "ci_badge"
+          ],
+          "align": "center",
+          "justify": "between"
+        },
+        "title": {
+          "id": "title",
+          "component": "Text",
+          "text": "🐙 PR Queue",
+          "variant": "h2"
+        },
+        "ci_badge": {
+          "id": "ci_badge",
+          "component": "Badge",
+          "text": "Connect GitHub to start",
+          "variant": "outline"
+        },
+        "kpis": {
+          "id": "kpis",
+          "component": "Grid",
+          "columns": 4,
+          "children": [
+            "kpi_open",
+            "kpi_review",
+            "kpi_stale",
+            "kpi_merged"
+          ]
+        },
+        "kpi_open": {
+          "id": "kpi_open",
+          "component": "Metric",
+          "label": "Open PRs",
+          "value": {
+            "path": "/metrics/openPrs"
+          }
+        },
+        "kpi_review": {
+          "id": "kpi_review",
+          "component": "Metric",
+          "label": "Awaiting Review",
+          "value": {
+            "path": "/metrics/awaitingReview"
+          }
+        },
+        "kpi_stale": {
+          "id": "kpi_stale",
+          "component": "Metric",
+          "label": "Stale (>48h)",
+          "value": {
+            "path": "/metrics/stalePrs"
+          }
+        },
+        "kpi_merged": {
+          "id": "kpi_merged",
+          "component": "Metric",
+          "label": "Merged (7d)",
+          "value": {
+            "path": "/metrics/mergedWeek"
+          }
+        },
+        "prs_card": {
+          "id": "prs_card",
+          "component": "Card",
+          "title": "Pull Requests",
+          "description": "Open PRs sorted by age",
+          "child": "prs_placeholder"
+        },
+        "prs_placeholder": {
+          "id": "prs_placeholder",
+          "component": "Text",
+          "text": "Connect GitHub and I'll populate this with your open PRs, auto-review small changes, and flag stale PRs needing attention.",
+          "variant": "muted"
+        },
+        "getting_started": {
+          "id": "getting_started",
+          "component": "Card",
+          "title": "🚀 Getting Started",
+          "child": "gs_text"
+        },
+        "gs_text": {
+          "id": "gs_text",
+          "component": "Text",
+          "text": "Say \"Connect my GitHub\" — I'll fetch your repos, triage PRs, and start auto-reviewing.",
+          "variant": "muted"
+        }
+      },
+      "dataModel": {
+        "metrics": {
+          "openPrs": "—",
+          "awaitingReview": "—",
+          "stalePrs": "—",
+          "mergedWeek": "—"
+        }
+      },
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    },
+    "team_activity": {
+      "surfaceId": "team_activity",
+      "title": "Team Activity",
+      "components": {
+        "root": {
+          "id": "root",
+          "component": "Column",
+          "children": [
+            "header",
+            "kpis",
+            "standup_card",
+            "feed_card"
+          ],
+          "gap": "lg"
+        },
+        "header": {
+          "id": "header",
+          "component": "Row",
+          "children": [
+            "title",
+            "date_badge"
+          ],
+          "align": "center",
+          "justify": "between"
+        },
+        "title": {
+          "id": "title",
+          "component": "Text",
+          "text": "📊 Team Activity",
+          "variant": "h2"
+        },
+        "date_badge": {
+          "id": "date_badge",
+          "component": "Badge",
+          "text": "Not yet generated",
+          "variant": "outline"
+        },
+        "kpis": {
+          "id": "kpis",
+          "component": "Grid",
+          "columns": 4,
+          "children": [
+            "kpi_commits",
+            "kpi_prs",
+            "kpi_reviews",
+            "kpi_velocity"
+          ]
+        },
+        "kpi_commits": {
+          "id": "kpi_commits",
+          "component": "Metric",
+          "label": "Commits (24h)",
+          "value": {
+            "path": "/metrics/commits"
+          }
+        },
+        "kpi_prs": {
+          "id": "kpi_prs",
+          "component": "Metric",
+          "label": "PRs Merged",
+          "value": {
+            "path": "/metrics/prsMerged"
+          }
+        },
+        "kpi_reviews": {
+          "id": "kpi_reviews",
+          "component": "Metric",
+          "label": "Reviews",
+          "value": {
+            "path": "/metrics/reviews"
+          }
+        },
+        "kpi_velocity": {
+          "id": "kpi_velocity",
+          "component": "Metric",
+          "label": "Velocity",
+          "value": {
+            "path": "/metrics/velocity"
+          }
+        },
+        "standup_card": {
+          "id": "standup_card",
+          "component": "Card",
+          "title": "Standup Summary",
+          "description": "Auto-generated from git activity",
+          "child": "standup_placeholder"
+        },
+        "standup_placeholder": {
+          "id": "standup_placeholder",
+          "component": "Text",
+          "text": "Once GitHub is connected, standup summaries will be auto-generated here each morning with per-developer Done / In Progress / Blockers.",
+          "variant": "muted"
+        },
+        "feed_card": {
+          "id": "feed_card",
+          "component": "Card",
+          "title": "Activity Feed",
+          "description": "Recent commits, PRs, and reviews",
+          "child": "feed_placeholder"
+        },
+        "feed_placeholder": {
+          "id": "feed_placeholder",
+          "component": "Text",
+          "text": "A chronological feed of engineering activity across your tracked repos.",
+          "variant": "muted"
+        }
+      },
+      "dataModel": {
+        "metrics": {
+          "commits": "—",
+          "prsMerged": "—",
+          "reviews": "—",
+          "velocity": "—"
+        }
+      },
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    },
+    "release_notes": {
+      "surfaceId": "release_notes",
+      "title": "Release Notes",
+      "components": {
+        "root": {
+          "id": "root",
+          "component": "Column",
+          "children": [
+            "header",
+            "kpis",
+            "changelog_card",
+            "checklist_card"
+          ],
+          "gap": "lg"
+        },
+        "header": {
+          "id": "header",
+          "component": "Row",
+          "children": [
+            "title",
+            "version_badge"
+          ],
+          "align": "center",
+          "justify": "between"
+        },
+        "title": {
+          "id": "title",
+          "component": "Text",
+          "text": "🚀 Release Notes",
+          "variant": "h2"
+        },
+        "version_badge": {
+          "id": "version_badge",
+          "component": "Badge",
+          "text": "No repos connected",
+          "variant": "outline"
+        },
+        "kpis": {
+          "id": "kpis",
+          "component": "Grid",
+          "columns": 3,
+          "children": [
+            "kpi_unreleased",
+            "kpi_days",
+            "kpi_deploy"
+          ]
+        },
+        "kpi_unreleased": {
+          "id": "kpi_unreleased",
+          "component": "Metric",
+          "label": "Unreleased PRs",
+          "value": {
+            "path": "/metrics/unreleased"
+          }
+        },
+        "kpi_days": {
+          "id": "kpi_days",
+          "component": "Metric",
+          "label": "Days Since Release",
+          "value": {
+            "path": "/metrics/daysSince"
+          }
+        },
+        "kpi_deploy": {
+          "id": "kpi_deploy",
+          "component": "Metric",
+          "label": "Deploy Status",
+          "value": {
+            "path": "/metrics/deployStatus"
+          }
+        },
+        "changelog_card": {
+          "id": "changelog_card",
+          "component": "Card",
+          "title": "Unreleased Changes",
+          "description": "PRs merged since last release",
+          "child": "changelog_placeholder"
+        },
+        "changelog_placeholder": {
+          "id": "changelog_placeholder",
+          "component": "Text",
+          "text": "I'll automatically track merged PRs and generate changelogs grouped by Features, Fixes, and Breaking Changes.",
+          "variant": "muted"
+        },
+        "checklist_card": {
+          "id": "checklist_card",
+          "component": "Card",
+          "title": "Deployment Checklist",
+          "description": "Pre-release steps",
+          "child": "checklist_content"
+        },
+        "checklist_content": {
+          "id": "checklist_content",
+          "component": "Column",
+          "children": [
+            "step1",
+            "step2",
+            "step3"
+          ],
+          "gap": "sm"
+        },
+        "step1": {
+          "id": "step1",
+          "component": "Row",
+          "children": [
+            "s1_badge",
+            "s1_text"
+          ],
+          "align": "center",
+          "gap": "sm"
+        },
+        "s1_badge": {
+          "id": "s1_badge",
+          "component": "Badge",
+          "text": "1",
+          "variant": "secondary"
+        },
+        "s1_text": {
+          "id": "s1_text",
+          "component": "Text",
+          "text": "Review changelog and breaking changes"
+        },
+        "step2": {
+          "id": "step2",
+          "component": "Row",
+          "children": [
+            "s2_badge",
+            "s2_text"
+          ],
+          "align": "center",
+          "gap": "sm"
+        },
+        "s2_badge": {
+          "id": "s2_badge",
+          "component": "Badge",
+          "text": "2",
+          "variant": "secondary"
+        },
+        "s2_text": {
+          "id": "s2_text",
+          "component": "Text",
+          "text": "Verify CI pipeline is green"
+        },
+        "step3": {
+          "id": "step3",
+          "component": "Row",
+          "children": [
+            "s3_badge",
+            "s3_text"
+          ],
+          "align": "center",
+          "gap": "sm"
+        },
+        "s3_badge": {
+          "id": "s3_badge",
+          "component": "Badge",
+          "text": "3",
+          "variant": "secondary"
+        },
+        "s3_text": {
+          "id": "s3_text",
+          "component": "Text",
+          "text": "Tag release and notify stakeholders"
+        }
+      },
+      "dataModel": {
+        "metrics": {
+          "unreleased": "—",
+          "daysSince": "—",
+          "deployStatus": "—"
+        }
+      },
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    }
+  }
+}

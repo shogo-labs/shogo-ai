@@ -1,0 +1,288 @@
+{
+  "surfaces": {
+    "sales_pipeline": {
+      "surfaceId": "sales_pipeline",
+      "title": "Sales Pipeline",
+      "components": {
+        "root": {
+          "id": "root",
+          "component": "Column",
+          "children": [
+            "header",
+            "kpis",
+            "board",
+            "getting_started"
+          ],
+          "gap": "lg"
+        },
+        "header": {
+          "id": "header",
+          "component": "Row",
+          "children": [
+            "title",
+            "status_badge"
+          ],
+          "align": "center",
+          "justify": "between"
+        },
+        "title": {
+          "id": "title",
+          "component": "Text",
+          "text": "🏆 Sales Pipeline",
+          "variant": "h2"
+        },
+        "status_badge": {
+          "id": "status_badge",
+          "component": "Badge",
+          "text": "Ready to set up",
+          "variant": "outline"
+        },
+        "kpis": {
+          "id": "kpis",
+          "component": "Grid",
+          "columns": 4,
+          "children": [
+            "kpi_value",
+            "kpi_deals",
+            "kpi_conversion",
+            "kpi_avg"
+          ]
+        },
+        "kpi_value": {
+          "id": "kpi_value",
+          "component": "Metric",
+          "label": "Pipeline Value",
+          "value": {
+            "path": "/metrics/value"
+          },
+          "unit": "$"
+        },
+        "kpi_deals": {
+          "id": "kpi_deals",
+          "component": "Metric",
+          "label": "Active Deals",
+          "value": {
+            "path": "/metrics/deals"
+          }
+        },
+        "kpi_conversion": {
+          "id": "kpi_conversion",
+          "component": "Metric",
+          "label": "Win Rate",
+          "value": {
+            "path": "/metrics/conversion"
+          }
+        },
+        "kpi_avg": {
+          "id": "kpi_avg",
+          "component": "Metric",
+          "label": "Avg Deal Size",
+          "value": {
+            "path": "/metrics/avgDeal"
+          },
+          "unit": "$"
+        },
+        "board": {
+          "id": "board",
+          "component": "Grid",
+          "columns": 5,
+          "gap": "md",
+          "children": [
+            "new_col",
+            "qualified_col",
+            "proposal_col",
+            "negotiation_col",
+            "closed_col"
+          ]
+        },
+        "new_col": {
+          "id": "new_col",
+          "component": "Card",
+          "title": "🆕 New",
+          "child": "new_ph"
+        },
+        "new_ph": {
+          "id": "new_ph",
+          "component": "Text",
+          "text": "New leads",
+          "variant": "muted"
+        },
+        "qualified_col": {
+          "id": "qualified_col",
+          "component": "Card",
+          "title": "✅ Qualified",
+          "child": "qual_ph"
+        },
+        "qual_ph": {
+          "id": "qual_ph",
+          "component": "Text",
+          "text": "Qualified leads",
+          "variant": "muted"
+        },
+        "proposal_col": {
+          "id": "proposal_col",
+          "component": "Card",
+          "title": "📄 Proposal",
+          "child": "prop_ph"
+        },
+        "prop_ph": {
+          "id": "prop_ph",
+          "component": "Text",
+          "text": "Proposals sent",
+          "variant": "muted"
+        },
+        "negotiation_col": {
+          "id": "negotiation_col",
+          "component": "Card",
+          "title": "🤝 Negotiation",
+          "child": "neg_ph"
+        },
+        "neg_ph": {
+          "id": "neg_ph",
+          "component": "Text",
+          "text": "In negotiation",
+          "variant": "muted"
+        },
+        "closed_col": {
+          "id": "closed_col",
+          "component": "Card",
+          "title": "🏆 Won",
+          "child": "won_ph"
+        },
+        "won_ph": {
+          "id": "won_ph",
+          "component": "Text",
+          "text": "Closed deals",
+          "variant": "muted"
+        },
+        "getting_started": {
+          "id": "getting_started",
+          "component": "Card",
+          "title": "🚀 Getting Started",
+          "child": "gs_text"
+        },
+        "gs_text": {
+          "id": "gs_text",
+          "component": "Text",
+          "text": "Tell me about your sales process and I'll set up a pipeline with deal tracking and revenue forecasting.",
+          "variant": "muted"
+        }
+      },
+      "dataModel": {
+        "metrics": {
+          "value": "—",
+          "deals": "0",
+          "conversion": "—",
+          "avgDeal": "—"
+        }
+      },
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    },
+    "revenue_dashboard": {
+      "surfaceId": "revenue_dashboard",
+      "title": "Revenue Dashboard",
+      "components": {
+        "root": {
+          "id": "root",
+          "component": "Column",
+          "children": [
+            "header",
+            "kpis",
+            "payments_card"
+          ],
+          "gap": "lg"
+        },
+        "header": {
+          "id": "header",
+          "component": "Row",
+          "children": [
+            "title",
+            "status_badge"
+          ],
+          "align": "center",
+          "justify": "between"
+        },
+        "title": {
+          "id": "title",
+          "component": "Text",
+          "text": "💰 Revenue Dashboard",
+          "variant": "h2"
+        },
+        "status_badge": {
+          "id": "status_badge",
+          "component": "Badge",
+          "text": "Connect Stripe to start",
+          "variant": "outline"
+        },
+        "kpis": {
+          "id": "kpis",
+          "component": "Grid",
+          "columns": 4,
+          "children": [
+            "kpi_mrr",
+            "kpi_balance",
+            "kpi_pending",
+            "kpi_customers"
+          ]
+        },
+        "kpi_mrr": {
+          "id": "kpi_mrr",
+          "component": "Metric",
+          "label": "MRR",
+          "value": {
+            "path": "/metrics/mrr"
+          },
+          "unit": "$"
+        },
+        "kpi_balance": {
+          "id": "kpi_balance",
+          "component": "Metric",
+          "label": "Balance",
+          "value": {
+            "path": "/metrics/balance"
+          },
+          "unit": "$"
+        },
+        "kpi_pending": {
+          "id": "kpi_pending",
+          "component": "Metric",
+          "label": "Pending",
+          "value": {
+            "path": "/metrics/pending"
+          }
+        },
+        "kpi_customers": {
+          "id": "kpi_customers",
+          "component": "Metric",
+          "label": "Customers",
+          "value": {
+            "path": "/metrics/customers"
+          }
+        },
+        "payments_card": {
+          "id": "payments_card",
+          "component": "Card",
+          "title": "Payment Activity",
+          "child": "payments_placeholder"
+        },
+        "payments_placeholder": {
+          "id": "payments_placeholder",
+          "component": "Text",
+          "text": "Say \"Connect Stripe\" and I'll pull live revenue data with trend charts and failed payment alerts.",
+          "variant": "muted"
+        }
+      },
+      "dataModel": {
+        "metrics": {
+          "mrr": "—",
+          "balance": "—",
+          "pending": "—",
+          "customers": "—"
+        }
+      },
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    }
+  }
+}

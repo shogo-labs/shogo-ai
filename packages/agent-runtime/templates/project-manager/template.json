@@ -1,0 +1,38 @@
+{
+  "id": "project-manager",
+  "name": "Project Manager",
+  "description": "Kanban board, sprint planning, standup collection, and team velocity tracking with multi-surface project dashboards.",
+  "category": "development",
+  "icon": "📋",
+  "tags": [
+    "project",
+    "kanban",
+    "sprint",
+    "tasks",
+    "standups",
+    "velocity",
+    "agile",
+    "scrum"
+  ],
+  "settings": {
+    "heartbeatInterval": 1800,
+    "heartbeatEnabled": true,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-5"
+  },
+  "integrations": [
+    {
+      "categoryId": "project-management",
+      "description": "Track tasks, sprints, and backlog",
+      "required": true
+    },
+    {
+      "categoryId": "communication",
+      "description": "Deliver standups and team notifications"
+    },
+    {
+      "categoryId": "code-repository",
+      "description": "Track commits and pull request activity"
+    }
+  ]
+}

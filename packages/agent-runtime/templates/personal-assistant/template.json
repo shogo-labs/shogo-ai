@@ -1,0 +1,48 @@
+{
+  "id": "personal-assistant",
+  "name": "Personal Assistant",
+  "description": "Daily planner, meeting prep, habit tracking, journaling, travel planning, and expense management — your unified personal productivity hub.",
+  "category": "personal",
+  "icon": "⚡",
+  "tags": [
+    "personal",
+    "planner",
+    "meetings",
+    "habits",
+    "journal",
+    "travel",
+    "expenses",
+    "fitness",
+    "reminders",
+    "calendar"
+  ],
+  "settings": {
+    "heartbeatInterval": 1800,
+    "heartbeatEnabled": true,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-5",
+    "quietHours": {
+      "start": "22:00",
+      "end": "07:00",
+      "timezone": "UTC"
+    }
+  },
+  "integrations": [
+    {
+      "categoryId": "calendar",
+      "description": "Sync your schedule and manage meetings"
+    },
+    {
+      "categoryId": "email",
+      "description": "Summarize emails and draft replies"
+    },
+    {
+      "categoryId": "notes",
+      "description": "Store notes, lists, and knowledge"
+    },
+    {
+      "categoryId": "travel",
+      "description": "Search and plan trips"
+    }
+  ]
+}

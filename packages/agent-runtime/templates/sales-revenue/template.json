@@ -1,0 +1,43 @@
+{
+  "id": "sales-revenue",
+  "name": "Sales & Revenue",
+  "description": "Pipeline management, deal tracking, client onboarding, revenue dashboards, and Stripe integration with multi-surface sales views.",
+  "category": "sales",
+  "icon": "🏆",
+  "tags": [
+    "sales",
+    "pipeline",
+    "deals",
+    "revenue",
+    "stripe",
+    "onboarding",
+    "crm",
+    "invoicing",
+    "forecasting"
+  ],
+  "settings": {
+    "heartbeatInterval": 1800,
+    "heartbeatEnabled": true,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-5"
+  },
+  "integrations": [
+    {
+      "categoryId": "payments",
+      "description": "Track revenue, invoices, and payment status",
+      "required": true
+    },
+    {
+      "categoryId": "crm",
+      "description": "Manage deals, contacts, and pipeline"
+    },
+    {
+      "categoryId": "email",
+      "description": "Send outreach and track conversations"
+    },
+    {
+      "categoryId": "communication",
+      "description": "Post deal alerts and team updates"
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "id": "hr-recruiting",
+  "name": "HR & Recruiting",
+  "description": "Hiring pipeline management, candidate tracking, interview scheduling, and recruiting metrics with multi-surface talent dashboards.",
+  "category": "business",
+  "icon": "👥",
+  "tags": [
+    "hiring",
+    "recruiting",
+    "candidates",
+    "interviews",
+    "pipeline",
+    "hr",
+    "onboarding",
+    "talent"
+  ],
+  "settings": {
+    "heartbeatInterval": 3600,
+    "heartbeatEnabled": true,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-5"
+  },
+  "integrations": [
+    {
+      "categoryId": "calendar",
+      "description": "Schedule interviews and track availability"
+    },
+    {
+      "categoryId": "email",
+      "description": "Communicate with candidates"
+    },
+    {
+      "categoryId": "communication",
+      "description": "Coordinate with hiring teams"
+    }
+  ]
+}

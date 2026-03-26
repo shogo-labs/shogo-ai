@@ -1,0 +1,283 @@
+{
+  "surfaces": {
+    "ticket_queue": {
+      "surfaceId": "ticket_queue",
+      "title": "Ticket Queue",
+      "components": {
+        "root": {
+          "id": "root",
+          "component": "Column",
+          "children": [
+            "header",
+            "kpis",
+            "tickets_card",
+            "getting_started"
+          ],
+          "gap": "lg"
+        },
+        "header": {
+          "id": "header",
+          "component": "Row",
+          "children": [
+            "title",
+            "status_badge"
+          ],
+          "align": "center",
+          "justify": "between"
+        },
+        "title": {
+          "id": "title",
+          "component": "Text",
+          "text": "🎫 Ticket Queue",
+          "variant": "h2"
+        },
+        "status_badge": {
+          "id": "status_badge",
+          "component": "Badge",
+          "text": "Connect ticketing tool",
+          "variant": "outline"
+        },
+        "kpis": {
+          "id": "kpis",
+          "component": "Grid",
+          "columns": 4,
+          "children": [
+            "kpi_open",
+            "kpi_resolved",
+            "kpi_response",
+            "kpi_csat"
+          ]
+        },
+        "kpi_open": {
+          "id": "kpi_open",
+          "component": "Metric",
+          "label": "Open",
+          "value": {
+            "path": "/metrics/open"
+          }
+        },
+        "kpi_resolved": {
+          "id": "kpi_resolved",
+          "component": "Metric",
+          "label": "Resolved (7d)",
+          "value": {
+            "path": "/metrics/resolved"
+          }
+        },
+        "kpi_response": {
+          "id": "kpi_response",
+          "component": "Metric",
+          "label": "Avg Response",
+          "value": {
+            "path": "/metrics/responseTime"
+          }
+        },
+        "kpi_csat": {
+          "id": "kpi_csat",
+          "component": "Metric",
+          "label": "CSAT",
+          "value": {
+            "path": "/metrics/csat"
+          }
+        },
+        "tickets_card": {
+          "id": "tickets_card",
+          "component": "Card",
+          "title": "Tickets by Priority",
+          "child": "tickets_content"
+        },
+        "tickets_content": {
+          "id": "tickets_content",
+          "component": "Column",
+          "children": [
+            "p0_row",
+            "p1_row",
+            "p2_row"
+          ],
+          "gap": "sm"
+        },
+        "p0_row": {
+          "id": "p0_row",
+          "component": "Row",
+          "children": [
+            "p0_badge",
+            "p0_text"
+          ],
+          "align": "center",
+          "gap": "sm"
+        },
+        "p0_badge": {
+          "id": "p0_badge",
+          "component": "Badge",
+          "text": "P0 Critical",
+          "variant": "destructive"
+        },
+        "p0_text": {
+          "id": "p0_text",
+          "component": "Text",
+          "text": "Immediate alert + escalation",
+          "variant": "muted"
+        },
+        "p1_row": {
+          "id": "p1_row",
+          "component": "Row",
+          "children": [
+            "p1_badge",
+            "p1_text"
+          ],
+          "align": "center",
+          "gap": "sm"
+        },
+        "p1_badge": {
+          "id": "p1_badge",
+          "component": "Badge",
+          "text": "P1 High",
+          "variant": "default"
+        },
+        "p1_text": {
+          "id": "p1_text",
+          "component": "Text",
+          "text": "Alert within 15 minutes",
+          "variant": "muted"
+        },
+        "p2_row": {
+          "id": "p2_row",
+          "component": "Row",
+          "children": [
+            "p2_badge",
+            "p2_text"
+          ],
+          "align": "center",
+          "gap": "sm"
+        },
+        "p2_badge": {
+          "id": "p2_badge",
+          "component": "Badge",
+          "text": "P2 Medium",
+          "variant": "secondary"
+        },
+        "p2_text": {
+          "id": "p2_text",
+          "component": "Text",
+          "text": "Included in daily digest",
+          "variant": "muted"
+        },
+        "getting_started": {
+          "id": "getting_started",
+          "component": "Card",
+          "title": "🚀 Getting Started",
+          "child": "gs_text"
+        },
+        "gs_text": {
+          "id": "gs_text",
+          "component": "Text",
+          "text": "Say \"Connect Zendesk\" or \"Connect Linear\" — I'll pull tickets, auto-triage, and build SLA tracking.",
+          "variant": "muted"
+        }
+      },
+      "dataModel": {
+        "metrics": {
+          "open": "—",
+          "resolved": "—",
+          "responseTime": "—",
+          "csat": "—"
+        }
+      },
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    },
+    "incident_tracker": {
+      "surfaceId": "incident_tracker",
+      "title": "Incident Tracker",
+      "components": {
+        "root": {
+          "id": "root",
+          "component": "Column",
+          "children": [
+            "header",
+            "kpis",
+            "incidents_card"
+          ],
+          "gap": "lg"
+        },
+        "header": {
+          "id": "header",
+          "component": "Row",
+          "children": [
+            "title",
+            "all_ok_badge"
+          ],
+          "align": "center",
+          "justify": "between"
+        },
+        "title": {
+          "id": "title",
+          "component": "Text",
+          "text": "🚨 Incident Tracker",
+          "variant": "h2"
+        },
+        "all_ok_badge": {
+          "id": "all_ok_badge",
+          "component": "Badge",
+          "text": "No active incidents",
+          "variant": "outline"
+        },
+        "kpis": {
+          "id": "kpis",
+          "component": "Grid",
+          "columns": 3,
+          "children": [
+            "kpi_active",
+            "kpi_mttr",
+            "kpi_total"
+          ]
+        },
+        "kpi_active": {
+          "id": "kpi_active",
+          "component": "Metric",
+          "label": "Active Incidents",
+          "value": {
+            "path": "/metrics/active"
+          }
+        },
+        "kpi_mttr": {
+          "id": "kpi_mttr",
+          "component": "Metric",
+          "label": "Avg MTTR",
+          "value": {
+            "path": "/metrics/mttr"
+          }
+        },
+        "kpi_total": {
+          "id": "kpi_total",
+          "component": "Metric",
+          "label": "Incidents (30d)",
+          "value": {
+            "path": "/metrics/total"
+          }
+        },
+        "incidents_card": {
+          "id": "incidents_card",
+          "component": "Card",
+          "title": "Incident History",
+          "child": "incidents_placeholder"
+        },
+        "incidents_placeholder": {
+          "id": "incidents_placeholder",
+          "component": "Text",
+          "text": "Incidents will be logged here with timelines, affected services, and resolution details.",
+          "variant": "muted"
+        }
+      },
+      "dataModel": {
+        "metrics": {
+          "active": "0",
+          "mttr": "—",
+          "total": "0"
+        }
+      },
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    }
+  }
+}

@@ -1,0 +1,249 @@
+{
+  "surfaces": {
+    "sprint_board": {
+      "surfaceId": "sprint_board",
+      "title": "Sprint Board",
+      "components": {
+        "root": {
+          "id": "root",
+          "component": "Column",
+          "children": [
+            "header",
+            "kpis",
+            "board",
+            "getting_started"
+          ],
+          "gap": "lg"
+        },
+        "header": {
+          "id": "header",
+          "component": "Row",
+          "children": [
+            "title",
+            "sprint_badge"
+          ],
+          "align": "center",
+          "justify": "between"
+        },
+        "title": {
+          "id": "title",
+          "component": "Text",
+          "text": "📋 Sprint Board",
+          "variant": "h2"
+        },
+        "sprint_badge": {
+          "id": "sprint_badge",
+          "component": "Badge",
+          "text": "Ready to set up",
+          "variant": "outline"
+        },
+        "kpis": {
+          "id": "kpis",
+          "component": "Grid",
+          "columns": 4,
+          "children": [
+            "kpi_tasks",
+            "kpi_velocity",
+            "kpi_bugs",
+            "kpi_done"
+          ]
+        },
+        "kpi_tasks": {
+          "id": "kpi_tasks",
+          "component": "Metric",
+          "label": "Open Tasks",
+          "value": {
+            "path": "/metrics/openTasks"
+          }
+        },
+        "kpi_velocity": {
+          "id": "kpi_velocity",
+          "component": "Metric",
+          "label": "Velocity",
+          "value": {
+            "path": "/metrics/velocity"
+          },
+          "unit": "pts"
+        },
+        "kpi_bugs": {
+          "id": "kpi_bugs",
+          "component": "Metric",
+          "label": "Open Bugs",
+          "value": {
+            "path": "/metrics/bugs"
+          }
+        },
+        "kpi_done": {
+          "id": "kpi_done",
+          "component": "Metric",
+          "label": "Done This Sprint",
+          "value": {
+            "path": "/metrics/done"
+          }
+        },
+        "board": {
+          "id": "board",
+          "component": "Grid",
+          "columns": 3,
+          "gap": "md",
+          "children": [
+            "todo_col",
+            "progress_col",
+            "done_col"
+          ]
+        },
+        "todo_col": {
+          "id": "todo_col",
+          "component": "Card",
+          "title": "📋 To Do",
+          "child": "todo_placeholder"
+        },
+        "todo_placeholder": {
+          "id": "todo_placeholder",
+          "component": "Text",
+          "text": "Tasks will appear here",
+          "variant": "muted"
+        },
+        "progress_col": {
+          "id": "progress_col",
+          "component": "Card",
+          "title": "🔄 In Progress",
+          "child": "progress_placeholder"
+        },
+        "progress_placeholder": {
+          "id": "progress_placeholder",
+          "component": "Text",
+          "text": "Active tasks",
+          "variant": "muted"
+        },
+        "done_col": {
+          "id": "done_col",
+          "component": "Card",
+          "title": "✅ Done",
+          "child": "done_placeholder"
+        },
+        "done_placeholder": {
+          "id": "done_placeholder",
+          "component": "Text",
+          "text": "Completed tasks",
+          "variant": "muted"
+        },
+        "getting_started": {
+          "id": "getting_started",
+          "component": "Card",
+          "title": "🚀 Getting Started",
+          "child": "gs_text"
+        },
+        "gs_text": {
+          "id": "gs_text",
+          "component": "Text",
+          "text": "Say \"Connect Linear\" to import tasks, or \"Create a sprint board\" to start tracking tasks directly here.",
+          "variant": "muted"
+        }
+      },
+      "dataModel": {
+        "metrics": {
+          "openTasks": "—",
+          "velocity": "—",
+          "bugs": "—",
+          "done": "—"
+        }
+      },
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    },
+    "standup_summary": {
+      "surfaceId": "standup_summary",
+      "title": "Standup Summary",
+      "components": {
+        "root": {
+          "id": "root",
+          "component": "Column",
+          "children": [
+            "header",
+            "kpis",
+            "summary_card"
+          ],
+          "gap": "lg"
+        },
+        "header": {
+          "id": "header",
+          "component": "Row",
+          "children": [
+            "title",
+            "date_badge"
+          ],
+          "align": "center",
+          "justify": "between"
+        },
+        "title": {
+          "id": "title",
+          "component": "Text",
+          "text": "🗓️ Standup Summary",
+          "variant": "h2"
+        },
+        "date_badge": {
+          "id": "date_badge",
+          "component": "Badge",
+          "text": "Not yet generated",
+          "variant": "outline"
+        },
+        "kpis": {
+          "id": "kpis",
+          "component": "Grid",
+          "columns": 3,
+          "children": [
+            "kpi_active",
+            "kpi_blockers",
+            "kpi_items"
+          ]
+        },
+        "kpi_active": {
+          "id": "kpi_active",
+          "component": "Metric",
+          "label": "Team Active",
+          "value": {
+            "path": "/metrics/teamActive"
+          }
+        },
+        "kpi_blockers": {
+          "id": "kpi_blockers",
+          "component": "Metric",
+          "label": "Blockers",
+          "value": {
+            "path": "/metrics/blockers"
+          }
+        },
+        "kpi_items": {
+          "id": "kpi_items",
+          "component": "Metric",
+          "label": "Items in Flight",
+          "value": {
+            "path": "/metrics/inFlight"
+          }
+        },
+        "summary_card": {
+          "id": "summary_card",
+          "component": "Card",
+          "title": "Today's Summary",
+          "child": "summary_placeholder"
+        },
+        "summary_placeholder": {
+          "id": "summary_placeholder",
+          "component": "Text",
+          "text": "Standup summaries will be generated here each morning from task activity and team updates.",
+          "variant": "muted"
+        }
+      },
+      "dataModel": {
+        "metrics": {
+          "teamActive": "—",
+          "blockers": "—",
+          "inFlight": "—"
+        }
+      },
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    }
+  }
+}

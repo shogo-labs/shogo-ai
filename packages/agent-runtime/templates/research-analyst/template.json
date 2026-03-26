@@ -1,0 +1,39 @@
+{
+  "id": "research-analyst",
+  "name": "Research Analyst",
+  "description": "Deep web research, topic tracking, market monitoring, competitive intelligence, and synthesized analysis across multiple research surfaces.",
+  "category": "research",
+  "icon": "🔬",
+  "tags": [
+    "research",
+    "web",
+    "synthesis",
+    "competitors",
+    "market",
+    "news",
+    "analysis",
+    "briefings",
+    "monitoring"
+  ],
+  "settings": {
+    "heartbeatInterval": 3600,
+    "heartbeatEnabled": true,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-5",
+    "quietHours": {
+      "start": "22:00",
+      "end": "07:00",
+      "timezone": "UTC"
+    }
+  },
+  "integrations": [
+    {
+      "categoryId": "communication",
+      "description": "Deliver briefings and research alerts"
+    },
+    {
+      "categoryId": "notes",
+      "description": "Archive research findings and reports"
+    }
+  ]
+}
