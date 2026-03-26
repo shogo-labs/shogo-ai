@@ -9,8 +9,7 @@
  * - Project-level analytics (scope = { workspaceId, projectId })
  */
 
-import { prisma } from '../lib/prisma'
-import { Prisma } from '../generated/prisma/client'
+import { prisma, Prisma } from '../lib/prisma'
 
 // ============================================================================
 // Types

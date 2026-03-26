@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { PrismaClient } from '../generated/prisma/client';
+
+// PG types are the canonical TypeScript interface. The SQLite client is
+// structurally compatible at runtime thanks to wrapForSqlite.
+import type { PrismaClient } from '../generated/prisma-pg/client';
 
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 
@@ -100,13 +103,15 @@ async function createPrismaClient(): Promise<PrismaClient> {
   const logConfig = process.env.NODE_ENV === 'development' ? ['query', 'error', 'warn'] as const : ['error'] as const
 
   if (isLocalMode) {
+    const { PrismaClient: SqliteClient } = await import('../generated/prisma-sqlite/client')
     const { PrismaBunSqlite } = await import('prisma-adapter-bun-sqlite')
     const dbUrl = process.env.DATABASE_URL || 'file:./shogo.db'
     const adapter = new PrismaBunSqlite({ url: dbUrl })
-    const client = new PrismaClient({ adapter, log: [...logConfig] })
-    return wrapForSqlite(client)
+    const client = new SqliteClient({ adapter, log: [...logConfig] })
+    return wrapForSqlite(client as unknown as PrismaClient)
   }
 
+  const { PrismaClient: PgClient } = await import('../generated/prisma-pg/client')
   const { PrismaPg } = await import('@prisma/adapter-pg')
   const adapter = new PrismaPg({
     connectionString: process.env.DATABASE_URL,
@@ -114,7 +119,7 @@ async function createPrismaClient(): Promise<PrismaClient> {
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 15_000,
   })
-  return new PrismaClient({
+  return new PgClient({
     adapter,
     log: [...logConfig],
     transactionOptions: {
@@ -130,5 +135,5 @@ if (process.env.NODE_ENV !== 'production') {
   globalForPrisma.prisma = prisma;
 }
 
-export type { PrismaClient } from '../generated/prisma/client';
-export * from '../generated/prisma/client';
+export type { PrismaClient } from '../generated/prisma-pg/client';
+export * from '../generated/prisma-pg/client';
