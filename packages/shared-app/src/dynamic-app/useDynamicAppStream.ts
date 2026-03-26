@@ -13,6 +13,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type {
   SurfaceState,
+  ComponentDefinition,
   DynamicAppMessage,
   ActionEvent,
   ApiModelInfo,
@@ -84,7 +85,7 @@ export function useDynamicAppStream(agentUrl: string | null, options?: DynamicAp
             }
             next.set(msg.surfaceId, surface)
           }
-          const updatedComponents = new Map(surface.components)
+          const updatedComponents = msg.merge ? new Map(surface.components) : new Map<string, ComponentDefinition>()
           for (const comp of msg.components) {
             updatedComponents.set(comp.id, comp)
           }

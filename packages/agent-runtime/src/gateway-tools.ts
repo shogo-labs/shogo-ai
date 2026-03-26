@@ -1563,7 +1563,7 @@ NEVER use Column/Card as direct Tabs children without an explicit "tabs" prop â€
       }
 
       // Render with auto-corrected components
-      const result = manager.updateComponents(surfaceId, components)
+      const result = manager.updateComponents(surfaceId, components, merge)
 
       // Non-fatal errors still present after auto-correction
       if (errors.length > 0) {
