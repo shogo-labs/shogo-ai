@@ -12,6 +12,7 @@ import {
   InteractionManager,
   Share,
   useWindowDimensions,
+  Keyboard,
 } from 'react-native'
 import { AgentClient, type FileNode, type SearchResult } from '@shogo-ai/sdk/agent'
 import { agentFetch } from '../../../lib/agent-fetch'
@@ -193,8 +194,28 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
   // New file/folder dialog
   const [showNewDialog, setShowNewDialog] = useState<'file' | 'folder' | null>(null)
   const [newName, setNewName] = useState('')
+  /** Lifts the inline new file/folder sheet above the Android soft keyboard (absolute bottom-* ignores inset resize). */
+  const [newDialogKeyboardPad, setNewDialogKeyboardPad] = useState(0)
 
   const hasChanges = content !== savedContent
+
+  useEffect(() => {
+    if (Platform.OS !== 'android' || !showNewDialog) {
+      setNewDialogKeyboardPad(0)
+      return
+    }
+    const showSub = Keyboard.addListener('keyboardDidShow', (e) => {
+      setNewDialogKeyboardPad(e.endCoordinates.height)
+    })
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
+      setNewDialogKeyboardPad(0)
+    })
+    return () => {
+      showSub.remove()
+      hideSub.remove()
+      setNewDialogKeyboardPad(0)
+    }
+  }, [showNewDialog])
 
   // -------------------------------------------------------------------------
   // Data Loading
@@ -719,7 +740,14 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
 
         {/* New file/folder dialog */}
         {showNewDialog && (
-          <View className="absolute bottom-16 left-2 right-2 bg-background border border-border rounded-lg p-3 shadow-lg z-10">
+          <View
+            className="absolute bottom-16 left-2 right-2 bg-background border border-border rounded-lg p-3 shadow-lg z-10"
+            style={
+              Platform.OS === 'android' && newDialogKeyboardPad > 0
+                ? { transform: [{ translateY: -newDialogKeyboardPad }] }
+                : undefined
+            }
+          >
             <Text className="text-xs font-medium text-foreground mb-2">
               New {showNewDialog === 'file' ? 'File' : 'Folder'}
             </Text>
