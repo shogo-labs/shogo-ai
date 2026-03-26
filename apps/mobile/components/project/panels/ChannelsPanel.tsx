@@ -28,6 +28,7 @@ interface ChannelInfo {
   type: string
   connected: boolean
   error?: string
+  model?: string
   metadata?: Record<string, unknown>
 }
 
@@ -35,6 +36,7 @@ interface ChannelsPanelProps {
   projectId: string
   agentUrl: string | null
   visible: boolean
+  hasAdvancedModelAccess?: boolean
 }
 
 interface ChannelField {
@@ -136,14 +138,16 @@ const CHANNEL_DEFS: Record<string, ChannelDef> = {
   },
 }
 
-export function ChannelsPanel({ projectId, agentUrl, visible }: ChannelsPanelProps) {
+export function ChannelsPanel({ projectId, agentUrl, visible, hasAdvancedModelAccess = false }: ChannelsPanelProps) {
   const [channels, setChannels] = useState<ChannelInfo[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [expandedType, setExpandedType] = useState<string | null>(null)
   const [formInputs, setFormInputs] = useState<Record<string, Record<string, string>>>({})
+  const [modelSelection, setModelSelection] = useState<Record<string, 'basic' | 'advanced'>>({})
   const [connecting, setConnecting] = useState<string | null>(null)
   const [disconnecting, setDisconnecting] = useState<string | null>(null)
+  const [savingModel, setSavingModel] = useState<string | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
   const [copiedSnippet, setCopiedSnippet] = useState(false)
 
@@ -183,10 +187,11 @@ export function ChannelsPanel({ projectId, agentUrl, visible }: ChannelsPanelPro
     setConnecting(type)
     setFormError(null)
     try {
+      const model = modelSelection[type] || 'basic'
       const res = await agentFetch(`${agentUrl}/agent/channels/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type, config: inputs }),
+        body: JSON.stringify({ type, config: inputs, model }),
       })
 
       const data = await res.json()
@@ -196,6 +201,11 @@ export function ChannelsPanel({ projectId, agentUrl, visible }: ChannelsPanelPro
 
       setExpandedType(null)
       setFormInputs(prev => {
+        const next = { ...prev }
+        delete next[type]
+        return next
+      })
+      setModelSelection(prev => {
         const next = { ...prev }
         delete next[type]
         return next
@@ -231,6 +241,37 @@ export function ChannelsPanel({ projectId, agentUrl, visible }: ChannelsPanelPro
       setDisconnecting(null)
     }
   }, [agentUrl, loadChannels])
+
+  const handleModelUpdate = useCallback(async (type: string) => {
+    if (!agentUrl) return
+    const model = modelSelection[type]
+    if (!model) return
+
+    setSavingModel(type)
+    setFormError(null)
+    try {
+      const res = await agentFetch(`${agentUrl}/agent/channels/${type}/model`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to update model')
+      }
+      setExpandedType(null)
+      setModelSelection(prev => {
+        const next = { ...prev }
+        delete next[type]
+        return next
+      })
+      await loadChannels()
+    } catch (err: any) {
+      setFormError(err.message)
+    } finally {
+      setSavingModel(null)
+    }
+  }, [agentUrl, modelSelection, loadChannels])
 
   const updateInput = (type: string, key: string, value: string) => {
     setFormInputs(prev => ({
@@ -290,13 +331,12 @@ export function ChannelsPanel({ projectId, agentUrl, visible }: ChannelsPanelPro
                   {/* Channel header row */}
                   <Pressable
                     onPress={() => {
-                      if (isConnected) return
-                      if (!hasForm) return
+                      if (!isConnected && !hasForm) return
                       setExpandedType(isExpanded ? null : type)
                       setFormError(null)
                     }}
                     className="px-3 py-2.5 flex-row items-center gap-3 active:bg-muted/50"
-                    disabled={isConnected || !hasForm}
+                    disabled={!isConnected && !hasForm}
                   >
                     <Text
                       className="text-lg"
@@ -322,7 +362,10 @@ export function ChannelsPanel({ projectId, agentUrl, visible }: ChannelsPanelPro
                       <View className="flex-row items-center gap-2">
                         <CheckCircle size={16} className="text-emerald-500" />
                         <Pressable
-                          onPress={() => handleDisconnect(type)}
+                          onPress={(e) => {
+                            e.stopPropagation?.()
+                            handleDisconnect(type)
+                          }}
                           disabled={isDisconnecting}
                           className="px-2 py-0.5 border border-border rounded active:bg-destructive/10"
                           style={isDisconnecting ? { opacity: 0.5 } : undefined}
@@ -333,6 +376,11 @@ export function ChannelsPanel({ projectId, agentUrl, visible }: ChannelsPanelPro
                             <Text className="text-[10px] text-muted-foreground">Disconnect</Text>
                           )}
                         </Pressable>
+                        {isExpanded ? (
+                          <ChevronDown size={14} className="text-muted-foreground" />
+                        ) : (
+                          <ChevronRight size={14} className="text-muted-foreground" />
+                        )}
                       </View>
                     ) : hasForm ? (
                       isExpanded ? (
@@ -393,6 +441,84 @@ export function ChannelsPanel({ projectId, agentUrl, visible }: ChannelsPanelPro
                     </View>
                   )}
 
+                  {/* Model selector for connected channels */}
+                  {isExpanded && isConnected && (
+                    <View className="px-3 pb-3 border-t border-border">
+                      <View className="mt-3 gap-2.5">
+                        <View>
+                          <Text className="text-[11px] text-muted-foreground mb-1">
+                            AI Model
+                          </Text>
+                          <View className="flex-row gap-2">
+                            <Pressable
+                              onPress={() => setModelSelection(prev => ({ ...prev, [type]: 'basic' }))}
+                              className={`flex-1 px-2.5 py-2 rounded-md border ${
+                                (modelSelection[type] || liveChannel?.model || 'basic') === 'basic'
+                                  ? 'border-primary bg-primary/10'
+                                  : 'border-border bg-background'
+                              }`}
+                            >
+                              <Text className={`text-xs font-medium ${
+                                (modelSelection[type] || liveChannel?.model || 'basic') === 'basic' ? 'text-primary' : 'text-foreground'
+                              }`}>
+                                Basic
+                              </Text>
+                              <Text className="text-[10px] text-muted-foreground mt-0.5">
+                                Economy tier — all plans
+                              </Text>
+                            </Pressable>
+                            <Pressable
+                              onPress={() => {
+                                if (hasAdvancedModelAccess) {
+                                  setModelSelection(prev => ({ ...prev, [type]: 'advanced' }))
+                                }
+                              }}
+                              disabled={!hasAdvancedModelAccess}
+                              className={`flex-1 px-2.5 py-2 rounded-md border ${
+                                !hasAdvancedModelAccess
+                                  ? 'border-border bg-muted/30 opacity-50'
+                                  : (modelSelection[type] || liveChannel?.model) === 'advanced'
+                                    ? 'border-primary bg-primary/10'
+                                    : 'border-border bg-background'
+                              }`}
+                            >
+                              <Text className={`text-xs font-medium ${
+                                !hasAdvancedModelAccess
+                                  ? 'text-muted-foreground'
+                                  : (modelSelection[type] || liveChannel?.model) === 'advanced' ? 'text-primary' : 'text-foreground'
+                              }`}>
+                                Advanced
+                              </Text>
+                              <Text className="text-[10px] text-muted-foreground mt-0.5">
+                                {hasAdvancedModelAccess ? 'Standard tier — Pro plan' : 'Requires Pro plan'}
+                              </Text>
+                            </Pressable>
+                          </View>
+                        </View>
+
+                        {formError && expandedType === type && (
+                          <View className="bg-destructive/10 rounded px-2 py-1.5">
+                            <Text className="text-xs text-destructive">{formError}</Text>
+                          </View>
+                        )}
+
+                        {modelSelection[type] && modelSelection[type] !== (liveChannel?.model || 'basic') && (
+                          <Pressable
+                            onPress={() => handleModelUpdate(type)}
+                            disabled={savingModel === type}
+                            className="self-start px-3 py-1.5 bg-primary rounded-md active:bg-primary/80"
+                            style={savingModel === type ? { opacity: 0.5 } : undefined}
+                          >
+                            <View className="flex-row items-center gap-1.5">
+                              {savingModel === type && <ActivityIndicator size="small" color="#fff" />}
+                              <Text className="text-xs text-primary-foreground">Save</Text>
+                            </View>
+                          </Pressable>
+                        )}
+                      </View>
+                    </View>
+                  )}
+
                   {/* Expandable config form */}
                   {isExpanded && !isConnected && hasForm && (
                     <View className="px-3 pb-3 border-t border-border">
@@ -412,6 +538,57 @@ export function ChannelsPanel({ projectId, agentUrl, visible }: ChannelsPanelPro
                             />
                           </View>
                         ))}
+
+                        <View>
+                          <Text className="text-[11px] text-muted-foreground mb-1">
+                            AI Model
+                          </Text>
+                          <View className="flex-row gap-2">
+                            <Pressable
+                              onPress={() => setModelSelection(prev => ({ ...prev, [type]: 'basic' }))}
+                              className={`flex-1 px-2.5 py-2 rounded-md border ${
+                                (modelSelection[type] || 'basic') === 'basic'
+                                  ? 'border-primary bg-primary/10'
+                                  : 'border-border bg-background'
+                              }`}
+                            >
+                              <Text className={`text-xs font-medium ${
+                                (modelSelection[type] || 'basic') === 'basic' ? 'text-primary' : 'text-foreground'
+                              }`}>
+                                Basic
+                              </Text>
+                              <Text className="text-[10px] text-muted-foreground mt-0.5">
+                                Economy tier — all plans
+                              </Text>
+                            </Pressable>
+                            <Pressable
+                              onPress={() => {
+                                if (hasAdvancedModelAccess) {
+                                  setModelSelection(prev => ({ ...prev, [type]: 'advanced' }))
+                                }
+                              }}
+                              disabled={!hasAdvancedModelAccess}
+                              className={`flex-1 px-2.5 py-2 rounded-md border ${
+                                !hasAdvancedModelAccess
+                                  ? 'border-border bg-muted/30 opacity-50'
+                                  : (modelSelection[type]) === 'advanced'
+                                    ? 'border-primary bg-primary/10'
+                                    : 'border-border bg-background'
+                              }`}
+                            >
+                              <Text className={`text-xs font-medium ${
+                                !hasAdvancedModelAccess
+                                  ? 'text-muted-foreground'
+                                  : (modelSelection[type]) === 'advanced' ? 'text-primary' : 'text-foreground'
+                              }`}>
+                                Advanced
+                              </Text>
+                              <Text className="text-[10px] text-muted-foreground mt-0.5">
+                                {hasAdvancedModelAccess ? 'Standard tier — Pro plan' : 'Requires Pro plan'}
+                              </Text>
+                            </Pressable>
+                          </View>
+                        </View>
 
                         {formError && expandedType === type && (
                           <View className="bg-destructive/10 rounded px-2 py-1.5">
