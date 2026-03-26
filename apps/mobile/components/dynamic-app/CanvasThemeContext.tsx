@@ -11,7 +11,7 @@
 
 import { createContext, useContext, useState, useMemo, useCallback, useRef, useEffect, type ReactNode } from 'react'
 import { View, Platform } from 'react-native'
-import { useColorScheme } from 'nativewind'
+import { useColorScheme, vars as nwVars } from 'nativewind'
 import { useTheme } from '../../contexts/theme'
 import { CANVAS_THEMES, type CanvasColorScheme, type CanvasThemePreset } from './canvas-themes'
 
@@ -234,13 +234,12 @@ const GLUESTACK_DARK: Record<string, string> = {
  */
 export function CanvasThemedContainer({ children, noBorder }: { children: ReactNode; noBorder?: boolean }) {
   const { resolvedIsDark, activePreset } = useCanvasTheme()
-  const vars = resolvedIsDark ? activePreset.dark : activePreset.light
+  const themeVars = resolvedIsDark ? activePreset.dark : activePreset.light
 
   const allVars = useMemo(() => {
-    if (Platform.OS !== 'web') return {}
     const gluestackVars = resolvedIsDark ? GLUESTACK_DARK : GLUESTACK_LIGHT
-    return { ...gluestackVars, ...vars } as Record<string, string>
-  }, [resolvedIsDark, vars])
+    return { ...gluestackVars, ...themeVars } as Record<string, string>
+  }, [resolvedIsDark, themeVars])
 
   if (Platform.OS === 'web') {
     return (
@@ -255,8 +254,8 @@ export function CanvasThemedContainer({ children, noBorder }: { children: ReactN
             borderRadius: 16,
             border: '1px solid rgb(var(--color-border, 228 228 231))',
           }),
-          backgroundColor: `rgb(${vars['--color-background']})`,
-          color: `rgb(${vars['--color-foreground']})`,
+          backgroundColor: `rgb(${themeVars['--color-background']})`,
+          color: `rgb(${themeVars['--color-foreground']})`,
         }}
       >
         {children}
@@ -264,8 +263,19 @@ export function CanvasThemedContainer({ children, noBorder }: { children: ReactN
     )
   }
 
+  // Native: scope canvas theme CSS variables to this container subtree
+  // via NativeWind's vars(), mirroring the web <div style={cssVars}> approach.
+  const nativeStyle = useMemo(() => {
+    const scopedVars = nwVars(allVars)
+    const [r, g, b] = themeVars['--color-background'].split(' ').map(Number)
+    return [scopedVars, { backgroundColor: `rgb(${r}, ${g}, ${b})` }]
+  }, [allVars, themeVars])
+
   return (
-    <View className={noBorder ? 'flex-1 overflow-hidden' : 'flex-1 overflow-hidden rounded-2xl border border-border'}>
+    <View
+      className={noBorder ? 'flex-1 overflow-hidden' : 'flex-1 overflow-hidden rounded-2xl border border-border'}
+      style={nativeStyle as any}
+    >
       {children}
     </View>
   )
