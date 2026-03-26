@@ -7,6 +7,14 @@ import type { PrismaClient } from '../generated/prisma-pg/client';
 
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 
+const DEFAULT_SQLITE_URL = 'file:./shogo.db'
+
+function getSqliteUrl(): string {
+  const url = process.env.DATABASE_URL
+  if (!url || url.startsWith('postgres')) return DEFAULT_SQLITE_URL
+  return url
+}
+
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
 };
@@ -105,8 +113,7 @@ async function createPrismaClient(): Promise<PrismaClient> {
   if (isLocalMode) {
     const { PrismaClient: SqliteClient } = await import('../generated/prisma-sqlite/client')
     const { PrismaBunSqlite } = await import('prisma-adapter-bun-sqlite')
-    const dbUrl = process.env.DATABASE_URL || 'file:./shogo.db'
-    const adapter = new PrismaBunSqlite({ url: dbUrl })
+    const adapter = new PrismaBunSqlite({ url: getSqliteUrl() })
     const client = new SqliteClient({ adapter, log: [...logConfig] })
     return wrapForSqlite(client as unknown as PrismaClient)
   }
