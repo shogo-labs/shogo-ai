@@ -10,7 +10,7 @@ Create your first AI agent in Shogo in just a few minutes. This guide walks you 
 
 ## Step 1: Create your account
 
-1. Go to [shogo.dev](https://shogo.dev) and click **Sign Up**.
+1. Go to [Shogo Studio](https://studio.shogo.ai) and click **Sign Up**.
 2. Enter your email, choose a password, and fill in your name.
 3. You'll be taken to your dashboard.
 
