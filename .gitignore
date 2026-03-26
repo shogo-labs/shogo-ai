@@ -165,3 +165,4 @@ load-tests/venv/
 # Code signing certificates
 *.p12
 *.pfx
+shogo.db
