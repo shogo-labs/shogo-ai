@@ -30,7 +30,12 @@ COPY apps/mobile/package.json ./apps/mobile/
 # Copy scripts needed for postinstall (patch-claude-sdk runs during bun install)
 COPY scripts ./scripts
 
-# Install all dependencies
+# Copy prisma schema and config before install (postinstall runs db:generate:all)
+COPY prisma ./prisma
+COPY prisma.config.ts ./prisma.config.ts
+COPY prisma.config.local.ts ./prisma.config.local.ts
+
+# Install all dependencies (postinstall generates Prisma client)
 RUN bun install
 
 # Copy source code
@@ -40,16 +45,6 @@ COPY packages/shared-runtime ./packages/shared-runtime
 COPY packages/sdk ./packages/sdk
 COPY apps/api ./apps/api
 COPY templates/runtime-template ./templates/runtime-template
-
-# Copy prisma schema and config for generation
-COPY prisma ./prisma
-COPY prisma.config.ts ./prisma.config.ts
-
-# Generate Prisma client (must be done before building apps)
-# Use local prisma from node_modules to ensure correct version (v6)
-# Provide a placeholder DATABASE_URL (not used during generation, but schema validation requires it)
-RUN DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder" \
-    ./node_modules/.bin/prisma generate
 
 # Build SDK first (dependency of api)
 WORKDIR /app/packages/sdk
