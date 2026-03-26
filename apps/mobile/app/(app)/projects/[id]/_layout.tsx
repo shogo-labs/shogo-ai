@@ -259,10 +259,26 @@ export default observer(function ProjectLayout() {
     },
   )
   const [userSelectedSurfaceId, setUserSelectedSurfaceId] = useState<string | null>(null)
+  const mountTimeRef = useRef(Date.now())
+
+  // Restore last-viewed surface from AsyncStorage
+  useEffect(() => {
+    if (!projectId) return
+    AsyncStorage.getItem(`shogo:lastCanvasSurface:${projectId}`).then((savedId) => {
+      if (savedId) setUserSelectedSurfaceId(savedId)
+    }).catch(() => {})
+  }, [projectId])
 
   const effectiveSurfaceId = userSelectedSurfaceId && surfaces.has(userSelectedSurfaceId)
     ? userSelectedSurfaceId
     : activeSurfaceId
+
+  // Persist active surface selection to AsyncStorage
+  useEffect(() => {
+    if (projectId && effectiveSurfaceId) {
+      AsyncStorage.setItem(`shogo:lastCanvasSurface:${projectId}`, effectiveSurfaceId).catch(() => {})
+    }
+  }, [projectId, effectiveSurfaceId])
 
   const activeSurface = useMemo(() => {
     return effectiveSurfaceId ? surfaces.get(effectiveSurfaceId) || null : null
@@ -275,9 +291,15 @@ export default observer(function ProjectLayout() {
     [surfaces],
   )
 
-  // Auto-switch to new surfaces created by the agent
+  // Auto-switch to new surfaces created by the agent.
+  // Suppressed for the first 2 s after mount so the SSE replay doesn't
+  // override the surface selection we just restored from AsyncStorage.
   const prevActiveSurfaceIdRef = useRef(activeSurfaceId)
   useEffect(() => {
+    if (Date.now() - mountTimeRef.current < 2000) {
+      prevActiveSurfaceIdRef.current = activeSurfaceId
+      return
+    }
     if (activeSurfaceId && activeSurfaceId !== prevActiveSurfaceIdRef.current) {
       setUserSelectedSurfaceId(null)
     }
