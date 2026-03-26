@@ -408,6 +408,8 @@ jobs:
             ${{ matrix.build_args == 'api' && format('BUILD_HASH={0}', github.sha) || '' }}
             ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_API_URL={0}', vars.EXPO_PUBLIC_API_URL) || '' }}
             ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_BUILD_HASH={0}', github.sha) || '' }}
+            ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_APP_ENV={0}_web', needs.resolve-config.outputs.environment) || '' }}
+            ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_SENTRY_DSN={0}', secrets.EXPO_PUBLIC_SENTRY_DSN) || '' }}
             ${{ matrix.build_args == 'web' && needs.resolve-config.outputs.environment == 'production' && format('GA4_MEASUREMENT_ID={0}', secrets.GA4_MEASUREMENT_ID) || '' }}
             ${{ matrix.build_args == 'web' && needs.resolve-config.outputs.environment == 'production' && format('FB_PIXEL_ID={0}', secrets.FB_PIXEL_ID) || '' }}
             ${{ matrix.build_args == 'runtime' && format('BASE_IMAGE={0}/shogo/shogo-runtime-base:latest', needs.resolve-config.outputs.ocir_registry) || '' }}
