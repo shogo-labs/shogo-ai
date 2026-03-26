@@ -279,7 +279,7 @@ WebhookAdapter.registerRoutes(app, () => {
 })
 
 // Hot-connect a channel at runtime (called by MCP tool after writing config.json)
-app.post('/agent/channels/connect', async (c) => {
+app.post('/agent/channels/hot-connect', async (c) => {
   if (!agentGateway) {
     return c.json({ error: 'Agent gateway not running' }, 503)
   }
@@ -357,18 +357,43 @@ app.post('/agent/channels/connect', async (c) => {
     return c.json({ error: 'Agent gateway not running' }, 503)
   }
 
-  const { type, config: channelConfig } = await c.req.json() as {
+  const { type, config: channelConfig, model } = await c.req.json() as {
     type: string
     config: Record<string, string>
+    model?: string
   }
 
   if (!type || !channelConfig) {
     return c.json({ error: 'type and config are required' }, 400)
   }
 
-  const validTypes = ['telegram', 'discord', 'slack', 'whatsapp', 'email']
+  const validTypes = ['telegram', 'discord', 'slack', 'whatsapp', 'email', 'webhook', 'webchat', 'teams']
   if (!validTypes.includes(type)) {
     return c.json({ error: `Invalid channel type: ${type}. Must be one of: ${validTypes.join(', ')}` }, 400)
+  }
+
+  const channelModel = (model === 'basic' || model === 'advanced') ? model : 'basic'
+
+  if (channelModel === 'advanced') {
+    const proxyUrl = process.env.AI_PROXY_URL
+    const proxyToken = process.env.AI_PROXY_TOKEN
+    if (proxyUrl && proxyToken) {
+      try {
+        const accessUrl = `${proxyUrl.replace(/\/chat\/completions$/, '').replace(/\/v1$/, '/v1')}/access`
+        const accessRes = await fetch(accessUrl, {
+          headers: { 'Authorization': `Bearer ${proxyToken}` },
+          signal: AbortSignal.timeout(5000),
+        })
+        if (accessRes.ok) {
+          const access = await accessRes.json() as { hasAdvancedModelAccess?: boolean }
+          if (!access.hasAdvancedModelAccess) {
+            return c.json({ error: 'Advanced model requires a Pro or higher subscription. Use "basic" or upgrade your plan.' }, 403)
+          }
+        }
+      } catch {
+        return c.json({ error: 'Unable to verify plan access. Please try again.' }, 503)
+      }
+    }
   }
 
   try {
@@ -378,18 +403,18 @@ app.post('/agent/channels/connect', async (c) => {
       try {
         fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'))
       } catch {
-        // config.json is corrupted — start fresh but preserve the file
         console.error('[agent-runtime] config.json is invalid JSON, starting with empty config')
         fileConfig = {}
       }
     }
 
     fileConfig.channels = fileConfig.channels || []
+    const channelEntry = { type, config: channelConfig, model: channelModel }
     const existing = fileConfig.channels.findIndex((ch: any) => ch.type === type)
     if (existing >= 0) {
-      fileConfig.channels[existing] = { type, config: channelConfig }
+      fileConfig.channels[existing] = channelEntry
     } else {
-      fileConfig.channels.push({ type, config: channelConfig })
+      fileConfig.channels.push(channelEntry)
     }
 
     await agentGateway.connectChannel(type, channelConfig)
@@ -399,6 +424,65 @@ app.post('/agent/channels/connect', async (c) => {
     return c.json({ ok: true, type, message: `${type} channel connected` })
   } catch (error: any) {
     return c.json({ error: error.message || `Failed to connect ${type}` }, 500)
+  }
+})
+
+// Update channel model — change model tier without reconnecting
+app.patch('/agent/channels/:type/model', async (c) => {
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+
+  const type = c.req.param('type')
+  const { model } = await c.req.json() as { model: string }
+
+  if (!model || (model !== 'basic' && model !== 'advanced')) {
+    return c.json({ error: 'model must be "basic" or "advanced"' }, 400)
+  }
+
+  if (model === 'advanced') {
+    const proxyUrl = process.env.AI_PROXY_URL
+    const proxyToken = process.env.AI_PROXY_TOKEN
+    if (proxyUrl && proxyToken) {
+      try {
+        const accessUrl = `${proxyUrl.replace(/\/chat\/completions$/, '').replace(/\/v1$/, '/v1')}/access`
+        const accessRes = await fetch(accessUrl, {
+          headers: { 'Authorization': `Bearer ${proxyToken}` },
+          signal: AbortSignal.timeout(5000),
+        })
+        if (accessRes.ok) {
+          const access = await accessRes.json() as { hasAdvancedModelAccess?: boolean }
+          if (!access.hasAdvancedModelAccess) {
+            return c.json({ error: 'Advanced model requires a Pro or higher subscription.' }, 403)
+          }
+        }
+      } catch {
+        return c.json({ error: 'Unable to verify plan access. Please try again.' }, 503)
+      }
+    }
+  }
+
+  try {
+    const configPath = join(WORKSPACE_DIR, 'config.json')
+    let fileConfig: Record<string, any> = {}
+    if (existsSync(configPath)) {
+      fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'))
+    }
+
+    const channels = fileConfig.channels || []
+    const idx = channels.findIndex((ch: any) => ch.type === type)
+    if (idx < 0) {
+      return c.json({ error: `Channel "${type}" not found in config` }, 404)
+    }
+
+    channels[idx].model = model
+    fileConfig.channels = channels
+    writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8')
+    agentGateway.reloadConfig()
+
+    return c.json({ ok: true, type, model })
+  } catch (error: any) {
+    return c.json({ error: error.message || 'Failed to update model' }, 500)
   }
 })
 

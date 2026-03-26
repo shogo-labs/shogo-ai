@@ -1428,18 +1428,25 @@ function createChannelListTool(ctx: ToolContext): AgentTool {
     label: 'List Channels',
     parameters: Type.Object({}),
     execute: async () => {
-      const statuses = []
-      for (const [type, adapter] of ctx.channels) {
-        statuses.push(adapter.getStatus())
-      }
-
       const configPath = join(ctx.workspaceDir, 'config.json')
+      let channelConfigs: Array<{ type: string; model?: string }> = []
       let configured: string[] = []
       if (existsSync(configPath)) {
         try {
           const fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'))
-          configured = (fileConfig.channels || []).map((ch: any) => ch.type)
+          channelConfigs = fileConfig.channels || []
+          configured = channelConfigs.map((ch: any) => ch.type)
         } catch { /* ignore */ }
+      }
+
+      const statuses = []
+      for (const [type, adapter] of ctx.channels) {
+        const status = adapter.getStatus()
+        const chConf = channelConfigs.find(c => c.type === type)
+        if (chConf?.model) {
+          status.model = chConf.model
+        }
+        statuses.push(status)
       }
 
       return textResult({
@@ -4130,11 +4137,41 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
           'For teams: { appId, appPassword, botName? }. ' +
           'For webchat: { title?, subtitle?, primaryColor?, position?, welcomeMessage?, avatarUrl?, allowedOrigins? } — all fields optional.',
       }),
+      model: Type.Optional(Type.String({
+        description: 'AI model tier for this channel: "basic" (economy, works on all plans) or "advanced" (requires Pro plan). Defaults to "basic".',
+      })),
     }),
     execute: async (_toolCallId, params) => {
-      const { type, config: channelConfig } = params as {
+      const { type, config: channelConfig, model } = params as {
         type: string
         config: Record<string, string>
+        model?: string
+      }
+
+      const channelModel = model || 'basic'
+      if (channelModel !== 'basic' && channelModel !== 'advanced') {
+        return textResult({ error: `Invalid model: "${channelModel}". Must be "basic" or "advanced".` })
+      }
+
+      if (channelModel === 'advanced') {
+        const proxyUrl = ctx.aiProxyUrl || process.env.AI_PROXY_URL
+        const proxyToken = ctx.aiProxyToken || process.env.AI_PROXY_TOKEN
+        if (proxyUrl && proxyToken) {
+          try {
+            const accessRes = await fetch(`${proxyUrl.replace(/\/chat\/completions$/, '').replace(/\/v1$/, '/v1')}/access`, {
+              headers: { 'Authorization': `Bearer ${proxyToken}` },
+              signal: AbortSignal.timeout(5000),
+            })
+            if (accessRes.ok) {
+              const access = await accessRes.json() as { hasAdvancedModelAccess?: boolean }
+              if (!access.hasAdvancedModelAccess) {
+                return textResult({
+                  error: 'Advanced model requires a Pro or higher subscription. Please use model: "basic" or upgrade your plan.',
+                })
+              }
+            }
+          } catch { /* If check fails, allow and let proxy enforce at runtime */ }
+        }
       }
 
       const validTypes = ['telegram', 'discord', 'email', 'slack', 'whatsapp', 'webhook', 'teams', 'webchat']
@@ -4152,10 +4189,11 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
         }
         savedConfig.channels = savedConfig.channels || []
         const existing = savedConfig.channels.findIndex((c: any) => c.type === type)
+        const channelEntry = { type, config: channelConfig, model: channelModel }
         if (existing >= 0) {
-          savedConfig.channels[existing] = { type, config: channelConfig }
+          savedConfig.channels[existing] = channelEntry
         } else {
-          savedConfig.channels.push({ type, config: channelConfig })
+          savedConfig.channels.push(channelEntry)
         }
         writeFileSync(configPath, JSON.stringify(savedConfig, null, 2), 'utf-8')
       } catch (err: any) {

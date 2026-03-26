@@ -441,6 +441,7 @@ defineTool({
         type: 'object',
         description: 'Channel configuration. Telegram: { botToken }. Discord: { botToken, guildId? }. Email: { imapHost, smtpHost, username, password }. WhatsApp: { accessToken, phoneNumberId, verifyToken? }. Slack: { botToken, appToken }. Webhook: { secret? }. Teams: { appId, appPassword, botName? }. WebChat: { title?, subtitle?, primaryColor?, position?, welcomeMessage?, avatarUrl?, allowedOrigins? }',
       },
+      model: { type: 'string', enum: ['basic', 'advanced'], description: 'AI model tier: "basic" (economy, all plans) or "advanced" (Pro plan required). Defaults to "basic".', default: 'basic' },
     },
     required: ['type', 'config'],
   },
@@ -452,13 +453,38 @@ defineTool({
     }
 
     config.channels = config.channels || []
+    const channelModel = input.model || 'basic'
+
+    if (channelModel === 'advanced') {
+      const proxyUrl = process.env.AI_PROXY_URL
+      const proxyToken = process.env.AI_PROXY_TOKEN
+      if (proxyUrl && proxyToken) {
+        try {
+          const accessUrl = proxyUrl.replace(/\/chat\/completions$/, '').replace(/\/v1$/, '/v1') + '/access'
+          const accessRes = await fetch(accessUrl, {
+            headers: { 'Authorization': `Bearer ${proxyToken}` },
+            signal: AbortSignal.timeout(5000),
+          })
+          if (accessRes.ok) {
+            const access = await accessRes.json() as { hasAdvancedModelAccess?: boolean }
+            if (!access.hasAdvancedModelAccess) {
+              return {
+                ok: false,
+                error: 'Advanced model requires a Pro or higher subscription. Please use model: "basic" or upgrade your plan.',
+              }
+            }
+          }
+        } catch { /* If check fails, allow and let proxy enforce at runtime */ }
+      }
+    }
     const existing = config.channels.findIndex(
       (c: any) => c.type === input.type
     )
+    const channelEntry = { type: input.type, config: input.config, model: channelModel }
     if (existing >= 0) {
-      config.channels[existing] = { type: input.type, config: input.config }
+      config.channels[existing] = channelEntry
     } else {
-      config.channels.push({ type: input.type, config: input.config })
+      config.channels.push(channelEntry)
     }
 
     writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
@@ -466,7 +492,7 @@ defineTool({
     // Hot-connect: tell the running gateway to connect the channel immediately
     const port = process.env.PORT || '8080'
     try {
-      const res = await fetch(`http://localhost:${port}/agent/channels/connect`, {
+      const res = await fetch(`http://localhost:${port}/agent/channels/hot-connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: input.type, config: input.config }),
@@ -538,9 +564,20 @@ defineTool({
 
 defineTool({
   name: 'channel_list',
-  description: 'List configured messaging channels',
+  description: 'List configured messaging channels with their connection status and model tier',
   inputSchema: { type: 'object', properties: {} },
   handler: async () => {
+    const port = process.env.PORT || '8080'
+    try {
+      const res = await fetch(`http://localhost:${port}/agent/status`, {
+        signal: AbortSignal.timeout(5000),
+      })
+      if (res.ok) {
+        const status = await res.json()
+        return { channels: status.channels || [] }
+      }
+    } catch { /* fall back to config.json */ }
+
     const configPath = join(AGENT_DIR, 'config.json')
     let config: Record<string, any> = {}
     if (existsSync(configPath)) {
