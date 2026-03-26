@@ -129,7 +129,7 @@ export interface ProjectTopBarProps {
   onDeleteComponent?: () => void
   onAddComponent?: () => void
   // Surface switching
-  surfaceEntries?: { id: string; title: string }[]
+  surfaceEntries?: { id: string; title: string; themeSwatchColor?: string }[]
   activeSurfaceId?: string | null
   onSurfaceChange?: (surfaceId: string) => void
   // Chat controls
@@ -584,6 +584,12 @@ export function ProjectTopBar({
                       className="h-7 flex-row items-center gap-1 px-2 rounded-md active:bg-muted"
                       accessibilityLabel="Switch canvas"
                     >
+                      {activeSurfaceEntry?.themeSwatchColor && (
+                        <View
+                          className="w-2.5 h-2.5 rounded-full"
+                          style={{ backgroundColor: activeSurfaceEntry.themeSwatchColor }}
+                        />
+                      )}
                       <Text className="text-[10px] font-medium text-muted-foreground max-w-[100px]" numberOfLines={1}>
                         {activeSurfaceEntry?.title || 'Canvas'}
                       </Text>
@@ -605,16 +611,25 @@ export function ProjectTopBar({
                             'px-3 py-2 active:bg-muted',
                             s.id === activeSurfaceId && 'bg-accent',
                           )}
+                          style={s.themeSwatchColor ? { borderBottomWidth: 2, borderBottomColor: s.themeSwatchColor } : undefined}
                         >
-                          <Text
-                            className={cn(
-                              'text-xs',
-                              s.id === activeSurfaceId ? 'font-semibold text-foreground' : 'text-muted-foreground',
+                          <View className="flex-row items-center gap-2">
+                            {s.themeSwatchColor && (
+                              <View
+                                className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                                style={{ backgroundColor: s.themeSwatchColor }}
+                              />
                             )}
-                            numberOfLines={1}
-                          >
-                            {s.title || s.id}
-                          </Text>
+                            <Text
+                              className={cn(
+                                'text-xs',
+                                s.id === activeSurfaceId ? 'font-semibold text-foreground' : 'text-muted-foreground',
+                              )}
+                              numberOfLines={1}
+                            >
+                              {s.title || s.id}
+                            </Text>
+                          </View>
                         </Pressable>
                       ))}
                     </PopoverBody>
