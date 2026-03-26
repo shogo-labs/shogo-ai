@@ -44,6 +44,11 @@ export class AgentClient {
     return `${this.baseUrl}${path}`
   }
 
+  /** Encode each segment of a relative path individually so slashes are preserved. */
+  private encodePath(relativePath: string): string {
+    return relativePath.split('/').map(encodeURIComponent).join('/')
+  }
+
   private async fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     const res = await this.doFetch(this.url(path), {
       ...init,
@@ -138,7 +143,7 @@ export class AgentClient {
   }
 
   async readFile(path: string): Promise<string> {
-    const res = await this.doFetch(this.url(`/agent/workspace/files/${encodeURIComponent(path)}`), {
+    const res = await this.doFetch(this.url(`/agent/workspace/files/${this.encodePath(path)}`), {
       headers: this.headers,
     })
     if (!res.ok) {
@@ -150,7 +155,7 @@ export class AgentClient {
   }
 
   async writeFile(path: string, content: string): Promise<void> {
-    await this.fetchJson(`/agent/workspace/files/${encodeURIComponent(path)}`, {
+    await this.fetchJson(`/agent/workspace/files/${this.encodePath(path)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content }),
@@ -158,7 +163,7 @@ export class AgentClient {
   }
 
   async deleteFile(path: string): Promise<void> {
-    await this.fetchJson(`/agent/workspace/files/${encodeURIComponent(path)}`, {
+    await this.fetchJson(`/agent/workspace/files/${this.encodePath(path)}`, {
       method: 'DELETE',
     })
   }
@@ -201,9 +206,13 @@ export class AgentClient {
   }
 
   async uploadWorkspaceFiles(formData: FormData): Promise<{ uploaded: string[]; count: number }> {
+    // FormData must not include Content-Type — fetch sets multipart boundary automatically.
+    const headers = { ...this.headers }
+    delete headers['Content-Type']
+    delete headers['content-type']
     const res = await this.doFetch(this.url('/agent/workspace/upload'), {
       method: 'POST',
-      headers: this.headers,
+      headers,
       body: formData,
     })
     if (!res.ok) {
@@ -216,7 +225,7 @@ export class AgentClient {
 
   /** Absolute URL for browser download / native WebView (GET returns raw bytes). */
   workspaceFileDownloadUrl(relativePath: string): string {
-    return this.url(`/agent/workspace/download/${encodeURIComponent(relativePath)}`)
+    return this.url(`/agent/workspace/download/${this.encodePath(relativePath)}`)
   }
 
   async exportAgentBundle(): Promise<AgentExportBundle> {

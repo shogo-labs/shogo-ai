@@ -26,7 +26,7 @@ import {
   Platform,
   BackHandler,
 } from 'react-native'
-import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useLocalSearchParams, useRouter, Stack } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import AsyncStorage from '@react-native-async-storage/async-storage'
@@ -789,6 +789,8 @@ export default observer(function ProjectLayout() {
   const chatHidden = isWide ? (isChatFullscreen || chatCollapsed) : activeTab !== 'chat'
   const canvasAreaHidden = (!isWide && activeTab === 'chat') || isChatFullscreen
   const narrowOnCanvas = !isWide && activeTab === 'canvas'
+  /** Native-only: float above Files / Terminal / … (those layers use z-20). Omit on Expo web so web layout stays unchanged. */
+  const showNativeNarrowChatFab = narrowOnCanvas && Platform.OS !== 'web'
 
   const topBarSharedProps = {
     projectName: project.name,
@@ -916,10 +918,11 @@ export default observer(function ProjectLayout() {
               Platform.OS === 'web' && !canvasAreaHidden && 'min-h-0',
             )}
           >
-            {/* Floating chat button on mobile canvas — bottom right */}
-            {narrowOnCanvas && (
-              <View
-                className="absolute bottom-0 right-0 z-10 pb-6 pr-4"
+            {/* Floating chat button on native narrow canvas — above every canvas sub-tab (z-20 panels) */}
+            {showNativeNarrowChatFab && (
+              <SafeAreaView
+                edges={['bottom']}
+                className="absolute bottom-0 right-0 z-30 pr-4 pb-4"
                 pointerEvents="box-none"
               >
                 <Pressable
@@ -932,7 +935,7 @@ export default observer(function ProjectLayout() {
                   <MessageSquare size={16} className="text-primary-foreground" />
                   <Text className="text-sm font-semibold text-primary-foreground">Chat</Text>
                 </Pressable>
-              </View>
+              </SafeAreaView>
             )}
 
             {canvasEnabled && previewTab === 'dynamic-app' && (
