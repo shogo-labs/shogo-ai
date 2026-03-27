@@ -346,6 +346,9 @@ jobs:
                       abiFilters "armeabi-v7a", "arm64-v8a"\
                   }' build.gradle
 
+      - name: Ensure Sentry CLI binary
+        run: node apps/mobile/node_modules/@sentry/cli/scripts/install.js || true
+
       - name: Build AAB
         working-directory: apps/mobile/android
         run: ./gradlew bundleRelease -x lintVitalAnalyzeRelease -x lintVitalRelease
