@@ -82,6 +82,19 @@ Long-lived facts and learnings are stored here.
  * Write default workspace files into a directory, creating subdirectories as needed.
  * Only writes files that don't already exist (won't overwrite user customizations).
  */
+/**
+ * Resolve a canonical workspace config/markdown file path.
+ * Root is preferred (existing behavior); `.shogo/` is used when the workspace was
+ * seeded from a template (see `seedWorkspaceFromTemplate`), which only copies into `.shogo/`.
+ */
+export function resolveWorkspaceConfigFilePath(dir: string, filename: string): string | null {
+  const rootPath = join(dir, filename)
+  if (existsSync(rootPath)) return rootPath
+  const shogoPath = join(dir, '.shogo', filename)
+  if (existsSync(shogoPath)) return shogoPath
+  return null
+}
+
 export function seedWorkspaceDefaults(dir: string): void {
   mkdirSync(dir, { recursive: true })
   mkdirSync(join(dir, 'memory'), { recursive: true })
