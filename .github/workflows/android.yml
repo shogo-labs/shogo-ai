@@ -347,7 +347,18 @@ jobs:
                   }' build.gradle
 
       - name: Ensure Sentry CLI binary
-        run: node apps/mobile/node_modules/@sentry/cli/scripts/install.js || true
+        working-directory: apps/mobile
+        run: |
+          if ! node_modules/@sentry/cli/bin/sentry-cli --version 2>/dev/null; then
+            echo "Sentry CLI binary missing, installing for Linux..."
+            npm install --no-save @sentry/cli-linux-x64 2>/dev/null || true
+            node node_modules/@sentry/cli/scripts/install.js 2>/dev/null || true
+          fi
+          if ! node_modules/@sentry/cli/bin/sentry-cli --version 2>/dev/null; then
+            echo "Sentry CLI still not working, disabling upload in Gradle config..."
+            sed -i '/apply plugin: "io.sentry.android.gradle"/a \
+            sentry { autoUploadSourceContext.set(false); autoUploadProguardMapping.set(false); autoUpload.set(false) }' android/app/build.gradle
+          fi
 
       - name: Build AAB
         working-directory: apps/mobile/android
@@ -360,7 +371,6 @@ jobs:
           EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
           EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_DISABLE_AUTO_UPLOAD: ${{ secrets.SENTRY_AUTH_TOKEN == '' && 'true' || 'false' }}
 
       - name: Upload AAB artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
