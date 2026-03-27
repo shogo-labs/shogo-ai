@@ -396,11 +396,6 @@ app.post('/agent/channels/connect', async (c) => {
     }
   }
 
-  if (type === 'webchat' && !channelConfig.widgetSecret) {
-    const { randomUUID } = await import('crypto')
-    channelConfig.widgetSecret = randomUUID()
-  }
-
   try {
     const configPath = join(WORKSPACE_DIR, 'config.json')
     let fileConfig: Record<string, any> = {}
