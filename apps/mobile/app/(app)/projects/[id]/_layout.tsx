@@ -295,7 +295,7 @@ export default observer(function ProjectLayout() {
 
   const handleCanvasPreview = useCallback(
     (surfaceId: string, components: any[]) => {
-      applyMessage({ type: 'updateComponents', surfaceId, components })
+      applyMessage({ type: 'updateComponents', surfaceId, components, merge: true })
     },
     [applyMessage],
   )
