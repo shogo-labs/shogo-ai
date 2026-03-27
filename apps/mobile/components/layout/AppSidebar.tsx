@@ -120,7 +120,6 @@ interface NavItemProps {
   collapsed?: boolean
   onPress?: () => void
   shortcut?: string
-  external?: boolean
   onNavPress?: () => void
 }
 
@@ -184,9 +183,6 @@ function NavItem({
         <View className="ml-auto rounded border border-border bg-muted px-1.5 py-0.5">
           <Text className="text-[10px] font-mono text-muted-foreground">{shortcut}</Text>
         </View>
-      )}
-      {!collapsed && externalHref && (
-        <ExternalLink size={12} className="ml-auto text-muted-foreground opacity-50" />
       )}
     </Pressable>
   )
