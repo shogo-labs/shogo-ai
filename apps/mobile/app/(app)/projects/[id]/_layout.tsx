@@ -932,7 +932,7 @@ export default observer(function ProjectLayout() {
                 <View
                   className={cn(
                     'flex min-h-0 flex-col',
-                    isWide ? 'w-[480px] shrink-0 border-r border-border bg-background z-10' : 'relative flex-1',
+                    isWide ? 'w-[480px] shrink-0 bg-background z-10' : 'relative flex-1',
                     chatHidden && 'hidden',
                   )}
                 >
@@ -1201,8 +1201,10 @@ function CanvasPanel({
   // Canvas v2: render the CanvasWebView (parent owns SSE, bridges via postMessage)
   if (canvasMode === 'code') {
     return (
-      <View className="flex-1">
-        <CanvasWebView agentUrl={agentUrl} />
+      <View className="flex-1 p-2 pt-0">
+        <View className="flex-1 overflow-hidden rounded-2xl">
+          <CanvasWebView agentUrl={agentUrl} />
+        </View>
       </View>
     )
   }
