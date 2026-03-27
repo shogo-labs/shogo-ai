@@ -53,6 +53,8 @@ export interface UpdateComponentsMessage {
   type: 'updateComponents'
   surfaceId: string
   components: ComponentDefinition[]
+  /** When false (default), replaces all components for the surface. When true, merges into existing. */
+  merge?: boolean
 }
 
 export interface UpdateDataMessage {
