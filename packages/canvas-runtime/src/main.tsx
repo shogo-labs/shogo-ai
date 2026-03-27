@@ -146,7 +146,6 @@ function applyThemeVariables(variables?: Record<string, string>, isDark?: boolea
   const root = document.documentElement
   if (variables) {
     for (const [key, value] of Object.entries(variables)) {
-      // Theme sends RGB triplets like "255 255 255"; wrap in rgb() for valid CSS
       const cssValue = /^\d+\s+\d+\s+\d+$/.test(value.trim()) ? `rgb(${value})` : value
       root.style.setProperty(key, cssValue)
     }
