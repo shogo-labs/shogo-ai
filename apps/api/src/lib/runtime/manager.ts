@@ -8,7 +8,7 @@
  */
 
 import { spawn, execSync, type ChildProcess } from 'child_process'
-import { existsSync, cpSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
+import { existsSync, cpSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, rmSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import type {
@@ -407,18 +407,22 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       mkdirSync(projectDir, { recursive: true })
 
       // Template resolution order: bundled > workspace > inline
+      // Exclude bun.lock so `bun install` does a fresh platform-appropriate resolution
+      // (a Mac-generated lockfile causes incomplete installs on Windows)
+      const copyFilter = (src: string) =>
+        !src.includes('node_modules') && !src.includes('.git') && !src.endsWith('bun.lock') && !src.endsWith('bun.lockb')
       if (existsSync(BUNDLED_TEMPLATE_DIR) && existsSync(join(BUNDLED_TEMPLATE_DIR, 'package.json'))) {
         console.log(`[RuntimeManager] Copying bundled template from ${BUNDLED_TEMPLATE_DIR}`)
         cpSync(BUNDLED_TEMPLATE_DIR, projectDir, {
           recursive: true,
-          filter: (src) => !src.includes('node_modules') && !src.includes('.git'),
+          filter: copyFilter,
         })
         console.log(`[RuntimeManager] Copied bundled template to ${projectDir}`)
       } else if (existsSync(workspaceTemplateDir)) {
         console.log(`[RuntimeManager] Copying workspace template from ${workspaceTemplateDir}`)
         cpSync(workspaceTemplateDir, projectDir, {
           recursive: true,
-          filter: (src) => !src.includes('node_modules') && !src.includes('.git'),
+          filter: copyFilter,
         })
         console.log(`[RuntimeManager] Copied workspace template to ${projectDir}`)
       } else {
@@ -427,9 +431,26 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       }
     }
 
-    // Check if node_modules exists, if not install dependencies
-    const nodeModulesDir = join(projectDir, 'node_modules')
-    if (!existsSync(nodeModulesDir)) {
+    // Install dependencies if needed.
+    // Uses a sentinel file (.install-ok) to detect incomplete installs
+    // (e.g. when bun --watch crashes mid-install on Windows, leaving partial node_modules).
+    const installSentinel = join(projectDir, 'node_modules', '.install-ok')
+    if (!existsSync(installSentinel)) {
+      // Remove stale lockfiles that may have been copied from another platform
+      for (const lockfile of ['bun.lock', 'bun.lockb']) {
+        const lockPath = join(projectDir, lockfile)
+        if (existsSync(lockPath)) {
+          unlinkSync(lockPath)
+        }
+      }
+
+      // Clean partial node_modules from a previous interrupted install
+      const nodeModulesDir = join(projectDir, 'node_modules')
+      if (existsSync(nodeModulesDir)) {
+        console.log(`[RuntimeManager] Removing incomplete node_modules for ${projectId}`)
+        rmSync(nodeModulesDir, { recursive: true, force: true })
+      }
+
       console.log(`[RuntimeManager] Installing dependencies for ${projectId}...`)
       try {
         await new Promise<void>((resolve, reject) => {
@@ -441,16 +462,23 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
             proc.kill()
             reject(new Error('bun install timed out after 60s'))
           }, 60000)
+          let stderr = ''
+          proc.stderr?.on('data', (data) => { stderr += data.toString() })
           proc.on('exit', (code) => {
             clearTimeout(timeout)
             if (code === 0) resolve()
-            else reject(new Error(`bun install exited with code ${code}`))
+            else {
+              console.error(`[RuntimeManager] bun install stderr: ${stderr}`)
+              reject(new Error(`bun install exited with code ${code}`))
+            }
           })
           proc.on('error', (err) => {
             clearTimeout(timeout)
             reject(err)
           })
         })
+        // Write sentinel so we know install completed successfully
+        writeFileSync(installSentinel, new Date().toISOString())
         console.log(`[RuntimeManager] Dependencies installed for ${projectId}`)
       } catch (err: any) {
         console.error(`[RuntimeManager] Failed to install dependencies:`, err.message)
@@ -712,8 +740,13 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       // } else {
 
       // Run Vite dev server
+      // Resolve vite binary directly from node_modules to avoid Windows .bin/ issue
+      // (Bun on Windows may not create .bin/ shims, causing "command not found: vite")
       let proc: ReturnType<typeof spawn>
-      const devArgs = ['run', 'dev', '--port', String(port), '--host', '0.0.0.0']
+      const viteBin = join(projectDir, 'node_modules', 'vite', 'bin', 'vite.js')
+      const devArgs = existsSync(viteBin)
+        ? [viteBin, '--port', String(port), '--host', '0.0.0.0']
+        : ['run', 'dev', '--port', String(port), '--host', '0.0.0.0']
       proc = spawn('bun', devArgs, {
         cwd: projectDir,
         stdio: ['ignore', 'pipe', 'pipe'],

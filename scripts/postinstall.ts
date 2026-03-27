@@ -9,4 +9,4 @@ if (existsSync("scripts/patch-claude-sdk.ts")) {
   }
 }
 
-execSync("bun run db:generate:all", { stdio: "inherit" });
+execSync("bun scripts/db-generate-all.ts", { stdio: "inherit" });
