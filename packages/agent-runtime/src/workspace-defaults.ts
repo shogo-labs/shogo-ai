@@ -86,6 +86,7 @@ export function seedWorkspaceDefaults(dir: string): void {
   mkdirSync(dir, { recursive: true })
   mkdirSync(join(dir, 'memory'), { recursive: true })
   mkdirSync(join(dir, '.shogo', 'skills'), { recursive: true })
+  mkdirSync(join(dir, '.shogo', 'plans'), { recursive: true })
 
   for (const [filename, content] of Object.entries(DEFAULT_WORKSPACE_FILES)) {
     const filepath = join(dir, filename)

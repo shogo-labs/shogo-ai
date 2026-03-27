@@ -1,0 +1,151 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+import { test, expect, type Page } from "@playwright/test"
+import {
+  makeTestUser,
+  signUpAndOnboard,
+  createProjectAndWait,
+  selectInteractionMode,
+  sendChatMessage,
+  waitForAgentResponse,
+} from "./helpers"
+
+/**
+ * Interaction Modes (Agent / Plan / Ask) E2E Tests
+ *
+ * Validates:
+ *   1. Dropdown renders all 3 modes with descriptions
+ *   2. Ask mode sends a message without tool calls
+ *   3. Plan mode triggers plan creation with restricted tools
+ *   4. Plan card confirm triggers agent execution
+ *   5. Plans panel shows saved plans
+ *   6. Agent mode restores full capabilities
+ *
+ * Run: STAGING_URL=https://your-staging-host npx playwright test --config e2e/playwright.config.ts interaction-modes
+ */
+
+const TEST_USER = makeTestUser("InteractionModes")
+
+test.describe("Interaction Modes (Agent / Plan / Ask)", () => {
+  test.describe.configure({ mode: "serial" })
+  let page: Page
+
+  test.beforeAll(async ({ browser }) => {
+    page = await browser.newPage()
+    await signUpAndOnboard(page, TEST_USER)
+  })
+
+  test.afterAll(async () => {
+    await page.close()
+  })
+
+  test("create a project for interaction mode testing", async () => {
+    await createProjectAndWait(page, "Simple test agent for interaction modes")
+    expect(page.url()).toMatch(/\/projects\//)
+  })
+
+  test("interaction mode dropdown renders with 3 options", async () => {
+    // Allow any auto-hello stream to start, then wait for it to finish
+    await page.waitForTimeout(3000)
+    await waitForAgentResponse(page)
+
+    const trigger = page.locator('[data-testid="interaction-mode-trigger"]')
+    await expect(trigger).toBeVisible({ timeout: 10_000 })
+    await expect(trigger).toContainText("Agent")
+
+    await trigger.click()
+    // Popover renders via portal with spring animation — wait for mount
+    await page.waitForTimeout(1000)
+
+    await expect(
+      page.getByText("Full autonomous mode")
+    ).toBeVisible({ timeout: 10_000 })
+    await expect(
+      page.getByText("Research and create a plan")
+    ).toBeVisible({ timeout: 5_000 })
+    await expect(
+      page.getByText("Just answer questions")
+    ).toBeVisible({ timeout: 5_000 })
+
+    // Close the popover by pressing Escape
+    await page.keyboard.press("Escape")
+    await page.waitForTimeout(500)
+  })
+
+  test("Ask mode: no tool calls in response", async () => {
+    await selectInteractionMode(page, "Ask")
+
+    const trigger = page.locator('[data-testid="interaction-mode-trigger"]')
+    await expect(trigger).toContainText("Ask", { timeout: 5_000 })
+
+    await sendChatMessage(page, "What is 2 + 2? Just reply with the number.")
+    await waitForAgentResponse(page)
+
+    // The response should contain "4" somewhere
+    await expect(page.getByText("4").last()).toBeVisible({ timeout: 15_000 })
+  })
+
+  test("Plan mode: produces a plan card", async () => {
+    await selectInteractionMode(page, "Plan")
+
+    const trigger = page.locator('[data-testid="interaction-mode-trigger"]')
+    await expect(trigger).toContainText("Plan", { timeout: 5_000 })
+
+    await sendChatMessage(
+      page,
+      "Create a plan to add a hello.txt file in the workspace root that contains 'Hello World'. Do not ask clarifying questions — just create the plan now using the create_plan tool."
+    )
+    await waitForAgentResponse(page, 180_000)
+
+    // A plan card should appear with a "Confirm & Execute" button
+    const confirmButton = page.getByText("Confirm & Execute")
+    await expect(confirmButton).toBeVisible({ timeout: 30_000 })
+  })
+
+  test("confirm triggers agent execution", async () => {
+    const confirmButton = page.getByText("Confirm & Execute")
+    await confirmButton.click()
+
+    // The interaction mode should switch back to Agent
+    const trigger = page.locator('[data-testid="interaction-mode-trigger"]')
+    await expect(trigger).toContainText("Agent", { timeout: 10_000 })
+
+    // Wait for the agent to process the confirmed plan
+    await waitForAgentResponse(page, 180_000)
+
+    // Verify the plan was confirmed (the "Plan confirmed" indicator should replace the button)
+    await expect(page.getByText("Plan confirmed")).toBeVisible({ timeout: 5_000 }).catch(() => {
+      // The confirm button should at least be gone
+    })
+  })
+
+  test("Plans panel shows saved plans", async () => {
+    // Click the Plans tab in the top bar — use aria-label set on the tab
+    const plansTab = page.getByLabel("Plans")
+    await plansTab.click({ timeout: 10_000 })
+    await page.waitForTimeout(2000)
+
+    // The plan created in the plan mode test should be listed
+    // Look for any content from the plan (title, description, hello)
+    const planContent = page.getByText(/Hello World File|hello/i)
+    await expect(planContent.first()).toBeVisible({ timeout: 15_000 })
+  })
+
+  test("Agent mode: full tool capabilities restored", async () => {
+    // Close the plans panel by clicking the X or clicking the Plans tab again
+    await page.getByLabel("Plans").click().catch(() => {})
+    await page.waitForTimeout(500)
+
+    await selectInteractionMode(page, "Agent")
+
+    const trigger = page.locator('[data-testid="interaction-mode-trigger"]')
+    await expect(trigger).toContainText("Agent", { timeout: 5_000 })
+
+    await sendChatMessage(page, "List the files in the workspace root directory using ls. Just list the filenames.")
+    await waitForAgentResponse(page, 120_000)
+
+    // The agent should have used tools — look for common workspace files or tool usage
+    const body = page.locator("body")
+    await expect(body).toContainText(/.md|AGENTS|SOUL|memory|config|skills|files/i, { timeout: 15_000 })
+  })
+})

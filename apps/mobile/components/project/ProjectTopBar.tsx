@@ -61,6 +61,7 @@ import {
   Plus,
   Trash2,
   Terminal,
+  ClipboardList,
 } from 'lucide-react-native'
 import { cn, Badge, Progress } from '@shogo/shared-ui/primitives'
 import { Tooltip, TooltipContent, TooltipText } from '@/components/ui/tooltip'
@@ -87,6 +88,7 @@ const AGENT_TABS: { id: string; label: string; icon: React.ElementType }[] = [
   { id: 'capabilities', label: 'Capabilities', icon: Sliders },
   { id: 'channels', label: 'Channels', icon: Radio },
   { id: 'monitor', label: 'Monitor', icon: Activity },
+  { id: 'plans', label: 'Plans', icon: ClipboardList },
 ]
 
 export interface ProjectSwitcherItem {

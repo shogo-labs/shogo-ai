@@ -27,14 +27,37 @@ const SCHEMA = `
 `
 
 export class SqliteSessionPersistence implements SessionPersistence {
-  private db: Database
+  private db!: Database
 
   constructor(workspaceDir: string) {
     const dbPath = join(workspaceDir, 'sessions.db')
-    this.db = new Database(dbPath)
-    this.db.exec('PRAGMA journal_mode = WAL')
-    this.db.exec('PRAGMA synchronous = NORMAL')
-    this.db.exec(SCHEMA)
+    // Retry opening the database — a previous process may still hold the lock
+    // briefly after being killed (WAL checkpoint, OS flush, etc.)
+    const MAX_RETRIES = 8
+    const BASE_DELAY_MS = 250
+    let lastError: unknown
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        this.db = new Database(dbPath)
+        this.db.exec('PRAGMA journal_mode = WAL')
+        this.db.exec('PRAGMA busy_timeout = 5000')
+        this.db.exec('PRAGMA synchronous = NORMAL')
+        this.db.exec(SCHEMA)
+        lastError = null
+        break
+      } catch (err: any) {
+        lastError = err
+        if (err?.code === 'SQLITE_BUSY' && attempt < MAX_RETRIES) {
+          const delay = BASE_DELAY_MS * attempt
+          console.warn(`[SqliteSessionPersistence] Database locked, retrying in ${delay}ms (attempt ${attempt}/${MAX_RETRIES})`)
+          // Synchronous sleep in constructor — acceptable during one-time init
+          Bun.sleepSync(delay)
+          continue
+        }
+        throw err
+      }
+    }
+    if (lastError) throw lastError
   }
 
   async save(id: string, session: SerializedSession): Promise<void> {

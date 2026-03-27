@@ -4517,6 +4517,74 @@ function createHeartbeatStatusTool(ctx: ToolContext): AgentTool {
 // Factory Functions
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Plan Mode: create_plan tool
+// ---------------------------------------------------------------------------
+
+function createCreatePlanTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'create_plan',
+    description: 'Create a structured plan for the user to review and confirm before execution. The plan is saved to .shogo/plans/ as a markdown file and presented to the user for approval.',
+    label: 'Create Plan',
+    parameters: Type.Object({
+      name: Type.String({ description: 'Short 3-5 word name for the plan' }),
+      overview: Type.String({ description: '1-2 sentence summary of what the plan accomplishes' }),
+      plan: Type.String({ description: 'Detailed plan in markdown format. Include specific file paths, code snippets, and implementation steps.' }),
+      todos: Type.Array(
+        Type.Object({
+          id: Type.String({ description: 'Unique task identifier (kebab-case)' }),
+          content: Type.String({ description: 'Task description' }),
+        }),
+        { description: 'Implementation tasks in execution order' }
+      ),
+    }),
+    execute: async (_id: string, params: { name: string; overview: string; plan: string; todos: Array<{ id: string; content: string }> }) => {
+      const slug = params.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').substring(0, 50)
+      const hash = Math.random().toString(36).substring(2, 10)
+      const filename = `${slug}_${hash}.plan.md`
+
+      const todosYaml = params.todos.map(t =>
+        `  - id: ${t.id}\n    content: ${JSON.stringify(t.content)}\n    status: pending`
+      ).join('\n')
+
+      const content = [
+        '---',
+        `name: ${JSON.stringify(params.name)}`,
+        `overview: ${JSON.stringify(params.overview)}`,
+        `createdAt: ${JSON.stringify(new Date().toISOString())}`,
+        'status: pending',
+        'todos:',
+        todosYaml,
+        '---',
+        '',
+        `# ${params.name}`,
+        '',
+        params.plan,
+      ].join('\n')
+
+      const plansDir = join(ctx.workspaceDir, '.shogo', 'plans')
+      mkdirSync(plansDir, { recursive: true })
+      const filepath = join(plansDir, filename)
+      writeFileSync(filepath, content, 'utf-8')
+
+      if (ctx.uiWriter) {
+        ctx.uiWriter.write({
+          type: 'data-plan',
+          data: {
+            name: params.name,
+            overview: params.overview,
+            plan: params.plan,
+            todos: params.todos,
+            filepath: `.shogo/plans/${filename}`,
+          },
+        })
+      }
+
+      return textResult(`Plan "${params.name}" created and saved to .shogo/plans/${filename}`)
+    },
+  }
+}
+
 /** All gateway tools (unified set for all agents) */
 export function createTools(ctx: ToolContext, modeHandler?: ModeSwitchHandler, extraTools?: AgentTool[]): AgentTool[] {
   const pe = ctx.permissionEngine
@@ -4570,6 +4638,7 @@ export function createTools(ctx: ToolContext, modeHandler?: ModeSwitchHandler, e
     g(createGenerateImageTool(ctx), 'network'),
     createHeartbeatConfigureTool(ctx),
     createHeartbeatStatusTool(ctx),
+    createCreatePlanTool(ctx),
   ]
 
   // Self-referencing getter for tools that need the full tool list (skill)

@@ -72,116 +72,165 @@ export class RuntimeManager implements IRuntimeManager {
    * This helps detect stale processes from previous API server instances.
    */
   private async isPortInUse(port: number): Promise<boolean> {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 500)
     try {
       const response = await fetch(`http://localhost:${port}/`, {
         method: 'HEAD',
-        signal: AbortSignal.timeout(500),
+        signal: controller.signal,
       })
+      clearTimeout(timer)
       return true // Port responded
     } catch {
+      clearTimeout(timer)
       return false // Port not responding
     }
   }
 
   /**
-   * Kill any process running on the specified port.
+   * Kill any process running on the specified port, then verify the port is free.
    * Cross-platform: uses lsof on macOS/Linux, netstat on Windows.
    *
    * Excludes the current process (and its parent) to avoid
    * the API server killing itself when it has connections to the port.
    */
-  private killProcessOnPort(port: number): void {
-    try {
-      const isWindows = process.platform === 'win32'
-      let pids: string[] = []
+  private async killProcessOnPort(port: number): Promise<boolean> {
+    const isWindows = process.platform === 'win32'
 
-      if (isWindows) {
-        const result = execSync(
-          `netstat -ano | findstr :${port} | findstr LISTENING`,
-          { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
-        ).trim()
-        pids = result.split('\n')
-          .map(line => line.trim().split(/\s+/).pop() || '')
-          .filter(pid => pid.length > 0 && pid !== '0')
-        pids = [...new Set(pids)]
-      } else {
-        const result = execSync(`lsof -ti :${port} 2>/dev/null || true`, { encoding: 'utf-8' })
-        pids = result.trim().split('\n').filter(pid => pid.length > 0)
+    const findPids = (): string[] => {
+      try {
+        if (isWindows) {
+          const result = execSync(
+            `netstat -ano | findstr :${port} | findstr LISTENING`,
+            { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+          ).trim()
+          const pids = result.split('\n')
+            .map(line => line.trim().split(/\s+/).pop() || '')
+            .filter(pid => pid.length > 0 && pid !== '0')
+          return [...new Set(pids)]
+        } else {
+          const result = execSync(`lsof -ti :${port} 2>/dev/null || true`, { encoding: 'utf-8' })
+          return result.trim().split('\n').filter(pid => pid.length > 0)
+        }
+      } catch {
+        return []
       }
+    }
 
-      const selfPid = String(process.pid)
-      const parentPid = String(process.ppid)
+    const selfPid = String(process.pid)
+    const parentPid = String(process.ppid)
+
+    const killPids = (pids: string[], force: boolean) => {
       const safePids = pids.filter(pid => pid !== selfPid && pid !== parentPid)
-
       if (pids.length > 0 && safePids.length === 0) {
         console.log(`[RuntimeManager] Port ${port} is held by the current process — skipping kill`)
+        return 0
       }
-
+      const signal = force ? 'SIGKILL' : 'SIGTERM'
       for (const pid of safePids) {
         try {
-          console.log(`[RuntimeManager] Killing stale process ${pid} on port ${port}`)
+          console.log(`[RuntimeManager] Sending ${signal} to process ${pid} on port ${port}`)
           if (isWindows) {
             execSync(`taskkill /F /PID ${pid} 2>nul`, { stdio: 'pipe' })
           } else {
-            execSync(`kill -9 ${pid} 2>/dev/null || true`)
+            execSync(`kill ${force ? '-9' : '-15'} ${pid} 2>/dev/null || true`)
           }
         } catch {
           // Process might have already exited
         }
       }
-      
-      if (safePids.length > 0) {
-        if (isWindows) {
-          execSync('timeout /t 1 /nobreak >nul 2>&1', { stdio: 'pipe' })
-        } else {
-          execSync('sleep 0.5')
-        }
+      return safePids.length
+    }
+
+    // Kill-and-verify loop: SIGTERM first (allows graceful DB close), then SIGKILL
+    const MAX_ATTEMPTS = 5
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      const pids = findPids()
+      if (pids.filter(p => p !== selfPid && p !== parentPid).length === 0) {
+        return true // Port is free
       }
-    } catch (err) {
-      console.warn(`[RuntimeManager] Failed to kill process on port ${port}:`, err)
+
+      // First two attempts use SIGTERM for graceful shutdown (DB close, WAL checkpoint)
+      // Subsequent attempts use SIGKILL as a last resort
+      const force = attempt > 2
+      const killed = killPids(pids, force)
+      if (killed === 0) return false // Only self holds the port
+
+      // Wait with increasing backoff: 500ms, 1s, 1.5s, 2s, 2.5s
+      const waitMs = 500 * attempt
+      await new Promise(resolve => setTimeout(resolve, waitMs))
+
+      // Verify port is actually free (TCP-level check, not HTTP)
+      const stillInUse = await this.isPortListening(port)
+      if (!stillInUse) {
+        console.log(`[RuntimeManager] Port ${port} freed after ${attempt} attempt(s)`)
+        return true
+      }
+
+      console.warn(`[RuntimeManager] Port ${port} still in use after kill attempt ${attempt}/${MAX_ATTEMPTS}`)
+    }
+
+    console.error(`[RuntimeManager] Failed to free port ${port} after ${MAX_ATTEMPTS} attempts`)
+    return false
+  }
+
+  /**
+   * TCP-level check whether a port is listening (faster and more reliable than HTTP fetch).
+   */
+  private async isPortListening(port: number): Promise<boolean> {
+    try {
+      const result = execSync(
+        process.platform === 'win32'
+          ? `netstat -ano | findstr :${port} | findstr LISTENING`
+          : `lsof -ti :${port} 2>/dev/null || true`,
+        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+      ).trim()
+      const pids = result.split('\n').filter(l => l.trim().length > 0)
+      const selfPid = String(process.pid)
+      const parentPid = String(process.ppid)
+      return pids.some(pid => pid !== selfPid && pid !== parentPid)
+    } catch {
+      return false
     }
   }
 
   /**
    * Allocate a port for a project - in local dev, always use the same port per project.
-   * If the port is in use by a stale process, kill it first.
+   * If the port is in use by a stale process, kill it first and verify it's freed.
    * This ensures consistent port assignments and avoids port drift on hot reload.
    */
   private async allocatePortAsync(): Promise<number> {
     const { basePort, maxRuntimes } = this.config
     
-    // In local development, always try to use basePort first (5200)
-    // This provides consistent URLs and avoids confusion
     const port = basePort
     const agentPort = port + 1000
     
-    // Check if ports are in use
-    const viteInUse = await this.isPortInUse(port)
-    const agentInUse = await this.isPortInUse(agentPort)
+    // Check if ports are in use (TCP-level check, not HTTP)
+    const viteInUse = await this.isPortListening(port)
+    const agentInUse = await this.isPortListening(agentPort)
     
-    // If either port is in use by a stale process, kill it
+    // Kill stale processes and verify ports are freed (sequential to avoid races)
     if (viteInUse) {
       console.log(`[RuntimeManager] Port ${port} is in use, killing stale process...`)
-      this.killProcessOnPort(port)
+      await this.killProcessOnPort(port)
     }
     if (agentInUse) {
       console.log(`[RuntimeManager] Port ${agentPort} is in use, killing stale process...`)
-      this.killProcessOnPort(agentPort)
+      await this.killProcessOnPort(agentPort)
     }
     
     // Verify ports are now free
-    const stillViteInUse = await this.isPortInUse(port)
-    const stillAgentInUse = await this.isPortInUse(agentPort)
+    const stillViteInUse = await this.isPortListening(port)
+    const stillAgentInUse = await this.isPortListening(agentPort)
     
     if (stillViteInUse || stillAgentInUse) {
       console.error(`[RuntimeManager] Failed to free ports ${port}/${agentPort}, trying next available...`)
-      // Fall back to finding next available port
       for (let offset = 1; offset < maxRuntimes; offset++) {
         const nextPort = basePort + offset
         const nextAgentPort = nextPort + 1000
         if (!this.usedPorts.has(nextPort)) {
-          const nextViteInUse = await this.isPortInUse(nextPort)
-          const nextAgentInUse = await this.isPortInUse(nextAgentPort)
+          const nextViteInUse = await this.isPortListening(nextPort)
+          const nextAgentInUse = await this.isPortListening(nextAgentPort)
           if (!nextViteInUse && !nextAgentInUse) {
             this.usedPorts.add(nextPort)
             return nextPort
@@ -820,17 +869,18 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           }
         })
 
+        const agentPrefix = `[Agent:${projectId.slice(0, 8)}]`
         agentProc.stdout?.on('data', (data) => {
-          const output = data.toString().trim()
-          if (output) {
-            console.log(`[Agent:${projectId.slice(0, 8)}] ${output}`)
+          const lines = data.toString().trimEnd().split('\n')
+          for (const line of lines) {
+            if (line) console.log(`${agentPrefix} ${line}`)
           }
         })
 
         agentProc.stderr?.on('data', (data) => {
-          const output = data.toString().trim()
-          if (output) {
-            console.error(`[Agent:${projectId.slice(0, 8)}] ${output}`)
+          const lines = data.toString().trimEnd().split('\n')
+          for (const line of lines) {
+            if (line) console.error(`${agentPrefix} ${line}`)
           }
         })
       } else {
@@ -877,15 +927,19 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     const checkInterval = 500
 
     while (Date.now() - startTime < timeoutMs) {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 1000)
       try {
         const response = await fetch(`http://localhost:${port}`, {
           method: 'HEAD',
-          signal: AbortSignal.timeout(1000),
+          signal: controller.signal,
         })
+        clearTimeout(timer)
         // Accept any response - server is running even if app has errors
         // This includes 200, 404, 500, etc.
         return
       } catch {
+        clearTimeout(timer)
         // Server not ready yet (connection refused, timeout, etc.)
       }
       await new Promise((resolve) => setTimeout(resolve, checkInterval))
@@ -903,11 +957,14 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     const RETRY_DELAY_MS = 500
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 2000)
       try {
         const response = await fetch(`http://localhost:${port}/health`, {
           method: 'GET',
-          signal: AbortSignal.timeout(2000),
+          signal: controller.signal,
         })
+        clearTimeout(timer)
         if (response.ok) {
           // Verify the agent is for the correct project (prevents stale agent routing)
           const data = await response.json() as { projectId?: string }
@@ -920,6 +977,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           return
         }
       } catch (err: any) {
+        clearTimeout(timer)
         // If it's a project mismatch error, don't retry - fail immediately
         if (err.message?.includes('occupied by agent for different project')) {
           throw err
@@ -1013,12 +1071,15 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       }
     }
 
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 5000)
     try {
       const healthPort = runtime.agentPort && !runtime.process ? runtime.agentPort : runtime.port
       const response = await fetch(`http://localhost:${healthPort}${runtime.process ? '' : '/health'}`, {
         method: runtime.process ? 'HEAD' : 'GET',
-        signal: AbortSignal.timeout(5000),
+        signal: controller.signal,
       })
+      clearTimeout(timer)
 
       const healthStatus: IHealthStatus = {
         healthy: response.ok || response.status === 404,
@@ -1028,6 +1089,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       runtime.lastHealthCheck = healthStatus
       return healthStatus
     } catch (err: any) {
+      clearTimeout(timer)
       const healthStatus: IHealthStatus = {
         healthy: false,
         lastCheck: Date.now(),
