@@ -197,6 +197,46 @@ ${lines.join('\n')}`
 }
 
 // ---------------------------------------------------------------------------
+// Canvas V2 formatters — one per DSPy-optimizable prompt section
+// ---------------------------------------------------------------------------
+
+function formatCanvasV2Guide(demos: Record<string, any>[]): string {
+  if (demos.length === 0) return ''
+  const componentSets = demos.slice(0, 5).map(d => d.react_patterns || d.component_types || '').filter(Boolean)
+  const patterns = [...new Set(componentSets.join(', ').split(/,\s*/))]
+  return `### Optimized Canvas Code Patterns\n\nMost common React patterns: ${patterns.slice(0, 10).join(', ')}`
+}
+
+function formatCanvasV2Backend(demos: Record<string, any>[]): string {
+  if (demos.length === 0) return ''
+  const withBackend = demos.filter(d => d.needs_backend === true || d.needs_backend === 'True')
+  const examples = withBackend.slice(0, 3).map(d =>
+    `- "${d.user_request}" → models: ${d.prisma_models}, endpoints: ${d.api_endpoints || d.fetch_patterns || 'CRUD'}`
+  )
+  return `### Optimized Backend Patterns\n\n${examples.join('\n')}`
+}
+
+function formatCanvasV2React(demos: Record<string, any>[]): string {
+  if (demos.length === 0) return ''
+  const qualityPatterns = demos.slice(0, 5).map(d => d.quality_patterns || d.react_patterns || '').filter(Boolean)
+  const patterns = [...new Set(qualityPatterns.join(', ').split(/,\s*/))]
+  return `### Optimized React Quality Patterns\n\nAlways apply: ${patterns.slice(0, 8).join(', ')}`
+}
+
+function formatCanvasV2Examples(demos: Record<string, any>[]): string {
+  if (demos.length === 0) return ''
+  const examples = demos.slice(0, 4).map((d, i) => {
+    const backend = d.needs_backend ? `Schema: ${d.prisma_models || d.prisma_schema || 'yes'}` : 'No backend'
+    return `**Example ${i + 1}:** "${d.user_request}"
+- ${backend}
+- Canvas: ${d.canvas_files || d.canvas_filename || 'canvas/app.js'}
+- Tools: ${d.tool_sequence}
+- Patterns: ${d.react_patterns || 'useState'}`
+  })
+  return `### Optimized Full-Stack Examples\n\n${examples.join('\n\n')}`
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -236,15 +276,22 @@ function main() {
   }
 
   // Extract demos per track
+  const emptyProgram = { predict: { demos: [], signature: { instructions: '', fields: [] } } }
   const canvasDemos = [
-    ...getAugmentedDemos(programs['canvas_planning'] || { predict: { demos: [], signature: { instructions: '', fields: [] } } }),
-    ...getAugmentedDemos(programs['canvas_e2e'] || { predict: { demos: [], signature: { instructions: '', fields: [] } } }),
+    ...getAugmentedDemos(programs['canvas_planning'] || emptyProgram),
+    ...getAugmentedDemos(programs['canvas_e2e'] || emptyProgram),
   ]
-  const memoryDemos = getAugmentedDemos(programs['memory_write'] || { predict: { demos: [], signature: { instructions: '', fields: [] } } })
-  const personalityDemos = getAugmentedDemos(programs['personality_self_update'] || { predict: { demos: [], signature: { instructions: '', fields: [] } } })
-  const planningDemos = getAugmentedDemos(programs['multiturn_plan'] || { predict: { demos: [], signature: { instructions: '', fields: [] } } })
-  const summaryDemos = getAugmentedDemos(programs['multiturn_summarize'] || { predict: { demos: [], signature: { instructions: '', fields: [] } } })
-  const skillMatchDemos = getAugmentedDemos(programs['skill_match'] || { predict: { demos: [], signature: { instructions: '', fields: [] } } })
+  const memoryDemos = getAugmentedDemos(programs['memory_write'] || emptyProgram)
+  const personalityDemos = getAugmentedDemos(programs['personality_self_update'] || emptyProgram)
+  const planningDemos = getAugmentedDemos(programs['multiturn_plan'] || emptyProgram)
+  const summaryDemos = getAugmentedDemos(programs['multiturn_summarize'] || emptyProgram)
+  const skillMatchDemos = getAugmentedDemos(programs['skill_match'] || emptyProgram)
+
+  // Canvas V2 code mode demos
+  const canvasV2PlanningDemos = getAugmentedDemos(programs['canvas_v2_planning'] || emptyProgram)
+  const canvasV2BackendDemos = getAugmentedDemos(programs['canvas_v2_backend'] || emptyProgram)
+  const canvasV2ReactDemos = getAugmentedDemos(programs['canvas_v2_react'] || emptyProgram)
+  const canvasV2E2EDemos = getAugmentedDemos(programs['canvas_v2_e2e'] || emptyProgram)
 
   console.log('Extracted demos:')
   console.log(`  Canvas:      ${canvasDemos.length} demos`)
@@ -253,6 +300,10 @@ function main() {
   console.log(`  Planning:    ${planningDemos.length} demos`)
   console.log(`  Summary:     ${summaryDemos.length} demos`)
   console.log(`  Skill Match: ${skillMatchDemos.length} demos`)
+  console.log(`  Canvas V2 Guide:    ${canvasV2PlanningDemos.length} demos`)
+  console.log(`  Canvas V2 Backend:  ${canvasV2BackendDemos.length} demos`)
+  console.log(`  Canvas V2 React:    ${canvasV2ReactDemos.length} demos`)
+  console.log(`  Canvas V2 Examples: ${canvasV2E2EDemos.length} demos`)
   console.log()
 
   // Format prompt sections
@@ -262,6 +313,12 @@ function main() {
   const planningSection = formatToolPlanningExamples(planningDemos)
   const summarySection = formatSessionSummaryExamples(summaryDemos)
   const skillSection = formatSkillMatchingExamples(skillMatchDemos)
+
+  // Canvas V2 sections
+  const canvasV2GuideSection = formatCanvasV2Guide(canvasV2PlanningDemos)
+  const canvasV2BackendSection = formatCanvasV2Backend(canvasV2BackendDemos)
+  const canvasV2ReactSection = formatCanvasV2React(canvasV2ReactDemos)
+  const canvasV2ExamplesSection = formatCanvasV2Examples(canvasV2E2EDemos)
 
   // Generate TypeScript module
   const output = `/**
@@ -285,6 +342,14 @@ export const OPTIMIZED_TOOL_PLANNING_GUIDE = \`${escapeTemplate(planningSection)
 export const OPTIMIZED_SESSION_SUMMARY_GUIDE = \`${escapeTemplate(summarySection)}\`
 
 export const OPTIMIZED_SKILL_MATCHING_GUIDE = \`${escapeTemplate(skillSection)}\`
+
+export const OPTIMIZED_CANVAS_V2_GUIDE = \`${escapeTemplate(canvasV2GuideSection)}\`
+
+export const OPTIMIZED_CANVAS_V2_BACKEND_GUIDE = \`${escapeTemplate(canvasV2BackendSection)}\`
+
+export const OPTIMIZED_CANVAS_V2_REACT_GUIDE = \`${escapeTemplate(canvasV2ReactSection)}\`
+
+export const OPTIMIZED_CANVAS_V2_EXAMPLES = \`${escapeTemplate(canvasV2ExamplesSection)}\`
 `
 
   if (DRY_RUN) {

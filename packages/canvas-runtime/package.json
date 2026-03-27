@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@shogo-ai/sdk": "workspace:*",
     "clsx": "^2.1.1",
     "lucide-react": "^0.511.0",
     "react": "19.1.0",

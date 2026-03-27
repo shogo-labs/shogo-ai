@@ -1,16 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Canvas V2 (Code Mode) Eval Test Cases
+ * Canvas V2 (Code Mode) Eval Test Cases — Full-Stack
  *
- * Tests the agent's ability to build dynamic UIs using write_file/edit_file/delete_file
- * to canvas/*.js files instead of the v1 canvas_* tools.
+ * Tests the agent's ability to build fully-connected apps using:
+ * - write_file/edit_file/delete_file for canvas/*.js React code
+ * - .shogo/server/schema.prisma for Prisma-backed REST backend
+ * - fetch() in canvas code to connect frontend to skill server
+ *
  * These run against a REAL agent-runtime server — the agent decides what
  * tools to use, executes them, and we validate the actual results.
  */
 
 import type { AgentEval, EvalResult } from './types'
-import { usedTool, neverUsedTool, responseContains } from './eval-helpers'
+import type { ToolMockMap } from './tool-mocks'
+import { usedTool, neverUsedTool, responseContains, toolCallArgsContain } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
 // Shared config — every eval seeds canvasMode: 'code' + activeMode: 'canvas'
@@ -26,10 +30,30 @@ const V2_CONFIG = JSON.stringify({
 }, null, 2)
 
 // ---------------------------------------------------------------------------
+// Tool mocks for full-stack evals (skill server)
+// ---------------------------------------------------------------------------
+
+const SKILL_SERVER_MOCKS: ToolMockMap = {
+  exec: {
+    type: 'static',
+    response: 'Done.',
+  },
+  web: {
+    type: 'pattern',
+    patterns: [
+      { match: { url: 'localhost:4100', method: 'POST' }, response: JSON.stringify({ id: 'new-1', createdAt: '2026-03-26T00:00:00Z' }) },
+      { match: { url: 'localhost:4100', method: 'PATCH' }, response: JSON.stringify({ id: 'new-1', updatedAt: '2026-03-26T00:00:00Z' }) },
+      { match: { url: 'localhost:4100', method: 'DELETE' }, response: JSON.stringify({ deleted: true }) },
+      { match: { url: 'localhost:4100' }, response: JSON.stringify([]) },
+    ],
+    default: JSON.stringify([]),
+  },
+}
+
+// ---------------------------------------------------------------------------
 // Canvas-v2 validation helpers
 // ---------------------------------------------------------------------------
 
-/** True if write_file was called with a path matching canvas/*.js */
 function wroteCanvasFile(r: EvalResult, namePattern?: RegExp): boolean {
   return r.toolCalls.some(t => {
     if (t.name !== 'write_file') return false
@@ -39,7 +63,6 @@ function wroteCanvasFile(r: EvalResult, namePattern?: RegExp): boolean {
   })
 }
 
-/** True if write_file was called with a path matching canvas/*.data.json */
 function wroteCanvasDataFile(r: EvalResult, namePattern?: RegExp): boolean {
   return r.toolCalls.some(t => {
     if (t.name !== 'write_file') return false
@@ -49,7 +72,6 @@ function wroteCanvasDataFile(r: EvalResult, namePattern?: RegExp): boolean {
   })
 }
 
-/** Concatenated content of all write_file calls targeting canvas/*.js (lowercased). */
 function allCanvasCode(r: EvalResult): string {
   return r.toolCalls
     .filter(t => t.name === 'write_file' || t.name === 'edit_file')
@@ -62,26 +84,16 @@ function allCanvasCode(r: EvalResult): string {
     .toLowerCase()
 }
 
-/** True if ALL write_file/edit_file calls to canvas/*.js contain every term (case-insensitive). */
-function canvasCodeContains(r: EvalResult, ...terms: string[]): boolean {
-  const code = allCanvasCode(r)
-  if (!code) return false
-  return terms.every(t => code.includes(t.toLowerCase()))
-}
-
-/** True if ANY write_file/edit_file call to canvas/*.js contains the term. */
 function anyCanvasCodeContains(r: EvalResult, term: string): boolean {
   return allCanvasCode(r).includes(term.toLowerCase())
 }
 
-/** True if no canvas_* (v1) tools were called. */
 function neverUsedV1CanvasTools(r: EvalResult): boolean {
   const v1Tools = ['canvas_create', 'canvas_update', 'canvas_data', 'canvas_api_schema',
     'canvas_api_seed', 'canvas_api_query', 'canvas_inspect', 'canvas_trigger_action']
   return v1Tools.every(t => neverUsedTool(r, t))
 }
 
-/** True if edit_file was called targeting canvas/*.js */
 function editedCanvasFile(r: EvalResult, namePattern?: RegExp): boolean {
   return r.toolCalls.some(t => {
     if (t.name !== 'edit_file') return false
@@ -91,7 +103,6 @@ function editedCanvasFile(r: EvalResult, namePattern?: RegExp): boolean {
   })
 }
 
-/** True if delete_file was called targeting canvas/*.js */
 function deletedCanvasFile(r: EvalResult, namePattern?: RegExp): boolean {
   return r.toolCalls.some(t => {
     if (t.name !== 'delete_file') return false
@@ -101,7 +112,6 @@ function deletedCanvasFile(r: EvalResult, namePattern?: RegExp): boolean {
   })
 }
 
-/** Count of distinct canvas/*.js files written (by unique path). */
 function canvasFileCount(r: EvalResult): number {
   const paths = new Set<string>()
   for (const t of r.toolCalls) {
@@ -112,7 +122,6 @@ function canvasFileCount(r: EvalResult): number {
   return paths.size
 }
 
-/** JSON of all write_file/edit_file content targeting canvas/ (lowercased, for ad-hoc searches). */
 function canvasCodeJson(r: EvalResult): string {
   return JSON.stringify(
     r.toolCalls
@@ -123,6 +132,42 @@ function canvasCodeJson(r: EvalResult): string {
       })
       .map(t => t.input)
   ).toLowerCase()
+}
+
+// ---------------------------------------------------------------------------
+// Full-stack validation helpers
+// ---------------------------------------------------------------------------
+
+/** True if write_file was called targeting .shogo/server/schema.prisma */
+function wroteSkillServerSchema(r: EvalResult): boolean {
+  return r.toolCalls.some(t => {
+    if (t.name !== 'write_file') return false
+    const path = String((t.input as any).path ?? '')
+    return path.includes('schema.prisma')
+  })
+}
+
+/** True if the schema.prisma content contains the given model name */
+function schemaContainsModel(r: EvalResult, modelName: string): boolean {
+  return r.toolCalls
+    .filter(t => t.name === 'write_file')
+    .filter(t => String((t.input as any).path ?? '').includes('schema.prisma'))
+    .some(t => {
+      const content = String((t.input as any).content ?? '')
+      return content.includes(`model ${modelName}`)
+    })
+}
+
+/** True if canvas code uses fetch() to call the skill server */
+function canvasCodeFetches(r: EvalResult): boolean {
+  const code = allCanvasCode(r)
+  return code.includes('fetch(') && (code.includes('localhost:4100') || code.includes('/api/'))
+}
+
+/** True if canvas code has a loading state pattern (useState for loading or Skeleton) */
+function canvasHasLoadingState(r: EvalResult): boolean {
+  const code = allCanvasCode(r)
+  return (code.includes('loading') && code.includes('usestate')) || code.includes('skeleton')
 }
 
 // ---------------------------------------------------------------------------
@@ -162,7 +207,7 @@ return h('div', { className: 'flex flex-col gap-4 p-2' }, [
 // ---------------------------------------------------------------------------
 
 export const CANVAS_V2_EVALS: AgentEval[] = [
-  // ---- Level 1: Basic view-only creation ----
+  // ---- Level 1: Simple display-only ----
   {
     id: 'canvas-v2-weather-display',
     name: 'Canvas V2: Build weather display',
@@ -189,13 +234,6 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
         validate: (r) => neverUsedV1CanvasTools(r),
       },
       {
-        id: 'wrote-canvas-js',
-        description: 'Wrote to a canvas/*.js path',
-        points: 15,
-        phase: 'execution',
-        validate: (r) => wroteCanvasFile(r),
-      },
-      {
         id: 'references-temp',
         description: 'Code references temperature data',
         points: 15,
@@ -204,6 +242,13 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
           const json = canvasCodeJson(r)
           return json.includes('72') || json.includes('temp')
         },
+      },
+      {
+        id: 'uses-h',
+        description: 'Code uses h() not JSX',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => anyCanvasCodeContains(r, 'h('),
       },
       {
         id: 'response-confirms',
@@ -223,12 +268,12 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
   },
 
   {
-    id: 'canvas-v2-metrics-dashboard',
-    name: 'Canvas V2: Metrics dashboard with key numbers',
+    id: 'canvas-v2-team-roster',
+    name: 'Canvas V2: Team roster display',
     category: 'canvas-v2',
     tags: ['view-only'],
     level: 1,
-    input: 'I need to see our key numbers — 1,500 users, $45K revenue, 342 active sessions. Build me a dashboard.',
+    input: 'Show me our team: 5 engineers, 2 designers, 1 PM with their names and roles. Make it look nice.',
     workspaceFiles: { 'config.json': V2_CONFIG },
     initialMode: 'canvas',
     maxScore: 100,
@@ -248,190 +293,40 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
         validate: (r) => neverUsedV1CanvasTools(r),
       },
       {
-        id: 'has-metric',
-        description: 'Code uses Metric component',
+        id: 'has-team-data',
+        description: 'Code has team member data with names',
         points: 20,
         phase: 'execution',
-        validate: (r) => anyCanvasCodeContains(r, 'Metric'),
-      },
-      {
-        id: 'has-data-values',
-        description: 'Code references the data values (1500 or 45)',
-        points: 15,
-        phase: 'execution',
         validate: (r) => {
-          const code = canvasCodeJson(r)
-          return code.includes('1500') || code.includes('1,500') || code.includes('45')
+          const code = allCanvasCode(r)
+          return code.includes('engineer') || code.includes('designer') || code.includes('pm')
         },
       },
       {
+        id: 'has-table-or-card',
+        description: 'Code uses Table or Card to display team',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => anyCanvasCodeContains(r, 'Table') || anyCanvasCodeContains(r, 'Card'),
+      },
+      {
         id: 'uses-h',
-        description: 'Code uses h() not JSX angle brackets',
+        description: 'Code uses h() not JSX',
         points: 15,
         phase: 'execution',
         validate: (r) => anyCanvasCodeContains(r, 'h('),
       },
       {
-        id: 'uses-var',
-        description: 'Code uses var not const/let',
-        points: 10,
-        phase: 'execution',
-        validate: (r) => {
-          const code = allCanvasCode(r)
-          if (!code) return false
-          const hasVar = code.includes('var ')
-          const hasConstLet = /\b(const|let)\s/.test(code)
-          return hasVar && !hasConstLet
-        },
-      },
-      {
         id: 'reasonable-tool-count',
         description: 'Reasonable number of tool calls (<=8)',
-        points: 10,
+        points: 15,
         phase: 'execution',
         validate: (r) => r.toolCalls.length <= 8,
       },
     ],
   },
 
-  // ---- Level 2: Data-backed and multi-component ----
-  {
-    id: 'canvas-v2-expense-tracker',
-    name: 'Canvas V2: Expense tracker with budget breakdown',
-    category: 'canvas-v2',
-    tags: ['view-only'],
-    level: 2,
-    input: 'Help me see where my team\'s money is going. We spent $4,230 of our $6,000 budget. Show a breakdown of recent expenses.',
-    workspaceFiles: { 'config.json': V2_CONFIG },
-    initialMode: 'canvas',
-    maxScore: 100,
-    validationCriteria: [
-      {
-        id: 'used-write-file',
-        description: 'Used write_file for .js file',
-        points: 15,
-        phase: 'intention',
-        validate: (r) => wroteCanvasFile(r),
-      },
-      {
-        id: 'never-v1',
-        description: 'Never used v1 canvas_* tools',
-        points: 10,
-        phase: 'intention',
-        validate: (r) => neverUsedV1CanvasTools(r),
-      },
-      {
-        id: 'wrote-data-file',
-        description: 'Wrote a .data.json file for expense data',
-        points: 15,
-        phase: 'execution',
-        validate: (r) => wroteCanvasDataFile(r),
-      },
-      {
-        id: 'references-data-var',
-        description: 'Code references data variable',
-        points: 15,
-        phase: 'execution',
-        validate: (r) => anyCanvasCodeContains(r, 'data'),
-      },
-      {
-        id: 'has-table-or-card',
-        description: 'Code includes Table or Card component',
-        points: 15,
-        phase: 'execution',
-        validate: (r) => anyCanvasCodeContains(r, 'Table') || anyCanvasCodeContains(r, 'Card'),
-      },
-      {
-        id: 'has-spend-data',
-        description: 'Spend data appears in code or data files',
-        points: 15,
-        phase: 'execution',
-        validate: (r) => {
-          const json = canvasCodeJson(r)
-          return json.includes('4230') || json.includes('4,230') || json.includes('6000') || json.includes('6,000')
-        },
-      },
-      {
-        id: 'reasonable-tool-count',
-        description: 'Reasonable number of tool calls (<=10)',
-        points: 15,
-        phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 10,
-      },
-    ],
-  },
-
-  {
-    id: 'canvas-v2-crm-pipeline',
-    name: 'Canvas V2: CRM sales pipeline',
-    category: 'canvas-v2',
-    tags: ['view-only'],
-    level: 2,
-    input: 'Show me my sales pipeline — leads in New, Qualified, and Closed stages with company name and score for each.',
-    workspaceFiles: { 'config.json': V2_CONFIG },
-    initialMode: 'canvas',
-    maxScore: 100,
-    validationCriteria: [
-      {
-        id: 'used-write-file',
-        description: 'Used write_file to create canvas file',
-        points: 15,
-        phase: 'intention',
-        validate: (r) => wroteCanvasFile(r),
-      },
-      {
-        id: 'never-v1',
-        description: 'Never used v1 canvas_* tools',
-        points: 10,
-        phase: 'intention',
-        validate: (r) => neverUsedV1CanvasTools(r),
-      },
-      {
-        id: 'has-stage-labels',
-        description: 'Code or data has stage labels (New, Qualified, Closed)',
-        points: 20,
-        phase: 'execution',
-        validate: (r) => {
-          const json = canvasCodeJson(r)
-          const hasStages = ['new', 'qualified', 'closed'].filter(s => json.includes(s))
-          return hasStages.length >= 2
-        },
-      },
-      {
-        id: 'has-lead-company-fields',
-        description: 'Code or data has lead and company fields',
-        points: 20,
-        phase: 'execution',
-        validate: (r) => {
-          const json = canvasCodeJson(r)
-          return (json.includes('company') || json.includes('name')) && (json.includes('lead') || json.includes('score'))
-        },
-      },
-      {
-        id: 'has-layout-components',
-        description: 'Code uses layout components (Grid, Row, Column, or Card)',
-        points: 15,
-        phase: 'execution',
-        validate: (r) => anyCanvasCodeContains(r, 'Grid') || anyCanvasCodeContains(r, 'Row') || anyCanvasCodeContains(r, 'Column') || anyCanvasCodeContains(r, 'Card'),
-      },
-      {
-        id: 'has-badge',
-        description: 'Code uses Badge for status display',
-        points: 10,
-        phase: 'execution',
-        validate: (r) => anyCanvasCodeContains(r, 'Badge'),
-      },
-      {
-        id: 'reasonable-tool-count',
-        description: 'Reasonable number of tool calls (<=10)',
-        points: 10,
-        phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 10,
-      },
-    ],
-  },
-
-  // ---- Level 2: Interactive stateful apps ----
+  // ---- Level 2: Interactive (no backend) ----
   {
     id: 'canvas-v2-counter-app',
     name: 'Canvas V2: Interactive counter app',
@@ -478,7 +373,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
         phase: 'execution',
         validate: (r) => {
           const code = allCanvasCode(r)
-          return (code.includes('onclick') || code.includes('onchange') || code.includes('function'))
+          return (code.includes('onclick') || code.includes('function'))
             && (code.includes('setcount') || code.includes('set'))
         },
       },
@@ -499,20 +394,29 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
     ],
   },
 
+  // ---- Level 2: Full-stack with skill server ----
   {
-    id: 'canvas-v2-todo-list',
-    name: 'Canvas V2: Interactive todo list',
+    id: 'canvas-v2-lead-tracker',
+    name: 'Canvas V2: Lead tracker with backend',
     category: 'canvas-v2',
-    tags: ['interactive'],
+    tags: ['full-stack'],
     level: 2,
-    input: 'I want to track my todos — adding, completing, and deleting them. Throw in a few sample tasks to start.',
+    input: 'Build me a lead tracker. I need to add new leads with name, email, and status, and see them in a table.',
     workspaceFiles: { 'config.json': V2_CONFIG },
     initialMode: 'canvas',
+    toolMocks: SKILL_SERVER_MOCKS,
     maxScore: 100,
     validationCriteria: [
       {
-        id: 'used-write-file',
-        description: 'Used write_file to create a canvas file',
+        id: 'wrote-schema',
+        description: 'Wrote .shogo/server/schema.prisma with Lead model',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => wroteSkillServerSchema(r) && schemaContainsModel(r, 'Lead'),
+      },
+      {
+        id: 'wrote-canvas',
+        description: 'Wrote canvas/*.js file',
         points: 10,
         phase: 'intention',
         validate: (r) => wroteCanvasFile(r),
@@ -525,80 +429,58 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
         validate: (r) => neverUsedV1CanvasTools(r),
       },
       {
-        id: 'has-usestate',
-        description: 'Code contains useState for todo state',
-        points: 15,
+        id: 'code-fetches',
+        description: 'Canvas code uses fetch() to call skill server',
+        points: 20,
         phase: 'execution',
-        validate: (r) => anyCanvasCodeContains(r, 'useState'),
+        validate: (r) => canvasCodeFetches(r),
       },
       {
-        id: 'has-add-delete',
-        description: 'Code has add and delete/remove logic',
+        id: 'has-usestate-useeffect',
+        description: 'Code uses useState + useEffect for data loading',
         points: 15,
         phase: 'execution',
-        validate: (r) => {
-          const code = allCanvasCode(r)
-          const hasAdd = code.includes('push') || code.includes('concat') || code.includes('...') || code.includes('add')
-          const hasDelete = code.includes('filter') || code.includes('splice') || code.includes('delete') || code.includes('remove')
-          return hasAdd && hasDelete
-        },
+        validate: (r) => anyCanvasCodeContains(r, 'useState') && anyCanvasCodeContains(r, 'useEffect'),
       },
       {
-        id: 'has-input',
-        description: 'Code has Input or text input element',
-        points: 10,
+        id: 'has-form-input',
+        description: 'Code has Input or form for adding leads',
+        points: 15,
         phase: 'execution',
         validate: (r) => anyCanvasCodeContains(r, 'Input') || anyCanvasCodeContains(r, 'input'),
       },
       {
-        id: 'has-button',
-        description: 'Code contains Button component',
-        points: 10,
+        id: 'has-table',
+        description: 'Code has Table to display leads',
+        points: 15,
         phase: 'execution',
-        validate: (r) => anyCanvasCodeContains(r, 'Button'),
-      },
-      {
-        id: 'has-checkbox-or-toggle',
-        description: 'Code contains Checkbox or strikethrough toggle',
-        points: 10,
-        phase: 'execution',
-        validate: (r) => anyCanvasCodeContains(r, 'Checkbox') || anyCanvasCodeContains(r, 'line-through') || anyCanvasCodeContains(r, 'completed') || anyCanvasCodeContains(r, 'done'),
-      },
-      {
-        id: 'has-sample-data',
-        description: 'Code has sample todo data in state initializer',
-        points: 10,
-        phase: 'execution',
-        validate: (r) => {
-          const code = allCanvasCode(r)
-          return code.includes('usestate(') && (code.includes('[{') || code.includes('[\'') || code.includes('["'))
-        },
-      },
-      {
-        id: 'reasonable-tool-count',
-        description: 'Reasonable number of tool calls (<=8)',
-        points: 10,
-        phase: 'execution',
-        validate: (r) => r.toolCalls.length <= 8,
+        validate: (r) => anyCanvasCodeContains(r, 'Table'),
       },
     ],
   },
 
-  // ---- Level 3: Multi-surface and edit/delete ----
   {
-    id: 'canvas-v2-multi-surface',
-    name: 'Canvas V2: Multi-surface (dashboard + settings)',
+    id: 'canvas-v2-bookmark-manager',
+    name: 'Canvas V2: Bookmark manager with backend',
     category: 'canvas-v2',
-    tags: ['view-only'],
-    level: 3,
-    input: 'Build me an app with a dashboard tab showing metrics and a settings tab with toggle switches.',
+    tags: ['full-stack'],
+    level: 2,
+    input: 'I want a bookmark manager where I can save URLs with a title and tags, and search through them.',
     workspaceFiles: { 'config.json': V2_CONFIG },
     initialMode: 'canvas',
+    toolMocks: SKILL_SERVER_MOCKS,
     maxScore: 100,
     validationCriteria: [
       {
-        id: 'used-write-file',
-        description: 'Used write_file to create canvas files',
+        id: 'wrote-schema',
+        description: 'Wrote schema.prisma with Bookmark model',
+        points: 15,
+        phase: 'intention',
+        validate: (r) => wroteSkillServerSchema(r) && schemaContainsModel(r, 'Bookmark'),
+      },
+      {
+        id: 'wrote-canvas',
+        description: 'Wrote canvas/*.js file',
         points: 10,
         phase: 'intention',
         validate: (r) => wroteCanvasFile(r),
@@ -611,39 +493,38 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
         validate: (r) => neverUsedV1CanvasTools(r),
       },
       {
-        id: 'wrote-2-files',
-        description: 'Wrote at least 2 distinct canvas/*.js files',
-        points: 25,
-        phase: 'execution',
-        validate: (r) => canvasFileCount(r) >= 2,
-      },
-      {
-        id: 'dashboard-file',
-        description: 'One file name suggests dashboard',
-        points: 10,
-        phase: 'execution',
-        validate: (r) => wroteCanvasFile(r, /dashboard|metrics|overview/i),
-      },
-      {
-        id: 'settings-file',
-        description: 'One file name suggests settings',
-        points: 10,
-        phase: 'execution',
-        validate: (r) => wroteCanvasFile(r, /settings|config|preferences/i),
-      },
-      {
-        id: 'has-switch-toggle',
-        description: 'Code contains Switch or toggle element',
+        id: 'code-fetches',
+        description: 'Canvas code uses fetch() for CRUD',
         points: 15,
         phase: 'execution',
-        validate: (r) => anyCanvasCodeContains(r, 'Switch') || anyCanvasCodeContains(r, 'toggle'),
+        validate: (r) => canvasCodeFetches(r),
       },
       {
-        id: 'has-metric',
-        description: 'Code contains Metric or numeric display',
+        id: 'has-search-filter',
+        description: 'Code has search or filter functionality',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => {
+          const code = allCanvasCode(r)
+          return code.includes('filter') || code.includes('search') || code.includes('query')
+        },
+      },
+      {
+        id: 'has-url-input',
+        description: 'Code has Input for URL entry',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => anyCanvasCodeContains(r, 'Input') || anyCanvasCodeContains(r, 'input'),
+      },
+      {
+        id: 'has-tags',
+        description: 'Code or schema references tags',
         points: 10,
         phase: 'execution',
-        validate: (r) => anyCanvasCodeContains(r, 'Metric') || anyCanvasCodeContains(r, 'value'),
+        validate: (r) => {
+          const json = canvasCodeJson(r)
+          return json.includes('tag')
+        },
       },
       {
         id: 'reasonable-tool-count',
@@ -655,6 +536,163 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
     ],
   },
 
+  // ---- Level 3: Complex full-stack + charts ----
+  {
+    id: 'canvas-v2-expense-dashboard',
+    name: 'Canvas V2: Expense dashboard with chart',
+    category: 'canvas-v2',
+    tags: ['full-stack'],
+    level: 3,
+    input: 'Build an expense tracking dashboard. I need to add expenses with amount, category, and date, see a breakdown by category, and a chart of spending over time.',
+    workspaceFiles: { 'config.json': V2_CONFIG },
+    initialMode: 'canvas',
+    toolMocks: SKILL_SERVER_MOCKS,
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'wrote-schema',
+        description: 'Wrote schema.prisma with Expense model',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => wroteSkillServerSchema(r) && schemaContainsModel(r, 'Expense'),
+      },
+      {
+        id: 'wrote-canvas',
+        description: 'Wrote canvas/*.js file',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => wroteCanvasFile(r),
+      },
+      {
+        id: 'never-v1',
+        description: 'Never used v1 canvas_* tools',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => neverUsedV1CanvasTools(r),
+      },
+      {
+        id: 'has-chart',
+        description: 'Code contains a chart component (Recharts)',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => {
+          const code = allCanvasCode(r)
+          return code.includes('responsivecontainer') || code.includes('barchart')
+            || code.includes('linechart') || code.includes('piechart')
+            || code.includes('areachart')
+        },
+      },
+      {
+        id: 'has-table-or-list',
+        description: 'Code has Table or list for expenses',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => anyCanvasCodeContains(r, 'Table') || anyCanvasCodeContains(r, 'DataList'),
+      },
+      {
+        id: 'has-form',
+        description: 'Code has form inputs for adding expenses',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => anyCanvasCodeContains(r, 'Input') || anyCanvasCodeContains(r, 'input'),
+      },
+      {
+        id: 'code-fetches',
+        description: 'Canvas code fetches from skill server',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => canvasCodeFetches(r),
+      },
+      {
+        id: 'has-loading-state',
+        description: 'Code has loading state pattern',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => canvasHasLoadingState(r),
+      },
+    ],
+  },
+
+  {
+    id: 'canvas-v2-project-board',
+    name: 'Canvas V2: Kanban project board',
+    category: 'canvas-v2',
+    tags: ['full-stack'],
+    level: 3,
+    input: 'Build a kanban-style project board with Todo, In Progress, and Done columns. I should be able to add tasks and move them between columns.',
+    workspaceFiles: { 'config.json': V2_CONFIG },
+    initialMode: 'canvas',
+    toolMocks: SKILL_SERVER_MOCKS,
+    maxScore: 100,
+    validationCriteria: [
+      {
+        id: 'wrote-schema',
+        description: 'Wrote schema.prisma with Task model',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => wroteSkillServerSchema(r) && schemaContainsModel(r, 'Task'),
+      },
+      {
+        id: 'wrote-canvas',
+        description: 'Wrote canvas/*.js file',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => wroteCanvasFile(r),
+      },
+      {
+        id: 'never-v1',
+        description: 'Never used v1 canvas_* tools',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => neverUsedV1CanvasTools(r),
+      },
+      {
+        id: 'has-columns',
+        description: 'Code has column layout for kanban stages',
+        points: 20,
+        phase: 'execution',
+        validate: (r) => {
+          const code = allCanvasCode(r)
+          return (code.includes('todo') || code.includes('to do'))
+            && (code.includes('in progress') || code.includes('inprogress') || code.includes('in_progress'))
+            && code.includes('done')
+        },
+      },
+      {
+        id: 'has-move-logic',
+        description: 'Code has move/status-change logic',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => {
+          const code = allCanvasCode(r)
+          return code.includes('status') && (code.includes('patch') || code.includes('move') || code.includes('setstatus'))
+        },
+      },
+      {
+        id: 'has-add-task',
+        description: 'Code has form/input for adding tasks',
+        points: 15,
+        phase: 'execution',
+        validate: (r) => anyCanvasCodeContains(r, 'Input') || anyCanvasCodeContains(r, 'input'),
+      },
+      {
+        id: 'code-fetches',
+        description: 'Canvas code fetches from skill server',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => canvasCodeFetches(r),
+      },
+      {
+        id: 'reasonable-tool-count',
+        description: 'Reasonable number of tool calls (<=12)',
+        points: 10,
+        phase: 'execution',
+        validate: (r) => r.toolCalls.length <= 12,
+      },
+    ],
+  },
+
+  // ---- Level 3: Edit/Delete operations ----
   {
     id: 'canvas-v2-edit-existing',
     name: 'Canvas V2: Edit existing dashboard with chart',
@@ -700,10 +738,7 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
         description: 'Did NOT delete the pre-existing Metric content',
         points: 15,
         phase: 'execution',
-        validate: (r) => {
-          const code = allCanvasCode(r)
-          return code.includes('metric')
-        },
+        validate: (r) => allCanvasCode(r).includes('metric'),
       },
       {
         id: 'targeted-dashboard',
@@ -782,25 +817,33 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
     ],
   },
 
-  // ---- Level 4: Complex multi-turn ----
+  // ---- Level 4: Complex multi-turn full-stack ----
   {
-    id: 'canvas-v2-social-analytics',
-    name: 'Canvas V2: Social analytics dashboard (multi-turn)',
+    id: 'canvas-v2-crm-dashboard',
+    name: 'Canvas V2: CRM dashboard (multi-turn)',
     category: 'canvas-v2',
-    tags: ['view-only'],
+    tags: ['full-stack'],
     level: 4,
     conversationHistory: [
-      { role: 'user', content: 'Show me how our social media is doing.' },
-      { role: 'assistant', content: 'I\'d love to help you visualize your social media performance! Could you share the metrics for your accounts? I\'ll need platform names, follower counts, and engagement rates to build a comprehensive dashboard.' },
+      { role: 'user', content: 'I need a CRM to track my sales pipeline.' },
+      { role: 'assistant', content: 'I\'d love to help you build a CRM pipeline! To build the best dashboard for you, could you tell me what stages your deals go through and what information you track per deal?' },
     ],
-    input: '@shogo_ai on Twitter has 12.4K followers and 4.2% engagement, @shogoai on Instagram has 8.1K and 6.1%, LinkedIn has 3.2K at 2.8%. Build me a dashboard with per-platform metrics, an engagement chart, and scheduled posts table.',
+    input: 'Stages: New, Qualified, Proposal, Closed Won, Closed Lost. Each deal has a company name, deal value in dollars, and contact person. Build the full thing with a pipeline view, summary metrics, and a chart showing value by stage.',
     workspaceFiles: { 'config.json': V2_CONFIG },
     initialMode: 'canvas',
+    toolMocks: SKILL_SERVER_MOCKS,
     maxScore: 100,
     validationCriteria: [
       {
-        id: 'used-write-file',
-        description: 'Used write_file to create canvas file',
+        id: 'wrote-schema',
+        description: 'Wrote schema.prisma with Deal model',
+        points: 10,
+        phase: 'intention',
+        validate: (r) => wroteSkillServerSchema(r) && schemaContainsModel(r, 'Deal'),
+      },
+      {
+        id: 'wrote-canvas',
+        description: 'Wrote canvas/*.js file',
         points: 10,
         phase: 'intention',
         validate: (r) => wroteCanvasFile(r),
@@ -813,21 +856,14 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
         validate: (r) => neverUsedV1CanvasTools(r),
       },
       {
-        id: 'wrote-canvas-js',
-        description: 'Wrote a canvas .js file',
-        points: 10,
-        phase: 'execution',
-        validate: (r) => wroteCanvasFile(r),
-      },
-      {
-        id: 'references-platforms',
-        description: 'Code or data references all 3 platforms',
+        id: 'has-stages',
+        description: 'Code references pipeline stages',
         points: 15,
         phase: 'execution',
         validate: (r) => {
           const json = canvasCodeJson(r)
-          const found = ['twitter', 'instagram', 'linkedin'].filter(p => json.includes(p))
-          return found.length >= 3
+          const stages = ['new', 'qualified', 'proposal', 'closed won', 'closed lost'].filter(s => json.includes(s))
+          return stages.length >= 3
         },
       },
       {
@@ -839,29 +875,31 @@ export const CANVAS_V2_EVALS: AgentEval[] = [
           const code = allCanvasCode(r)
           return code.includes('responsivecontainer') || code.includes('barchart')
             || code.includes('linechart') || code.includes('piechart')
-            || code.includes('areachart')
         },
       },
       {
-        id: 'has-table',
-        description: 'Code contains Table or table-like display',
+        id: 'has-metrics',
+        description: 'Code contains Metric or summary cards',
         points: 10,
         phase: 'execution',
-        validate: (r) => anyCanvasCodeContains(r, 'Table'),
+        validate: (r) => anyCanvasCodeContains(r, 'Metric') || anyCanvasCodeContains(r, 'value'),
       },
       {
-        id: 'has-metric',
-        description: 'Code contains Metric or metric-like cards',
+        id: 'code-fetches',
+        description: 'Canvas code fetches from skill server',
         points: 10,
         phase: 'execution',
-        validate: (r) => anyCanvasCodeContains(r, 'Metric') || anyCanvasCodeContains(r, 'Card'),
+        validate: (r) => canvasCodeFetches(r),
       },
       {
-        id: 'has-data',
-        description: 'Wrote .data.json or embedded data in code',
+        id: 'has-deal-fields',
+        description: 'Code or schema references company and value',
         points: 10,
         phase: 'execution',
-        validate: (r) => wroteCanvasDataFile(r) || anyCanvasCodeContains(r, '12.4') || anyCanvasCodeContains(r, '12400'),
+        validate: (r) => {
+          const json = canvasCodeJson(r)
+          return json.includes('company') && (json.includes('value') || json.includes('amount'))
+        },
       },
       {
         id: 'reasonable-tool-count',

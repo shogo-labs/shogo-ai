@@ -16,6 +16,7 @@
     "evals:agent": "bun run src/evals/run-eval.ts",
     "evals:agent:canvas": "bun run src/evals/run-eval.ts --track canvas",
     "evals:agent:canvas-v2": "bun run src/evals/run-eval.ts --track canvas-v2",
+    "evals:agent:edit-file": "bun run src/evals/run-eval.ts --track edit-file",
     "evals:agent:all": "bun run src/evals/run-eval.ts --track all",
     "evals:optimize": "cd src/evals/dspy && python3 optimize.py --track all --eval-model haiku --optimize-model sonnet --strategy bootstrap --no-cache",
     "evals:apply": "bun run src/evals/apply-optimizations.ts",
