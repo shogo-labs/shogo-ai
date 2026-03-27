@@ -36,7 +36,7 @@
     "db:push": "npx prisma db push",
     "db:studio": "npx prisma studio",
     "db:generate": "npx prisma generate",
-    "db:generate:all": "SHOGO_LOCAL_MODE=false DATABASE_URL=${DATABASE_URL:-postgres://localhost/prisma-generate} npx prisma generate && SHOGO_LOCAL_MODE=true DATABASE_URL=${DATABASE_URL:-file:./dev.db} npx prisma generate && ln -sfn prisma-pg apps/api/src/generated/prisma",
+    "db:generate:all": "SHOGO_LOCAL_MODE=false DATABASE_URL=${DATABASE_URL:-postgres://localhost/prisma-generate} npx prisma generate && SHOGO_LOCAL_MODE=true DATABASE_URL=${DATABASE_URL:-file:./dev.db} npx prisma generate && bun scripts/link-prisma.ts",
     "db:reset": "npx prisma migrate reset",
     "docker:prod": "docker-compose up",
     "docker:prod:build": "docker-compose up --build",
@@ -57,7 +57,7 @@
     "test:channels:webchat": "bun test e2e/channels/webchat.integration.test.ts",
     "test:channels:webhook": "bun test e2e/channels/webhook.integration.test.ts",
     "test:channels:external": "bun test e2e/channels/external-channels.integration.test.ts",
-    "postinstall": "([ -f scripts/patch-claude-sdk.ts ] && bun scripts/patch-claude-sdk.ts || true) && bun run db:generate:all"
+    "postinstall": "bun scripts/postinstall.ts"
   },
   "devDependencies": {
     "@babel/plugin-proposal-decorators": "^7.29.0",
