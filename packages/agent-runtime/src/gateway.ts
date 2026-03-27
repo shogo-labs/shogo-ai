@@ -37,6 +37,7 @@ import { SessionManager, type SessionManagerConfig } from './session-manager'
 import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { BlockChunker } from './block-chunker'
 import { CanvasStreamParser } from './canvas-stream-parser'
+import { CanvasCodeStreamParser } from './canvas-code-stream-parser'
 import { BASIC_CANVAS_TOOLS_GUIDE, BASIC_CANVAS_EXAMPLES } from './canvas-prompt'
 import { CANVAS_V2_PROMPT } from './canvas-v2-prompt'
 import { CanvasFileWatcher } from './canvas-file-watcher'
@@ -354,7 +355,8 @@ export class AgentGateway {
       channels: [],
       model: { provider: 'anthropic', name: 'claude-sonnet-4-6' },
       maxSessionMessages: 30,
-      activeMode: 'none',
+      activeMode: 'canvas',
+      canvasMode: 'code',
       allowedModes: ['canvas', 'none'],
       mainSessionIds: ['chat'],
     }
@@ -1269,6 +1271,7 @@ export class AgentGateway {
     // Canvas streaming: track active parsers and which tool calls already
     // sent their tool-input-start via the streaming path.
     const canvasParsers = new Map<string, CanvasStreamParser>()
+    const canvasCodeParsers = new Map<string, CanvasCodeStreamParser>()
     const streamedToolCalls = new Set<string>()
 
     try {
@@ -1343,6 +1346,23 @@ export class AgentGateway {
             })
             canvasParsers.set(toolCallId, parser)
           }
+          if ((toolName === 'write_file' || toolName === 'edit_file') && this.config.canvasMode === 'code') {
+            const watcher = this.canvasFileWatcher
+            const codeParser = new CanvasCodeStreamParser(
+              toolName as 'write_file' | 'edit_file',
+              {
+                onPreview: (surfaceId, code) => {
+                  const title = surfaceId.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+                  watcher.broadcast({ type: 'renderCode', surfaceId, title, code })
+                },
+                getCurrentCode: (surfaceId) => {
+                  const init = watcher.getInitEvent()
+                  return init.surfaces?.find(s => s.surfaceId === surfaceId)?.code
+                },
+              },
+            )
+            canvasCodeParsers.set(toolCallId, codeParser)
+          }
         },
         onToolCallDelta: (toolName, delta, toolCallId) => {
           if (uiWriter) {
@@ -1352,9 +1372,18 @@ export class AgentGateway {
           if (parser) {
             parser.feed(delta)
           }
+          const codeParser = canvasCodeParsers.get(toolCallId)
+          if (codeParser) {
+            codeParser.feed(delta)
+          }
         },
         onToolCallEnd: (_toolName, toolCallId) => {
           canvasParsers.delete(toolCallId)
+          const codeParser = canvasCodeParsers.get(toolCallId)
+          if (codeParser) {
+            codeParser.flush()
+            canvasCodeParsers.delete(toolCallId)
+          }
         },
         onBeforeToolCall: async (toolName, args, toolCallId) => {
           if (uiWriter && uiTextId) {

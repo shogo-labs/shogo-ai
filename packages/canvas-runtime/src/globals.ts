@@ -42,88 +42,164 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend,
 } from 'recharts'
 
-// Lucide icons — export commonly used ones as named globals
+// Lucide icons
 import * as LucideIcons from 'lucide-react'
 
-/**
- * Names and values for every global passed to agent code via new Function().
- * Order matters: names[i] corresponds to values[i].
- */
-export function getGlobals(data: unknown, onAction: (name: string, context?: Record<string, unknown>) => void) {
-  const names: string[] = []
-  const values: unknown[] = []
+// ---------------------------------------------------------------------------
+// Import map — maps package names to their exports for Sucrase-compiled
+// `require()` calls. This lets agent code use standard `import` statements.
+// ---------------------------------------------------------------------------
 
-  function add(name: string, value: unknown) {
-    names.push(name)
-    values.push(value)
+const reactExports = {
+  default: React,
+  React,
+  createElement: React.createElement,
+  Fragment,
+  useState, useEffect, useMemo, useCallback, useRef, useReducer,
+}
+
+const uiCard = { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter }
+const uiButton = { Button }
+const uiBadge = { Badge }
+const uiInput = { Input }
+const uiLabel = { Label }
+const uiTextarea = { Textarea }
+const uiCheckbox = { Checkbox }
+const uiSwitch = { Switch }
+const uiSelect = { Select, SelectTrigger, SelectValue, SelectContent, SelectItem }
+const uiTabs = { Tabs, TabsList, TabsTrigger, TabsContent }
+const uiTable = { Table, TableHeader, TableBody, TableRow, TableHead, TableCell }
+const uiDialog = { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter }
+const uiAlert = { Alert, AlertTitle, AlertDescription }
+const uiAccordion = { Accordion, AccordionItem, AccordionTrigger, AccordionContent }
+const uiProgress = { Progress }
+const uiSeparator = { Separator }
+const uiScrollArea = { ScrollArea }
+const uiSkeleton = { Skeleton }
+const uiTooltip = { Tooltip, TooltipProvider, TooltipTrigger, TooltipContent }
+const uiAvatar = { Avatar, AvatarImage, AvatarFallback }
+const uiDropdown = { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem }
+const uiSheet = { Sheet, SheetTrigger, SheetContent, SheetHeader, SheetTitle }
+const uiPopover = { Popover, PopoverTrigger, PopoverContent }
+
+const rechartsExports = {
+  ResponsiveContainer, LineChart, BarChart, AreaChart, PieChart,
+  Line, Bar, Area, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip: RechartsTooltip, Legend,
+}
+
+const canvasLayout = { Row, Column, Grid, CanvasCard, CanvasScrollArea }
+const canvasDisplay = { DynText, DynBadge, DynImage, DynIcon, DynSeparator, DynProgress, DynSkeleton, DynAlert }
+const canvasData = { Metric, DynTable, DynChart, DataList }
+const canvasExtended = { DynTabs, DynTabPanel, DynAccordion, DynAccordionItem }
+
+function buildImportMap(data: unknown, onAction: (name: string, context?: Record<string, unknown>) => void) {
+  const map: Record<string, Record<string, unknown>> = {
+    'react': reactExports,
+    'recharts': rechartsExports,
+    'lucide-react': { ...LucideIcons },
+    '@/lib/cn': { cn, default: cn },
+    '@/components/ui/card': uiCard,
+    '@/components/ui/button': uiButton,
+    '@/components/ui/badge': uiBadge,
+    '@/components/ui/input': uiInput,
+    '@/components/ui/label': uiLabel,
+    '@/components/ui/textarea': uiTextarea,
+    '@/components/ui/checkbox': uiCheckbox,
+    '@/components/ui/switch': uiSwitch,
+    '@/components/ui/select': uiSelect,
+    '@/components/ui/tabs': uiTabs,
+    '@/components/ui/table': uiTable,
+    '@/components/ui/dialog': uiDialog,
+    '@/components/ui/alert': uiAlert,
+    '@/components/ui/accordion': uiAccordion,
+    '@/components/ui/progress': uiProgress,
+    '@/components/ui/separator': uiSeparator,
+    '@/components/ui/scroll-area': uiScrollArea,
+    '@/components/ui/skeleton': uiSkeleton,
+    '@/components/ui/tooltip': uiTooltip,
+    '@/components/ui/avatar': uiAvatar,
+    '@/components/ui/dropdown-menu': uiDropdown,
+    '@/components/ui/sheet': uiSheet,
+    '@/components/ui/popover': uiPopover,
+    '@/components/canvas/layout': canvasLayout,
+    '@/components/canvas/display': canvasDisplay,
+    '@/components/canvas/data': canvasData,
+    '@/components/canvas/extended': canvasExtended,
+    '@/canvas/data': { default: data, data },
+    '@/canvas/actions': { default: onAction, onAction },
+  }
+  return map
+}
+
+// ---------------------------------------------------------------------------
+// Flat scope — every symbol available as a top-level variable.
+// Used for inline-mode code (no imports/exports).
+// ---------------------------------------------------------------------------
+
+function buildFlatScope(data: unknown, onAction: (name: string, context?: Record<string, unknown>) => void): Record<string, unknown> {
+  const scope: Record<string, unknown> = {
+    React,
+    h: React.createElement,
+    Fragment,
+    useState, useEffect, useMemo, useCallback, useRef, useReducer,
+
+    Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter,
+    Button, Badge, Input, Label, Textarea, Checkbox, Switch,
+    Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
+    Tabs, TabsList, TabsTrigger, TabsContent,
+    Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
+    Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
+    Alert, AlertTitle, AlertDescription,
+    Accordion, AccordionItem, AccordionTrigger, AccordionContent,
+    Progress, Separator, ScrollArea, Skeleton,
+    Tooltip, TooltipProvider, TooltipTrigger, TooltipContent,
+    Avatar, AvatarImage, AvatarFallback,
+    DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
+    Sheet, SheetTrigger, SheetContent, SheetHeader, SheetTitle,
+    Popover, PopoverTrigger, PopoverContent,
+
+    Column, Row, Grid, CanvasCard, CanvasScrollArea,
+    Metric, DataList,
+    DynText, DynBadge, DynImage, DynIcon,
+    DynTable, DynChart,
+    DynSeparator, DynProgress, DynSkeleton, DynAlert,
+    DynTabs, DynTabPanel, DynAccordion, DynAccordionItem,
+
+    ResponsiveContainer,
+    LineChart, BarChart, AreaChart, PieChart,
+    Line, Bar, Area, Pie, Cell,
+    XAxis, YAxis, CartesianGrid, RechartsTooltip, Legend,
+
+    cn,
+    data,
+    onAction,
   }
 
-  // React core
-  add('React', React)
-  add('h', React.createElement)
-  add('Fragment', Fragment)
-  add('useState', useState)
-  add('useEffect', useEffect)
-  add('useMemo', useMemo)
-  add('useCallback', useCallback)
-  add('useRef', useRef)
-  add('useReducer', useReducer)
-
-  // shadcn/ui
-  add('Card', Card); add('CardHeader', CardHeader); add('CardTitle', CardTitle)
-  add('CardDescription', CardDescription); add('CardContent', CardContent); add('CardFooter', CardFooter)
-  add('Button', Button); add('Badge', Badge); add('Input', Input); add('Label', Label)
-  add('Textarea', Textarea); add('Checkbox', Checkbox); add('Switch', Switch)
-  add('Select', Select); add('SelectTrigger', SelectTrigger); add('SelectValue', SelectValue)
-  add('SelectContent', SelectContent); add('SelectItem', SelectItem)
-  add('Tabs', Tabs); add('TabsList', TabsList); add('TabsTrigger', TabsTrigger); add('TabsContent', TabsContent)
-  add('Table', Table); add('TableHeader', TableHeader); add('TableBody', TableBody)
-  add('TableRow', TableRow); add('TableHead', TableHead); add('TableCell', TableCell)
-  add('Dialog', Dialog); add('DialogTrigger', DialogTrigger); add('DialogContent', DialogContent)
-  add('DialogHeader', DialogHeader); add('DialogTitle', DialogTitle)
-  add('DialogDescription', DialogDescription); add('DialogFooter', DialogFooter)
-  add('Alert', Alert); add('AlertTitle', AlertTitle); add('AlertDescription', AlertDescription)
-  add('Accordion', Accordion); add('AccordionItem', AccordionItem)
-  add('AccordionTrigger', AccordionTrigger); add('AccordionContent', AccordionContent)
-  add('Progress', Progress); add('Separator', Separator); add('ScrollArea', ScrollArea); add('Skeleton', Skeleton)
-  add('Tooltip', Tooltip); add('TooltipProvider', TooltipProvider)
-  add('TooltipTrigger', TooltipTrigger); add('TooltipContent', TooltipContent)
-  add('Avatar', Avatar); add('AvatarImage', AvatarImage); add('AvatarFallback', AvatarFallback)
-  add('DropdownMenu', DropdownMenu); add('DropdownMenuTrigger', DropdownMenuTrigger)
-  add('DropdownMenuContent', DropdownMenuContent); add('DropdownMenuItem', DropdownMenuItem)
-  add('Sheet', Sheet); add('SheetTrigger', SheetTrigger); add('SheetContent', SheetContent)
-  add('SheetHeader', SheetHeader); add('SheetTitle', SheetTitle)
-  add('Popover', Popover); add('PopoverTrigger', PopoverTrigger); add('PopoverContent', PopoverContent)
-
-  // Canvas components
-  add('Column', Column); add('Row', Row); add('Grid', Grid)
-  add('CanvasCard', CanvasCard); add('CanvasScrollArea', CanvasScrollArea)
-  add('Metric', Metric); add('DataList', DataList)
-  add('DynText', DynText); add('DynBadge', DynBadge); add('DynImage', DynImage); add('DynIcon', DynIcon)
-  add('DynTable', DynTable); add('DynChart', DynChart)
-  add('DynSeparator', DynSeparator); add('DynProgress', DynProgress)
-  add('DynSkeleton', DynSkeleton); add('DynAlert', DynAlert)
-  add('DynTabs', DynTabs); add('DynTabPanel', DynTabPanel)
-  add('DynAccordion', DynAccordion); add('DynAccordionItem', DynAccordionItem)
-
-  // Recharts
-  add('ResponsiveContainer', ResponsiveContainer)
-  add('LineChart', LineChart); add('BarChart', BarChart); add('AreaChart', AreaChart); add('PieChart', PieChart)
-  add('Line', Line); add('Bar', Bar); add('Area', Area); add('Pie', Pie); add('Cell', Cell)
-  add('XAxis', XAxis); add('YAxis', YAxis); add('CartesianGrid', CartesianGrid)
-  add('RechartsTooltip', RechartsTooltip); add('Legend', Legend)
-
-  // Lucide icons — add all exported icons
   for (const [name, icon] of Object.entries(LucideIcons)) {
     if (typeof icon === 'function' && name[0] === name[0].toUpperCase() && name !== 'createLucideIcon') {
-      add(name, icon)
+      scope[name] = icon
     }
   }
 
-  // Utilities
-  add('cn', cn)
-  add('data', data)
-  add('onAction', onAction)
+  return scope
+}
 
-  return { names, values }
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+export interface CanvasScope {
+  importMap: Record<string, Record<string, unknown>>
+  flatScope: Record<string, unknown>
+}
+
+export function getScope(
+  data: unknown,
+  onAction: (name: string, context?: Record<string, unknown>) => void,
+): CanvasScope {
+  return {
+    importMap: buildImportMap(data, onAction),
+    flatScope: buildFlatScope(data, onAction),
+  }
 }

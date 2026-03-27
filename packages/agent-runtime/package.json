@@ -15,6 +15,7 @@
     "evals:run": "cd src/evals/dspy && python3 optimize.py",
     "evals:agent": "bun run src/evals/run-eval.ts",
     "evals:agent:canvas": "bun run src/evals/run-eval.ts --track canvas",
+    "evals:agent:canvas-v2": "bun run src/evals/run-eval.ts --track canvas-v2",
     "evals:agent:all": "bun run src/evals/run-eval.ts --track all",
     "evals:optimize": "cd src/evals/dspy && python3 optimize.py --track all --eval-model haiku --optimize-model sonnet --strategy bootstrap --no-cache",
     "evals:apply": "bun run src/evals/apply-optimizations.ts",
@@ -42,6 +43,7 @@
     "openai": "^6.25.0",
     "playwright-core": "^1.58.2",
     "sqlite-vec": "^0.1.7-alpha.2",
+    "sucrase": "^3.35.1",
     "tar": "^7.4.3",
     "yaml": "^2.7.1",
     "zod": "^4.3.6"

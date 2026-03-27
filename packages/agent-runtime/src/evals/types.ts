@@ -27,6 +27,7 @@ export type EvalCategory =
   | 'template'
   | 'mode-switching'
   | 'code-agent'
+  | 'canvas-v2'
   | 'cross-mode'
 
 export type ValidationPhase = 'intention' | 'execution' | 'interaction'
