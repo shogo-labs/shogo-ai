@@ -336,7 +336,7 @@ const SCANNABLE_EXTENSIONS = new Set([
 
 const SKIP_DIRS = new Set([
   'node_modules', '.git', 'dist', 'build', '.next',
-  '.cache', 'coverage', 'test-results', '.turbo',
+  '.cache', 'coverage', 'test-results',
 ])
 
 const MAX_FILE_SIZE = 500 * 1024 // 500KB

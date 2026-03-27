@@ -2337,7 +2337,7 @@ app.get('/api/projects/:projectId/download', async (c) => {
   try {
     const excludes = [
       'node_modules', '.git', '.next', 'dist', 'build', '.cache',
-      '.output', '.nuxt', '.turbo', '.bun', '.vite'
+      '.output', '.nuxt', '.bun', '.vite'
     ]
     const excludeArgs = excludes.flatMap((dir: string) => ['--exclude', dir])
     
