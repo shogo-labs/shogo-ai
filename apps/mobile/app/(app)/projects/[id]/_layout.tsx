@@ -55,6 +55,7 @@ import { ChatPanel } from '../../../../components/chat/ChatPanel'
 import { ChatSessionPicker, ChatSessionSidebar, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
 import { DynamicAppRenderer } from '../../../../components/dynamic-app/DynamicAppRenderer'
 import { CanvasErrorBoundary } from '../../../../components/dynamic-app/CanvasErrorBoundary'
+import { CanvasWebView } from '../../../../components/dynamic-app/CanvasWebView'
 import { EditModeProvider, useEditModeOptional } from '../../../../components/dynamic-app/edit/EditModeContext'
 import { AddComponentDialog } from '../../../../components/dynamic-app/edit/AddComponentDialog'
 import { InspectorPanel } from '../../../../components/dynamic-app/edit/InspectorPanel'
@@ -196,6 +197,7 @@ export default observer(function ProjectLayout() {
   }, [project?.settings])
 
   const canvasEnabled = projectSettings.canvasEnabled !== false
+  const canvasMode = (projectSettings.canvasMode as 'json' | 'code') || 'json'
   // APP_MODE_DISABLED: treat 'app' as 'none' for existing projects
   const rawMode = (projectSettings.activeMode as 'canvas' | 'app' | 'none') || (canvasEnabled ? 'canvas' : 'none')
   const activeMode = rawMode === 'app' ? 'none' : rawMode
@@ -820,6 +822,7 @@ export default observer(function ProjectLayout() {
       authHeaders={nativeHeaders}
       onRefresh={reconnect}
       fullBleed={!isWide}
+      canvasMode={canvasMode}
     />
   ) : null
 
@@ -1126,6 +1129,7 @@ function CanvasPanel({
   authHeaders,
   onRefresh,
   fullBleed,
+  canvasMode = 'json',
 }: {
   surface: any | null
   surfaces: Map<string, any>
@@ -1138,6 +1142,7 @@ function CanvasPanel({
   authHeaders?: () => Record<string, string>
   onRefresh?: () => void
   fullBleed?: boolean
+  canvasMode?: 'json' | 'code'
 }) {
   const editMode = useEditModeOptional()
   const isEditMode = editMode?.isEditMode ?? false
@@ -1189,6 +1194,15 @@ function CanvasPanel({
             </Text>
           </>
         )}
+      </View>
+    )
+  }
+
+  // Canvas v2: render the CanvasWebView (parent owns SSE, bridges via postMessage)
+  if (canvasMode === 'code') {
+    return (
+      <View className="flex-1">
+        <CanvasWebView agentUrl={agentUrl} />
       </View>
     )
   }

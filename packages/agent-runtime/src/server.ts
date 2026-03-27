@@ -45,6 +45,7 @@ import { WebChatAdapter } from './channels/webchat'
 import { WebhookAdapter } from './channels/webhook'
 import { WhatsAppAdapter } from './channels/whatsapp'
 import { TeamsAdapter } from './channels/teams'
+import { CanvasFileWatcher } from './canvas-file-watcher'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -850,6 +851,14 @@ function getPreviewManager(): PreviewManager {
     })
   }
   return previewManager
+}
+
+// ---------------------------------------------------------------------------
+// Canvas File Watcher (canvas v2 mode — lazy init)
+// ---------------------------------------------------------------------------
+
+function getCanvasFileWatcher(): CanvasFileWatcher {
+  return CanvasFileWatcher.getInstance(WORKSPACE_DIR)
 }
 
 app.get('/preview/status', (c) => {
@@ -2427,10 +2436,8 @@ app.all('/api/*', async (c) => {
 })
 
 // =============================================================================
-// Static File Serving (app-preview mode)
+// Shared MIME map for static file serving
 // =============================================================================
-
-const PROJECT_DIST = join(WORKSPACE_DIR, 'project', 'dist')
 
 const STATIC_MIME: Record<string, string> = {
   '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
@@ -2442,13 +2449,124 @@ const STATIC_MIME: Record<string, string> = {
   '.webmanifest': 'application/manifest+json', '.mjs': 'application/javascript',
 }
 
+// =============================================================================
+// Canvas v2 Endpoints
+// =============================================================================
+
+app.get('/agent/canvas/stream', (c) => {
+  const watcher = getCanvasFileWatcher()
+
+  const stream = new ReadableStream({
+    start(controller) {
+      const encoder = new TextEncoder()
+      const send = (data: string) => {
+        try {
+          controller.enqueue(encoder.encode(`data: ${data}\n\n`))
+        } catch {}
+      }
+
+      // Replay current state
+      send(JSON.stringify(watcher.getInitEvent()))
+
+      // Subscribe to live updates
+      const handler = (event: import('./canvas-file-watcher').CanvasEvent) => {
+        send(JSON.stringify(event))
+      }
+      watcher.subscribe(handler)
+
+      // Heartbeat
+      const heartbeat = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(': heartbeat\n\n'))
+        } catch {
+          clearInterval(heartbeat)
+          watcher.unsubscribe(handler)
+        }
+      }, 15_000)
+
+      c.req.raw.signal.addEventListener('abort', () => {
+        clearInterval(heartbeat)
+        watcher.unsubscribe(handler)
+        try { controller.close() } catch {}
+      })
+    },
+  })
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    },
+  })
+})
+
+app.post('/agent/canvas/action', async (c) => {
+  try {
+    const body = await c.req.json() as { surfaceId?: string; name?: string; context?: Record<string, unknown> }
+    if (!body.name) return c.json({ error: 'Missing action name' }, 400)
+
+    console.log(`[canvas-action] ${body.surfaceId}/${body.name}`, body.context ? JSON.stringify(body.context).slice(0, 200) : '')
+
+    // TODO: Route canvas actions to the gateway when canvas_action_wait is implemented for v2
+    // For now, just acknowledge — the agent can poll for actions or we'll add event routing.
+
+    return c.json({ ok: true })
+  } catch {
+    return c.json({ error: 'Invalid request body' }, 400)
+  }
+})
+
+// Canvas runtime static files
+const CANVAS_RUNTIME_DIST = resolve(__dirname, '../../canvas-runtime/dist')
+
+app.get('/canvas/*', (c) => {
+  const urlPath = new URL(c.req.url).pathname
+  const relativePath = urlPath.replace(/^\/canvas\/?/, '') || 'index.html'
+  const safePath = relativePath.replace(/\.\./g, '').replace(/\/+/g, '/')
+  const filePath = join(CANVAS_RUNTIME_DIST, safePath)
+
+  if (!filePath.startsWith(resolve(CANVAS_RUNTIME_DIST))) {
+    return c.notFound()
+  }
+
+  if (existsSync(filePath) && statSync(filePath).isFile()) {
+    const ext = extname(filePath).toLowerCase()
+    const mime = STATIC_MIME[ext] || 'application/octet-stream'
+    return new Response(readFileSync(filePath), {
+      headers: {
+        'Content-Type': mime,
+        'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=31536000, immutable',
+      },
+    })
+  }
+
+  // SPA fallback
+  const indexPath = join(CANVAS_RUNTIME_DIST, 'index.html')
+  if (existsSync(indexPath)) {
+    return new Response(readFileSync(indexPath), {
+      headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' },
+    })
+  }
+
+  return c.notFound()
+})
+
+// =============================================================================
+// Static File Serving (app-preview mode)
+// =============================================================================
+
+const PROJECT_DIST = join(WORKSPACE_DIR, 'project', 'dist')
+
 app.get('*', (c) => {
   const urlPath = new URL(c.req.url).pathname
 
   if (urlPath.startsWith('/agent') || urlPath.startsWith('/pool') ||
       urlPath.startsWith('/health') || urlPath.startsWith('/ready') ||
       urlPath.startsWith('/preview') || urlPath.startsWith('/console-log') ||
-      urlPath.startsWith('/api') || urlPath.startsWith('/templates')) {
+      urlPath.startsWith('/api') || urlPath.startsWith('/templates') ||
+      urlPath.startsWith('/canvas')) {
     return c.notFound()
   }
 

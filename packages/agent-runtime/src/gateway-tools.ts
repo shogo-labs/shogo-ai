@@ -62,6 +62,8 @@ export interface ToolContext {
   fileIndexEngine?: FileIndexEngine
   /** Authenticated user ID from the chat request (for per-user integrations like Composio) */
   userId?: string
+  /** Canvas v2 file watcher — notified when canvas/*.js files are written/edited/deleted */
+  canvasFileWatcher?: import('./canvas-file-watcher').CanvasFileWatcher
   /** Permission engine for local-mode security guardrails */
   permissionEngine?: PermissionEngine
   /** AI Proxy URL for image generation and other proxy-routed calls */
@@ -295,6 +297,7 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
       } else {
         writeFileSync(resolved, content, 'utf-8')
       }
+      ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
       return textResult({ ok: true, path: filePath, bytes: content.length })
     },
   }
@@ -347,6 +350,7 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
         ? content.split(old_string).join(new_string)
         : content.replace(old_string, new_string)
       writeFileSync(resolved, updated, 'utf-8')
+      ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
       return textResult({ ok: true, path: filePath, replacements: replace_all ? occurrences : 1 })
     },
   }
@@ -3922,6 +3926,7 @@ function createDeleteFileTool(ctx: ToolContext): AgentTool {
       }
 
       unlinkSync(resolved)
+      ctx.canvasFileWatcher?.onFileDeleted(filePath)
       return textResult({ ok: true, deleted: filePath })
     },
   }
