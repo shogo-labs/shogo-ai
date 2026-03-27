@@ -4675,7 +4675,7 @@ export function createTools(ctx: ToolContext, modeHandler?: ModeSwitchHandler, e
     g(createGenerateImageTool(ctx), 'network'),
     createHeartbeatConfigureTool(ctx),
     createHeartbeatStatusTool(ctx),
-    createCreatePlanTool(ctx),
+    // createCreatePlanTool(ctx), // disabled: plan mode tool removed from agent
   ]
 
   // Self-referencing getter for tools that need the full tool list (skill)
