@@ -39,7 +39,7 @@ import { BlockChunker } from './block-chunker'
 import { CanvasStreamParser } from './canvas-stream-parser'
 import { CanvasCodeStreamParser } from './canvas-code-stream-parser'
 import { BASIC_CANVAS_TOOLS_GUIDE, BASIC_CANVAS_EXAMPLES } from './canvas-prompt'
-import { CANVAS_V2_PROMPT } from './canvas-v2-prompt'
+import { CANVAS_V2_GUIDE, CANVAS_V2_BACKEND_GUIDE, CANVAS_V2_REACT_GUIDE, CANVAS_V2_EXAMPLES } from './canvas-v2-prompt'
 import { CanvasFileWatcher } from './canvas-file-watcher'
 import { CODE_AGENT_GENERAL_GUIDE } from './code-agent-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
@@ -1643,7 +1643,21 @@ export class AgentGateway {
     const activeMode = this.config.activeMode || 'none'
     // Inject mode-specific prompt sections
     if (activeMode === 'canvas') {
-      parts.push(`\n## Canvas Mode — Declarative Agent Display
+      if (this.config.canvasMode === 'code') {
+        parts.push(`\n## Canvas Mode — React Code Display
+
+You are in canvas code mode. Write React code to \`canvas/*.js\` files using \`write_file\`, \`edit_file\`, \`delete_file\`. Each file is a separate tab rendered instantly in the canvas panel.
+
+**Your workflow in canvas code mode:**
+1. Understand what the user wants to display or build
+2. If the app needs persistent data, create a skill server by writing \`.shogo/server/schema.prisma\`
+3. Write canvas code that fetches from the skill server and renders the UI
+4. Use \`edit_file\` to update existing canvas files, \`delete_file\` to remove tabs
+
+**IMPORTANT:** Do NOT switch modes unless the user explicitly asks you to. Stay in canvas mode for all visual work.
+`)
+      } else {
+        parts.push(`\n## Canvas Mode — Declarative Agent Display
 
 You are in canvas mode. You have all canvas tools available directly — use them to build and update canvas surfaces.
 
@@ -1662,6 +1676,7 @@ When integrations are connected, use \`tool_search\` to discover available actio
 
 **IMPORTANT:** Do NOT switch modes unless the user explicitly asks you to. Stay in canvas mode for all visual work.
 `)
+      }
     } else if (activeMode === 'none') {
       parts.push(`\n## Visual Mode Available
 
@@ -1682,7 +1697,10 @@ Examples:
     // Mode-specific tool guides
     if (activeMode === 'canvas') {
       if (this.config.canvasMode === 'code') {
-        parts.push(CANVAS_V2_PROMPT)
+        parts.push(this.promptOverrides.get('canvas_v2_guide') ?? CANVAS_V2_GUIDE)
+        parts.push(this.promptOverrides.get('canvas_v2_backend_guide') ?? CANVAS_V2_BACKEND_GUIDE)
+        parts.push(this.promptOverrides.get('canvas_v2_react_guide') ?? CANVAS_V2_REACT_GUIDE)
+        parts.push(this.promptOverrides.get('canvas_v2_examples') ?? CANVAS_V2_EXAMPLES)
       } else {
         parts.push(BASIC_CANVAS_TOOLS_GUIDE)
         parts.push(BASIC_CANVAS_EXAMPLES)

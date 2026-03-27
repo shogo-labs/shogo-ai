@@ -45,6 +45,9 @@ import {
 // Lucide icons
 import * as LucideIcons from 'lucide-react'
 
+// Shogo SDK (lightweight client-side pieces)
+import { createClient, HttpClient, OptimisticStore } from '@shogo-ai/sdk'
+
 // ---------------------------------------------------------------------------
 // Import map — maps package names to their exports for Sucrase-compiled
 // `require()` calls. This lets agent code use standard `import` statements.
@@ -93,6 +96,8 @@ const canvasDisplay = { DynText, DynBadge, DynImage, DynIcon, DynSeparator, DynP
 const canvasData = { Metric, DynTable, DynChart, DataList }
 const canvasExtended = { DynTabs, DynTabPanel, DynAccordion, DynAccordionItem }
 
+const sdkExports = { createClient, HttpClient, OptimisticStore }
+
 function buildImportMap(data: unknown, onAction: (name: string, context?: Record<string, unknown>) => void) {
   const map: Record<string, Record<string, unknown>> = {
     'react': reactExports,
@@ -128,6 +133,7 @@ function buildImportMap(data: unknown, onAction: (name: string, context?: Record
     '@/components/canvas/extended': canvasExtended,
     '@/canvas/data': { default: data, data },
     '@/canvas/actions': { default: onAction, onAction },
+    '@shogo-ai/sdk': sdkExports,
   }
   return map
 }
@@ -174,6 +180,8 @@ function buildFlatScope(data: unknown, onAction: (name: string, context?: Record
     cn,
     data,
     onAction,
+
+    createClient, HttpClient, OptimisticStore,
   }
 
   for (const [name, icon] of Object.entries(LucideIcons)) {
