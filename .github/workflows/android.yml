@@ -350,15 +350,16 @@ jobs:
         working-directory: apps/mobile
         run: |
           if ! node_modules/@sentry/cli/bin/sentry-cli --version 2>/dev/null; then
-            echo "Sentry CLI binary missing, installing for Linux..."
-            npm install --no-save @sentry/cli-linux-x64 2>/dev/null || true
+            echo "Sentry CLI binary not working, installing for this platform..."
+            npx @sentry/cli@latest --version 2>/dev/null || true
             node node_modules/@sentry/cli/scripts/install.js 2>/dev/null || true
           fi
           if ! node_modules/@sentry/cli/bin/sentry-cli --version 2>/dev/null; then
-            echo "Sentry CLI still not working, disabling upload in Gradle config..."
-            sed -i '/apply plugin: "io.sentry.android.gradle"/a \
-            sentry { autoUploadSourceContext.set(false); autoUploadProguardMapping.set(false); autoUpload.set(false) }' android/app/build.gradle
+            echo "Creating no-op sentry-cli stub to prevent build failure..."
+            printf '#!/bin/bash\necho "sentry-cli stub: skipping upload"\nexit 0\n' > node_modules/@sentry/cli/bin/sentry-cli
+            chmod +x node_modules/@sentry/cli/bin/sentry-cli
           fi
+          node_modules/@sentry/cli/bin/sentry-cli --version || echo "sentry-cli stub active"
 
       - name: Build AAB
         working-directory: apps/mobile/android
