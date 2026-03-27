@@ -53,6 +53,7 @@ import {
   OPTIMIZED_MCP_DISCOVERY_GUIDE,
   OPTIMIZED_CONSTRAINT_AWARENESS_GUIDE,
 } from './optimized-prompts'
+import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
 
 function isComposioTool(name: string): boolean {
   return /^[A-Z]+_/.test(name)
@@ -349,8 +350,8 @@ export class AgentGateway {
       allowedModes: ['canvas', 'none'],
       mainSessionIds: ['chat'],
     }
-    const configPath = join(this.workspaceDir, 'config.json')
-    if (existsSync(configPath)) {
+    const configPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'config.json')
+    if (configPath) {
       try {
         const raw = JSON.parse(readFileSync(configPath, 'utf-8'))
         return {
@@ -566,8 +567,8 @@ export class AgentGateway {
   async heartbeatTick(): Promise<string> {
     this.lastHeartbeatTick = new Date()
 
-    const heartbeatPath = join(this.workspaceDir, 'HEARTBEAT.md')
-    if (!existsSync(heartbeatPath)) {
+    const heartbeatPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'HEARTBEAT.md')
+    if (!heartbeatPath) {
       return 'HEARTBEAT_OK'
     }
 
@@ -776,8 +777,8 @@ export class AgentGateway {
 
   private isUnconfigured(): boolean {
     if (this.skills.length > 0 || this.configSkills.length > 0) return false
-    const agentsPath = join(this.workspaceDir, 'AGENTS.md')
-    if (!existsSync(agentsPath)) return true
+    const agentsPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'AGENTS.md')
+    if (!agentsPath) return true
     const content = readFileSync(agentsPath, 'utf-8')
     return content.includes('Respond concisely and helpfully') && content.includes('# Agent Instructions')
   }
@@ -1064,8 +1065,9 @@ export class AgentGateway {
       onModeSwitch: (mode: VisualMode, reason: string) => {
         this.setActiveMode(mode)
         const enableCanvas = mode === 'canvas'
-        // Persist to config.json
-        const configPath = join(this.workspaceDir, 'config.json')
+        // Persist to config.json (same path as loadConfig: root or .shogo/)
+        const configPath =
+          resolveWorkspaceConfigFilePath(this.workspaceDir, 'config.json') ?? join(this.workspaceDir, 'config.json')
         try {
           const config = existsSync(configPath) ? JSON.parse(readFileSync(configPath, 'utf-8')) : {}
           config.activeMode = mode
@@ -1531,8 +1533,8 @@ export class AgentGateway {
     const parts: string[] = []
 
     for (const filename of files) {
-      const filepath = join(this.workspaceDir, filename)
-      if (existsSync(filepath)) {
+      const filepath = resolveWorkspaceConfigFilePath(this.workspaceDir, filename)
+      if (filepath) {
         const content = readFileSync(filepath, 'utf-8').trim()
         if (content) {
           parts.push(content)
@@ -1540,8 +1542,8 @@ export class AgentGateway {
       }
     }
 
-    const memoryPath = join(this.workspaceDir, 'MEMORY.md')
-    if (existsSync(memoryPath)) {
+    const memoryPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'MEMORY.md')
+    if (memoryPath) {
       const memory = readFileSync(memoryPath, 'utf-8').trim()
       if (memory) {
         parts.push(`## Memory\n${memory}`)
@@ -2050,8 +2052,8 @@ Examples:
   }
 
   private loadConfigSkills(): Array<{ name: string; trigger?: string; description?: string }> {
-    const configPath = join(this.workspaceDir, 'config.json')
-    if (!existsSync(configPath)) return []
+    const configPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'config.json')
+    if (!configPath) return []
     try {
       const raw = JSON.parse(readFileSync(configPath, 'utf-8'))
       return Array.isArray(raw.skills) ? raw.skills : []
