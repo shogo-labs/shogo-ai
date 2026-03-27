@@ -62,7 +62,7 @@ import { isNativePhoneIntegrationsLayout } from "../../lib/native-phone-layout"
 import { authClient } from "../../lib/auth-client"
 import { ChatHeader } from "./ChatHeader"
 import { MessageList } from "./MessageList"
-import { ChatInput, type AgentMode, type FileAttachment } from "./ChatInput"
+import { ChatInput, type AgentMode, type InteractionMode, type FileAttachment } from "./ChatInput"
 import { CompactChatInput } from "./CompactChatInput"
 import { ExpandTab } from "./ExpandTab"
 import { ToolCallDisplay, type ToolCallState } from "./ToolCallDisplay"
@@ -80,6 +80,7 @@ import {
 } from "./tools/types"
 import * as ExpoLinking from "expo-linking"
 import { AlertCircle, RefreshCw, X } from "lucide-react-native"
+import { PlanCard, type PlanData } from "./PlanCard"
 import { openAuthFlow, preCreateAuthWindow, isMobileWeb } from "@shogo/ui-kit/platform"
 import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
 
@@ -113,6 +114,41 @@ async function saveAgentMode(value: AgentMode): Promise<void> {
       return
     }
     await SecureStore.setItemAsync(AGENT_MODE_KEY, value)
+  } catch {
+    // Silently fail
+  }
+}
+
+// ============================================================
+// Interaction Mode Persistence
+// ============================================================
+
+const INTERACTION_MODE_KEY = "interaction-mode-preference"
+
+async function loadInteractionMode(): Promise<InteractionMode | null> {
+  try {
+    if (Platform.OS === "web") {
+      const stored = typeof localStorage !== "undefined" ? localStorage.getItem(INTERACTION_MODE_KEY) : null
+      if (stored === "agent" || stored === "plan" || stored === "ask") return stored
+      return null
+    }
+    const stored = await SecureStore.getItemAsync(INTERACTION_MODE_KEY)
+    if (stored === "agent" || stored === "plan" || stored === "ask") return stored
+    return null
+  } catch {
+    return null
+  }
+}
+
+async function saveInteractionMode(value: InteractionMode): Promise<void> {
+  try {
+    if (Platform.OS === "web") {
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem(INTERACTION_MODE_KEY, value)
+      }
+      return
+    }
+    await SecureStore.setItemAsync(INTERACTION_MODE_KEY, value)
   } catch {
     // Silently fail
   }
@@ -217,6 +253,8 @@ export interface ChatPanelProps {
   }
   /** Called whenever the streaming messages array changes (for TerminalPanel etc.) */
   onMessagesChange?: (messages: any[]) => void
+  /** Triggered from the Plans panel Build button — executes a saved plan */
+  buildPlanRequest?: { plan: PlanData; agentMode: AgentMode; nonce: number } | null
 }
 
 // ============================================================
@@ -540,6 +578,7 @@ export const ChatPanel = observer(function ChatPanel({
   legacyDomains,
   billingData,
   onMessagesChange,
+  buildPlanRequest,
 }: ChatPanelProps) {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
   const isNativePhoneLayout = isNativePhoneIntegrationsLayout(windowWidth, windowHeight)
@@ -637,6 +676,25 @@ export const ChatPanel = observer(function ChatPanel({
     setAgentMode(mode)
     saveAgentMode(mode)
   }, [])
+
+  const [interactionMode, setInteractionMode] = useState<InteractionMode>("agent")
+
+  useEffect(() => {
+    loadInteractionMode().then((stored) => {
+      if (stored) {
+        setInteractionMode(stored)
+      }
+    })
+  }, [])
+
+  const handleInteractionModeChange = useCallback((mode: InteractionMode) => {
+    setInteractionMode(mode)
+    saveInteractionMode(mode)
+  }, [])
+
+  const [confirmedPlan, setConfirmedPlan] = useState<PlanData | null>(null)
+  const confirmedPlanRef = useRef<PlanData | null>(null)
+  const [pendingPlan, setPendingPlan] = useState<PlanData | null>(null)
 
   const [ccSessionId, setCcSessionId] = useState<string | undefined>(undefined)
   const ccSessionIdRef = useRef<string | undefined>(undefined)
@@ -1149,6 +1207,13 @@ export const ChatPanel = observer(function ChatPanel({
         const { mode, reason } = (dataPart as any).data as { mode: "canvas" | "app" | "none"; reason: string }
         console.log("[ChatPanel:ModeSwitch]", mode, reason)
         onModeSwitch?.(mode, reason)
+      }
+
+      if ((dataPart as any).type === "data-plan") {
+        const planData = (dataPart as any).data
+        if (planData) {
+          setPendingPlan(planData)
+        }
       }
 
       // Handle permission approval requests from the agent runtime
@@ -1899,19 +1964,25 @@ export const ChatPanel = observer(function ChatPanel({
       }
 
       try {
-        await sendMessage(messagePayload, {
-          body: {
-            featureId,
-            phase,
-            ccSessionId: ccSessionIdRef.current,
-            chatSessionId: currentSessionId,
-            workspaceId,
-            userId,
-            projectId,
-            agentMode: selectedAgentMode || agentMode,
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          },
-        })
+        const bodyExtra: Record<string, unknown> = {
+          featureId,
+          phase,
+          ccSessionId: ccSessionIdRef.current,
+          chatSessionId: currentSessionId,
+          workspaceId,
+          userId,
+          projectId,
+          agentMode: selectedAgentMode || agentMode,
+          interactionMode,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        }
+        const planToSend = confirmedPlanRef.current
+        if (planToSend) {
+          bodyExtra.confirmedPlan = planToSend
+          confirmedPlanRef.current = null
+          setConfirmedPlan(null)
+        }
+        await sendMessage(messagePayload, { body: bodyExtra })
       } catch (err) {
         console.error("[ChatPanel] Failed to send message:", err)
         throw err
@@ -1930,6 +2001,7 @@ export const ChatPanel = observer(function ChatPanel({
       userId,
       projectId,
       agentMode,
+      interactionMode,
       actions,
     ]
   )
@@ -2040,6 +2112,29 @@ export const ChatPanel = observer(function ChatPanel({
     },
     [handleSendMessage]
   )
+
+  // Plan confirmation: switch to Agent mode and execute
+  const handleConfirmPlan = useCallback(() => {
+    if (!pendingPlan) return
+    confirmedPlanRef.current = pendingPlan
+    setConfirmedPlan(pendingPlan)
+    setPendingPlan(null)
+    handleInteractionModeChange("agent")
+    handleSendMessage("Execute the confirmed plan.")
+  }, [pendingPlan, handleSendMessage, handleInteractionModeChange])
+
+  // Build from Plans panel: execute a saved plan with selected model
+  const lastBuildNonceRef = useRef<number>(0)
+  useEffect(() => {
+    if (!buildPlanRequest || buildPlanRequest.nonce === lastBuildNonceRef.current) return
+    lastBuildNonceRef.current = buildPlanRequest.nonce
+    const { plan, agentMode: requestedMode } = buildPlanRequest
+    confirmedPlanRef.current = plan
+    setConfirmedPlan(plan)
+    setPendingPlan(null)
+    handleInteractionModeChange("agent")
+    handleSendMessage("Execute the confirmed plan.", undefined, requestedMode)
+  }, [buildPlanRequest, handleInteractionModeChange, handleSendMessage])
 
   // Homepage transition warm-start: Inject initial message on mount (only for fresh sessions)
   useEffect(() => {
@@ -2272,6 +2367,15 @@ export const ChatPanel = observer(function ChatPanel({
                 </View>
               </View>
             )}
+
+            {/* Plan Card (shown when agent produces a plan in Plan mode) */}
+            {pendingPlan && (
+              <PlanCard
+                plan={pendingPlan}
+                onConfirm={handleConfirmPlan}
+                isConfirmed={pendingPlan === null}
+              />
+            )}
           </ScrollView>
 
           {/* Tool Error Banner */}
@@ -2468,7 +2572,11 @@ export const ChatPanel = observer(function ChatPanel({
                   ? "Select a feature to start chatting..."
                   : hasPendingQuestion
                     ? "Respond to the question above, or type a message..."
-                    : "Ask Shogo..."
+                    : interactionMode === "plan"
+                      ? "Describe what you want to plan..."
+                      : interactionMode === "ask"
+                        ? "Ask a question..."
+                        : "Ask Shogo..."
               }
               isStreaming={isStreaming}
               onStop={handleStop}
@@ -2479,6 +2587,8 @@ export const ChatPanel = observer(function ChatPanel({
               queuedMessages={messageQueue}
               onRemoveQueuedMessage={handleRemoveQueuedMessage}
               onReorderQueuedMessage={handleReorderQueuedMessage}
+              interactionMode={interactionMode}
+              onInteractionModeChange={handleInteractionModeChange}
             />
           </View>
         </KeyboardAvoidingView>

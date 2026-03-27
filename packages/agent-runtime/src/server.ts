@@ -654,6 +654,8 @@ app.post('/agent/chat', async (c) => {
 
   const agentMode = body.agentMode as 'basic' | 'advanced' | undefined
   const modelOverride = agentMode || undefined
+  const interactionMode = body.interactionMode as 'agent' | 'plan' | 'ask' | undefined
+  const confirmedPlan = body.confirmedPlan || undefined
 
   if (body.timezone && typeof body.timezone === 'string') {
     agentGateway!.setUserTimezone(body.timezone)
@@ -669,6 +671,8 @@ app.post('/agent/chat', async (c) => {
           modelOverride,
           fileParts: userFileParts.length > 0 ? userFileParts : undefined,
           userId: chatUserId,
+          interactionMode,
+          confirmedPlan,
         })
 
         const usage = agentGateway!.consumeLastTurnUsage()
@@ -758,6 +762,69 @@ app.post('/agent/mode', async (c) => {
 
   agentGateway.setActiveMode(mode)
   return c.json({ mode })
+})
+
+// ---------------------------------------------------------------------------
+// Plans API
+// ---------------------------------------------------------------------------
+
+app.get('/agent/plans', async (c) => {
+  const plansDir = join(WORKSPACE_DIR, '.shogo', 'plans')
+  if (!existsSync(plansDir)) {
+    return c.json({ plans: [] })
+  }
+
+  const plans: Array<{ filename: string; name: string; overview: string; createdAt: string; status: string }> = []
+  try {
+    for (const entry of readdirSync(plansDir)) {
+      if (!entry.endsWith('.plan.md')) continue
+      const filepath = join(plansDir, entry)
+      const content = readFileSync(filepath, 'utf-8')
+      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/)
+      if (!fmMatch) continue
+      const fm = fmMatch[1]
+      const getName = (s: string) => { const m = s.match(/^name:\s*"?([^"\n]*)"?/m); return m?.[1] || '' }
+      const getOverview = (s: string) => { const m = s.match(/^overview:\s*"?([^"\n]*)"?/m); return m?.[1] || '' }
+      const getCreatedAt = (s: string) => { const m = s.match(/^createdAt:\s*"?([^"\n]*)"?/m); return m?.[1] || '' }
+      const getStatus = (s: string) => { const m = s.match(/^status:\s*(\S+)/m); return m?.[1] || 'pending' }
+      plans.push({
+        filename: entry,
+        name: getName(fm),
+        overview: getOverview(fm),
+        createdAt: getCreatedAt(fm),
+        status: getStatus(fm),
+      })
+    }
+  } catch { /* directory unreadable */ }
+
+  plans.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+  return c.json({ plans })
+})
+
+app.get('/agent/plans/:filename', async (c) => {
+  const filename = c.req.param('filename')
+  if (!filename || !filename.endsWith('.plan.md')) {
+    return c.json({ error: 'Invalid plan filename' }, 400)
+  }
+  const filepath = join(WORKSPACE_DIR, '.shogo', 'plans', filename)
+  if (!existsSync(filepath)) {
+    return c.json({ error: 'Plan not found' }, 404)
+  }
+  const content = readFileSync(filepath, 'utf-8')
+  return c.json({ filename, content })
+})
+
+app.delete('/agent/plans/:filename', async (c) => {
+  const filename = c.req.param('filename')
+  if (!filename || !filename.endsWith('.plan.md')) {
+    return c.json({ error: 'Invalid plan filename' }, 400)
+  }
+  const filepath = join(WORKSPACE_DIR, '.shogo', 'plans', filename)
+  if (!existsSync(filepath)) {
+    return c.json({ error: 'Plan not found' }, 404)
+  }
+  unlinkSync(filepath)
+  return c.json({ deleted: true })
 })
 
 // Stop/interrupt the current agent turn (and any active code agent task)
@@ -2451,10 +2518,8 @@ async function initializeEssentials(): Promise<void> {
   initDynamicAppManager(canvasStatePath)
   logTiming('Canvas state manager initialized')
 
-  // Write CLAUDE.md and .mcp.json
+  // Write CLAUDE.md and .mcp.json (function logs timing internally)
   writeAgentConfigFiles()
-  logTiming('Wrote CLAUDE.md')
-  logTiming('Wrote .mcp.json')
   logTiming('Essentials complete')
 
   // Auto-start preview server if an app project was restored from S3.
@@ -2477,7 +2542,13 @@ async function initializeEssentials(): Promise<void> {
  * Start the agent gateway (heavy: loads skills, MCP servers, sessions, BOOT.md).
  * Called after essentials are done — can run in background for warm pool assigns.
  */
+let gatewayStarting = false
 async function startGateway(): Promise<void> {
+  if (gatewayStarting) {
+    console.warn('[agent-runtime] startGateway() called while already starting — skipping')
+    return
+  }
+  gatewayStarting = true
   logTiming('Starting agent gateway...')
 
   gatewayReadyPromise = new Promise<void>((resolve) => { gatewayReadyResolve = resolve })

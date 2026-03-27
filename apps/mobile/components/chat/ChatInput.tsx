@@ -47,6 +47,9 @@ import {
   ChevronDown,
   ChevronUp,
   Trash2,
+  Bot,
+  ClipboardList,
+  MessageCircleQuestion,
 } from "lucide-react-native"
 
 export type AgentMode = "basic" | "advanced"
@@ -59,6 +62,36 @@ export interface AgentModeConfig {
   creditHint: string
   requiresPro?: boolean
 }
+
+export type InteractionMode = "agent" | "plan" | "ask"
+
+export interface InteractionModeConfig {
+  id: InteractionMode
+  label: string
+  description: string
+  Icon: React.ElementType
+}
+
+const INTERACTION_MODES: InteractionModeConfig[] = [
+  {
+    id: "agent",
+    label: "Agent",
+    description: "Full autonomous mode — reads, writes, executes",
+    Icon: Bot,
+  },
+  {
+    id: "plan",
+    label: "Plan",
+    description: "Research and create a plan before making changes",
+    Icon: ClipboardList,
+  },
+  {
+    id: "ask",
+    label: "Ask",
+    description: "Just answer questions, no tools or changes",
+    Icon: MessageCircleQuestion,
+  },
+]
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024
 const MAX_FILES = 10
@@ -123,6 +156,8 @@ export interface ChatInputProps {
   queuedMessages?: QueuedMessage[]
   onRemoveQueuedMessage?: (messageId: string) => void
   onReorderQueuedMessage?: (messageId: string, direction: "up" | "down") => void
+  interactionMode?: InteractionMode
+  onInteractionModeChange?: (mode: InteractionMode) => void
 }
 
 export function ChatInput({
@@ -138,6 +173,8 @@ export function ChatInput({
   queuedMessages = [],
   onRemoveQueuedMessage,
   onReorderQueuedMessage,
+  interactionMode: controlledInteractionMode,
+  onInteractionModeChange,
 }: ChatInputProps) {
   const { features } = usePlatformConfig()
   const effectiveIsPro = features.billing ? isPro : true
@@ -153,6 +190,7 @@ export function ChatInput({
   const [isDragOver, setIsDragOver] = useState(false)
   const [queueExpanded, setQueueExpanded] = useState(true)
   const [agentModeOpen, setAgentModeOpen] = useState(false)
+  const [interactionModeOpen, setInteractionModeOpen] = useState(false)
   const [attachSheetOpen, setAttachSheetOpen] = useState(false)
 
   const [internalAgentMode, setInternalAgentMode] = useState<AgentMode>(
@@ -181,6 +219,25 @@ export function ChatInput({
   const currentAgentConfig = useMemo(
     () => AGENT_MODES.find((m) => m.id === agentMode) || AGENT_MODES[1],
     [agentMode]
+  )
+
+  const [internalInteractionMode, setInternalInteractionMode] = useState<InteractionMode>("agent")
+  const interactionMode = controlledInteractionMode ?? internalInteractionMode
+
+  const handleInteractionModeChange = useCallback(
+    (mode: InteractionMode) => {
+      if (onInteractionModeChange) {
+        onInteractionModeChange(mode)
+      } else {
+        setInternalInteractionMode(mode)
+      }
+    },
+    [onInteractionModeChange]
+  )
+
+  const currentInteractionConfig = useMemo(
+    () => INTERACTION_MODES.find((m) => m.id === interactionMode) || INTERACTION_MODES[0],
+    [interactionMode]
   )
 
   // Skill picker state
@@ -621,7 +678,7 @@ export function ChatInput({
           className={cn(
             "min-h-[60px] max-h-[200px] w-full",
             "bg-transparent",
-            "px-4 pt-4 pb-2 text-xs text-foreground",
+            "px-4 pt-4 text-xs text-foreground",
             disabled && "opacity-50",
             Platform.OS === "web" && "outline-none"
           )}
@@ -629,7 +686,7 @@ export function ChatInput({
         />
 
         {/* Bottom toolbar */}
-        <View className="flex-row items-center justify-between px-2 pb-2">
+        <View className="flex-row items-center justify-between pr-2">
           {/* Left side buttons */}
           <View className="flex-row items-center gap-1">
             {/* Attach button */}
@@ -650,7 +707,64 @@ export function ChatInput({
               />
             </Pressable>
 
-            {/* Agent mode selector */}
+            {/* Interaction mode selector (Agent / Plan / Ask) */}
+            <Popover
+              placement="top"
+              size="xs"
+              isOpen={interactionModeOpen}
+              onOpen={() => setInteractionModeOpen(true)}
+              onClose={() => setInteractionModeOpen(false)}
+              trigger={(triggerProps) => (
+                <Pressable
+                  {...triggerProps}
+                  disabled={disabled || isStreaming}
+                  className="h-7 flex-row items-center gap-1 rounded-md px-2 bg-muted/50"
+                  testID="interaction-mode-trigger"
+                >
+                  <currentInteractionConfig.Icon className="h-3 w-3 text-muted-foreground" size={12} />
+                  <Text className="text-xs text-muted-foreground">
+                    {currentInteractionConfig.label}
+                  </Text>
+                  <ChevronDown className="h-2.5 w-2.5 text-muted-foreground/60" size={10} />
+                </Pressable>
+              )}
+            >
+              <PopoverBackdrop />
+              <PopoverContent className="w-[280px] p-0">
+                <View className="py-1">
+                  {INTERACTION_MODES.map((mode) => {
+                    const isSelected = mode.id === interactionMode
+                    return (
+                      <Pressable
+                        key={mode.id}
+                        onPress={() => {
+                          handleInteractionModeChange(mode.id)
+                          setInteractionModeOpen(false)
+                        }}
+                        className={cn(
+                          "flex-row items-center gap-3 p-3 rounded-lg mb-1",
+                          isSelected && "bg-accent"
+                        )}
+                      >
+                        <View className="w-8 items-center">
+                          <mode.Icon className="h-3.5 w-3.5 text-muted-foreground" size={14} />
+                        </View>
+                        <View className="flex-1">
+                          <Text className="font-medium text-sm text-foreground">
+                            {mode.label}
+                          </Text>
+                          <Text className="text-xs text-muted-foreground">
+                            {mode.description}
+                          </Text>
+                        </View>
+                      </Pressable>
+                    )
+                  })}
+                </View>
+              </PopoverContent>
+            </Popover>
+
+            {/* Model quality selector (Basic / Advanced) */}
             <Popover
               placement="top"
               size="xs"
@@ -661,12 +775,12 @@ export function ChatInput({
                 <Pressable
                   {...triggerProps}
                   disabled={disabled || isStreaming}
-                  className="h-8 flex-row items-center gap-1.5 rounded-full px-3"
+                  className="h-7 flex-row items-center gap-1 rounded-md px-2"
                 >
-                  <currentAgentConfig.Icon className="h-3.5 w-3.5 text-muted-foreground" size={14} />
                   <Text className="text-xs text-muted-foreground">
                     {currentAgentConfig.label}
                   </Text>
+                  <ChevronDown className="h-2.5 w-2.5 text-muted-foreground/60" size={10} />
                 </Pressable>
               )}
             >
@@ -753,6 +867,8 @@ export function ChatInput({
             {isStreaming ? (
               <Pressable
                 onPress={onStop}
+                accessibilityLabel="Stop"
+                testID="stop-streaming"
                 className="h-8 w-8 rounded-full bg-destructive items-center justify-center"
               >
                 <Square

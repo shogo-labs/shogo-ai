@@ -9,7 +9,7 @@ import { seedWorkspaceFromTemplate } from '../workspace-defaults'
 const ALL_TEMPLATE_IDS = [
   'marketing-command-center', 'devops-hub', 'project-manager', 'sales-revenue',
   'support-ops', 'research-analyst', 'hr-recruiting', 'personal-assistant',
-  'operations-monitor', 'blank-agent',
+  'operations-monitor',
   // directory-based originals
   'code-quality', 'comms-monitoring', 'engineering-pulse', 'incident-response',
   'meeting-intelligence', 'research-tracking', 'revenue-finance', 'standup-automation',
@@ -28,8 +28,8 @@ afterAll(() => {
 })
 
 describe('template loading', () => {
-  test('loads all 18 templates', () => {
-    expect(AGENT_TEMPLATES.length).toBe(18)
+  test('loads all 17 templates', () => {
+    expect(AGENT_TEMPLATES.length).toBe(17)
   })
 
   test('every expected template ID is present', () => {
@@ -53,7 +53,7 @@ describe('template loading', () => {
 
   test('getTemplateSummaries omits files field', () => {
     const summaries = getTemplateSummaries()
-    expect(summaries.length).toBe(18)
+    expect(summaries.length).toBe(17)
     for (const s of summaries) {
       expect(s).not.toHaveProperty('files')
       expect(s.id).toBeTruthy()
@@ -125,10 +125,6 @@ describe('template directory structure', () => {
     }
   })
 
-  test('blank-agent has no canvas state', () => {
-    expect(getTemplateCanvasStatePath('blank-agent')).toBeNull()
-  })
-
   test('canvas state surfaces have required fields', () => {
     for (const id of ALL_TEMPLATE_IDS) {
       const path = getTemplateCanvasStatePath(id)
@@ -191,11 +187,6 @@ describe('workspace seeding', () => {
       expect(data.surfaces).toBeDefined()
       expect(Object.keys(data.surfaces).length).toBeGreaterThan(0)
     }
-  })
-
-  test('no canvas state for blank-agent', () => {
-    const dir = join(tempRoot, 'seed-blank-agent')
-    expect(existsSync(join(dir, '.canvas-state.json'))).toBe(false)
   })
 
   test('copies skills into .shogo/skills/', () => {

@@ -141,6 +141,97 @@ export async function signUpAndOnboardWithAppTemplate(
  *
  * Leaves the browser on the app after the Stripe redirect.
  */
+// ── Interaction mode helpers ─────────────────────────────────────────────────
+
+export async function selectInteractionMode(page: Page, mode: "Agent" | "Plan" | "Ask") {
+  // Ensure no active stream (stop button gone) so the trigger is enabled
+  await waitForAgentResponse(page)
+  const trigger = page.locator('[data-testid="interaction-mode-trigger"]')
+  await trigger.waitFor({ state: "visible", timeout: 5_000 })
+
+  // gluestack-ui Popover trigger uses React Native Web Pressable which may not
+  // respond to Playwright's synthetic click. Use dispatchEvent as fallback.
+  await trigger.click()
+  await page.waitForTimeout(600)
+
+  const descriptions: Record<string, string> = {
+    Agent: "Full autonomous mode",
+    Plan: "Research and create a plan",
+    Ask: "Just answer questions",
+  }
+
+  let popoverVisible = await page.getByText(descriptions[mode]).isVisible().catch(() => false)
+
+  if (!popoverVisible) {
+    // Fallback: dispatch pointer events directly on the DOM element
+    await trigger.dispatchEvent("pointerdown")
+    await page.waitForTimeout(100)
+    await trigger.dispatchEvent("pointerup")
+    await page.waitForTimeout(600)
+    popoverVisible = await page.getByText(descriptions[mode]).isVisible().catch(() => false)
+  }
+
+  if (!popoverVisible) {
+    // Last resort: evaluate JS click on the raw DOM node
+    await trigger.evaluate((el: HTMLElement) => el.click())
+    await page.waitForTimeout(600)
+  }
+
+  const desc = page.getByText(descriptions[mode])
+  await desc.waitFor({ state: "visible", timeout: 10_000 })
+  await desc.locator("..").locator("..").click()
+  await page.waitForTimeout(300)
+}
+
+export async function sendChatMessage(page: Page, text: string) {
+  const chatInput = page.getByPlaceholder(/Ask Shogo|Describe what|Ask a question/)
+  await chatInput.click()
+  await chatInput.fill(text)
+  await page.waitForTimeout(300)
+  await page.keyboard.press("Enter")
+}
+
+export async function waitForAgentResponse(page: Page, timeoutMs = 90_000) {
+  const stopSel = '[data-testid="stop-streaming"], [aria-label="Stop"]'
+  // First wait for the stop button to appear (agent starts streaming)
+  try {
+    await page.waitForSelector(stopSel, { state: "attached", timeout: 10_000 })
+  } catch {
+    // Agent may have already finished or not started — that's fine
+  }
+  // Then wait for it to disappear (agent done)
+  await page
+    .waitForSelector(stopSel, { state: "detached", timeout: timeoutMs })
+    .catch(() => {})
+  await page.waitForTimeout(1000)
+}
+
+export async function createProjectAndWait(page: Page, prompt: string) {
+  await page.goto("/")
+  await page.waitForSelector("text=What's on your mind", { timeout: 15_000 })
+
+  const input = page.getByPlaceholder("Ask Shogo to create...")
+  await input.click()
+  await input.fill(prompt)
+  await page.waitForTimeout(500)
+  await page.keyboard.press("Enter")
+
+  await page.waitForURL(/\/projects\//, { timeout: 60_000 })
+
+  const stopSel = '[data-testid="stop-streaming"], [aria-label="Stop"]'
+  // Wait for streaming to start
+  try {
+    await page.waitForSelector(stopSel, { state: "attached", timeout: 15_000 })
+  } catch {
+    // Agent may not have started streaming yet — that's fine
+  }
+  // Wait for streaming to finish
+  await page
+    .waitForSelector(stopSel, { state: "detached", timeout: 90_000 })
+    .catch(() => {})
+  await page.waitForTimeout(1000)
+}
+
 export async function signUpAndUpgradeToPro(page: Page, user: TestUser): Promise<void> {
   await signUpAndOnboard(page, user)
 

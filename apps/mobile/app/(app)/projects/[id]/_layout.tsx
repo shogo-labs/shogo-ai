@@ -68,6 +68,7 @@ import {
   CapabilitiesPanel,
   MonitorPanel,
   TerminalPanel,
+  PlansPanel,
 } from '../../../../components/project/panels'
 import { RefreshCw, MessageSquare } from 'lucide-react-native'
 import { IntegrationsCard, type TemplateIntegrationRef } from '../../../../components/project/IntegrationsCard'
@@ -77,7 +78,7 @@ type ActiveTab = 'chat' | 'canvas'
 
 const WIDE_BREAKPOINT = 1024
 const HIDDEN_HEADER_OPTIONS = { headerShown: false } as const
-const STANDALONE_PANELS = ['files', 'terminal', 'capabilities', 'channels', 'monitor']
+const STANDALONE_PANELS = ['files', 'terminal', 'capabilities', 'channels', 'monitor', 'plans']
 
 export default observer(function ProjectLayout() {
   const params = useLocalSearchParams<{
@@ -482,6 +483,7 @@ export default observer(function ProjectLayout() {
   const [showChatSessions, setShowChatSessions] = useState(false)
   const [previewTab, setPreviewTab] = useState('dynamic-app')
   const [chatMessages, setChatMessages] = useState<any[]>([])
+  const [buildPlanRequest, setBuildPlanRequest] = useState<{ plan: any; agentMode: any; nonce: number } | null>(null)
 
   useEffect(() => {
     if (!canvasEnabled) {
@@ -591,6 +593,16 @@ export default observer(function ProjectLayout() {
   const handleManualModeChange = useCallback((mode: 'canvas' | 'none') => {
     handleModeSwitch(mode, 'User selected agent type')
   }, [handleModeSwitch])
+
+  const handleBuildPlan = useCallback((plan: any, agentMode: any) => {
+    setBuildPlanRequest({ plan, agentMode, nonce: Date.now() })
+    setActiveTab('chat')
+    if (canvasEnabled) {
+      setPreviewTab('dynamic-app')
+    } else {
+      setPreviewTab('chat-fullscreen')
+    }
+  }, [canvasEnabled])
 
   const [sessionNames, setSessionNames] = useState<Record<string, string>>({})
 
@@ -759,6 +771,7 @@ export default observer(function ProjectLayout() {
       onCanvasPreview={handleCanvasPreview}
       onModeSwitch={handleModeSwitch}
       onMessagesChange={setChatMessages}
+      buildPlanRequest={buildPlanRequest}
       className="flex-1"
     />
   )
@@ -953,12 +966,12 @@ export default observer(function ProjectLayout() {
             <View
               className={cn(
                 'absolute inset-0',
-                ['files', 'terminal', 'capabilities', 'channels', 'monitor'].includes(previewTab)
+                STANDALONE_PANELS.includes(previewTab)
                   ? 'z-20 bg-background'
                   : 'pointer-events-none',
               )}
               pointerEvents={
-                ['files', 'terminal', 'capabilities', 'channels', 'monitor'].includes(previewTab)
+                STANDALONE_PANELS.includes(previewTab)
                   ? 'auto'
                   : 'none'
               }
@@ -968,6 +981,7 @@ export default observer(function ProjectLayout() {
               <CapabilitiesPanel visible={previewTab === 'capabilities'} projectId={projectId!} agentUrl={agentUrl} capabilities={capabilitySettings} onCapabilityToggle={handleCapabilityToggle} isPaidPlan={effectiveHasActiveSubscription} activeMode={activeMode} onModeChange={handleManualModeChange} />
               <ChannelsPanel visible={previewTab === 'channels'} projectId={projectId!} agentUrl={agentUrl} hasAdvancedModelAccess={features.billing ? billingData.hasAdvancedModelAccess : true} />
               <MonitorPanel visible={previewTab === 'monitor'} projectId={projectId!} agentUrl={agentUrl} isPaidPlan={effectiveHasActiveSubscription} />
+              <PlansPanel visible={previewTab === 'plans'} projectId={projectId!} agentUrl={agentUrl} onBuildPlan={handleBuildPlan} />
             </View>
           </View>
 

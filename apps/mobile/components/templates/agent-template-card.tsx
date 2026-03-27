@@ -15,7 +15,6 @@ export const AGENT_TEMPLATE_ICON_BOX: Record<string, string> = {
   'hr-recruiting': 'bg-teal-500/15 dark:bg-teal-400/20',
   'personal-assistant': 'bg-violet-500/15 dark:bg-violet-400/20',
   'operations-monitor': 'bg-red-500/15 dark:bg-red-400/20',
-  'blank-agent': 'bg-slate-500/15 dark:bg-slate-400/20',
 }
 
 const SPINNER_COLOR: Record<string, string> = {
@@ -28,7 +27,6 @@ const SPINNER_COLOR: Record<string, string> = {
   'hr-recruiting': '#14b8a6',
   'personal-assistant': '#a855f7',
   'operations-monitor': '#ef4444',
-  'blank-agent': '#64748b',
 }
 
 const POPULAR_IDS = new Set([
@@ -363,13 +361,6 @@ function AgentTemplatePreview({
               Payment API — 342ms latency
             </Text>
           </PreviewRow>
-        </View>
-      )
-    case 'blank-agent':
-      return (
-        <View className={cn('items-center justify-center flex-1', compact ? 'min-h-[72px]' : 'min-h-[100px]')}>
-          <Text className={cn(h, 'mb-0 text-center')}>Blank canvas</Text>
-          <Text className={cn(muted, 'text-center mt-1.5 px-2')}>Build a custom agent from scratch</Text>
         </View>
       )
     default:

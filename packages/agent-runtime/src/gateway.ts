@@ -370,6 +370,10 @@ export class AgentGateway {
   }
 
   async start(): Promise<void> {
+    if (this.running) {
+      console.warn('[AgentGateway] start() called but gateway is already running — skipping')
+      return
+    }
     console.log('[AgentGateway] Starting...')
     this.running = true
 
@@ -830,7 +834,13 @@ export class AgentGateway {
   async processChatMessageStream(
     text: string,
     writer: { write(chunk: Record<string, any>): void },
-    options?: { modelOverride?: string; fileParts?: FilePart[]; userId?: string },
+    options?: {
+      modelOverride?: string
+      fileParts?: FilePart[]
+      userId?: string
+      interactionMode?: 'agent' | 'plan' | 'ask'
+      confirmedPlan?: { name: string; overview: string; plan: string; todos: Array<{ id: string; content: string }> }
+    },
   ): Promise<void> {
     if (options?.modelOverride) {
       const session = this.sessionManager.getOrCreate('chat')
@@ -861,6 +871,28 @@ export class AgentGateway {
       }
     }
 
+    // If a confirmed plan is present, prepend it as context to the user's message
+    if (options?.confirmedPlan) {
+      const cp = options.confirmedPlan
+      const todoList = cp.todos.map(t => `- [ ] ${t.content}`).join('\n')
+      const planContext = [
+        'The user has confirmed the following plan. Execute it step by step:',
+        '',
+        `## ${cp.name}`,
+        cp.overview,
+        '',
+        cp.plan,
+        '',
+        '## Tasks',
+        todoList,
+        '',
+        'Proceed with execution now.',
+      ].join('\n')
+      effectiveText = effectiveText
+        ? `${planContext}\n\n---\n\nUser message: ${effectiveText}`
+        : planContext
+    }
+
     let prompt: string
     let activeSkill: { name: string } | undefined
     if (this.isUnconfigured()) {
@@ -872,7 +904,8 @@ export class AgentGateway {
       activeSkill = result.activeSkill
     }
 
-    const response = await this.agentTurn(prompt, 'chat', false, undefined, writer, activeSkill, images)
+    const interactionMode = options?.interactionMode || 'agent'
+    const response = await this.agentTurn(prompt, 'chat', false, undefined, writer, activeSkill, images, interactionMode)
     this.emitLog(`Chat response (stream): "${response.substring(0, 100)}"`)
 
     this.appendDailyMemory(`chat: "${text.substring(0, 100)}" -> "${response.substring(0, 100)}"`)
@@ -924,6 +957,7 @@ export class AgentGateway {
     uiWriter?: { write(chunk: Record<string, any>): void },
     activeSkill?: { name: string },
     images?: ImageContent[],
+    interactionMode: 'agent' | 'plan' | 'ask' = 'agent',
   ): Promise<string> {
     // Reload skills from disk so any files created/edited/deleted by file tools are picked up
     this.skills = loadAllSkills(this.workspaceDir)
@@ -947,10 +981,37 @@ export class AgentGateway {
       ].join('\n')
       this.promptOverrides.set('mcp_discovery_guide', skillOverride)
     }
-    const systemPrompt = this.loadBootstrapContext()
+    let systemPrompt = this.loadBootstrapContext()
     if (activeSkill) {
       this.promptOverrides.delete('mcp_discovery_guide')
     }
+
+    // Interaction mode system prompt injection
+    if (interactionMode === 'plan') {
+      const planModePrompt = [
+        '## PLAN MODE ACTIVE',
+        '',
+        'Plan mode is active. You MUST NOT make any edits, run commands, write files, or otherwise make changes. This supersedes all other instructions.',
+        '',
+        'Your job:',
+        '1. Research the user\'s request using read-only tools (read_file, grep, glob, web, etc.)',
+        '2. If you need more information, ask clarifying questions using ask_user',
+        '3. If the request is too broad, ask 1-2 narrowing questions using ask_user',
+        '4. If there are multiple valid approaches, ask the user which they prefer',
+        '5. When you have enough context, call create_plan with a structured plan',
+        '6. The plan should be concise, specific, and actionable — cite file paths and code snippets',
+        '7. Do NOT make any changes until the user confirms the plan',
+      ].join('\n')
+      systemPrompt = planModePrompt + '\n\n---\n\n' + systemPrompt
+    } else if (interactionMode === 'ask') {
+      const askModePrompt = [
+        '## ASK MODE ACTIVE',
+        '',
+        'Ask mode is active. You are in a read-only conversational mode. Answer the user\'s questions directly using your knowledge and conversation context. You have no tools available. Do not attempt to make changes, run commands, or take any actions. Just provide helpful, informative answers.',
+      ].join('\n')
+      systemPrompt = askModePrompt + '\n\n---\n\n' + systemPrompt
+    }
+
     const session = this.sessionManager.getOrCreate(sessionId)
     const modelId = session.modelOverride || this.config.model.name
     const provider = this.config.model.provider
@@ -1051,6 +1112,21 @@ export class AgentGateway {
     }
     if (this.config.memoryEnabled === false) {
       assembledTools = assembledTools.filter(t => !t.name.startsWith('memory_'))
+    }
+
+    // Interaction mode tool restrictions
+    if (interactionMode === 'ask') {
+      assembledTools = []
+    } else if (interactionMode === 'plan') {
+      const PLAN_MODE_ALLOWED = new Set([
+        'read_file', 'glob', 'grep', 'ls', 'list_files', 'search_files',
+        'web', 'browser',
+        'memory_read', 'memory_search',
+        'ask_user', 'todo_write', 'create_plan',
+        'canvas_inspect', 'canvas_components',
+        'skill',
+      ])
+      assembledTools = assembledTools.filter(t => PLAN_MODE_ALLOWED.has(t.name))
     }
 
     let staticTools = assembledTools
