@@ -15,6 +15,14 @@ export const AGENT_TEMPLATE_ICON_BOX: Record<string, string> = {
   'hr-recruiting': 'bg-teal-500/15 dark:bg-teal-400/20',
   'personal-assistant': 'bg-violet-500/15 dark:bg-violet-400/20',
   'operations-monitor': 'bg-red-500/15 dark:bg-red-400/20',
+  'code-quality': 'bg-green-500/15 dark:bg-green-400/20',
+  'comms-monitoring': 'bg-indigo-500/15 dark:bg-indigo-400/20',
+  'engineering-pulse': 'bg-cyan-500/15 dark:bg-cyan-400/20',
+  'incident-response': 'bg-orange-500/15 dark:bg-orange-400/20',
+  'meeting-intelligence': 'bg-blue-500/15 dark:bg-blue-400/20',
+  'research-tracking': 'bg-emerald-500/15 dark:bg-emerald-400/20',
+  'revenue-finance': 'bg-green-500/15 dark:bg-green-400/20',
+  'standup-automation': 'bg-amber-500/15 dark:bg-amber-400/20',
 }
 
 const SPINNER_COLOR: Record<string, string> = {
@@ -27,6 +35,14 @@ const SPINNER_COLOR: Record<string, string> = {
   'hr-recruiting': '#14b8a6',
   'personal-assistant': '#a855f7',
   'operations-monitor': '#ef4444',
+  'code-quality': '#22c55e',
+  'comms-monitoring': '#6366f1',
+  'engineering-pulse': '#06b6d4',
+  'incident-response': '#f97316',
+  'meeting-intelligence': '#3b82f6',
+  'research-tracking': '#10b981',
+  'revenue-finance': '#22c55e',
+  'standup-automation': '#f59e0b',
 }
 
 const POPULAR_IDS = new Set([
@@ -361,6 +377,270 @@ function AgentTemplatePreview({
               Payment API — 342ms latency
             </Text>
           </PreviewRow>
+        </View>
+      )
+    case 'code-quality':
+      return (
+        <View>
+          <Text className={h}>Pull Requests</Text>
+          <PreviewRow className="bg-green-50 dark:bg-green-500/10">
+            <View className="flex-row items-center gap-2">
+              <View className="w-1.5 h-1.5 rounded-full bg-green-500" />
+              <View className="flex-1">
+                <Text className={fs} numberOfLines={1}>
+                  feat: Add caching layer
+                </Text>
+                <Text className={cn(muted, 'text-green-600 dark:text-green-400')}>Approved · main</Text>
+              </View>
+            </View>
+          </PreviewRow>
+          <PreviewRow className="bg-amber-50 dark:bg-amber-500/10">
+            <View className="flex-row items-center gap-2">
+              <View className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+              <View className="flex-1">
+                <Text className={fs} numberOfLines={1}>
+                  fix: Memory leak in worker
+                </Text>
+                <Text className={cn(muted, 'text-amber-600 dark:text-amber-400')}>Changes requested · dev</Text>
+              </View>
+            </View>
+          </PreviewRow>
+        </View>
+      )
+    case 'comms-monitoring':
+      return (
+        <View>
+          <Text className={h}>Monitored Channels</Text>
+          <PreviewRow className={box}>
+            <View className="flex-row items-center gap-2">
+              <View className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
+              <View className="flex-1">
+                <Text className={fs} numberOfLines={1}>
+                  #eng-alerts — deploy keyword
+                </Text>
+                <Text className={muted}>Slack · 5 min ago</Text>
+              </View>
+            </View>
+          </PreviewRow>
+          <PreviewRow className="bg-indigo-50 dark:bg-indigo-500/10">
+            <View className="flex-row items-center gap-2">
+              <View className="w-1.5 h-1.5 rounded-full bg-red-500" />
+              <View className="flex-1">
+                <Text className={fs} numberOfLines={1}>
+                  CEO mention — quarterly update
+                </Text>
+                <Text className={cn(muted, 'text-red-600 dark:text-red-400')}>Email · 12 min ago</Text>
+              </View>
+            </View>
+          </PreviewRow>
+        </View>
+      )
+    case 'engineering-pulse':
+      return (
+        <View>
+          <Text className={h}>This Week</Text>
+          <View className="flex-row gap-2 mb-2">
+            {[
+              ['47', 'Commits'],
+              ['12', 'PRs'],
+              ['8.2', 'Velocity'],
+            ].map(([n, l]) => (
+              <View key={l} className={cn('flex-1 items-center py-1 rounded-md', box)}>
+                <Text
+                  className={cn(
+                    compact ? 'text-xs' : 'text-sm',
+                    'font-bold text-slate-900 dark:text-white/90',
+                  )}
+                >
+                  {n}
+                </Text>
+                <Text className={cn(compact ? 'text-[8px]' : 'text-[9px]', muted)}>{l}</Text>
+              </View>
+            ))}
+          </View>
+          <Text className={cn(muted, 'mb-1')}>Sprint progress</Text>
+          <View className={cn('rounded-sm overflow-hidden', box, compact ? 'h-1' : 'h-1.5')}>
+            <View className="h-full w-[68%] rounded-sm bg-cyan-500" />
+          </View>
+        </View>
+      )
+    case 'incident-response':
+      return (
+        <View>
+          <View className="flex-row items-center justify-between mb-2">
+            <Text className={cn(h, 'mb-0')}>Active Incidents</Text>
+            <View className="self-start px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-500/20">
+              <Text className="text-[8px] font-semibold text-red-600 dark:text-red-400">1 Open</Text>
+            </View>
+          </View>
+          <PreviewRow className="bg-red-50 dark:bg-red-500/10">
+            <View className="flex-row items-center gap-2">
+              <View className="w-1.5 h-1.5 rounded-full bg-red-500" />
+              <View className="flex-1">
+                <Text className={cn(fs, 'text-red-700 dark:text-red-400')} numberOfLines={1}>
+                  P1 — API gateway timeout
+                </Text>
+                <Text className={muted}>Investigating · 8 min ago</Text>
+              </View>
+            </View>
+          </PreviewRow>
+          <PreviewRow className="bg-green-50 dark:bg-green-500/10">
+            <View className="flex-row items-center gap-2">
+              <View className="w-1.5 h-1.5 rounded-full bg-green-500" />
+              <View className="flex-1">
+                <Text className={fs} numberOfLines={1}>
+                  P2 — Elevated error rate
+                </Text>
+                <Text className={cn(muted, 'text-green-600 dark:text-green-400')}>Resolved · 2h ago</Text>
+              </View>
+            </View>
+          </PreviewRow>
+        </View>
+      )
+    case 'meeting-intelligence':
+      return (
+        <View>
+          <Text className={h}>Upcoming Meetings</Text>
+          {[
+            {
+              time: '10:00',
+              title: 'Product Sync',
+              status: 'Prepared',
+              pillBox: 'bg-green-100 dark:bg-green-500/20',
+              pillText: 'text-green-700 dark:text-green-300',
+              rowBox: 'bg-green-50 dark:bg-green-500/10',
+              timeCls: 'text-green-600 dark:text-green-400',
+            },
+            {
+              time: '1:30',
+              title: 'Investor Call',
+              status: 'Needs Prep',
+              pillBox: 'bg-amber-100 dark:bg-amber-500/20',
+              pillText: 'text-amber-700 dark:text-amber-300',
+              rowBox: 'bg-amber-50 dark:bg-amber-500/10',
+              timeCls: 'text-amber-600 dark:text-amber-400',
+            },
+          ].map((row) => (
+            <PreviewRow key={row.title} className={cn(row.rowBox, 'mb-0.5')}>
+              <View className="flex-row items-center justify-between">
+                <View className="flex-1">
+                  <Text className={cn(compact ? 'text-[9px]' : 'text-[10px]', 'font-bold', row.timeCls)}>
+                    {row.time}
+                  </Text>
+                  <Text className={cn(muted, 'mt-0.5 text-slate-900 dark:text-white/90')} numberOfLines={1}>
+                    {row.title}
+                  </Text>
+                </View>
+                <View className={cn('px-1.5 py-0.5 rounded', row.pillBox)}>
+                  <Text className={cn('text-[8px] font-semibold', row.pillText)}>{row.status}</Text>
+                </View>
+              </View>
+            </PreviewRow>
+          ))}
+        </View>
+      )
+    case 'research-tracking':
+      return (
+        <View>
+          <Text className={h}>Tracked Topics</Text>
+          <PreviewRow className="bg-emerald-50 dark:bg-emerald-500/10">
+            <View className="flex-row items-center justify-between">
+              <View className="flex-1">
+                <Text className={fs} numberOfLines={1}>
+                  AI regulation landscape
+                </Text>
+                <Text className={muted}>14 sources · Updated today</Text>
+              </View>
+              <View className="px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-500/20">
+                <Text className="text-[8px] font-semibold text-emerald-700 dark:text-emerald-300">Active</Text>
+              </View>
+            </View>
+          </PreviewRow>
+          <PreviewRow className={box}>
+            <View className="flex-row items-center justify-between">
+              <View className="flex-1">
+                <Text className={fs} numberOfLines={1}>
+                  Competitor pricing changes
+                </Text>
+                <Text className={muted}>8 sources · 2 days ago</Text>
+              </View>
+              <View className="px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-500/20">
+                <Text className="text-[8px] font-semibold text-blue-700 dark:text-blue-300">Monitoring</Text>
+              </View>
+            </View>
+          </PreviewRow>
+        </View>
+      )
+    case 'revenue-finance':
+      return (
+        <View>
+          <Text className={cn(h, 'mb-1')}>Monthly Revenue</Text>
+          <Text
+            className={cn(
+              'font-bold text-slate-900 dark:text-white/90 mb-2',
+              compact ? 'text-lg' : 'text-xl',
+            )}
+          >
+            $48.2K
+          </Text>
+          <View className={cn('flex-row justify-between py-1.5 px-2 rounded-md mb-1', box)}>
+            <Text className={fs}>Active Subscriptions</Text>
+            <Text className={cn(muted, 'text-green-600 dark:text-green-400 font-semibold')}>286</Text>
+          </View>
+          <PreviewRow className="bg-amber-50 dark:bg-amber-500/12">
+            <View className="flex-row justify-between">
+              <Text className={fsN} numberOfLines={1}>
+                Overdue Invoices
+              </Text>
+              <Text className={cn(muted, 'text-amber-600 dark:text-amber-400 font-semibold')}>3</Text>
+            </View>
+          </PreviewRow>
+        </View>
+      )
+    case 'standup-automation':
+      return (
+        <View>
+          <Text className={h}>{"Today's Standup"}</Text>
+          {[
+            {
+              init: 'AL',
+              name: 'Alex L.',
+              summary: 'Shipped auth refactor, 4 PRs merged',
+              source: 'GitHub',
+              pillBox: 'bg-slate-200 dark:bg-white/15',
+              pillText: 'text-slate-700 dark:text-slate-300',
+            },
+            {
+              init: 'MK',
+              name: 'Maya K.',
+              summary: 'Updated design specs in #product',
+              source: 'Slack',
+              pillBox: 'bg-indigo-100 dark:bg-indigo-500/20',
+              pillText: 'text-indigo-700 dark:text-indigo-300',
+            },
+          ].map((row) => (
+            <View key={row.name} className="flex-row items-center gap-2 mb-2 py-1">
+              <View className="w-7 h-7 rounded-full items-center justify-center bg-slate-200 dark:bg-white/10">
+                <Text
+                  className={cn(
+                    compact ? 'text-[8px]' : 'text-[9px]',
+                    'font-bold text-slate-900 dark:text-white/90',
+                  )}
+                >
+                  {row.init}
+                </Text>
+              </View>
+              <View className="flex-1 min-w-0">
+                <Text className={fs} numberOfLines={1}>
+                  {row.name}
+                </Text>
+                <Text className={muted} numberOfLines={1}>{row.summary}</Text>
+              </View>
+              <View className={cn('self-start px-1.5 py-0.5 rounded', row.pillBox)}>
+                <Text className={cn('text-[8px] font-semibold', row.pillText)}>{row.source}</Text>
+              </View>
+            </View>
+          ))}
         </View>
       )
     default:
