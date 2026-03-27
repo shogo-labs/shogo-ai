@@ -67,7 +67,8 @@ Long-lived facts and learnings are stored here.
       heartbeatEnabled: false,
       quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
       channels: [],
-      activeMode: 'none',
+      activeMode: 'canvas',
+      canvasMode: 'code',
       model: {
         provider: 'anthropic',
         name: 'claude-sonnet-4-6',

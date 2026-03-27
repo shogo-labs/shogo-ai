@@ -4,7 +4,7 @@
  * Runtime Manager Implementation
  *
  * Spawns and manages Vite dev server processes per project.
- * Uses child_process.spawn with port allocation strategy (base 5200 + offset).
+ * Uses child_process.spawn with random port allocation in range 37100-37900.
  */
 
 import { spawn, execSync, type ChildProcess } from 'child_process'
@@ -37,9 +37,14 @@ const BUNDLED_TEMPLATE_DIR = join(__dirname, '..', '..', '..', '..', '..', 'temp
 const RUNTIME_SERVER = process.env.AGENT_RUNTIME_ENTRY
   || join(__dirname, '..', '..', '..', '..', '..', 'packages', 'agent-runtime', 'src', 'server.ts')
 
+/** Port range for random allocation (obscure high range to avoid conflicts) */
+const PORT_RANGE_START = 37100
+const PORT_RANGE_END = 37900
+const AGENT_PORT_OFFSET = 1000
+
 /** Default configuration values */
 const DEFAULT_CONFIG: IRuntimeConfig = {
-  basePort: 5200,
+  basePort: PORT_RANGE_START,
   maxRuntimes: 10,
   healthCheckInterval: 30000,
   workspacesDir: process.cwd(),
@@ -62,9 +67,42 @@ export class RuntimeManager implements IRuntimeManager {
   private runtimes: Map<string, InternalRuntime> = new Map()
   private usedPorts: Set<number> = new Set()
   private healthCheckTimers: Map<string, NodeJS.Timeout> = new Map()
+  private startingPromises: Map<string, Promise<IProjectRuntime>> = new Map()
 
   constructor(config: Partial<IRuntimeConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config }
+    this.cleanupStaleProcesses()
+  }
+
+  /**
+   * Kill any leftover processes from previous API server sessions on our port range.
+   * Runs synchronously at construction so ports are free before any start() call.
+   */
+  private cleanupStaleProcesses(): void {
+    const rangesToClean = [
+      { start: PORT_RANGE_START, end: PORT_RANGE_END },
+      { start: PORT_RANGE_START + AGENT_PORT_OFFSET, end: PORT_RANGE_END + AGENT_PORT_OFFSET },
+    ]
+
+    for (const range of rangesToClean) {
+      try {
+        const result = execSync(
+          `lsof -iTCP:${range.start}-${range.end} -sTCP:LISTEN -t 2>/dev/null || true`,
+          { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+        ).trim()
+
+        const selfPid = String(process.pid)
+        const parentPid = String(process.ppid)
+        const pids = result.split('\n').filter(p => p.trim() && p !== selfPid && p !== parentPid)
+
+        if (pids.length > 0) {
+          console.log(`[RuntimeManager] Cleaning up ${pids.length} stale process(es) on ports ${range.start}-${range.end}: ${pids.join(', ')}`)
+          for (const pid of pids) {
+            try { execSync(`kill -9 ${pid} 2>/dev/null || true`) } catch {}
+          }
+        }
+      } catch {}
+    }
   }
 
   /**
@@ -195,69 +233,31 @@ export class RuntimeManager implements IRuntimeManager {
   }
 
   /**
-   * Allocate a port for a project - in local dev, always use the same port per project.
-   * If the port is in use by a stale process, kill it first and verify it's freed.
-   * This ensures consistent port assignments and avoids port drift on hot reload.
+   * Allocate a random port in the obscure high range.
+   * Picks randomly to avoid collisions with stale processes or other services.
+   * Both the Vite port and agent port (offset by AGENT_PORT_OFFSET) must be free.
    */
   private async allocatePortAsync(): Promise<number> {
-    const { basePort, maxRuntimes } = this.config
-    
-    const port = basePort
-    const agentPort = port + 1000
-    
-    // Check if ports are in use (TCP-level check, not HTTP)
-    const viteInUse = await this.isPortListening(port)
-    const agentInUse = await this.isPortListening(agentPort)
-    
-    // Kill stale processes and verify ports are freed (sequential to avoid races)
-    if (viteInUse) {
-      console.log(`[RuntimeManager] Port ${port} is in use, killing stale process...`)
-      await this.killProcessOnPort(port)
-    }
-    if (agentInUse) {
-      console.log(`[RuntimeManager] Port ${agentPort} is in use, killing stale process...`)
-      await this.killProcessOnPort(agentPort)
-    }
-    
-    // Verify ports are now free
-    const stillViteInUse = await this.isPortListening(port)
-    const stillAgentInUse = await this.isPortListening(agentPort)
-    
-    if (stillViteInUse || stillAgentInUse) {
-      console.error(`[RuntimeManager] Failed to free ports ${port}/${agentPort}, trying next available...`)
-      for (let offset = 1; offset < maxRuntimes; offset++) {
-        const nextPort = basePort + offset
-        const nextAgentPort = nextPort + 1000
-        if (!this.usedPorts.has(nextPort)) {
-          const nextViteInUse = await this.isPortListening(nextPort)
-          const nextAgentInUse = await this.isPortListening(nextAgentPort)
-          if (!nextViteInUse && !nextAgentInUse) {
-            this.usedPorts.add(nextPort)
-            return nextPort
-          }
-        }
-      }
-      throw new Error(`Cannot allocate port - all ports occupied`)
-    }
-    
-    this.usedPorts.add(port)
-    return port
-  }
+    const range = PORT_RANGE_END - PORT_RANGE_START
+    const maxAttempts = Math.min(range, 50)
 
-  /**
-   * Allocate next available port starting from basePort.
-   * @deprecated Use allocatePortAsync for proper stale process detection
-   */
-  private allocatePort(): number {
-    const { basePort, maxRuntimes } = this.config
-    for (let offset = 0; offset < maxRuntimes; offset++) {
-      const port = basePort + offset
-      if (!this.usedPorts.has(port)) {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const port = PORT_RANGE_START + Math.floor(Math.random() * range)
+      const agentPort = port + AGENT_PORT_OFFSET
+
+      if (this.usedPorts.has(port)) continue
+
+      const viteInUse = await this.isPortListening(port)
+      const agentInUse = await this.isPortListening(agentPort)
+
+      if (!viteInUse && !agentInUse) {
         this.usedPorts.add(port)
+        console.log(`[RuntimeManager] Allocated ports ${port}/${agentPort}`)
         return port
       }
     }
-    throw new Error(`Maximum runtimes (${maxRuntimes}) reached. Cannot allocate port.`)
+
+    throw new Error(`Cannot allocate port after ${maxAttempts} attempts in range ${PORT_RANGE_START}-${PORT_RANGE_END}`)
   }
 
   /**
@@ -563,9 +563,26 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     // Check if already running
     const existing = this.runtimes.get(projectId)
     if (existing && existing.status === 'running') {
-      throw new Error(`Runtime for project ${projectId} is already running`)
+      return this.toPublicRuntime(existing)
     }
 
+    // Deduplicate concurrent start calls for the same project
+    const inflight = this.startingPromises.get(projectId)
+    if (inflight) {
+      console.log(`[RuntimeManager] Waiting on in-flight start for ${projectId}`)
+      return inflight
+    }
+
+    const promise = this.doStart(projectId)
+    this.startingPromises.set(projectId, promise)
+    try {
+      return await promise
+    } finally {
+      this.startingPromises.delete(projectId)
+    }
+  }
+
+  private async doStart(projectId: string): Promise<IProjectRuntime> {
     const projectInfo = await this.getProjectInfo(projectId)
 
     // Ensure project directory exists with dependencies
@@ -573,7 +590,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 
     // Allocate ports (async to check for stale processes)
     const port = await this.allocatePortAsync()
-    const agentPort = port + 1000
+    const agentPort = port + AGENT_PORT_OFFSET
     const url = this.buildUrl(projectId, port)
     const startedAt = Date.now()
 
@@ -1153,7 +1170,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
  */
 export function createRuntimeManager(overrides?: Partial<IRuntimeConfig>): RuntimeManager {
   const config: Partial<IRuntimeConfig> = {
-    basePort: parseInt(process.env.RUNTIME_BASE_PORT || '5200', 10),
+    basePort: PORT_RANGE_START,
     maxRuntimes: parseInt(process.env.RUNTIME_MAX_COUNT || '10', 10),
     healthCheckInterval: parseInt(process.env.RUNTIME_HEALTH_INTERVAL || '30000', 10),
     workspacesDir: process.env.WORKSPACES_DIR || process.cwd(),

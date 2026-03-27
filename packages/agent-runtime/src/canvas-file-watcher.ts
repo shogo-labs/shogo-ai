@@ -5,12 +5,27 @@
  *
  * Registered as a post-hook on write_file/edit_file/delete_file when
  * canvasMode === 'code'. Maps workspace files to canvas surfaces:
- *   - canvas/*.js       → surface code (surfaceId = filename without .js)
- *   - canvas/*.data.json → surface data (surfaceId = filename without .data.json)
+ *   - canvas/*.{tsx,ts,jsx,js} → surface code (surfaceId = filename without ext)
+ *   - canvas/*.data.json       → surface data (surfaceId = filename without .data.json)
  */
 
 import { readFileSync, existsSync, readdirSync } from 'fs'
 import { basename, join } from 'path'
+
+const CODE_EXTENSIONS = ['.tsx', '.ts', '.jsx', '.js'] as const
+
+function getCodeSurfaceId(fileName: string): string | null {
+  for (const ext of CODE_EXTENSIONS) {
+    if (fileName.endsWith(ext)) {
+      return basename(fileName, ext)
+    }
+  }
+  return null
+}
+
+function isCodeFile(fileName: string): boolean {
+  return CODE_EXTENSIONS.some(ext => fileName.endsWith(ext))
+}
 
 export interface CanvasEvent {
   type: 'init' | 'renderCode' | 'dataUpdate' | 'removeSurface'
@@ -50,18 +65,18 @@ export class CanvasFileWatcher {
     const files = readdirSync(canvasDir)
     for (const file of files) {
       const fullPath = join(canvasDir, file)
-      if (file.endsWith('.js')) {
-        const surfaceId = basename(file, '.js')
+      const surfaceId = getCodeSurfaceId(file)
+      if (surfaceId && !file.includes('/')) {
         try {
           const code = readFileSync(fullPath, 'utf-8')
           this.surfaceCode.set(surfaceId, code)
           this.surfaceTitles.set(surfaceId, this.titleFromId(surfaceId))
         } catch {}
       } else if (file.endsWith('.data.json')) {
-        const surfaceId = basename(file, '.data.json')
+        const dataId = basename(file, '.data.json')
         try {
           const data = JSON.parse(readFileSync(fullPath, 'utf-8'))
-          this.surfaceData.set(surfaceId, data)
+          this.surfaceData.set(dataId, data)
         } catch {}
       }
     }
@@ -81,8 +96,9 @@ export class CanvasFileWatcher {
 
     const fileName = relativePath.slice('canvas/'.length)
 
-    if (fileName.endsWith('.js') && !fileName.includes('/')) {
-      const surfaceId = basename(fileName, '.js')
+    if (isCodeFile(fileName) && !fileName.includes('/')) {
+      const surfaceId = getCodeSurfaceId(fileName)
+      if (!surfaceId) return
       try {
         const code = readFileSync(absolutePath, 'utf-8')
         this.surfaceCode.set(surfaceId, code)
@@ -110,8 +126,9 @@ export class CanvasFileWatcher {
 
     const fileName = relativePath.slice('canvas/'.length)
 
-    if (fileName.endsWith('.js') && !fileName.includes('/')) {
-      const surfaceId = basename(fileName, '.js')
+    if (isCodeFile(fileName) && !fileName.includes('/')) {
+      const surfaceId = getCodeSurfaceId(fileName)
+      if (!surfaceId) return
       this.surfaceCode.delete(surfaceId)
       this.surfaceTitles.delete(surfaceId)
       this.broadcast({ type: 'removeSurface', surfaceId })
@@ -147,7 +164,7 @@ export class CanvasFileWatcher {
     this.subscribers.delete(fn)
   }
 
-  private broadcast(event: CanvasEvent): void {
+  broadcast(event: CanvasEvent): void {
     for (const fn of this.subscribers) {
       try { fn(event) } catch {}
     }

@@ -1,7 +1,8 @@
 import './styles/globals.css'
-import React, { useState, useCallback, useEffect, useRef, type ReactElement } from 'react'
+import React, { useState, useCallback, useEffect, useRef } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { getGlobals } from './globals'
+import { transform } from 'sucrase'
+import { getScope, type CanvasScope } from './globals'
 
 interface SurfaceState {
   surfaceId: string
@@ -17,39 +18,76 @@ type CanvasEvent =
   | { type: 'removeSurface'; surfaceId: string }
 
 // ---------------------------------------------------------------------------
-// Code Executor — wraps agent code in a React component
+// Code Transpiler + Evaluator — Sucrase handles JSX, TypeScript, and imports
 // ---------------------------------------------------------------------------
 
+const HAS_EXPORT = /\bexport\s+(default\b|function\b|const\b|class\b)/
+const HAS_IMPORT = /\bimport\s+/
+
+function transpile(rawCode: string): string {
+  const needsImportTransform = HAS_IMPORT.test(rawCode) || HAS_EXPORT.test(rawCode)
+  const transforms: Array<'typescript' | 'jsx' | 'imports'> = ['typescript', 'jsx']
+  if (needsImportTransform) transforms.push('imports')
+  return transform(rawCode, { transforms, jsxRuntime: 'classic', production: true }).code
+}
+
+/**
+ * Evaluate transpiled module-style code (has import/export).
+ * Sucrase converts imports → require(), exports → exports.default.
+ */
+function evalModule(compiled: string, scope: CanvasScope): React.FC {
+  const exports: Record<string, unknown> = {}
+  const module = { exports }
+  const require = (id: string): unknown => {
+    const mod = scope.importMap[id]
+    if (mod) return mod
+    throw new Error(`Module not found: "${id}"`)
+  }
+
+  const fn = new Function('require', 'exports', 'module', 'React', compiled)
+  fn(require, exports, module, scope.flatScope.React)
+
+  const component = (exports as any).__esModule
+    ? (exports as any).default
+    : exports.default ?? module.exports
+  if (typeof component !== 'function') {
+    throw new Error('Module must export a default React component')
+  }
+  return component as React.FC
+}
+
+/**
+ * Evaluate inline-style code (no import/export, just a function body).
+ * All symbols are injected as function parameters.
+ */
+function evalInline(compiled: string, scope: CanvasScope): React.FC {
+  const names = Object.keys(scope.flatScope)
+  const values = Object.values(scope.flatScope)
+  const factory = new Function(...names, compiled)
+  return function InlineComponent() {
+    return factory(...values) as React.ReactElement
+  }
+}
+
 function createAgentComponent(
-  code: string,
+  rawCode: string,
   surfaceData: Record<string, unknown>,
   onAction: (name: string, context?: Record<string, unknown>) => void,
 ): React.FC {
-  const { names, values } = getGlobals(surfaceData, onAction)
+  const scope = getScope(surfaceData, onAction)
 
-  let factory: Function
   try {
-    factory = new Function(...names, code)
+    const isModule = HAS_EXPORT.test(rawCode) || HAS_IMPORT.test(rawCode)
+    const compiled = transpile(rawCode)
+    return isModule ? evalModule(compiled, scope) : evalInline(compiled, scope)
   } catch (err) {
     const errorMsg = String(err)
     return function ErrorComponent() {
-      return React.createElement('div', { className: 'p-4 text-red-500 font-mono text-sm' },
-        React.createElement('p', { className: 'font-bold' }, 'Syntax Error'),
-        React.createElement('pre', { className: 'mt-2 whitespace-pre-wrap' }, errorMsg),
-      )
-    }
-  }
-
-  const capturedFactory = factory
-  const capturedValues = values
-
-  return function AgentComponent() {
-    try {
-      return capturedFactory(...capturedValues) as ReactElement
-    } catch (err) {
-      return React.createElement('div', { className: 'p-4 text-red-500 font-mono text-sm' },
-        React.createElement('p', { className: 'font-bold' }, 'Render Error'),
-        React.createElement('pre', { className: 'mt-2 whitespace-pre-wrap' }, String(err)),
+      return (
+        <div className="p-4 text-red-500 font-mono text-sm">
+          <p className="font-bold">Compile Error</p>
+          <pre className="mt-2 whitespace-pre-wrap">{errorMsg}</pre>
+        </div>
       )
     }
   }
@@ -175,8 +213,6 @@ function CanvasApp() {
     })
   }, [])
 
-  // postMessage bridge — when embedded in an iframe/WebView, the parent owns
-  // the SSE connection and relays events here.
   useEffect(() => {
     if (!isEmbedded) return
 
@@ -200,7 +236,6 @@ function CanvasApp() {
     return () => window.removeEventListener('message', onMessage)
   }, [applyEvent])
 
-  // SSE fallback — standalone mode (test-server, direct browser access)
   useEffect(() => {
     if (isEmbedded) return
 
