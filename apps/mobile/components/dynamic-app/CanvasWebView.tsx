@@ -8,8 +8,9 @@
  * iframe/WebView via postMessage, eliminating cross-origin and proxy issues.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useMemo } from 'react'
 import { Platform, View, StyleSheet } from 'react-native'
+import { useCanvasThemeOptional } from './CanvasThemeContext'
 
 interface CanvasWebViewProps {
   agentUrl: string | null
@@ -100,6 +101,19 @@ function postCanvasAction(
 export function CanvasWebView({ agentUrl }: CanvasWebViewProps) {
   const canvasUrl = agentUrl ? `${agentUrl}/canvas/` : null
   const sse = useCanvasSSE(agentUrl)
+  const canvasTheme = useCanvasThemeOptional()
+
+  const themeMessage = useMemo(() => {
+    if (!canvasTheme) return null
+    const vars = canvasTheme.resolvedIsDark
+      ? canvasTheme.activePreset.dark
+      : canvasTheme.activePreset.light
+    return {
+      type: 'canvas-theme' as const,
+      variables: vars,
+      isDark: canvasTheme.resolvedIsDark,
+    }
+  }, [canvasTheme?.activePreset, canvasTheme?.resolvedIsDark])
 
   if (!canvasUrl || !agentUrl) {
     return (
@@ -110,23 +124,30 @@ export function CanvasWebView({ agentUrl }: CanvasWebViewProps) {
   }
 
   if (Platform.OS === 'web') {
-    return <CanvasIframe url={canvasUrl} agentUrl={agentUrl} sse={sse} />
+    return <CanvasIframe url={canvasUrl} agentUrl={agentUrl} sse={sse} themeMessage={themeMessage} />
   }
 
-  return <CanvasNativeWebView url={canvasUrl} agentUrl={agentUrl} sse={sse} />
+  return <CanvasNativeWebView url={canvasUrl} agentUrl={agentUrl} sse={sse} themeMessage={themeMessage} />
 }
 
 // ---------------------------------------------------------------------------
 // Web — iframe + postMessage bridge
 // ---------------------------------------------------------------------------
 
+interface ThemeMessage {
+  type: 'canvas-theme'
+  variables: Record<string, string>
+  isDark: boolean
+}
+
 interface BridgeProps {
   url: string
   agentUrl: string
   sse: ReturnType<typeof useCanvasSSE>
+  themeMessage: ThemeMessage | null
 }
 
-function CanvasIframe({ url, agentUrl, sse }: BridgeProps) {
+function CanvasIframe({ url, agentUrl, sse, themeMessage }: BridgeProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const readyRef = useRef(false)
 
@@ -146,6 +167,11 @@ function CanvasIframe({ url, agentUrl, sse }: BridgeProps) {
     if (sse.connected) sendToIframe({ type: 'canvas-connected' })
   }, [sse.connected, sendToIframe])
 
+  // Send theme when it changes
+  useEffect(() => {
+    if (themeMessage && readyRef.current) sendToIframe(themeMessage)
+  }, [themeMessage, sendToIframe])
+
   // Listen for messages from the iframe
   useEffect(() => {
     function onMessage(e: MessageEvent) {
@@ -157,6 +183,7 @@ function CanvasIframe({ url, agentUrl, sse }: BridgeProps) {
         const init = sse.replayInit()
         if (init) sendToIframe({ type: 'canvas-event', event: init })
         if (sse.connected) sendToIframe({ type: 'canvas-connected' })
+        if (themeMessage) sendToIframe(themeMessage)
       } else if (msg.type === 'canvas-action') {
         postCanvasAction(agentUrl, {
           surfaceId: msg.surfaceId,
@@ -168,7 +195,7 @@ function CanvasIframe({ url, agentUrl, sse }: BridgeProps) {
 
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [agentUrl, sse, sendToIframe])
+  }, [agentUrl, sse, sendToIframe, themeMessage])
 
   return (
     <View style={styles.container}>
@@ -191,7 +218,7 @@ function CanvasIframe({ url, agentUrl, sse }: BridgeProps) {
 // Native — react-native-webview + postMessage bridge
 // ---------------------------------------------------------------------------
 
-function CanvasNativeWebView({ url, agentUrl, sse }: BridgeProps) {
+function CanvasNativeWebView({ url, agentUrl, sse, themeMessage }: BridgeProps) {
   const WebView = require('react-native-webview').default
   const webViewRef = useRef<any>(null)
   const readyRef = useRef(false)
@@ -212,6 +239,11 @@ function CanvasNativeWebView({ url, agentUrl, sse }: BridgeProps) {
     if (sse.connected) sendToWebView({ type: 'canvas-connected' })
   }, [sse.connected, sendToWebView])
 
+  // Send theme when it changes
+  useEffect(() => {
+    if (themeMessage && readyRef.current) sendToWebView(themeMessage)
+  }, [themeMessage, sendToWebView])
+
   const onMessage = useCallback((e: any) => {
     try {
       const msg = JSON.parse(e.nativeEvent.data)
@@ -221,6 +253,7 @@ function CanvasNativeWebView({ url, agentUrl, sse }: BridgeProps) {
         const init = sse.replayInit()
         if (init) sendToWebView({ type: 'canvas-event', event: init })
         if (sse.connected) sendToWebView({ type: 'canvas-connected' })
+        if (themeMessage) sendToWebView(themeMessage)
       } else if (msg.type === 'canvas-action') {
         postCanvasAction(agentUrl, {
           surfaceId: msg.surfaceId,
@@ -229,7 +262,7 @@ function CanvasNativeWebView({ url, agentUrl, sse }: BridgeProps) {
         })
       }
     } catch {}
-  }, [agentUrl, sse, sendToWebView])
+  }, [agentUrl, sse, sendToWebView, themeMessage])
 
   return (
     <View style={styles.container}>

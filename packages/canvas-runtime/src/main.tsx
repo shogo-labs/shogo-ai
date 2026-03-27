@@ -139,6 +139,25 @@ function sendToParent(message: Record<string, unknown>) {
 }
 
 // ---------------------------------------------------------------------------
+// Theme injection — receives CSS variable overrides from the parent frame
+// ---------------------------------------------------------------------------
+
+function applyThemeVariables(variables?: Record<string, string>, isDark?: boolean) {
+  const root = document.documentElement
+  if (variables) {
+    for (const [key, value] of Object.entries(variables)) {
+      // Theme sends RGB triplets like "255 255 255"; wrap in rgb() for valid CSS
+      const cssValue = /^\d+\s+\d+\s+\d+$/.test(value.trim()) ? `rgb(${value})` : value
+      root.style.setProperty(key, cssValue)
+    }
+  }
+  if (isDark !== undefined) {
+    root.style.colorScheme = isDark ? 'dark' : 'light'
+    root.classList.toggle('dark', isDark)
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Canvas App — manages surfaces, SSE connection, rendering
 // ---------------------------------------------------------------------------
 
@@ -228,6 +247,8 @@ function CanvasApp() {
       } else if (msg.type === 'canvas-connected') {
         setConnected(true)
         setError(null)
+      } else if (msg.type === 'canvas-theme') {
+        applyThemeVariables(msg.variables as Record<string, string> | undefined, msg.isDark as boolean | undefined)
       }
     }
 
