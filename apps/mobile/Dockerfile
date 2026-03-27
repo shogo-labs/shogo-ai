@@ -35,6 +35,9 @@ RUN apk add --no-cache bash curl && \
     curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v1.3.9" && \
     rm -rf /root/.bun
 
+# Install Sentry CLI standalone binary (statically linked, works on Alpine/musl)
+RUN curl -sL https://sentry.io/get-cli/ | SENTRY_CLI_VERSION="3.3.4" sh
+
 # Copy workspace root files
 COPY package.json bun.lock ./
 COPY tsconfig.base.json ./
@@ -86,8 +89,8 @@ RUN node scripts/inject-analytics.js
 
 # Upload source maps to Sentry (inject debug IDs, upload, then strip maps)
 RUN if [ -n "$SENTRY_AUTH_TOKEN" ]; then \
-      npx @sentry/cli sourcemaps inject --release "$EXPO_PUBLIC_BUILD_HASH" ./dist && \
-      npx @sentry/cli sourcemaps upload --release "$EXPO_PUBLIC_BUILD_HASH" ./dist && \
+      sentry-cli sourcemaps inject --release "$EXPO_PUBLIC_BUILD_HASH" ./dist && \
+      sentry-cli sourcemaps upload --release "$EXPO_PUBLIC_BUILD_HASH" ./dist && \
       find ./dist -name '*.map' -delete; \
     fi
 
