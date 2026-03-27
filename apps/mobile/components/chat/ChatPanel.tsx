@@ -2113,7 +2113,9 @@ export const ChatPanel = observer(function ChatPanel({
     [handleSendMessage]
   )
 
-  // Plan confirmation: switch to Agent mode and execute
+  // Plan confirmation: switch to Agent mode and execute.
+  // Keep the PlanCard visible with confirmed state for a few seconds before dismissing.
+  const confirmDismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const handleConfirmPlan = useCallback(() => {
     if (!pendingPlan) return
     confirmedPlanRef.current = pendingPlan
@@ -2121,6 +2123,10 @@ export const ChatPanel = observer(function ChatPanel({
     setPendingPlan(null)
     handleInteractionModeChange("agent")
     handleSendMessage("Execute the confirmed plan.")
+    if (confirmDismissTimerRef.current) clearTimeout(confirmDismissTimerRef.current)
+    confirmDismissTimerRef.current = setTimeout(() => {
+      setConfirmedPlan(null)
+    }, 4000)
   }, [pendingPlan, handleSendMessage, handleInteractionModeChange])
 
   // Build from Plans panel: execute a saved plan with selected model
@@ -2134,7 +2140,17 @@ export const ChatPanel = observer(function ChatPanel({
     setPendingPlan(null)
     handleInteractionModeChange("agent")
     handleSendMessage("Execute the confirmed plan.", undefined, requestedMode)
+    if (confirmDismissTimerRef.current) clearTimeout(confirmDismissTimerRef.current)
+    confirmDismissTimerRef.current = setTimeout(() => {
+      setConfirmedPlan(null)
+    }, 4000)
   }, [buildPlanRequest, handleInteractionModeChange, handleSendMessage])
+
+  useEffect(() => {
+    return () => {
+      if (confirmDismissTimerRef.current) clearTimeout(confirmDismissTimerRef.current)
+    }
+  }, [])
 
   // Homepage transition warm-start: Inject initial message on mount (only for fresh sessions)
   useEffect(() => {
@@ -2368,12 +2384,12 @@ export const ChatPanel = observer(function ChatPanel({
               </View>
             )}
 
-            {/* Plan Card (shown when agent produces a plan in Plan mode) */}
-            {pendingPlan && (
+            {/* Plan Card (shown when agent produces a plan, or briefly after confirmation) */}
+            {(pendingPlan || confirmedPlan) && (
               <PlanCard
-                plan={pendingPlan}
-                onConfirm={handleConfirmPlan}
-                isConfirmed={pendingPlan === null}
+                plan={(pendingPlan ?? confirmedPlan)!}
+                onConfirm={pendingPlan ? handleConfirmPlan : undefined}
+                isConfirmed={!pendingPlan && !!confirmedPlan}
               />
             )}
           </ScrollView>
