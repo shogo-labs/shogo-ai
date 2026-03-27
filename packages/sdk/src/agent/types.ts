@@ -104,6 +104,10 @@ export interface AgentImportResult {
 
 export interface AgentClientConfig {
   baseUrl?: string
+  /**
+   * Sent on every request (e.g. `Authorization`). Do not set `Content-Type` here —
+   * JSON and multipart requests set it from the body; a default would break `FormData` uploads.
+   */
   headers?: Record<string, string>
   /**
    * Custom fetch (e.g. inject cookies on React Native via `Cookie` header).

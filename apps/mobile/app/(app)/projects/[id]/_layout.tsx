@@ -768,6 +768,10 @@ export default observer(function ProjectLayout() {
       pendingToolInstalls.length > 0
     )
 
+  /** Native phone + narrow layout: float only on Chat tab (not Canvas / Files / Terminal / …). Web, tablet, and wide layouts unchanged. */
+  const showIntegrationsCardUi =
+    showIntegrationsCard && (!nativePhone || isWide || activeTab === 'chat')
+
   // Loading state
   if (isLoading || !project) {
     return (
@@ -1013,7 +1017,7 @@ export default observer(function ProjectLayout() {
           </View>
 
           {/* Floating integrations card */}
-          {showIntegrationsCard && (
+          {showIntegrationsCardUi && (
             <View
               className={cn(
                 'absolute z-30',
