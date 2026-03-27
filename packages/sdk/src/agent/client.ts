@@ -15,6 +15,16 @@ import type {
   VisualMode,
 } from './types.js'
 
+/** Per-request bodies set Content-Type; shared headers must not force a single type (e.g. multipart). */
+function withoutContentType(headers: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === 'content-type') continue
+    out[key] = value
+  }
+  return out
+}
+
 /**
  * Client for communicating with a Shogo agent runtime.
  *
@@ -31,12 +41,13 @@ import type {
  */
 export class AgentClient {
   private baseUrl: string
-  private headers: Record<string, string>
+  /** Auth / context headers only — never `Content-Type` (set per request from the body). */
+  private ambientHeaders: Record<string, string>
   private doFetch: typeof fetch
 
   constructor(config?: AgentClientConfig) {
     this.baseUrl = config?.baseUrl?.replace(/\/$/, '') ?? ''
-    this.headers = config?.headers ?? {}
+    this.ambientHeaders = withoutContentType(config?.headers ?? {})
     this.doFetch = config?.fetch ?? globalThis.fetch.bind(globalThis)
   }
 
@@ -52,7 +63,7 @@ export class AgentClient {
   private async fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     const res = await this.doFetch(this.url(path), {
       ...init,
-      headers: { ...this.headers, ...init?.headers },
+      headers: { ...this.ambientHeaders, ...init?.headers },
     })
     if (!res.ok) {
       const text = await res.text().catch(() => res.statusText)
@@ -90,7 +101,7 @@ export class AgentClient {
 
     const res = await this.doFetch(this.url('/agent/chat'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...this.headers },
+      headers: { 'Content-Type': 'application/json', ...this.ambientHeaders },
       body: JSON.stringify(body),
     })
     if (!res.ok) {
@@ -144,7 +155,7 @@ export class AgentClient {
 
   async readFile(path: string): Promise<string> {
     const res = await this.doFetch(this.url(`/agent/workspace/files/${this.encodePath(path)}`), {
-      headers: this.headers,
+      headers: this.ambientHeaders,
     })
     if (!res.ok) {
       const text = await res.text().catch(() => res.statusText)
@@ -206,13 +217,9 @@ export class AgentClient {
   }
 
   async uploadWorkspaceFiles(formData: FormData): Promise<{ uploaded: string[]; count: number }> {
-    // FormData must not include Content-Type — fetch sets multipart boundary automatically.
-    const headers = { ...this.headers }
-    delete headers['Content-Type']
-    delete headers['content-type']
     const res = await this.doFetch(this.url('/agent/workspace/upload'), {
       method: 'POST',
-      headers,
+      headers: this.ambientHeaders,
       body: formData,
     })
     if (!res.ok) {
