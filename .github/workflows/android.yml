@@ -349,17 +349,17 @@ jobs:
       - name: Ensure Sentry CLI binary
         working-directory: apps/mobile
         run: |
-          if ! node_modules/@sentry/cli/bin/sentry-cli --version 2>/dev/null; then
-            echo "Sentry CLI binary not working, installing for this platform..."
-            npx @sentry/cli@latest --version 2>/dev/null || true
-            node node_modules/@sentry/cli/scripts/install.js 2>/dev/null || true
+          SENTRY_CLI="node_modules/@sentry/cli/bin/sentry-cli"
+          if [ -x "$SENTRY_CLI" ] && "$SENTRY_CLI" --version 2>/dev/null; then
+            echo "Sentry CLI binary works"
+          else
+            echo "Sentry CLI binary missing or broken, creating no-op stub..."
+            mkdir -p "$(dirname "$SENTRY_CLI")"
+            printf '#!/bin/bash\necho "sentry-cli stub: skipping upload"\nexit 0\n' > "$SENTRY_CLI"
+            chmod +x "$SENTRY_CLI"
+            echo "Stub created at $SENTRY_CLI"
+            "$SENTRY_CLI" --version
           fi
-          if ! node_modules/@sentry/cli/bin/sentry-cli --version 2>/dev/null; then
-            echo "Creating no-op sentry-cli stub to prevent build failure..."
-            printf '#!/bin/bash\necho "sentry-cli stub: skipping upload"\nexit 0\n' > node_modules/@sentry/cli/bin/sentry-cli
-            chmod +x node_modules/@sentry/cli/bin/sentry-cli
-          fi
-          node_modules/@sentry/cli/bin/sentry-cli --version || echo "sentry-cli stub active"
 
       - name: Build AAB
         working-directory: apps/mobile/android
