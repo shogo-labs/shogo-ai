@@ -26,6 +26,7 @@ import { type ToolCallData, getToolCategory } from "../tools/types"
 import { useChatContextSafe } from "../ChatContext"
 import { MarkdownText } from "../MarkdownText"
 import { GenerateImageWidget } from "./GenerateImageWidget"
+import { NotifyErrorWidget } from "./NotifyErrorWidget"
 import { ThinkingWidget } from "./ThinkingWidget"
 
 export interface AssistantContentProps {
@@ -138,7 +139,7 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
   return result
 }
 
-const UNGROUPABLE_TOOLS = new Set(["ask_user", "TodoWrite", "tool_install", "mcp_install", "generate_image", "exec", "Bash"])
+const UNGROUPABLE_TOOLS = new Set(["ask_user", "notify_user_error", "TodoWrite", "tool_install", "mcp_install", "generate_image", "exec", "Bash"])
 const MIN_GROUP_SIZE = 2
 
 function groupConsecutiveParts(parts: MessagePart[]): GroupedMessagePart[] {
@@ -369,6 +370,12 @@ export function AssistantContent({
           if (part.tool.toolName === "generate_image") {
             return (
               <GenerateImageWidget key={part.id} tool={part.tool} />
+            )
+          }
+
+          if (part.tool.toolName === "notify_user_error") {
+            return (
+              <NotifyErrorWidget key={part.id} tool={part.tool} />
             )
           }
 

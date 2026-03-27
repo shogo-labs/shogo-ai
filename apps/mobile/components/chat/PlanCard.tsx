@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useCallback } from "react"
+import { useState } from "react"
 import { View, Text, Pressable, ScrollView } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { CheckCircle2, Circle, Play, ClipboardList } from "lucide-react-native"
+import { CheckCircle2, Circle, Play, ClipboardList, ChevronDown, ChevronUp } from "lucide-react-native"
 import { MarkdownText } from "./MarkdownText"
 
 export interface PlanData {
@@ -14,6 +14,8 @@ export interface PlanData {
   filepath?: string
 }
 
+const PLAN_TRUNCATE_LENGTH = 2000
+
 interface PlanCardProps {
   plan: PlanData
   onConfirm?: () => void
@@ -22,6 +24,14 @@ interface PlanCardProps {
 }
 
 export function PlanCard({ plan, onConfirm, onViewFull, isConfirmed }: PlanCardProps) {
+  const [expanded, setExpanded] = useState(false)
+  const isTruncatable = plan.plan.length > PLAN_TRUNCATE_LENGTH
+  const displayedPlan = expanded || !isTruncatable
+    ? plan.plan
+    : plan.plan.substring(0, PLAN_TRUNCATE_LENGTH) + "\n\n..."
+
+  const handleViewFull = onViewFull ?? (isTruncatable ? () => setExpanded(prev => !prev) : undefined)
+
   return (
     <View className="mx-2 my-3 rounded-xl border border-border bg-card overflow-hidden">
       {/* Header */}
@@ -33,10 +43,10 @@ export function PlanCard({ plan, onConfirm, onViewFull, isConfirmed }: PlanCardP
         </View>
       </View>
 
-      {/* Plan body (truncated) */}
-      <View className="px-4 py-3 max-h-[300px] overflow-hidden">
-        <MarkdownText>{plan.plan.length > 2000 ? plan.plan.substring(0, 2000) + "\n\n..." : plan.plan}</MarkdownText>
-      </View>
+      {/* Plan body */}
+      <ScrollView className={cn("px-4 py-3", expanded ? "max-h-[600px]" : "max-h-[300px]")}>
+        <MarkdownText>{displayedPlan}</MarkdownText>
+      </ScrollView>
 
       {/* Todos */}
       {plan.todos.length > 0 && (
@@ -67,12 +77,17 @@ export function PlanCard({ plan, onConfirm, onViewFull, isConfirmed }: PlanCardP
               </Text>
             </Pressable>
           )}
-          {onViewFull && (
+          {handleViewFull && (
             <Pressable
-              onPress={onViewFull}
+              onPress={handleViewFull}
               className="flex-row items-center gap-1.5 rounded-lg border border-border px-4 py-2"
             >
-              <Text className="text-xs text-muted-foreground">View Full Plan</Text>
+              {expanded
+                ? <ChevronUp className="h-3 w-3 text-muted-foreground" size={12} />
+                : <ChevronDown className="h-3 w-3 text-muted-foreground" size={12} />}
+              <Text className="text-xs text-muted-foreground">
+                {expanded ? "Collapse Plan" : "View Full Plan"}
+              </Text>
             </Pressable>
           )}
         </View>

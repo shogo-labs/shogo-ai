@@ -184,7 +184,7 @@ describe('gateway-tools', () => {
 
   describe('tool sets', () => {
     test('createTools returns expected tools', () => {
-      expect(createTools(createCtx())).toHaveLength(46)
+      expect(createTools(createCtx())).toHaveLength(49)
       expect(createTools(createCtx()).find((t) => t.name === 'cron')).toBeUndefined()
       expect(createTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'browser')).toBeDefined()
