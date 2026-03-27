@@ -59,7 +59,7 @@ import { EditModeProvider, useEditModeOptional } from '../../../../components/dy
 import { AddComponentDialog } from '../../../../components/dynamic-app/edit/AddComponentDialog'
 import { InspectorPanel } from '../../../../components/dynamic-app/edit/InspectorPanel'
 import { ComponentTreePanel } from '../../../../components/dynamic-app/edit/ComponentTreePanel'
-import { CanvasThemeProvider, CanvasThemedContainer } from '../../../../components/dynamic-app/CanvasThemeContext'
+import { CanvasThemeProvider, CanvasThemedContainer, useCanvasThemeOptional } from '../../../../components/dynamic-app/CanvasThemeContext'
 import { CanvasThemePicker } from '../../../../components/dynamic-app/CanvasThemePicker'
 import { ProjectTopBar } from '../../../../components/project/ProjectTopBar'
 import {
@@ -260,10 +260,26 @@ export default observer(function ProjectLayout() {
     },
   )
   const [userSelectedSurfaceId, setUserSelectedSurfaceId] = useState<string | null>(null)
+  const mountTimeRef = useRef(Date.now())
+
+  // Restore last-viewed surface from AsyncStorage
+  useEffect(() => {
+    if (!projectId) return
+    AsyncStorage.getItem(`shogo:lastCanvasSurface:${projectId}`).then((savedId) => {
+      if (savedId) setUserSelectedSurfaceId(savedId)
+    }).catch(() => {})
+  }, [projectId])
 
   const effectiveSurfaceId = userSelectedSurfaceId && surfaces.has(userSelectedSurfaceId)
     ? userSelectedSurfaceId
     : activeSurfaceId
+
+  // Persist active surface selection to AsyncStorage
+  useEffect(() => {
+    if (projectId && effectiveSurfaceId) {
+      AsyncStorage.setItem(`shogo:lastCanvasSurface:${projectId}`, effectiveSurfaceId).catch(() => {})
+    }
+  }, [projectId, effectiveSurfaceId])
 
   const activeSurface = useMemo(() => {
     return effectiveSurfaceId ? surfaces.get(effectiveSurfaceId) || null : null
@@ -276,9 +292,20 @@ export default observer(function ProjectLayout() {
     [surfaces],
   )
 
-  // Auto-switch to new surfaces created by the agent
+  const surfaceIds = useMemo(() =>
+    surfaceEntries.map(s => s.id),
+    [surfaceEntries],
+  )
+
+  // Auto-switch to new surfaces created by the agent.
+  // Suppressed for the first 2 s after mount so the SSE replay doesn't
+  // override the surface selection we just restored from AsyncStorage.
   const prevActiveSurfaceIdRef = useRef(activeSurfaceId)
   useEffect(() => {
+    if (Date.now() - mountTimeRef.current < 2000) {
+      prevActiveSurfaceIdRef.current = activeSurfaceId
+      return
+    }
     if (activeSurfaceId && activeSurfaceId !== prevActiveSurfaceIdRef.current) {
       setUserSelectedSurfaceId(null)
     }
@@ -841,7 +868,7 @@ export default observer(function ProjectLayout() {
     <>
       <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
 
-      <CanvasThemeProvider projectSettings={project?.settings} onUpdateSettings={handleUpdateCanvasSettings}>
+      <CanvasThemeProvider projectSettings={projectSettings} onUpdateSettings={handleUpdateCanvasSettings} activeSurfaceId={effectiveSurfaceId} surfaceIds={surfaceIds}>
         <EditModeProvider agentUrl={agentUrl}>
           <View className="flex-1 bg-background">
             {isWide ? (
@@ -1023,6 +1050,7 @@ export default observer(function ProjectLayout() {
 function TopBarBridge({
   canvasActive,
   effectiveSurfaceId,
+  surfaceEntries,
   ...props
 }: React.ComponentProps<typeof ProjectTopBar> & {
   canvasActive: boolean
@@ -1030,6 +1058,15 @@ function TopBarBridge({
 }) {
   const editMode = useEditModeOptional()
   const [showAddDialog, setShowAddDialog] = useState(false)
+  const canvasTheme = useCanvasThemeOptional()
+
+  const themedSurfaceEntries = useMemo(() => {
+    if (!surfaceEntries || !canvasTheme) return surfaceEntries
+    return surfaceEntries.map((s) => ({
+      ...s,
+      themeSwatchColor: canvasTheme.getSwatchForSurface(s.id),
+    }))
+  }, [surfaceEntries, canvasTheme])
 
   const handleDelete = useCallback(() => {
     if (effectiveSurfaceId && editMode?.selectedComponentId) {
@@ -1043,6 +1080,7 @@ function TopBarBridge({
     <>
       <ProjectTopBar
         {...props}
+        surfaceEntries={themedSurfaceEntries}
         isEditMode={canvasActive ? editMode?.isEditMode : undefined}
         onToggleEditMode={canvasActive ? editMode?.toggleEditMode : undefined}
         showTreePanel={canvasActive ? editMode?.showTreePanel : undefined}
