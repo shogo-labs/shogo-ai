@@ -94,7 +94,7 @@ export class WebChatAdapter implements ChannelAdapter {
       welcomeMessage: config.welcomeMessage || DEFAULT_CONFIG.welcomeMessage,
       avatarUrl: config.avatarUrl || DEFAULT_CONFIG.avatarUrl,
       allowedOrigins: config.allowedOrigins || DEFAULT_CONFIG.allowedOrigins,
-      widgetSecret: config.widgetSecret || randomUUID(),
+      widgetSecret: config.widgetSecret || '',
     }
 
     this.connected = true
@@ -170,7 +170,7 @@ export class WebChatAdapter implements ChannelAdapter {
   }
 
   validateWidgetSecret(secret: string | null | undefined): boolean {
-    if (!this.config.widgetSecret) return true
+    if (!this.config.widgetSecret) return false
     return secret === this.config.widgetSecret
   }
 
