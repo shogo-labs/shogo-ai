@@ -436,7 +436,7 @@ const SCANNABLE_EXTENSIONS = new Set([
 /** Directories to skip */
 const SKIP_DIRS = new Set([
   "node_modules", ".git", "dist", "build", ".next",
-  ".cache", "coverage", "test-results", ".turbo",
+  ".cache", "coverage", "test-results",
 ])
 
 /** Max file size to scan (500KB) */
