@@ -665,6 +665,15 @@ const app = new Hono()
 // OpenTelemetry tracing — must be first middleware so all requests get spans
 app.use('*', tracingMiddleware)
 
+// Canvas HTML is loaded in an iframe from a different port — strip framing
+// restrictions. Registered before secureHeaders so it wraps it and can remove
+// headers on the way back out of the middleware onion.
+app.use('/api/projects/:projectId/agent-proxy/canvas/*', async (c, next) => {
+  await next()
+  c.res.headers.delete('X-Frame-Options')
+  c.res.headers.delete('Cross-Origin-Opener-Policy')
+})
+
 // Security headers — X-Content-Type-Options, X-Frame-Options, etc.
 app.use('*', secureHeaders({
   xFrameOptions: 'SAMEORIGIN',

@@ -38,6 +38,8 @@ import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { BlockChunker } from './block-chunker'
 import { CanvasStreamParser } from './canvas-stream-parser'
 import { BASIC_CANVAS_TOOLS_GUIDE, BASIC_CANVAS_EXAMPLES } from './canvas-prompt'
+import { CANVAS_V2_PROMPT } from './canvas-v2-prompt'
+import { CanvasFileWatcher } from './canvas-file-watcher'
 import { CODE_AGENT_GENERAL_GUIDE } from './code-agent-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
@@ -134,6 +136,8 @@ export interface GatewayConfig {
   memoryEnabled?: boolean
   /** Whether canvas tools are enabled (default: true). Automatically set false when switching to app/none mode. */
   canvasEnabled?: boolean
+  /** Canvas rendering mode: 'json' = v1 declarative JSON, 'code' = v2 agent-written React code */
+  canvasMode?: 'json' | 'code'
 }
 
 const PERSONALITY_EVOLUTION_GUIDE_PREFIX = `## Personality Self-Update
@@ -204,6 +208,10 @@ export class AgentGateway {
   } | null = null
   /** Manages the per-workspace skill server process (.shogo/server/) */
   private skillServerManager: SkillServerManager
+  /** Canvas v2 file watcher — shared singleton from CanvasFileWatcher.getInstance() */
+  private get canvasFileWatcher(): CanvasFileWatcher {
+    return CanvasFileWatcher.getInstance(this.workspaceDir)
+  }
 
   constructor(workspaceDir: string, projectId: string) {
     this.workspaceDir = workspaceDir
@@ -1044,6 +1052,9 @@ export class AgentGateway {
       aiProxyUrl: process.env.AI_PROXY_URL,
       aiProxyToken: process.env.AI_PROXY_TOKEN,
       uiWriter,
+      canvasFileWatcher: this.config.canvasMode === 'code'
+        ? this.canvasFileWatcher
+        : undefined,
       updateHeartbeatConfig: async (config) => {
         const apiUrl = deriveApiUrl()
         if (!apiUrl) return
@@ -1114,6 +1125,9 @@ export class AgentGateway {
     }
     if (this.config.memoryEnabled === false) {
       assembledTools = assembledTools.filter(t => !t.name.startsWith('memory_'))
+    }
+    if (this.config.canvasMode === 'code') {
+      assembledTools = assembledTools.filter(t => !t.name.startsWith('canvas_'))
     }
 
     // Interaction mode tool restrictions
@@ -1638,8 +1652,12 @@ Examples:
 
     // Mode-specific tool guides
     if (activeMode === 'canvas') {
-      parts.push(BASIC_CANVAS_TOOLS_GUIDE)
-      parts.push(BASIC_CANVAS_EXAMPLES)
+      if (this.config.canvasMode === 'code') {
+        parts.push(CANVAS_V2_PROMPT)
+      } else {
+        parts.push(BASIC_CANVAS_TOOLS_GUIDE)
+        parts.push(BASIC_CANVAS_EXAMPLES)
+      }
     }
     // General coding guide (edit_file, exec safety, code quality) — always included
     parts.push(CODE_AGENT_GENERAL_GUIDE)
