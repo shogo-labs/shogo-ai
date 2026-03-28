@@ -216,7 +216,7 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
       // Build agent URL as an agent-proxy path through the API server so it works
       // with tunnels (ngrok) and cross-origin setups. The API server proxies
       // requests to the actual agent runtime (localhost:agentPort).
-      const host = c.req.header('host') || 'localhost:8002'
+      const host = c.req.header('host') || `localhost:${process.env.API_PORT || process.env.PORT || '8002'}`
       const protocol = c.req.header('x-forwarded-proto') || 'http'
       const agentUrl = `${protocol}://${host}/api/projects/${projectId}/agent-proxy`
 

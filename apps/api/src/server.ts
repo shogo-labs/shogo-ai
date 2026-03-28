@@ -1864,7 +1864,10 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
     const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
     const url = new URL(c.req.url)
     url.pathname = `/projects/${projectId}/sandbox/url`
-    const newReq = new Request(url.toString(), { method: 'GET' })
+    const newReq = new Request(url.toString(), {
+      method: 'GET',
+      headers: { host: c.req.header('host') || `localhost:${process.env.API_PORT || process.env.PORT || '8002'}` },
+    })
     return router.fetch(newReq)
   }
 })

@@ -3,10 +3,39 @@
 import { app, BrowserWindow, protocol, net, session, ipcMain, Menu } from 'electron'
 import path from 'path'
 import fs from 'fs'
-import { startLocalServer, stopLocalServer, getApiUrl } from './local-server'
+import { startLocalServer, stopLocalServer, getApiUrl, getApiPort } from './local-server'
 import { getWebDir } from './paths'
 import { readConfig, writeConfig } from './config'
 import { initAutoUpdater } from './updater'
+
+// --- Persistent file logging ---
+const logDir = path.join(app.getPath('home'), 'Library', 'Logs', 'Shogo')
+fs.mkdirSync(logDir, { recursive: true })
+const logFile = path.join(logDir, 'main.log')
+const logStream = fs.createWriteStream(logFile, { flags: 'a' })
+
+function writeLog(level: string, ...args: unknown[]): void {
+  const ts = new Date().toISOString()
+  const msg = args.map(a => (a instanceof Error ? a.stack || a.message : String(a))).join(' ')
+  logStream.write(`${ts} [${level}] ${msg}\n`)
+}
+
+const origLog = console.log
+const origError = console.error
+const origWarn = console.warn
+console.log = (...args: unknown[]) => { origLog(...args); writeLog('INFO', ...args) }
+console.error = (...args: unknown[]) => { origError(...args); writeLog('ERROR', ...args) }
+console.warn = (...args: unknown[]) => { origWarn(...args); writeLog('WARN', ...args) }
+
+process.on('uncaughtException', (err) => {
+  writeLog('FATAL', 'Uncaught exception:', err)
+  logStream.end()
+})
+process.on('unhandledRejection', (reason) => {
+  writeLog('FATAL', 'Unhandled rejection:', reason)
+})
+
+console.log(`[Desktop] === Shogo starting (v${app.getVersion()}, packaged=${app.isPackaged}) ===`)
 
 // Must be called before app 'ready' — gives shogo:// a real origin instead of "null"
 protocol.registerSchemesAsPrivileged([
@@ -126,6 +155,7 @@ function createWindow(): void {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      additionalArguments: [`--api-port=${getApiPort()}`],
     },
     show: false,
   })
@@ -285,8 +315,18 @@ app.on('window-all-closed', () => {
   }
 })
 
-app.on('before-quit', async () => {
-  if (!isCloudMode) {
-    await stopLocalServer()
-  }
+let isQuitting = false
+app.on('before-quit', (event) => {
+  console.log(`[Desktop] before-quit fired, isQuitting=${isQuitting}, isCloudMode=${isCloudMode}`)
+  if (isQuitting || isCloudMode) return
+  isQuitting = true
+  event.preventDefault()
+  console.log('[Desktop] Waiting for server cleanup before exit...')
+  stopLocalServer()
+    .then(() => console.log('[Desktop] Server cleanup complete'))
+    .catch((err) => console.error('[Desktop] Server cleanup error:', err))
+    .finally(() => {
+      console.log('[Desktop] Exiting app')
+      app.exit(0)
+    })
 })

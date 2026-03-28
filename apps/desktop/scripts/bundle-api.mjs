@@ -41,6 +41,8 @@ const ITEMS_TO_CLEAN = [
   'packages',
   'node_modules',
   'prisma',
+  'templates',
+  'runtime-template',
   'scripts',
   'package.json',
   'bun.lock',
@@ -56,6 +58,7 @@ const EXTERNAL_PACKAGES = [
   'playwright-core',
   '@playwright/mcp',
   '@prisma/client',
+  'prisma',
   'prisma-adapter-bun-sqlite',
   'sqlite-vec',
   '@anthropic-ai/claude-agent-sdk',
@@ -196,8 +199,34 @@ function main() {
     })
   }
 
+  // --- Copy runtime template (Vite scaffold for new projects) ---
+  console.log(`[${stepOffset + 4}/${stepOffset + 6}] Copying runtime template...`)
+  const runtimeTemplateSource = path.join(REPO_ROOT, 'templates', 'runtime-template')
+  const runtimeTemplateDest = path.join(RESOURCES_DIR, 'runtime-template')
+  if (fs.existsSync(runtimeTemplateSource)) {
+    fs.cpSync(runtimeTemplateSource, runtimeTemplateDest, {
+      recursive: true,
+      filter: (src) => !src.includes('node_modules') && !src.includes('.git'),
+    })
+    console.log('  ✓ Copied runtime-template')
+  } else {
+    console.warn('  ⚠ runtime-template not found at', runtimeTemplateSource)
+  }
+
+  // --- Copy agent templates ---
+  console.log(`[${stepOffset + 5}/${stepOffset + 6}] Copying agent templates...`)
+  const templatesSource = path.join(REPO_ROOT, 'packages', 'agent-runtime', 'templates')
+  const templatesDest = path.join(RESOURCES_DIR, 'templates')
+  if (fs.existsSync(templatesSource)) {
+    fs.cpSync(templatesSource, templatesDest, { recursive: true })
+    const count = fs.readdirSync(templatesDest, { withFileTypes: true }).filter(d => d.isDirectory()).length
+    console.log(`  ✓ Copied ${count} template(s)`)
+  } else {
+    console.warn('  ⚠ Templates directory not found at', templatesSource)
+  }
+
   // --- Patch claude-agent-sdk (runs post-install in cloud, do it manually here) ---
-  console.log(`[${stepOffset + 4}/${stepOffset + 4}] Patching claude-agent-sdk...`)
+  console.log(`[${stepOffset + 6}/${stepOffset + 6}] Patching claude-agent-sdk...`)
   const patchScript = path.join(REPO_ROOT, 'scripts', 'patch-claude-sdk.ts')
   if (fs.existsSync(patchScript)) {
     try {
