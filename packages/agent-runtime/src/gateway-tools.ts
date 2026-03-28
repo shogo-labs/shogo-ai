@@ -136,48 +136,6 @@ function truncateExecOutput(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Mode Switching Tool
-// ---------------------------------------------------------------------------
-
-export interface ModeSwitchHandler {
-  onModeSwitch: (mode: 'canvas' | 'app' | 'none', reason: string) => void
-  getAllowedModes: () => Array<'canvas' | 'app' | 'none'>
-  getActiveMode: () => 'canvas' | 'app' | 'none'
-}
-
-function createSwitchModeTool(ctx: ToolContext, modeHandler: ModeSwitchHandler): AgentTool {
-  return {
-    name: 'switch_mode',
-    description:
-      'Switch the visual output mode. "canvas" = your quick display panel (declarative agent dashboard). "none" = chat only, no visual output. Start with canvas for visual needs.',
-    label: 'Switch Mode',
-    parameters: Type.Object({
-      mode: Type.Union([Type.Literal('canvas'), Type.Literal('none')]),
-      reason: Type.String({ description: 'Brief explanation of why this mode fits the request' }),
-    }),
-    execute: async (_id, params) => {
-      const { mode, reason } = params as { mode: 'canvas' | 'none'; reason: string }
-
-      const allowed = modeHandler.getAllowedModes()
-      if (!allowed.includes(mode)) {
-        return textResult({
-          error: true,
-          message: `Mode "${mode}" is not available on this plan. Available modes: ${allowed.join(', ')}`,
-        })
-      }
-
-      const current = modeHandler.getActiveMode()
-      if (current === mode) {
-        return textResult({ switched: false, mode, message: `Already in ${mode} mode.` })
-      }
-
-      modeHandler.onModeSwitch(mode, reason)
-      return textResult({ switched: true, previousMode: current, mode, reason })
-    },
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Tool Definitions (created via factory)
 // ---------------------------------------------------------------------------
 
@@ -4716,7 +4674,7 @@ function createCanvasLintTool(ctx: ToolContext): AgentTool {
 }
 
 /** All gateway tools (unified set for all agents) */
-export function createTools(ctx: ToolContext, modeHandler?: ModeSwitchHandler, extraTools?: AgentTool[]): AgentTool[] {
+export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTool[] {
   const pe = ctx.permissionEngine
   const g = (tool: AgentTool, cat: import('./types').PermissionCategory) => applyPermissionGate(tool, cat, pe)
 
@@ -4777,9 +4735,6 @@ export function createTools(ctx: ToolContext, modeHandler?: ModeSwitchHandler, e
   const allToolsGetter = () => tools
   tools.push(createSkillTool(ctx, allToolsGetter))
 
-  if (modeHandler) {
-    tools.push(createSwitchModeTool(ctx, modeHandler))
-  }
   if (extraTools) {
     tools.push(...extraTools)
   }

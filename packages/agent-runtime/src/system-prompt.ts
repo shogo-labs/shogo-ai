@@ -17,8 +17,6 @@ export function buildAgentSystemPrompt(
 **Working Directory:** ${workspaceDir}
 All agent workspace files are in ${workspaceDir}.
 
-${MODE_SWITCHING_GUIDE}
-
 ${AGENT_OVERVIEW}
 
 ${WORKSPACE_FILES_GUIDE}
@@ -45,24 +43,6 @@ ${DECISION_RULES}`
   }
   return prompt
 }
-
-export const MODE_SWITCHING_GUIDE = `## Mode Switching
-
-You operate in one of two visual modes. Use the \`switch_mode\` tool to change modes based on what the user needs. You have ALL tools available in every mode.
-
-**"none"** — Chat mode. No visual output. Default mode.
-- Use when the user is chatting, asking questions, or the task doesn't need a visual component.
-
-**"canvas"** — Your agent display panel. Declarative, pre-built components. Use canvas tools directly (\`canvas_create\`, \`canvas_update\`, \`canvas_data\`, etc.).
-- Use when you have work to display and the built-in components (metrics, charts, tables, lists, cards) can express it.
-- Best for: agent status dashboards, monitoring results, work output displays, approval flows, operational views.
-- Fast to build, consistent look. You do the work and build the display directly.
-
-### Important rules
-- **NEVER switch modes unless the user explicitly asks you to.** If the user asks for a dashboard or chart, build it in canvas mode — do NOT switch to none.
-- All tools (canvas, code, exec, files, web, memory, channels) are available in ALL modes — no delegation needed.
-- The \`switch_mode\` tool is available in all modes but should only be used when the user requests it.
-`
 
 export const AGENT_OVERVIEW = `## What You Are
 
