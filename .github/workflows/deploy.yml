@@ -341,7 +341,7 @@ jobs:
       needs.detect-changes.outputs.has_changes == 'true' &&
       (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped')
     environment: ${{ needs.resolve-config.outputs.environment == 'production' && 'production-us' || needs.resolve-config.outputs.environment }}
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     strategy:
       fail-fast: false
