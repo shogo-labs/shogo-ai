@@ -26,17 +26,18 @@ function nativeApiUrlWithoutEnv(): string {
 }
 
 export const API_URL = (() => {
-  const envUrl = process.env.EXPO_PUBLIC_API_URL
-
   if (Platform.OS === 'web' && typeof window !== 'undefined') {
-    // Production/staging: nginx proxies /api/ to the API service, so use same origin.
-    // Dev: localhost with non-standard port means local dev server.
+    const desktop = (window as any).shogoDesktop as { apiUrl?: string } | undefined
+    if (desktop?.apiUrl) return desktop.apiUrl
+
+    const envUrl = process.env.EXPO_PUBLIC_API_URL
     if (envUrl) return envUrl
     const origin = window.location.origin
     if (!origin.includes('localhost')) return origin
     return `http://localhost:${API_PORT}`
   }
 
+  const envUrl = process.env.EXPO_PUBLIC_API_URL
   if (envUrl) return envUrl
 
   return nativeApiUrlWithoutEnv()

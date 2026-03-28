@@ -145,10 +145,14 @@ apps/desktop/resources/packages/
 apps/desktop/resources/node_modules/
 apps/desktop/resources/prisma/
 apps/desktop/resources/scripts/
+apps/desktop/resources/templates/
+apps/desktop/resources/runtime-template/
+apps/desktop/resources/seed.db
 apps/desktop/resources/package.json
 apps/desktop/resources/bun.lock
 apps/desktop/resources/tsconfig.base.json
 apps/desktop/resources/prisma.config.local.ts
+apps/desktop/local-server.js
 
 # Local SQLite databases
 *.local.db
