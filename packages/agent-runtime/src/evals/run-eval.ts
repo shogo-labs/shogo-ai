@@ -38,6 +38,7 @@ for (const envFile of ['.env.local', '.env']) {
 }
 import { runEval } from './runner'
 import { resetWorkspaceDefaults } from '../workspace-defaults'
+import { encodeSecurityPolicy } from '../permission-engine'
 import { CANVAS_EVALS } from './test-cases-canvas'
 import { COMPLEX_EVALS } from './test-cases-complex'
 import { MEMORY_EVALS } from './test-cases-memory'
@@ -186,6 +187,7 @@ async function startWorker(id: number): Promise<Worker> {
       PROJECT_DIR: dir,
       PROJECT_ID: `eval-worker-${id}`,
       AGENT_MODEL: modelArg,
+      SECURITY_POLICY: encodeSecurityPolicy({ mode: 'full_autonomy' }),
     },
     stdout: 'inherit',
     stderr: 'inherit',
