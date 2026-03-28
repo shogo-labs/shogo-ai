@@ -94,8 +94,10 @@ export function createDomainActions(store: IDomainStore) {
       _type?: string,
       templateId?: string
     ) => {
-      // APP_MODE_DISABLED: _type === 'APP' settings override removed
-      const settings = undefined
+      const settings = JSON.stringify({
+        activeMode: 'canvas',
+        canvasMode: 'code',
+      })
 
       const project = await store.projectCollection.create({
         name,

@@ -15,13 +15,17 @@
     "evals:run": "cd src/evals/dspy && python3 optimize.py",
     "evals:agent": "bun run src/evals/run-eval.ts",
     "evals:agent:canvas": "bun run src/evals/run-eval.ts --track canvas",
+    "evals:agent:canvas-v2": "bun run src/evals/run-eval.ts --track canvas-v2",
+    "evals:agent:edit-file": "bun run src/evals/run-eval.ts --track edit-file",
     "evals:agent:all": "bun run src/evals/run-eval.ts --track all",
     "evals:optimize": "cd src/evals/dspy && python3 optimize.py --track all --eval-model haiku --optimize-model sonnet --strategy bootstrap --no-cache",
     "evals:apply": "bun run src/evals/apply-optimizations.ts",
     "evals:pipeline": "bun run evals:optimize && bun run evals:apply",
     "generate-templates": "bun run src/template-generator/cli.ts",
     "generate-templates:force": "bun run src/template-generator/cli.ts --force",
-    "generate-templates:dry": "bun run src/template-generator/cli.ts --dry-run"
+    "generate-templates:dry": "bun run src/template-generator/cli.ts --dry-run",
+    "migrate-canvas": "bun run src/migrate-canvas-to-code.ts",
+    "migrate-canvas:all": "bun run src/migrate-canvas-to-code.ts --all"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.76",
@@ -42,13 +46,14 @@
     "openai": "^6.25.0",
     "playwright-core": "^1.58.2",
     "sqlite-vec": "^0.1.7-alpha.2",
+    "sucrase": "^3.35.1",
     "tar": "^7.4.3",
     "yaml": "^2.7.1",
+    "typescript": "^6.0.2",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "@types/nodemailer": "^7.0.10",
-    "typescript": "^6.0.2"
+    "@types/nodemailer": "^7.0.10"
   }
 }

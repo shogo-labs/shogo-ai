@@ -55,7 +55,7 @@ case "${1:-start}" in
     echo "   ./scripts/docker-dev.sh init  # Initialize database tables"
     echo ""
     echo "💡 Then run your apps locally:"
-    echo "   bun run dev        # Start all apps with turbo"
+    echo "   bun run dev:all    # Start API + web concurrently"
     echo "   bun run web:dev    # Start web only"
     echo "   bun run api:dev    # Start API only"
     echo ""

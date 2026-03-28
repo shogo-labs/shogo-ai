@@ -151,7 +151,6 @@ async function verifyProjectAccess(userId: string, projectId: string): Promise<s
  * Get or create the RuntimeManager singleton.
  *
  * Configurable via environment variables:
- * - RUNTIME_BASE_PORT: Base port for Vite runtimes (default: 5200)
  * - RUNTIME_MAX_COUNT: Maximum concurrent runtimes (default: 10)
  * - RUNTIME_DOMAIN_SUFFIX: Domain suffix for URLs (default: localhost)
  * - WORKSPACES_DIR: Directory containing project workspaces (default: PROJECT_ROOT/workspaces)
@@ -160,14 +159,13 @@ function getRuntimeManager(): IRuntimeManager {
   if (!runtimeManager) {
     const workspacesDir = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
     runtimeManager = createRuntimeManager({
-      basePort: parseInt(process.env.RUNTIME_BASE_PORT || '5200', 10),
       maxRuntimes: parseInt(process.env.RUNTIME_MAX_COUNT || '10', 10),
       domainSuffix: process.env.RUNTIME_DOMAIN_SUFFIX || 'localhost',
       workspacesDir,
       templateDir: '_template',
     })
     console.log('[Runtime] RuntimeManager initialized:', {
-      basePort: process.env.RUNTIME_BASE_PORT || '5200',
+      portRange: '37100-37900 (random)',
       maxRuntimes: process.env.RUNTIME_MAX_COUNT || '10',
       domainSuffix: process.env.RUNTIME_DOMAIN_SUFFIX || 'localhost',
       workspacesDir,
@@ -664,6 +662,15 @@ const app = new Hono()
 
 // OpenTelemetry tracing — must be first middleware so all requests get spans
 app.use('*', tracingMiddleware)
+
+// Canvas HTML is loaded in an iframe from a different port — strip framing
+// restrictions. Registered before secureHeaders so it wraps it and can remove
+// headers on the way back out of the middleware onion.
+app.use('/api/projects/:projectId/agent-proxy/canvas/*', async (c, next) => {
+  await next()
+  c.res.headers.delete('X-Frame-Options')
+  c.res.headers.delete('Cross-Origin-Opener-Policy')
+})
 
 // Security headers — X-Content-Type-Options, X-Frame-Options, etc.
 app.use('*', secureHeaders({
@@ -2333,7 +2340,7 @@ app.get('/api/projects/:projectId/download', async (c) => {
   try {
     const excludes = [
       'node_modules', '.git', '.next', 'dist', 'build', '.cache',
-      '.output', '.nuxt', '.turbo', '.bun', '.vite'
+      '.output', '.nuxt', '.bun', '.vite'
     ]
     const excludeArgs = excludes.flatMap((dir: string) => ['--exclude', dir])
     

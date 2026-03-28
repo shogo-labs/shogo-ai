@@ -89,7 +89,6 @@ if [ -d "/workspaces" ] && [ -z "${SKIP_WORKSPACE_SEEDING:-}" ]; then
                 --exclude "**/dist/**" \
                 --exclude "**/build/**" \
                 --exclude "**/.next/**" \
-                --exclude "**/.turbo/**" \
                 --exclude "**/*.log" \
                 "$workspace_dir" "myminio/shogo-workspaces/${workspace_name}/" || {
                 echo "    Warning: Some files may have been skipped"

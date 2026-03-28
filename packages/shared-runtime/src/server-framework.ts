@@ -267,6 +267,8 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
     if (path.startsWith('/agent/channels/webchat/events/')) return true
     if (path.startsWith('/agent/channels/whatsapp/')) return true
     if (path.startsWith('/agent/channels/teams/')) return true
+    if (path.startsWith('/agent/canvas/')) return true
+    if (path.startsWith('/canvas/') || path === '/canvas') return true
     return false
   }
 
